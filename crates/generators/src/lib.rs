@@ -5,8 +5,8 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context, Result, anyhow, bail};
 use lumen_engine::node::{
-    EnumDef, InputPortDef, NodeCategory, NodeKind, NodeParams, NodeSchemaDef, PortKind,
-    PropertyDef, PropertyKind, PropertyValue, SINGLE_RASTER_OUTPUT,
+    EnumDef, InputPortDef, NodeCategory, NodeKind, NodeParams, NodeSchemaDef, PropertyDef,
+    PropertyKind,
 };
 use serde_json::{Map, Value, json};
 
@@ -407,7 +407,7 @@ fn object_schema_json<P: NodeParams>(
     defs: &mut Map<String, Value>,
     value_schemas: &[(&str, Value)],
 ) -> Result<Value> {
-    let defaults = P::default().default_properties();
+    let defaults = P::default().json_properties();
     let mut fields = Map::new();
     let mut required = Vec::new();
     for property in &P::property_defs() {
@@ -415,7 +415,7 @@ fn object_schema_json<P: NodeParams>(
             required.push(property.id);
             None
         } else {
-            default_json(property, &defaults)?
+            default_json(property, &defaults)
         };
         let replaced = value_schemas.iter().find(|(id, _)| *id == property.id);
         let value_schema = match (replaced, property.enum_def) {
@@ -503,7 +503,7 @@ fn expressions_json() -> Value {
 fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {
     let mut properties = Map::new();
     for property in &schema.properties {
-        let default = default_json(property, &schema.default_properties)?;
+        let default = default_json(property, &schema.default_properties);
         properties.insert(
             property.id.to_string(),
             property_schema_json(property, default),
@@ -514,10 +514,7 @@ fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {
         "description": schema.description,
         "x-lumen-category": category_name(schema.category),
         "x-lumen-inputs": schema.inputs.iter().map(input_port_json).collect::<Vec<_>>(),
-        "x-lumen-outputs": SINGLE_RASTER_OUTPUT
-            .iter()
-            .map(|output| json!({ "name": output.name, "kind": port_kind_name(output.kind) }))
-            .collect::<Vec<_>>(),
+        "x-lumen-outputs": [{ "name": "output", "kind": "raster_frame" }],
         "type": "object",
         "required": ["id", "type"],
         "properties": {
@@ -536,7 +533,7 @@ fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {
 fn input_port_json(input: &InputPortDef) -> Value {
     json!({
         "name": input.name,
-        "kind": port_kind_name(input.kind),
+        "kind": "raster_frame",
         "optional": input.optional,
         "variadic": input.variadic,
     })
@@ -687,13 +684,6 @@ fn category_name(category: NodeCategory) -> &'static str {
     }
 }
 
-fn port_kind_name(kind: PortKind) -> &'static str {
-    match kind {
-        PortKind::Raster => "raster_frame",
-        PortKind::Vector => "vector",
-    }
-}
-
 fn property_kind_name(kind: PropertyKind) -> &'static str {
     match kind {
         PropertyKind::Float => "float",
@@ -714,43 +704,13 @@ fn property_kind_name(kind: PropertyKind) -> &'static str {
     }
 }
 
-/// The JSON form of `property`'s entry in `defaults`, which is absent for optional params and
-/// for optional fields of a param kind, since they are unset unless given.
-fn default_json(
-    property: &PropertyDef,
-    defaults: &[(&'static str, PropertyValue)],
-) -> Result<Option<Value>> {
-    let Some((_, value)) = defaults.iter().find(|(name, _)| *name == property.id) else {
-        return Ok(None);
-    };
-    if let Some(enum_def) = property.enum_def {
-        let PropertyValue::Int(value) = value else {
-            bail!("enum default param must be stored as an int: {value:?}");
-        };
-        let option = enum_def
-            .options
-            .iter()
-            .find(|option| option.value == *value)
-            .with_context(|| format!("enum default `{value}` not found in `{}`", enum_def.name))?;
-        return Ok(Some(json!(option.name)));
-    }
-
-    Ok(Some(match value {
-        PropertyValue::Float(value) => json!(value),
-        PropertyValue::Int(value) => json!(value),
-        PropertyValue::Bool(value) => json!(value),
-        PropertyValue::String(value) => json!(value),
-        PropertyValue::Color(value) => json!(value),
-        PropertyValue::Paint(value) => value.to_json_value(),
-        PropertyValue::Vec2(value) => json!(value),
-        PropertyValue::ShaderUniforms(value) => value.to_json_value(),
-        PropertyValue::ClipProps(value) => value.to_json_value(),
-        PropertyValue::TextContent(value) => value.to_json_value(),
-        PropertyValue::TextLine(value) => Value::Object(value.to_json()),
-        PropertyValue::TextHighlight(value) => Value::Object(value.to_json()),
-        PropertyValue::FontFeatures(value) => value.to_json_value(),
-        PropertyValue::TextStroke(value) => Value::Object(value.to_json()),
-    }))
+/// `property`'s entry in `defaults`, which is absent for optional params and for optional fields
+/// of a param kind, since they are unset unless given.
+fn default_json(property: &PropertyDef, defaults: &[(&'static str, Value)]) -> Option<Value> {
+    defaults
+        .iter()
+        .find(|(name, _)| *name == property.id)
+        .map(|(_, value)| value.clone())
 }
 
 fn write_if_changed(path: &Path, content: &str) -> Result<()> {

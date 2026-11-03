@@ -30,13 +30,11 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let input_static = format_ident!("__LUMEN_{}_INPUTS", ident.to_string().to_uppercase());
     let input_defs = inputs.iter().map(|input| {
         let name = &input.name;
-        let kind = port_kind_tokens(&input.kind);
         let optional = input.optional;
         let variadic = input.variadic;
         quote! {
             ::lumen_engine::node::InputPortDef {
                 name: #name,
-                kind: #kind,
                 optional: #optional,
                 variadic: #variadic,
             }
@@ -47,7 +45,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
         .map(|(_, ty)| quote!(<#ty as ::lumen_engine::node::NodeParams>::property_defs()));
     let metas_default_properties = metas
         .iter()
-        .map(|(field, _)| quote!(defaults.#field.default_properties()));
+        .map(|(field, _)| quote!(defaults.#field.json_properties()));
     let metas_property_matches = metas.iter().map(|(field, _)| {
         quote! {
             if let Some(value) = self.#field.get_property(id) {
@@ -81,7 +79,13 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             })
         } else {
             quote!(#name => {
-                self.#field = source;
+                if self.#field.is_some() {
+                    return Err(::lumen_engine::error::GraphValidationError::InputAlreadyConnected {
+                        node_id: self.id,
+                        port: #name.to_string(),
+                    });
+                }
+                self.#field = Some(source);
                 Ok(())
             })
         }
@@ -89,9 +93,9 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let input_port_collectors = inputs.iter().map(|input| {
         let field = &input.field;
         if input.variadic {
-            quote!(ports.extend(self.#field.clone()))
+            quote!(ports.extend(self.#field.iter().copied().map(Some)))
         } else {
-            quote!(ports.push(self.#field.clone()))
+            quote!(ports.push(self.#field))
         }
     });
 
@@ -153,11 +157,14 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             fn set_input_json(
                 &mut self,
                 port: &str,
-                source: ::lumen_engine::node::PortRef,
-            ) -> ::anyhow::Result<()> {
+                source: ::lumen_engine::node::NodeId,
+            ) -> ::core::result::Result<(), ::lumen_engine::error::GraphValidationError> {
                 match port {
                     #(#json_input_matches,)*
-                    _ => ::anyhow::bail!("unknown input port `{port}` on node {}", self.id),
+                    _ => Err(::lumen_engine::error::GraphValidationError::MissingTargetPort {
+                        node_id: self.id,
+                        port: port.to_string(),
+                    }),
                 }
             }
         }
@@ -171,7 +178,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                 #input_static
             }
 
-            fn input_ports(&self) -> ::std::vec::Vec<::lumen_engine::node::PortRef> {
+            fn input_ports(&self) -> ::std::vec::Vec<::core::option::Option<::lumen_engine::node::NodeId>> {
                 let mut ports = ::std::vec::Vec::new();
                 #(#input_port_collectors;)*
                 ports
@@ -182,7 +189,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             fn get_property(
                 &self,
                 id: &str,
-            ) -> ::core::option::Option<::lumen_engine::node::PropertyExpression> {
+            ) -> ::core::option::Option<::lumen_engine::node::PropertyRead<'_>> {
                 #(#metas_property_matches)*
                 None
             }

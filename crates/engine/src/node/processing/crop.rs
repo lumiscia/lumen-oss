@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
@@ -36,7 +36,7 @@ impl Default for CropParams {
 }
 
 /// Keeps a raster region in place and clears everything outside it.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "crop", name = "Crop", category = "processing")]
 pub struct Crop {
     pub id: NodeId,
@@ -44,32 +44,15 @@ pub struct Crop {
     pub params: CropParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
-}
-
-impl Default for Crop {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: CropParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
+    pub source: Option<NodeId>,
 }
 
 impl GpuCompileNode for Crop {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
-        let source = ctx
-            .compile_port(&self.source)?
-            .into_raster(self.source.id, &self.source.port)?;
+        let source = ctx.compile_input(self.id, "source", self.source)?;
         let size = source.domain.storage_size;
         let texture = ctx.builder_mut().texture(
             Some(format!("crop:{}:output", self.id.0)),

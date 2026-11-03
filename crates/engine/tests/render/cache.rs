@@ -1,11 +1,7 @@
 //! Output kept between frames: what `memo` holds, what static layers keep, and how both survive
 //! plan switches, edits, external targets and the shared text atlas.
 
-use lumen_engine::{
-    composition::Composition,
-    gpu::GpuCompositionRenderer,
-    node::{NodeId, PortRef},
-};
+use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, node::NodeId};
 use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
@@ -618,10 +614,10 @@ fn replacing_a_kept_texture_renders_it_again() {
         .compiled()
         .unwrap()
         .node_outputs
-        .get(&PortRef::new(NodeId::new(3), "output".to_string()))
+        .get(&NodeId::new(3))
         .unwrap()
         .clone()
-        .into_raster(NodeId::new(3), "output")
+        .into_raster(NodeId::new(3))
         .unwrap();
     let gpu = renderer.gpu_renderer_mut();
     let desc = gpu.texture_desc(kept.texture).unwrap();

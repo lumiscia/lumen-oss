@@ -48,7 +48,6 @@ struct NodeAttr {
 struct InputAttr {
     field: Ident,
     name: LitStr,
-    kind: Ident,
     optional: bool,
     variadic: bool,
 }
@@ -92,15 +91,12 @@ fn parse_input_attr(attrs: &[Attribute], field: &Ident) -> Result<Option<InputAt
         return Ok(None);
     };
     let mut name = None;
-    let mut kind = None;
     let mut optional = None;
     let mut variadic = None;
 
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("name") {
             name = Some(meta.value()?.parse()?);
-        } else if meta.path.is_ident("kind") {
-            kind = Some(ident_value(&meta)?);
         } else if meta.path.is_ident("optional") {
             optional = Some(optional_bool(&meta)?);
         } else if meta.path.is_ident("variadic") {
@@ -114,7 +110,6 @@ fn parse_input_attr(attrs: &[Attribute], field: &Ident) -> Result<Option<InputAt
     Ok(Some(InputAttr {
         field: field.clone(),
         name: name.unwrap_or_else(|| LitStr::new(&field.to_string(), field.span())),
-        kind: kind.unwrap_or_else(|| Ident::new("raster", Span::call_site())),
         optional: optional.unwrap_or(false),
         variadic: variadic.unwrap_or(false),
     }))
@@ -218,17 +213,6 @@ fn category_tokens(category: &Ident) -> proc_macro2::TokenStream {
         _ => {
             let span = category.span();
             quote::quote_spanned!(span=> compile_error!("unknown node category"))
-        }
-    }
-}
-
-fn port_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
-    match kind.to_string().as_str() {
-        "raster" | "Raster" => quote!(::lumen_engine::node::PortKind::Raster),
-        "vector" | "Vector" => quote!(::lumen_engine::node::PortKind::Vector),
-        _ => {
-            let span = kind.span();
-            quote::quote_spanned!(span=> compile_error!("unknown port kind"))
         }
     }
 }

@@ -19,7 +19,7 @@ use crate::{
     error::LumenError,
     expr::ExpressionContext,
     gpu::{CompiledOutput, GpuCompileNode},
-    node::{ClipPropValue, ClipProps, Deferred, DelegateEvalContext, NodeId, NodeParams, PortRef},
+    node::{ClipPropValue, ClipProps, Deferred, DelegateEvalContext, NodeId, NodeParams},
     scope::{FrameTime, PropValues, Routed, Scope},
 };
 
@@ -82,7 +82,7 @@ impl Default for ClipParams {
 }
 
 /// Plays a composition template, or its source, over a window of time.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "clip", name = "Clip", category = "compositing")]
 pub struct Clip {
     pub id: NodeId,
@@ -90,17 +90,7 @@ pub struct Clip {
     pub params: ClipParamsDelegate,
     /// The branch to play when no `composition` is set.
     #[input(optional)]
-    pub source: PortRef,
-}
-
-impl Default for Clip {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ClipParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
+    pub source: Option<NodeId>,
 }
 
 /// When a clip shows and at which of its content's frames.
@@ -261,8 +251,8 @@ impl Clip {
             return Ok(None);
         };
         let Some(template) = self.template(scope)? else {
-            return Ok(Some(Routed {
-                port: self.source.clone(),
+            return Ok(self.source.map(|source| Routed {
+                node: source,
                 frame: local,
                 scope: scope.clone(),
                 instance: Some(self.id),
@@ -273,8 +263,8 @@ impl Clip {
         let Some(crate::node::NodeKind::MediaOutput(output)) = child.node(output) else {
             unreachable!("media_output returns a media output node");
         };
-        Ok(Some(Routed {
-            port: output.source.clone(),
+        Ok(output.source.map(|source| Routed {
+            node: source,
             frame: local,
             scope: child,
             instance: Some(self.id),
@@ -319,11 +309,7 @@ impl GpuCompileNode for Clip {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
         ctx.compile_clip(self)
     }
 }
@@ -380,7 +366,15 @@ mod tests {
         };
         for frame in 3..250 {
             let local = clip.local_time(f64::from(frame).into()).unwrap();
-            let source = map_to_source_frame(local, 24.0, 30.0, 1000, None, 1.0, LoopMode::Clamp);
+            let source = map_to_source_frame(
+                local,
+                24.0,
+                30.0,
+                1000,
+                &(0..u32::MAX),
+                1.0,
+                LoopMode::Clamp,
+            );
             assert_eq!(source, Some(frame - 3 + 5), "at {frame}");
         }
     }

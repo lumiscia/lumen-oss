@@ -14,6 +14,18 @@ pub enum ExpressionValue {
     Color([f64; 4]),
 }
 
+/// Parses `rrggbb` or `rrggbbaa` hex digits to RGBA, with alpha opaque when it is absent.
+pub(crate) fn parse_hex_color(hex: &str) -> Option<[u8; 4]> {
+    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut color = [255; 4];
+    for (index, channel) in color.iter_mut().take(hex.len() / 2).enumerate() {
+        *channel = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(color)
+}
+
 impl ExpressionValue {
     pub fn color_from_u8(color: [u8; 4]) -> Self {
         Self::Color(color.map(|component| f64::from(component) / 255.0))

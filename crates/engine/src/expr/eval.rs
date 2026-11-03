@@ -10,7 +10,7 @@ use crate::{
         ast::{BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::{evaluate_builtin, evaluate_text_measure_builtin},
     },
-    node::{PropertyEval, PropertyExpression, PropertyValue},
+    node::{PropertyEval, PropertyRead},
 };
 
 impl Expression {
@@ -70,19 +70,6 @@ impl Drop for EvaluationGuard {
         let (open, started) = EVALUATIONS.get();
         let open = open - self.levels;
         EVALUATIONS.set((open, if open == 0 { 0 } else { started }));
-    }
-}
-
-fn property_value_to_expression_value(value: &PropertyValue) -> Option<ExpressionValue> {
-    match value {
-        PropertyValue::Float(number) => Some(ExpressionValue::Number(*number)),
-        PropertyValue::Int(number) => Some(ExpressionValue::Number(*number as f64)),
-        PropertyValue::Bool(boolean) => Some(ExpressionValue::Boolean(*boolean)),
-        PropertyValue::String(text) => Some(ExpressionValue::String(text.clone())),
-        PropertyValue::Vec2(value) => Some(ExpressionValue::Vec2(*value)),
-        PropertyValue::Color(value) => Some(ExpressionValue::color_from_u8(*value)),
-        PropertyValue::TextContent(content) => content.literal_text().map(ExpressionValue::String),
-        _ => None,
     }
 }
 
@@ -329,17 +316,16 @@ pub(crate) fn evaluate_expr(
                     node_id.0
                 ))
             })?;
-            match &prop {
-                PropertyExpression::Expr(inner_expr) => inner_expr
+            match prop {
+                PropertyRead::Expr(inner_expr) => inner_expr
                     .evaluate(&ctx.without_glyph())
                     .map_err(|error| error.located(*node_id, property)),
-                PropertyExpression::Value(value) => property_value_to_expression_value(value)
-                    .ok_or_else(|| {
-                        LumenError::evaluate(format!(
-                            "property `{property}` on node {} can't be read in an expression",
-                            node_id.0
-                        ))
-                    }),
+                PropertyRead::Value(value) => value.ok_or_else(|| {
+                    LumenError::evaluate(format!(
+                        "property `{property}` on node {} can't be read in an expression",
+                        node_id.0
+                    ))
+                }),
             }
         }
         ExprNode::Conditional(condition, when_true, when_false) => {
@@ -506,7 +492,7 @@ mod tests {
         error::ExpressionError,
         expr::ast::ExprNode,
         graph::Graph,
-        node::{NodeId, NodeKind, PropertyValue, source::text::Text},
+        node::{DelegateEvaluable, NodeId, NodeKind, ParamValue, source::text::Text},
     };
 
     fn test_context() -> ExpressionContext<'static> {
@@ -598,20 +584,14 @@ mod tests {
 
     #[test]
     fn converts_supported_node_properties() {
+        assert_eq!(7_i64.to_expression(), Some(ExpressionValue::Number(7.0)));
+        assert_eq!(true.to_expression(), Some(ExpressionValue::Boolean(true)));
         assert_eq!(
-            property_value_to_expression_value(&PropertyValue::Int(7)),
-            Some(ExpressionValue::Number(7.0))
-        );
-        assert_eq!(
-            property_value_to_expression_value(&PropertyValue::Bool(true)),
-            Some(ExpressionValue::Boolean(true))
-        );
-        assert_eq!(
-            property_value_to_expression_value(&PropertyValue::Vec2((10.0, 20.0))),
+            (10.0, 20.0).to_expression(),
             Some(ExpressionValue::Vec2((10.0, 20.0)))
         );
         assert_eq!(
-            property_value_to_expression_value(&PropertyValue::Color([255, 0, 0, 255])),
+            [255_u8, 0, 0, 255].to_expression(),
             Some(ExpressionValue::Color([1.0, 0.0, 0.0, 1.0]))
         );
     }
@@ -1031,6 +1011,7 @@ mod tests {
                 "color": "=if(text_width(node(8)) > 10, #ff0000, #0000ff)",
                 "underline": { "paint": "=if(text_height(node(8)) > 10, #ff0000, #0000ff)" }
             }]),
+            "content",
         )
         .unwrap();
         let mut graph = Graph::new();
@@ -1064,6 +1045,7 @@ mod tests {
                 "text": "Morning",
                 "baseline_shift": "=text_height(node(8)) / 2"
             }]),
+            "content",
         )
         .unwrap();
         let mut graph = Graph::new();

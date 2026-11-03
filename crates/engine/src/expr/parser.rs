@@ -3,7 +3,9 @@ use std::ops::Range;
 use crate::{
     error::ExpressionError,
     expr::{
-        ast::{BinaryOp, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
+        ast::{
+            BinaryOp, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp, parse_hex_color,
+        },
         builtins::range_error,
         functions,
         spec::{BuiltinSpec, Easing, ValueKind, builtin_for_name},
@@ -251,17 +253,9 @@ impl<'a> Lexer<'a> {
             self.bump_char();
         }
         let literal = &self.source[start..self.position];
-        let hex = &literal[1..];
-        if !(matches!(hex.len(), 6 | 8) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())) {
-            return Err(ExpressionError::Parse {
-                details: format!("invalid colour `{literal}`; use #rrggbb or #rrggbbaa"),
-            });
-        }
-        let mut color = [255; 4];
-        for (index, channel) in color.iter_mut().take(hex.len() / 2).enumerate() {
-            *channel = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).expect("hex digits");
-        }
-        Ok(color)
+        parse_hex_color(&literal[1..]).ok_or_else(|| ExpressionError::Parse {
+            details: format!("invalid colour `{literal}`; use #rrggbb or #rrggbbaa"),
+        })
     }
 
     fn read_identifier(&mut self) -> String {

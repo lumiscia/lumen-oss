@@ -1,10 +1,11 @@
-use lumen_engine::composition::Composition;
+use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer};
 use lumen_ffmpeg::VideoCodec;
 
 use crate::render::{RenderError, RenderProgress, media::LocalMediaStore};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_project_mp4_cuda(
+    _renderer: GpuCompositionRenderer,
     _composition: &Composition,
     _media_store: &LocalMediaStore,
     _width: u32,

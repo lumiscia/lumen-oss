@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -22,24 +22,14 @@ impl Default for OpacityParams {
 }
 
 /// Uniformly adjusts raster opacity.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "opacity", name = "Opacity", category = "processing")]
 pub struct Opacity {
     pub id: NodeId,
     #[params]
     pub params: OpacityParamsDelegate,
     #[input()]
-    pub source: PortRef,
-}
-
-impl Default for Opacity {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: OpacityParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
+    pub source: Option<NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,12 +71,10 @@ impl GpuCompileNode for Opacity {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
         let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
-            &self.source,
-            port,
+            self.source,
             "opacity",
             SHADER,
             std::mem::size_of::<compiler::OpacityParams>() as u64,

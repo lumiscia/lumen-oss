@@ -10,7 +10,7 @@ use crate::gpu::{
     compiler,
 };
 use crate::node::motion::Shutter;
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 const SHAPE_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -122,7 +122,7 @@ impl Default for ShapeParams {
 }
 
 /// Produces a vector shape layer for GPU rasterization.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "shape", name = "Shape", category = "vector")]
 pub struct Shape {
     pub id: NodeId,
@@ -130,25 +130,8 @@ pub struct Shape {
     pub params: ShapeParamsDelegate,
 }
 
-impl Default for Shape {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ShapeParamsDelegate::default(),
-        }
-    }
-}
-
 impl GpuCompileNode for Shape {
-    fn compile_gpu(
-        &self,
-        ctx: &mut CompileContext<'_>,
-        port: &PortRef,
-    ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
+    fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<CompiledOutput> {
         // Enum params are always constants, so the pipeline can be chosen here.
         Ok(match self.params.geometry_kind {
             ShapeGeometryKindDelegate::Polygon => compile_polygon_shape(ctx, self),

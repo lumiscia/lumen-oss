@@ -9,7 +9,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let pixel_origin = vec2<f32>(f32(id.x), f32(id.y));
     let target_size = vec2<f32>(f32(size.x), f32(size.y));
-    if (paint.paint_supersample == 0u) {
+    // A solid paint is the same everywhere, so it is never supersampled.
+    if (paint.paint_supersample == 0u || paint.kind == 0u) {
         let pixel = pixel_origin + vec2<f32>(0.5);
         textureStore(output_tex, vec2<i32>(id.xy), sample_paint(paint, pixel, pixel / target_size));
         return;

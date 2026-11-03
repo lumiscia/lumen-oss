@@ -13,7 +13,7 @@ use crate::{
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{
-        Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, PortRef,
+        Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
         source::text_content::TextContentDelegate,
     },
     scope::{FrameTime, Routed, Scope},
@@ -371,8 +371,15 @@ impl GpuCompositionRenderer {
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
-        self.ensure_compiled_for_frame(composition, 0.0, Some(media), PlanUse::Render)
-            .map(drop)
+        // Frame 0 is only compiled ahead of time. The frames being rendered may never reach a
+        // source it can't open, and those that do fail with the same error.
+        match self.ensure_compiled_for_frame(composition, 0.0, Some(media), PlanUse::Render) {
+            Err(crate::error::LumenError::Media(error)) => {
+                tracing::debug!(target: "lumen_render", %error, "frame 0 did not compile ahead of time");
+                Ok(())
+            }
+            result => result.map(drop),
+        }
     }
 
     /// Drops every compiled plan and cached media texture, destroying the GPU textures and
@@ -919,42 +926,55 @@ impl GpuCompositionRenderer {
                 "resolve media texture upload"
             );
             #[cfg(feature = "ffmpeg")]
-            if let MediaFrame::GpuVideo(frame) = &upload.frame {
-                let texture = gpu_media_importer
-                    .import(
+            let cpu_retry;
+            let frame = match &upload.frame {
+                MediaFrame::CpuRgba(frame) => frame,
+                #[cfg(feature = "ffmpeg")]
+                MediaFrame::GpuVideo(frame) => {
+                    match gpu_media_importer.import(
                         &prepared.renderer,
                         &mut prepared.media_imports,
                         upload,
                         frame,
-                    )
-                    .map_err(|details| RenderError::Gpu {
-                        details: format!("failed to import GPU media frame: {details}"),
-                    })?;
-                let size = texture.size();
-                let desc = lumen_gpu::TextureDesc::sampled(
-                    lumen_gpu::Size::new(size.width, size.height),
-                    match frame.frame.backend() {
-                        #[cfg(all(target_os = "macos", feature = "metal"))]
-                        lumen_ffmpeg::GpuBackend::Metal => {
-                            lumen_gpu::wgpu::TextureFormat::Bgra8Unorm
+                    ) {
+                        Ok(texture) => {
+                            let bound = prepared.renderer.texture_arc(upload.texture);
+                            if bound.is_none_or(|bound| !Arc::ptr_eq(&bound, &texture)) {
+                                let size = texture.size();
+                                let desc = lumen_gpu::TextureDesc::sampled(
+                                    lumen_gpu::Size::new(size.width, size.height),
+                                    match frame.frame.backend() {
+                                        #[cfg(all(target_os = "macos", feature = "metal"))]
+                                        lumen_ffmpeg::GpuBackend::Metal => {
+                                            lumen_gpu::wgpu::TextureFormat::Bgra8Unorm
+                                        }
+                                        _ => lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                                    },
+                                );
+                                prepared
+                                    .renderer
+                                    .replace_texture_arc(upload.texture, texture, desc)
+                                    .map_err(|error| RenderError::Gpu {
+                                        details: error.to_string(),
+                                    })?;
+                            }
+                            prepared.current_media_textures.remove(&upload.texture);
+                            continue;
                         }
-                        _ => lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                    },
-                );
-                prepared
-                    .renderer
-                    .replace_texture_arc(upload.texture, texture, desc)
-                    .map_err(|error| RenderError::Gpu {
-                        details: error.to_string(),
-                    })?;
-                prepared.current_media_textures.remove(&upload.texture);
-                continue;
-            }
-
-            let frame = match &upload.frame {
-                MediaFrame::CpuRgba(frame) => frame,
-                #[cfg(feature = "ffmpeg")]
-                MediaFrame::GpuVideo(_) => unreachable!("GPU video frames are imported above"),
+                        Err(reason) => {
+                            cpu_retry =
+                                frame
+                                    .decode_on_cpu(&reason)
+                                    .map_err(|error| RenderError::Gpu {
+                                        details: format!(
+                                            "failed to import GPU media frame: {reason}; \
+                                         decoding it on the CPU also failed: {error}"
+                                        ),
+                                    })?;
+                            &cpu_retry
+                        }
+                    }
+                }
             };
 
             let Some(key) = &upload.key else {
@@ -963,11 +983,20 @@ impl GpuCompositionRenderer {
                     texture = ?upload.texture,
                     "upload uncached video frame"
                 );
-                if prepared
+                let cached_was_bound = prepared
                     .current_media_textures
                     .remove(&upload.texture)
-                    .is_some()
-                {
+                    .is_some();
+                // A source that moved to the CPU may leave an imported texture of another size or
+                // format.
+                let not_writable = prepared
+                    .renderer
+                    .texture(upload.texture)
+                    .is_some_and(|bound| {
+                        bound.size() != upload.size.as_extent()
+                            || bound.format() != lumen_gpu::wgpu::TextureFormat::Rgba8Unorm
+                    });
+                if cached_was_bound || not_writable {
                     // The bound texture is a cached image's, which must not be written.
                     prepared
                         .renderer
@@ -1274,7 +1303,7 @@ impl GpuCompositionRenderer {
         media: Option<&dyn MediaStore>,
     ) -> crate::Result<CompiledPlanKey> {
         let root = Scope::root(composition);
-        let output = PortRef::new(root.media_output()?, "output".to_string());
+        let output = root.media_output()?;
         let mut collector = PlanKeyCollector {
             media,
             time_remaps: TimeRemapPath::new(),
@@ -1282,7 +1311,7 @@ impl GpuCompositionRenderer {
             entries: Vec::new(),
             has_text: false,
         };
-        collector.collect(&root, &output, frame.into())?;
+        collector.collect(&root, output, frame.into())?;
         let mut entries = collector.entries;
         entries.sort();
         entries.dedup();
@@ -1319,18 +1348,15 @@ impl<'a> PlanKeyCollector<'a> {
     fn collect(
         &mut self,
         scope: &Scope<'_>,
-        port: &PortRef,
+        node_id: NodeId,
         frame: FrameTime,
     ) -> crate::Result<()> {
-        if port.is_empty() {
+        if !self.visited.insert((node_id, self.time_remaps.clone())) {
             return Ok(());
         }
-        if !self.visited.insert((port.id, self.time_remaps.clone())) {
-            return Ok(());
-        }
-        let Some(node) = scope.node(port.id) else {
-            return Ok(());
-        };
+        let node = scope
+            .node(node_id)
+            .ok_or(RenderError::MissingNode { node_id })?;
         self.collect_node(scope, node, frame)
     }
 
@@ -1351,12 +1377,11 @@ impl<'a> PlanKeyCollector<'a> {
                 self.push_entry(switch.id, PlanChoice::SwitchSelection(selection));
             }
             NodeKind::Clip(clip) => {
-                let shown = routes.first().is_some_and(|routed| !routed.port.is_empty());
-                self.push_entry(clip.id, PlanChoice::ClipShown(shown));
+                self.push_entry(clip.id, PlanChoice::ClipShown(!routes.is_empty()));
             }
             NodeKind::Text(text) => {
                 let spans = match &text.params.content {
-                    TextContentDelegate::Spans(spans) => &spans.items[..],
+                    TextContentDelegate::Spans(spans) => &spans[..],
                     TextContentDelegate::Text(_) => &[],
                 };
                 let families = std::iter::once(&text.params.font_family)
@@ -1380,10 +1405,8 @@ impl<'a> PlanKeyCollector<'a> {
             }
             NodeKind::MediaIn(media_in) => {
                 let ctx = scope.expr_context(frame, self.media);
-                if let Some(size) = self
-                    .media
-                    .and_then(|media| media_in.native_size(&ctx, media))
-                {
+                // A failing source is left for compiling to report, like a font family above.
+                if let Ok(Some(size)) = media_in.native_size(&ctx) {
                     self.push_entry(media_in.id, PlanChoice::MediaSize(size.width, size.height));
                 }
             }
@@ -1401,14 +1424,14 @@ impl<'a> PlanKeyCollector<'a> {
             _ => {}
         }
         for Routed {
-            port,
+            node,
             frame,
             scope,
             instance,
         } in routes
         {
             self.time_remaps.extend(instance);
-            let result = self.collect(&scope, &port, frame);
+            let result = self.collect(&scope, node, frame);
             if instance.is_some() {
                 self.time_remaps.pop();
             }

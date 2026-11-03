@@ -2,15 +2,13 @@
 mod driver;
 #[cfg(target_os = "linux")]
 mod interop;
-#[cfg(target_os = "linux")]
-mod kernel;
 
 mod frame;
 
-pub use frame::{BACKEND, CudaDecodedFrame, CudaVideoFrame};
+pub use frame::{BACKEND, CudaVideoFrame};
 
 #[cfg(target_os = "linux")]
 pub use driver::{
-    CudaContext, CudaDeviceAllocation, CudaDeviceInfo, CudaDriver, CudaNv12ToRgbaConverter,
-    ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image,
+    CudaContext, CudaDeviceAllocation, CudaDeviceInfo, CudaDriver, ImportedCudaExternalImage,
+    import_owned_vulkan_opaque_fd_image,
 };

@@ -1,4 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, compositing::BlendMode,
+};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -14,25 +16,25 @@ pub(crate) const SHADER: &str = concat!(
 /// Composites a variadic stack of raster layers in order.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct RasterMultiMergeParams {
-    /// Opacity applied to each layer as it is composited.
+    /// Opacity of each layer above the first, which is the base and is used as is.
     #[meta(min = 0, max = 1, step = 0.05)]
     pub opacity: f64,
     /// Blend mode used for each layer in the stack.
-    #[meta(kind = "enum", enum_type = crate::node::compositing::BlendMode)]
-    pub blend_mode: i64,
+    #[meta(kind = "enum", enum_type = BlendMode)]
+    pub blend_mode: BlendMode,
 }
 
 impl Default for RasterMultiMergeParams {
     fn default() -> Self {
         Self {
             opacity: 1.0,
-            blend_mode: 0,
+            blend_mode: BlendMode::Normal,
         }
     }
 }
 
 /// Composites a variadic stack of raster layers in order.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "raster_multimerge",
     name = "Raster Multi Merge",
@@ -44,17 +46,7 @@ pub struct RasterMultiMerge {
     pub params: RasterMultiMergeParamsDelegate,
 
     #[input(optional, variadic)]
-    pub layers: Vec<PortRef>,
-}
-
-impl Default for RasterMultiMerge {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: RasterMultiMergeParamsDelegate::default(),
-            layers: Vec::new(),
-        }
-    }
+    pub layers: Vec<NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,7 +82,7 @@ impl GpuCompiledNode for RasterMultiCompiledMerge {
             let params = compiler::RasterMultiMergeParams {
                 values: [
                     evaluated.opacity as f32,
-                    evaluated.blend_mode as f32,
+                    evaluated.blend_mode as u32 as f32,
                     f32::from(u8::from(layer.base_straight)),
                     f32::from(u8::from(layer.overlay_straight)),
                 ],
@@ -106,19 +98,13 @@ impl GpuCompileNode for RasterMultiMerge {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
         let layers = self
             .layers
             .iter()
-            .filter(|layer| !layer.is_empty())
-            .map(|layer| {
+            .map(|&layer| {
                 ctx.compile_bounded_port(layer)
-                    .and_then(|output| output.into_raster(layer.id, &layer.port))
+                    .and_then(|output| output.into_raster(layer))
             })
             .collect::<crate::Result<Vec<_>>>()?;
         let Some((&first, overlays)) = layers.split_first() else {

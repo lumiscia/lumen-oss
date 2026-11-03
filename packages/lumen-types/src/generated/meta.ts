@@ -890,6 +890,7 @@ export type ChannelShuffleBlue = "red" | "green" | "blue" | "alpha" | "zero" | "
 export type ChannelShuffleGreen = "red" | "green" | "blue" | "alpha" | "zero" | "one";
 export type ChannelShuffleRed = "red" | "green" | "blue" | "alpha" | "zero" | "one";
 export type ClipEnd = "hide" | "hold" | "loop";
+export type ColorGradeInterpolation = "nearest" | "linear";
 export type MediaInKind = "image" | "video";
 export type MediaInLoopMode = "clamp" | "repeat" | "ping_pong";
 export type MergeBlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten";
@@ -1006,7 +1007,10 @@ export type TextSpan = {
    * kept. Within a word, the first span's features apply to all of it.
    */
   readonly font_features?: FontFeatures;
-  /** Font size in pixels. */
+  /**
+   * Font size in pixels. Where spans of one family, weight and style meet, a ligature or
+   * other cluster across the boundary takes the size of the span it starts in.
+   */
   readonly font_size?: ExpressionValue<number>;
   /** Font style. */
   readonly font_style?: ExpressionValue<TextFontStyle>;
@@ -1065,10 +1069,10 @@ export interface AlphaPremultiplyNode extends CompositionNodeBase<"alpha_premult
 
 export interface BackgroundNode extends CompositionNodeBase<"background"> {
   readonly params?: {
-    readonly "height"?: ExpressionValue<number>;
+    readonly "height"?: number;
     readonly "paint"?: ExpressionValue<Paint>;
     readonly "paint_supersample"?: ExpressionValue<boolean>;
-    readonly "width"?: ExpressionValue<number>;
+    readonly "width"?: number;
   };
 }
 
@@ -1108,7 +1112,7 @@ export interface ClipNode extends CompositionNodeBase<"clip"> {
 
 export interface ColorGradeNode extends CompositionNodeBase<"color_grade"> {
   readonly params?: {
-    readonly "interpolation"?: ExpressionValue<number>;
+    readonly "interpolation"?: ExpressionValue<ColorGradeInterpolation>;
     readonly "lut_source"?: ExpressionValue<string>;
     readonly "strength"?: ExpressionValue<number>;
   };
@@ -1179,7 +1183,7 @@ export interface MemoNode extends CompositionNodeBase<"memo"> {
 
 export interface MergeNode extends CompositionNodeBase<"merge"> {
   readonly params?: {
-    readonly "blend_mode"?: MergeBlendMode;
+    readonly "blend_mode"?: ExpressionValue<MergeBlendMode>;
     readonly "feather"?: ExpressionValue<number>;
     readonly "invert"?: ExpressionValue<boolean>;
     readonly "mask_mode"?: MergeMaskMode;
@@ -1224,7 +1228,7 @@ export interface ResizeNode extends CompositionNodeBase<"resize"> {
   readonly params?: {
     readonly "height"?: ExpressionValue<number>;
     readonly "mode"?: ResizeMode;
-    readonly "sampling"?: ResizeSampling;
+    readonly "sampling"?: ExpressionValue<ResizeSampling>;
     readonly "width"?: ExpressionValue<number>;
     readonly "x"?: ExpressionValue<number>;
     readonly "y"?: ExpressionValue<number>;
@@ -1326,7 +1330,7 @@ export interface TransformNode extends CompositionNodeBase<"transform"> {
     readonly "pivot_x"?: ExpressionValue<number>;
     readonly "pivot_y"?: ExpressionValue<number>;
     readonly "rotate"?: ExpressionValue<number>;
-    readonly "sampling"?: TransformSampling;
+    readonly "sampling"?: ExpressionValue<TransformSampling>;
     readonly "scale_x"?: ExpressionValue<number>;
     readonly "scale_y"?: ExpressionValue<number>;
     readonly "translate_x"?: ExpressionValue<number>;

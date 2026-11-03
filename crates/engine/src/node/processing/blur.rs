@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -9,7 +9,7 @@ use super::gaussian;
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct BlurParams {
-    /// Blur radius in pixels. Fractional radii blend smoothly.
+    /// Blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.
     #[meta(min = 0, step = 0.5)]
     pub radius: f64,
 }
@@ -21,24 +21,14 @@ impl Default for BlurParams {
 }
 
 /// Applies a separable Gaussian blur to a raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "blur", name = "Blur", category = "processing")]
 pub struct Blur {
     pub id: NodeId,
     #[params]
     pub params: BlurParamsDelegate,
     #[input()]
-    pub source: PortRef,
-}
-
-impl Default for Blur {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: BlurParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
+    pub source: Option<NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,15 +66,8 @@ impl GpuCompileNode for Blur {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
-        let source = ctx
-            .compile_bounded_port(&self.source)?
-            .into_raster(self.source.id, &self.source.port)?;
+        let source = ctx.compile_bounded_input(self.id, "source", self.source)?;
         // The blur spreads the source's data by the radius, up to its largest over the timeline.
         let bounds = ctx.source_bounds(
             compiler::SourceMotion::of(self.params.radius.is_expr(), &self.params),

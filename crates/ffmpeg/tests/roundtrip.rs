@@ -941,3 +941,55 @@ fn best_video_stream_prefers_the_default_track_over_stream_order() {
         let _ = fs::remove_file(path);
     }
 }
+
+#[test]
+fn decodes_every_column_when_the_width_is_not_a_multiple_of_eight() {
+    let formats = [
+        ("yuv420p", [854, 1022, 1366].as_slice()),
+        ("yuv422p", [854, 1022].as_slice()),
+        ("yuv444p", [853, 855, 854].as_slice()),
+        ("yuv420p10le", [854, 1022].as_slice()),
+    ];
+    for (format, widths) in formats {
+        for &width in widths {
+            let name = format!("columns_{format}_{width}");
+            let path = temp_path(&name, "mp4");
+            let available = run_fixture(
+                Command::new("ffmpeg")
+                    .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+                    .arg("-i")
+                    .arg(format!("color=c=0xc86432:s={width}x16:r=30:d=0.1"))
+                    .args([
+                        "-pix_fmt",
+                        format,
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        "ultrafast",
+                    ])
+                    .arg(&path),
+                &name,
+            );
+            if !available {
+                return;
+            }
+            let frames = decode_all_rgba(&path);
+            assert!(!frames.is_empty(), "{name}");
+            for frame in &frames {
+                assert_eq!(frame.width as usize, width, "{name}");
+                let expected = &frame.data[..4];
+                assert_eq!(expected[3], 255, "{name}");
+                for (index, pixel) in frame.data.chunks_exact(4).enumerate() {
+                    assert_eq!(
+                        pixel,
+                        expected,
+                        "{name}: column {} of row {}",
+                        index % width,
+                        index / width
+                    );
+                }
+            }
+            let _ = fs::remove_file(path);
+        }
+    }
+}

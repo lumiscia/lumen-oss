@@ -1,6 +1,6 @@
 use crate::node::{
-    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef,
-    compositing::BlendMode, processing::gaussian,
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, compositing::BlendMode,
+    processing::gaussian,
 };
 
 use crate::gpu::{
@@ -44,7 +44,7 @@ pub struct MergeParams {
     /// Swaps the masked and unmasked areas.
     #[meta()]
     pub invert: bool,
-    /// Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`.
+    /// Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`. Radii above about 588 look the same.
     #[meta(min = 0, step = 0.5)]
     pub feather: f64,
 }
@@ -62,7 +62,7 @@ impl Default for MergeParams {
 }
 
 /// Composites an overlay raster over a base raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "merge", name = "Merge", category = "compositing")]
 pub struct Merge {
     pub id: NodeId,
@@ -70,23 +70,11 @@ pub struct Merge {
     pub params: MergeParamsDelegate,
 
     #[input()]
-    pub base: PortRef,
+    pub base: Option<NodeId>,
     #[input()]
-    pub overlay: PortRef,
+    pub overlay: Option<NodeId>,
     #[input(optional)]
-    pub mask: PortRef,
-}
-
-impl Default for Merge {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: MergeParamsDelegate::default(),
-            base: PortRef::empty(),
-            overlay: PortRef::empty(),
-            mask: PortRef::empty(),
-        }
-    }
+    pub mask: Option<NodeId>,
 }
 
 /// `MergeParams::mask_source`: no mask, the feathered mask, or the mask as is. A feather
@@ -160,33 +148,23 @@ impl GpuCompileNode for Merge {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
-        let base = ctx
-            .compile_bounded_port(&self.base)?
-            .into_raster(self.base.id, &self.base.port)?;
-        let overlay = ctx
-            .compile_bounded_port(&self.overlay)?
-            .into_raster(self.overlay.id, &self.overlay.port)?;
+        let base = ctx.compile_bounded_input(self.id, "base", self.base)?;
+        let overlay = ctx.compile_bounded_input(self.id, "overlay", self.overlay)?;
         // A literal feather of zero or less never blurs, so its passes are left out. The
         // blur reads the mask at full frame.
         let feathered =
             !matches!(&self.params.feather, Deferred::Value(radius) if !(*radius > 0.0));
-        let mask = if self.mask.is_empty() {
-            None
-        } else {
-            let mask = ctx
-                .compile_bounded_port(&self.mask)?
-                .into_raster(self.mask.id, &self.mask.port)?;
-            Some(if feathered {
-                ctx.full_frame(mask)
-            } else {
-                mask
-            })
+        let mask = match self.mask {
+            Some(mask) => {
+                let mask = ctx.compile_bounded_port(mask)?.into_raster(mask)?;
+                Some(if feathered {
+                    ctx.full_frame(mask)
+                } else {
+                    mask
+                })
+            }
+            None => None,
         };
 
         let size = base.domain.display_size();
@@ -284,7 +262,7 @@ impl GpuCompileNode for Merge {
         ctx.register_compiled_node(CompiledMerge {
             node_id: self.id,
             params: self.params.clone(),
-            has_mask: !self.mask.is_empty(),
+            has_mask: self.mask.is_some(),
             straight_inputs: u32::from(straight(&base))
                 | (u32::from(straight(&overlay)) << 1)
                 | (u32::from(mask.as_ref().is_some_and(straight)) << 2),

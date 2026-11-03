@@ -64,7 +64,6 @@ fn build_small_media_transform(with_exposure: bool) -> Composition {
         NodeKind::MediaIn(MediaIn {
             id: media,
             params: MediaInParamsDelegate {
-                kind: Deferred::value(0),
                 source: Deferred::value(MEDIA_ID.to_string()),
                 ..Default::default()
             },
@@ -101,7 +100,6 @@ fn build_small_media_transform(with_exposure: bool) -> Composition {
     graph
         .connect(Connection {
             from_node: media,
-            from_port: "output".to_string(),
             to_node: transform,
             to_port: "source".to_string(),
         })
@@ -110,7 +108,6 @@ fn build_small_media_transform(with_exposure: bool) -> Composition {
         graph
             .connect(Connection {
                 from_node: transform,
-                from_port: "output".to_string(),
                 to_node: exposure,
                 to_port: "source".to_string(),
             })
@@ -122,7 +119,6 @@ fn build_small_media_transform(with_exposure: bool) -> Composition {
     graph
         .connect(Connection {
             from_node: output_source,
-            from_port: "output".to_string(),
             to_node: output,
             to_port: "source".to_string(),
         })
@@ -226,8 +222,8 @@ mod tests {
         else {
             panic!("expected filtered media output")
         };
-        assert_eq!(direct_output.source.id, NodeId::new(2));
-        assert_eq!(filtered_exposure.source.id, NodeId::new(2));
-        assert_eq!(filtered_output.source.id, NodeId::new(3));
+        assert_eq!(direct_output.source, Some(NodeId::new(2)));
+        assert_eq!(filtered_exposure.source, Some(NodeId::new(2)));
+        assert_eq!(filtered_output.source, Some(NodeId::new(3)));
     }
 }

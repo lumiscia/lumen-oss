@@ -61,7 +61,6 @@ impl CompositionFixture for SimplePipeline {
         graph
             .connect(Connection {
                 from_node: background,
-                from_port: "output".to_string(),
                 to_node: exposure,
                 to_port: "source".to_string(),
             })
@@ -69,7 +68,6 @@ impl CompositionFixture for SimplePipeline {
         graph
             .connect(Connection {
                 from_node: exposure,
-                from_port: "output".to_string(),
                 to_node: output,
                 to_port: "source".to_string(),
             })

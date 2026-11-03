@@ -1,5 +1,5 @@
-use super::{ids::NodeId, ports::PortRef};
-use super::{ports::InputPortDef, property::PropertyValue};
+use super::ids::NodeId;
+use super::ports::InputPortDef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -92,7 +92,7 @@ pub struct NodeSchemaDef {
     pub category: NodeCategory,
     pub inputs: &'static [InputPortDef],
     pub properties: Vec<PropertyDef>,
-    pub default_properties: Vec<(&'static str, PropertyValue)>,
+    pub default_properties: Vec<(&'static str, serde_json::Value)>,
 }
 
 #[cfg(feature = "metadata")]
@@ -108,5 +108,9 @@ pub trait JsonNode: Default {
     where
         Self: Sized;
 
-    fn set_input_json(&mut self, port: &str, source: PortRef) -> anyhow::Result<()>;
+    fn set_input_json(
+        &mut self,
+        port: &str,
+        source: NodeId,
+    ) -> Result<(), crate::error::GraphValidationError>;
 }

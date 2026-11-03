@@ -12,7 +12,8 @@ use lumen_engine::{
         VideoMetadata, collect_frame_requirements,
     },
     node::{
-        Deferred, NodeId, NodeKind, PortRef,
+        Deferred, NodeId, NodeKind,
+        compositing::{merge::Merge, raster_multimerge::RasterMultiMerge},
         media_output::MediaOutput,
         processing::{
             alpha_premultiply::{AlphaPremultiply, AlphaPremultiplyParamsDelegate},
@@ -94,18 +95,14 @@ fn compile(composition: &Composition, frame: Option<u32>) -> CompiledComposition
     try_compile(composition, frame).unwrap()
 }
 
-fn port(node: u64) -> PortRef {
-    PortRef::new(NodeId::new(node), "output".to_string())
-}
-
 fn has_output(compiled: &CompiledComposition, node: u64) -> bool {
-    compiled.node_outputs.contains_key(&port(node))
+    compiled.node_outputs.contains_key(&NodeId::new(node))
 }
 
 fn raster(compiled: &CompiledComposition, node: u64) -> lumen_engine::gpu::RasterHandle {
-    compiled.node_outputs[&port(node)]
+    compiled.node_outputs[&NodeId::new(node)]
         .clone()
-        .into_raster(NodeId::new(node), "output")
+        .into_raster(NodeId::new(node))
         .unwrap()
 }
 
@@ -258,7 +255,7 @@ fn a_cycle_error_prints_the_cycle_and_not_the_nodes_it_feeds() {
         NodeKind::Blur(Blur {
             id: NodeId::new(id),
             params: Default::default(),
-            source: PortRef::new(NodeId::new(source), "output".to_string()),
+            source: Some(NodeId::new(source)),
         })
     };
     let mut graph = Graph::new();
@@ -282,7 +279,7 @@ fn a_missing_input_node_is_not_reported_as_a_cycle() {
         output,
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: PortRef::new(NodeId::new(999), "output".to_string()),
+            source: Some(NodeId::new(999)),
         }),
     );
     assert!(matches!(
@@ -298,32 +295,43 @@ fn cycles_are_rejected_at_build() {
     let first = NodeId::new(1);
     let second = NodeId::new(2);
     let output = NodeId::new(3);
-    let port = |id| PortRef::new(id, "output".to_string());
     let connection = |from, to| Connection {
         from_node: from,
-        from_port: "output".to_string(),
         to_node: to,
         to_port: "source".to_string(),
     };
     let exposure = |id, source| {
         NodeKind::Exposure(Exposure {
             id,
-            source: port(source),
+            source: Some(source),
             ..Exposure::default()
         })
     };
     let media_output = || {
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: port(first),
+            source: Some(first),
         })
     };
 
-    // Ports and connections agree.
+    // Connections written into the inputs.
     let mut graph = Graph::new();
-    graph.nodes.insert(first, exposure(first, second));
-    graph.nodes.insert(second, exposure(second, first));
-    graph.nodes.insert(output, media_output());
+    for id in [first, second] {
+        graph.nodes.insert(
+            id,
+            NodeKind::Exposure(Exposure {
+                id,
+                ..Exposure::default()
+            }),
+        );
+    }
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            ..MediaOutput::default()
+        }),
+    );
     for edge in [
         connection(first, second),
         connection(second, first),
@@ -333,7 +341,7 @@ fn cycles_are_rejected_at_build() {
     }
     assert_cycle_rejected_at_build(graph);
 
-    // Nodes built directly carry their inputs on ports, with no connections at all.
+    // Nodes built directly carry their inputs.
     let mut graph = Graph::new();
     graph.nodes.insert(first, exposure(first, second));
     graph.nodes.insert(second, exposure(second, first));
@@ -345,7 +353,7 @@ fn cycles_are_rejected_at_build() {
         first,
         NodeKind::TimeRemap(TimeRemap {
             id: first,
-            source: port(first),
+            source: Some(first),
             ..TimeRemap::default()
         }),
     );
@@ -358,7 +366,7 @@ fn cycles_are_rejected_at_build() {
         first,
         NodeKind::TimeRemap(TimeRemap {
             id: second,
-            source: port(first),
+            source: Some(first),
             ..TimeRemap::default()
         }),
     );
@@ -367,6 +375,79 @@ fn cycles_are_rejected_at_build() {
         error,
         LumenError::GraphValidation(GraphValidationError::NodeIdMismatch { .. })
     )));
+}
+
+#[test]
+fn a_missing_required_input_is_named() {
+    let output = NodeId::new(1);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            ..MediaOutput::default()
+        }),
+    );
+    let errors = build_errors(graph);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.to_string() == "node 1 is missing required input `source`"),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_second_connection_to_a_single_input_is_rejected_and_a_variadic_input_appends() {
+    let (first, second, merge) = (NodeId::new(1), NodeId::new(2), NodeId::new(3));
+    let connect = |graph: &mut Graph, from_node, to_port: &str| {
+        graph.connect(Connection {
+            from_node,
+            to_node: merge,
+            to_port: to_port.to_string(),
+        })
+    };
+    let mut graph = Graph::new();
+    for id in [first, second] {
+        graph.nodes.insert(
+            id,
+            NodeKind::Background(Background {
+                id,
+                ..Background::default()
+            }),
+        );
+    }
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            ..Merge::default()
+        }),
+    );
+    connect(&mut graph, first, "base").unwrap();
+    let error = connect(&mut graph, second, "base").unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "input `base` of node 3 is already connected"
+    );
+
+    let multi = NodeId::new(4);
+    graph.nodes.insert(
+        multi,
+        NodeKind::RasterMultiMerge(RasterMultiMerge {
+            id: multi,
+            ..RasterMultiMerge::default()
+        }),
+    );
+    for from_node in [first, second] {
+        graph
+            .connect(Connection {
+                from_node,
+                to_node: multi,
+                to_port: "layers".to_string(),
+            })
+            .unwrap();
+    }
 }
 
 #[test]
@@ -473,7 +554,6 @@ fn media_prediction_follows_direct_ports() {
         NodeKind::MediaIn(MediaIn {
             id: media,
             params: MediaInParamsDelegate {
-                kind: Deferred::value(0),
                 source: Deferred::value("plate".to_string()),
                 ..Default::default()
             },
@@ -483,7 +563,7 @@ fn media_prediction_follows_direct_ports() {
         opacity,
         NodeKind::Opacity(Opacity {
             id: opacity,
-            source: port(1),
+            source: Some(NodeId::new(1)),
             ..Opacity::default()
         }),
     );
@@ -491,7 +571,7 @@ fn media_prediction_follows_direct_ports() {
         output,
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: port(2),
+            source: Some(NodeId::new(2)),
         }),
     );
     let composition = build(graph).unwrap_or_else(|errors| panic!("{errors:?}"));
@@ -548,6 +628,97 @@ fn media_prediction_visits_shared_inputs_once() {
     collect_frame_requirements(&scene((8, 4), json!(nodes)), &store, 0).unwrap();
 
     assert_eq!(store.0.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn media_prediction_follows_a_videos_range_and_loop_mode() {
+    #[derive(Debug)]
+    struct TenFrameStore;
+    impl MediaStore for TenFrameStore {
+        fn get_video_resolver(
+            &self,
+            _: &str,
+        ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
+            Ok(Box::new(TenFrameVideo))
+        }
+    }
+    struct TenFrameVideo;
+    impl VideoFrameResolver for TenFrameVideo {
+        fn id(&self) -> &str {
+            "clip"
+        }
+        fn metadata(&self) -> VideoMetadata {
+            VideoMetadata {
+                width: 8,
+                height: 4,
+                frame_count: 10,
+                fps: 24.0,
+            }
+        }
+        fn frame(&self, _: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+            unreachable!("prediction reads no frames")
+        }
+    }
+
+    let predicted = |params: Value, frame: u32| {
+        let mut params = params.as_object().unwrap().clone();
+        params.insert("kind".into(), json!("video"));
+        params.insert("source".into(), json!("clip"));
+        let composition = scene(
+            (8, 4),
+            json!([{ "id": 1, "type": "media_in", "params": params }]),
+        );
+        collect_frame_requirements(&composition, &TenFrameStore, frame).map(|requirements| {
+            requirements
+                .videos
+                .into_iter()
+                .flat_map(|video| video.frames)
+                .collect::<Vec<_>>()
+        })
+    };
+
+    // The end is the first frame past the range, and a start alone plays to the source's end.
+    for (params, frame, expected) in [
+        (
+            json!({ "range_start": 4, "range_end": 7, "loop_mode": "repeat" }),
+            3,
+            4,
+        ),
+        (json!({ "range_start": 4, "range_end": 7 }), 9, 6),
+        (json!({ "range_start": 4 }), 9, 9),
+        (json!({ "range_end": 3, "loop_mode": "ping_pong" }), 3, 1),
+        (json!({ "loop_mode": "=1" }), 12, 2),
+    ] {
+        assert_eq!(
+            predicted(params.clone(), frame).unwrap(),
+            [expected],
+            "{params} at {frame}"
+        );
+    }
+
+    let error = predicted(json!({ "range_start": 6, "range_end": 6 }), 0).unwrap_err();
+    assert!(
+        error.to_string().contains("out of range for clip"),
+        "{error}"
+    );
+    let error = predicted(json!({ "loop_mode": "=7" }), 0).unwrap_err();
+    assert!(
+        error.to_string().contains("7 is not a value of LoopMode"),
+        "{error}"
+    );
+}
+
+#[test]
+fn compiling_media_reports_why_the_source_failed() {
+    let composition = scene(
+        (16, 9),
+        json!([{ "id": 1, "type": "media_in", "params": { "kind": "image", "source": "gone" } }]),
+    );
+    let error =
+        CompileContext::with_media(&composition, &TestMediaStore::image("plate", 8, 4), RGBA8)
+            .compile()
+            .unwrap_err();
+    assert!(error.to_string().contains("not the test image"), "{error}");
 }
 
 #[test]
@@ -828,7 +999,7 @@ fn bind_errors() {
                     params: AlphaPremultiplyParamsDelegate {
                         mode: Deferred::Expr(Expression::parse("\"unpremultiply\"").unwrap()),
                     },
-                    source: port(1),
+                    source: Some(NodeId::new(1)),
                 }),
             );
             convert
@@ -874,6 +1045,72 @@ fn bind_errors() {
         Stage::Bind,
         "`glyph` is only available",
     ));
+    // An expression can only name a value the enum has.
+    let source = json!({ "source": 1 });
+    for (kind, inputs, param, value, enum_name) in [
+        (
+            "boolean",
+            json!({ "a": 1, "b": 2 }),
+            "operation",
+            "=4",
+            "BooleanOperation",
+        ),
+        (
+            "raster_multimerge",
+            json!({ "layers": [1, 2] }),
+            "blend_mode",
+            "=6",
+            "BlendMode",
+        ),
+        (
+            "merge",
+            json!({ "base": 1, "overlay": 2 }),
+            "blend_mode",
+            "=6",
+            "BlendMode",
+        ),
+        (
+            "color_grade",
+            source.clone(),
+            "interpolation",
+            "=2",
+            "RasterSampling",
+        ),
+        (
+            "resize",
+            source.clone(),
+            "sampling",
+            "=-1",
+            "RasterSampling",
+        ),
+        ("transform", source, "sampling", "=2", "RasterSampling"),
+    ] {
+        rows.push(row(
+            &format!("{kind} {param} outside its enum"),
+            json!([
+                solid(1, [255, 0, 0, 255]),
+                solid(2, [0, 0, 255, 255]),
+                { "id": 3, "type": kind, "in": inputs, "params": { param: value } },
+            ]),
+            Stage::Bind,
+            format!("is not a value of {enum_name}"),
+        ));
+    }
+    rows.push(row(
+        "shadow color that is a gradient",
+        json!([
+            solid(1, [255, 0, 0, 255]),
+            { "id": 2, "type": "shadow", "in": { "source": 1 }, "params": { "color": {
+                "type": "linear_gradient",
+                "stops": [
+                    { "offset": 0.0, "color": [255, 0, 0, 255] },
+                    { "offset": 1.0, "color": [0, 0, 255, 255] }
+                ]
+            } } },
+        ]),
+        Stage::Bind,
+        "property `color` on node 2 has invalid type: expected a solid color, got a gradient",
+    ));
     rows.push(row(
         "malformed path data",
         json!([{ "id": 1, "type": "path", "params": { "data": "M 0 0 L 10 10 C nope" } }]),
@@ -912,6 +1149,29 @@ fn bind_errors() {
         }
         .to_string();
         assert!(error.contains(&row.message), "{}: {error}", row.name);
+    }
+}
+
+#[test]
+fn color_grade_interpolation_is_a_sampling_name() {
+    let load = |value: Value| {
+        lumen_engine::json::parse_value(&json!({
+            "timeline": { "fps": 24, "duration_frames": 12 },
+            "render_settings": { "width": 8, "height": 4 },
+            "nodes": [
+                solid(1, [255, 0, 0, 255]),
+                { "id": 2, "type": "color_grade", "params": { "interpolation": value } },
+                { "id": 3, "type": "media_output" },
+            ],
+            "connections": [
+                { "from_node": 1, "to_node": 2, "to_port": "source" },
+                { "from_node": 2, "to_node": 3, "to_port": "source" },
+            ],
+        }))
+    };
+    load(json!("nearest")).unwrap();
+    for value in [json!(0), json!("cubic")] {
+        assert!(load(value.clone()).is_err(), "{value}");
     }
 }
 
@@ -981,7 +1241,7 @@ fn glyph_scope_crosses_functions() {
             NodeId::new(2),
             NodeKind::MediaOutput(MediaOutput {
                 id: NodeId::new(2),
-                source: port(1),
+                source: Some(NodeId::new(1)),
             }),
         );
         CompositionBuilder::new(
@@ -1175,7 +1435,7 @@ fn atlas_composition(nodes: impl FnOnce(&mut Graph) -> NodeId) -> Composition {
         output,
         NodeKind::MediaOutput(MediaOutput {
             id: output,
-            source: PortRef::new(last, "output".to_string()),
+            source: Some(last),
         }),
     );
     CompositionBuilder::new(
@@ -1243,8 +1503,8 @@ fn text_upload_repeats_until_it_is_marked_uploaded() {
             merge,
             NodeKind::Merge(lumen_engine::node::compositing::merge::Merge {
                 id: merge,
-                base: PortRef::new(shape, "output".to_string()),
-                overlay: PortRef::new(text, "output".to_string()),
+                base: Some(shape),
+                overlay: Some(text),
                 ..Default::default()
             }),
         );

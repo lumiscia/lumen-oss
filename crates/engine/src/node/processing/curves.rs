@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -31,7 +31,7 @@ impl Default for CurvesParams {
 }
 
 /// Applies a 1D RGB curve table to a raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "curves", name = "Curves", category = "processing")]
 pub struct Curves {
     pub id: NodeId,
@@ -39,32 +39,15 @@ pub struct Curves {
     pub params: CurvesParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
-}
-
-impl Default for Curves {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: CurvesParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
+    pub source: Option<NodeId>,
 }
 
 impl GpuCompileNode for Curves {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
-        let source = ctx
-            .compile_port(&self.source)?
-            .into_raster(self.source.id, &self.source.port)?;
+        let source = ctx.compile_input(self.id, "source", self.source)?;
         let size = source.domain.storage_size;
         let texture = ctx.builder_mut().texture(
             Some(format!("curves:{}:output", self.id.0)),

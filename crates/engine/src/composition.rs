@@ -148,7 +148,7 @@ impl PropKind {
                 .as_f64()
                 .map(ExpressionValue::Number)
                 .ok_or_else(invalid),
-            Self::Color => color_literal(value)
+            Self::Color => crate::json::parse_color(value)
                 .map(ExpressionValue::color_from_u8)
                 .ok_or_else(invalid),
             Self::Vec2 => match value.as_array().map(Vec::as_slice) {
@@ -161,27 +161,6 @@ impl PropKind {
             },
         }
     }
-}
-
-fn color_literal(value: &serde_json::Value) -> Option<[u8; 4]> {
-    if let Some(hex) = value.as_str().and_then(|text| text.strip_prefix('#')) {
-        if !matches!(hex.len(), 6 | 8) || !hex.is_ascii() {
-            return None;
-        }
-        let mut color = [255; 4];
-        for (index, channel) in color.iter_mut().take(hex.len() / 2).enumerate() {
-            *channel = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
-        }
-        return Some(color);
-    }
-    let channels = value
-        .as_array()
-        .filter(|items| matches!(items.len(), 3 | 4))?;
-    let mut color = [255; 4];
-    for (channel, item) in color.iter_mut().zip(channels) {
-        *channel = u8::try_from(item.as_u64()?).ok()?;
-    }
-    Some(color)
 }
 
 impl Composition {
@@ -335,7 +314,7 @@ impl CompositionBuilder {
                 }
             ));
         };
-        if !clip.source.is_empty() {
+        if clip.source.is_some() {
             return Err(
                 "a clip plays either a `composition` or its `source` input, not both".to_string(),
             );
@@ -405,7 +384,7 @@ impl CompositionBuilder {
 }
 
 /// Identifies the exact content of a composition and its templates: their canvases, timelines,
-/// props, connections and every node's params, literal values and expression sources.
+/// props, and every node's inputs, params, literal values and expression sources.
 fn fingerprint(composition: &CompositionBuilder) -> u64 {
     crate::fingerprint::fingerprint(composition)
 }
@@ -523,12 +502,12 @@ mod fingerprint_tests {
     }
 
     #[test]
-    fn connections_are_hashed_even_without_changing_wired_inputs() {
-        let composition = parse(&scene());
-        let expected = composition.fingerprint();
-        let mut builder = composition.into_builder();
-        builder.graph.connections[0].from_node = crate::node::NodeId::new(2);
-        assert_ne!(expected, builder.build().unwrap().fingerprint());
+    fn rewiring_an_input_changes_the_fingerprint() {
+        let value = scene();
+        let expected = parse(&value).fingerprint();
+        let mut rewired = value.clone();
+        rewired["connections"][0]["from_node"] = json!(2);
+        assert_ne!(expected, parse(&rewired).fingerprint());
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use lumen_engine::{
     composition::Composition,
     gpu::{CompileContext, CompiledComposition, CompiledOutput},
-    node::{NodeId, PortRef},
+    node::NodeId,
 };
 use serde_json::{Value, json};
 
@@ -536,7 +536,7 @@ fn standalone_compile_keeps_animated_sources_full_frame_for_fractional_binds() {
         .frames(2)
         .fps(24.0),
     );
-    let shape = PortRef::new(NodeId::new(1), "output".to_string());
+    let shape = NodeId::new(1);
     let shape_domain = |compiled: &CompiledComposition| match &compiled.node_outputs[&shape] {
         CompiledOutput::Raster(raster) => raster.domain,
         CompiledOutput::Empty => panic!("the shape has no output"),

@@ -4,7 +4,7 @@ use std::{mem::MaybeUninit, sync::Arc};
 
 use cudarc::driver::{CudaContext as CudaContextInner, result, sys};
 
-use super::{CudaVideoFrame, interop, kernel};
+use super::{CudaVideoFrame, interop};
 pub use interop::{ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +67,7 @@ impl CudaDriver {
 /// before releasing their resources.
 #[derive(Clone)]
 pub struct CudaContext {
-    pub(super) inner: Arc<CudaContextInner>,
+    inner: Arc<CudaContextInner>,
 }
 
 impl CudaContext {
@@ -125,34 +125,6 @@ impl CudaContext {
             destination.memory.width,
             destination.memory.height,
         )
-    }
-
-    pub fn copy_rgba_frame_to_image(
-        &self,
-        source: &CudaDeviceAllocation,
-        destination: &ImportedCudaExternalImage,
-    ) -> Result<(), String> {
-        self.set_current()?;
-        interop::copy_rgba_frame_to_image(
-            source.memory.device_ptr,
-            source.memory.pitch,
-            destination,
-            source.memory.width,
-            source.memory.height,
-        )
-    }
-
-    pub fn synchronize(&self) -> Result<(), String> {
-        self.set_current()?;
-        unsafe { sys::cuCtxSynchronize() }
-            .result()
-            .map_err(|error| error.to_string())
-    }
-
-    pub fn create_nv12_to_rgba_converter(&self) -> Result<CudaNv12ToRgbaConverter, String> {
-        Ok(CudaNv12ToRgbaConverter {
-            converter: kernel::CudaNv12ToRgbaConverter::new(self.inner.clone())?,
-        })
     }
 }
 
@@ -212,19 +184,5 @@ impl Drop for CudaDeviceMemory {
     fn drop(&mut self) {
         let _ = self.context.set_current();
         let _ = unsafe { sys::cuMemFree_v2(self.device_ptr).result() };
-    }
-}
-
-pub struct CudaNv12ToRgbaConverter {
-    converter: kernel::CudaNv12ToRgbaConverter,
-}
-
-impl CudaNv12ToRgbaConverter {
-    pub fn convert(
-        &self,
-        source: &super::CudaDecodedFrame,
-        destination: &CudaDeviceAllocation,
-    ) -> Result<(), String> {
-        self.converter.convert(source, destination)
     }
 }

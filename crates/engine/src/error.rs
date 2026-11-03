@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::node::{NodeId, PortKind};
+use crate::node::NodeId;
 
 #[derive(Debug, Error, Clone)]
 pub enum LumenError {
@@ -87,21 +87,10 @@ pub enum GraphValidationError {
     MissingSourceNode { node_id: NodeId },
     #[error("connection target port `{port}` is missing on node {node_id}")]
     MissingTargetPort { node_id: NodeId, port: String },
-    #[error("connection source port `{port}` is missing on node {node_id}")]
-    MissingSourcePort { node_id: NodeId, port: String },
+    #[error("input `{port}` of node {node_id} is already connected")]
+    InputAlreadyConnected { node_id: NodeId, port: String },
     #[error("node {node_id} is missing required input `{port}`")]
     MissingRequiredInput { node_id: NodeId, port: String },
-    #[error(
-        "port kind mismatch: input `{to_port}` of node {to_node} takes {expected_kind:?}, but output `{from_port}` of node {from_node} is {from_kind:?}"
-    )]
-    PortKindMismatch {
-        from_node: NodeId,
-        from_port: String,
-        from_kind: PortKind,
-        to_node: NodeId,
-        to_port: String,
-        expected_kind: PortKind,
-    },
     #[error("exactly one media output node is required, found none")]
     MissingMediaOutput,
     #[error("exactly one media output node is required, found {count}")]

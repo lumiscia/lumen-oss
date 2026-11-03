@@ -1,4 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
+};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
@@ -17,17 +19,6 @@ pub enum ResizeMode {
     Stretch = 0,
     Fit = 1,
     Fill = 2,
-}
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum")]
-pub enum ResizeSampling {
-    Nearest = 0,
-    #[default]
-    Linear = 1,
 }
 
 /// Resamples a raster into a rectangle placed on the composition canvas.
@@ -49,8 +40,8 @@ pub struct ResizeParams {
     #[meta(kind = "enum", enum_type = ResizeMode)]
     pub mode: ResizeMode,
     /// Sampling filter used when resizing.
-    #[meta(kind = "enum", enum_type = ResizeSampling)]
-    pub sampling: ResizeSampling,
+    #[meta(kind = "enum", enum_type = RasterSampling)]
+    pub sampling: RasterSampling,
 }
 
 impl Default for ResizeParams {
@@ -61,13 +52,13 @@ impl Default for ResizeParams {
             width: 1,
             height: 1,
             mode: ResizeMode::Stretch,
-            sampling: ResizeSampling::Linear,
+            sampling: RasterSampling::Linear,
         }
     }
 }
 
 /// Resamples a raster into a rectangle placed on the composition canvas.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "resize", name = "Resize", category = "processing")]
 pub struct Resize {
     pub id: NodeId,
@@ -75,32 +66,15 @@ pub struct Resize {
     pub params: ResizeParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
-}
-
-impl Default for Resize {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ResizeParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
+    pub source: Option<NodeId>,
 }
 
 impl GpuCompileNode for Resize {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
-        let source = ctx
-            .compile_port(&self.source)?
-            .into_raster(self.source.id, &self.source.port)?;
+        let source = ctx.compile_input(self.id, "source", self.source)?;
         let size = ctx.canvas_size();
         let texture = ctx.builder_mut().texture(
             Some(format!("resize:{}:output", self.id.0)),

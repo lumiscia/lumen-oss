@@ -8,7 +8,10 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::expr::Expression;
+use crate::{
+    expr::{Expression, parse_hex_color},
+    json::{StringParam, classify_string},
+};
 
 use super::Deferred;
 
@@ -63,14 +66,18 @@ impl ShaderUniformValue {
             return Ok(Self::Number(number));
         }
         if let Some(text) = value.as_str() {
-            if let Some(expression) = expression_source(text) {
-                return Expression::parse(expression)
+            if let Some(StringParam::Expression(source)) = classify_string(text) {
+                return Expression::parse(source)
                     .map(Self::Expr)
                     .map_err(|error| error.to_string());
             }
             if let Some(hex) = text.strip_prefix('#') {
-                return parse_hex_color(hex)
-                    .ok_or_else(|| format!("`{text}` is not a `#rrggbb` or `#rrggbbaa` colour"));
+                let [r, g, b, a] = parse_hex_color(hex)
+                    .ok_or_else(|| format!("`{text}` is not a `#rrggbb` or `#rrggbbaa` colour"))?;
+                return Ok(Self::Color {
+                    rgb: [r, g, b],
+                    alpha: (hex.len() == 8).then_some(a),
+                });
             }
             return Err(format!("{EXPECTED}, got `{text}`"));
         }
@@ -87,16 +94,14 @@ impl ShaderUniformValue {
                 if let Some(number) = item.as_f64() {
                     return Ok(Deferred::Value(number));
                 }
-                item.as_str()
-                    .and_then(expression_source)
-                    .ok_or_else(|| {
-                        format!("component {index} must be a number or `=expression`, got {item}")
-                    })
-                    .and_then(|source| {
-                        Expression::parse(source)
-                            .map(Deferred::Expr)
-                            .map_err(|error| error.to_string())
-                    })
+                match item.as_str().and_then(classify_string) {
+                    Some(StringParam::Expression(source)) => Expression::parse(source)
+                        .map(Deferred::Expr)
+                        .map_err(|error| error.to_string()),
+                    _ => Err(format!(
+                        "component {index} must be a number or `=expression`, got {item}"
+                    )),
+                }
             })
             .collect::<Result<_, _>>()
             .map(Self::Vector)
@@ -123,22 +128,6 @@ impl ShaderUniformValue {
             }
         }
     }
-}
-
-fn parse_hex_color(hex: &str) -> Option<ShaderUniformValue> {
-    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    let byte = |index: usize| u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok();
-    Some(ShaderUniformValue::Color {
-        rgb: [byte(0)?, byte(1)?, byte(2)?],
-        alpha: if hex.len() == 8 { Some(byte(3)?) } else { None },
-    })
-}
-
-/// The source of a `=expression` string; `==` escapes are not expressions.
-fn expression_source(text: &str) -> Option<&str> {
-    text.strip_prefix('=').filter(|rest| !rest.starts_with('='))
 }
 
 #[cfg(test)]

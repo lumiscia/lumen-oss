@@ -1,86 +1,47 @@
 //! Directed graph model, validation, and topological evaluation ordering.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
-use crate::node::PortRef;
 use crate::{
     error::{GraphValidationError, LumenError},
     node::{Node, NodeId, NodeKind},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, lumen_macros::StructuralHash)]
+/// An edge as authors write it. `connect` stores it in the target node's input field.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connection {
     pub from_node: NodeId,
-    pub from_port: String,
     pub to_node: NodeId,
     pub to_port: String,
 }
 
+/// The nodes of a composition. A node's input fields are the graph's only edges.
 #[derive(Default, Debug, lumen_macros::StructuralHash)]
 pub struct Graph {
     pub nodes: HashMap<NodeId, NodeKind>,
-    pub connections: Vec<Connection>,
-    #[structural_hash(skip)] // Derived bookkeeping, not composition content.
-    outgoing_connection_counts: HashMap<NodeId, usize>,
 }
 
 impl Graph {
     pub fn new() -> Self {
-        Self {
-            nodes: HashMap::new(),
-            connections: Vec::new(),
-            outgoing_connection_counts: HashMap::new(),
-        }
+        Self::default()
     }
 
+    /// Wires the output of `from_node` into the named input of `to_node`. A variadic input
+    /// appends; any other input takes one connection.
     pub fn connect(&mut self, connection: Connection) -> crate::Result<()> {
-        if !self.nodes.contains_key(&connection.from_node) {
-            return Err(GraphValidationError::MissingSourceNode {
-                node_id: connection.from_node,
-            }
-            .into());
-        }
-
-        if !self.nodes.contains_key(&connection.to_node) {
-            return Err(GraphValidationError::MissingTargetNode {
-                node_id: connection.to_node,
-            }
-            .into());
-        }
-
-        *self
-            .outgoing_connection_counts
-            .entry(connection.from_node)
-            .or_default() += 1;
-
         let Connection {
             from_node,
-            from_port,
             to_node,
             to_port,
         } = connection;
-
-        wire_input_port(
-            self,
-            to_node,
-            &to_port,
-            PortRef::new(from_node, from_port.clone()),
-        )?;
-
-        self.connections.push(Connection {
-            from_node,
-            from_port,
-            to_node,
-            to_port,
-        });
-        Ok(())
-    }
-
-    pub fn outgoing_connection_count(&self, node_id: NodeId) -> usize {
-        self.outgoing_connection_counts
-            .get(&node_id)
-            .copied()
-            .unwrap_or_default()
+        if !self.nodes.contains_key(&from_node) {
+            return Err(GraphValidationError::MissingSourceNode { node_id: from_node }.into());
+        }
+        let target = self
+            .nodes
+            .get_mut(&to_node)
+            .ok_or(GraphValidationError::MissingTargetNode { node_id: to_node })?;
+        Ok(wire_input_port(target, &to_port, from_node)?)
     }
 
     pub fn validate(&self) -> Result<(), Vec<LumenError>> {
@@ -102,6 +63,8 @@ impl Graph {
             );
         }
 
+        // The sources each node reads, which are the edges of the graph.
+        let mut sources: HashMap<NodeId, Vec<NodeId>> = HashMap::with_capacity(self.nodes.len());
         for (key, node) in &self.nodes {
             if node.id() != *key {
                 errors.push(
@@ -112,102 +75,16 @@ impl Graph {
                     .into(),
                 );
             }
-        }
 
-        for connection in &self.connections {
-            let Some(from_node) = self.nodes.get(&connection.from_node) else {
-                errors.push(
-                    GraphValidationError::MissingSourceNode {
-                        node_id: connection.from_node,
-                    }
-                    .into(),
-                );
-                continue;
-            };
-            let Some(to_node) = self.nodes.get(&connection.to_node) else {
-                errors.push(
-                    GraphValidationError::MissingTargetNode {
-                        node_id: connection.to_node,
-                    }
-                    .into(),
-                );
-                continue;
-            };
-
-            let Some(output_def) = from_node
-                .output_port_defs()
-                .iter()
-                .find(|def| def.name == connection.from_port)
-            else {
-                errors.push(
-                    GraphValidationError::MissingSourcePort {
-                        node_id: connection.from_node,
-                        port: connection.from_port.clone(),
-                    }
-                    .into(),
-                );
-                continue;
-            };
-            let Some(input_def) = to_node
-                .input_port_defs()
-                .iter()
-                .find(|def| def.name == connection.to_port)
-            else {
-                errors.push(
-                    GraphValidationError::MissingTargetPort {
-                        node_id: connection.to_node,
-                        port: connection.to_port.clone(),
-                    }
-                    .into(),
-                );
-                continue;
-            };
-
-            if output_def.kind != input_def.kind {
-                errors.push(
-                    GraphValidationError::PortKindMismatch {
-                        from_node: connection.from_node,
-                        from_port: output_def.name.into(),
-                        from_kind: output_def.kind,
-                        to_node: connection.to_node,
-                        to_port: input_def.name.into(),
-                        expected_kind: input_def.kind,
-                    }
-                    .into(),
-                );
-            }
-        }
-
-        for node in self.nodes.values() {
-            errors.extend(
-                node.input_ports()
-                    .into_iter()
-                    .filter(|port| !port.is_empty() && !self.nodes.contains_key(&port.id))
-                    .map(|port| {
-                        GraphValidationError::MissingSourceNode { node_id: port.id }.into()
-                    }),
-            );
-            let mut direct_inputs = node.input_ports().into_iter();
+            let inputs = node.input_ports();
+            let mut wired = inputs.iter();
             for input in node.input_port_defs() {
-                if input.optional {
-                    if !input.variadic {
-                        direct_inputs.next();
-                    }
-                    continue;
-                }
-
-                let connected_by_edge = self
-                    .connections
-                    .iter()
-                    .any(|edge| edge.to_node == node.id() && edge.to_port == input.name);
-                let connected_directly = if input.variadic {
-                    direct_inputs.any(|source| !source.is_empty())
+                let connected = if input.variadic {
+                    wired.by_ref().any(Option::is_some)
                 } else {
-                    direct_inputs
-                        .next()
-                        .is_some_and(|source| !source.is_empty())
+                    wired.next().is_some_and(Option::is_some)
                 };
-                if !connected_by_edge && !connected_directly {
+                if !connected && !input.optional {
                     errors.push(
                         GraphValidationError::MissingRequiredInput {
                             node_id: node.id(),
@@ -217,9 +94,19 @@ impl Graph {
                     );
                 }
             }
+
+            let node_sources = sources.entry(*key).or_default();
+            for source in inputs.into_iter().flatten() {
+                // A missing source is its own validation error, not part of a cycle.
+                if self.nodes.contains_key(&source) {
+                    node_sources.push(source);
+                } else {
+                    errors.push(GraphValidationError::MissingSourceNode { node_id: source }.into());
+                }
+            }
         }
 
-        if let Err(cycle_error) = self.validate_no_cycle() {
+        if let Err(cycle_error) = find_cycle(&sources) {
             errors.push(cycle_error.into());
         }
 
@@ -229,86 +116,67 @@ impl Graph {
             Err(errors)
         }
     }
+}
 
-    fn validate_no_cycle(&self) -> Result<(), GraphValidationError> {
-        // A node reads its input ports whether or not a connection mirrors them.
-        let mut edges = HashSet::new();
-        for node in self.nodes.values() {
-            edges.extend(
-                node.input_ports()
-                    .into_iter()
-                    .filter(|port| !port.is_empty())
-                    .map(|port| (port.id, node.id())),
-            );
+/// Kahn's algorithm over `sources`, each node's inputs, which reports a cycle if the nodes
+/// can't all be ordered after their inputs.
+fn find_cycle(sources: &HashMap<NodeId, Vec<NodeId>>) -> Result<(), GraphValidationError> {
+    let mut waiting: HashMap<NodeId, usize> = sources
+        .iter()
+        .map(|(&node, node_sources)| (node, node_sources.len()))
+        .collect();
+    let mut consumers: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    for (&node, node_sources) in sources {
+        for &source in node_sources {
+            consumers.entry(source).or_default().push(node);
         }
-        edges.extend(
-            self.connections
-                .iter()
-                .map(|edge| (edge.from_node, edge.to_node)),
-        );
-
-        let mut indegree: HashMap<NodeId, usize> =
-            self.nodes.keys().copied().map(|id| (id, 0)).collect();
-        let mut outgoing: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-        // A missing endpoint is its own validation error, not part of a cycle.
-        for &(from, to) in &edges {
-            if self.nodes.contains_key(&from) && self.nodes.contains_key(&to) {
-                *indegree.entry(to).or_default() += 1;
-                outgoing.entry(from).or_default().push(to);
-            }
-        }
-
-        let mut queue: VecDeque<NodeId> = indegree
-            .iter()
-            .filter_map(|(node_id, degree)| (*degree == 0).then_some(*node_id))
-            .collect();
-
-        let mut visited = 0_usize;
-        while let Some(node_id) = queue.pop_front() {
-            visited += 1;
-            for &to in outgoing.get(&node_id).into_iter().flatten() {
-                if let Some(entry) = indegree.get_mut(&to) {
-                    *entry -= 1;
-                    if *entry == 0 {
-                        queue.push_back(to);
-                    }
-                }
-            }
-        }
-
-        if visited != self.nodes.len() {
-            let unordered = indegree
-                .into_iter()
-                .filter_map(|(node_id, degree)| (degree > 0).then_some(node_id))
-                .collect();
-            return Err(GraphValidationError::Cycle {
-                path: cycle_path(&unordered, &edges),
-            });
-        }
-
-        Ok(())
     }
+
+    let mut ready: Vec<NodeId> = waiting
+        .iter()
+        .filter_map(|(&node, &count)| (count == 0).then_some(node))
+        .collect();
+    let mut ordered = 0_usize;
+    while let Some(node) = ready.pop() {
+        ordered += 1;
+        for consumer in consumers.get(&node).into_iter().flatten() {
+            let count = waiting.get_mut(consumer).expect("every consumer is a node");
+            *count -= 1;
+            if *count == 0 {
+                ready.push(*consumer);
+            }
+        }
+    }
+
+    if ordered == sources.len() {
+        return Ok(());
+    }
+    let unordered: HashSet<NodeId> = waiting
+        .into_iter()
+        .filter_map(|(node, count)| (count > 0).then_some(node))
+        .collect();
+    Err(GraphValidationError::Cycle {
+        path: cycle_path(&unordered, sources),
+    })
 }
 
 /// A cycle among `unordered`, the nodes a topological sort left over, each of which has an input
 /// from another of them. It is found by walking inputs from the lowest id until a node repeats,
 /// and runs along the edges, ending with the node it starts at.
-fn cycle_path(unordered: &HashSet<NodeId>, edges: &HashSet<(NodeId, NodeId)>) -> Vec<NodeId> {
-    let mut input = HashMap::new();
-    for &(from, to) in edges {
-        if unordered.contains(&from) && unordered.contains(&to) {
-            input
-                .entry(to)
-                .and_modify(|known: &mut NodeId| *known = from.min(*known))
-                .or_insert(from);
-        }
-    }
+fn cycle_path(unordered: &HashSet<NodeId>, sources: &HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId> {
+    let lowest_unordered_source = |node: NodeId| {
+        sources[&node]
+            .iter()
+            .copied()
+            .filter(|source| unordered.contains(source))
+            .min()
+    };
     let Some(mut node) = unordered.iter().min().copied() else {
         return Vec::new();
     };
     let mut walked = vec![node];
     loop {
-        node = input[&node];
+        node = lowest_unordered_source(node).expect("a leftover node has a leftover input");
         if let Some(start) = walked.iter().position(|&seen| seen == node) {
             let mut path = walked.split_off(start);
             path.push(node);
@@ -320,52 +188,39 @@ fn cycle_path(unordered: &HashSet<NodeId>, edges: &HashSet<(NodeId, NodeId)>) ->
 }
 
 fn wire_input_port(
-    graph: &mut Graph,
-    to_node: NodeId,
+    node: &mut NodeKind,
     to_port: &str,
-    source: PortRef,
-) -> crate::Result<()> {
+    source: NodeId,
+) -> Result<(), GraphValidationError> {
     use crate::node::JsonNode;
 
-    let node = graph
-        .nodes
-        .get_mut(&to_node)
-        .ok_or(GraphValidationError::MissingTargetNode { node_id: to_node })?;
-
-    let wire = |error: anyhow::Error| GraphValidationError::MissingTargetPort {
-        node_id: to_node,
-        port: format!("{to_port} ({error})"),
-    };
-
     match node {
-        NodeKind::MediaIn(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Background(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Text(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Path(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Shape(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Boolean(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Merge(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::RasterMultiMerge(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::AlphaPremultiply(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Blur(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::ChannelShuffle(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::ColorGrade(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Curves(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Exposure(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::HueSaturation(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Levels(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Memo(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Opacity(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::TimeRemap(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Transform(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Crop(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Resize(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Shadow(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::WgslShader(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Switch(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::Clip(node) => node.set_input_json(to_port, source).map_err(wire)?,
-        NodeKind::MediaOutput(node) => node.set_input_json(to_port, source).map_err(wire)?,
+        NodeKind::MediaIn(node) => node.set_input_json(to_port, source),
+        NodeKind::Background(node) => node.set_input_json(to_port, source),
+        NodeKind::Text(node) => node.set_input_json(to_port, source),
+        NodeKind::Path(node) => node.set_input_json(to_port, source),
+        NodeKind::Shape(node) => node.set_input_json(to_port, source),
+        NodeKind::Boolean(node) => node.set_input_json(to_port, source),
+        NodeKind::Merge(node) => node.set_input_json(to_port, source),
+        NodeKind::RasterMultiMerge(node) => node.set_input_json(to_port, source),
+        NodeKind::AlphaPremultiply(node) => node.set_input_json(to_port, source),
+        NodeKind::Blur(node) => node.set_input_json(to_port, source),
+        NodeKind::ChannelShuffle(node) => node.set_input_json(to_port, source),
+        NodeKind::ColorGrade(node) => node.set_input_json(to_port, source),
+        NodeKind::Curves(node) => node.set_input_json(to_port, source),
+        NodeKind::Exposure(node) => node.set_input_json(to_port, source),
+        NodeKind::HueSaturation(node) => node.set_input_json(to_port, source),
+        NodeKind::Levels(node) => node.set_input_json(to_port, source),
+        NodeKind::Memo(node) => node.set_input_json(to_port, source),
+        NodeKind::Opacity(node) => node.set_input_json(to_port, source),
+        NodeKind::TimeRemap(node) => node.set_input_json(to_port, source),
+        NodeKind::Transform(node) => node.set_input_json(to_port, source),
+        NodeKind::Crop(node) => node.set_input_json(to_port, source),
+        NodeKind::Resize(node) => node.set_input_json(to_port, source),
+        NodeKind::Shadow(node) => node.set_input_json(to_port, source),
+        NodeKind::WgslShader(node) => node.set_input_json(to_port, source),
+        NodeKind::Switch(node) => node.set_input_json(to_port, source),
+        NodeKind::Clip(node) => node.set_input_json(to_port, source),
+        NodeKind::MediaOutput(node) => node.set_input_json(to_port, source),
     }
-
-    Ok(())
 }

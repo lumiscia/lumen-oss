@@ -6,13 +6,11 @@ pub mod metal;
 pub mod vulkan;
 
 #[cfg(feature = "cuda")]
-pub use cuda::CudaDecodedFrame;
-#[cfg(feature = "cuda")]
 pub use cuda::CudaVideoFrame;
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 pub use cuda::{
-    CudaContext, CudaDeviceAllocation, CudaDriver, CudaNv12ToRgbaConverter,
-    ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image,
+    CudaContext, CudaDeviceAllocation, CudaDriver, ImportedCudaExternalImage,
+    import_owned_vulkan_opaque_fd_image,
 };
 #[cfg(feature = "metal")]
 pub use metal::{
@@ -20,7 +18,10 @@ pub use metal::{
     Objc2MetalDevice, Objc2MetalTexture,
 };
 #[cfg(feature = "vulkan")]
-pub use vulkan::{VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame};
+pub use vulkan::{
+    VulkanDecodedFrame, VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame,
+    YuvToRgb,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuBackend {
@@ -92,12 +93,10 @@ impl<'a> GpuVideoInput<'a> {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum GpuVideoFrame {
-    #[cfg(feature = "cuda")]
-    Cuda(CudaDecodedFrame),
     #[cfg(feature = "metal")]
     Metal(MetalDecodedFrame),
     #[cfg(feature = "vulkan")]
-    Vulkan(VulkanVideoFrame),
+    Vulkan(VulkanDecodedFrame),
     #[doc(hidden)]
     __NonExhaustive,
 }
@@ -105,8 +104,6 @@ pub enum GpuVideoFrame {
 impl GpuVideoFrame {
     pub fn backend(&self) -> GpuBackend {
         match self {
-            #[cfg(feature = "cuda")]
-            Self::Cuda(_) => GpuBackend::Cuda,
             #[cfg(feature = "metal")]
             Self::Metal(_) => GpuBackend::Metal,
             #[cfg(feature = "vulkan")]
@@ -117,8 +114,6 @@ impl GpuVideoFrame {
 
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
-            #[cfg(feature = "cuda")]
-            Self::Cuda(frame) => frame.dimensions(),
             #[cfg(feature = "metal")]
             Self::Metal(frame) => frame.dimensions(),
             #[cfg(feature = "vulkan")]
@@ -129,8 +124,6 @@ impl GpuVideoFrame {
 
     pub fn pts(&self) -> Option<i64> {
         match self {
-            #[cfg(feature = "cuda")]
-            Self::Cuda(frame) => frame.pts(),
             #[cfg(feature = "metal")]
             Self::Metal(frame) => frame.pts(),
             #[cfg(feature = "vulkan")]

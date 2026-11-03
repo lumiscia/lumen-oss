@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::media::MediaFrame;
-use crate::node::{NodeId, PortRef};
+use crate::node::NodeId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlphaMode {
@@ -46,7 +46,7 @@ pub enum CompiledOutput {
 }
 
 impl CompiledOutput {
-    pub fn into_raster(self, node_id: NodeId, _port: &str) -> crate::Result<RasterHandle> {
+    pub fn into_raster(self, node_id: NodeId) -> crate::Result<RasterHandle> {
         match self {
             Self::Raster(raster) => Ok(raster),
             Self::Empty => Err(crate::error::RenderError::InvalidNodeOutputType {
@@ -56,18 +56,6 @@ impl CompiledOutput {
             }
             .into()),
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct FramePortRef {
-    pub port: PortRef,
-    pub frame: f64,
-}
-
-impl FramePortRef {
-    pub fn new(port: PortRef, frame: f64) -> Self {
-        Self { port, frame }
     }
 }
 
@@ -106,7 +94,7 @@ pub struct CompiledComposition {
     pub(crate) text_atlas_texture: Option<lumen_gpu::TextureId>,
     pub(crate) text_atlas: std::sync::Arc<std::sync::Mutex<lumen_text::GlyphAtlas>>,
     pub output: RasterHandle,
-    pub node_outputs: HashMap<PortRef, CompiledOutput>,
+    pub node_outputs: HashMap<NodeId, CompiledOutput>,
     pub compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
 }
 

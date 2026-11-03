@@ -652,11 +652,11 @@ impl Case {
             .nodes
             .values()
             .find_map(|node| match node {
-                NodeKind::MediaOutput(output) => Some(&output.source),
+                NodeKind::MediaOutput(output) => output.source,
                 _ => None,
             })
             .expect("scene has a media_output");
-        match &renderer.compiled().expect("a frame rendered").node_outputs[source] {
+        match &renderer.compiled().expect("a frame rendered").node_outputs[&source] {
             CompiledOutput::Raster(raster) => raster.domain,
             CompiledOutput::Empty => panic!("output source {source:?} is empty"),
         }

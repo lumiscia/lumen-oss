@@ -100,6 +100,18 @@ impl AvPacket {
         let pts = unsafe { (*self.ptr.as_ptr()).pts };
         (pts != sys::AV_NOPTS_VALUE).then_some(pts)
     }
+
+    pub(crate) fn is_discarded(&self) -> bool {
+        unsafe { (*self.ptr.as_ptr()).flags & sys::AV_PKT_FLAG_DISCARD != 0 }
+    }
+
+    pub(crate) fn clone_without_discard(&self) -> Result<Self> {
+        let ptr = unsafe { sys::av_packet_clone(self.ptr.as_ptr()) };
+        let ptr = NonNull::new(ptr)
+            .ok_or_else(|| FfmpegError::new("av_packet_clone", "failed to clone packet"))?;
+        unsafe { (*ptr.as_ptr()).flags &= !sys::AV_PKT_FLAG_DISCARD };
+        Ok(Self { ptr })
+    }
 }
 
 impl Drop for AvPacket {
@@ -152,17 +164,12 @@ impl AvFrame {
         unsafe { (*self.ptr.as_ptr()).color_range }
     }
 
-    #[cfg(any(feature = "metal", feature = "cuda"))]
+    #[cfg(feature = "metal")]
     pub(crate) fn data(&self, plane: usize) -> *mut u8 {
         unsafe { (*self.ptr.as_ptr()).data[plane] }
     }
 
-    #[cfg(feature = "cuda")]
-    pub(crate) fn line_size(&self, plane: usize) -> i32 {
-        unsafe { (*self.ptr.as_ptr()).linesize[plane] }
-    }
-
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "vulkan")]
     pub(crate) fn hw_sw_format(&self) -> Option<sys::AVPixelFormat> {
         let frame = unsafe { self.ptr.as_ref() };
         if frame.hw_frames_ctx.is_null() {

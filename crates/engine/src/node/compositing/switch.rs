@@ -1,6 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
+use crate::gpu::{CompiledOutput, GpuCompileNode};
 
 /// Selects one raster input according to a controlled layer index.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -11,7 +11,7 @@ pub struct SwitchParams {
 }
 
 /// Selects one raster input according to a controlled layer index.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "switch", name = "Switch", category = "compositing")]
 pub struct Switch {
     pub id: NodeId,
@@ -19,17 +19,7 @@ pub struct Switch {
     pub params: SwitchParamsDelegate,
 
     #[input(optional, variadic)]
-    pub layers: Vec<PortRef>,
-}
-
-impl Default for Switch {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: SwitchParamsDelegate::default(),
-            layers: Vec::new(),
-        }
-    }
+    pub layers: Vec<NodeId>,
 }
 
 pub fn selected_layer_for_frame(
@@ -47,44 +37,14 @@ impl GpuCompileNode for Switch {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
         let selected_layer = selected_layer_for_frame(self, &ctx.expr_context())?;
-        ctx.register_compiled_node(CompiledSwitch {
-            node_id: self.id,
-            selected_layer,
-        });
-
         let Some(index) = selected_layer else {
             return Ok(ctx.compile_transparent(self.id));
         };
         let Some(layer) = self.layers.get(index) else {
             return Ok(ctx.compile_transparent(self.id));
         };
-        if layer.is_empty() {
-            return Ok(ctx.compile_transparent(self.id));
-        }
-        ctx.compile_bounded_port(layer)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct CompiledSwitch {
-    node_id: NodeId,
-    selected_layer: Option<usize>,
-}
-
-impl GpuCompiledNode for CompiledSwitch {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, _ctx: &FrameBindContext<'_>, _bound: &mut BoundFrame) -> crate::Result<()> {
-        let _ = self.selected_layer;
-        Ok(())
+        ctx.compile_bounded_port(*layer)
     }
 }

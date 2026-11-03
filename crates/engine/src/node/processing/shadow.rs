@@ -1,5 +1,6 @@
+use crate::error::PropertyError;
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef, vector::paint::Paint,
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
 
 use crate::gpu::{
@@ -23,10 +24,10 @@ pub struct ShadowParams {
     /// Vertical shadow offset in pixels.
     #[meta(name = "Offset Y", step = 1)]
     pub offset_y: f64,
-    /// Shadow blur radius in pixels. Fractional radii blend smoothly.
+    /// Shadow blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.
     #[meta(name = "Blur radius", min = 0, step = 0.5)]
     pub radius: f64,
-    /// Shadow color.
+    /// Shadow color. Must be a solid color; a gradient is an error.
     #[meta(role = "color")]
     pub color: Paint,
     /// Shadow opacity.
@@ -47,7 +48,7 @@ impl Default for ShadowParams {
 }
 
 /// Composites a blurred alpha shadow behind a raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "shadow", name = "Shadow", category = "processing")]
 pub struct Shadow {
     pub id: NodeId,
@@ -55,32 +56,15 @@ pub struct Shadow {
     pub params: ShadowParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
-}
-
-impl Default for Shadow {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ShadowParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
+    pub source: Option<NodeId>,
 }
 
 impl GpuCompileNode for Shadow {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
-        let source = ctx
-            .compile_bounded_port(&self.source)?
-            .into_raster(self.source.id, &self.source.port)?;
+        let source = ctx.compile_bounded_input(self.id, "source", self.source)?;
         // The shadow is the source's data shifted by the offset and spread by the radius,
         // at their largest over the timeline.
         let params = &self.params;
@@ -206,7 +190,16 @@ impl GpuCompiledNode for CompiledShadow {
             node_id: self.node_id,
             expr: &ctx.expr_context(),
         })?;
-        let color = evaluated.color.to_gpu([0, 0, 0, 255]).colors[0];
+        let Paint::SolidColor(r, g, b, a) = evaluated.color else {
+            return Err(PropertyError::InvalidType {
+                node_id: self.node_id,
+                property_path: "color".to_string(),
+                expected: "a solid color",
+                actual: "a gradient",
+            }
+            .into());
+        };
+        let color = [r, g, b, a].map(|channel| f32::from(channel) / 255.0);
         // The color alpha is folded into the opacity so `color.w` can carry the
         // source's straight-alpha flag.
         self.blurred.write(

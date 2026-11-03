@@ -13,7 +13,7 @@ use crate::gpu::{
     compiler,
 };
 use crate::node::motion::Shutter;
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -103,7 +103,7 @@ impl Default for PathParams {
 }
 
 /// Produces a rasterized vector path source.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "path", name = "Path", category = "vector")]
 pub struct Path {
     pub id: NodeId,
@@ -111,25 +111,8 @@ pub struct Path {
     pub params: PathParamsDelegate,
 }
 
-impl Default for Path {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: PathParamsDelegate::default(),
-        }
-    }
-}
-
 impl GpuCompileNode for Path {
-    fn compile_gpu(
-        &self,
-        ctx: &mut CompileContext<'_>,
-        port: &PortRef,
-    ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
+    fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<CompiledOutput> {
         let fixed_points = fixed_points(&self.params.data, &self.params.scale);
         // Opacity only hides what is drawn, so it is left out of the bounds.
         let opaque = PathParamsDelegate {

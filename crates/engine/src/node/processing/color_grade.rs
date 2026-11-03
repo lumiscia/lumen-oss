@@ -1,4 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
+};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -27,8 +29,8 @@ pub struct ColorGradeParams {
     #[meta(min = 0, max = 1, step = 0.01)]
     pub strength: f64,
     /// Sampling filter used when reading LUT data.
-    #[meta(format = "sampling_mode")]
-    pub interpolation: i64,
+    #[meta(kind = "enum", enum_type = RasterSampling)]
+    pub interpolation: RasterSampling,
 }
 
 impl Default for ColorGradeParams {
@@ -36,13 +38,13 @@ impl Default for ColorGradeParams {
         Self {
             lut_source: IDENTITY_LUT.to_string(),
             strength: 1.0,
-            interpolation: 1,
+            interpolation: RasterSampling::Linear,
         }
     }
 }
 
 /// Applies a LUT-driven color transform to a raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "color_grade", name = "Color Grade", category = "processing")]
 pub struct ColorGrade {
     pub id: NodeId,
@@ -50,32 +52,15 @@ pub struct ColorGrade {
     pub params: ColorGradeParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
-}
-
-impl Default for ColorGrade {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ColorGradeParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
+    pub source: Option<NodeId>,
 }
 
 impl GpuCompileNode for ColorGrade {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
-        let source = ctx
-            .compile_port(&self.source)?
-            .into_raster(self.source.id, &self.source.port)?;
+        let source = ctx.compile_input(self.id, "source", self.source)?;
         let size = source.domain.storage_size;
         let texture = ctx.builder_mut().texture(
             Some(format!("color-grade:{}:output", self.id.0)),
@@ -169,7 +154,7 @@ impl GpuCompiledNode for CompiledColorGrade {
         })?;
         let gpu_params = compiler::ColorGradeParams {
             strength: evaluated.strength as f32,
-            interpolation: if evaluated.interpolation == 0 { 0 } else { 1 },
+            interpolation: evaluated.interpolation as u32,
             premultiplied: u32::from(self.alpha_mode == AlphaMode::Premultiplied),
             _pad: 0,
         };

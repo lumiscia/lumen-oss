@@ -5,7 +5,7 @@ use crate::{
     error::RenderError,
     expr::ExpressionContext,
     media::MediaStore,
-    node::{NodeKind, PortRef},
+    node::{NodeId, NodeKind},
     scope::{FrameTime, Routed, Scope},
 };
 
@@ -76,7 +76,7 @@ impl<'a> FrameBindContext<'a> {
                 .begin_frame();
             bound.text_atlas = Some(std::sync::Arc::clone(&compiled.text_atlas));
         }
-        let output = PortRef::new(self.scope.media_output()?, "output".to_string());
+        let output = self.scope.media_output()?;
         let mut visited = HashMap::with_capacity_and_hasher(
             compiled.compiled_nodes.len() * 2,
             Default::default(),
@@ -84,7 +84,7 @@ impl<'a> FrameBindContext<'a> {
         let mut time_remaps = TimeRemapPath::new();
         self.bind_port(
             compiled,
-            &output,
+            output,
             &mut time_remaps,
             &mut visited,
             &mut bound,
@@ -103,22 +103,19 @@ impl<'a> FrameBindContext<'a> {
         Ok(bound)
     }
 
-    /// Binds `port`, which this context's scope and frame are for, after everything it reads,
+    /// Binds `node_id`, which this context's scope and frame are for, after everything it reads,
     /// returning whether its output renders this frame rather than staying as kept from an
     /// earlier one.
     fn bind_port(
         &self,
         compiled: &CompiledComposition,
-        port: &PortRef,
+        node_id: NodeId,
         time_remaps: &mut TimeRemapPath,
-        visited: &mut HashMap<(PortRef, TimeRemapPath), bool>,
+        visited: &mut HashMap<(NodeId, TimeRemapPath), bool>,
         bound: &mut BoundFrame,
         cache: &mut Option<BindCache<'_>>,
     ) -> crate::Result<bool> {
-        if port.is_empty() {
-            return Ok(false);
-        }
-        let visit = (port.clone(), time_remaps.clone());
+        let visit = (node_id, time_remaps.clone());
         if let Some(renders) = visited.get(&visit) {
             return Ok(*renders);
         }
@@ -126,12 +123,12 @@ impl<'a> FrameBindContext<'a> {
 
         let node = self
             .scope
-            .node(port.id)
-            .ok_or(RenderError::MissingNode { node_id: port.id })?;
+            .node(node_id)
+            .ok_or(RenderError::MissingNode { node_id })?;
 
         let instance = cache
             .as_ref()
-            .and_then(|cache| cache.layout.instance(port.id, time_remaps));
+            .and_then(|cache| cache.layout.instance(node_id, time_remaps));
         let mut kept = false;
         let mut holds = false;
         if let Some(cache) = cache.as_mut()
@@ -164,7 +161,7 @@ impl<'a> FrameBindContext<'a> {
         };
         let mut inputs_render = false;
         for Routed {
-            port: input,
+            node: input,
             frame,
             scope,
             instance: remap,
@@ -177,7 +174,7 @@ impl<'a> FrameBindContext<'a> {
             };
             time_remaps.extend(remap);
             inputs_render |=
-                input_ctx.bind_port(compiled, &input, time_remaps, visited, bound, cache)?;
+                input_ctx.bind_port(compiled, input, time_remaps, visited, bound, cache)?;
             if remap.is_some() {
                 time_remaps.pop();
             }
@@ -185,7 +182,7 @@ impl<'a> FrameBindContext<'a> {
 
         let compiled_node = compiled
             .compiled_nodes
-            .get(&port.id)
+            .get(&node_id)
             .and_then(|instances| instances.get(time_remaps.as_slice()));
         let renders = if kept && !inputs_render {
             match compiled_node {
@@ -197,7 +194,7 @@ impl<'a> FrameBindContext<'a> {
                 tracing::trace!(
                     target: "lumen_bind",
                     binding_frame = self.frame.value(),
-                    node_id = port.id.0,
+                    node_id = node_id.0,
                     "bind compiled node"
                 );
                 compiled_node.bind(self, bound)?;

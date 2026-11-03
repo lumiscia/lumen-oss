@@ -208,7 +208,7 @@ fn run_case(
     for font in &media.fonts {
         system.load_font_data(font.clone());
     }
-    let layout = system.layout(&request);
+    let layout = system.shape(&request).place([0.0; 2]);
     // Glyph id 0 is the font's missing-glyph box.
     if case == BenchCase::Emoji && layout.glyphs.iter().any(|glyph| glyph.key.0.glyph_id == 0) {
         return Ok(CaseOutcome::Skipped(
@@ -240,7 +240,7 @@ fn run_case(
         NodeId::new(2),
         NodeKind::MediaOutput(MediaOutput {
             id: NodeId::new(2),
-            source: lumen_engine::node::PortRef::new(NodeId::new(1), "output".to_string()),
+            source: Some(NodeId::new(1)),
         }),
     );
     let composition = CompositionBuilder::new(
@@ -274,7 +274,7 @@ fn run_case(
                 })?;
         } else {
             request.spans[0].font_size = 24.0 + (frame % 96) as f32;
-            std::hint::black_box(system.layout(&request));
+            std::hint::black_box(system.shape(&request).place([0.0; 2]));
         }
         Ok(())
     };
