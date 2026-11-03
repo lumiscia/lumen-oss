@@ -321,3 +321,25 @@ impl<D: DelegateValue> OptionalDelegate for Override<D> {
         }
     }
 }
+
+#[cfg(all(test, feature = "json"))]
+mod tests {
+    #[derive(Debug, Clone, Default, PartialEq, lumen_macros::Delegate)]
+    #[delegate(properties)]
+    pub struct Span {
+        #[meta(required)]
+        pub text: String,
+        #[meta(min = 1, step = 1)]
+        pub size: Option<f64>,
+    }
+
+    #[test]
+    fn a_required_field_is_rejected_when_missing() {
+        let error =
+            serde_json::from_value::<SpanDelegate>(serde_json::json!({ "size": 12 })).unwrap_err();
+        assert!(
+            error.to_string().contains("missing field `text`"),
+            "{error}"
+        );
+    }
+}
