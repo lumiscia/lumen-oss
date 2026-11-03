@@ -46,6 +46,25 @@ fn render_schema() -> Result<String> {
         "required": ["timeline", "render_settings", "nodes", "connections"],
         "additionalProperties": true,
         "properties": {
+            "$schema": {
+                "description": "URL of the composition schema, for editors.",
+                "type": "string"
+            },
+            "lumenSchemaVersion": {
+                "description": "Version of the composition format. Absent means the current version.",
+                "type": "string"
+            },
+            "schemaVersion": {
+                "description": "Older name of `lumenSchemaVersion`, read when that is absent.",
+                "type": "string"
+            },
+            "metadata": {
+                "type": "object",
+                "properties": {
+                    "name": { "description": "Display name of the composition.", "type": "string" }
+                },
+                "additionalProperties": true
+            },
             "timeline": { "$ref": "#/$defs/timeline" },
             "audio": {
                 "type": "object",

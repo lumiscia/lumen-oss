@@ -1107,6 +1107,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
   "properties": {
+    "$schema": {
+      "description": "URL of the composition schema, for editors.",
+      "type": "string"
+    },
     "audio": {
       "additionalProperties": true,
       "properties": {
@@ -1146,6 +1150,20 @@
       "description": "Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used.",
       "propertyNames": {
         "pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*\\s*(,\\s*[A-Za-z_][A-Za-z0-9_]*\\s*)*)?\\)\\s*$"
+      },
+      "type": "object"
+    },
+    "lumenSchemaVersion": {
+      "description": "Version of the composition format. Absent means the current version.",
+      "type": "string"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "description": "Display name of the composition.",
+          "type": "string"
+        }
       },
       "type": "object"
     },
@@ -4583,6 +4601,10 @@
       },
       "required": ["width", "height"],
       "type": "object"
+    },
+    "schemaVersion": {
+      "description": "Older name of `lumenSchemaVersion`, read when that is absent.",
+      "type": "string"
     },
     "timeline": {
       "additionalProperties": true,
