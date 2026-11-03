@@ -312,14 +312,6 @@ impl VideoFrameResolver for SharedVideoResolver {
 struct SharedAudioResolver(Arc<FfmpegAudioResolver>);
 
 impl AudioResolver for SharedAudioResolver {
-    fn id(&self) -> &str {
-        self.0.id()
-    }
-
-    fn metadata(&self) -> lumen_engine::audio::AudioMetadata {
-        self.0.metadata()
-    }
-
     fn resolve_range(
         &self,
         start_sample: u64,

@@ -8,15 +8,14 @@ use ffmpeg_next as ffmpeg;
 use lumen_ffmpeg::{ALLOWED_INPUT_FORMATS, ALLOWED_INPUT_PROTOCOLS};
 
 use crate::{
-    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMetadata, AudioResolver},
+    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioResolver},
     error::MediaError,
 };
 
-use super::{ensure_ffmpeg_init, rational_to_f64};
+use super::ensure_ffmpeg_init;
 
 pub struct FfmpegAudioResolver {
-    id: String,
-    metadata: AudioMetadata,
+    source: String,
     decoded_ranges: Mutex<Vec<CachedAudioRange>>,
 }
 
@@ -26,11 +25,10 @@ impl FfmpegAudioResolver {
     pub fn open(source: impl Into<String>) -> Result<Self, MediaError> {
         ensure_ffmpeg_init()?;
         let source = source.into();
-        let metadata = audio_metadata(&source)?;
+        ensure_audio_stream(&source)?;
 
         Ok(Self {
-            id: source,
-            metadata,
+            source,
             decoded_ranges: Mutex::new(Vec::new()),
         })
     }
@@ -54,7 +52,7 @@ impl FfmpegAudioResolver {
 
         let frames_to_decode = frames.max(Self::DECODE_WINDOW_SAMPLES);
         let buffer = Arc::new(decode_audio_range_to_f32_stereo(
-            &self.id,
+            &self.source,
             start_sample,
             frames_to_decode,
         )?);
@@ -106,14 +104,6 @@ struct ResolvedAudioRange {
 }
 
 impl AudioResolver for FfmpegAudioResolver {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn metadata(&self) -> AudioMetadata {
-        self.metadata
-    }
-
     fn resolve_range(
         &self,
         start_sample: u64,
@@ -133,14 +123,11 @@ impl AudioResolver for FfmpegAudioResolver {
             }
         }
 
-        Ok(Arc::new(AudioBuffer::from_channels(
-            AUDIO_SAMPLE_RATE,
-            channels,
-        )))
+        Ok(Arc::new(AudioBuffer::from_channels(channels)))
     }
 }
 
-fn audio_metadata(source: &str) -> Result<AudioMetadata, MediaError> {
+fn ensure_audio_stream(source: &str) -> Result<(), MediaError> {
     let mut options = ffmpeg::Dictionary::new();
     options.set("format_whitelist", ALLOWED_INPUT_FORMATS);
     options.set("protocol_whitelist", ALLOWED_INPUT_PROTOCOLS);
@@ -150,28 +137,13 @@ fn audio_metadata(source: &str) -> Result<AudioMetadata, MediaError> {
             details: format!("failed opening audio source: {err}"),
         }
     })?;
-    let stream = format
-        .streams()
-        .best(Type::Audio)
-        .ok_or_else(|| MediaError::Decode {
+    if format.streams().best(Type::Audio).is_none() {
+        return Err(MediaError::Decode {
             media_source: source.to_string(),
             details: "file has no audio stream".to_string(),
-        })?;
-    let duration_seconds = if stream.duration() > 0 {
-        rational_to_f64(stream.time_base())
-            .map(|time_base| stream.duration() as f64 * time_base)
-            .unwrap_or(0.0)
-    } else if format.duration() > 0 {
-        format.duration() as f64 / f64::from(ffmpeg::ffi::AV_TIME_BASE)
-    } else {
-        0.0
-    };
-
-    Ok(AudioMetadata {
-        sample_rate: AUDIO_SAMPLE_RATE,
-        channels: AUDIO_CHANNELS as u16,
-        duration_samples: (duration_seconds.max(0.0) * f64::from(AUDIO_SAMPLE_RATE)).round() as u64,
-    })
+        });
+    }
+    Ok(())
 }
 
 fn decode_audio_range_to_f32_stereo(
@@ -237,7 +209,7 @@ fn decode_audio_range_to_f32_stereo(
         }
     }
 
-    Ok(AudioBuffer::from_channels(AUDIO_SAMPLE_RATE, channels))
+    Ok(AudioBuffer::from_channels(channels))
 }
 
 #[cfg(test)]
@@ -247,7 +219,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{audio_metadata, decode_audio_range_to_f32_stereo};
+    use super::{decode_audio_range_to_f32_stereo, ensure_audio_stream};
 
     #[test]
     fn audio_paths_read_uploads_but_not_playlists() {
@@ -282,14 +254,14 @@ mod tests {
         let wav = wav.to_str().expect("wav path");
         let playlist = playlist.to_str().expect("playlist path");
 
-        assert!(audio_metadata(wav).is_ok());
+        assert!(ensure_audio_stream(wav).is_ok());
         let decoded = decode_audio_range_to_f32_stereo(wav, 0, 4800).expect("decode wav");
         assert!(decoded.frames() > 0);
 
-        let metadata = audio_metadata(playlist);
+        let stream = ensure_audio_stream(playlist);
         let decoded = decode_audio_range_to_f32_stereo(playlist, 0, 4800);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(metadata.is_err());
+        assert!(stream.is_err());
         assert!(decoded.is_err());
     }
 }
