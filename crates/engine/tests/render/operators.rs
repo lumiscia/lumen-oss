@@ -125,7 +125,7 @@ fn operators_produce_hand_computed_colors() {
     let level = json!({ "black_point": 0.1, "white_point": 0.9, "gamma": 1.2,
         "output_black": 0.05, "output_white": 0.95 });
     let lut =
-        json!({ "lut_source": "rgb1d: 0,0,0; 255,128,0", "strength": 0.5, "interpolation": 1 });
+        json!({ "lut_source": "rgb1d: 0,0,0; 255,128,0", "strength": 0.5, "interpolation": "linear" });
     // Each scene is a 4 × 4 solid, and every pixel of the output is the colour.
     let rows = [
         // 50% blue at 50% opacity over red: (0, 0, .251) over (1, 0, 0) leaves .749 of the red.

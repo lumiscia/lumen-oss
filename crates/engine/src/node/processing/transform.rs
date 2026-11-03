@@ -1,6 +1,9 @@
 use crate::error::RenderError;
 use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
+    processing::RasterSampling,
+};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -11,17 +14,6 @@ pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
     include_str!("transform.wgsl")
 );
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum")]
-pub enum TransformSampling {
-    Nearest = 0,
-    #[default]
-    Linear = 1,
-}
 
 /// Transforms a raster into the composition canvas bounds.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -55,8 +47,8 @@ pub struct TransformParams {
     #[meta(name = "Motion blur", min = 0, max = 360, step = 1)]
     pub motion_blur: f64,
     /// Sampling filter used when transforming.
-    #[meta(kind = "enum", enum_type = TransformSampling)]
-    pub sampling: TransformSampling,
+    #[meta(kind = "enum", enum_type = RasterSampling)]
+    pub sampling: RasterSampling,
 }
 
 impl Default for TransformParams {
@@ -71,7 +63,7 @@ impl Default for TransformParams {
             pivot_y: 0.0,
             custom_pivot: false,
             motion_blur: 0.0,
-            sampling: TransformSampling::Linear,
+            sampling: RasterSampling::Linear,
         }
     }
 }

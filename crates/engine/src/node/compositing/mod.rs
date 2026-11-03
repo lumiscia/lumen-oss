@@ -9,7 +9,7 @@ pub mod switch;
 )]
 #[repr(u8)]
 #[non_exhaustive]
-#[delegate(kind = "enum")]
+#[delegate(kind = "enum", expressions)]
 pub enum BlendMode {
     #[default]
     Normal = 0,

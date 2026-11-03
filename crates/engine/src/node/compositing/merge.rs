@@ -44,7 +44,7 @@ pub struct MergeParams {
     /// Swaps the masked and unmasked areas.
     #[meta()]
     pub invert: bool,
-    /// Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`.
+    /// Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`. Radii above about 588 look the same.
     #[meta(min = 0, step = 0.5)]
     pub feather: f64,
 }
