@@ -20,6 +20,8 @@ pub mod processing;
 pub mod source;
 pub mod vector;
 
+use crate::expr::Expression;
+
 pub use clip_props::{ClipPropValue, ClipProps};
 pub use deferred::Deferred;
 pub use deferred::{ParamValue, enum_value, truncated_int};
@@ -46,7 +48,15 @@ pub trait Node: Send + Sync {
     /// expanded in place. `None` is an unconnected input.
     fn input_ports(&self) -> Vec<Option<NodeId>>;
     /// Whether any of the node's params is an expression.
-    fn has_expressions(&self) -> bool;
+    /// Calls `f` with every expression in the node's params.
+    fn for_each_expression(&self, f: &mut dyn FnMut(&Expression));
+
+    /// Whether any of the node's params is an expression.
+    fn has_expressions(&self) -> bool {
+        let mut any = false;
+        self.for_each_expression(&mut |_| any = true);
+        any
+    }
 }
 
 pub trait PropertyEval {

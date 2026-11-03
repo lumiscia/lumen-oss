@@ -11,7 +11,9 @@ mod spec;
 use crate::{error::ExpressionError, graph::Graph};
 
 pub(crate) use ast::parse_hex_color;
-pub use ast::{BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp};
+pub use ast::{
+    BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, Reads, UnaryOp,
+};
 pub use functions::FunctionScope;
 pub use spec::{
     BUILTINS, BuiltinArg, BuiltinSpec, Easing, FORMS, FormSpec, GLOBALS, GlobalSpec, ValueKind,

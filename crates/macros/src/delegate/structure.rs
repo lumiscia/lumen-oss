@@ -179,8 +179,8 @@ pub(crate) fn expand_struct_delegate(
                 })
             }
 
-            fn has_expressions(&self) -> bool {
-                false #(|| ::lumen_engine::node::DelegateEvaluable::has_expressions(&self.#field_idents))*
+            fn for_each_expression(&self, f: &mut dyn FnMut(&::lumen_engine::expr::Expression)) {
+                #(::lumen_engine::node::DelegateEvaluable::for_each_expression(&self.#field_idents, f);)*
             }
 
             fn from_json_value(

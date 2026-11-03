@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
+use crate::expr::Expression;
 use crate::node::{
     Deferred, DelegateEvalContext, DelegateEvaluable, Delegated, Override, PropertyRead,
     vector::paint::Paint,
@@ -213,8 +214,10 @@ impl DelegateEvaluable for FontFeaturesDelegate {
             .map(FontFeatures)
     }
 
-    fn has_expressions(&self) -> bool {
-        self.0.values().any(Deferred::is_expr)
+    fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
+        for value in self.0.values() {
+            value.for_each_expression(f);
+        }
     }
 
     /// Parses a JSON object of tags to non-negative integers or `=expression`s.
@@ -399,10 +402,10 @@ impl DelegateEvaluable for TextContentDelegate {
         })
     }
 
-    fn has_expressions(&self) -> bool {
+    fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
         match self {
-            Self::Text(text) => text.has_expressions(),
-            Self::Spans(spans) => spans.has_expressions(),
+            Self::Text(text) => text.for_each_expression(f),
+            Self::Spans(spans) => spans.for_each_expression(f),
         }
     }
 

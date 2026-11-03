@@ -133,10 +133,41 @@ pub enum ExprNode {
     Param(usize),
 }
 
+/// What an expression reads, found once when it is built.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Reads {
+    pub glyph: bool,
+    pub word: bool,
+    pub line: bool,
+    pub span: bool,
+    /// Another node or measured text, whose values live outside of the node and its plan.
+    pub outside_node: bool,
+}
+
+impl Reads {
+    fn of(ast: &ExprNode) -> Self {
+        let mut reads = Self::default();
+        super::functions::visit(ast, &mut |node| match node {
+            ExprNode::Global(GlobalVar::Glyph) => reads.glyph = true,
+            ExprNode::Global(GlobalVar::Word) => reads.word = true,
+            ExprNode::Global(GlobalVar::Line) => reads.line = true,
+            ExprNode::Global(GlobalVar::Span) => reads.span = true,
+            ExprNode::Node(_)
+            | ExprNode::PropertyValue(..)
+            | ExprNode::Builtin(BuiltinFn::TextWidth | BuiltinFn::TextHeight, _) => {
+                reads.outside_node = true;
+            }
+            _ => {}
+        });
+        reads
+    }
+}
+
 #[derive(Clone)]
 pub struct Expression {
     pub(super) ast: ExprNode,
     pub source: String,
+    pub reads: Reads,
     /// Levels of `ast`, which is how deep evaluating it recurses.
     pub(super) depth: usize,
     /// How `ast` is evaluated, built from it once.
@@ -206,6 +237,7 @@ impl Expression {
         Self {
             plan: Arc::new(super::eval::EvalPlan::new(&ast)),
             depth: ast.depth(),
+            reads: Reads::of(&ast),
             ast,
             source,
         }
@@ -216,7 +248,7 @@ impl Expression {
     }
 }
 
-// The plan follows from `ast`, so it is left out of comparisons and debug output.
+// The plan and reads follow from `ast`, so they are left out of comparisons and debug output.
 impl PartialEq for Expression {
     fn eq(&self, other: &Self) -> bool {
         self.ast == other.ast && self.source == other.source
@@ -243,7 +275,30 @@ impl fmt::Debug for Expression {
 
 #[cfg(test)]
 mod tests {
-    use super::ExpressionValue;
+    use super::{Expression, ExpressionValue, Reads};
+
+    #[test]
+    fn an_expression_knows_what_it_reads() {
+        let reads = |source: &str| Expression::parse(source).unwrap().reads;
+        assert_eq!(reads("frame + 1"), Reads::default());
+        assert_eq!(
+            reads("glyph + if(span > 0, line, 1)"),
+            Reads {
+                glyph: true,
+                line: true,
+                span: true,
+                ..Reads::default()
+            }
+        );
+        assert!(reads("word * 2").word);
+        for source in [
+            "node(3, 'opacity') + 1",
+            "text_width(node(3))",
+            "text_height('a') / 2",
+        ] {
+            assert!(reads(source).outside_node, "{source}");
+        }
+    }
 
     #[test]
     fn vec2_value_conversions_are_explicit() {
