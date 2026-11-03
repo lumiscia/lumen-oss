@@ -1,8 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -61,7 +60,6 @@ pub struct Boolean {
 struct CompiledBoolean {
     node_id: NodeId,
     params: BooleanParamsDelegate,
-    straight_inputs: [f32; 2],
     buffer: lumen_gpu::BufferId,
 }
 
@@ -76,12 +74,7 @@ impl GpuCompiledNode for CompiledBoolean {
             expr: &ctx.expr_context(),
         })?;
         let gpu_params = compiler::BooleanParams {
-            values: [
-                params.operation as u32 as f32,
-                params.threshold as f32,
-                self.straight_inputs[0],
-                self.straight_inputs[1],
-            ],
+            values: [params.operation as u32 as f32, params.threshold as f32],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
@@ -142,23 +135,13 @@ impl GpuCompileNode for Boolean {
         ctx.register_compiled_node(CompiledBoolean {
             node_id: self.id,
             params: self.params.clone(),
-            straight_inputs: [straight_flag(a.alpha_mode), straight_flag(b.alpha_mode)],
             buffer: params,
         });
 
         Ok(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            alpha_mode: AlphaMode::Premultiplied,
             bounds: None,
         })
-    }
-}
-
-fn straight_flag(alpha_mode: AlphaMode) -> f32 {
-    if alpha_mode == AlphaMode::Unpremultiplied {
-        1.0
-    } else {
-        0.0
     }
 }

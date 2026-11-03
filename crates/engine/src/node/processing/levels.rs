@@ -1,8 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -58,7 +57,6 @@ pub struct Levels {
 struct CompiledLevels {
     node_id: NodeId,
     params: LevelsParamsDelegate,
-    alpha_mode: AlphaMode,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -78,8 +76,6 @@ impl GpuCompiledNode for CompiledLevels {
             gamma: params.gamma as f32,
             output_black: params.output_black as f32,
             output_white: params.output_white as f32,
-            premultiplied: u32::from(self.alpha_mode == AlphaMode::Premultiplied),
-            _pad: [0.0; 2],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
@@ -94,18 +90,16 @@ impl GpuCompileNode for Levels {
             "levels",
             SHADER,
             std::mem::size_of::<compiler::LevelsParams>() as u64,
-            compiler::FilterDomain::PremultipliedSource,
+            compiler::FilterDomain::Source,
         )?;
         ctx.register_compiled_node(CompiledLevels {
             node_id: self.id,
             params: self.params.clone(),
-            alpha_mode: source.alpha_mode,
             buffer: params,
         });
         Ok(RasterHandle {
             texture,
             domain: source.domain,
-            alpha_mode: source.alpha_mode,
             bounds: source.bounds,
         })
     }

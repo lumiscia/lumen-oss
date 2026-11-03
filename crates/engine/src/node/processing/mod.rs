@@ -1,4 +1,3 @@
-pub mod alpha_premultiply;
 pub mod blur;
 pub mod color_grade;
 pub mod crop;

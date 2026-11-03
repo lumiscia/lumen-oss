@@ -3,8 +3,7 @@ use crate::node::{
 };
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -56,13 +55,10 @@ struct RasterMultiCompiledMerge {
     layers: Vec<CompiledLayer>,
 }
 
-/// Per-pass uniform buffer, carrying the alpha representation and placement of that pass's
-/// inputs.
+/// Per-pass uniform buffer, carrying the placement of that pass's inputs.
 #[derive(Debug, Clone)]
 struct CompiledLayer {
     buffer: lumen_gpu::BufferId,
-    base_straight: bool,
-    overlay_straight: bool,
     /// Output texel of the pass's first invocation, then canvas pixels of the first texels
     /// of the output, base and overlay.
     origins: [[i32; 2]; 4],
@@ -80,12 +76,8 @@ impl GpuCompiledNode for RasterMultiCompiledMerge {
         })?;
         for layer in &self.layers {
             let params = compiler::RasterMultiMergeParams {
-                values: [
-                    evaluated.opacity as f32,
-                    evaluated.blend_mode as u32 as f32,
-                    f32::from(u8::from(layer.base_straight)),
-                    f32::from(u8::from(layer.overlay_straight)),
-                ],
+                opacity: evaluated.opacity as f32,
+                blend_mode: evaluated.blend_mode as u32,
                 origins: layer.origins,
             };
             bound.write_buffer(layer.buffer, 0, bytemuck::bytes_of(&params));
@@ -183,8 +175,6 @@ impl GpuCompileNode for RasterMultiMerge {
             ];
             compiled_layers.push(CompiledLayer {
                 buffer: params,
-                base_straight: current.alpha_mode == AlphaMode::Unpremultiplied,
-                overlay_straight: overlay.alpha_mode == AlphaMode::Unpremultiplied,
                 origins: [
                     start,
                     origin(&domain),
@@ -206,7 +196,6 @@ impl GpuCompileNode for RasterMultiMerge {
             current = RasterHandle {
                 texture,
                 domain,
-                alpha_mode: AlphaMode::Premultiplied,
                 bounds: None,
             };
         }

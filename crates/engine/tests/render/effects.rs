@@ -41,10 +41,6 @@ fn tinted_shadow(offset: [Value; 2], radius: impl Into<Value>) -> Value {
     shadow_in([20, 40, 200, 255], 0.8, offset, radius)
 }
 
-fn unpremultiply() -> Value {
-    json!({ "type": "alpha_premultiply", "params": { "mode": "unpremultiply" } })
-}
-
 /// `nodes` as a line, each fed by the one before.
 fn chain(canvas: (u32, u32), nodes: Vec<Value>) -> Scene {
     let nodes = nodes.into_iter().enumerate().map(|(index, mut node)| {
@@ -195,15 +191,12 @@ fn gaussian_response() {
         )
     };
     // The fringe of a half-covered edge stays white over transparent, whatever the source's alpha.
-    let fringe = |kind: &str, fill: [u8; 4], straight: bool| {
+    let fringe = |kind: &str, fill: [u8; 4]| {
         let mut source = white(24.5, 24.5, 16, 16);
         source["params"]["fill_paint"] = json!(fill);
-        let mut nodes = vec![source];
-        nodes.extend(straight.then(unpremultiply));
-        nodes.push(blur(5));
         Case::new(
             format!("{kind} edge keeps rgb equal to alpha"),
-            chain((64, 64), nodes),
+            chain((64, 64), vec![source, blur(5)]),
             custom(|frames| {
                 assert!(alpha(&frames[0], 32, 32) > 100.0, "the blur is blank");
                 for pixel in frames[0].rgba.as_chunks::<4>().0 {
@@ -235,9 +228,8 @@ fn gaussian_response() {
         fractional,
         wide(blur(80), "blur of radius 80", true),
         wide(shadow([0.0, 0.0], 80), "shadow of radius 80", false),
-        fringe("opaque", [255; 4], false),
-        fringe("straight", [255; 4], true),
-        fringe("translucent straight", [255, 255, 255, 128], true),
+        fringe("opaque", [255; 4]),
+        fringe("translucent", [255, 255, 255, 128]),
     ]);
 }
 
@@ -335,25 +327,20 @@ fn gaussian_continuity() {
 fn edge_blur_cases() -> Vec<Case> {
     let mut cases = Vec::new();
     // Radii that blur at full resolution, on a reduced level and across two, with the shape in
-    // each corner and straight alpha, so that the blur reads its edge and the canvas'. The
+    // each corner, so that the blur reads its edge and the canvas'. The
     // largest reaches past the canvas on every side.
     for radius in [0.0, 3.0, 8.5, 21.0, 30.0, 38.0, 40.0, 150.0] {
         for position in [[2, 3], [368, 274], [190, 140], [-5, 270]] {
-            for straight in [false, true] {
-                let mut nodes = vec![small(json!(position))];
-                nodes.extend(straight.then(unpremultiply));
-                nodes.push(blur(radius));
-                let case = Case::new(
-                    format!("blur {radius} at {position:?}, straight {straight}"),
-                    chain((384, 288), nodes),
-                    Expect::Nonblank,
-                );
-                cases.push(if radius < 150.0 {
-                    case.bounded(true)
-                } else {
-                    case
-                });
-            }
+            let case = Case::new(
+                format!("blur {radius} at {position:?}"),
+                chain((384, 288), vec![small(json!(position)), blur(radius)]),
+                Expect::Nonblank,
+            );
+            cases.push(if radius < 150.0 {
+                case.bounded(true)
+            } else {
+                case
+            });
         }
     }
     // The kernel still has ink at (146, 47), past the 48 a reach of two sigma would stop at.
@@ -433,10 +420,11 @@ fn shadow_cases() -> Vec<Case> {
         ([-250.0, 0.0], 12),
         ([400.0, -300.0], 60),
     ] {
-        for (position, straight) in [([30, 20], false), ([366, 270], true)] {
-            let mut nodes = vec![small(json!(position))];
-            nodes.extend(straight.then(unpremultiply));
-            nodes.push(tinted_shadow(offset.map(Value::from), radius));
+        for position in [[30, 20], [366, 270]] {
+            let nodes = vec![
+                small(json!(position)),
+                tinted_shadow(offset.map(Value::from), radius),
+            ];
             cases.push(
                 Case::new(
                     format!("shadow {offset:?} radius {radius} at {position:?}"),

@@ -1,8 +1,6 @@
 struct ColorGradeParams {
     strength: f32,
     interpolation: u32,
-    premultiplied: u32,
-    _pad: u32,
 }
 
 struct ColorGradeLut {
@@ -33,13 +31,12 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let premultiplied = params.premultiplied != 0u;
-    let color = to_straight_alpha(textureLoad(input_tex, vec2<i32>(id.xy), 0), premultiplied);
+    let color = unpremultiply(textureLoad(input_tex, vec2<i32>(id.xy), 0));
     let graded = vec3<f32>(
         sample_lut(color.r, 0u),
         sample_lut(color.g, 1u),
         sample_lut(color.b, 2u)
     );
     let rgb = mix(color.rgb, graded, clamp(params.strength, 0.0, 1.0));
-    textureStore(output_tex, vec2<i32>(id.xy), from_straight_alpha(vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), color.a), premultiplied));
+    textureStore(output_tex, vec2<i32>(id.xy), premultiply(vec4<f32>(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)), color.a)));
 }

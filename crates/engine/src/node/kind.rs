@@ -106,7 +106,6 @@ node_kinds! {
     Switch(compositing::switch::Switch),
     Clip(compositing::clip::Clip),
     Opacity(processing::opacity::Opacity),
-    AlphaPremultiply(processing::alpha_premultiply::AlphaPremultiply),
     Blur(processing::blur::Blur),
     ColorGrade(processing::color_grade::ColorGrade),
     Exposure(processing::exposure::Exposure),

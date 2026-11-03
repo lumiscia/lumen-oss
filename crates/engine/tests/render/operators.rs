@@ -19,12 +19,6 @@ fn solid(id: u32, color: [u8; 4]) -> Value {
     json!({ "id": id, "type": "background", "params": { "paint": color, "width": 4, "height": 4 } })
 }
 
-/// Converts the premultiplied raster `source` to straight alpha.
-fn straight(id: u32, source: u32) -> Value {
-    json!({ "id": id, "type": "alpha_premultiply", "in": { "source": source },
-        "params": { "mode": "unpremultiply" } })
-}
-
 /// A 4 × 4 `color` solid through `kind` with `params`.
 fn through(color: [u8; 4], kind: &str, params: Value) -> Scene {
     scene(
@@ -72,11 +66,6 @@ fn bar(id: u32, x: f64, width: u32, color: [u8; 4]) -> Value {
 /// A mask covering no pixels of columns before 8, half of 8, all of 9 to 15 and half of 16.
 fn rim(color: [u8; 4]) -> Value {
     json!([bar(5, 8.5, 8, color)])
-}
-
-/// The same coverage as `rim`, in a straight-alpha raster.
-fn straight_rim(color: [u8; 4]) -> Value {
-    json!([bar(6, 8.5, 8, color), straight(5, 6)])
 }
 
 fn solid_mask(color: [u8; 4], width: u32, height: u32) -> Value {
@@ -143,32 +132,14 @@ fn operators_produce_hand_computed_colors() {
             ),
             [255, 64, 64, 255],
         ),
-        (
-            "straight overlay is premultiplied before merging",
-            scene(
-                (4, 4),
-                json!([solid(1, BLACK), solid(2, [255, 0, 0, 128]), straight(3, 2),
-                { "id": 4, "type": "merge", "in": { "base": 1, "overlay": 3 } }]),
-            ),
-            [128, 0, 0, 255],
-        ),
-        (
-            "wgsl shader premultiplies a straight input",
-            scene(
-                (4, 4),
-                json!([solid(1, [200, 60, 0, 128]), straight(2, 1),
-                { "id": 3, "type": "wgsl_shader", "in": { "source": [2] } }]),
-            ),
-            [100, 30, 0, 128],
-        ),
         // Half-red (.5, 0, 0, .5) over its own green shadow (0, .5, 0, .5), then over black.
         (
-            "shadow composites a straight source in premultiplied space",
+            "shadow of a translucent source",
             scene(
                 (4, 4),
-                json!([solid(1, BLACK), solid(2, [255, 0, 0, 128]), straight(3, 2),
-                { "id": 4, "type": "shadow", "in": { "source": 3 }, "params": green_shadow },
-                { "id": 5, "type": "merge", "in": { "base": 1, "overlay": 4 } }]),
+                json!([solid(1, BLACK), solid(2, [255, 0, 0, 128]),
+                { "id": 3, "type": "shadow", "in": { "source": 2 }, "params": green_shadow },
+                { "id": 4, "type": "merge", "in": { "base": 1, "overlay": 3 } }]),
             ),
             [128, 64, 0, 255],
         ),
@@ -183,16 +154,6 @@ fn operators_produce_hand_computed_colors() {
             "exposure lifts a translucent pixel",
             through(TEAL, "exposure", lift.clone()),
             [124, 128, 128, 128],
-        ),
-        // A straight raster stays straight: (.235, .471, .784) lifted to (.97, 1, 1), unconverted.
-        (
-            "exposure of a straight raster",
-            scene(
-                (4, 4),
-                json!([solid(1, TEAL), straight(2, 1),
-                { "id": 3, "type": "exposure", "params": lift, "in": { "source": 2 } }]),
-            ),
-            [247, 255, 255, 128],
         ),
         // Gain 2^.5 and contrast 1.2 about the midpoint: red .239, green .639, blue clamps at 1.
         (
@@ -308,45 +269,32 @@ fn mattes_select_by_alpha_or_luma() {
     ];
     // A translucent orange (200, 90, 40) at alpha .588: its alpha is 150, and its luma over
     // black is .2126 * 117.6 + .7152 * 52.9 + .0722 * 23.5 = 65. A zero feather expression must
-    // read the mask as no feather does, and a straight mask must feather like a premultiplied one.
+    // read the mask as no feather does.
     let orange = [200, 90, 40, 150];
     for (mode, full) in [("alpha", 150), ("luma", 65)] {
-        let straight = |feather: Value| {
+        let translucent = |feather: Value| {
             let params = json!({ "mask_mode": mode, "feather": feather });
-            matte(WIDTH, straight_rim(orange), params)
+            matte(WIDTH, rim(orange), params)
         };
-        let premultiplied = matte(
-            WIDTH,
-            rim(orange),
-            json!({ "mask_mode": mode, "feather": 2 }),
-        );
         cases.push(Case::new(
-            format!("{mode} of a translucent straight mask"),
-            straight(json!(0)),
+            format!("{mode} of a translucent mask"),
+            translucent(json!(0)),
             matte_at(edge(full)),
         ));
         cases.push(
             Case::new(
                 format!("{mode} with a zero feather expression"),
-                straight(json!("=0")),
-                Expect::Matches(straight(json!(0)).into()),
+                translucent(json!("=0")),
+                Expect::Matches(translucent(json!(0)).into()),
             )
             .tolerance(0),
-        );
-        cases.push(
-            Case::new(
-                format!("{mode} of a straight mask feathers like a premultiplied one"),
-                straight(json!(2)),
-                Expect::Matches(premultiplied.into()),
-            )
-            .tolerance(2),
         );
     }
     // Sent through the blur's float texture, this gray's luma rounds to 160 instead of 161.
     let gray = |feather: Value| {
         matte(
             WIDTH,
-            straight_rim([178, 178, 178, 230]),
+            rim([178, 178, 178, 230]),
             json!({ "mask_mode": "luma", "feather": feather }),
         )
     };

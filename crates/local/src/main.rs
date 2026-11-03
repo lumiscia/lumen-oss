@@ -22,7 +22,7 @@ use lumen_engine::{
     composition::Composition,
     error::MediaError,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
-    gpu::{AlphaMode, GpuCompositionRenderer},
+    gpu::GpuCompositionRenderer,
     image::ImageFileResolver,
     media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
@@ -860,9 +860,7 @@ fn render_single_png(
     let size = rendered.domain.storage_size;
     let mut pixels = read_texture_rgba8(renderer.gpu_renderer(), rendered.texture, size)
         .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
-    if rendered.alpha_mode == AlphaMode::Premultiplied {
-        unpremultiply_rgba8(&mut pixels);
-    }
+    unpremultiply_rgba8(&mut pixels);
 
     write_png(output, size.width, size.height, pixels.as_slice())?;
 

@@ -449,15 +449,9 @@ fn expression_placement_matches_engine_parsing() {
         ),
         (
             "expression for a literal-only enum",
-            node("alpha_premultiply", json!({ "mode": "='premultiply'" })),
+            node("shape", json!({ "geometry_kind": "='ellipse'" })),
             false,
             false,
-        ),
-        (
-            "escaped literal for a literal-only enum",
-            node("alpha_premultiply", json!({ "mode": "==premultiply" })),
-            true,
-            true,
         ),
         (
             "expression as a paint",

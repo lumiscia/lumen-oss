@@ -1,8 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 use super::gaussian;
@@ -36,7 +35,6 @@ struct CompiledBlur {
     node_id: NodeId,
     params: BlurParamsDelegate,
     passes: gaussian::GaussianPasses,
-    straight_source: bool,
 }
 
 impl GpuCompiledNode for CompiledBlur {
@@ -53,7 +51,6 @@ impl GpuCompiledNode for CompiledBlur {
             bound,
             &gaussian::GaussianSettings {
                 radius: params.radius,
-                straight_source: self.straight_source,
                 transparent_edge: false,
                 offset: [0.0; 2],
             },
@@ -94,12 +91,10 @@ impl GpuCompileNode for Blur {
             node_id: self.id,
             params: self.params.clone(),
             passes,
-            straight_source: source.alpha_mode == AlphaMode::Unpremultiplied,
         });
         Ok(RasterHandle {
             texture: output,
             domain,
-            alpha_mode: AlphaMode::Premultiplied,
             bounds: None,
         })
     }

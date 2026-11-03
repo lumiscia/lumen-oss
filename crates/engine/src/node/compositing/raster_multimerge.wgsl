@@ -1,5 +1,6 @@
 struct RasterMultiMergeParams {
-    values: vec4<f32>,
+    opacity: f32,
+    blend_mode: u32,
     // Output texel of the first invocation, then canvas pixels of the first texels of the
     // output, base and overlay.
     start: vec2<i32>,
@@ -31,8 +32,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let pixel = texel + params.origin;
-    let base = to_premultiplied_alpha(sample_or_transparent(base_tex, pixel, params.base_origin), params.values.z >= 0.5);
-    let overlay = to_premultiplied_alpha(sample_or_transparent(overlay_tex, pixel, params.overlay_origin), params.values.w >= 0.5);
-    let opacity = clamp(params.values.x, 0.0, 1.0);
-    textureStore(output_tex, texel, composite(base, overlay * opacity, u32(params.values.y)));
+    let base = sample_or_transparent(base_tex, pixel, params.base_origin);
+    let overlay = sample_or_transparent(overlay_tex, pixel, params.overlay_origin);
+    let opacity = clamp(params.opacity, 0.0, 1.0);
+    textureStore(output_tex, texel, composite(base, overlay * opacity, params.blend_mode));
 }

@@ -141,7 +141,6 @@ impl GpuCompileNode for Resize {
         Ok(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            alpha_mode: source.alpha_mode,
             bounds: None,
         })
     }

@@ -5,8 +5,7 @@ use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 use crate::scope::FrameTime;
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, MediaTextureKey,
-    RasterHandle,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, MediaTextureKey, RasterHandle,
 };
 
 /// What playback does once it leaves the source range.
@@ -196,7 +195,6 @@ impl GpuCompileNode for MediaIn {
         Ok(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            alpha_mode: AlphaMode::Premultiplied,
             bounds: None,
         })
     }

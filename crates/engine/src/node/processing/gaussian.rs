@@ -178,8 +178,6 @@ pub(crate) struct GaussianPasses {
 pub(crate) struct GaussianSettings {
     /// Blur radius in pixels, as exposed on the node.
     pub(crate) radius: f64,
-    /// The source is straight alpha and gets premultiplied before filtering.
-    pub(crate) straight_source: bool,
     /// Texels outside the source read as transparent instead of clamping to the edge.
     pub(crate) transparent_edge: bool,
     /// Shifts the source by this many pixels, rounded to whole pixels. Must be
@@ -197,8 +195,8 @@ impl GaussianPasses {
         let params = compiler::BlurParams {
             values: [
                 sigma_for_radius(settings.radius),
-                flag(settings.straight_source),
                 flag(settings.transparent_edge),
+                0.0,
                 0.0,
             ],
             offset: [
