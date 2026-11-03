@@ -13,6 +13,7 @@ use lumen_engine::{
     },
     node::{
         Deferred, NodeId, NodeKind, PortRef,
+        compositing::{merge::Merge, raster_multimerge::RasterMultiMerge},
         media_output::MediaOutput,
         processing::{
             alpha_premultiply::{AlphaPremultiply, AlphaPremultiplyParamsDelegate},
@@ -319,11 +320,24 @@ fn cycles_are_rejected_at_build() {
         })
     };
 
-    // Ports and connections agree.
+    // Connections written into the inputs.
     let mut graph = Graph::new();
-    graph.nodes.insert(first, exposure(first, second));
-    graph.nodes.insert(second, exposure(second, first));
-    graph.nodes.insert(output, media_output());
+    for id in [first, second] {
+        graph.nodes.insert(
+            id,
+            NodeKind::Exposure(Exposure {
+                id,
+                ..Exposure::default()
+            }),
+        );
+    }
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            ..MediaOutput::default()
+        }),
+    );
     for edge in [
         connection(first, second),
         connection(second, first),
@@ -333,7 +347,7 @@ fn cycles_are_rejected_at_build() {
     }
     assert_cycle_rejected_at_build(graph);
 
-    // Nodes built directly carry their inputs on ports, with no connections at all.
+    // Nodes built directly carry their inputs.
     let mut graph = Graph::new();
     graph.nodes.insert(first, exposure(first, second));
     graph.nodes.insert(second, exposure(second, first));
@@ -367,6 +381,81 @@ fn cycles_are_rejected_at_build() {
         error,
         LumenError::GraphValidation(GraphValidationError::NodeIdMismatch { .. })
     )));
+}
+
+#[test]
+fn a_missing_required_input_is_named() {
+    let output = NodeId::new(1);
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            ..MediaOutput::default()
+        }),
+    );
+    let errors = build_errors(graph);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.to_string() == "node 1 is missing required input `source`"),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_second_connection_to_a_single_input_is_rejected_and_a_variadic_input_appends() {
+    let (first, second, merge) = (NodeId::new(1), NodeId::new(2), NodeId::new(3));
+    let connect = |graph: &mut Graph, from_node, to_port: &str| {
+        graph.connect(Connection {
+            from_node,
+            from_port: "output".to_string(),
+            to_node: merge,
+            to_port: to_port.to_string(),
+        })
+    };
+    let mut graph = Graph::new();
+    for id in [first, second] {
+        graph.nodes.insert(
+            id,
+            NodeKind::Background(Background {
+                id,
+                ..Background::default()
+            }),
+        );
+    }
+    graph.nodes.insert(
+        merge,
+        NodeKind::Merge(Merge {
+            id: merge,
+            ..Merge::default()
+        }),
+    );
+    connect(&mut graph, first, "base").unwrap();
+    let error = connect(&mut graph, second, "base").unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "input `base` of node 3 is already connected"
+    );
+
+    let multi = NodeId::new(4);
+    graph.nodes.insert(
+        multi,
+        NodeKind::RasterMultiMerge(RasterMultiMerge {
+            id: multi,
+            ..RasterMultiMerge::default()
+        }),
+    );
+    for from_node in [first, second] {
+        graph
+            .connect(Connection {
+                from_node,
+                from_port: "output".to_string(),
+                to_node: multi,
+                to_port: "layers".to_string(),
+            })
+            .unwrap();
+    }
 }
 
 #[test]

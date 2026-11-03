@@ -1328,9 +1328,9 @@ impl<'a> PlanKeyCollector<'a> {
         if !self.visited.insert((port.id, self.time_remaps.clone())) {
             return Ok(());
         }
-        let Some(node) = scope.node(port.id) else {
-            return Ok(());
-        };
+        let node = scope
+            .node(port.id)
+            .ok_or(RenderError::MissingNode { node_id: port.id })?;
         self.collect_node(scope, node, frame)
     }
 

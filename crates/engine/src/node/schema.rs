@@ -108,5 +108,9 @@ pub trait JsonNode: Default {
     where
         Self: Sized;
 
-    fn set_input_json(&mut self, port: &str, source: PortRef) -> anyhow::Result<()>;
+    fn set_input_json(
+        &mut self,
+        port: &str,
+        source: PortRef,
+    ) -> Result<(), crate::error::GraphValidationError>;
 }
