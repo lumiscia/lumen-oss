@@ -41,11 +41,9 @@ export type {
   NativeVideoFrameTarget,
   RegisteredImageSource,
   RegisteredVideoSource,
-  SourceMediaSourceInput,
   UrlMediaSourceInput,
   VideoFrameMetadata,
   VideoFramePayload,
   VideoFramePixels,
   VideoSourceRegistration,
-  VideoTimelineMode,
 } from "./types.js";

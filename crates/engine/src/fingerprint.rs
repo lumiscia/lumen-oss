@@ -37,12 +37,10 @@ hash_leaf!(
     isize,
     str,
     String,
-    crate::expr::ast::BinaryOp,
-    crate::expr::ast::UnaryOp,
-    crate::expr::ast::GlobalVar,
-    crate::expr::ast::PropertyPath,
-    crate::expr::ast::VirtualPropertyId,
-    crate::expr::spec::BuiltinFn,
+    crate::expr::BinaryOp,
+    crate::expr::UnaryOp,
+    crate::expr::GlobalVar,
+    crate::expr::BuiltinFn,
 );
 
 impl StructuralHash for f32 {

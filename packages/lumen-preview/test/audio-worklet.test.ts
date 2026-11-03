@@ -1,0 +1,241 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const QUANTUM = 128;
+
+type Position = {
+  contextTime: number;
+  currentSample: number;
+  generation: number;
+  stalled: boolean;
+};
+
+async function createWorklet() {
+  const reports: Position[] = [];
+  vi.stubGlobal(
+    "AudioWorkletProcessor",
+    class {
+      port: { onmessage?: unknown; postMessage: (message: Position) => void } = {
+        postMessage: (message) => reports.push(message),
+      };
+    },
+  );
+  vi.stubGlobal("registerProcessor", () => {});
+  vi.stubGlobal("currentTime", 0);
+  vi.resetModules();
+  const { LumenAudioWorkletProcessor } = await import("../src/audio-worklet.js");
+  const worklet = new LumenAudioWorkletProcessor();
+  const render = () => {
+    const output = [new Float32Array(QUANTUM), new Float32Array(QUANTUM)];
+    worklet.process([], [output]);
+    return output;
+  };
+  const chunk = (startSample: number, frames: number, value: number) =>
+    worklet.handleMessage({
+      channelCount: 2,
+      frames,
+      generation: 1,
+      sampleRate: 48_000,
+      samples: new Float32Array(frames * 2).fill(value),
+      startSample,
+      type: "chunk",
+    });
+  return { chunk, render, reports, worklet };
+}
+
+describe("LumenAudioWorkletProcessor", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("holds the position until the first chunk arrives", async () => {
+    const { chunk, render, reports, worklet } = await createWorklet();
+    worklet.handleMessage({ generation: 1, holdOnUnderrun: true, startSample: 500, type: "play" });
+
+    render();
+    render();
+    expect(worklet.currentSample).toBe(500);
+    expect(reports.at(-1)).toMatchObject({ currentSample: 500, stalled: true });
+
+    chunk(0, 12_000, 0.5);
+    const [left] = render();
+    expect(left?.every((sample) => sample === 0.5)).toBe(true);
+    expect(worklet.currentSample).toBe(500 + QUANTUM);
+    expect(reports.at(-1)).toMatchObject({ currentSample: 500 + QUANTUM, stalled: false });
+  });
+
+  it("stops at the last available sample during an underrun and resumes from it", async () => {
+    const { chunk, render, reports, worklet } = await createWorklet();
+    worklet.handleMessage({ generation: 1, holdOnUnderrun: true, startSample: 0, type: "play" });
+    chunk(0, QUANTUM + 10, 0.25);
+    render();
+    reports.length = 0;
+
+    const [left] = render();
+    expect(left?.slice(0, 10).every((sample) => sample === 0.25)).toBe(true);
+    expect(left?.slice(10).every((sample) => sample === 0)).toBe(true);
+    expect(worklet.currentSample).toBe(QUANTUM + 10);
+    expect(reports).toMatchObject([{ currentSample: QUANTUM + 10, stalled: true }]);
+
+    render();
+    expect(worklet.currentSample).toBe(QUANTUM + 10);
+
+    chunk(QUANTUM + 10, 12_000, 0.75);
+    const [resumed] = render();
+    expect(resumed?.every((sample) => sample === 0.75)).toBe(true);
+    expect(reports.at(-1)).toMatchObject({ stalled: false });
+  });
+
+  it("plays silence through missing samples without losing its place when not holding", async () => {
+    const { chunk, render, reports, worklet } = await createWorklet();
+    worklet.handleMessage({ generation: 1, holdOnUnderrun: false, startSample: 0, type: "play" });
+    chunk(0, QUANTUM + 10, 0.25);
+    render();
+
+    const [underrun] = render();
+    expect(underrun?.slice(0, 10).every((sample) => sample === 0.25)).toBe(true);
+    expect(underrun?.slice(10).every((sample) => sample === 0)).toBe(true);
+    expect(worklet.currentSample).toBe(QUANTUM * 2);
+    expect(reports.at(-1)).toMatchObject({ stalled: false });
+  });
+
+  it("ramps up over the samples that recover an underrun, keeping its position", async () => {
+    const { chunk, render, worklet } = await createWorklet();
+    worklet.handleMessage({ generation: 1, holdOnUnderrun: false, startSample: 0, type: "play" });
+    chunk(0, QUANTUM, 0.25);
+    render();
+    render();
+
+    const firstRecovered = QUANTUM * 2 + 10;
+    chunk(firstRecovered, 12_000, 0.75);
+    const quanta = 4;
+    const output = Array.from({ length: quanta }, () => render()[0] ?? new Float32Array());
+    const left = Float32Array.from(output.flatMap((quantum) => [...quantum]));
+
+    expect(left.slice(0, 10).every((sample) => sample === 0)).toBe(true);
+    const ramp = left.slice(10);
+    const rampFrames = ramp.findIndex((sample) => sample === 0.75);
+    expect(ramp[0]).toBe(0);
+    expect(rampFrames).toBeGreaterThanOrEqual(QUANTUM);
+    expect(rampFrames).toBeLessThan(QUANTUM * 3);
+    for (let frame = 1; frame < rampFrames; frame += 1) {
+      expect(ramp[frame]).toBeCloseTo((0.75 * frame) / rampFrames, 5);
+    }
+    expect(ramp.slice(rampFrames).every((sample) => sample === 0.75)).toBe(true);
+    expect(worklet.currentSample).toBe(QUANTUM * (2 + quanta));
+  });
+
+  it("starts the ramp again when the audio drops out during it", async () => {
+    const { chunk, render, worklet } = await createWorklet();
+    worklet.handleMessage({ generation: 1, holdOnUnderrun: false, startSample: 0, type: "play" });
+    chunk(0, QUANTUM, 0.5);
+    render();
+    render();
+    chunk(QUANTUM * 2, 20, 0.5);
+    render();
+
+    chunk(QUANTUM * 3, 12_000, 0.5);
+    const [again] = render();
+
+    expect(again?.[0]).toBe(0);
+    expect(again?.[QUANTUM - 1]).toBeLessThan(0.5);
+  });
+
+  it("doesn't fade a first play that starts late, wherever it starts", async () => {
+    const { chunk, render, worklet } = await createWorklet();
+    worklet.handleMessage({
+      generation: 1,
+      holdOnUnderrun: false,
+      startSample: 24_000,
+      type: "play",
+    });
+    render();
+    render();
+
+    chunk(24_000, 12_000, 0.5);
+    const [left] = render();
+
+    expect(left?.every((sample) => sample === 0.5)).toBe(true);
+  });
+
+  it("doesn't fade a restart after an underrun", async () => {
+    const { chunk, render, worklet } = await createWorklet();
+    worklet.handleMessage({ generation: 1, holdOnUnderrun: false, startSample: 0, type: "play" });
+    chunk(0, QUANTUM, 0.5);
+    render();
+    render();
+
+    worklet.handleMessage({ generation: 1, holdOnUnderrun: false, startSample: 0, type: "play" });
+    render();
+    chunk(QUANTUM, 12_000, 0.5);
+    const [left] = render();
+
+    expect(left?.every((sample) => sample === 0.5)).toBe(true);
+  });
+
+  it("plays the mixer's samples untouched across chunks, silence and a loop", async () => {
+    const { render, worklet } = await createWorklet();
+    const { mixTimelineChunk } = await import("../src/audio-worker.js");
+    const seconds = 1;
+    const timeline = {
+      clips: [
+        {
+          durationMs: 500,
+          id: "clip",
+          sourceId: "tone",
+          sourceStartMs: 0,
+          startMs: 250,
+          trackId: "track",
+          volume: 1,
+        },
+      ],
+      durationFrames: 30 * seconds,
+      fps: 30,
+      tracks: [{ id: "track", muted: false, solo: false, volume: 1 }],
+    };
+    const sources = new Map([["tone", new Float32Array(96_000).fill(0.5)]]);
+    const start = 30_000;
+    const frames = 36_000;
+    worklet.handleMessage({
+      generation: 1,
+      holdOnUnderrun: false,
+      startSample: start,
+      type: "play",
+    });
+    for (let chunkStart = start; chunkStart < start + frames; chunkStart += 12_000) {
+      worklet.handleMessage({
+        channelCount: 2,
+        frames: 12_000,
+        generation: 1,
+        sampleRate: 48_000,
+        samples: mixTimelineChunk(timeline, sources, chunkStart, 12_000),
+        startSample: chunkStart,
+        type: "chunk",
+      });
+    }
+
+    const expected = mixTimelineChunk(timeline, sources, start, frames);
+    expect(new Set(expected).size).toBeGreaterThan(2);
+    for (let quantum = 0; quantum < Math.floor(frames / QUANTUM); quantum += 1) {
+      const [left] = render();
+      for (let frame = 0; frame < QUANTUM; frame += 1) {
+        const index = (quantum * QUANTUM + frame) * 2;
+        if (left?.[frame] !== expected[index]) {
+          expect.fail(`frame ${index / 2}: ${left?.[frame]} != ${expected[index]}`);
+        }
+      }
+    }
+  });
+
+  it("drops chunks from an older generation", async () => {
+    const { chunk, render, worklet } = await createWorklet();
+    worklet.handleMessage({ generation: 2, holdOnUnderrun: true, startSample: 0, type: "play" });
+    chunk(0, 12_000, 0.5);
+
+    const [left] = render();
+    expect(left?.every((sample) => sample === 0)).toBe(true);
+    expect(worklet.currentSample).toBe(0);
+  });
+});

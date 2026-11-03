@@ -106,10 +106,10 @@ fn derived_property_eval_reads_marked_properties() {
     let node = lumen_engine::node::processing::exposure::Exposure::default();
 
     assert!(matches!(
-        node.get_property("contrast").unwrap(),
+        node.get_property("contrast"),
         Some(PropertyExpression::Value(PropertyValue::Float(1.0)))
     ));
-    assert!(node.get_property("source").unwrap().is_none());
+    assert!(node.get_property("source").is_none());
 }
 
 #[test]

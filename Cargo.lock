@@ -1611,7 +1611,6 @@ name = "lumen-bench"
 version = "0.3.1"
 dependencies = [
  "anyhow",
- "libc",
  "lumen-engine",
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",
@@ -1636,6 +1635,7 @@ dependencies = [
  "lumen-engine-macros",
  "lumen-engine-text",
  "lyon_path",
+ "naga",
  "objc2-metal",
  "pollster",
  "serde",

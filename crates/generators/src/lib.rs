@@ -1019,7 +1019,6 @@ fn literal_from_property_value(
         lumen_engine::node::PropertyValue::TextStroke(value) => {
             Ok(NodeLiteralValue::TextStroke(Value::Object(value.to_json())))
         }
-        other => bail!("unsupported default param literal: {other:?}"),
     }
 }
 

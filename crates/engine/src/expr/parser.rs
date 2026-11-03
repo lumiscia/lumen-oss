@@ -1,12 +1,9 @@
-use std::{collections::HashSet, ops::Range};
+use std::ops::Range;
 
 use crate::{
     error::ExpressionError,
     expr::{
-        ast::{
-            BinaryOp, ExprNode, Expression, ExpressionReference, ExpressionValue, GlobalVar,
-            PropertyPath, UnaryOp,
-        },
+        ast::{BinaryOp, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::range_error,
         easing::Easing,
         functions,
@@ -327,30 +324,6 @@ pub fn parse_expression(source: &str) -> Result<Expression, ExpressionError> {
     parser.parse()
 }
 
-/// The distinct nodes and properties `ast` reads, in the order they first appear.
-pub(super) fn references(ast: &ExprNode) -> Vec<ExpressionReference> {
-    let mut seen = HashSet::new();
-    let mut references = Vec::new();
-    functions::visit(ast, &mut |node| {
-        let reference = match node {
-            ExprNode::SymbolicPath(segments) => ExpressionReference::SymbolicPath {
-                segments: segments.clone(),
-            },
-            ExprNode::Node(node_id) => ExpressionReference::Node { node_id: *node_id },
-            ExprNode::PropertyValue(node_id, property_path) => ExpressionReference::PropertyValue {
-                node_id: *node_id,
-                property_path: property_path.clone(),
-            },
-            ExprNode::VirtualProperty(id) => ExpressionReference::VirtualProperty { id: *id },
-            _ => return,
-        };
-        if seen.insert(reference.clone()) {
-            references.push(reference);
-        }
-    });
-    references
-}
-
 fn tokenize(source: &str) -> Result<Vec<TokenKind>, ExpressionError> {
     let mut lexer = Lexer::new(source);
     let mut tokens = Vec::new();
@@ -634,27 +607,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_identifier(&mut self, identifier: String) -> Result<ExprNode, ExpressionError> {
-        let mut dotted_segments = vec![identifier.clone()];
-        while self.match_token(|kind| matches!(kind, TokenKind::Dot)) {
-            let token = self.peek().cloned().ok_or(ExpressionError::Parse {
+        if self.match_token(|kind| matches!(kind, TokenKind::Dot)) {
+            return Err(ExpressionError::Parse {
                 path: None,
-                details: "expected identifier after `.`".to_string(),
-            })?;
-            match token.kind {
-                TokenKind::Identifier(next_segment) => {
-                    self.position += 1;
-                    dotted_segments.push(next_segment);
-                }
-                _ => {
-                    return Err(ExpressionError::Parse {
-                        path: None,
-                        details: "expected identifier after `.`".to_string(),
-                    });
-                }
-            }
-        }
-        if dotted_segments.len() > 1 {
-            return self.budget.push(ExprNode::SymbolicPath(dotted_segments));
+                details: format!(
+                    "`{identifier}.` is not supported; read another node's property with node(id, 'property')"
+                ),
+            });
         }
 
         if identifier == "true" {
@@ -766,7 +725,7 @@ impl<'a> Parser<'a> {
         }
 
         let property_path = match &args[1] {
-            ExprNode::Literal(ExpressionValue::String(value)) => PropertyPath::new(value.clone()),
+            ExprNode::Literal(ExpressionValue::String(value)) => value.clone(),
             _ => {
                 return Err(ExpressionError::Parse {
                     path: None,
@@ -883,6 +842,15 @@ mod tests {
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], ExprNode::Literal(ExpressionValue::Number(10.0)));
         assert!(matches!(args[1], ExprNode::Binary(..)));
+    }
+
+    #[test]
+    fn dotted_property_reads_point_to_node_references() {
+        let error = Expression::parse("title.opacity * 2")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("node(id, 'property')"), "{error}");
     }
 
     fn parse_on_worker_stack(source: String) -> Result<Expression, crate::error::ExpressionError> {

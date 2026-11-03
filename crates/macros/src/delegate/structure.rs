@@ -151,7 +151,7 @@ pub(crate) fn expand_struct_delegate(
         });
         let parse = quote! {
             let def = #property_def;
-            let parsed = ::lumen_engine::json::parse_property(value, Some(&def), #name)
+            let parsed = ::lumen_engine::json::parse_property(value, &def, #name)
                 .map_err(|error| ::anyhow::anyhow!("node {node_id}: {error:#}"))?;
             #reject_expression
             ::lumen_engine::node::DelegateValue::from_property_expression(parsed, node_id, #name)?

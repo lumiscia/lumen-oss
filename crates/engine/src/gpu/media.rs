@@ -1,12 +1,16 @@
 use std::sync::Arc;
 
-#[cfg(any(
-    all(target_os = "linux", feature = "cuda", feature = "vulkan"),
-    all(target_os = "macos", feature = "metal")
-))]
+#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 use std::collections::HashMap;
 
 use super::types::MediaTextureUpload;
+
+/// The textures a plan's imported frames are held in, by the plan's texture they stand in for.
+#[derive(Default)]
+pub(super) struct GpuMediaImports {
+    #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+    cuda: HashMap<lumen_gpu::TextureId, CudaMediaTexture>,
+}
 
 #[derive(Default)]
 pub(super) struct GpuMediaFrameImporter {
@@ -20,20 +24,25 @@ impl GpuMediaFrameImporter {
     pub(super) fn import(
         &mut self,
         renderer: &lumen_gpu::Renderer,
+        imports: &mut GpuMediaImports,
         upload: &MediaTextureUpload,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
+        #[cfg(not(all(target_os = "linux", feature = "cuda", feature = "vulkan")))]
+        let _ = (imports, upload);
         #[cfg(not(any(
             all(target_os = "linux", feature = "cuda", feature = "vulkan"),
             all(target_os = "macos", feature = "metal")
         )))]
-        let _ = (renderer, upload);
+        let _ = renderer;
 
         match frame.frame.backend() {
             #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-            lumen_ffmpeg::GpuBackend::Cuda => self.import_cuda(renderer, upload, frame),
+            lumen_ffmpeg::GpuBackend::Cuda => {
+                self.import_cuda(renderer, &mut imports.cuda, upload, frame)
+            }
             #[cfg(all(target_os = "macos", feature = "metal"))]
-            lumen_ffmpeg::GpuBackend::Metal => self.import_metal(renderer, upload, frame),
+            lumen_ffmpeg::GpuBackend::Metal => self.import_metal(renderer, frame),
             backend => Err(format!(
                 "GPU media backend {backend:?} is not supported by this renderer build"
             )),
@@ -44,6 +53,7 @@ impl GpuMediaFrameImporter {
     fn import_cuda(
         &mut self,
         renderer: &lumen_gpu::Renderer,
+        textures: &mut HashMap<lumen_gpu::TextureId, CudaMediaTexture>,
         upload: &MediaTextureUpload,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
@@ -65,14 +75,13 @@ impl GpuMediaFrameImporter {
         self.cuda
             .as_mut()
             .ok_or_else(|| "CUDA media importer was not initialized".to_string())?
-            .import_frame(renderer, upload, frame)
+            .import_frame(renderer, textures, upload, frame)
     }
 
     #[cfg(all(target_os = "macos", feature = "metal"))]
     fn import_metal(
         &mut self,
         renderer: &lumen_gpu::Renderer,
-        upload: &MediaTextureUpload,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
         if self.metal.is_none() {
@@ -81,21 +90,13 @@ impl GpuMediaFrameImporter {
         self.metal
             .as_mut()
             .ok_or_else(|| "Metal media importer was not initialized".to_string())?
-            .import_frame(renderer, upload, frame)
+            .import_frame(renderer, frame)
     }
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
 struct MetalMediaImporter {
     texture_cache: lumen_ffmpeg::MetalTextureCache,
-    textures: HashMap<lumen_gpu::TextureId, MetalMediaTexture>,
-}
-
-#[cfg(all(target_os = "macos", feature = "metal"))]
-struct MetalMediaTexture {
-    _size: lumen_gpu::Size,
-    _texture: Arc<lumen_gpu::wgpu::Texture>,
-    _frame: Arc<crate::media::GpuVideoMediaFrame>,
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
@@ -105,16 +106,13 @@ impl MetalMediaImporter {
             .map_err(|error| error.to_string())?;
         let texture_cache =
             lumen_ffmpeg::MetalTextureCache::create(&device).map_err(|error| error.to_string())?;
-        Ok(Self {
-            texture_cache,
-            textures: HashMap::new(),
-        })
+        Ok(Self { texture_cache })
     }
 
+    /// The texture holds `frame` until wgpu releases it, which is after the GPU finishes with it.
     fn import_frame(
         &mut self,
         renderer: &lumen_gpu::Renderer,
-        upload: &MediaTextureUpload,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
         let lumen_ffmpeg::GpuVideoFrame::Metal(decoded) = &frame.frame else {
@@ -132,6 +130,7 @@ impl MetalMediaImporter {
                 0,
             )
             .map_err(|error| error.to_string())?;
+        let owner = Arc::clone(frame);
         // SAFETY: the texture is a 2D single-layer, single-mip, single-sample BGRA8 Metal texture
         // on the renderer's device, created at the decoded frame's size.
         let texture = Arc::new(unsafe {
@@ -148,16 +147,9 @@ impl MetalMediaImporter {
                     usage: media_texture_usage(),
                     view_formats: &[],
                 },
+                Some(Box::new(move || drop(owner))),
             )
         });
-        self.textures.insert(
-            upload.texture,
-            MetalMediaTexture {
-                _size: size,
-                _texture: Arc::clone(&texture),
-                _frame: Arc::clone(frame),
-            },
-        );
         Ok(texture)
     }
 }
@@ -165,7 +157,6 @@ impl MetalMediaImporter {
 #[cfg(all(target_os = "macos", feature = "metal"))]
 impl Drop for MetalMediaImporter {
     fn drop(&mut self) {
-        self.textures.clear();
         self.texture_cache.flush();
     }
 }
@@ -181,7 +172,6 @@ fn media_texture_usage() -> lumen_gpu::wgpu::TextureUsages {
 struct CudaMediaImporter {
     context: lumen_ffmpeg::CudaContext,
     converter: lumen_ffmpeg::CudaNv12ToRgbaConverter,
-    textures: HashMap<lumen_gpu::TextureId, CudaMediaTexture>,
 }
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
@@ -205,16 +195,13 @@ impl CudaMediaImporter {
             .unwrap_or(0);
         let context = driver.create_primary_context_for_ordinal(cuda_ordinal)?;
         let converter = context.create_nv12_to_rgba_converter()?;
-        Ok(Self {
-            context,
-            converter,
-            textures: HashMap::new(),
-        })
+        Ok(Self { context, converter })
     }
 
     fn import_frame(
         &mut self,
         renderer: &lumen_gpu::Renderer,
+        textures: &mut HashMap<lumen_gpu::TextureId, CudaMediaTexture>,
         upload: &MediaTextureUpload,
         frame: &crate::media::GpuVideoMediaFrame,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
@@ -227,16 +214,14 @@ impl CudaMediaImporter {
         let (decoded_width, decoded_height) = decoded.dimensions();
         let decoded_size = lumen_gpu::Size::new(decoded_width.max(1), decoded_height.max(1));
 
-        let needs_texture = self
-            .textures
+        let needs_texture = textures
             .get(&upload.texture)
             .is_none_or(|texture| texture.size != decoded_size);
         if needs_texture {
             let texture = create_cuda_media_texture(renderer, &self.context, decoded_size)?;
-            self.textures.insert(upload.texture, texture);
+            textures.insert(upload.texture, texture);
         }
-        let texture = self
-            .textures
+        let texture = textures
             .get_mut(&upload.texture)
             .ok_or_else(|| "CUDA media texture cache entry was not initialized".to_string())?;
 

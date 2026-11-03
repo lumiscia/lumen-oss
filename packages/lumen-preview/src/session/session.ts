@@ -85,7 +85,6 @@ export class LumenPreviewSession implements LumenPreviewDriverHost {
 function normalizeInputs(options: LumenPreviewSessionOptions): LumenPreviewSessionInputs {
   return {
     audioSources: options.audioSources ?? EMPTY_AUDIO_SOURCES,
-    audioTimeline: options.audioTimeline ?? null,
     bindings: options.bindings ?? missingBindings(),
     compositionJson: options.compositionJson ?? null,
     lookaheadCount: options.lookaheadCount ?? DEFAULT_LOOKAHEAD_COUNT,

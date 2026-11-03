@@ -440,6 +440,7 @@ impl MetalVideoToolboxTargetPool {
                     usage: external_output_usage(),
                     view_formats: &[],
                 },
+                None,
             )
         };
         Ok(MetalVideoToolboxTarget {

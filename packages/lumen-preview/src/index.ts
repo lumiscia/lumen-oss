@@ -1,13 +1,5 @@
 import { LumenMediaBridge } from "./media/index.js";
-export {
-  audioTimelineFromCompositionJson,
-  createLumenAudioSchedule,
-  defaultAudioWorkerUrl,
-  defaultAudioWorkletUrl,
-  lumenAudioSamplesToSeconds,
-  LumenAudioEngine,
-  msToLumenAudioSample,
-} from "./audio-engine.js";
+export { defaultAudioWorkerUrl, defaultAudioWorkletUrl, LumenAudioEngine } from "./audio-engine.js";
 export {
   LumenPreviewContext,
   createLumenPreview,
@@ -23,14 +15,7 @@ export type {
   LumenPreviewStats,
   LumenPreviewStatsCallback,
 } from "./session/index.js";
-export type {
-  AudioEngineClip,
-  AudioEngineTimeline,
-  AudioEngineTrack,
-  LumenAudioEngineOptions,
-  AudioSourceRegistration,
-  ScheduledAudioClip,
-} from "./audio-engine.js";
+export type { LumenAudioEngineOptions, AudioSourceRegistration } from "./audio-engine.js";
 import type {
   LumenMediaTarget,
   MediaRegistration,
@@ -55,12 +40,10 @@ export type {
   NativeVideoFrameTarget,
   RegisteredImageSource,
   RegisteredVideoSource,
-  SourceMediaSourceInput,
   UrlMediaSourceInput,
   VideoFrameMetadata,
   VideoFramePayload,
   VideoFramePixels,
-  VideoTimelineMode,
   VideoSourceRegistration,
 } from "./media/index.js";
 export {
@@ -114,6 +97,7 @@ export interface LumenRendererBinding {
 }
 
 export interface LumenPreviewControllerBinding extends LumenMediaTarget {
+  audioTimeline(): string | undefined;
   clear(): void;
   clearMedia(): void;
   clearVideos(): void;

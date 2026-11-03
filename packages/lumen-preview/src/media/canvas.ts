@@ -89,21 +89,26 @@ export async function syncVideoFrameToTarget(
   streamId: string,
   frame: number,
   payload: VideoFramePayload,
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
   try {
     if (typeof target.setVideoFrameObject === "function") {
-      await target.setVideoFrameObject(
-        streamId,
-        frame,
-        payload.videoFrame,
-        payload.width,
-        payload.height,
-      );
+      if (isCurrent()) {
+        await target.setVideoFrameObject(
+          streamId,
+          frame,
+          payload.videoFrame,
+          payload.width,
+          payload.height,
+        );
+      }
       return;
     }
 
     const pixels = await decodeVideoFramePixels(payload);
-    target.setVideoFrame(streamId, frame, pixels.width, pixels.height, pixels.rgba);
+    if (isCurrent()) {
+      target.setVideoFrame(streamId, frame, pixels.width, pixels.height, pixels.rgba);
+    }
   } finally {
     closeVideoFrame(payload.videoFrame);
   }

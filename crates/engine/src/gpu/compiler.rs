@@ -83,17 +83,19 @@ fn reads_outside_node<P: NodeParams>(params: &P) -> bool {
 }
 
 fn expr_reads_outside_node(expr: &crate::expr::Expression) -> bool {
-    let mut measures_text = false;
+    let mut reads_outside = false;
     crate::expr::functions::visit(expr.ast(), &mut |node| {
-        measures_text |= matches!(
+        reads_outside |= matches!(
             node,
-            crate::expr::ExprNode::Builtin(
-                crate::expr::BuiltinFn::TextWidth | crate::expr::BuiltinFn::TextHeight,
-                _
-            )
+            crate::expr::ExprNode::Node(_)
+                | crate::expr::ExprNode::PropertyValue(..)
+                | crate::expr::ExprNode::Builtin(
+                    crate::expr::BuiltinFn::TextWidth | crate::expr::BuiltinFn::TextHeight,
+                    _
+                )
         );
     });
-    measures_text || !expr.references.is_empty()
+    reads_outside
 }
 
 /// Whether a clip's timing or prop expressions read state outside the node, which edits can
