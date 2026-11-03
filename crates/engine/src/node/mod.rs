@@ -23,9 +23,8 @@ pub mod vector;
 
 pub use clip_props::{ClipPropValue, ClipProps};
 pub use deferred::Deferred;
-#[cfg(feature = "json")]
 pub use deferred::DeferredJsonValue;
-pub use deferred::{DeferredValue, eval_number};
+pub use deferred::{DeferredValue, eval_int, eval_number};
 pub use delegate::{
     DelegateEvalContext, DelegateEvaluable, DelegateValue, DelegateVec, Delegated, NodeParams,
     OptionalDelegate, Override,
@@ -35,9 +34,7 @@ pub use kind::NodeKind;
 pub use param_type::NodeParamType;
 pub use ports::{InputPortDef, OutputPortDef, PortKind, PortRef, SINGLE_RASTER_OUTPUT};
 pub use property::{PropertyExpression, PropertyValue};
-#[cfg(feature = "json")]
 pub use schema::JsonNode;
-#[cfg(any(feature = "json", feature = "metadata"))]
 pub use schema::{EnumDef, EnumOptionDef, NodeEnum};
 pub use schema::{NodeCategory, NodeSchemaDef, PropertyDef, PropertyKind};
 #[cfg(feature = "metadata")]

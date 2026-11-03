@@ -60,7 +60,6 @@ pub trait NodeParams: DelegateEvaluable + Default {
     fn is_property(id: &str) -> bool;
     fn default_properties(&self) -> Vec<(&'static str, PropertyValue)>;
     fn get_property(&self, id: &str) -> Option<PropertyExpression>;
-    #[cfg(feature = "json")]
     fn from_json(
         node_id: NodeId,
         params: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -74,7 +73,6 @@ pub struct DelegateVec<T: Delegated> {
     pub items: Vec<T::Delegate>,
 }
 
-#[cfg(feature = "json")]
 impl<'de, T> serde::Deserialize<'de> for DelegateVec<T>
 where
     T: Delegated,
@@ -235,7 +233,7 @@ impl<D: DelegateValue> OptionalDelegate for Override<D> {
     }
 }
 
-#[cfg(all(test, feature = "json"))]
+#[cfg(test)]
 mod tests {
     #[derive(Debug, Clone, Default, PartialEq, lumen_macros::Delegate)]
     #[delegate(properties)]

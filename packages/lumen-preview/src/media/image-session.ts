@@ -24,7 +24,12 @@ export class ImageSession {
       const blob = await sourceInputToBlob(this.source);
       return decodeImageBitmapToRgba(await createImageBitmap(blob));
     } catch (error) {
-      throw toMediaError("decode_failed", `image source "${this.imageId}" failed to decode`, error);
+      throw toMediaError(
+        "decode_failed",
+        this.imageId,
+        `image source "${this.imageId}" failed to decode`,
+        error,
+      );
     }
   }
 }

@@ -11,16 +11,12 @@ name = "lumen_engine"
 path = "src/lib.rs"
 
 [features]
-default = ["msdf"]
 ffmpeg = ["dep:ffmpeg-next", "dep:lumen-ffmpeg"]
 image = ["dep:image"]
-json = ["dep:anyhow", "dep:serde_path_to_error"]
 metadata = []
-webgl = []
 metal = ["dep:objc2-metal", "lumen-ffmpeg?/metal", "lumen-gpu/metal"]
 vulkan = ["lumen-ffmpeg?/vulkan", "lumen-gpu/vulkan"]
 cuda = ["lumen-ffmpeg?/cuda"]
-msdf = ["lumen-text/msdf"]
 
 [dependencies]
 thiserror = "2.0.18"
@@ -38,10 +34,9 @@ image = { version = "0.25.9", default-features = false, features = [
 ], optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145" }
-serde_path_to_error = { version = "0.1.20", optional = true }
-anyhow = { version = "1.0.101", optional = true }
+serde_path_to_error = "0.1.20"
+anyhow = "1.0.101"
 foldhash = "0.2.0"
-smallvec = "1.15.1"
 lyon_path = "1.0.19"
 svgtypes = "0.16.1"
 lumen-ffmpeg = { workspace = true, optional = true }
@@ -51,12 +46,8 @@ bytemuck = { version = "1.25.0", features = ["derive"] }
 objc2-metal = { version = "0.3.2", optional = true }
 
 [dev-dependencies]
-lumen-engine = { path = ".", features = ["json"] }
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }
 pollster = "1.0.1"
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-glemu = { version = "0.1.2", default-features = false, features = ["api", "video-frame"] }
 js-sys = "0.3"
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["VideoFrame", "WebGl2RenderingContext", "console"] }

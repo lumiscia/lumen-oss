@@ -208,7 +208,7 @@ pub(crate) fn range_error(builtin: BuiltinFn, index: usize, value: f64) -> Optio
 
 /// Clamped progress through frames `start..end`; a step at `start` when `end <= start`.
 fn progress(ctx: &ExpressionContext<'_>, start: f64, end: f64) -> f64 {
-    let frame = f64::from(ctx.frame);
+    let frame = ctx.frame;
     if end <= start {
         return if frame >= start { 1.0 } else { 0.0 };
     }

@@ -42,12 +42,17 @@ export async function createVideoTimeline({
     throw new LumenMediaError(
       "decode_failed",
       `video source "${streamId}": unable to determine stream frame rate`,
+      { sourceId: streamId },
     );
   }
 
   const duration = await track.computeDuration();
   if (!Number.isFinite(duration) || duration <= 0) {
-    throw new LumenMediaError("decode_failed", "video track has an invalid duration");
+    throw new LumenMediaError(
+      "decode_failed",
+      `video source "${streamId}": video track has an invalid duration`,
+      { sourceId: streamId },
+    );
   }
 
   const firstTimestamp = await track.getFirstTimestamp();
@@ -69,7 +74,7 @@ export async function createVideoTimeline({
       codec: await track.getCodecParameterString(),
     },
     timestampForFrame(frame: number) {
-      assertFrameInRange(frame, frameCount);
+      assertFrameInRange(frame, frameCount, streamId);
       return Math.min(Math.max(frame / fps, playbackStart), latestTimestamp);
     },
   };
@@ -80,8 +85,12 @@ async function streamFrameRate(track: InputVideoTrack): Promise<number | null> {
   return normalizeFps(stats.averagePacketRate);
 }
 
-function assertFrameInRange(frame: number, frameCount: number): void {
+function assertFrameInRange(frame: number, frameCount: number, streamId: string): void {
   if (!Number.isInteger(frame) || frame < 0 || frame >= frameCount) {
-    throw new LumenMediaError("frame_unavailable", "video frame index out of range");
+    throw new LumenMediaError(
+      "frame_unavailable",
+      `video source "${streamId}": frame ${frame} is out of range (${frameCount} frames)`,
+      { sourceId: streamId },
+    );
   }
 }

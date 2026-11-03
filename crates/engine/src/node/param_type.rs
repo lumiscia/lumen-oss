@@ -1,11 +1,9 @@
 use super::schema::PropertyKind;
 
-#[cfg(any(feature = "json", feature = "metadata"))]
 use super::schema::EnumDef;
 
 pub trait NodeParamType {
     fn property_kind() -> PropertyKind;
-    #[cfg(any(feature = "json", feature = "metadata"))]
     fn enum_def() -> Option<&'static EnumDef> {
         None
     }
@@ -87,7 +85,6 @@ impl<T: NodeParamType> NodeParamType for Option<T> {
     fn property_kind() -> PropertyKind {
         T::property_kind()
     }
-    #[cfg(any(feature = "json", feature = "metadata"))]
     fn enum_def() -> Option<&'static EnumDef> {
         T::enum_def()
     }
@@ -97,7 +94,6 @@ impl<T: NodeParamType> NodeParamType for super::Override<T> {
     fn property_kind() -> PropertyKind {
         T::property_kind()
     }
-    #[cfg(any(feature = "json", feature = "metadata"))]
     fn enum_def() -> Option<&'static EnumDef> {
         T::enum_def()
     }

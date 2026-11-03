@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-#[cfg(feature = "json")]
 use crate::node::PortRef;
 use crate::{
     error::{GraphValidationError, LumenError},
@@ -61,7 +60,6 @@ impl Graph {
             to_port,
         } = connection;
 
-        #[cfg(feature = "json")]
         wire_input_port(
             self,
             to_node,
@@ -321,7 +319,6 @@ fn cycle_path(unordered: &HashSet<NodeId>, edges: &HashSet<(NodeId, NodeId)>) ->
     }
 }
 
-#[cfg(feature = "json")]
 fn wire_input_port(
     graph: &mut Graph,
     to_node: NodeId,

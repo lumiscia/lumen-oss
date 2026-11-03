@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-use std::{ffi::CStr, mem::MaybeUninit, sync::Arc};
+use std::{mem::MaybeUninit, sync::Arc};
 
 use cudarc::driver::{CudaContext as CudaContextInner, result, sys};
 
@@ -60,34 +60,6 @@ impl CudaDriver {
             });
         }
         Ok(devices)
-    }
-
-    pub fn describe_error(&self, result: sys::CUresult) -> String {
-        let mut name = std::ptr::null();
-        let mut description = std::ptr::null();
-        let name = if unsafe { sys::cuGetErrorName(result, &mut name) }
-            .result()
-            .is_ok()
-            && !name.is_null()
-        {
-            unsafe { CStr::from_ptr(name) }
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            "UNKNOWN_CUDA_ERROR".to_string()
-        };
-        let description = if unsafe { sys::cuGetErrorString(result, &mut description) }
-            .result()
-            .is_ok()
-            && !description.is_null()
-        {
-            unsafe { CStr::from_ptr(description) }
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            "no CUDA error description available".to_string()
-        };
-        format!("{name} ({result:?}): {description}")
     }
 }
 

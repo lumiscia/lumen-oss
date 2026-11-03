@@ -157,6 +157,16 @@ fn uploaded_f32s(bound: &BoundFrame, buffer: lumen_gpu::BufferId, count: usize) 
         .collect()
 }
 
+fn buffer_labelled<'a>(
+    plan: &'a lumen_gpu::RenderPlan,
+    label: &str,
+) -> &'a lumen_gpu::BufferResource {
+    plan.buffers()
+        .iter()
+        .find(|buffer| buffer.label.as_deref() == Some(label))
+        .unwrap_or_else(|| panic!("the plan has no buffer {label}"))
+}
+
 fn bind(composition: &Composition, compiled: &CompiledComposition, frame: u32) -> BoundFrame {
     FrameBindContext::new(composition, frame)
         .bind(compiled)
@@ -184,12 +194,15 @@ impl TestMediaStore {
 }
 
 impl MediaStore for TestMediaStore {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
-        (source == self.id).then(|| Box::new(self.clone()) as Box<dyn ImageResolver>)
-    }
-
-    fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
+    fn get_image_resolver(
+        &self,
+        source: &str,
+    ) -> Result<Box<dyn ImageResolver>, lumen_engine::error::MediaError> {
+        (source == self.id)
+            .then(|| Box::new(self.clone()) as Box<dyn ImageResolver>)
+            .ok_or_else(|| {
+                lumen_engine::error::MediaError::source_not_found(source, "not the test image")
+            })
     }
 }
 
@@ -495,12 +508,12 @@ fn media_prediction_visits_shared_inputs_once() {
     #[derive(Debug, Default)]
     struct CountingStore(AtomicUsize);
     impl MediaStore for CountingStore {
-        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
-            None
-        }
-        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        fn get_video_resolver(
+            &self,
+            _: &str,
+        ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
             self.0.fetch_add(1, Ordering::Relaxed);
-            Some(Box::new(OneFrameVideo))
+            Ok(Box::new(OneFrameVideo))
         }
     }
     struct OneFrameVideo;
@@ -861,6 +874,12 @@ fn bind_errors() {
         Stage::Bind,
         "`glyph` is only available",
     ));
+    rows.push(row(
+        "malformed path data",
+        json!([{ "id": 1, "type": "path", "params": { "data": "M 0 0 L 10 10 C nope" } }]),
+        Stage::Bind,
+        "Path node 1 evaluation failed: `data` is malformed",
+    ));
     let mut data = String::from("M 10 10");
     for index in 1..20_000 - 2 {
         data += &format!(
@@ -894,6 +913,53 @@ fn bind_errors() {
         .to_string();
         assert!(error.contains(&row.message), "{}: {error}", row.name);
     }
+}
+
+#[test]
+fn text_at_fractional_position_draws_glyphs_on_whole_pixels() {
+    let composition = scene(
+        (160, 80),
+        json!([text(
+            "Sharp text\nwraps across lines",
+            json!({
+                "font_size": 17, "max_width": 90, "position": [10.3, 20.6],
+                "alignment_horizontal": "center", "alignment_vertical": "middle"
+            })
+        )]),
+    );
+    let compiled = compile(&composition, None);
+    let bound = bind(&composition, &compiled, 0);
+    let instances = buffer_labelled(&compiled.plan, "text:1:instances").id;
+    let rects: Vec<[f32; 4]> = uploaded(&bound, instances)
+        .as_chunks::<{ std::mem::size_of::<lumen_text::GpuGlyphInstance>() }>()
+        .0
+        .iter()
+        .map(|instance| bytemuck::pod_read_unaligned(&instance[..16]))
+        .collect();
+
+    assert!(rects.len() > 10);
+    assert!(
+        rects
+            .iter()
+            .all(|rect| rect[0].fract() == 0.0 && rect[1].fract() == 0.0),
+        "glyph quads must start on whole pixels: {rects:?}"
+    );
+}
+
+#[test]
+fn path_points_buffer_is_sized_to_the_flattened_path() {
+    let mut data = String::from("M 10 10");
+    for index in 1..400 - 2 {
+        let x = 10.0 + 100.0 * index as f64 / (400 - 3) as f64;
+        data += &format!(" L {x:.4} {}", if index % 2 == 0 { 10.0 } else { 11.0 });
+    }
+    let composition = scene(
+        (128, 128),
+        json!([{ "id": 1, "type": "path", "params": { "data": data + " L 110 90 L 10 90 Z" } }]),
+    );
+    let compiled = compile(&composition, None);
+    let size = buffer_labelled(&compiled.plan, "path:1:points").desc.size;
+    assert_eq!(size, 400 * 24, "sized to the flattened path");
 }
 
 #[test]

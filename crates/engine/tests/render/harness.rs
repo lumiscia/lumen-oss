@@ -189,27 +189,31 @@ fn bounds_match_reference() {
             shape_through(json!([2, 3]), blur.clone()),
             Expect::Nonblank,
         )
-        .bounded(true),
+        .bounded(true)
+        .own_programs(),
         Case::new(
             "shadow with fractional offsets",
             shape_through(json!([190, 140]), shadow),
             Expect::Nonblank,
         )
-        .bounded(true),
+        .bounded(true)
+        .own_programs(),
         Case::new(
             "blur of a source moving along the timeline",
             shape_through(json!("=vec2(20 + frame * 10, 30)"), blur.clone()).frames(4),
             Expect::Nonblank,
         )
         .frames([0.0, 3.0])
-        .bounded(true),
+        .bounded(true)
+        .own_programs(),
         Case::new(
             "blur bound off the timeline's whole frames fills the canvas",
             shape_through(json!("=vec2(20 + frame * 10, 30)"), blur).frames(4),
             Expect::Nonblank,
         )
         .frames([1.5])
-        .bounded(false),
+        .bounded(false)
+        .own_programs(),
     ]);
 }
 

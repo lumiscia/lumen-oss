@@ -92,7 +92,6 @@ impl PropertyDefTokens<'_> {
             ::lumen_engine::node::PropertyDef {
                 id: #id,
                 expected: #kind,
-                #[cfg(any(feature = "json", feature = "metadata"))]
                 enum_def: #enum_def,
                 #[cfg(feature = "metadata")]
                 name: #name,

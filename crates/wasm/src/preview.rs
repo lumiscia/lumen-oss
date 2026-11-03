@@ -11,7 +11,9 @@ use crate::{
     media::WasmMediaStore,
     renderer::SurfaceCompositionRenderer,
     types::{AudioTimelinePayload, FrameRequirementsPayload},
-    utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
+    utils::{
+        composition_json_to_composition, image_frame_from_rgba, render_failure, validate_rgba_len,
+    },
 };
 
 /// The GPU device is created once per controller and kept across composition and media changes.
@@ -257,7 +259,7 @@ impl LumenPreviewController {
 
     #[wasm_bindgen(js_name = "setLogLevel")]
     pub fn set_log_level(&self, level: &str) -> Result<(), JsValue> {
-        lumen_engine::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))?;
+        crate::set_log_level(level).map_err(|error| JsValue::from_str(&error))?;
         tracing::debug!(target: "lumen_wasm", level, "set log level");
         Ok(())
     }
@@ -630,7 +632,7 @@ fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Resu
         .as_ref()
         .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
     let requirements = collect_frame_requirements(composition, media, frame)
-        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        .map_err(|error| render_failure(&error))?;
 
     let images_ready = requirements
         .images
