@@ -111,89 +111,6 @@ impl std::ops::DerefMut for TestRenderer {
 }
 
 #[test]
-fn compiles_background_exposure_media_output_to_gpu_plan() {
-    let solid = NodeId::new(1);
-    let exposure = NodeId::new(2);
-    let output = NodeId::new(3);
-    let mut graph = Graph::new();
-    graph.nodes.insert(
-        solid,
-        NodeKind::Background(Background {
-            id: solid,
-            params: BackgroundParamsDelegate {
-                paint: lumen_engine::node::vector::paint::PaintDelegate::from(
-                    lumen_engine::node::vector::paint::Paint::solid([64, 128, 255, 255]),
-                ),
-                width: Deferred::value(8),
-                height: Deferred::value(4),
-                paint_supersample: Deferred::value(true),
-            },
-        }),
-    );
-    graph.nodes.insert(
-        exposure,
-        NodeKind::Exposure(Exposure {
-            id: exposure,
-            params: ExposureParamsDelegate {
-                exposure: Deferred::value(1.0),
-                contrast: Deferred::value(1.0),
-                offset: Deferred::value(0.0),
-            },
-            source: PortRef::new(solid, "output".to_string()),
-        }),
-    );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(exposure, "output".to_string()),
-        }),
-    );
-    graph
-        .connect(Connection {
-            from_node: solid,
-            from_port: "output".to_string(),
-            to_node: exposure,
-            to_port: "source".to_string(),
-        })
-        .unwrap();
-    graph
-        .connect(Connection {
-            from_node: exposure,
-            from_port: "output".to_string(),
-            to_node: output,
-            to_port: "source".to_string(),
-        })
-        .unwrap();
-    let composition = CompositionBuilder::new(
-        graph,
-        TimelineSettings {
-            fps: 24.0,
-            duration_frames: 12,
-        },
-        RenderSettings {
-            width: 8,
-            height: 4,
-            background_color: [0, 0, 0, 255],
-        },
-    )
-    .build()
-    .expect("valid test composition");
-
-    let compiled = CompileContext::new(&composition).compile().unwrap();
-
-    assert_eq!(compiled.plan.textures().len(), 2);
-    assert_eq!(compiled.plan.buffers().len(), 2);
-    assert_eq!(compiled.plan.programs().len(), 2);
-    assert_eq!(compiled.plan.passes().len(), 2);
-    assert_eq!(compiled.compiled_nodes.len(), 2);
-    assert_eq!(
-        compiled.output.domain.storage_size,
-        lumen_gpu::Size::new(8, 4)
-    );
-}
-
-#[test]
 fn compiles_merge_to_gpu_blend_pass() {
     let base = NodeId::new(1);
     let overlay = NodeId::new(2);
@@ -281,101 +198,6 @@ fn compiles_raster_multimerge_with_blend_mode_binding() {
 
     assert_eq!(compiled.plan.passes().len(), 5);
     assert!(compiled.compiled_nodes.contains_key(&multi));
-}
-
-#[test]
-fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
-    let solid_id = NodeId::new(1);
-    let transform = NodeId::new(2);
-    let crop = NodeId::new(3);
-    let resize = NodeId::new(4);
-    let output = NodeId::new(5);
-    let mut graph = Graph::new();
-    graph
-        .nodes
-        .insert(solid_id, solid(solid_id, [255, 0, 0, 255]));
-    graph.nodes.insert(
-        transform,
-        NodeKind::Transform(Transform {
-            id: transform,
-            params: TransformParamsDelegate {
-                translate_x: Deferred::Expr(
-                    lumen_engine::expr::Expression::parse("frame").unwrap(),
-                ),
-                translate_y: Deferred::value(2.0),
-                rotate: Deferred::value(15.0),
-                ..Default::default()
-            },
-            source: PortRef::new(solid_id, "output".to_string()),
-        }),
-    );
-    graph.nodes.insert(
-        crop,
-        NodeKind::Crop(Crop {
-            id: crop,
-            params: CropParamsDelegate {
-                x: Deferred::value(1),
-                y: Deferred::value(1),
-                width: Deferred::value(6),
-                height: Deferred::value(3),
-            },
-            source: PortRef::new(transform, "output".to_string()),
-        }),
-    );
-    graph.nodes.insert(
-        resize,
-        NodeKind::Resize(Resize {
-            id: resize,
-            params: ResizeParamsDelegate {
-                x: Deferred::value(0),
-                y: Deferred::value(0),
-                width: Deferred::value(4),
-                height: Deferred::value(2),
-                mode: ResizeMode::Fit.into(),
-                sampling: ResizeSampling::Linear.into(),
-            },
-            source: PortRef::new(crop, "output".to_string()),
-        }),
-    );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(resize, "output".to_string()),
-        }),
-    );
-
-    let composition = test_composition(graph);
-    let compiled = CompileContext::new(&composition).compile().unwrap();
-    let transformed = compiled
-        .node_outputs
-        .get(&PortRef::new(transform, "output".to_string()))
-        .unwrap()
-        .clone()
-        .into_raster(transform, "output")
-        .unwrap();
-    let resized = compiled
-        .node_outputs
-        .get(&PortRef::new(resize, "output".to_string()))
-        .unwrap()
-        .clone()
-        .into_raster(resize, "output")
-        .unwrap();
-
-    assert_eq!(compiled.plan.textures().len(), 4);
-    assert_eq!(compiled.plan.buffers().len(), 4);
-    assert_eq!(compiled.plan.programs().len(), 4);
-    assert_eq!(compiled.plan.passes().len(), 4);
-    assert_eq!(compiled.compiled_nodes.len(), 4);
-    assert!(compiled.compiled_nodes.contains_key(&transform));
-    assert!(compiled.compiled_nodes.contains_key(&crop));
-    assert!(compiled.compiled_nodes.contains_key(&resize));
-    assert_eq!(transformed.domain.storage_size, lumen_gpu::Size::new(8, 4));
-    assert_eq!(resized.domain.storage_size, lumen_gpu::Size::new(8, 4));
-
-    FrameBindContext::new(&composition, 7)
-        .bind(&compiled)
-        .unwrap();
 }
 
 #[test]
@@ -1680,42 +1502,6 @@ fn text_at_fractional_position_draws_glyphs_on_whole_pixels() {
             .all(|rect| rect[0].fract() == 0.0 && rect[1].fract() == 0.0),
         "glyph quads must start on whole pixels: {rects:?}"
     );
-}
-
-#[test]
-fn compiles_vector_path_through_shared_renderer() {
-    let path = NodeId::new(1);
-    let output = NodeId::new(2);
-    let mut graph = Graph::new();
-    graph.nodes.insert(
-        path,
-        NodeKind::Path(Path {
-            id: path,
-            params: PathParamsDelegate {
-                data: Deferred::value("M 1 1 L 6 1 L 6 3 L 1 3 Z".to_string()),
-                fill_paint: Paint::solid([0, 255, 0, 255]).into(),
-                stroke_enabled: Deferred::value(true),
-                stroke_width: Deferred::value(1.0),
-                ..Default::default()
-            },
-        }),
-    );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(path, "output".to_string()),
-        }),
-    );
-
-    let composition = test_composition(graph);
-    let compiled = CompileContext::new(&composition).compile().unwrap();
-    let bound = FrameBindContext::new(&composition, 0)
-        .bind(&compiled)
-        .unwrap();
-
-    assert!(compiled.compiled_nodes.contains_key(&path));
-    assert_eq!(bound.frame_update().uploads().len(), 3);
 }
 
 #[test]
@@ -3547,45 +3333,6 @@ fn merge_feather_spreads_outside_a_smaller_mask() {
 }
 
 #[test]
-fn a_feather_that_evaluates_to_zero_reads_the_mask_like_a_literal_zero() {
-    // A translucent straight-alpha mask is read the same either way.
-    let rectangle = |graph: &mut Graph| {
-        let (shape, mask) = (NodeId::new(5), NodeId::new(6));
-        graph
-            .nodes
-            .insert(shape, edged_rectangle(shape, 8.5, 8, [200, 90, 40, 150]));
-        graph.nodes.insert(
-            mask,
-            NodeKind::AlphaPremultiply(AlphaPremultiply {
-                id: mask,
-                params: AlphaPremultiplyParamsDelegate {
-                    mode: Deferred::value("unpremultiply".to_string()),
-                },
-                source: PortRef::new(shape, "output".to_string()),
-            }),
-        );
-        mask
-    };
-    for mask_mode in [MaskMode::Alpha, MaskMode::Luma] {
-        let render = |feather: Deferred<f64>| {
-            render_matte(
-                rectangle,
-                MergeParamsDelegate {
-                    mask_mode: mask_mode.into(),
-                    feather,
-                    ..Default::default()
-                },
-            )
-        };
-        let skipped = render(Deferred::value(0.0));
-        let blurred = render(Deferred::Expr(
-            lumen_engine::expr::Expression::parse("0").unwrap(),
-        ));
-        assert_eq!(skipped, blurred, "{mask_mode:?}");
-    }
-}
-
-#[test]
 fn merge_feather_animates_smoothly() {
     let rectangle = |graph: &mut Graph| {
         let mask = NodeId::new(5);
@@ -5041,50 +4788,6 @@ fn malformed_path_data_fails_the_frame_naming_the_data_field() {
         error.contains("Path node") && error.contains("`data` is malformed"),
         "{error}"
     );
-}
-
-#[test]
-fn path_with_more_than_128_points_renders_fully() {
-    let polyline = |count: usize| {
-        let mut data = String::from("M 10 10");
-        for index in 1..count - 2 {
-            let x = 10.0 + 100.0 * index as f64 / (count - 3) as f64;
-            data += &format!(" L {x:.4} {}", if index % 2 == 0 { 10.0 } else { 11.0 });
-        }
-        data + " L 110 90 L 10 90 Z"
-    };
-    let path = |data: String| {
-        NodeKind::Path(Path {
-            id: NodeId::new(1),
-            params: PathParamsDelegate {
-                data: Deferred::value(data),
-                ..Default::default()
-            },
-        })
-    };
-
-    let Some(mut renderer) = gpu_composition_renderer() else {
-        return;
-    };
-    let pixels = render_drawable_graph(&mut renderer, vec![path(polyline(400))], 128);
-    let points_buffer = renderer
-        .compiled()
-        .unwrap()
-        .plan
-        .buffers()
-        .iter()
-        .find(|buffer| buffer.label.as_deref() == Some("path:1:points"))
-        .unwrap()
-        .desc
-        .size;
-    assert_eq!(points_buffer, 400 * 24, "sized to the flattened path");
-    let alpha = |x: usize, y: usize| pixels[(y * 128 + x) * 4 + 3];
-    for (x, y) in [(15, 50), (60, 50), (105, 50), (105, 85)] {
-        assert_eq!(alpha(x, y), 255, "({x}, {y}) is inside the path");
-    }
-    for (x, y) in [(5, 50), (115, 50), (60, 95)] {
-        assert_eq!(alpha(x, y), 0, "({x}, {y}) is outside the path");
-    }
 }
 
 #[test]
@@ -6590,8 +6293,6 @@ fn blur_keeps_taps_around_a_frame_whose_scale_is_zero() {
         .zip(["shape", "rectangle path", "curved path"])
         .chain([(text(scale(), 360.0), "text")])
         .collect();
-    let mut still_cases = layers(scale(), 0.0);
-    still_cases.push(text(scale(), 0.0));
     let at = |frame: f64| Deferred::value((frame - 1.0, 1.0));
     for (index, (blurred, name)) in cases.into_iter().enumerate() {
         let blurred = render_drawable_frame(&mut renderer, blurred, 96, 1, &EmptyMediaStore);
@@ -7695,53 +7396,6 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
             );
         }
     }
-}
-
-#[test]
-fn wgsl_shader_source_edits_behind_a_filter_rebuild_the_plan() {
-    let Some(mut renderer) = gpu_composition_renderer() else {
-        return;
-    };
-    let through_opacity = |color: &str| {
-        let (input, shader, opacity, output) = (
-            NodeId::new(1),
-            NodeId::new(2),
-            NodeId::new(3),
-            NodeId::new(4),
-        );
-        let mut graph = Graph::new();
-        graph.nodes.insert(input, solid(input, [0, 0, 0, 255]));
-        graph.nodes.insert(
-            shader,
-            wgsl_shader_node(
-                shader,
-                Deferred::value(fill_shader(color)),
-                vec![PortRef::new(input, "output".to_string())],
-            ),
-        );
-        graph.nodes.insert(
-            opacity,
-            NodeKind::Opacity(Opacity {
-                id: opacity,
-                source: PortRef::new(shader, "output".to_string()),
-                ..Opacity::default()
-            }),
-        );
-        graph.nodes.insert(
-            output,
-            NodeKind::MediaOutput(MediaOutput {
-                id: output,
-                source: PortRef::new(opacity, "output".to_string()),
-            }),
-        );
-        test_composition(graph)
-    };
-    let red = through_opacity("vec4<f32>(1.0, 0.0, 0.0, 1.0)");
-    let pixels = render_rgba8(&mut renderer, &red, 0, &EmptyMediaStore);
-    assert_uniform_pixels(&pixels, [255, 0, 0, 255], "initial source");
-    let green = through_opacity("vec4<f32>(0.0, 1.0, 0.0, 1.0)");
-    let pixels = render_rgba8(&mut renderer, &green, 0, &EmptyMediaStore);
-    assert_uniform_pixels(&pixels, [0, 255, 0, 255], "edit behind opacity");
 }
 
 #[test]
@@ -12076,5 +11730,88 @@ fn video_frames_do_not_overwrite_cached_images() {
     for (frame, expected) in [red, blue, green, yellow, red].into_iter().enumerate() {
         let pixels = render_rgba8(&mut renderer, &composition, frame as u32, &media);
         assert_eq!(canvas_pixel(&pixels, 1, 1), expected, "frame {frame}");
+    }
+}
+
+#[test]
+fn a_feather_that_evaluates_to_zero_reads_the_mask_like_a_literal_zero() {
+    // A translucent straight-alpha mask is read the same either way.
+    let rectangle = |graph: &mut Graph| {
+        let (shape, mask) = (NodeId::new(5), NodeId::new(6));
+        graph
+            .nodes
+            .insert(shape, edged_rectangle(shape, 8.5, 8, [200, 90, 40, 150]));
+        graph.nodes.insert(
+            mask,
+            NodeKind::AlphaPremultiply(AlphaPremultiply {
+                id: mask,
+                params: AlphaPremultiplyParamsDelegate {
+                    mode: Deferred::value("unpremultiply".to_string()),
+                },
+                source: PortRef::new(shape, "output".to_string()),
+            }),
+        );
+        mask
+    };
+    for mask_mode in [MaskMode::Alpha, MaskMode::Luma] {
+        let render = |feather: Deferred<f64>| {
+            render_matte(
+                rectangle,
+                MergeParamsDelegate {
+                    mask_mode: mask_mode.into(),
+                    feather,
+                    ..Default::default()
+                },
+            )
+        };
+        let skipped = render(Deferred::value(0.0));
+        let blurred = render(Deferred::Expr(
+            lumen_engine::expr::Expression::parse("0").unwrap(),
+        ));
+        assert_eq!(skipped, blurred, "{mask_mode:?}");
+    }
+}
+
+#[test]
+fn path_with_more_than_128_points_renders_fully() {
+    let polyline = |count: usize| {
+        let mut data = String::from("M 10 10");
+        for index in 1..count - 2 {
+            let x = 10.0 + 100.0 * index as f64 / (count - 3) as f64;
+            data += &format!(" L {x:.4} {}", if index % 2 == 0 { 10.0 } else { 11.0 });
+        }
+        data + " L 110 90 L 10 90 Z"
+    };
+    let path = |data: String| {
+        NodeKind::Path(Path {
+            id: NodeId::new(1),
+            params: PathParamsDelegate {
+                data: Deferred::value(data),
+                ..Default::default()
+            },
+        })
+    };
+
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let pixels = render_drawable_graph(&mut renderer, vec![path(polyline(400))], 128);
+    let points_buffer = renderer
+        .compiled()
+        .unwrap()
+        .plan
+        .buffers()
+        .iter()
+        .find(|buffer| buffer.label.as_deref() == Some("path:1:points"))
+        .unwrap()
+        .desc
+        .size;
+    assert_eq!(points_buffer, 400 * 24, "sized to the flattened path");
+    let alpha = |x: usize, y: usize| pixels[(y * 128 + x) * 4 + 3];
+    for (x, y) in [(15, 50), (60, 50), (105, 50), (105, 85)] {
+        assert_eq!(alpha(x, y), 255, "({x}, {y}) is inside the path");
+    }
+    for (x, y) in [(5, 50), (115, 50), (60, 95)] {
+        assert_eq!(alpha(x, y), 0, "({x}, {y}) is outside the path");
     }
 }

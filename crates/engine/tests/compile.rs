@@ -1202,6 +1202,11 @@ fn text_bind_ahead_restores_the_committed_frame() {
     bind(&composition, &compiled, 1);
     let restored = bind(&composition, &compiled, 0);
     assert!(restored.buffer_upload_count() > 0);
+    assert_eq!(
+        restored.texture_upload_count(),
+        0,
+        "a bind that was never applied must not undo the committed atlas"
+    );
 
     restored.mark_uploaded().unwrap();
     assert_eq!(bind(&composition, &compiled, 0).texture_upload_count(), 0);
