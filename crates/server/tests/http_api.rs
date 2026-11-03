@@ -292,10 +292,7 @@ fn media_composition(kind: &str, source: &str) -> Value {
 
 fn error_code(response: Response) -> String {
     let body: Value = response.json().expect("error body");
-    body["error"]["code"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string()
+    body["code"].as_str().unwrap_or_default().to_string()
 }
 
 #[test]
@@ -351,6 +348,119 @@ fn refuses_a_non_loopback_bind_without_a_token() {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("without a token"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn errors_answer_with_the_code_and_message_the_sdk_reads() {
+    let server = Server::start(&[]);
+    let body = |response: Response| response.json::<Value>().expect("error body");
+    let bytes = |payload: Vec<u8>| {
+        server
+            .http
+            .post(format!("{}/renders", server.base))
+            .bearer_auth(TOKEN)
+            .header("content-type", "application/json")
+            .body(payload)
+            .send()
+            .expect("request")
+    };
+
+    assert_eq!(
+        body(
+            server
+                .http
+                .get(format!("{}/renders/nope", server.base))
+                .bearer_auth(TOKEN)
+                .send()
+                .expect("request")
+        ),
+        json!({ "code": "render_not_found", "error": "render was not found" })
+    );
+
+    let malformed = bytes(b"{".to_vec());
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(malformed), "invalid_request_body");
+
+    let too_large = bytes(vec![b' '; 2 * 1024 * 1024 + 1]);
+    assert_eq!(too_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        body(too_large),
+        json!({
+            "code": "request_too_large",
+            "error": "request body exceeds the 2097152 byte limit",
+        })
+    );
+}
+
+#[test]
+fn a_failed_render_keeps_its_code_on_every_read() {
+    let server = Server::start(&[]);
+    let id = server.submit(&json!({
+        "composition": solid_composition(),
+        "media": { "hero": "http://127.0.0.1:1/image.png" },
+    }));
+    let progress = server.wait_for_state(&id, &["failed"]);
+    assert_eq!(progress["errorCode"], "media_download_forbidden_host");
+    assert_eq!(progress["retryable"], false);
+
+    let read = |path: String| {
+        server
+            .http
+            .get(format!("{}{path}", server.base))
+            .bearer_auth(TOKEN)
+            .send()
+            .expect("request")
+            .json::<Value>()
+            .expect("render body")
+    };
+    let render = read(format!("/renders/{id}"));
+    let expected = json!({
+        "code": "media_download_forbidden_host",
+        "message": progress["error"],
+        "retryable": false,
+    });
+    assert_eq!(render["render"]["error"], expected);
+    assert_eq!(
+        read(format!("/renders/{id}/progress"))["render"]["error"],
+        expected
+    );
+}
+
+#[test]
+fn errors_axum_answers_itself_carry_the_same_body() {
+    let server = Server::start(&[]);
+    for (path, status, code) in [
+        ("/missing", StatusCode::NOT_FOUND, "route_not_found"),
+        (
+            "/renders",
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+        ),
+        (
+            "/renders/%FF/artifact",
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+        (
+            "/renders/nope/socket",
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+    ] {
+        let response = server.get(path);
+        assert_eq!(response.status(), status, "{path}");
+        if status == StatusCode::METHOD_NOT_ALLOWED {
+            assert_eq!(response.headers()["allow"], "POST", "{path}");
+        }
+        let body: Value = response.json().expect("error body");
+        assert_eq!(body["code"], code, "{path}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty()),
+            "{path}: {body}"
+        );
     }
 }
 
