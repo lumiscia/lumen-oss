@@ -16,6 +16,7 @@ use lumen_engine::{
         media_output::MediaOutput,
         processing::{
             alpha_premultiply::{AlphaPremultiply, AlphaPremultiplyParamsDelegate},
+            blur::Blur,
             exposure::Exposure,
             opacity::Opacity,
             time_remap::TimeRemap,
@@ -236,6 +237,28 @@ fn assert_cycle_rejected_at_build(graph: Graph) {
             GraphValidationError::Cycle { .. }
         )]
     ));
+}
+
+#[test]
+fn a_cycle_error_prints_the_cycle_and_not_the_nodes_it_feeds() {
+    let blur = |id, source| {
+        NodeKind::Blur(Blur {
+            id: NodeId::new(id),
+            params: Default::default(),
+            source: PortRef::new(NodeId::new(source), "output".to_string()),
+        })
+    };
+    let mut graph = Graph::new();
+    for node in [blur(1, 3), blur(3, 1), blur(4, 3)] {
+        graph.nodes.insert(node.id(), node);
+    }
+    let errors = build_errors(graph);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.to_string() == "graph contains a cycle: 1 -> 3 -> 1"),
+        "{errors:?}"
+    );
 }
 
 #[test]

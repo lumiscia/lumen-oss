@@ -13,7 +13,7 @@ use crate::gpu::{
     compiler,
 };
 use crate::node::motion::Shutter;
-use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -175,7 +175,7 @@ pub(super) fn compile_path_source<'a>(
 ) -> (CompiledOutput, PathBuffers) {
     let point_capacity = point_capacity.max(1);
     let band_capacity = super::path_bands::band_capacity(point_capacity);
-    let bounds = ctx.source_bounds(node_id, motion, |expr| {
+    let bounds = ctx.source_bounds(motion, |expr| {
         frame_at(expr, band_capacity).map(|frame| Some(frame.uniforms.screen_bounds))
     });
     let domain = ctx.source_domain(bounds);
@@ -227,7 +227,7 @@ impl GpuCompiledNode for CompiledPath {
         let frame = path_frame(
             &self.params,
             self.node_id,
-            &ctx.expr_context(self.node_id, "params"),
+            &ctx.expr_context(),
             self.fixed_points.as_deref(),
             self.buffers.band_capacity,
         )?;
@@ -245,7 +245,7 @@ fn path_frame<'a>(
     fixed_points: Option<&'a [PathPoint]>,
     band_capacity: usize,
 ) -> crate::Result<PathFrame<'a>> {
-    let evaluated = params.eval(&NodeParamEvalContext { node_id, expr })?;
+    let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
     let transform = DrawableTransform {
         position: evaluated.position,
         scale: evaluated.scale,
@@ -270,7 +270,6 @@ fn path_frame<'a>(
                 MAX_PATH_POINTS,
             )
             .map_err(|details| RenderError::NodeEvaluation {
-                frame: expr.frame as u32,
                 node_id,
                 node_kind: "Path",
                 details: format!("`data` {details}"),

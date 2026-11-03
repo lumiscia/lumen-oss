@@ -13,7 +13,7 @@ use crate::{
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{
-        Deferred, NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef,
+        Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, PortRef,
         source::text_content::TextContentDelegate,
     },
     scope::{FrameTime, Routed, Scope},
@@ -1344,7 +1344,7 @@ impl<'a> PlanKeyCollector<'a> {
         match node {
             NodeKind::Switch(switch) => {
                 // Out-of-range selections all compile to transparent, so they share one key.
-                let ctx = scope.expr_context(frame, format!("{}.params", switch.id), self.media);
+                let ctx = scope.expr_context(frame, self.media);
                 let selection =
                     crate::node::compositing::switch::selected_layer_for_frame(switch, &ctx)?
                         .filter(|index| *index < switch.layers.len());
@@ -1368,9 +1368,8 @@ impl<'a> PlanKeyCollector<'a> {
                     match family {
                         Deferred::Value(family) => self.collect_font_family(text.id, family),
                         Deferred::Expr(_) => {
-                            let ctx = ctx.get_or_insert_with(|| {
-                                scope.expr_context(frame, format!("{}.params", text.id), self.media)
-                            });
+                            let ctx =
+                                ctx.get_or_insert_with(|| scope.expr_context(frame, self.media));
                             if let Ok(family) = family.eval(text.id, "font_family", ctx) {
                                 self.collect_font_family(text.id, &family);
                             }
@@ -1380,7 +1379,7 @@ impl<'a> PlanKeyCollector<'a> {
                 self.has_text = true;
             }
             NodeKind::MediaIn(media_in) => {
-                let ctx = scope.expr_context(frame, format!("{}.params", media_in.id), self.media);
+                let ctx = scope.expr_context(frame, self.media);
                 if let Some(size) = self
                     .media
                     .and_then(|media| media_in.native_size(&ctx, media))
@@ -1389,8 +1388,8 @@ impl<'a> PlanKeyCollector<'a> {
                 }
             }
             NodeKind::WgslShader(shader) => {
-                let ctx = scope.expr_context(frame, format!("{}.params", shader.id), self.media);
-                let params = shader.params.eval(&NodeParamEvalContext {
+                let ctx = scope.expr_context(frame, self.media);
+                let params = shader.params.eval(&DelegateEvalContext {
                     node_id: shader.id,
                     expr: &ctx,
                 })?;
