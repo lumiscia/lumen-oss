@@ -9,10 +9,10 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, mpsc};
 use lumen_engine::{
     composition::Composition,
     error::MediaError,
-    gpu::{CompiledOutput, GpuCompositionRenderer},
+    gpu::{BoundFrame, CompiledOutput, GpuCompositionRenderer},
     media::{
-        CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
-        VideoMetadata,
+        CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
+        VideoFrameResolver, VideoMetadata,
     },
     node::NodeKind,
 };
@@ -116,6 +116,7 @@ impl From<Scene> for Composition {
 pub struct TestMedia {
     images: HashMap<String, Arc<CpuMediaFrame>>,
     numbered_video: Option<String>,
+    fonts: HashMap<String, TestFont>,
 }
 
 impl TestMedia {
@@ -136,6 +137,34 @@ impl TestMedia {
         self.numbered_video = Some(source.to_string());
         self
     }
+
+    /// The font file `data` for text in `family`, which must be the family the file names.
+    /// Fonts are process-global and keyed by `resolver_id`, so use an id no other row does for
+    /// different data.
+    pub fn font(mut self, family: &str, resolver_id: &str, data: &'static [u8]) -> Self {
+        let font = TestFont {
+            id: resolver_id.to_string(),
+            data,
+        };
+        self.fonts.insert(family.to_string(), font);
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TestFont {
+    id: String,
+    data: &'static [u8],
+}
+
+impl FontResolver for TestFont {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
+        Ok(vec![self.data.to_vec()])
+    }
 }
 
 impl MediaStore for TestMedia {
@@ -153,6 +182,14 @@ impl MediaStore for TestMedia {
                 id: stream_id.to_string(),
             }) as _
         })
+    }
+
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        Some(self.fonts.get(family)?.id.clone())
+    }
+
+    fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
+        Some(Box::new(self.fonts.get(family)?.clone()))
     }
 }
 
@@ -246,6 +283,31 @@ pub fn render(
 ) -> Frame {
     let raster = renderer
         .render_frame_at(scene, at, media)
+        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
+    let size = raster.domain.storage_size;
+    let gpu = renderer.gpu_renderer();
+    Frame {
+        at,
+        width: size.width,
+        height: size.height,
+        rgba: read_rgba8(gpu, gpu.texture(raster.texture).unwrap(), size),
+    }
+}
+
+/// Like `render`, but hands the bound frame to `inspect` before it is drawn.
+pub fn render_inspecting(
+    renderer: &mut GpuCompositionRenderer,
+    scene: &Composition,
+    at: f64,
+    media: &impl MediaStore,
+    inspect: impl FnOnce(&GpuCompositionRenderer, &BoundFrame),
+) -> Frame {
+    let bound = renderer
+        .bind_frame_at(scene, at, media)
+        .unwrap_or_else(|error| panic!("frame {at} does not bind: {error}"));
+    inspect(renderer, &bound);
+    let (raster, _) = renderer
+        .submit_bound_frame(&bound)
         .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
     let size = raster.domain.storage_size;
     let gpu = renderer.gpu_renderer();
