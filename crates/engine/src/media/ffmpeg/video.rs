@@ -23,8 +23,8 @@ const SEEK_REOPEN_THRESHOLD: u32 = 120;
 #[derive(Debug, Clone, Default)]
 pub struct FfmpegResolverOptions {
     pub prefer_hardware_decode: bool,
-    /// The renderer's device, for hardware decode straight to its textures. Without it, Linux builds
-    /// with `cuda` use CUDA and others decode on the CPU.
+    /// The renderer's device, for hardware decode straight to its textures. Without it, Linux
+    /// decodes on the CPU.
     #[cfg(all(target_os = "linux", feature = "vulkan"))]
     pub vulkan_device: Option<lumen_ffmpeg::VulkanDevice>,
 }
@@ -142,26 +142,14 @@ impl GpuDecodeStatus {
         match self {
             Self::NotRequested => "cpu_not_requested",
             Self::Active {
-                backend: GpuBackend::Cuda,
-            } => "gpu_cuda",
-            Self::Active {
                 backend: GpuBackend::Metal,
             } => "gpu_metal",
-            Self::Active {
-                backend: GpuBackend::Vulkan,
-            } => "gpu_vulkan",
-            Self::Unavailable {
-                backend: GpuBackend::Cuda,
-                ..
-            } => "cpu_cuda_unavailable",
+            Self::Active { .. } => "gpu_vulkan",
             Self::Unavailable {
                 backend: GpuBackend::Metal,
                 ..
             } => "cpu_metal_unavailable",
-            Self::Unavailable {
-                backend: GpuBackend::Vulkan,
-                ..
-            } => "cpu_vulkan_unavailable",
+            Self::Unavailable { .. } => "cpu_vulkan_unavailable",
         }
     }
 
@@ -863,6 +851,11 @@ fn open_hardware_decoder(
     }
     #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
     let _ = options;
+    if backend != GpuBackend::Metal {
+        return Err(format!(
+            "{backend:?} hardware decode isn't available in this build"
+        ));
+    }
     VideoDecoder::open(
         input,
         VideoDecoderConfig {
@@ -900,8 +893,6 @@ fn preferred_gpu_backend(options: &FfmpegResolverOptions) -> GpuBackend {
     let _ = options;
     if cfg!(target_os = "macos") {
         GpuBackend::Metal
-    } else if cfg!(all(target_os = "linux", feature = "cuda")) {
-        GpuBackend::Cuda
     } else {
         GpuBackend::Vulkan
     }
