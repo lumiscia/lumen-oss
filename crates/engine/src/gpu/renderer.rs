@@ -207,6 +207,7 @@ pub struct GpuCompositionRenderer {
     text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
     reuse_static_output: bool,
+    full_frame_sources: bool,
     media_texture_cache: MediaTextureCache,
     #[cfg(feature = "ffmpeg")]
     gpu_media_importer: GpuMediaFrameImporter,
@@ -251,6 +252,7 @@ impl GpuCompositionRenderer {
             text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             reuse_static_output: true,
+            full_frame_sources: false,
             media_texture_cache: MediaTextureCache::new(),
             #[cfg(feature = "ffmpeg")]
             gpu_media_importer: GpuMediaFrameImporter::default(),
@@ -271,6 +273,7 @@ impl GpuCompositionRenderer {
         self.plan_compile_count += 1;
         let compiled = CompileContext::with_options(composition, 0.0, None, output_format, true)
             .render_static(!self.reuse_static_output)
+            .full_frame_sources(self.full_frame_sources)
             .compile()?;
         self.prepare_compiled(key, compiled)
     }
@@ -282,6 +285,16 @@ impl GpuCompositionRenderer {
     pub fn set_static_output_reuse(&mut self, enabled: bool) {
         if self.reuse_static_output != enabled {
             self.reuse_static_output = enabled;
+            self.reset_compiled(self.output_format);
+        }
+    }
+
+    /// Sets whether every source fills the canvas instead of being sized to its bounds, which
+    /// gives tests a reference render for those bounds. Drops the compiled plans when it changes.
+    #[doc(hidden)]
+    pub fn set_full_frame_sources(&mut self, enabled: bool) {
+        if self.full_frame_sources != enabled {
+            self.full_frame_sources = enabled;
             self.reset_compiled(self.output_format);
         }
     }
@@ -1211,6 +1224,7 @@ impl GpuCompositionRenderer {
             true,
         )
         .render_static(!self.reuse_static_output)
+        .full_frame_sources(self.full_frame_sources)
         .compile()
         {
             Ok(compiled) => compiled,
