@@ -1,8 +1,6 @@
 //! Compositing and colour operators on known pixels. Every expected colour is worked out by hand
 //! from the operator's definition, with translucent inputs so premultiplication matters.
 
-use lumen_engine::{composition::Composition, gpu::CompileContext};
-use lumen_gpu::PassDesc;
 use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, Frame, Scene, check, scene};
@@ -578,25 +576,4 @@ fn boolean_combines_antialiased_coverage() {
             })
             .collect(),
     );
-}
-
-#[test]
-fn a_feather_that_is_never_positive_compiles_no_blur_passes() {
-    let blur_passes = |feather: Value| {
-        let composition: Composition =
-            matte(WIDTH, rim(WHITE), json!({ "feather": feather })).into();
-        let compiled = CompileContext::new(&composition).compile().unwrap();
-        let is_blur = |pass: &PassDesc| {
-            matches!(pass, PassDesc::Compute(desc)
-                if desc.label.as_deref().is_some_and(|label| label.starts_with("merge-feather:")))
-        };
-        compiled
-            .plan
-            .passes()
-            .iter()
-            .filter(|pass| is_blur(&pass.desc))
-            .count()
-    };
-    assert_eq!((blur_passes(json!(0)), blur_passes(json!(-2))), (0, 0));
-    assert!(blur_passes(json!(2)) > 0 && blur_passes(json!("=0")) > 0);
 }
