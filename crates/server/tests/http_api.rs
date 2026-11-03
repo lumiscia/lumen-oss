@@ -511,17 +511,23 @@ fn sockets_send_the_current_status_then_changes_and_close_when_the_render_ends()
     server.wait_for_state(&id, &["processing"]);
 
     let mut socket = open_socket(&server, &id);
+    let Message::Text(first) = socket.read().expect("current status") else {
+        panic!("the current status should be a text frame");
+    };
+    let first: Value = serde_json::from_str(&first).expect("event");
+    assert_eq!(first["type"], "render.started", "{first}");
+    assert_eq!(first["renderId"], id.as_str());
+
     media.release.send(()).expect("release held download");
     let events = socket_events(&mut socket);
 
-    assert_eq!(events[0]["type"], "render.started", "{events:?}");
     let last = events.last().unwrap();
     assert!(
         ["render.completed", "render.failed"].contains(&last["type"].as_str().unwrap()),
         "{events:?}"
     );
     assert!(
-        events[1..events.len() - 1]
+        events[..events.len() - 1]
             .iter()
             .all(|event| event["type"] == "render.progress"),
         "{events:?}"
