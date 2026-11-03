@@ -1,6 +1,6 @@
 use crate::error::RenderError;
 use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
-use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -109,7 +109,6 @@ impl Transform {
             && (moved(&self.params.pivot_x) || moved(&self.params.pivot_y))
         {
             return Err(RenderError::NodeEvaluation {
-                frame: 0,
                 node_id: self.id,
                 node_kind: "Transform",
                 details: "a pivot only applies when `custom_pivot` is on; set custom_pivot: true"
@@ -137,7 +136,6 @@ impl GpuCompileNode for Transform {
             source_size: source.domain.display_size(),
         };
         let bounds = ctx.source_bounds(
-            self.id,
             compiler::SourceMotion::of(motion.is_animated(), &motion.params),
             |expr| motion.canvas_bounds(source.domain.data_rect, expr),
         );
@@ -184,8 +182,8 @@ impl GpuCompiledNode for CompiledTransform {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let expr = ctx.expr_context(self.motion.node_id, "params");
-        let evaluated = self.motion.params.eval(&NodeParamEvalContext {
+        let expr = ctx.expr_context();
+        let evaluated = self.motion.params.eval(&DelegateEvalContext {
             node_id: self.motion.node_id,
             expr: &expr,
         })?;
@@ -279,7 +277,7 @@ impl TransformMotion {
         data: lumen_gpu::RectI,
         expr: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Option<[f32; 4]>> {
-        let evaluated = self.params.eval(&NodeParamEvalContext {
+        let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
             expr,
         })?;

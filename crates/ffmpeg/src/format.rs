@@ -108,6 +108,8 @@ pub struct VideoStreamInfo {
     /// Clockwise rotation in degrees (0, 90, 180 or 270) that RGBA decode applies to each frame.
     pub rotation: u32,
     pub pixel_format: PixelFormat,
+    /// Whether the stream's pixel format carries an alpha channel.
+    pub has_alpha: bool,
     pub time_base: Rational,
     pub avg_frame_rate: Rational,
     /// `avg_frame_rate`, or FFmpeg's guess when the stream has no average.
@@ -362,16 +364,17 @@ impl InputContext {
             } else {
                 (coded_height, coded_width)
             };
+            let format = std::mem::transmute::<i32, sys::AVPixelFormat>((*params).format);
+            let descriptor = sys::av_pix_fmt_desc_get(format);
             VideoStreamInfo {
                 stream_index: index,
                 codec: VideoCodec::from_av_codec_id((*params).codec_id),
                 width,
                 height,
                 rotation,
-                pixel_format: PixelFormat::from_av_pixel_format(std::mem::transmute::<
-                    i32,
-                    sys::AVPixelFormat,
-                >((*params).format)),
+                pixel_format: PixelFormat::from_av_pixel_format(format),
+                has_alpha: !descriptor.is_null()
+                    && (*descriptor).flags & sys::AV_PIX_FMT_FLAG_ALPHA as u64 != 0,
                 time_base: (*stream).time_base.into(),
                 avg_frame_rate: (*stream).avg_frame_rate.into(),
                 frame_rate: stream_frame_rate(self.ptr, stream),

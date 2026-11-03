@@ -1,5 +1,4 @@
 use lumen_engine::{
-    error::{LumenError, PropertyError},
     expr::{Expression, ExpressionContext},
     node::{
         Deferred, DelegateEvalContext, NodeId, PropertyEval, PropertyExpression, PropertyValue,
@@ -63,19 +62,11 @@ fn paint_delegate_evaluation_error_names_node_and_property_path() {
     let expr = ExpressionContext::default();
     let ctx = DelegateEvalContext {
         node_id: NodeId::new(7),
-        property_path: "paint",
         expr: &expr,
     };
 
-    let error = delegate.try_into_evaluated(&ctx).unwrap_err();
-    let LumenError::Property(PropertyError::InvalidType {
-        node_id,
-        property_path,
-        ..
-    }) = error
-    else {
-        panic!("unexpected error: {error:?}");
-    };
-    assert_eq!(node_id, NodeId::new(7));
-    assert_eq!(property_path, "paint");
+    assert_eq!(
+        ctx.eval_field("paint", &delegate).unwrap_err().to_string(),
+        "node 7 `paint`: expected a number, got string `not a number`"
+    );
 }

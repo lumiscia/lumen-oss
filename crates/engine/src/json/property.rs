@@ -38,7 +38,7 @@ pub fn parse_property(val: &Value, def: &PropertyDef, name: &str) -> Result<Prop
     let val = match val.as_str().and_then(classify_string) {
         Some(StringParam::Expression(source)) => {
             let expr = Expression::parse(source)
-                .map_err(|e| anyhow::anyhow!("expression parse error for `{name}`: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("`{name}`: `={source}`: {e}"))?;
             return Ok(PropertyExpression::Expr(expr));
         }
         Some(StringParam::EscapedLiteral(text)) => {

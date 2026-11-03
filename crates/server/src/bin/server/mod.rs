@@ -7,8 +7,7 @@ use std::{collections::HashMap, time::Instant};
 
 pub use types::{
     ApiRenderJob, ArtifactOutput, CreateRenderResponse, GetRenderResponse, RenderJobError,
-    RenderJobInput, RenderJobMetrics, RenderJobResponse, RenderNotification,
-    RenderProgressResponse, RenderQueueState,
+    RenderJobInput, RenderJobMetrics, RenderNotification, RenderProgressResponse, RenderQueueState,
 };
 
 use lumen_server::render::{
@@ -71,7 +70,9 @@ where
         total_frames,
         "starting mp4 render"
     );
+    let render_span = tracing::info_span!("render_job", job_id);
     let rendered_bytes = tokio::task::spawn_blocking(move || {
+        let _render_span = render_span.enter();
         let mut progress_callback = |event: RenderProgress| {
             if verbose_debug {
                 tracing::debug!(

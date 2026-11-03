@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
@@ -102,9 +102,9 @@ impl GpuCompiledNode for CompiledChannelShuffle {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&NodeParamEvalContext {
+        let params = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         let selectors = [
             compiler::channel_selector(self.node_id, "red", params.red.as_spec())?,

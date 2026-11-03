@@ -279,14 +279,45 @@ impl Graph {
         }
 
         if visited != self.nodes.len() {
-            let cycle_nodes = indegree
+            let unordered = indegree
                 .into_iter()
                 .filter_map(|(node_id, degree)| (degree > 0).then_some(node_id))
                 .collect();
-            return Err(GraphValidationError::Cycle { path: cycle_nodes });
+            return Err(GraphValidationError::Cycle {
+                path: cycle_path(&unordered, &edges),
+            });
         }
 
         Ok(())
+    }
+}
+
+/// A cycle among `unordered`, the nodes a topological sort left over, each of which has an input
+/// from another of them. It is found by walking inputs from the lowest id until a node repeats,
+/// and runs along the edges, ending with the node it starts at.
+fn cycle_path(unordered: &HashSet<NodeId>, edges: &HashSet<(NodeId, NodeId)>) -> Vec<NodeId> {
+    let mut input = HashMap::new();
+    for &(from, to) in edges {
+        if unordered.contains(&from) && unordered.contains(&to) {
+            input
+                .entry(to)
+                .and_modify(|known: &mut NodeId| *known = from.min(*known))
+                .or_insert(from);
+        }
+    }
+    let Some(mut node) = unordered.iter().min().copied() else {
+        return Vec::new();
+    };
+    let mut walked = vec![node];
+    loop {
+        node = input[&node];
+        if let Some(start) = walked.iter().position(|&seen| seen == node) {
+            let mut path = walked.split_off(start);
+            path.push(node);
+            path.reverse();
+            return path;
+        }
+        walked.push(node);
     }
 }
 

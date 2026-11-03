@@ -1,6 +1,6 @@
 use crate::node::{
-    Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef, compositing::BlendMode,
-    processing::gaussian,
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef,
+    compositing::BlendMode, processing::gaussian,
 };
 
 use crate::gpu::{
@@ -122,9 +122,9 @@ impl GpuCompiledNode for CompiledMerge {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let evaluated = self.params.eval(&NodeParamEvalContext {
+        let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         let params = compiler::MergeParams {
             opacity: evaluated.opacity as f32,

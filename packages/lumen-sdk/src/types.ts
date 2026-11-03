@@ -41,6 +41,8 @@ export interface RenderResult {
 export interface RenderJob {
   readonly apiKeyId?: string;
   readonly createdAt: string;
+  /** Why the render failed, when `status` is `failed` and the server reports it. */
+  readonly error?: LumenApiError & { readonly retryable?: boolean };
   /** Render cost in millionths of a US dollar. */
   readonly costMicros: number;
   readonly id: string;

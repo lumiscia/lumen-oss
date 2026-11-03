@@ -1,4 +1,5 @@
 mod audio;
+mod choice;
 mod codec;
 mod common;
 mod hardware;
@@ -12,6 +13,7 @@ mod video;
 mod video_gpu;
 
 pub use audio::AudioEncoderConfig;
+pub use choice::VideoEncoderChoice;
 pub use hardware::{GpuTextureEncodeSupport, gpu_texture_encode_support};
 pub use muxed::MuxedEncoder;
 pub use quality::RateControl;

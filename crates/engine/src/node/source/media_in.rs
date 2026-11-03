@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
-use crate::node::{NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 use crate::scope::FrameTime;
 
 use crate::gpu::{
@@ -104,7 +104,7 @@ pub fn resolve_for_context(
     media_in: &MediaIn,
     ctx: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<MediaInKind> {
-    let params = media_in.params.eval(&crate::node::NodeParamEvalContext {
+    let params = media_in.params.eval(&DelegateEvalContext {
         node_id: media_in.id,
         expr: ctx,
     })?;
@@ -216,7 +216,7 @@ impl GpuCompileNode for MediaIn {
 
         let size = ctx
             .media()
-            .and_then(|media| self.native_size(&ctx.expr_context(self.id, "source"), media))
+            .and_then(|media| self.native_size(&ctx.expr_context(), media))
             .unwrap_or_else(|| ctx.canvas_size());
         let texture = ctx.builder_mut().texture(
             Some(format!("media-in:{}:frame", self.id.0)),
@@ -279,7 +279,6 @@ impl GpuCompiledNode for CompiledMediaInput {
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let media = ctx.media().ok_or_else(|| RenderError::NodeEvaluation {
-            frame: ctx.frame(),
             node_id: self.node_id,
             node_kind: "MediaIn",
             details: "media store is required for media input nodes".to_string(),
@@ -288,7 +287,7 @@ impl GpuCompiledNode for CompiledMediaInput {
             id: self.node_id,
             params: self.params.clone(),
         };
-        let kind = resolve_for_context(&node, &ctx.expr_context(self.node_id, "source"))?;
+        let kind = resolve_for_context(&node, &ctx.expr_context())?;
         let (frame, key) = match kind {
             MediaInKind::Image { image_id } => {
                 let resolver = media.get_image_resolver(&image_id).ok_or_else(|| {
@@ -317,7 +316,7 @@ impl GpuCompiledNode for CompiledMediaInput {
                 let metadata = resolver.metadata();
                 let source_frame = map_to_source_frame(
                     ctx.frame_time(),
-                    ctx.expr_context(self.node_id, "source").fps,
+                    ctx.expr_context().fps,
                     metadata.fps,
                     metadata.frame_count,
                     range.as_ref(),

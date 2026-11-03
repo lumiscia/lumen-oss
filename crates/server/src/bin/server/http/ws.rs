@@ -88,8 +88,9 @@ fn render_event(notification: &RenderNotification) -> Option<serde_json::Value> 
             "type": "render.failed",
             "renderId": state.render_id,
             "error": {
-                "code": "render_failed",
+                "code": state.error_code.as_deref().unwrap_or("render_failed"),
                 "message": state.error.as_deref().unwrap_or("Render failed."),
+                "retryable": state.retryable.unwrap_or(false),
             },
         }),
         "processing" if notification.kind == "started" => serde_json::json!({
@@ -102,4 +103,41 @@ fn render_event(notification: &RenderNotification) -> Option<serde_json::Value> 
             "progress": state.progress,
         }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::RenderQueueState;
+
+    #[test]
+    fn a_failed_render_event_carries_the_failure_code() {
+        let event = render_event(&RenderNotification {
+            kind: "completed",
+            state: Some(RenderQueueState {
+                artifact_url: None,
+                duration_ms: None,
+                error: Some("media 'hero': not found".to_string()),
+                error_code: Some("media_download_failed".to_string()),
+                organization_id: String::new(),
+                output_bytes: None,
+                progress: 1.0,
+                render_id: "r_1".to_string(),
+                resolution: None,
+                retryable: Some(true),
+                stage: None,
+                state: "failed",
+                updated_at: String::new(),
+            }),
+        })
+        .unwrap();
+        assert_eq!(
+            event["error"],
+            serde_json::json!({
+                "code": "media_download_failed",
+                "message": "media 'hero': not found",
+                "retryable": true,
+            })
+        );
+    }
 }

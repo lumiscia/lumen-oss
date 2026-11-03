@@ -1,18 +1,21 @@
 @group(0) @binding(0) var source_tex: texture_2d<f32>;
-@group(0) @binding(1) var output_tex: texture_storage_2d<rgba8unorm, write>;
 
-@compute @workgroup_size(8, 8, 1)
-fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let output_size = textureDimensions(output_tex);
-    if (id.x >= output_size.x || id.y >= output_size.y) {
-        return;
-    }
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+    let positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -3.0),
+        vec2<f32>(3.0, 1.0),
+        vec2<f32>(-1.0, 1.0),
+    );
+    return vec4<f32>(positions[vertex_index], 0.0, 1.0);
+}
 
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let pixel = vec2<u32>(floor(position.xy));
     let source_size = textureDimensions(source_tex);
-    let pixel = id.xy;
-    var color = vec4<f32>(0.0);
-    if (pixel.x < source_size.x && pixel.y < source_size.y) {
-        color = textureLoad(source_tex, vec2<i32>(pixel), 0);
+    if (pixel.x >= source_size.x || pixel.y >= source_size.y) {
+        return vec4<f32>(0.0);
     }
-    textureStore(output_tex, vec2<i32>(pixel), color);
+    return textureLoad(source_tex, vec2<i32>(pixel), 0);
 }

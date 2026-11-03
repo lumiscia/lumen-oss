@@ -1121,7 +1121,7 @@ impl ValidationScope {
     }
 }
 
-fn env_flag(name: &str) -> bool {
+pub(crate) fn env_flag(name: &str) -> bool {
     env::var(name)
         .map(|value| {
             matches!(

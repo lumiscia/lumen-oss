@@ -50,7 +50,6 @@ impl CompiledOutput {
         match self {
             Self::Raster(raster) => Ok(raster),
             Self::Empty => Err(crate::error::RenderError::InvalidNodeOutputType {
-                frame: 0,
                 node_id,
                 expected: "Raster",
                 actual: "Empty",

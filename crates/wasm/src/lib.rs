@@ -11,9 +11,7 @@ use tracing_subscriber::{Layer, filter::filter_fn, layer::SubscriberExt};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen::JsValue;
 
-pub use media::LumenMediaStore;
 pub use preview::LumenPreviewController;
-pub use renderer::LumenRenderer;
 
 static INSTALL_RUNTIME_HOOKS: Once = Once::new();
 

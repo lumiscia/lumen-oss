@@ -509,6 +509,14 @@ impl VideoDecoder {
             .hw_sw_format()
             .map(PixelFormat::from_av_pixel_format)
             .unwrap_or(PixelFormat::Unknown);
+        // The renderer's CUDA converter only reads NV12. Failing here moves the source to the CPU.
+        if pixel_format != PixelFormat::Nv12 {
+            return Err(FfmpegError::new(
+                "receive_gpu_frame",
+                format!("CUDA decoded {pixel_format:?} frames, only NV12 converts to RGBA"),
+            )
+            .with_backend(GpuBackend::Cuda));
+        }
         Ok(GpuVideoFrame::Cuda(
             crate::gpu::CudaDecodedFrame::from_av_frame(
                 frame,

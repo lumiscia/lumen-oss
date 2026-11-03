@@ -63,7 +63,6 @@ impl GpuCompileNode for Memo {
             .map(|desc| desc.format);
         if format != Some(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm) {
             return Err(RenderError::InvalidNodeOutputType {
-                frame: 0,
                 node_id: self.source.id,
                 expected: "an RGBA8 raster for memo to keep",
                 actual: "a raster of another format",

@@ -13,7 +13,7 @@ use crate::{
     graph::Graph,
     media::MediaStore,
     node::{
-        NodeId, NodeKind, NodeParamEvalContext, NodeParams, PortRef,
+        DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, PortRef,
         processing::time_remap::{TimeRemap, TimeRemapSettings, remap_frame},
     },
 };
@@ -127,7 +127,6 @@ impl<'a> Scope<'a> {
     pub fn expr_context<'s>(
         &'s self,
         frame: FrameTime,
-        path: String,
         media: Option<&'s dyn MediaStore>,
     ) -> ExpressionContext<'s> {
         ExpressionContext {
@@ -135,7 +134,6 @@ impl<'a> Scope<'a> {
             fps: self.timeline.fps,
             width: self.render_settings.width,
             height: self.render_settings.height,
-            path: Some(path),
             graph: Some(self.graph),
             media,
             glyph: None,
@@ -195,7 +193,7 @@ pub fn route<'a>(
     Ok(match node {
         NodeKind::TimeRemap(node) => vec![route_time_remap(scope, node, frame, media)?],
         NodeKind::Switch(node) => {
-            let ctx = scope.expr_context(frame, format!("{}.params", node.id), media);
+            let ctx = scope.expr_context(frame, media);
             crate::node::compositing::switch::selected_layer_for_frame(node, &ctx)?
                 .and_then(|index| node.layers.get(index))
                 .map(|port| vec![Routed::same(scope, port.clone(), frame)])
@@ -217,9 +215,9 @@ pub(crate) fn route_time_remap<'a>(
     frame: FrameTime,
     media: Option<&dyn MediaStore>,
 ) -> crate::Result<Routed<'a>> {
-    let params = node.params.eval(&NodeParamEvalContext {
+    let params = node.params.eval(&DelegateEvalContext {
         node_id: node.id,
-        expr: &scope.expr_context(frame, format!("{}.params", node.id), media),
+        expr: &scope.expr_context(frame, media),
     })?;
     let frame = remap_frame(
         node.id,

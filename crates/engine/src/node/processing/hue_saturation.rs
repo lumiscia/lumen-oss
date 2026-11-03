@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -74,9 +74,9 @@ impl GpuCompiledNode for CompiledHueSaturation {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&NodeParamEvalContext {
+        let params = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         let gpu_params = compiler::HueSaturationParams {
             hue_offset: (params.hue_degrees / 360.0) as f32,

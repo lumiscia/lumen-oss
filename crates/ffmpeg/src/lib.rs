@@ -15,7 +15,7 @@ pub use ash;
 pub use audio::{AudioDecoder, AudioFrame, AudioResampler, AudioResamplerConfig};
 pub use encode::{
     AudioEncoderConfig, ContainerCrop, GpuTextureEncodeSupport, MuxedEncoder, RateControl,
-    VideoEncoderConfig, gpu_texture_encode_support,
+    VideoEncoderChoice, VideoEncoderConfig, gpu_texture_encode_support,
 };
 pub use format::{
     ALLOWED_INPUT_FORMATS, ALLOWED_INPUT_PROTOCOLS, AudioStreamInfo, InputContext, MediaInfo,

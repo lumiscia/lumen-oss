@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -56,9 +56,9 @@ impl GpuCompiledNode for CompiledOpacity {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let evaluated = self.params.eval(&NodeParamEvalContext {
+        let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         let premultiplied = match self.alpha_mode {
             AlphaMode::Premultiplied => 1.0,
