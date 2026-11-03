@@ -133,6 +133,21 @@ On Linux CI, the SDK integration test also points Vulkan at lavapipe with
 `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`. This is a portability
 baseline, not a hardware performance target.
 
+### Flags and environment
+
+| Flag                              | Environment                           | Default          | Meaning                                                                                           |
+| --------------------------------- | ------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------- |
+| `--bind <addr>`                   | `LUMEN_SERVER_BIND`                   | `127.0.0.1:8080` | Address to listen on. A non-loopback address requires a token.                                    |
+| `--token <token>`                 | `LUMEN_SERVER_TOKEN`                  | none             | Bearer token required on every route except `/health`.                                            |
+| `--max-concurrent-renders <n>`    | `LUMEN_SERVER_MAX_CONCURRENT_RENDERS` | 1                | Renders that run at once.                                                                         |
+| `--retained-renders <n>`          | `LUMEN_SERVER_RETAINED_RENDERS`       | 16               | Finished renders kept in memory.                                                                  |
+| `--allow-media-host <host>`       | `LUMEN_SERVER_ALLOW_MEDIA_HOSTS`      | none             | Hosts allowed to resolve to non-public addresses. Repeatable, or comma-separated in the variable. |
+| `--progress-min-delta <fraction>` | `LUMEN_SERVER_PROGRESS_MIN_DELTA`     | 0.02             | Minimum progress increase between non-terminal updates.                                           |
+| `--verbose-debug`                 | `LUMEN_SERVER_VERBOSE_DEBUG`          | false            | Per-frame renderer diagnostics.                                                                   |
+|                                   | `LUMEN_MEDIA_ROOT`                    | none             | The one directory a composition can read fonts from.                                              |
+|                                   | `LUMEN_VIDEO_ENCODER`                 | platform default | Encoder name, used when the render options name none.                                             |
+|                                   | `LUMEN_HARDWARE_DECODE`               |                  | `1`, `true`, `yes` or `on` turns GPU video decode on, and any other value turns it off.           |
+
 ## Development
 
 ```bash
