@@ -1,17 +1,10 @@
-//! JSON property conversion with type coercion and expression parsing.
+//! The JSON forms params share: a leading `=`, whole numbers and colors.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use serde_json::Value;
 
-use crate::{
-    error::{LumenError, PropertyError},
-    expr::{Expression, parse_hex_color},
-    node::{
-        ClipProps, Deferred, DelegateValue, NodeId, OptionalDelegate, Override, PropertyDef,
-        PropertyExpression, PropertyKind, PropertyValue, ShaderUniforms,
-        source::text_content::{FontFeaturesDelegate, TextContentDelegate},
-    },
-};
+use crate::expr::parse_hex_color;
+use crate::node::NodeId;
 
 /// How a JSON string parameter starting with `=` is interpreted.
 pub(crate) enum StringParam<'a> {
@@ -31,156 +24,17 @@ pub(crate) fn classify_string(text: &str) -> Option<StringParam<'_>> {
     })
 }
 
-/// Converts a JSON param to a property. A string starting with `=` is an
-/// expression, and a leading `==` escapes a literal string starting with `=`.
-pub fn parse_property(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyExpression> {
-    let escaped;
-    let val = match val.as_str().and_then(classify_string) {
-        Some(StringParam::Expression(source)) => {
-            let expr = Expression::parse(source)
-                .map_err(|e| anyhow::anyhow!("`{name}`: `={source}`: {e}"))?;
-            return Ok(PropertyExpression::Expr(expr));
-        }
-        Some(StringParam::EscapedLiteral(text)) => {
-            escaped = Value::String(text.to_string());
-            &escaped
-        }
-        None => val,
-    };
-
-    Ok(PropertyExpression::Value(parse_typed(val, def, name)?))
+/// The error for an `=expression` where a param takes literals only.
+pub(crate) fn expression_unsupported(path: &str) -> String {
+    format!("`{path}` does not support expressions")
 }
 
-fn parse_typed(val: &Value, def: &PropertyDef, name: &str) -> Result<PropertyValue> {
-    match def.expected {
-        PropertyKind::Float => {
-            let f = val
-                .as_f64()
-                .or_else(|| val.as_i64().map(|i| i as f64))
-                .with_context(|| format!("`{name}` expected float"))?;
-            Ok(PropertyValue::Float(f))
-        }
-        PropertyKind::Int => {
-            let i =
-                integral_i64(val).ok_or_else(|| anyhow!("`{name}` {}", integer_mismatch(val)))?;
-            Ok(PropertyValue::Int(i))
-        }
-        PropertyKind::Bool => {
-            let b = val
-                .as_bool()
-                .or_else(|| val.as_i64().map(|i| i != 0))
-                .with_context(|| format!("`{name}` expected bool"))?;
-            Ok(PropertyValue::Bool(b))
-        }
-        PropertyKind::String => {
-            let s = val
-                .as_str()
-                .with_context(|| format!("`{name}` expected string"))?;
-            Ok(PropertyValue::String(s.to_string()))
-        }
-        PropertyKind::Color => try_parse_color(val)
-            .map_err(|error| anyhow!("`{name}` expected color: {error}"))
-            .map(PropertyValue::Color),
-        PropertyKind::Paint => crate::node::vector::paint::Paint::from_json_value(val)
-            .map_err(|error| anyhow!("`{name}`: {error}"))
-            .map(PropertyValue::Paint),
-        PropertyKind::Vec2 => {
-            let arr = val
-                .as_array()
-                .with_context(|| format!("`{name}` expected [x, y]"))?;
-            if arr.len() != 2 {
-                bail!(
-                    "`{name}` expected [x, y], got array of length {}",
-                    arr.len()
-                );
-            }
-            let x = arr[0]
-                .as_f64()
-                .with_context(|| format!("`{name}[0]` expected number"))?;
-            let y = arr[1]
-                .as_f64()
-                .with_context(|| format!("`{name}[1]` expected number"))?;
-            Ok(PropertyValue::Vec2((x, y)))
-        }
-        PropertyKind::ShaderUniforms => ShaderUniforms::from_json_value(val, name)
-            .map_err(|error| anyhow!(error))
-            .map(PropertyValue::ShaderUniforms),
-        PropertyKind::ClipProps => ClipProps::from_json_value(val, name)
-            .map_err(|error| anyhow!(error))
-            .map(PropertyValue::ClipProps),
-        // `parse_property` has already classified a string, so it is the literal text.
-        PropertyKind::TextContent => match val {
-            Value::String(text) => Ok(TextContentDelegate::Text(Deferred::Value(text.clone()))),
-            _ => TextContentDelegate::from_json_value(val)
-                .map_err(|error| anyhow!("`{name}`: {error}")),
-        }
-        .map(|content| PropertyValue::TextContent(Box::new(content))),
-        PropertyKind::TextLine => nested_from_json(val)
-            .map_err(|error| anyhow!("`{name}`: {error}"))
-            .map(|line| PropertyValue::TextLine(Box::new(line))),
-        PropertyKind::TextHighlight => nested_from_json(val)
-            .map_err(|error| anyhow!("`{name}`: {error}"))
-            .map(|highlight| PropertyValue::TextHighlight(Box::new(highlight))),
-        PropertyKind::FontFeatures => FontFeaturesDelegate::from_json_value(val)
-            .map_err(|error| anyhow!("`{name}`: {error}"))
-            .map(|features| PropertyValue::FontFeatures(Box::new(features))),
-        PropertyKind::TextStroke => nested_from_json(val)
-            .map_err(|error| anyhow!("`{name}`: {error}"))
-            .map(|stroke| PropertyValue::TextStroke(Box::new(stroke))),
-        PropertyKind::Enum => {
-            let enum_def = def
-                .enum_def
-                .with_context(|| format!("`{name}` missing enum definition"))?;
-            let enum_name = val
-                .as_str()
-                .with_context(|| format!("`{name}` expected enum string"))?;
-            let option = enum_def
-                .options
-                .iter()
-                .find(|option| option.name == enum_name)
-                .with_context(|| format!("`{name}` unknown enum value `{enum_name}`"))?;
-            Ok(PropertyValue::Int(option.value))
-        }
+/// Fails when `value` is an `=expression`, for params that take literals only.
+pub(crate) fn reject_expression(value: &Value, path: &str) -> std::result::Result<(), String> {
+    match value.as_str().and_then(classify_string) {
+        Some(StringParam::Expression(_)) => Err(expression_unsupported(path)),
+        _ => Ok(()),
     }
-}
-
-/// Deserializes `val`, naming the path to an error inside it.
-pub(crate) fn nested_from_json<T: serde::de::DeserializeOwned>(
-    val: &Value,
-) -> std::result::Result<T, String> {
-    serde_path_to_error::deserialize(val).map_err(|error| error.to_string())
-}
-
-/// Parses a field of a param nested in another, such as a text span's `font_size`, the way
-/// node params parse.
-pub(crate) fn parse_nested_field<T: DelegateValue>(
-    value: &Value,
-    def: &PropertyDef,
-    constant: bool,
-) -> std::result::Result<T, String> {
-    let parsed = parse_property(value, def, def.id).map_err(|error| format!("{error:#}"))?;
-    if constant && matches!(parsed, PropertyExpression::Expr(_)) {
-        return Err(format!("`{}` does not support expressions", def.id));
-    }
-    // A nested field has no node of its own to name, so errors name the field.
-    T::from_property_expression(parsed, NodeId::new(0), def.id).map_err(|error| match error {
-        LumenError::Property(PropertyError::InvalidType {
-            expected, actual, ..
-        }) => format!("`{}` expected {expected}, got {actual}", def.id),
-        error => error.to_string(),
-    })
-}
-
-/// Like [`parse_nested_field`] for `Option` and `Override` fields.
-pub(crate) fn parse_nested_optional_field<T: OptionalDelegate>(
-    value: &Value,
-    def: &PropertyDef,
-    constant: bool,
-) -> std::result::Result<T, String> {
-    if value.is_null() && T::NULLABLE {
-        return Ok(T::from_override(Override::Clear));
-    }
-    parse_nested_field(value, def, constant).map(|value| T::from_override(Override::Set(value)))
 }
 
 /// Reads a JSON number as an `i64`, accepting integral floats such as `3.0`.
@@ -332,48 +186,5 @@ mod tests {
             integer_mismatch(&serde_json::json!("3")),
             "must be an integer within the i64 range, got \"3\""
         );
-    }
-
-    fn float_def() -> PropertyDef {
-        def_of::<crate::node::processing::exposure::ExposureParamsDelegate>("contrast")
-    }
-
-    fn string_def() -> PropertyDef {
-        def_of::<crate::node::source::media_in::MediaInParamsDelegate>("source")
-    }
-
-    fn def_of<P: crate::node::NodeParams>(id: &str) -> PropertyDef {
-        P::property_defs()
-            .into_iter()
-            .find(|def| def.id == id)
-            .unwrap()
-    }
-
-    #[test]
-    fn typed_property() {
-        let v = serde_json::json!(1.25);
-        let p = parse_property(&v, &float_def(), "test").unwrap();
-        assert!(matches!(
-            p,
-            PropertyExpression::Value(PropertyValue::Float(f)) if (f - 1.25).abs() < 1e-10
-        ));
-    }
-
-    #[test]
-    fn expression_property() {
-        let v = serde_json::json!("=frame * 2");
-        let p = parse_property(&v, &float_def(), "test").unwrap();
-        assert!(matches!(p, PropertyExpression::Expr(_)));
-    }
-
-    #[test]
-    fn leading_double_equals_is_a_literal_string() {
-        for (input, expected) in [("==wow", "=wow"), ("===", "=="), ("==", "=")] {
-            let p = parse_property(&serde_json::json!(input), &string_def(), "test").unwrap();
-            assert!(
-                matches!(&p, PropertyExpression::Value(PropertyValue::String(s)) if s == expected),
-                "{input}"
-            );
-        }
     }
 }

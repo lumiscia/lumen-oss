@@ -188,10 +188,7 @@ pub(crate) fn expand_enum_delegate(
         has_expressions_matches.push(quote!(
             Self::Expr(deferred) => ::lumen_engine::node::DelegateEvaluable::has_expressions(deferred)
         ));
-        // Enum names deserialize to the other variants; expressions come from properties.
-        let skip_deserializing = is_enum_kind.then(|| quote!(#[serde(skip_deserializing)]));
-        delegate_variants
-            .push(quote!(#skip_deserializing Expr(::lumen_engine::node::Deferred<#ident>)));
+        delegate_variants.push(quote!(Expr(::lumen_engine::node::Deferred<#ident>)));
         eval_matches.push(quote!(
             Self::Expr(deferred) => ::lumen_engine::node::DelegateEvaluable::eval(deferred, ctx)
         ));
@@ -216,6 +213,21 @@ pub(crate) fn expand_enum_delegate(
         quote! {
             impl ::lumen_engine::node::ParamValue for #ident {
                 const ACCEPTS_EXPRESSIONS: bool = true;
+
+                fn from_json_value(
+                    value: &::serde_json::Value,
+                    path: &str,
+                ) -> ::core::result::Result<Self, ::std::string::String> {
+                    let name = value
+                        .as_str()
+                        .ok_or_else(|| ::std::format!("`{path}` expected enum string"))?;
+                    <Self as ::lumen_engine::node::NodeEnum>::enum_def()
+                        .options
+                        .iter()
+                        .find(|option| option.name == name)
+                        .and_then(|option| Self::from_i64(option.value))
+                        .ok_or_else(|| ::std::format!("`{path}` unknown enum value `{name}`"))
+                }
 
                 fn from_expression(
                     value: ::lumen_engine::expr::ExpressionValue,
@@ -242,14 +254,6 @@ pub(crate) fn expand_enum_delegate(
                 fn to_expression(&self) -> ::core::option::Option<::lumen_engine::expr::ExpressionValue> {
                     ::core::option::Option::Some(::lumen_engine::expr::ExpressionValue::Number(self.to_i64() as f64))
                 }
-
-                fn from_property_value(value: ::lumen_engine::node::PropertyValue) -> ::core::option::Option<Self> {
-                    value.coerce_int().and_then(Self::from_i64)
-                }
-
-                fn property_kind_name() -> &'static str {
-                    "Enum"
-                }
             }
 
             impl #ident {
@@ -271,32 +275,25 @@ pub(crate) fn expand_enum_delegate(
         quote! {}
     };
 
-    let expr_arm = if expressions {
+    let expr_parse_arm = if expressions {
         quote! {
-            ::lumen_engine::node::PropertyExpression::Expr(expr) => {
-                Ok(Self::Expr(::lumen_engine::node::Deferred::Expr(expr)))
-            }
+            deferred @ ::lumen_engine::node::Deferred::Expr(_) => Ok(Self::Expr(deferred)),
         }
     } else {
         quote! {
-            ::lumen_engine::node::PropertyExpression::Expr(_) => {
-                Err(::lumen_engine::node::PropertyValue::invalid_type(
-                    node_id,
-                    property_path,
-                    expected,
-                    "expression",
-                ))
+            ::lumen_engine::node::Deferred::Expr(_) => {
+                Err(::lumen_engine::json::expression_unsupported(path))
             }
         }
     };
     let expr_json_arm = expressions.then(|| {
         quote! {
-            Self::Expr(deferred) => ::lumen_engine::node::DelegateValue::to_json_value(deferred),
+            Self::Expr(deferred) => ::lumen_engine::node::DelegateEvaluable::to_json_value(deferred),
         }
     });
     let expr_read_arm = expressions.then(|| {
         quote! {
-            Self::Expr(deferred) => ::lumen_engine::node::DelegateValue::read(deferred),
+            Self::Expr(deferred) => ::lumen_engine::node::DelegateEvaluable::read(deferred),
         }
     });
     let accepts_expressions = if expressions {
@@ -304,59 +301,9 @@ pub(crate) fn expand_enum_delegate(
     } else {
         quote!(false)
     };
-    let enum_property_methods = quote! {
-        fn to_json_value(&self) -> ::serde_json::Value {
-            match self {
-                #expr_json_arm
-                _ => ::lumen_engine::node::ParamValue::to_json_value(
-                    &self
-                        .clone()
-                        .into_evaluated()
-                        .expect("delegate enum literals cannot contain expressions"),
-                ),
-            }
-        }
-
-        fn read(&self) -> ::lumen_engine::node::PropertyRead<'_> {
-            match self {
-                #expr_read_arm
-                _ => ::lumen_engine::node::PropertyRead::Value(
-                    ::lumen_engine::node::ParamValue::to_expression(
-                        &self
-                            .clone()
-                            .into_evaluated()
-                            .expect("delegate enum literals cannot contain expressions"),
-                    ),
-                ),
-            }
-        }
-
-        fn from_property_expression(
-            value: ::lumen_engine::node::PropertyExpression,
-            node_id: ::lumen_engine::node::NodeId,
-            property_path: &str,
-        ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
-            let expected = <#ident as ::lumen_engine::node::ParamValue>::property_kind_name();
-            match value {
-                ::lumen_engine::node::PropertyExpression::Value(value) => {
-                    <#ident as ::lumen_engine::node::ParamValue>::from_property_value(value)
-                        .map(::core::convert::Into::into)
-                        .ok_or_else(|| {
-                            ::lumen_engine::node::PropertyValue::invalid_type(
-                                node_id,
-                                property_path,
-                                expected,
-                                "incompatible value",
-                            )
-                        })
-                }
-                #expr_arm
-            }
-        }
-    };
 
     Ok(quote! {
-        #[derive(Debug, Clone, ::lumen_engine::fingerprint::StructuralHash, ::serde::Deserialize)]
+        #[derive(Debug, Clone, ::lumen_engine::fingerprint::StructuralHash)]
         pub enum #delegate_ident {
             #(#delegate_variants,)*
         }
@@ -408,6 +355,8 @@ pub(crate) fn expand_enum_delegate(
         impl ::lumen_engine::node::DelegateEvaluable for #delegate_ident {
             type Evaluated = #ident;
 
+            const ACCEPTS_EXPRESSIONS: bool = #accepts_expressions;
+
             fn eval(
                 &self,
                 ctx: &::lumen_engine::node::DelegateEvalContext<'_>,
@@ -420,12 +369,42 @@ pub(crate) fn expand_enum_delegate(
                     #(#has_expressions_matches,)*
                 }
             }
-        }
 
-        impl ::lumen_engine::node::DelegateValue for #delegate_ident {
-            const ACCEPTS_EXPRESSIONS: bool = #accepts_expressions;
+            fn from_json_value(
+                value: &::serde_json::Value,
+                path: &str,
+            ) -> ::core::result::Result<Self, ::std::string::String> {
+                match <::lumen_engine::node::Deferred<#ident> as ::lumen_engine::node::DelegateEvaluable>::from_json_value(value, path)? {
+                    ::lumen_engine::node::Deferred::Value(value) => Ok(value.into()),
+                    #expr_parse_arm
+                }
+            }
 
-            #enum_property_methods
+            fn to_json_value(&self) -> ::core::option::Option<::serde_json::Value> {
+                match self {
+                    #expr_json_arm
+                    _ => Some(::lumen_engine::node::ParamValue::to_json_value(
+                        &self
+                            .clone()
+                            .into_evaluated()
+                            .expect("delegate enum literals cannot contain expressions"),
+                    )),
+                }
+            }
+
+            fn read(&self) -> ::core::option::Option<::lumen_engine::node::PropertyRead<'_>> {
+                match self {
+                    #expr_read_arm
+                    _ => Some(::lumen_engine::node::PropertyRead::Value(
+                        ::lumen_engine::node::ParamValue::to_expression(
+                            &self
+                                .clone()
+                                .into_evaluated()
+                                .expect("delegate enum literals cannot contain expressions"),
+                        ),
+                    )),
+                }
+            }
         }
 
         #node_meta_type_impl

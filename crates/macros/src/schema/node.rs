@@ -45,7 +45,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
         .map(|(_, ty)| quote!(<#ty as ::lumen_engine::node::NodeParams>::property_defs()));
     let metas_default_properties = metas
         .iter()
-        .map(|(field, _)| quote!(defaults.#field.default_properties()));
+        .map(|(field, _)| quote!(defaults.#field.json_properties()));
     let metas_property_matches = metas.iter().map(|(field, _)| {
         quote! {
             if let Some(value) = self.#field.get_property(id) {

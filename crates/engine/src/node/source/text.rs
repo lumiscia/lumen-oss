@@ -1453,7 +1453,7 @@ pub(crate) fn decoration_paints(params: &TextParamsDelegate) -> Option<usize> {
     let mut painted =
         usize::from(params.highlight.is_some()) + usize::from(params.stroke.is_some());
     if let TextContentDelegate::Spans(spans) = &params.content {
-        for span in &spans.items {
+        for span in spans {
             for line in [&span.underline, &span.strikethrough] {
                 if let Override::Set(line) = line {
                     lines.push(line);
@@ -1471,7 +1471,7 @@ pub(crate) fn decoration_paints(params: &TextParamsDelegate) -> Option<usize> {
 pub(crate) fn stroked(params: &TextParamsDelegate) -> bool {
     params.stroke.is_some()
         || matches!(&params.content, TextContentDelegate::Spans(spans)
-            if spans.items.iter().any(|span| matches!(span.stroke, Override::Set(_))))
+            if spans.iter().any(|span| matches!(span.stroke, Override::Set(_))))
 }
 
 /// A span's stroke: how far it reaches to each side of the glyph edge, whether it is drawn
