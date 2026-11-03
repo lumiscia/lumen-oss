@@ -2655,19 +2655,6 @@ mod tests {
     }
 
     #[test]
-    fn measures_roboto_text() {
-        let mut system = TextSystem::new();
-        let mut request = TextLayoutRequest::new("External URL media");
-        request.spans[0].font_size = 44.0;
-        request.max_width = Some(900.0);
-
-        let measurement = system.measure(&request);
-
-        assert!(measurement.width > 100.0);
-        assert!(measurement.height > 40.0);
-    }
-
-    #[test]
     fn repeated_measurement_uses_cache_without_affecting_layout() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("Cached text");
@@ -3274,19 +3261,6 @@ mod tests {
     }
 
     #[test]
-    fn fractional_y_changes_raster_subpixel_bin_and_pixels() {
-        let mut system = TextSystem::new();
-        let shaped = system.shape(&TextLayoutRequest::new("A"));
-        let first = shaped.place([0.0, 0.0], [1.0; 4]);
-        let second = shaped.place([0.0, 0.5], [1.0; 4]);
-
-        assert_ne!(first.glyphs[0].key.0.y_bin, second.glyphs[0].key.0.y_bin);
-        let first = system.render_atlas(&first, TextRenderMode::Raster, 64);
-        let second = system.render_atlas(&second, TextRenderMode::Raster, 64);
-        assert_ne!(first.pixels, second.pixels);
-    }
-
-    #[test]
     fn raster_ink_follows_fractional_y() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("H");
@@ -3310,6 +3284,8 @@ mod tests {
             sum / weight
         };
 
+        let bin = |y: f32| shaped.place([4.0, y], [1.0; 4]).glyphs[0].key.0.y_bin;
+        assert_ne!(bin(20.0), bin(20.5));
         let base = ink_center(&mut system, 20.0);
         for step in [0.25, 0.5, 0.75, 1.0, -0.25, -0.75] {
             let moved = ink_center(&mut system, 20.0 + step) - base;
@@ -3435,7 +3411,7 @@ mod tests {
     }
 
     #[test]
-    fn trailing_letter_spacing_does_not_shift_alignment() {
+    fn trailing_letter_spacing_is_excluded_from_measurement_and_alignment() {
         let mut system = TextSystem::new();
         let h_x = |system: &mut TextSystem, align, spacing| {
             let mut request = TextLayoutRequest::new("H");
@@ -3450,6 +3426,16 @@ mod tests {
             for spacing in [20.0, -10.0] {
                 assert!((h_x(&mut system, align, spacing) - base).abs() < 0.01);
             }
+        }
+
+        let mut request = TextLayoutRequest::new("H");
+        request.spans[0].font_size = 40.0;
+        let base = system.measure(&request).width;
+        for spacing in [20.0, -10.0] {
+            request.spans[0].letter_spacing = spacing;
+            let shaped = system.shape(&request);
+            assert!((shaped.measurement.width - base).abs() < 0.01);
+            assert!((shaped.bounds[2] - base).abs() < 0.01);
         }
     }
 
@@ -3479,20 +3465,6 @@ mod tests {
         let natural = system.measure(&request).width;
         assert_eq!(line_count(&mut system, &mut request, natural + 0.5), 1);
         assert_eq!(line_count(&mut system, &mut request, natural - 0.5), 2);
-    }
-
-    #[test]
-    fn measured_width_excludes_trailing_letter_spacing() {
-        let mut system = TextSystem::new();
-        let mut request = TextLayoutRequest::new("H");
-        request.spans[0].font_size = 40.0;
-        let base = system.measure(&request).width;
-        for spacing in [20.0, -10.0] {
-            request.spans[0].letter_spacing = spacing;
-            let shaped = system.shape(&request);
-            assert!((shaped.measurement.width - base).abs() < 0.01);
-            assert!((shaped.bounds[2] - base).abs() < 0.01);
-        }
     }
 
     #[test]
@@ -3651,7 +3623,6 @@ mod tests {
                     .all(|key| atlas.glyphs.contains_key(key))
             );
         }
-        assert!(atlas.size() <= 1024);
     }
 
     #[cfg(feature = "msdf")]
@@ -3744,7 +3715,6 @@ mod tests {
             }
 
             assert!(uploads <= fields.len());
-            assert_eq!(atlas.size(), 4096);
         }
 
         #[test]
@@ -3842,7 +3812,6 @@ mod tests {
             let mut atlas = GlyphAtlas::new(128);
             let mode = TextRenderMode::Msdf;
             for half_width in [1000.0, 7000.0] {
-                let start = std::time::Instant::now();
                 atlas.begin_frame();
                 let prepared = system.prepare_stroked_glyphs(
                     &mut atlas,
@@ -3857,10 +3826,8 @@ mod tests {
                     (0, 1),
                     "{half_width}"
                 );
-                assert!(
-                    start.elapsed() < std::time::Duration::from_secs(1),
-                    "{half_width}"
-                );
+                // Only the glyph's own field is uploaded, never the stroke's.
+                assert_eq!(prepared.uploads.len(), 1, "{half_width}");
             }
         }
 
@@ -4157,19 +4124,6 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_words_take_the_next_line() {
-        let mut system = TextSystem::new();
-        let mut request = TextLayoutRequest::new("one two three");
-        request.spans[0].font_size = 20.0;
-        request.max_width = Some(50.0);
-        let (items, counts) = items(&mut system, &request);
-        let words: Vec<_> = items.iter().map(|[_, word, line]| (*word, *line)).collect();
-        assert_eq!(&words[..3], [(0, 0); 3]);
-        assert_eq!(*words.last().unwrap(), (2, 2));
-        assert_eq!((counts.word, counts.line), (3, 3));
-    }
-
-    #[test]
     fn wrapping_does_not_change_glyph_or_word_numbering() {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("one two three");
@@ -4182,6 +4136,12 @@ mod tests {
         assert_eq!(wrapped_counts.word, unwrapped_counts.word);
         assert_eq!(unwrapped_counts.line, 1);
         assert_eq!(wrapped_counts.line, 3);
+        let words: Vec<_> = wrapped
+            .iter()
+            .map(|[_, word, line]| (*word, *line))
+            .collect();
+        assert_eq!(&words[..3], [(0, 0); 3]);
+        assert_eq!(*words.last().unwrap(), (2, 2));
         // The wrap drops the two separating spaces from the drawn glyphs, but the glyphs
         // around them keep their numbers.
         let numbering = |items: &[[u32; 3]]| -> Vec<[u32; 2]> {

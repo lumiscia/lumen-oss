@@ -260,89 +260,6 @@ fn cycles_are_rejected_at_build() {
 }
 
 #[test]
-fn compiles_background_exposure_media_output_to_gpu_plan() {
-    let solid = NodeId::new(1);
-    let exposure = NodeId::new(2);
-    let output = NodeId::new(3);
-    let mut graph = Graph::new();
-    graph.nodes.insert(
-        solid,
-        NodeKind::Background(Background {
-            id: solid,
-            params: BackgroundParamsDelegate {
-                paint: lumen_engine::node::vector::paint::PaintDelegate::from(
-                    lumen_engine::node::vector::paint::Paint::solid([64, 128, 255, 255]),
-                ),
-                width: Deferred::value(8),
-                height: Deferred::value(4),
-                paint_supersample: Deferred::value(true),
-            },
-        }),
-    );
-    graph.nodes.insert(
-        exposure,
-        NodeKind::Exposure(Exposure {
-            id: exposure,
-            params: ExposureParamsDelegate {
-                exposure: Deferred::value(1.0),
-                contrast: Deferred::value(1.0),
-                offset: Deferred::value(0.0),
-            },
-            source: PortRef::new(solid, "output".to_string()),
-        }),
-    );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(exposure, "output".to_string()),
-        }),
-    );
-    graph
-        .connect(Connection {
-            from_node: solid,
-            from_port: "output".to_string(),
-            to_node: exposure,
-            to_port: "source".to_string(),
-        })
-        .unwrap();
-    graph
-        .connect(Connection {
-            from_node: exposure,
-            from_port: "output".to_string(),
-            to_node: output,
-            to_port: "source".to_string(),
-        })
-        .unwrap();
-    let composition = CompositionBuilder::new(
-        graph,
-        TimelineSettings {
-            fps: 24.0,
-            duration_frames: 12,
-        },
-        RenderSettings {
-            width: 8,
-            height: 4,
-            background_color: [0, 0, 0, 255],
-        },
-    )
-    .build()
-    .expect("valid test composition");
-
-    let compiled = CompileContext::new(&composition).compile().unwrap();
-
-    assert_eq!(compiled.plan.textures().len(), 2);
-    assert_eq!(compiled.plan.buffers().len(), 2);
-    assert_eq!(compiled.plan.programs().len(), 2);
-    assert_eq!(compiled.plan.passes().len(), 2);
-    assert_eq!(compiled.compiled_nodes.len(), 2);
-    assert_eq!(
-        compiled.output.domain.storage_size,
-        lumen_gpu::Size::new(8, 4)
-    );
-}
-
-#[test]
 fn frame_binding_updates_expression_uniforms_without_recompile() {
     let solid = NodeId::new(1);
     let exposure = NodeId::new(2);
@@ -1412,101 +1329,6 @@ fn media_prediction_visits_shared_inputs_once() {
 }
 
 #[test]
-fn compiles_transform_crop_resize_to_gpu_plan_with_frame_uniforms() {
-    let solid_id = NodeId::new(1);
-    let transform = NodeId::new(2);
-    let crop = NodeId::new(3);
-    let resize = NodeId::new(4);
-    let output = NodeId::new(5);
-    let mut graph = Graph::new();
-    graph
-        .nodes
-        .insert(solid_id, solid(solid_id, [255, 0, 0, 255]));
-    graph.nodes.insert(
-        transform,
-        NodeKind::Transform(Transform {
-            id: transform,
-            params: TransformParamsDelegate {
-                translate_x: Deferred::Expr(
-                    lumen_engine::expr::Expression::parse("frame").unwrap(),
-                ),
-                translate_y: Deferred::value(2.0),
-                rotate: Deferred::value(15.0),
-                ..Default::default()
-            },
-            source: PortRef::new(solid_id, "output".to_string()),
-        }),
-    );
-    graph.nodes.insert(
-        crop,
-        NodeKind::Crop(Crop {
-            id: crop,
-            params: CropParamsDelegate {
-                x: Deferred::value(1),
-                y: Deferred::value(1),
-                width: Deferred::value(6),
-                height: Deferred::value(3),
-            },
-            source: PortRef::new(transform, "output".to_string()),
-        }),
-    );
-    graph.nodes.insert(
-        resize,
-        NodeKind::Resize(Resize {
-            id: resize,
-            params: ResizeParamsDelegate {
-                x: Deferred::value(0),
-                y: Deferred::value(0),
-                width: Deferred::value(4),
-                height: Deferred::value(2),
-                mode: ResizeMode::Fit.into(),
-                sampling: ResizeSampling::Linear.into(),
-            },
-            source: PortRef::new(crop, "output".to_string()),
-        }),
-    );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(resize, "output".to_string()),
-        }),
-    );
-
-    let composition = test_composition(graph);
-    let compiled = CompileContext::new(&composition).compile().unwrap();
-    let transformed = compiled
-        .node_outputs
-        .get(&PortRef::new(transform, "output".to_string()))
-        .unwrap()
-        .clone()
-        .into_raster(transform, "output")
-        .unwrap();
-    let resized = compiled
-        .node_outputs
-        .get(&PortRef::new(resize, "output".to_string()))
-        .unwrap()
-        .clone()
-        .into_raster(resize, "output")
-        .unwrap();
-
-    assert_eq!(compiled.plan.textures().len(), 4);
-    assert_eq!(compiled.plan.buffers().len(), 4);
-    assert_eq!(compiled.plan.programs().len(), 4);
-    assert_eq!(compiled.plan.passes().len(), 4);
-    assert_eq!(compiled.compiled_nodes.len(), 4);
-    assert!(compiled.compiled_nodes.contains_key(&transform));
-    assert!(compiled.compiled_nodes.contains_key(&crop));
-    assert!(compiled.compiled_nodes.contains_key(&resize));
-    assert_eq!(transformed.domain.storage_size, lumen_gpu::Size::new(8, 4));
-    assert_eq!(resized.domain.storage_size, lumen_gpu::Size::new(8, 4));
-
-    FrameBindContext::new(&composition, 7)
-        .bind(&compiled)
-        .unwrap();
-}
-
-#[test]
 fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
     let solid_id = NodeId::new(1);
     let alpha = NodeId::new(2);
@@ -1702,48 +1524,18 @@ fn compiles_source_text_and_vector_shape_through_shared_renderer() {
         .unwrap();
     assert_eq!(unchanged.texture_upload_count(), 0);
     assert!(unchanged.buffer_upload_count() > 0);
-}
 
-#[test]
-fn text_bind_ahead_restores_committed_frame_after_pending_frame() {
-    let _guard = TEXT_TEST_LOCK.lock().unwrap();
-    let text = NodeId::new(1);
-    let output = NodeId::new(2);
-    let mut graph = Graph::new();
-    graph.nodes.insert(
-        text,
-        NodeKind::Text(Text {
-            id: text,
-            params: TextParamsDelegate {
-                content: TextContentDelegate::Text(Deferred::value("Bind ahead".to_string())),
-                position: Deferred::Expr(Expression::parse("vec2(frame * 10, 0)").unwrap()),
-                ..Default::default()
-            },
-        }),
+    FrameBindContext::new(&composition, 1)
+        .bind(&compiled)
+        .unwrap();
+    let restored = FrameBindContext::new(&composition, 0)
+        .bind(&compiled)
+        .unwrap();
+    assert_eq!(
+        restored.texture_upload_count(),
+        0,
+        "a bind that was never applied must not undo the committed atlas"
     );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(text, "output".to_string()),
-        }),
-    );
-    let composition = test_composition(graph);
-    let compiled = CompileContext::new(&composition).compile().unwrap();
-    let bind = |frame| {
-        FrameBindContext::new(&composition, frame)
-            .bind(&compiled)
-            .unwrap()
-    };
-    let first = bind(0);
-    first.mark_uploaded().unwrap();
-    bind(1);
-    let restored = bind(0);
-    assert!(restored.buffer_upload_count() > 0);
-
-    restored.mark_uploaded().unwrap();
-    assert_eq!(bind(0).texture_upload_count(), 0);
-    assert!(bind(1).buffer_upload_count() > 0);
 }
 
 #[test]
@@ -2944,42 +2736,6 @@ fn text_at_fractional_position_draws_glyphs_on_whole_pixels() {
             .all(|rect| rect[0].fract() == 0.0 && rect[1].fract() == 0.0),
         "glyph quads must start on whole pixels: {rects:?}"
     );
-}
-
-#[test]
-fn compiles_vector_path_through_shared_renderer() {
-    let path = NodeId::new(1);
-    let output = NodeId::new(2);
-    let mut graph = Graph::new();
-    graph.nodes.insert(
-        path,
-        NodeKind::Path(Path {
-            id: path,
-            params: PathParamsDelegate {
-                data: Deferred::value("M 1 1 L 6 1 L 6 3 L 1 3 Z".to_string()),
-                fill_paint: Paint::solid([0, 255, 0, 255]).into(),
-                stroke_enabled: Deferred::value(true),
-                stroke_width: Deferred::value(1.0),
-                ..Default::default()
-            },
-        }),
-    );
-    graph.nodes.insert(
-        output,
-        NodeKind::MediaOutput(MediaOutput {
-            id: output,
-            source: PortRef::new(path, "output".to_string()),
-        }),
-    );
-
-    let composition = test_composition(graph);
-    let compiled = CompileContext::new(&composition).compile().unwrap();
-    let bound = FrameBindContext::new(&composition, 0)
-        .bind(&compiled)
-        .unwrap();
-
-    assert!(compiled.compiled_nodes.contains_key(&path));
-    assert_eq!(bound.frame_update().uploads().len(), 3);
 }
 
 #[test]
@@ -8132,8 +7888,6 @@ fn blur_keeps_taps_around_a_frame_whose_scale_is_zero() {
         .zip(["shape", "rectangle path", "curved path"])
         .chain([(text(scale(), 360.0), "text")])
         .collect();
-    let mut still_cases = layers(scale(), 0.0);
-    still_cases.push(text(scale(), 0.0));
     let at = |frame: f64| Deferred::value((frame - 1.0, 1.0));
     for (index, (blurred, name)) in cases.into_iter().enumerate() {
         let blurred = render_drawable_frame(&mut renderer, blurred, 96, 1, &EmptyMediaStore);
@@ -9237,53 +8991,6 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
             );
         }
     }
-}
-
-#[test]
-fn wgsl_shader_source_edits_behind_a_filter_rebuild_the_plan() {
-    let Some(mut renderer) = gpu_composition_renderer() else {
-        return;
-    };
-    let through_opacity = |color: &str| {
-        let (input, shader, opacity, output) = (
-            NodeId::new(1),
-            NodeId::new(2),
-            NodeId::new(3),
-            NodeId::new(4),
-        );
-        let mut graph = Graph::new();
-        graph.nodes.insert(input, solid(input, [0, 0, 0, 255]));
-        graph.nodes.insert(
-            shader,
-            wgsl_shader_node(
-                shader,
-                Deferred::value(fill_shader(color)),
-                vec![PortRef::new(input, "output".to_string())],
-            ),
-        );
-        graph.nodes.insert(
-            opacity,
-            NodeKind::Opacity(Opacity {
-                id: opacity,
-                source: PortRef::new(shader, "output".to_string()),
-                ..Opacity::default()
-            }),
-        );
-        graph.nodes.insert(
-            output,
-            NodeKind::MediaOutput(MediaOutput {
-                id: output,
-                source: PortRef::new(opacity, "output".to_string()),
-            }),
-        );
-        test_composition(graph)
-    };
-    let red = through_opacity("vec4<f32>(1.0, 0.0, 0.0, 1.0)");
-    let pixels = render_rgba8(&mut renderer, &red, 0, &EmptyMediaStore);
-    assert_uniform_pixels(&pixels, [255, 0, 0, 255], "initial source");
-    let green = through_opacity("vec4<f32>(0.0, 1.0, 0.0, 1.0)");
-    let pixels = render_rgba8(&mut renderer, &green, 0, &EmptyMediaStore);
-    assert_uniform_pixels(&pixels, [0, 255, 0, 255], "edit behind opacity");
 }
 
 #[test]

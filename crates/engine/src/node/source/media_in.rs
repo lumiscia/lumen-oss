@@ -204,58 +204,6 @@ pub fn map_to_source_frame(
     (mapped < frame_count).then_some(mapped)
 }
 
-#[cfg(test)]
-mod frame_mapping_tests {
-    use super::{LoopMode, map_to_source_frame};
-
-    #[test]
-    fn frames_just_below_a_source_frame_stay_on_the_one_before() {
-        let below = 6.0_f64.next_down();
-        let mapped = map_to_source_frame(below, 30.0, 15.0, 100, None, 1.0, LoopMode::Clamp);
-        assert_eq!(mapped, Some(2));
-    }
-
-    #[test]
-    fn lower_fps_media_repeats_frames_at_composition_rate() {
-        let mapped = (0..6)
-            .map(|frame| {
-                map_to_source_frame(
-                    f64::from(frame),
-                    30.0,
-                    15.0,
-                    100,
-                    None,
-                    1.0,
-                    LoopMode::Clamp,
-                )
-                .expect("mapped frame")
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(mapped, vec![0, 0, 1, 1, 2, 2]);
-    }
-
-    #[test]
-    fn higher_fps_media_advances_at_source_rate() {
-        let mapped = (0..3)
-            .map(|frame| {
-                map_to_source_frame(
-                    f64::from(frame),
-                    30.0,
-                    60.0,
-                    100,
-                    None,
-                    1.0,
-                    LoopMode::Clamp,
-                )
-                .expect("mapped frame")
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(mapped, vec![0, 2, 4]);
-    }
-}
-
 impl GpuCompileNode for MediaIn {
     fn compile_gpu(
         &self,
@@ -393,92 +341,98 @@ impl GpuCompiledNode for CompiledMediaInput {
 mod tests {
     use super::{LoopMode, map_to_source_frame};
 
-    #[test]
-    fn maps_negative_media_speed_in_reverse() {
-        assert_eq!(
-            map_to_source_frame(0.0, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
-            Some(6)
-        );
-        assert_eq!(
-            map_to_source_frame(3.0, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
-            Some(3)
-        );
-        assert_eq!(
-            map_to_source_frame(99.0, 30.0, 30.0, 10, Some(&(2..7)), -1.0, LoopMode::Clamp),
-            Some(2)
-        );
+    struct Row {
+        name: &'static str,
+        composition_fps: f32,
+        source_fps: f32,
+        speed: f32,
+        mode: LoopMode,
+        range: Option<std::ops::Range<u32>>,
+        frame_count: u32,
+        frames: Vec<(f64, u32)>,
     }
 
-    #[test]
-    fn maps_ping_pong_loop_mode() {
-        let frames = (0..8)
-            .map(|frame| {
-                map_to_source_frame(
-                    f64::from(frame),
-                    30.0,
-                    30.0,
-                    4,
-                    None,
-                    1.0,
-                    LoopMode::PingPong,
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
+    fn forward(name: &'static str, source_fps: f32, frames: Vec<(f64, u32)>) -> Row {
+        Row {
+            name,
+            composition_fps: 30.0,
+            source_fps,
+            speed: 1.0,
+            mode: LoopMode::Clamp,
+            range: None,
+            frame_count: 100,
             frames,
-            vec![
-                Some(0),
-                Some(1),
-                Some(2),
-                Some(3),
-                Some(2),
-                Some(1),
-                Some(0),
-                Some(1)
-            ]
-        );
+        }
+    }
+
+    fn ping_pong(name: &'static str, speed: f32, sources: [u32; 8]) -> Row {
+        Row {
+            speed,
+            mode: LoopMode::PingPong,
+            frame_count: 4,
+            frames: (0..).map(f64::from).zip(sources).collect(),
+            ..forward(name, 30.0, Vec::new())
+        }
     }
 
     #[test]
-    fn fractional_frames_show_the_source_frame_at_that_instant() {
-        let map = |frame, source_fps| {
-            map_to_source_frame(frame, 30.0, source_fps, 100, None, 1.0, LoopMode::Clamp)
-        };
-
-        assert_eq!(map(1.0, 30.0), Some(1));
-        assert_eq!(map(1.5, 30.0), Some(1));
-        assert_eq!(map(1.999, 30.0), Some(1));
-        assert_eq!(map(2.9, 60.0), Some(5));
-    }
-
-    #[test]
-    fn maps_negative_ping_pong_loop_mode() {
-        let frames = (0..8)
-            .map(|frame| {
-                map_to_source_frame(
-                    f64::from(frame),
+    fn composition_frames_map_to_source_frames() {
+        let rows = [
+            forward(
+                "lower fps media repeats frames",
+                15.0,
+                vec![(0.0, 0), (1.0, 0), (2.0, 1), (3.0, 1), (4.0, 2), (5.0, 2)],
+            ),
+            forward(
+                "higher fps media skips frames",
+                60.0,
+                vec![(0.0, 0), (1.0, 2), (2.0, 4), (2.9, 5)],
+            ),
+            forward(
+                "a fractional frame shows the source frame at that instant",
+                30.0,
+                vec![(1.0, 1), (1.5, 1), (1.999, 1)],
+            ),
+            forward(
+                "a frame just below a source frame stays on the one before",
+                15.0,
+                vec![(6.0_f64.next_down(), 2)],
+            ),
+            Row {
+                speed: -1.0,
+                range: Some(2..7),
+                frame_count: 10,
+                ..forward(
+                    "negative speed plays the range in reverse and clamps",
                     30.0,
-                    30.0,
-                    4,
-                    None,
-                    -1.0,
-                    LoopMode::PingPong,
+                    vec![(0.0, 6), (3.0, 3), (99.0, 2)],
                 )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            frames,
-            vec![
-                Some(3),
-                Some(2),
-                Some(1),
-                Some(0),
-                Some(1),
-                Some(2),
-                Some(3),
-                Some(2)
-            ]
-        );
+            },
+            ping_pong(
+                "ping pong bounces off both ends",
+                1.0,
+                [0, 1, 2, 3, 2, 1, 0, 1],
+            ),
+            ping_pong(
+                "negative ping pong starts at the end",
+                -1.0,
+                [3, 2, 1, 0, 1, 2, 3, 2],
+            ),
+        ];
+        for row in rows {
+            for (frame, expected) in row.frames {
+                let mapped = map_to_source_frame(
+                    frame,
+                    row.composition_fps,
+                    row.source_fps,
+                    row.frame_count,
+                    row.range.as_ref(),
+                    row.speed,
+                    row.mode,
+                );
+                assert_eq!(mapped, Some(expected), "{}: frame {frame}", row.name);
+            }
+        }
     }
 
     #[test]

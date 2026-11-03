@@ -519,19 +519,6 @@ mod tests {
     use crate::node::NodeKind;
 
     #[test]
-    fn parses_the_expression_animation_demo() {
-        parse(include_str!(
-            "../../../local/demo/expression-animation.json"
-        ))
-        .expect("should parse");
-    }
-
-    #[test]
-    fn parses_the_kinetic_type_demo() {
-        parse(include_str!("../../../local/demo/kinetic-type.json")).expect("should parse");
-    }
-
-    #[test]
     fn parses_every_bundled_demo() {
         let demos = concat!(env!("CARGO_MANIFEST_DIR"), "/../local/demo");
         for entry in std::fs::read_dir(demos).unwrap() {
@@ -539,30 +526,6 @@ mod tests {
             let source = std::fs::read_to_string(&path).unwrap();
             parse(&source).unwrap_or_else(|error| panic!("{}: {error:#}", path.display()));
         }
-    }
-
-    #[test]
-    fn parse_minimal_composition() {
-        let json = r#"{
-            "lumenSchemaVersion": "0.1.0",
-            "timeline": { "fps": 30, "duration_frames": 90 },
-            "render_settings": { "width": 1920, "height": 1080 },
-            "nodes": [
-                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255], "width": 1920, "height": 1080 } },
-                { "id": 2, "type": "media_output" }
-            ],
-            "connections": [
-                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
-            ]
-        }"#;
-
-        let comp = parse(json).expect("should parse");
-        assert_eq!(comp.timeline().fps, 30.0);
-        assert_eq!(comp.timeline().duration_frames, 90);
-        assert_eq!(comp.render_settings().width, 1920);
-        assert_eq!(comp.render_settings().height, 1080);
-        assert_eq!(comp.graph().nodes.len(), 2);
-        assert_eq!(comp.graph().connections.len(), 1);
     }
 
     #[test]
@@ -826,30 +789,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_with_expressions() {
-        let json = r##"{
-            "timeline": { "fps": 24, "duration_frames": 48 },
-            "render_settings": { "width": 800, "height": 600 },
-            "nodes": [
-                { "id": 1, "type": "background", "params": { "paint": "#FF0000", "width": 800, "height": 600 } },
-                { "id": 2, "type": "exposure", "params": {
-                    "exposure": "=frame * 0.1",
-                    "contrast": 1.0,
-                    "offset": 0.0
-                }},
-                { "id": 3, "type": "media_output" }
-            ],
-            "connections": [
-                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" },
-                { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "source" }
-            ]
-        }"##;
-
-        let comp = parse(json).expect("should parse");
-        assert_eq!(comp.graph().nodes.len(), 3);
-    }
-
-    #[test]
     fn parses_and_evaluates_vec2_expression() {
         let json = r##"{
             "timeline": { "fps": 24, "duration_frames": 48 },
@@ -896,28 +835,6 @@ mod tests {
                 expected
             );
         }
-    }
-
-    #[test]
-    fn parse_switch_node() {
-        let json = r#"{
-            "timeline": { "fps": 30, "duration_frames": 60 },
-            "render_settings": { "width": 100, "height": 100 },
-            "nodes": [
-                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0], "width": 100, "height": 100 } },
-                { "id": 2, "type": "background", "params": { "paint": [0, 255, 0], "width": 100, "height": 100 } },
-                { "id": 3, "type": "switch", "params": { "selected_layer": "=if(frame < 30, 0, 1)" } },
-                { "id": 4, "type": "media_output" }
-            ],
-            "connections": [
-                { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "layers" },
-                { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "layers" },
-                { "from_node": 3, "from_port": "output", "to_node": 4, "to_port": "source" }
-            ]
-        }"#;
-
-        let comp = parse(json).expect("should parse");
-        assert_eq!(comp.graph().nodes.len(), 4);
     }
 
     #[test]
@@ -1198,12 +1115,6 @@ mod tests {
             "{:#}",
             parse_value(&clip_composition(clip, card_nodes(paint))).unwrap_err()
         )
-    }
-
-    #[test]
-    fn parses_the_clips_demo() {
-        let comp = parse(include_str!("../../../local/demo/clips.json")).expect("should parse");
-        assert!(comp.compositions().contains_key("title_card"));
     }
 
     #[test]
