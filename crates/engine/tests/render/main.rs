@@ -1,3 +1,4 @@
+mod effects;
 mod geometry;
 mod harness;
 mod paint;
