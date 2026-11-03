@@ -17,6 +17,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use lumen_engine::{
+    ffmpeg::FfmpegVideoResolver,
+    media::{MediaFrame, VideoFrameResolver},
+};
 use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
 use reqwest::{
     StatusCode,
@@ -565,6 +569,38 @@ fn renders_read_only_manifest_media_with_gpu() {
     let artifact = server.get(&format!("/renders/{id}/artifact"));
     assert_eq!(artifact.status(), StatusCode::OK);
     assert!(!artifact.bytes().expect("artifact bytes").is_empty());
+}
+
+/// This size is below what hardware H.264 encoders accept, and software Vulkan has none, so the
+/// default encoder falls back wherever this runs.
+#[test]
+fn the_default_encoder_falls_back_to_a_correct_video_with_gpu() {
+    let server = Server::start(&[]);
+    let Some((id, progress)) =
+        render_outcome(&server, &json!({ "composition": solid_composition() }))
+    else {
+        return;
+    };
+    assert_eq!(progress["state"], "succeeded", "{progress}");
+    let artifact = server.get(&format!("/renders/{id}/artifact"));
+    assert_eq!(artifact.status(), StatusCode::OK);
+
+    let directory = tempfile::tempdir().expect("temp directory");
+    let path = directory.path().join("output.mp4");
+    std::fs::write(&path, artifact.bytes().expect("artifact bytes")).expect("write artifact");
+    let video = FfmpegVideoResolver::open(path.display().to_string()).expect("open artifact");
+    assert_eq!(video.metadata().frame_count, 1);
+    let MediaFrame::CpuRgba(decoded) = video.frame(0).expect("decode frame") else {
+        panic!("expected a CPU frame");
+    };
+    let offset = decoded.row_bytes * 8 + 8 * 4;
+    for (channel, want) in decoded.rgba[offset..offset + 3].iter().zip([255, 0, 0]) {
+        assert!(
+            (i32::from(*channel) - want).abs() <= 3,
+            "{:?}",
+            &decoded.rgba[offset..offset + 3]
+        );
+    }
 }
 
 #[test]
