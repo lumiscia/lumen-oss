@@ -4,7 +4,7 @@
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
 export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
-export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "clip" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "clip" | "color_grade" | "crop" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
 
@@ -1127,13 +1127,6 @@ export interface CropNode extends CompositionNodeBase<"crop"> {
   };
 }
 
-export interface CurvesNode extends CompositionNodeBase<"curves"> {
-  readonly params?: {
-    readonly "curve_source"?: ExpressionValue<string>;
-    readonly "strength"?: ExpressionValue<number>;
-  };
-}
-
 export interface ExposureNode extends CompositionNodeBase<"exposure"> {
   readonly params?: {
     readonly "contrast"?: ExpressionValue<number>;
@@ -1353,7 +1346,6 @@ export interface CompositionNodeByKind {
   readonly "clip": ClipNode;
   readonly "color_grade": ColorGradeNode;
   readonly "crop": CropNode;
-  readonly "curves": CurvesNode;
   readonly "exposure": ExposureNode;
   readonly "hue_saturation": HueSaturationNode;
   readonly "levels": LevelsNode;
@@ -1397,9 +1389,6 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "crop": Omit<CropNode, "id"> & {
-    readonly id?: number;
-  };
-  readonly "curves": Omit<CurvesNode, "id"> & {
     readonly id?: number;
   };
   readonly "exposure": Omit<ExposureNode, "id"> & {
@@ -1467,7 +1456,6 @@ export interface NodeInputPortNameByKind {
   readonly "clip": "source";
   readonly "color_grade": "source";
   readonly "crop": "source";
-  readonly "curves": "source";
   readonly "exposure": "source";
   readonly "hue_saturation": "source";
   readonly "levels": "source";

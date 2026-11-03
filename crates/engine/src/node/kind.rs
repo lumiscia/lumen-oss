@@ -111,7 +111,6 @@ node_kinds! {
     Blur(processing::blur::Blur),
     ChannelShuffle(processing::channel_shuffle::ChannelShuffle),
     ColorGrade(processing::color_grade::ColorGrade),
-    Curves(processing::curves::Curves),
     Exposure(processing::exposure::Exposure),
     HueSaturation(processing::hue_saturation::HueSaturation),
     Levels(processing::levels::Levels),

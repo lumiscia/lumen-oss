@@ -3,7 +3,6 @@ pub mod blur;
 pub mod channel_shuffle;
 pub mod color_grade;
 pub mod crop;
-pub mod curves;
 pub mod exposure;
 pub(crate) mod gaussian;
 pub mod hue_saturation;
