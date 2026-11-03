@@ -2,6 +2,28 @@
   "$defs": {
     "audioClip": {
       "additionalProperties": true,
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "required": ["start_ms"]
+            },
+            {
+              "required": ["start_frame"]
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "required": ["duration_ms"]
+            },
+            {
+              "required": ["duration_frames"]
+            }
+          ]
+        }
+      ],
       "properties": {
         "duration_frames": {
           "minimum": 1,
@@ -214,12 +236,14 @@
       "additionalProperties": false,
       "properties": {
         "from_node": {
+          "minimum": 0,
           "type": "integer"
         },
         "from_port": {
           "type": "string"
         },
         "to_node": {
+          "minimum": 0,
           "type": "integer"
         },
         "to_port": {
@@ -618,7 +642,6 @@
         "radius": {
           "anyOf": [
             {
-              "minimum": 0.0,
               "type": "number"
             },
             {
@@ -734,7 +757,6 @@
         "thickness": {
           "anyOf": [
             {
-              "minimum": 0.0,
               "type": "number"
             },
             {
@@ -818,7 +840,6 @@
         "font_size": {
           "anyOf": [
             {
-              "minimum": 1.0,
               "type": "number"
             },
             {
@@ -866,8 +887,6 @@
         "font_weight": {
           "anyOf": [
             {
-              "maximum": 1000.0,
-              "minimum": 1.0,
               "type": "integer"
             },
             {
@@ -1055,7 +1074,6 @@
         "width": {
           "anyOf": [
             {
-              "minimum": 0.0,
               "type": "number"
             },
             {
@@ -1190,6 +1208,7 @@
             "description": "Generates a background raster texture.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -1271,6 +1290,7 @@
             "description": "Applies a separable Gaussian blur to a raster.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -1279,7 +1299,6 @@
                   "radius": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -1326,6 +1345,7 @@
             "description": "Combines two raster alpha masks with boolean operations.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -1372,8 +1392,6 @@
                   "threshold": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -1427,6 +1445,7 @@
             "description": "Plays a composition template, or its source, over a window of time.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -1576,6 +1595,7 @@
             "description": "Applies a LUT-driven color transform to a raster.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -1631,8 +1651,6 @@
                   "strength": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -1680,6 +1698,7 @@
             "description": "Keeps a raster region in place and clears everything outside it.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -1688,7 +1707,6 @@
                   "height": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "integer"
                       },
                       {
@@ -1707,7 +1725,6 @@
                   "width": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "integer"
                       },
                       {
@@ -1788,6 +1805,7 @@
             "description": "Adjusts raster exposure, contrast, and offset.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -1796,7 +1814,6 @@
                   "contrast": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -1877,6 +1894,7 @@
             "description": "Adjusts raster hue, saturation, and lightness.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -1964,6 +1982,7 @@
             "description": "Remaps raster black, white, gamma, and output range.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -1972,8 +1991,6 @@
                   "black_point": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -1993,7 +2010,6 @@
                   "gamma": {
                     "anyOf": [
                       {
-                        "minimum": 0.01,
                         "type": "number"
                       },
                       {
@@ -2012,8 +2028,6 @@
                   "output_black": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2033,8 +2047,6 @@
                   "output_white": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2054,8 +2066,6 @@
                   "white_point": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2103,6 +2113,7 @@
             "description": "Binds an external image or video frame as a GPU texture.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -2172,7 +2183,6 @@
                   "range_end": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "integer"
                       },
                       {
@@ -2190,7 +2200,6 @@
                   "range_start": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "integer"
                       },
                       {
@@ -2264,6 +2273,7 @@
             "description": "Copies the compiled raster into the final composition output.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -2299,6 +2309,7 @@
             "description": "Composites an overlay raster over a base raster.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -2355,7 +2366,6 @@
                   "feather": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2409,8 +2419,6 @@
                   "opacity": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2470,6 +2478,7 @@
             "description": "Uniformly adjusts raster opacity.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -2478,8 +2487,6 @@
                   "opacity": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2527,6 +2534,7 @@
             "description": "Produces a rasterized vector path source.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -2610,8 +2618,6 @@
                   "motion_blur": {
                     "anyOf": [
                       {
-                        "maximum": 360.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2631,8 +2637,6 @@
                   "opacity": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2725,7 +2729,6 @@
                   "stroke_width": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2744,8 +2747,6 @@
                   "trim_end": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2765,8 +2766,6 @@
                   "trim_start": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2807,6 +2806,7 @@
             "description": "Composites a variadic stack of raster layers in order.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -2863,8 +2863,6 @@
                   "opacity": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -2912,6 +2910,7 @@
             "description": "Resamples a raster into a rectangle placed on the composition canvas.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -2920,7 +2919,6 @@
                   "height": {
                     "anyOf": [
                       {
-                        "minimum": 1.0,
                         "type": "integer"
                       },
                       {
@@ -2993,7 +2991,6 @@
                   "width": {
                     "anyOf": [
                       {
-                        "minimum": 1.0,
                         "type": "integer"
                       },
                       {
@@ -3074,6 +3071,7 @@
             "description": "Composites a blurred alpha shadow behind a raster.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -3133,8 +3131,6 @@
                   "opacity": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3154,7 +3150,6 @@
                   "radius": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3201,6 +3196,7 @@
             "description": "Produces a vector shape layer for GPU rasterization.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -3223,7 +3219,6 @@
                   "border_radius": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3305,7 +3300,6 @@
                   "height": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3324,8 +3318,6 @@
                   "motion_blur": {
                     "anyOf": [
                       {
-                        "maximum": 360.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3345,8 +3337,6 @@
                   "opacity": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3439,7 +3429,6 @@
                   "stroke_width": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3458,7 +3447,6 @@
                   "width": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3498,6 +3486,7 @@
             "description": "Selects one raster input according to a controlled layer index.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -3506,7 +3495,6 @@
                   "selected_layer": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "integer"
                       },
                       {
@@ -3553,6 +3541,7 @@
             "description": "Produces a text source.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -3712,7 +3701,6 @@
                   "font_size": {
                     "anyOf": [
                       {
-                        "minimum": 1.0,
                         "type": "number"
                       },
                       {
@@ -3764,8 +3752,6 @@
                   "font_weight": {
                     "anyOf": [
                       {
-                        "maximum": 1000.0,
-                        "minimum": 1.0,
                         "type": "integer"
                       },
                       {
@@ -3798,8 +3784,6 @@
                   "glyph_opacity": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3873,7 +3857,6 @@
                   "line_height": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3892,7 +3875,6 @@
                   "max_height": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3910,7 +3892,6 @@
                   "max_lines": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "integer"
                       },
                       {
@@ -3928,7 +3909,6 @@
                   "max_width": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3947,7 +3927,6 @@
                   "min_font_size": {
                     "anyOf": [
                       {
-                        "minimum": 1.0,
                         "type": "number"
                       },
                       {
@@ -3966,8 +3945,6 @@
                   "motion_blur": {
                     "anyOf": [
                       {
-                        "maximum": 360.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -3987,8 +3964,6 @@
                   "opacity": {
                     "anyOf": [
                       {
-                        "maximum": 1.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -4064,7 +4039,6 @@
                   "paragraph_spacing": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -4231,6 +4205,7 @@
             "description": "Evaluates a raster input at another frame.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -4239,7 +4214,6 @@
                   "frame": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -4272,7 +4246,6 @@
                   "loop_end": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "integer"
                       },
                       {
@@ -4291,7 +4264,6 @@
                   "loop_start": {
                     "anyOf": [
                       {
-                        "minimum": 0.0,
                         "type": "integer"
                       },
                       {
@@ -4338,6 +4310,7 @@
             "description": "Transforms a raster into the composition canvas bounds.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {
@@ -4360,8 +4333,6 @@
                   "motion_blur": {
                     "anyOf": [
                       {
-                        "maximum": 360.0,
-                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -4556,6 +4527,7 @@
             "description": "Runs a custom WGSL compute shader over one or more rasters.",
             "properties": {
               "id": {
+                "minimum": 0,
                 "type": "integer"
               },
               "params": {

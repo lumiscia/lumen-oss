@@ -537,3 +537,166 @@ fn expression_placement_matches_engine_parsing() {
         );
     }
 }
+
+/// Each row is a node param set to a value outside its editor slider range, whether the schema
+/// accepts it and whether the engine parses it. The engine clamps or floors these when it
+/// renders, so the schema must not reject them.
+#[test]
+fn editor_hint_ranges_are_not_enforced() {
+    let schema = schema();
+    let opacity = &schema["properties"]["nodes"]["items"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["properties"]["type"]["const"] == "opacity")
+        .unwrap()["properties"]["params"]["properties"]["opacity"];
+    assert_eq!(
+        opacity["x-lumen-constraints"],
+        json!({ "min": 0.0, "max": 1.0, "step": 0.01 })
+    );
+    assert!(opacity["anyOf"][0].get("minimum").is_none());
+
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let rows = [
+        ("opacity above 1", "opacity", json!({ "opacity": 2 }), true),
+        ("opacity below 0", "opacity", json!({ "opacity": -1 }), true),
+        ("crop width below 0", "crop", json!({ "width": -5 }), true),
+        ("resize width of 0", "resize", json!({ "width": 0 }), true),
+        ("levels gamma of 0", "levels", json!({ "gamma": 0 }), true),
+        (
+            "text font size below 1",
+            "text",
+            json!({ "font_size": 0.5 }),
+            true,
+        ),
+        (
+            "text font weight above 1000",
+            "text",
+            json!({ "font_weight": 2000 }),
+            true,
+        ),
+        (
+            "shape motion blur above 360",
+            "shape",
+            json!({ "motion_blur": 720 }),
+            true,
+        ),
+        (
+            "switch layer below 0",
+            "switch",
+            json!({ "selected_layer": -1 }),
+            true,
+        ),
+    ];
+    for (label, kind, params, engine_accepts) in rows {
+        let composition = composition_with_node(&node_schema(kind), params);
+        assert!(validator.is_valid(&composition), "{label} schema");
+        assert_eq!(
+            lumen_engine::json::parse_value(&composition).is_ok(),
+            engine_accepts,
+            "{label} engine"
+        );
+    }
+}
+
+/// Each row is a node type, a param, its lowest literal and a literal below it the engine refuses.
+#[test]
+fn enforced_ranges_match_engine_parsing() {
+    let validator = schema_validator();
+    let rows = [
+        ("background", "width", json!(0), json!(-1)),
+        ("background", "height", json!(0), json!(-1)),
+        ("clip", "duration", json!(-1), json!(-2)),
+    ];
+    for (kind, param, lowest, below) in rows {
+        let composition =
+            |value: &Value| composition_with_node(&node_schema(kind), json!({ param: value }));
+        assert!(
+            validator.is_valid(&composition(&lowest)),
+            "{kind}.{param} {lowest} schema"
+        );
+        assert!(
+            !validator.is_valid(&composition(&below)),
+            "{kind}.{param} {below} schema"
+        );
+        assert!(
+            lumen_engine::json::parse_value(&composition(&below)).is_err(),
+            "{kind}.{param} {below} engine"
+        );
+    }
+}
+
+/// Each row is a composition, whether the schema accepts it and whether the engine parses it.
+#[test]
+fn ids_and_audio_clips_match_engine_parsing() {
+    let validator = schema_validator();
+    let base = composition_with_node(&node_schema("exposure"), json!({}));
+    let with_id = |id: i64| {
+        let mut value = base.clone();
+        value["nodes"][0]["id"] = json!(id);
+        value
+    };
+    let with_connection_node = |field: &str, id: i64| {
+        let mut value = base.clone();
+        value["connections"][0][field] = json!(id);
+        value
+    };
+    let with_clip = |clip: Value| {
+        let mut value = base.clone();
+        value["audio"] = json!({
+            "tracks": [{ "id": "track" }],
+            "clips": [{ "id": "clip", "source_id": "voice", "track_id": "track" }]
+        });
+        for (key, field) in clip.as_object().unwrap() {
+            value["audio"]["clips"][0][key] = field.clone();
+        }
+        value
+    };
+    let rows = [
+        ("negative node id", with_id(-1), false),
+        (
+            "negative connection source",
+            with_connection_node("from_node", -1),
+            false,
+        ),
+        (
+            "negative connection target",
+            with_connection_node("to_node", -1),
+            false,
+        ),
+        ("audio clip without a time", with_clip(json!({})), false),
+        (
+            "audio clip without a start",
+            with_clip(json!({ "duration_ms": 500 })),
+            false,
+        ),
+        (
+            "audio clip without a duration",
+            with_clip(json!({ "start_ms": 0 })),
+            false,
+        ),
+        (
+            "audio clip in milliseconds",
+            with_clip(json!({ "start_ms": 0, "duration_ms": 500 })),
+            true,
+        ),
+        (
+            "audio clip in frames",
+            with_clip(json!({ "start_frame": 0, "duration_frames": 15 })),
+            true,
+        ),
+        (
+            "audio clip starting in frames and lasting in milliseconds",
+            with_clip(json!({ "start_frame": 3, "duration_ms": 500 })),
+            true,
+        ),
+    ];
+    for (label, composition, accepted) in rows {
+        assert_eq!(validator.is_valid(&composition), accepted, "{label} schema");
+        assert_eq!(
+            lumen_engine::json::parse_value(&composition).is_ok(),
+            accepted,
+            "{label} engine"
+        );
+    }
+}

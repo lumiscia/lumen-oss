@@ -66,6 +66,9 @@ pub struct PropertyDef {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PropertyConstraints {
     pub min: Option<f64>,
+    /// Whether the engine refuses literals below `min`, which the schema then does too. Other
+    /// ranges are editor hints.
+    pub enforced_min: bool,
     pub max: Option<f64>,
     pub step: Option<f64>,
     pub format: Option<&'static str>,

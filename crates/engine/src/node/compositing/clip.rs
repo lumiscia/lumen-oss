@@ -51,7 +51,7 @@ pub struct ClipParams {
     pub start: f64,
     /// Frames the clip plays for; -1 plays the template to its end, or a source to the end of
     /// this composition.
-    #[meta(name = "Duration", min = -1, step = 1)]
+    #[meta(name = "Duration", min = -1, enforced_min, step = 1)]
     pub duration: f64,
     /// Frames of the content skipped at the start, in the content's frames.
     #[meta(name = "Offset", step = 1)]
