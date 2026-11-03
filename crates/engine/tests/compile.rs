@@ -1116,8 +1116,8 @@ fn text_upload_repeats_until_it_is_marked_uploaded() {
             NodeKind::Shape(Shape {
                 id: shape,
                 params: ShapeParamsDelegate {
-                    width: Deferred::value(6),
-                    height: Deferred::value(4),
+                    width: Deferred::value(6.0),
+                    height: Deferred::value(4.0),
                     position: Deferred::value((1.0, 0.0)),
                     fill_paint: Paint::solid([255, 0, 0, 255]).into(),
                     ..Default::default()

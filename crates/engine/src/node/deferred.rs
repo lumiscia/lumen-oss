@@ -306,6 +306,26 @@ impl DeferredValue for f32 {
     }
 }
 
+/// An expression's number as an integer param takes it: truncated toward zero, or an error when
+/// it is NaN or infinite.
+fn truncated_int(
+    value: f64,
+    node_id: NodeId,
+    property_path: &str,
+    kind: &'static str,
+) -> crate::Result<i64> {
+    if value.is_finite() {
+        Ok(value as i64)
+    } else {
+        Err(PropertyValue::invalid_type(
+            node_id,
+            property_path,
+            kind,
+            "non-finite value",
+        ))
+    }
+}
+
 impl DeferredValue for i64 {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
@@ -321,7 +341,7 @@ impl DeferredValue for i64 {
                 let value = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
                     PropertyValue::invalid_type(node_id, property_path, "Int", "expression")
                 })?;
-                Ok(value as i64)
+                truncated_int(value, node_id, property_path, "Int")
             }
         }
     }
@@ -350,9 +370,12 @@ impl DeferredValue for u32 {
     ) -> crate::Result<Self> {
         let value = match deferred {
             Deferred::Value(value) => i64::from(*value),
-            Deferred::Expr(expr) => expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
-                PropertyValue::invalid_type(node_id, property_path, "UInt", "expression")
-            })? as i64,
+            Deferred::Expr(expr) => {
+                let value = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
+                    PropertyValue::invalid_type(node_id, property_path, "UInt", "expression")
+                })?;
+                truncated_int(value, node_id, property_path, "UInt")?
+            }
         };
         u32::try_from(value).map_err(|_| {
             PropertyValue::invalid_type(node_id, property_path, "UInt", "out-of-range value")
@@ -385,9 +408,12 @@ impl DeferredValue for u8 {
     ) -> crate::Result<Self> {
         let value = match deferred {
             Deferred::Value(value) => i64::from(*value),
-            Deferred::Expr(expr) => expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
-                PropertyValue::invalid_type(node_id, property_path, "Int", "expression")
-            })? as i64,
+            Deferred::Expr(expr) => {
+                let value = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
+                    PropertyValue::invalid_type(node_id, property_path, "Int", "expression")
+                })?;
+                truncated_int(value, node_id, property_path, "U8")?
+            }
         };
         u8::try_from(value).map_err(|_| {
             PropertyValue::invalid_type(node_id, property_path, "U8", "out-of-range value")
@@ -837,6 +863,35 @@ mod tests {
             media: None,
             glyph: None,
             props: None,
+        }
+    }
+
+    #[test]
+    fn integer_targets_truncate_finite_results_and_reject_the_rest() {
+        fn eval<T: crate::node::DeferredValue>(source: &str) -> crate::Result<T> {
+            Deferred::<T>::Expr(Expression::parse(source).unwrap()).eval(
+                NodeId::new(4),
+                "count",
+                &context(),
+            )
+        }
+        assert_eq!(eval::<i64>("-2.9").unwrap(), -2);
+        assert_eq!(eval::<u32>("2.9").unwrap(), 2);
+        assert_eq!(eval::<u8>("2.9").unwrap(), 2);
+        assert!(eval::<u8>("256").is_err());
+
+        for source in ["pow(-1, 0.5)", "pow(10, 400)"] {
+            for error in [
+                eval::<i64>(source).err(),
+                eval::<u32>(source).err(),
+                eval::<u8>(source).err(),
+            ] {
+                let Some(LumenError::Property(PropertyError::InvalidType { actual, .. })) = error
+                else {
+                    panic!("{source} should be refused, not {error:?}");
+                };
+                assert_eq!(actual, "non-finite value", "{source}");
+            }
         }
     }
 

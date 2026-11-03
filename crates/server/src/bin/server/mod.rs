@@ -70,7 +70,9 @@ where
         total_frames,
         "starting mp4 render"
     );
+    let render_span = tracing::info_span!("render_job", job_id);
     let rendered_bytes = tokio::task::spawn_blocking(move || {
+        let _render_span = render_span.enter();
         let mut progress_callback = |event: RenderProgress| {
             if verbose_debug {
                 tracing::debug!(
