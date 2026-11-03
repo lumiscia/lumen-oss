@@ -122,36 +122,6 @@ pub fn copy_image_to_rgba_frame(
         .map_err(driver_error)
 }
 
-pub fn copy_rgba_frame_to_image(
-    source_device_ptr: sys::CUdeviceptr,
-    source_pitch: usize,
-    destination: &ImportedCudaExternalImage,
-    width: u32,
-    height: u32,
-) -> Result<(), String> {
-    let copy = sys::CUDA_MEMCPY2D {
-        srcXInBytes: 0,
-        srcY: 0,
-        srcMemoryType: CU_MEMORYTYPE_DEVICE,
-        srcHost: std::ptr::null(),
-        srcDevice: source_device_ptr,
-        srcArray: std::ptr::null_mut(),
-        srcPitch: source_pitch,
-        dstXInBytes: 0,
-        dstY: 0,
-        dstMemoryType: CU_MEMORYTYPE_ARRAY,
-        dstHost: std::ptr::null_mut(),
-        dstDevice: 0,
-        dstArray: destination.level_zero,
-        dstPitch: 0,
-        WidthInBytes: width as usize * 4,
-        Height: height as usize,
-    };
-    unsafe { sys::cuMemcpy2D_v2(&copy) }
-        .result()
-        .map_err(driver_error)
-}
-
 fn driver_error(error: cudarc::driver::result::DriverError) -> String {
     error.to_string()
 }

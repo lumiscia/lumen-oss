@@ -164,17 +164,12 @@ impl AvFrame {
         unsafe { (*self.ptr.as_ptr()).color_range }
     }
 
-    #[cfg(any(feature = "metal", feature = "cuda"))]
+    #[cfg(feature = "metal")]
     pub(crate) fn data(&self, plane: usize) -> *mut u8 {
         unsafe { (*self.ptr.as_ptr()).data[plane] }
     }
 
-    #[cfg(feature = "cuda")]
-    pub(crate) fn line_size(&self, plane: usize) -> i32 {
-        unsafe { (*self.ptr.as_ptr()).linesize[plane] }
-    }
-
-    #[cfg(any(feature = "cuda", feature = "vulkan"))]
+    #[cfg(feature = "vulkan")]
     pub(crate) fn hw_sw_format(&self) -> Option<sys::AVPixelFormat> {
         let frame = unsafe { self.ptr.as_ref() };
         if frame.hw_frames_ctx.is_null() {
