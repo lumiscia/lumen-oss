@@ -108,7 +108,7 @@ pub struct VideoStreamInfo {
     /// Clockwise rotation in degrees (0, 90, 180 or 270) that RGBA decode applies to each frame.
     pub rotation: u32,
     pub pixel_format: PixelFormat,
-    /// Whether the stream's pixel format carries an alpha channel.
+    /// Whether the stream carries alpha, in its pixel format or in a VP8 or VP9 alpha layer.
     pub has_alpha: bool,
     pub time_base: Rational,
     pub avg_frame_rate: Rational,
@@ -365,7 +365,6 @@ impl InputContext {
                 (coded_height, coded_width)
             };
             let format = std::mem::transmute::<i32, sys::AVPixelFormat>((*params).format);
-            let descriptor = sys::av_pix_fmt_desc_get(format);
             VideoStreamInfo {
                 stream_index: index,
                 codec: VideoCodec::from_av_codec_id((*params).codec_id),
@@ -373,8 +372,7 @@ impl InputContext {
                 height,
                 rotation,
                 pixel_format: PixelFormat::from_av_pixel_format(format),
-                has_alpha: !descriptor.is_null()
-                    && (*descriptor).flags & sys::AV_PIX_FMT_FLAG_ALPHA as u64 != 0,
+                has_alpha: self.has_alpha_layer(index) || pixel_format_has_alpha(format),
                 time_base: (*stream).time_base.into(),
                 avg_frame_rate: (*stream).avg_frame_rate.into(),
                 frame_rate: stream_frame_rate(self.ptr, stream),
@@ -447,6 +445,20 @@ impl InputContext {
         }
     }
 
+    /// Whether the stream has a separate VP8 or VP9 alpha layer. Its pixel format doesn't show one,
+    /// so this reads the tag the Matroska demuxer sets from the track header.
+    pub(crate) fn has_alpha_layer(&self, stream_index: usize) -> bool {
+        unsafe {
+            if stream_index >= (*self.ptr).nb_streams as usize {
+                return false;
+            }
+            let stream = *(*self.ptr).streams.add(stream_index);
+            let entry =
+                sys::av_dict_get((*stream).metadata, c"alpha_mode".as_ptr(), ptr::null(), 0);
+            !entry.is_null() && CStr::from_ptr((*entry).value).to_bytes() == b"1"
+        }
+    }
+
     pub(crate) fn stream_parameters(
         &self,
         stream_index: usize,
@@ -501,6 +513,11 @@ unsafe fn stream_frame_rate(
 }
 
 /// Reads the clockwise quarter turn a stream's display matrix asks for. Any other matrix reads as 0.
+pub(crate) fn pixel_format_has_alpha(format: sys::AVPixelFormat) -> bool {
+    let descriptor = unsafe { sys::av_pix_fmt_desc_get(format) };
+    !descriptor.is_null() && unsafe { (*descriptor).flags } & sys::AV_PIX_FMT_FLAG_ALPHA as u64 != 0
+}
+
 pub(crate) fn display_rotation(params: *const sys::AVCodecParameters) -> u32 {
     const DISPLAY_MATRIX_BYTES: usize = 9 * size_of::<i32>();
     unsafe {

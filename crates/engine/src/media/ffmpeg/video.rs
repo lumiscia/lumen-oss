@@ -234,6 +234,12 @@ impl LibavStreamDecoder {
             tracing::warn!(reason, "hardware decode unavailable, decoding on the CPU");
             options.prefer_hardware_decode = false;
         }
+        if decoder.drops_alpha() {
+            tracing::warn!(
+                source,
+                "this FFmpeg has no libvpx decoder, so the video's alpha layer is dropped and it renders opaque"
+            );
+        }
 
         Ok(DecoderComponents {
             input,
@@ -437,7 +443,7 @@ impl LibavStreamDecoder {
             width: decoded.width,
             height: decoded.height,
             rgba: decoded.data,
-            premultiply: false,
+            premultiply: self.decoder.last_frame_had_alpha(),
         })
     }
 
@@ -1194,6 +1200,131 @@ mod tests {
             &decoded.rgba[..4]
         );
         let _ = fs::remove_file(path);
+    }
+
+    /// 0x2080ff at half alpha, whose blue channel is 255 straight and 128 premultiplied.
+    #[test]
+    fn vp9_alpha_layers_are_detected_and_decoded_premultiplied() {
+        let path =
+            std::env::temp_dir().join(format!("lumen_engine_{}_alpha.webm", std::process::id()));
+        let Ok(output) = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args([
+                "-i",
+                "color=c=0x2080ff:s=32x32:r=30:d=0.2,format=rgba,colorchannelmixer=aa=0.5,format=yuva420p",
+            ])
+            .args(["-c:v", "libvpx-vp9", "-crf", "10", "-b:v", "0"])
+            .arg(&path)
+            .output()
+        else {
+            eprintln!("ffmpeg CLI not installed; skipping VP9 alpha test");
+            return;
+        };
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("Unknown encoder"), "{stderr}");
+            eprintln!("libvpx-vp9 unavailable; skipping VP9 alpha test");
+            return;
+        }
+
+        let source = path.to_string_lossy().to_string();
+        let input = open_input(&source).expect("open clip");
+        assert!(input.best_video_stream().expect("video stream").has_alpha);
+        let resolver =
+            FfmpegVideoResolver::open_with_options(source, FfmpegResolverOptions::default())
+                .expect("open clip");
+        let MediaFrame::CpuRgba(decoded) = resolver.frame(0).expect("decode frame") else {
+            panic!("expected a CPU frame");
+        };
+        let [_, _, blue, alpha] = decoded.rgba[..4] else {
+            panic!("expected a pixel");
+        };
+        assert!(
+            alpha.abs_diff(128) <= 2 && blue.abs_diff(128) <= 4,
+            "{:?}",
+            &decoded.rgba[..4]
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    /// The stream's parameters come from its opaque start, so only the frames show the alpha.
+    #[test]
+    fn frames_that_gain_alpha_mid_stream_are_premultiplied() {
+        let directory =
+            std::env::temp_dir().join(format!("lumen_engine_{}_gains_alpha", std::process::id()));
+        fs::create_dir_all(&directory).expect("create directory");
+        let encode = |name: &str, filter: &str, pixel_format: &str| {
+            let path = directory.join(name);
+            Command::new("ffmpeg")
+                .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+                .args(["-i", filter])
+                .args(["-pix_fmt", pixel_format, "-c:v", "prores_ks"])
+                .args(["-profile:v", "4444", "-alpha_bits", "16"])
+                .arg(&path)
+                .output()
+                .map(|output| (path, output))
+        };
+        let parts = [
+            encode(
+                "opaque.mov",
+                "color=c=0x2080ff:s=32x32:r=30:d=0.1",
+                "yuv444p10le",
+            ),
+            encode(
+                "alpha.mov",
+                "color=c=0x2080ff:s=32x32:r=30:d=0.1,format=rgba,colorchannelmixer=aa=0.5",
+                "yuva444p10le",
+            ),
+        ];
+        let mut list = String::new();
+        for part in &parts {
+            let Ok((path, output)) = part else {
+                eprintln!("ffmpeg CLI not installed; skipping mid-stream alpha test");
+                return;
+            };
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(stderr.contains("Unknown encoder"), "{stderr}");
+                eprintln!("prores_ks unavailable; skipping mid-stream alpha test");
+                return;
+            }
+            list.push_str(&format!("file '{}'\n", path.display()));
+        }
+        let list_path = directory.join("list.txt");
+        fs::write(&list_path, list).expect("write concat list");
+        let path = directory.join("gains_alpha.mov");
+        let output = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error"])
+            .args(["-f", "concat", "-safe", "0", "-i"])
+            .arg(&list_path)
+            .args(["-c", "copy"])
+            .arg(&path)
+            .output()
+            .expect("concat clips");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let source = path.to_string_lossy().to_string();
+        let input = open_input(&source).expect("open clip");
+        assert!(!input.best_video_stream().expect("video stream").has_alpha);
+        let resolver =
+            FfmpegVideoResolver::open_with_options(source, FfmpegResolverOptions::default())
+                .expect("open clip");
+        let MediaFrame::CpuRgba(decoded) = resolver.frame(4).expect("decode frame") else {
+            panic!("expected a CPU frame");
+        };
+        let [_, _, blue, alpha] = decoded.rgba[..4] else {
+            panic!("expected a pixel");
+        };
+        assert!(
+            alpha.abs_diff(128) <= 2 && blue.abs_diff(128) <= 4,
+            "{:?}",
+            &decoded.rgba[..4]
+        );
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]

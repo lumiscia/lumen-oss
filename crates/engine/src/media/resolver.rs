@@ -4,6 +4,7 @@ use crate::error::MediaError;
 
 #[derive(Debug, Clone)]
 pub struct CpuMediaFrame {
+    /// Premultiplied RGBA8, which is what the renderer's textures hold.
     pub rgba: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
