@@ -258,7 +258,10 @@ fn open_video_device(
         (encode.0, 1, vk::QueueFlags::VIDEO_ENCODE_KHR),
     ] {
         match queue_families.iter_mut().find(|family| family.0 == index) {
-            Some(family) => family.2 |= flags,
+            Some(family) => {
+                family.1 = family.1.min(count);
+                family.2 |= flags;
+            }
             None => queue_families.push((index, count, flags)),
         }
     }

@@ -160,6 +160,9 @@ impl VulkanDevice {
     /// must keep them alive. No queue family listed with compute, transfer or video capabilities may
     /// contain a queue that is used outside FFmpeg, and `render_queue` must submit to a queue of a
     /// listed family as its documentation requires.
+    ///
+    /// Families with video encode must list one queue, because encoders on this device run with
+    /// more than one frame in flight, which can stall NVIDIA's H.264 encoder across several queues.
     pub unsafe fn from_raw(
         desc: &VulkanDeviceDesc<'_>,
         render_queue: Arc<dyn VulkanRenderQueue>,
@@ -200,6 +203,13 @@ impl VulkanDevice {
                 .with_backend(BACKEND));
             }
             for (slot, &(index, count, flags)) in desc.queue_families.iter().enumerate() {
+                if flags.contains(vk::QueueFlags::VIDEO_ENCODE_KHR) && count != 1 {
+                    return Err(FfmpegError::new(
+                        "VulkanDevice::from_raw",
+                        "a queue family with video encode must list one queue",
+                    )
+                    .with_backend(BACKEND));
+                }
                 (*hwctx).qf[slot] = sys::AVVulkanDeviceQueueFamily {
                     idx: index as i32,
                     num: count as i32,
