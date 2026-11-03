@@ -153,8 +153,9 @@ fn audio_metadata(source: &str) -> Result<AudioMetadata, MediaError> {
     let stream = format
         .streams()
         .best(Type::Audio)
-        .ok_or_else(|| MediaError::SourceNotFound {
+        .ok_or_else(|| MediaError::Decode {
             media_source: source.to_string(),
+            details: "file has no audio stream".to_string(),
         })?;
     let duration_seconds = if stream.duration() > 0 {
         rational_to_f64(stream.time_base())

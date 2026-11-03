@@ -10,7 +10,7 @@ use lumen_engine::{
     error::MediaError,
     expr::{Expression, ExpressionContext},
     gpu::{BoundFrame, CompileContext, CompiledOutput, FrameBindContext, GpuCompositionRenderer},
-    media::{FontResolver, ImageResolver, MediaStore, TextSession, VideoFrameResolver},
+    media::{FontResolver, MediaStore, TextSession},
     node::{NodeId, PortRef},
 };
 use lumen_gpu::{Upload, wgpu};
@@ -973,14 +973,6 @@ impl FontResolver for ChurningResolver {
 }
 
 impl MediaStore for ChurningFont {
-    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
-        None
-    }
-
-    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
-    }
-
     fn font_resolver_id(&self, family: &str) -> Option<String> {
         (family == "Churn").then(|| format!("churn-{}", self.asked.fetch_add(1, Ordering::Relaxed)))
     }

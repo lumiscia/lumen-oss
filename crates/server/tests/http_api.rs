@@ -251,6 +251,8 @@ fn serve_media(mut stream: TcpStream, port: u16, released: &Mutex<Receiver<()>>,
     } else if path.starts_with("/photo.jpg") {
         photo = normal_sized_jpeg();
         &photo
+    } else if path.starts_with("/corrupt") {
+        b"not media"
     } else {
         TINY_PNG
     };
@@ -645,6 +647,41 @@ fn render_outcome(server: &Server, body: &Value) -> Option<(String, Value)> {
         return None;
     }
     Some((id, progress))
+}
+
+#[test]
+fn corrupt_media_errors_do_not_reveal_where_it_is_staged_with_gpu() {
+    let media = MediaServer::start();
+    let server = Server::start(&["--allow-media-host", "localhost"]);
+    let temp = std::env::temp_dir().canonicalize().expect("temp directory");
+    for (kind, alias) in [("image", "hero.png"), ("video", "clip.mp4")] {
+        let Some((_, progress)) = render_outcome(
+            &server,
+            &json!({
+                "composition": media_composition(kind, alias),
+                "media": { alias: media.url("localhost", "/corrupt") },
+            }),
+        ) else {
+            return;
+        };
+        assert_eq!(progress["state"], "failed", "{alias}: {progress}");
+        let error = progress["error"].as_str().unwrap_or_default();
+        assert!(error.contains(alias), "{alias}: {error}");
+        assert!(
+            !error.contains(&*temp.to_string_lossy()),
+            "{alias}: {error}"
+        );
+    }
+
+    let Some((_, progress)) = render_outcome(
+        &server,
+        &json!({ "composition": media_composition("image", ".") }),
+    ) else {
+        return;
+    };
+    assert_eq!(progress["state"], "failed", "{progress}");
+    let error = progress["error"].as_str().unwrap_or_default();
+    assert!(!error.contains(&*temp.to_string_lossy()), "{error}");
 }
 
 #[test]

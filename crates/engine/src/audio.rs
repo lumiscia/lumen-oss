@@ -227,12 +227,7 @@ impl<'a, P: MediaStore> AudioMixer<'a, P> {
             let output_offset = usize::try_from(overlap_start - start_sample).unwrap_or(0);
             let clip_offset = overlap_start - clip_start;
             let source_start = ms_to_sample(clip.source_start_ms).saturating_add(clip_offset);
-            let source = self
-                .provider
-                .get_audio_resolver(&clip.source_id)
-                .ok_or_else(|| MediaError::SourceNotFound {
-                    media_source: clip.source_id.clone(),
-                })?;
+            let source = self.provider.get_audio_resolver(&clip.source_id)?;
             let source_buffer = source.resolve_range(source_start, frames_to_mix)?;
             let gain = track.volume * clip.volume;
 
@@ -310,27 +305,22 @@ mod tests {
     }
 
     impl crate::media::MediaStore for TestProvider {
-        fn get_image_resolver(
+        fn get_audio_resolver(
             &self,
-            _source: &str,
-        ) -> Option<Box<dyn crate::media::ImageResolver>> {
-            None
-        }
-
-        fn get_video_resolver(
-            &self,
-            _stream_id: &str,
-        ) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
-            None
-        }
-
-        fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
-            self.sources.get(source_id).cloned().map(|buffer| {
-                Box::new(TestResolver {
-                    id: source_id.to_string(),
-                    buffer,
-                }) as Box<dyn AudioResolver>
-            })
+            source_id: &str,
+        ) -> Result<Box<dyn AudioResolver>, crate::error::MediaError> {
+            self.sources
+                .get(source_id)
+                .cloned()
+                .map(|buffer| {
+                    Box::new(TestResolver {
+                        id: source_id.to_string(),
+                        buffer,
+                    }) as Box<dyn AudioResolver>
+                })
+                .ok_or_else(|| {
+                    crate::error::MediaError::source_not_found(source_id, "not registered")
+                })
         }
     }
 
