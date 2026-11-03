@@ -1,4 +1,4 @@
-use crate::server::{RenderNotification, RenderQueueState, current_timestamp};
+use crate::server::{RenderJobError, RenderNotification, RenderQueueState, current_timestamp};
 
 use super::state::{AppState, RenderRegistry};
 
@@ -6,7 +6,7 @@ use super::state::{AppState, RenderRegistry};
 pub(super) struct RenderProgressPatch {
     pub artifact_url: Option<String>,
     pub duration_ms: Option<u128>,
-    pub error: Option<String>,
+    pub failure: Option<RenderJobError>,
     pub output_bytes: Option<usize>,
     pub progress: Option<f32>,
     pub stage: Option<&'static str>,
@@ -43,18 +43,24 @@ pub(super) fn apply_render_progress(
         artifact_url: None,
         duration_ms: None,
         error: None,
+        error_code: None,
         organization_id: "self-hosted".to_string(),
         output_bytes: None,
         progress: 0.0,
         render_id: id.to_string(),
         resolution: None,
+        retryable: None,
         stage: Some("queued"),
         state: "queued",
         updated_at: current_timestamp(),
     });
     progress.artifact_url = patch.artifact_url.or(progress.artifact_url);
     progress.duration_ms = patch.duration_ms.or(progress.duration_ms);
-    progress.error = patch.error.or(progress.error);
+    if let Some(failure) = patch.failure {
+        progress.error = Some(failure.message);
+        progress.error_code = Some(failure.code);
+        progress.retryable = Some(failure.retryable);
+    }
     progress.output_bytes = patch.output_bytes.or(progress.output_bytes);
     progress.progress = patch
         .progress

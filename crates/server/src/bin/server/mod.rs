@@ -7,8 +7,7 @@ use std::{collections::HashMap, time::Instant};
 
 pub use types::{
     ApiRenderJob, ArtifactOutput, CreateRenderResponse, GetRenderResponse, RenderJobError,
-    RenderJobInput, RenderJobMetrics, RenderJobResponse, RenderNotification,
-    RenderProgressResponse, RenderQueueState,
+    RenderJobInput, RenderJobMetrics, RenderNotification, RenderProgressResponse, RenderQueueState,
 };
 
 use lumen_server::render::{
