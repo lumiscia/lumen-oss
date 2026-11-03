@@ -429,6 +429,27 @@ fn timeline_schema_matches_engine_parsing() {
     }
 }
 
+#[test]
+fn version_keys_match_engine_parsing() {
+    let validator = schema_validator();
+
+    for (key, version, valid) in [
+        ("lumenSchemaVersion", json!("0.1.0"), true),
+        ("lumenSchemaVersion", json!(1), false),
+        ("schemaVersion", json!("0.1.0"), true),
+        ("schemaVersion", json!(1), false),
+    ] {
+        let mut composition = composition_with_node(&node_schema("exposure"), json!({}));
+        composition[key] = version.clone();
+        assert_eq!(validator.is_valid(&composition), valid, "{key}: {version}");
+        assert_eq!(
+            lumen_engine::json::parse_value(&composition).is_ok(),
+            valid,
+            "{key}: {version}"
+        );
+    }
+}
+
 /// Each row is a composition, whether the schema accepts it and whether the engine parses it.
 #[test]
 fn expression_placement_matches_engine_parsing() {

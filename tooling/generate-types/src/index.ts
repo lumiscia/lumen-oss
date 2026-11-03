@@ -1,17 +1,18 @@
-import { readCompositionSchemaManifest } from "./definitions.js";
+import { readFile } from "node:fs/promises";
+
 import {
   compositionSchemaPath,
   generatedMetaTypesPath,
   generatedSchemaTypesPath,
 } from "./paths.js";
-import { renderCompositionTypes, renderMetaTypes, renderSchemaTypePrelude } from "./render.js";
+import type { JsonSchema } from "./render-defs.js";
+import { renderTypes } from "./render.js";
 import { writeGeneratedFile } from "./write.js";
 
-const manifest = await readCompositionSchemaManifest(compositionSchemaPath);
-const metaTypes = renderMetaTypes(manifest);
-const schemaTypes = `${renderSchemaTypePrelude()}${renderCompositionTypes()}`;
+const schema = JSON.parse(await readFile(compositionSchemaPath, "utf8")) as JsonSchema;
+const { meta, root } = renderTypes(schema);
 
 await Promise.all([
-  writeGeneratedFile(generatedSchemaTypesPath, schemaTypes),
-  writeGeneratedFile(generatedMetaTypesPath, metaTypes),
+  writeGeneratedFile(generatedSchemaTypesPath, root),
+  writeGeneratedFile(generatedMetaTypesPath, meta),
 ]);
