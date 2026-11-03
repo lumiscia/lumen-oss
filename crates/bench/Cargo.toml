@@ -38,3 +38,7 @@ path = "src/bin/text.rs"
 [[bin]]
 name = "lumen-bench-json-parse"
 path = "src/bin/json_parse.rs"
+
+[[bin]]
+name = "lumen-bench-expression"
+path = "src/bin/expression.rs"

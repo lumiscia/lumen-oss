@@ -45,18 +45,17 @@ impl ExpressionValue {
         match self {
             Self::Number(n) => Some(*n),
             Self::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
-            Self::String(s) => s.parse().ok(),
-            Self::Vec2(_) | Self::Color(_) => None,
+            Self::String(_) | Self::Vec2(_) | Self::Color(_) => None,
         }
     }
 
     pub fn as_bool(&self) -> bool {
         match self {
             Self::Boolean(b) => *b,
-            Self::Number(n) => n.abs() > f64::EPSILON,
+            Self::Number(n) => is_truthy(*n),
             Self::String(s) => !s.is_empty(),
-            Self::Vec2((x, y)) => x.abs() > f64::EPSILON || y.abs() > f64::EPSILON,
-            Self::Color(color) => color.iter().any(|component| component.abs() > f64::EPSILON),
+            Self::Vec2((x, y)) => is_truthy(*x) || is_truthy(*y),
+            Self::Color(color) => color.iter().copied().any(is_truthy),
         }
     }
 
@@ -89,6 +88,11 @@ impl ExpressionValue {
             _ => None,
         }
     }
+}
+
+/// Whether a number counts as true: anything but zero and NaN.
+fn is_truthy(number: f64) -> bool {
+    number.abs() > 0.0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -198,7 +202,7 @@ impl ExprNode {
 
 impl Expression {
     /// Builds an expression from an AST, deriving its evaluation plan.
-    pub fn new(ast: ExprNode, source: String) -> Self {
+    pub(crate) fn new(ast: ExprNode, source: String) -> Self {
         Self {
             plan: Arc::new(super::eval::EvalPlan::new(&ast)),
             depth: ast.depth(),
@@ -251,7 +255,8 @@ mod tests {
         assert_eq!(value.as_string(), "[12.5, -3]");
         assert!(value.as_bool());
         assert!(!ExpressionValue::Vec2((0.0, 0.0)).as_bool());
-        assert!(!ExpressionValue::Vec2((f64::EPSILON, 0.0)).as_bool());
+        assert!(ExpressionValue::Vec2((f64::EPSILON, 0.0)).as_bool());
+        assert!(!ExpressionValue::Vec2((f64::NAN, -0.0)).as_bool());
     }
 
     #[test]

@@ -2,9 +2,8 @@ use crate::{
     error::LumenError,
     expr::{
         ExpressionContext,
-        ast::{BuiltinFn, ExprNode, ExpressionValue},
+        ast::{BuiltinFn, ExpressionValue},
         easing::{SPRING_DAMPING, SPRING_STIFFNESS, cubic_bezier, spring},
-        eval::evaluate_expr,
         spec::{Easing, easing_builtins},
     },
     node::{
@@ -25,13 +24,6 @@ pub fn evaluate_builtin(
 ) -> crate::Result<ExpressionValue> {
     let spec = builtin.spec();
     let error = |details: String| LumenError::evaluate(details);
-    if !spec.accepts_arity(args.len()) {
-        return Err(error(format!(
-            "builtin expects {} arguments, got {}",
-            spec.arity_description(),
-            args.len()
-        )));
-    }
     let number = |index: usize| {
         args[index]
             .as_f64()
@@ -49,6 +41,13 @@ pub fn evaluate_builtin(
         ))
     };
     let unary = |f: fn(f64) -> f64| Ok(ExpressionValue::Number(f(number(0)?)));
+    let optional = |index: usize, default: f64| {
+        if index < args.len() {
+            number(index)
+        } else {
+            Ok(default)
+        }
+    };
 
     match builtin {
         BuiltinFn::Min | BuiltinFn::Max => {
@@ -82,7 +81,7 @@ pub fn evaluate_builtin(
         BuiltinFn::Pow => Ok(ExpressionValue::Number(number(0)?.powf(number(1)?))),
         BuiltinFn::Mod => {
             let (lhs, rhs) = (number(0)?, number(1)?);
-            if rhs.abs() <= f64::EPSILON {
+            if rhs == 0.0 {
                 return Err(error("mod divisor must be non-zero".to_string()));
             }
             Ok(ExpressionValue::Number(lhs % rhs))
@@ -99,10 +98,14 @@ pub fn evaluate_builtin(
             let (start, end, t) = (number(0)?, number(1)?, number(2)?);
             Ok(ExpressionValue::Number(if t >= 1.0 { end } else { start }))
         }
-        BuiltinFn::TextHeight | BuiltinFn::TextWidth => Err(error(format!(
-            "{} node references should be evaluated before calling this helper",
-            spec.name
-        ))),
+        BuiltinFn::TextHeight | BuiltinFn::TextWidth => measure_text(
+            builtin,
+            args[0].as_string(),
+            optional(1, 16.0)?,
+            optional(2, 0.0)?,
+            args.get(3).map(ExpressionValue::as_string),
+            ctx,
+        ),
         BuiltinFn::Uppercase => Ok(ExpressionValue::String(args[0].as_string().to_uppercase())),
         BuiltinFn::Lowercase => Ok(ExpressionValue::String(args[0].as_string().to_lowercase())),
         BuiltinFn::Vec2 => Ok(ExpressionValue::Vec2((number(0)?, number(1)?))),
@@ -120,10 +123,11 @@ pub fn evaluate_builtin(
         ))),
         BuiltinFn::Tween => {
             let ease = match args.get(4) {
-                None => Easing::Linear,
-                Some(ease) => Easing::from_name(&ease.as_string())
-                    .ok_or_else(|| error(format!("unknown easing `{}`", ease.as_string())))?,
-            };
+                None => Some(Easing::Linear),
+                Some(ExpressionValue::String(name)) => Easing::from_name(name),
+                Some(_) => None,
+            }
+            .ok_or_else(|| error(format!("unknown easing `{}`", args[4].as_string())))?;
             let start = number(2)?;
             let t = ease.apply(progress(ctx, start, start + number(3)?));
             interpolate(&args[0], &args[1], t).ok_or_else(|| mismatch(spec.name))
@@ -162,13 +166,6 @@ pub fn evaluate_builtin(
             })
         }
         BuiltinFn::Spring => {
-            let optional = |index: usize, default: f64| {
-                if index < args.len() {
-                    number(index)
-                } else {
-                    Ok(default)
-                }
-            };
             let stiffness = checked(1, optional(1, SPRING_STIFFNESS)?)?;
             let damping = checked(2, optional(2, SPRING_DAMPING)?)?;
             Ok(ExpressionValue::Number(spring(
@@ -227,56 +224,25 @@ fn interpolate(from: &ExpressionValue, to: &ExpressionValue, t: f64) -> Option<E
     }
 }
 
-pub fn evaluate_text_measure_builtin(
+/// `builtin`'s dimension of `measurement`.
+fn measured(builtin: BuiltinFn, measurement: lumen_text::TextMeasurement) -> ExpressionValue {
+    ExpressionValue::Number(f64::from(if builtin == BuiltinFn::TextHeight {
+        measurement.height
+    } else {
+        measurement.width
+    }))
+}
+
+fn measure_text(
     builtin: BuiltinFn,
-    args: &[ExprNode],
+    text: String,
+    font_size: f64,
+    max_width: f64,
+    font_family: Option<String>,
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<ExpressionValue> {
-    let builtin_name = builtin.name();
-    if !builtin.spec().accepts_arity(args.len()) {
-        return Err(LumenError::evaluate(format!(
-            "{builtin_name} expects 1 to 4 arguments"
-        )));
-    }
-
-    if let Some(ExprNode::Node(node_id)) = args.first() {
-        if args.len() != 1 {
-            return Err(LumenError::evaluate(format!(
-                "{builtin_name}(node(id)) does not accept override arguments"
-            )));
-        }
-        let measurement = measure_text_node(*node_id, ctx)?;
-        return Ok(ExpressionValue::Number(match builtin {
-            BuiltinFn::TextHeight => f64::from(measurement.height),
-            BuiltinFn::TextWidth => f64::from(measurement.width),
-            _ => unreachable!(),
-        }));
-    }
-
-    let evaluate = |index: usize| {
-        args.get(index)
-            .map(|arg| evaluate_expr(arg, ctx))
-            .transpose()
-    };
-    let number = |index: usize, details: &str| {
-        evaluate(index)?
-            .map(|value| {
-                value
-                    .as_f64()
-                    .ok_or_else(|| LumenError::evaluate(format!("{builtin_name} {details}")))
-            })
-            .transpose()
-    };
-    let text = evaluate(0)?
-        .map(|value| value.as_string())
-        .unwrap_or_default();
-    let font_size = number(1, "optional second arg must be numeric font size")?.unwrap_or(16.0);
-    let max_width = number(2, "optional third arg must be numeric max width")?.unwrap_or(0.0);
-    let font_family = evaluate(3)?
-        .map(|value| value.as_string())
-        .unwrap_or_else(|| lumen_text::DEFAULT_FONT_FAMILY.to_string());
     let style = TextLayoutStyle {
-        font_family,
+        font_family: font_family.unwrap_or_else(|| lumen_text::DEFAULT_FONT_FAMILY.to_string()),
         font_size,
         font_weight: 400,
         font_style: TextFontStyle::Normal,
@@ -292,11 +258,16 @@ pub fn evaluate_text_measure_builtin(
         ctx,
         style.request(&TextContent::Text(text), &Default::default()),
     )?;
-    Ok(ExpressionValue::Number(match builtin {
-        BuiltinFn::TextHeight => f64::from(measurement.height),
-        BuiltinFn::TextWidth => f64::from(measurement.width),
-        _ => unreachable!(),
-    }))
+    Ok(measured(builtin, measurement))
+}
+
+/// `text_width(node(id))` or `text_height(node(id))`.
+pub fn measure_node(
+    builtin: BuiltinFn,
+    node_id: NodeId,
+    ctx: &ExpressionContext<'_>,
+) -> crate::Result<ExpressionValue> {
+    Ok(measured(builtin, measure_text_node(node_id, ctx)?))
 }
 
 fn measure_text_node(

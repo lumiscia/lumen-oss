@@ -8,9 +8,9 @@ use crate::{
     expr::{
         ExpressionContext, GlyphScope,
         ast::{BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
-        builtins::{evaluate_builtin, evaluate_text_measure_builtin},
+        builtins::{evaluate_builtin, measure_node},
     },
-    node::{PropertyEval, PropertyRead},
+    node::{NodeId, PropertyEval, PropertyRead},
 };
 
 impl Expression {
@@ -76,13 +76,11 @@ impl Drop for EvaluationGuard {
 /// An expression's AST with each distinct subtree as one step, so a subtree it repeats, as
 /// expanded easing curves repeat their progress, is evaluated once per evaluation. Steps are
 /// evaluated in the AST's order and only where it evaluates them, so `&&`, `||` and conditional
-/// branches stay lazy and errors are those of the AST.
+/// branches stay lazy.
 #[derive(Debug)]
 pub(crate) struct EvalPlan {
     steps: Vec<Step>,
     root: usize,
-    /// Subtrees that `Op::Tree` evaluates as they are.
-    trees: Vec<ExprNode>,
     memo_slots: usize,
 }
 
@@ -101,8 +99,12 @@ enum Op {
     Binary(usize, BinaryOp, usize),
     Builtin(BuiltinFn, Box<[usize]>),
     Conditional(usize, usize, usize),
-    /// Text measurement, which reads its arguments as written, and references to nodes.
-    Tree(usize),
+    /// `node(id, 'property')`.
+    ReadProperty(NodeId, String),
+    /// `node(id)` outside a measurement, which fails when evaluated.
+    NodeRef(NodeId),
+    /// `text_width(node(id))` or `text_height(node(id))`.
+    MeasureNode(BuiltinFn, NodeId),
 }
 
 /// A literal compared by its bits, so that `0` and `-0` stay distinct.
@@ -153,7 +155,11 @@ impl EvalPlan {
                         reads[*step] += 1;
                     }
                 }
-                Op::Literal(_) | Op::Global(_) | Op::Tree(_) => {}
+                Op::Literal(_)
+                | Op::Global(_)
+                | Op::ReadProperty(..)
+                | Op::NodeRef(_)
+                | Op::MeasureNode(..) => {}
             }
         }
         let mut memo_slots = 0;
@@ -173,7 +179,6 @@ impl EvalPlan {
         Self {
             steps,
             root,
-            trees: builder.trees,
             memo_slots,
         }
     }
@@ -218,7 +223,14 @@ impl EvalPlan {
                 };
                 self.evaluate_step(*branch, ctx, memo)?
             }
-            Op::Tree(tree) => evaluate_expr(&self.trees[*tree], ctx)?,
+            Op::ReadProperty(node_id, property) => read_property(*node_id, property, ctx)?,
+            Op::NodeRef(node_id) => {
+                return Err(LumenError::evaluate(format!(
+                    "node reference `{}` can only be used in builtins that accept node references",
+                    node_id.0
+                )));
+            }
+            Op::MeasureNode(builtin, node_id) => measure_node(*builtin, *node_id, ctx)?,
         };
         if let Some(slot) = step.memo {
             memo[slot] = Some(value.clone());
@@ -230,7 +242,6 @@ impl EvalPlan {
 #[derive(Default)]
 struct PlanBuilder {
     ops: Vec<Op>,
-    trees: Vec<ExprNode>,
     interned: foldhash::HashMap<Op, usize>,
 }
 
@@ -245,20 +256,28 @@ impl PlanBuilder {
                 let lhs = self.add(lhs);
                 Op::Binary(lhs, *op, self.add(rhs))
             }
-            ExprNode::Builtin(builtin, args) if !measures_text(*builtin) => {
-                Op::Builtin(*builtin, args.iter().map(|arg| self.add(arg)).collect())
-            }
+            ExprNode::Builtin(builtin, args) => match (builtin, args.as_slice()) {
+                (BuiltinFn::TextHeight | BuiltinFn::TextWidth, [ExprNode::Node(node_id)]) => {
+                    Op::MeasureNode(*builtin, *node_id)
+                }
+                _ => Op::Builtin(*builtin, args.iter().map(|arg| self.add(arg)).collect()),
+            },
             ExprNode::Conditional(condition, when_true, when_false) => {
                 let condition = self.add(condition);
                 let when_true = self.add(when_true);
                 Op::Conditional(condition, when_true, self.add(when_false))
             }
-            ExprNode::Builtin(..) | ExprNode::Node(_) | ExprNode::PropertyValue(..) => {
-                self.trees.push(node.clone());
-                Op::Tree(self.trees.len() - 1)
+            ExprNode::Node(node_id) => Op::NodeRef(*node_id),
+            ExprNode::PropertyValue(node_id, property) => {
+                Op::ReadProperty(*node_id, property.clone())
             }
             ExprNode::Param(_) => unreachable!("function bodies are not evaluated"),
         };
+        // Each read stays its own step, so `EvaluationGuard` counts every evaluation it starts.
+        if matches!(op, Op::ReadProperty(..) | Op::MeasureNode(..)) {
+            self.ops.push(op);
+            return self.ops.len() - 1;
+        }
         if let Some(&step) = self.interned.get(&op) {
             return step;
         }
@@ -268,74 +287,39 @@ impl PlanBuilder {
     }
 }
 
-fn measures_text(builtin: BuiltinFn) -> bool {
-    matches!(builtin, BuiltinFn::TextHeight | BuiltinFn::TextWidth)
-}
-
-pub(crate) fn evaluate_expr(
-    expr: &ExprNode,
+/// The value of `property` on `node_id`, evaluating its expression if it has one.
+fn read_property(
+    node_id: NodeId,
+    property: &str,
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<ExpressionValue> {
-    match expr {
-        ExprNode::Literal(value) => Ok(value.clone()),
-        ExprNode::Unary(op, value) => unary(*op, evaluate_expr(value, ctx)?),
-        ExprNode::Binary(left, op, right) => {
-            binary(evaluate_expr(left, ctx)?, *op, || evaluate_expr(right, ctx))
-        }
-        ExprNode::Builtin(builtin, args) => {
-            if measures_text(*builtin) {
-                return evaluate_text_measure_builtin(*builtin, args, ctx);
-            }
-            let mut evaluated_args = Vec::with_capacity(args.len());
-            for arg in args {
-                evaluated_args.push(evaluate_expr(arg, ctx)?);
-            }
-            evaluate_builtin(*builtin, &evaluated_args, ctx)
-        }
-        ExprNode::Global(global) => global_value(*global, ctx),
-        ExprNode::Param(_) => unreachable!("function bodies are not evaluated"),
-        ExprNode::Node(node_id) => Err(LumenError::evaluate(format!(
-            "node reference `{}` can only be used in builtins that accept node references",
+    let graph = ctx.graph.ok_or_else(|| {
+        LumenError::evaluate(format!(
+            "no graph available to resolve node property reference `{property}`"
+        ))
+    })?;
+    let node = graph.nodes.get(&node_id).ok_or_else(|| {
+        LumenError::evaluate(format!(
+            "node `{}` not found for property reference `{property}`",
             node_id.0
-        ))),
-        ExprNode::PropertyValue(node_id, property) => {
-            let graph = ctx.graph.ok_or_else(|| {
-                LumenError::evaluate(format!(
-                    "no graph available to resolve node property reference `{property}`"
-                ))
-            })?;
-            let node = graph.nodes.get(node_id).ok_or_else(|| {
-                LumenError::evaluate(format!(
-                    "node `{}` not found for property reference `{property}`",
-                    node_id.0
-                ))
-            })?;
-            let prop = node.get_property(property).ok_or_else(|| {
-                LumenError::evaluate(format!(
-                    "property `{property}` not found on node `{}`",
-                    node_id.0
-                ))
-            })?;
-            match prop {
-                PropertyRead::Expr(inner_expr) => inner_expr
-                    .evaluate(&ctx.without_glyph())
-                    .map_err(|error| error.located(*node_id, property)),
-                PropertyRead::Value(value) => value.ok_or_else(|| {
-                    LumenError::evaluate(format!(
-                        "property `{property}` on node {} can't be read in an expression",
-                        node_id.0
-                    ))
-                }),
-            }
-        }
-        ExprNode::Conditional(condition, when_true, when_false) => {
-            let condition = evaluate_expr(condition, ctx)?;
-            if condition.as_bool() {
-                evaluate_expr(when_true, ctx)
-            } else {
-                evaluate_expr(when_false, ctx)
-            }
-        }
+        ))
+    })?;
+    let prop = node.get_property(property).ok_or_else(|| {
+        LumenError::evaluate(format!(
+            "property `{property}` not found on node `{}`",
+            node_id.0
+        ))
+    })?;
+    match prop {
+        PropertyRead::Expr(inner_expr) => inner_expr
+            .evaluate(&ctx.without_glyph())
+            .map_err(|error| error.located(node_id, property)),
+        PropertyRead::Value(value) => value.ok_or_else(|| {
+            LumenError::evaluate(format!(
+                "property `{property}` on node {} can't be read in an expression",
+                node_id.0
+            ))
+        }),
     }
 }
 
@@ -424,9 +408,9 @@ fn arithmetic(
         BinaryOp::Add => Ok(a + b),
         BinaryOp::Sub => Ok(a - b),
         BinaryOp::Mul => Ok(a * b),
-        BinaryOp::Div if b.abs() <= f64::EPSILON => Err(LumenError::evaluate("division by zero")),
+        BinaryOp::Div if b == 0.0 => Err(LumenError::evaluate("division by zero")),
         BinaryOp::Div => Ok(a / b),
-        BinaryOp::Mod if b.abs() <= f64::EPSILON => Err(LumenError::evaluate("modulo by zero")),
+        BinaryOp::Mod if b == 0.0 => Err(LumenError::evaluate("modulo by zero")),
         _ => Ok(a % b),
     };
     let scales = matches!(op, BinaryOp::Mul | BinaryOp::Div);
@@ -490,7 +474,6 @@ mod tests {
     use super::*;
     use crate::{
         error::ExpressionError,
-        expr::ast::ExprNode,
         graph::Graph,
         node::{DelegateEvaluable, NodeId, NodeKind, ParamValue, source::text::Text},
     };
@@ -510,24 +493,18 @@ mod tests {
 
     #[test]
     fn evaluates_globals_from_expression_context() {
-        let ctx = test_context();
-
-        assert_eq!(
-            evaluate_expr(&ExprNode::Global(GlobalVar::Time), &ctx).unwrap(),
-            ExpressionValue::Number(2.0)
-        );
-        assert_eq!(
-            evaluate_expr(&ExprNode::Global(GlobalVar::Fps), &ctx).unwrap(),
-            ExpressionValue::Number(24.0)
-        );
-        assert_eq!(
-            evaluate_expr(&ExprNode::Global(GlobalVar::Width), &ctx).unwrap(),
-            ExpressionValue::Number(1920.0)
-        );
-        assert_eq!(
-            evaluate_expr(&ExprNode::Global(GlobalVar::Height), &ctx).unwrap(),
-            ExpressionValue::Number(1080.0)
-        );
+        for (source, expected) in [
+            ("time", 2.0),
+            ("fps", 24.0),
+            ("width", 1920.0),
+            ("height", 1080.0),
+        ] {
+            assert_eq!(
+                evaluate(source, 48).unwrap(),
+                ExpressionValue::Number(expected),
+                "{source}"
+            );
+        }
     }
 
     #[test]
@@ -572,14 +549,9 @@ mod tests {
     fn subframe_offsets_frame_and_time() {
         let ctx = test_context().at_subframe(-0.25);
 
-        assert_eq!(
-            evaluate_expr(&ExprNode::Global(GlobalVar::Frame), &ctx).unwrap(),
-            ExpressionValue::Number(47.75)
-        );
-        assert_eq!(
-            evaluate_expr(&ExprNode::Global(GlobalVar::Time), &ctx).unwrap(),
-            ExpressionValue::Number(47.75 / 24.0)
-        );
+        let value = |source: &str| Expression::parse(source).unwrap().evaluate(&ctx).unwrap();
+        assert_eq!(value("frame"), ExpressionValue::Number(47.75));
+        assert_eq!(value("time"), ExpressionValue::Number(47.75 / 24.0));
     }
 
     #[test]
@@ -711,31 +683,80 @@ mod tests {
     }
 
     #[test]
-    fn vec2_coerces_boolean_and_numeric_string_components() {
-        for (source, expected) in [
-            ("vec2(true, false)", (1.0, 0.0)),
-            ("vec2(\"12.5\", \"-3\")", (12.5, -3.0)),
-            ("vec2(true, \"2.25\")", (1.0, 2.25)),
-        ] {
-            assert_eq!(
-                Expression::parse(source)
-                    .unwrap()
-                    .evaluate(&test_context())
-                    .unwrap(),
-                ExpressionValue::Vec2(expected)
-            );
-        }
+    fn vec2_coerces_boolean_components() {
+        assert_eq!(
+            evaluate("vec2(true, false)", 0).unwrap(),
+            ExpressionValue::Vec2((1.0, 0.0))
+        );
     }
 
     #[test]
     fn vec2_rejects_invalid_component_types() {
-        for source in ["vec2(\"left\", 2)", "vec2(1, vec2(2, 3))"] {
+        for source in [
+            "vec2(\"left\", 2)",
+            "vec2(\"12.5\", 2)",
+            "vec2(1, vec2(2, 3))",
+        ] {
             let error = Expression::parse(source)
                 .unwrap()
                 .evaluate(&test_context())
                 .expect_err("nonnumeric component must fail");
 
             assert_eq!(error.to_string(), "vec2 expects numeric arguments");
+        }
+    }
+
+    #[test]
+    fn numeric_strings_are_not_numbers() {
+        for (source, expected) in [
+            ("'1' + 2", "cannot convert string `1` into a number"),
+            ("'1' > 0", "cannot convert string `1` into a number"),
+            ("-'1'", "cannot convert string `1` into a number"),
+            ("abs('1')", "abs expects numeric arguments"),
+            (
+                "text_width('a', '32')",
+                "text_width expects numeric arguments",
+            ),
+            (
+                "lerp('0', '1', 0.5)",
+                "expects `from` and `to` of the same type",
+            ),
+        ] {
+            let error = evaluate(source, 0).unwrap_err().to_string();
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+        assert_eq!(
+            evaluate("uppercase(1) == '1'", 0).unwrap(),
+            ExpressionValue::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn only_exact_zero_is_zero() {
+        let tiny = 10_f64.powf(-20.0);
+        for (source, expected) in [
+            ("1 / pow(10, -20)", ExpressionValue::Number(1.0 / tiny)),
+            ("1 % pow(10, -20)", ExpressionValue::Number(1.0 % tiny)),
+            ("mod(1, pow(10, -20))", ExpressionValue::Number(1.0 % tiny)),
+            ("if(pow(10, -20), 1, 2)", ExpressionValue::Number(1.0)),
+            ("!pow(10, -20)", ExpressionValue::Boolean(false)),
+            ("if(pow(-1, 0.5), 1, 2)", ExpressionValue::Number(2.0)),
+            ("if(-0, 1, 2)", ExpressionValue::Number(2.0)),
+            (
+                "1 / sin(3.141592653589793) > 1",
+                ExpressionValue::Boolean(true),
+            ),
+        ] {
+            assert_eq!(evaluate(source, 0).unwrap(), expected, "{source}");
+        }
+        for (source, expected) in [
+            ("1 / 0", "division by zero"),
+            ("1 / -0", "division by zero"),
+            ("1 % 0", "modulo by zero"),
+            ("mod(1, 0)", "mod divisor must be non-zero"),
+        ] {
+            let error = evaluate(source, 0).unwrap_err().to_string();
+            assert!(error.contains(expected), "{source}: {error}");
         }
     }
 
@@ -748,34 +769,65 @@ mod tests {
     }
 
     #[test]
-    fn repeated_subtrees_evaluate_as_the_tree_does() {
-        let sources = [
-            "min(1, max(0, (time - 0.5) / 0.5)) * min(1, max(0, (time - 0.5) / 0.5))",
-            "if(frame > 48, 10 / (frame - 48), (frame - 48) * 2)",
-            "frame == 48 || 10 / (frame - 48) > 1",
-            "10 / (frame - 48) + 10 / (frame - 48)",
-            "vec2(-(time * 0), time * 0) + vec2(time * 0, -0)",
-        ];
-        for source in sources {
-            let expression = Expression::parse(source).unwrap();
-            for frame in [0.0, 48.0, 60.0] {
-                let ctx = ExpressionContext {
-                    frame,
-                    ..test_context()
-                };
-                let planned = expression.evaluate(&ctx).map_err(|error| error.to_string());
-                let walked = evaluate_expr(expression.ast(), &ctx).map_err(|e| e.to_string());
-                match (planned, walked) {
-                    (Ok(ExpressionValue::Vec2(a)), Ok(ExpressionValue::Vec2(b))) => {
-                        assert_eq!(
-                            (a.0.to_bits(), a.1.to_bits()),
-                            (b.0.to_bits(), b.1.to_bits())
-                        );
-                    }
-                    (planned, walked) => assert_eq!(planned, walked, "{source} at {frame}"),
-                }
-            }
+    fn repeated_subtrees_stay_lazy_and_keep_their_errors() {
+        let number = ExpressionValue::Number;
+        let boolean = ExpressionValue::Boolean;
+        for (source, frame, expected) in [
+            (
+                "min(1, max(0, (time - 0.5) / 0.5)) * min(1, max(0, (time - 0.5) / 0.5))",
+                18,
+                Ok(number(0.25)),
+            ),
+            (
+                "if(frame > 48, 10 / (frame - 48), (frame - 48) * 2)",
+                0,
+                Ok(number(-96.0)),
+            ),
+            (
+                "if(frame > 48, 10 / (frame - 48), (frame - 48) * 2)",
+                48,
+                Ok(number(0.0)),
+            ),
+            (
+                "if(frame > 48, 10 / (frame - 48), (frame - 48) * 2)",
+                58,
+                Ok(number(1.0)),
+            ),
+            (
+                "frame == 48 || 10 / (frame - 48) > 1",
+                48,
+                Ok(boolean(true)),
+            ),
+            (
+                "frame == 48 || 10 / (frame - 48) > 1",
+                58,
+                Ok(boolean(false)),
+            ),
+            ("10 / (frame - 48) + 10 / (frame - 48)", 58, Ok(number(2.0))),
+            (
+                "10 / (frame - 48) + 10 / (frame - 48)",
+                48,
+                Err("division by zero"),
+            ),
+        ] {
+            let result = evaluate(source, frame).map_err(|error| error.to_string());
+            assert_eq!(
+                result,
+                expected.map_err(str::to_string),
+                "{source} at {frame}"
+            );
         }
+    }
+
+    #[test]
+    fn subtrees_that_differ_only_in_the_sign_of_zero_stay_apart() {
+        let ExpressionValue::Vec2((negative, positive)) =
+            evaluate("vec2(-(time * 0), time * 0)", 48).unwrap()
+        else {
+            panic!("expected vec2");
+        };
+        assert_eq!(negative.to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(positive.to_bits(), 0.0_f64.to_bits());
     }
 
     #[test]
@@ -951,12 +1003,12 @@ mod tests {
             assert_eq!(later, measure(function, 8.0, false), "{function} at 8");
         }
 
-        let ctx = test_context();
         for source in [
             "text_width(node(8), 32, 300, \"Roboto\")",
             "text_height(node(8), 32, 300, \"Roboto\")",
         ] {
-            assert!(Expression::parse(source).unwrap().evaluate(&ctx).is_err());
+            let error = Expression::parse(source).unwrap_err().to_string();
+            assert!(error.contains("does not accept override"), "{error}");
         }
     }
 
@@ -1238,8 +1290,7 @@ mod tests {
 
     #[test]
     fn the_whole_budget_fits_a_worker_stack_in_the_largest_frames() {
-        // Right-nested binaries are the deepest frames, and a measurement's own arguments are
-        // evaluated from the AST rather than the plan.
+        // Right-nested binaries are the deepest frames.
         let nest = |levels: usize, leaf: &str| {
             format!("{}{leaf}{}", "1 + (".repeat(levels), ")".repeat(levels))
         };

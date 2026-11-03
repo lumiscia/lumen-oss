@@ -4,7 +4,8 @@ use crate::{
     error::ExpressionError,
     expr::{
         ast::{
-            BinaryOp, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp, parse_hex_color,
+            BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp,
+            parse_hex_color,
         },
         builtins::range_error,
         functions,
@@ -636,7 +637,8 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Checks what can be known before evaluation: arity, easing names and literal spring ranges.
+/// Checks what can be known before evaluation: arity, easing names, literal spring ranges and
+/// measuring a node with overrides.
 fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), ExpressionError> {
     let error = |details: String| ExpressionError::Parse {
         details: format!("`{}`: {details}", spec.name),
@@ -647,6 +649,13 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
             spec.arity_description(),
             args.len()
         )));
+    }
+    if matches!(spec.builtin, BuiltinFn::TextHeight | BuiltinFn::TextWidth)
+        && matches!(args, [ExprNode::Node(_), _, ..])
+    {
+        return Err(error(
+            "`node(id)` does not accept override arguments".to_string(),
+        ));
     }
     for (arg, param) in args.iter().zip(spec.args) {
         if param.kind != ValueKind::Easing {
