@@ -12,8 +12,8 @@ Lumen is still a heavy-beta renderer. This matrix describes what is supported to
 | NVIDIA / CUDA              | Experimental fast path | Linux CUDA/NVENC interop exists for hardware video paths. CPU-backed encoding remains the baseline fallback.                                                                                                       |
 | AMD / Intel Vulkan         | Experimental           | Expected to use the Vulkan renderer without CUDA-specific interop. Coverage depends on local hardware because CI currently uses software Vulkan.                                                                   |
 | Software Vulkan / lavapipe | CI-covered baseline    | CI selects lavapipe for SDK/server integration tests with `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json` and `WGPU_BACKEND=vulkan`. This validates baseline rendering behavior, not hardware performance. |
-| CPU encoding               | Supported baseline     | The portable path is CPU-backed FFmpeg encoding. It is the expected fallback when hardware encoder interop is unavailable.                                                                                         |
-| Hardware encoding          | Experimental           | CUDA/NVENC on Linux and VideoToolbox on macOS are the intended hardware paths. Availability depends on OS, driver, FFmpeg, and adapter support.                                                                    |
+| CPU encoding               | Supported baseline     | The portable path is CPU-backed FFmpeg encoding with `libx264`. It is what the Linux default falls back to when `h264_vulkan` won't open.                                                                          |
+| Hardware encoding          | Experimental           | `h264_vulkan` is the Linux default and VideoToolbox the macOS default. CUDA/NVENC is available by name. Availability depends on OS, driver, FFmpeg, and adapter support.                                           |
 
 ## Operating Systems
 
@@ -65,9 +65,21 @@ Software Vulkan through lavapipe is the deterministic CI baseline. It is useful 
 
 ## Encoding
 
-CPU-backed FFmpeg encoding is the baseline portable encoder path. Hardware encoding paths are opportunistic and should fall back clearly when unavailable.
+`lumen-local` and `lumen-server` pick their encoder from `--encoder` (`lumen-local`) or the render options (`lumen-server`), then `LUMEN_VIDEO_ENCODER`, then the platform default:
 
-When the renderer uses Vulkan but no compatible hardware encoder interop path exists, CPU encoding is the expected fallback.
+| Platform | Default             | If it won't open                                       |
+| -------- | ------------------- | ------------------------------------------------------ |
+| Linux    | `h264_vulkan`       | One warning with the reason, then `libx264` on the CPU |
+| macOS    | `h264_videotoolbox` | The render fails                                       |
+| Other    | `libx264`           | The render fails                                       |
+
+Only the automatic default falls back. An encoder you name either opens or fails the render, and `av1_vulkan` needs FFmpeg 8.0 or newer. The fallback covers everything that stops the encoder opening: FFmpeg built without `h264_vulkan`, no Vulkan driver, a device without `VK_KHR_video_encode_queue`, no H.264 encode support, a canvas size the hardware rejects, and `--crf` or `--preset`, which `h264_vulkan` doesn't support. A failure after the encoder has opened stays an error.
+
+`lumen-local` renders and encodes `h264_vulkan` on one Vulkan device, so frames never leave the GPU. `lumen-server` reads frames back and uploads them to the encoder. Each logs the encoder it opened and how frames reach it.
+
+### Hardware decode
+
+`LUMEN_HARDWARE_DECODE=1` asks for hardware video decode. A source moves to CPU decode for the rest of the render, with one warning, if its hardware decoder won't open or fails while decoding. A `--features vulkan` build without `cuda` always takes this fallback, because it can't import decoded Vulkan frames yet. Rotated sources and sources with an alpha channel always decode on the CPU.
 
 ## CI Coverage
 

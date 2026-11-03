@@ -15,6 +15,10 @@ Supported targets today are:
 
 VideoToolbox GPU texture encode is only available on macOS. Vulkan/CUDA export and NVENC paths are Linux-focused.
 
+## Encoders
+
+`--encoder` or `LUMEN_VIDEO_ENCODER` names the encoder, and a named encoder that won't open fails the render. With neither set, Linux uses `h264_vulkan` and falls back to `libx264` on the CPU with one warning, and macOS uses `h264_videotoolbox`. See the [support matrix](../../docs/support-matrix.md#encoding).
+
 ## Features
 
 - `vulkan`: enables Vulkan renderer and FFmpeg interop features.
