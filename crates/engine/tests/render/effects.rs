@@ -356,6 +356,15 @@ fn edge_blur_cases() -> Vec<Case> {
             }
         }
     }
+    // The kernel still has ink at (146, 47), past the 48 a reach of two sigma would stop at.
+    cases.push(
+        Case::new(
+            "blur 30 keeps its tail three sigma out",
+            chain((384, 288), vec![white(128.0, 90.0, 128, 108), blur(30.0)]),
+            Expect::Nonblank,
+        )
+        .bounded(true),
+    );
     cases
 }
 
