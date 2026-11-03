@@ -2465,8 +2465,7 @@
                         "$ref": "#/$defs/expression"
                       }
                     ],
-                    "default": 0,
-                    "description": "Last source frame to include.",
+                    "description": "First source frame past the range; the source's end when unset.",
                     "title": "Range End",
                     "x-lumen-constraints": {
                       "min": 0.0,

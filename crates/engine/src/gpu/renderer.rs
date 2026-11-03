@@ -1398,10 +1398,8 @@ impl<'a> PlanKeyCollector<'a> {
             }
             NodeKind::MediaIn(media_in) => {
                 let ctx = scope.expr_context(frame, self.media);
-                if let Some(size) = self
-                    .media
-                    .and_then(|media| media_in.native_size(&ctx, media))
-                {
+                // A failing source is left for compiling to report, like a font family above.
+                if let Ok(Some(size)) = media_in.native_size(&ctx) {
                     self.push_entry(media_in.id, PlanChoice::MediaSize(size.width, size.height));
                 }
             }
