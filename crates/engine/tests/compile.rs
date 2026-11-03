@@ -12,7 +12,7 @@ use lumen_engine::{
         VideoMetadata, collect_frame_requirements,
     },
     node::{
-        Deferred, NodeId, NodeKind,
+        Deferred, Node, NodeId, NodeKind,
         compositing::{merge::Merge, raster_multimerge::RasterMultiMerge},
         media_output::MediaOutput,
         processing::{

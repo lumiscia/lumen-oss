@@ -45,6 +45,8 @@ pub trait Node: Send + Sync {
     /// The node wired to each input, in the order of `input_port_defs`, with a variadic input
     /// expanded in place. `None` is an unconnected input.
     fn input_ports(&self) -> Vec<Option<NodeId>>;
+    /// Whether any of the node's params is an expression.
+    fn has_expressions(&self) -> bool;
 }
 
 pub trait PropertyEval {

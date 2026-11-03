@@ -101,6 +101,9 @@ pub trait NodeSchema: Default {
 }
 
 pub trait JsonNode: Default {
+    /// The node's `type` in JSON.
+    const KIND: &'static str;
+
     fn from_json(
         id: NodeId,
         params: Option<&serde_json::Map<String, serde_json::Value>>,

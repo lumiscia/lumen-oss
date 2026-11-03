@@ -41,7 +41,7 @@ use std::hash::Hasher;
 use crate::{
     composition::Composition,
     gpu::TimeRemapPath,
-    node::{NodeId, NodeKind},
+    node::{Node, NodeId, NodeKind},
 };
 
 /// A memo node reached through one path of time remaps and clips.
