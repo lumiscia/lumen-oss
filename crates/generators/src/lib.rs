@@ -46,19 +46,7 @@ fn render_schema() -> Result<String> {
         "required": ["timeline", "render_settings", "nodes", "connections"],
         "additionalProperties": true,
         "properties": {
-            "timeline": {
-                "type": "object",
-                "required": ["duration_frames"],
-                "properties": {
-                    "fps": { "type": "number", "exclusiveMinimum": 0, "default": 30 },
-                    "duration_frames": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 4294967295u32
-                    }
-                },
-                "additionalProperties": true
-            },
+            "timeline": { "$ref": "#/$defs/timeline" },
             "audio": {
                 "type": "object",
                 "required": ["tracks", "clips"],
@@ -74,19 +62,11 @@ fn render_schema() -> Result<String> {
                 },
                 "additionalProperties": true
             },
-            "render_settings": {
-                "type": "object",
-                "required": ["width", "height"],
-                "properties": {
-                    "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                    "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                    "background_color": { "$ref": "#/$defs/color" }
-                },
-                "additionalProperties": true
-            },
+            "render_settings": { "$ref": "#/$defs/renderSettings" },
             "functions": {
                 "description": "Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used.",
                 "type": "object",
+                "x-lumen-keyType": "`${string}(${string})`",
                 "propertyNames": {
                     "pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*\\s*(,\\s*[A-Za-z_][A-Za-z0-9_]*\\s*)*)?\\)\\s*$"
                 },
@@ -107,34 +87,40 @@ fn render_schema() -> Result<String> {
             }
         },
         "$defs": {
+            "timeline": {
+                "x-lumen-type": "Timeline",
+                "description": "Length and frame rate. `fps` defaults to 30 at the root, and a template's timeline takes the root's `fps`.",
+                "type": "object",
+                "required": ["duration_frames"],
+                "properties": {
+                    "fps": { "type": "number", "exclusiveMinimum": 0 },
+                    "duration_frames": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 4294967295u32
+                    }
+                },
+                "additionalProperties": true
+            },
+            "renderSettings": {
+                "x-lumen-type": "RenderSettings",
+                "type": "object",
+                "required": ["width", "height"],
+                "properties": {
+                    "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                    "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                    "background_color": { "$ref": "#/$defs/color" }
+                },
+                "additionalProperties": true
+            },
             "compositionTemplate": {
+                "x-lumen-type": "CompositionTemplate",
                 "description": "A composition a `clip` plays. Without `render_settings` it takes the root's size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's fps.",
                 "type": "object",
                 "required": ["nodes", "connections"],
                 "properties": {
-                    "render_settings": {
-                        "type": "object",
-                        "required": ["width", "height"],
-                        "properties": {
-                            "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                            "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                            "background_color": { "$ref": "#/$defs/color" }
-                        },
-                        "additionalProperties": true
-                    },
-                    "timeline": {
-                        "type": "object",
-                        "required": ["duration_frames"],
-                        "properties": {
-                            "fps": { "type": "number", "exclusiveMinimum": 0 },
-                            "duration_frames": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 4294967295u32
-                            }
-                        },
-                        "additionalProperties": true
-                    },
+                    "render_settings": { "$ref": "#/$defs/renderSettings" },
+                    "timeline": { "$ref": "#/$defs/timeline" },
                     "props": {
                         "description": "Props that `prop('name')` reads inside the template, set per `clip`.",
                         "type": "object",
@@ -149,6 +135,7 @@ fn render_schema() -> Result<String> {
                 "additionalProperties": false
             },
             "compositionProp": {
+                "x-lumen-type": "CompositionPropDeclaration",
                 "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent or [0, 0].",
                 "oneOf": [
                     prop_declaration_json("string", json!({ "type": "string" })),
@@ -184,6 +171,7 @@ fn render_schema() -> Result<String> {
                 "maxItems": 2
             },
             "connection": {
+                "x-lumen-type": "Connection",
                 "type": "object",
                 "required": ["from_node", "to_node", "to_port"],
                 "properties": {
@@ -195,6 +183,7 @@ fn render_schema() -> Result<String> {
                 "additionalProperties": false
             },
             "audioTrack": {
+                "x-lumen-type": "AudioTrack",
                 "type": "object",
                 "required": ["id"],
                 "properties": {
@@ -207,6 +196,7 @@ fn render_schema() -> Result<String> {
                 "additionalProperties": true
             },
             "audioClip": {
+                "x-lumen-type": "AudioClip",
                 "type": "object",
                 "required": ["id", "source_id", "track_id"],
                 "properties": {
@@ -568,18 +558,18 @@ fn value_schema_json(property: &PropertyDef) -> Value {
     }
 }
 
+/// The schema of an enum param, which names its Rust enum as `x-lumen-type` so that params
+/// sharing an enum share a generated type.
 fn enum_schema_json(property: &PropertyDef) -> Value {
-    let values = property
-        .enum_def
-        .map(|enum_def| {
-            enum_def
-                .options
-                .iter()
-                .map(|option| option.name)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    json!({ "type": "string", "enum": values })
+    let Some(enum_def) = property.enum_def else {
+        return json!({ "type": "string", "enum": [] });
+    };
+    let values = enum_def.options.iter().map(|option| option.name);
+    json!({
+        "type": "string",
+        "enum": values.collect::<Vec<_>>(),
+        "x-lumen-type": enum_def.name,
+    })
 }
 
 /// The schema of an enum `$def`, which also lists the serde aliases the engine accepts.
