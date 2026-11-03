@@ -49,6 +49,8 @@ A failed request answers with its status and `{ "code": "...", "error": "..." }`
 
 A render that fails after being accepted keeps why. `GET /renders/:id` and `GET /renders/:id/progress` return it as `render.error`: `{ "code": "...", "message": "...", "retryable": false }`. The `progress` object has the same as `error`, `errorCode` and `retryable`, and the WebSocket's `render.failed` event carries it as `error`.
 
+`GET /renders/:id/artifact` returns `409` with `artifact_not_ready` until the render succeeds, and `409` with the render's own error code if it failed. A succeeded render also reports the artifact's relative URL as `render.outputUrl`. `render.status` is `queued`, `processing`, `succeeded` or `failed`.
+
 S3-compatible artifact storage is planned for a future self-hosted release. For now, the HTTP binary's in-memory artifact storage is intended for local development and single-process testing, not durable production delivery. Only the most recent `--retained-renders` finished renders (default 16, `LUMEN_SERVER_RETAINED_RENDERS`) are kept, and their artifacts stay in memory until then. Older renders are dropped, record and artifact together, and return `404`.
 
 Renders run in submission order, `--max-concurrent-renders` at a time (default 1, `LUMEN_SERVER_MAX_CONCURRENT_RENDERS`). Later renders stay `queued` until a slot frees. Raise it only if the GPU has the memory for parallel renders.
@@ -77,7 +79,7 @@ Fonts are found by the family name inside each font file, not by file name, in t
 
 A family that none of them has is logged once per render as a warning, and text using it falls back to the bundled font. A composition can only read fonts that are in the font directory or the system fonts, never other files on the server. A font directory is trusted, so it follows symlinks.
 
-`GET /renders/:id/progress` and `GET /renders/:id/socket` mirror the hosted progress shape. The WebSocket sends SDK render events like:
+`GET /renders/:id/progress` and `GET /renders/:id/socket` mirror the hosted progress shape. The WebSocket sends the render's current status when it connects, then each change, and closes after the render succeeds or fails. It sends SDK render events like:
 
 ```json
 {

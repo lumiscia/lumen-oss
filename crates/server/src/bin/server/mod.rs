@@ -6,8 +6,8 @@ mod util;
 use std::{collections::HashMap, path::Path, time::Instant};
 
 pub use types::{
-    ApiRenderJob, ArtifactOutput, CreateRenderResponse, GetRenderResponse, RenderJobError,
-    RenderJobInput, RenderJobMetrics, RenderNotification, RenderProgressResponse, RenderQueueState,
+    ApiRenderJob, Artifact, CreateRenderResponse, GetRenderResponse, RenderJobError,
+    RenderJobInput, RenderProgressResponse, RenderQueueState, RenderRecord, RenderStatus,
 };
 
 use lumen_engine::composition::Composition;
@@ -27,15 +27,13 @@ pub struct RenderJob {
 }
 
 pub struct CompletedRender {
-    pub artifact: ArtifactOutput,
     pub bytes: Vec<u8>,
-    pub metrics: RenderJobMetrics,
+    pub render_ms: u128,
 }
 
 pub async fn execute_render_job<F>(
     job: RenderJob,
     media_client: &MediaClient,
-    artifact_url: String,
     mut on_progress: F,
 ) -> Result<CompletedRender, RenderJobError>
 where
@@ -104,17 +102,6 @@ where
         "finished mp4 render"
     );
 
-    let artifact = ArtifactOutput {
-        download_url: artifact_url,
-        content_type: "video/mp4",
-        bytes: rendered_bytes.len(),
-    };
-    let metrics = RenderJobMetrics {
-        stage_ms: stage_started.elapsed().as_millis(),
-        render_ms,
-        total_frames: total_frames as u64,
-    };
-
     tracing::info!(
         width = output_width,
         height = output_height,
@@ -122,9 +109,8 @@ where
     );
 
     Ok(CompletedRender {
-        artifact,
         bytes: rendered_bytes,
-        metrics,
+        render_ms,
     })
 }
 
