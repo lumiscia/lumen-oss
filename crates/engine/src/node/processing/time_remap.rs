@@ -1,6 +1,6 @@
 use crate::node::{NodeId, NodeParams};
 
-use crate::gpu::{CompiledOutput, GpuCompileNode};
+use crate::gpu::{GpuCompileNode, RasterHandle};
 
 /// Evaluates a raster input at another frame.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -71,10 +71,7 @@ pub fn remap_frame(node_id: NodeId, params: &TimeRemapParams) -> crate::Result<f
 }
 
 impl GpuCompileNode for TimeRemap {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         ctx.compile_time_remap(self)
     }
 }

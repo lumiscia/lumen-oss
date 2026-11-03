@@ -18,7 +18,7 @@ use crate::{
     composition::CompositionTemplate,
     error::LumenError,
     expr::ExpressionContext,
-    gpu::{CompiledOutput, GpuCompileNode},
+    gpu::{GpuCompileNode, RasterHandle},
     node::{ClipPropValue, ClipProps, Deferred, DelegateEvalContext, NodeId, NodeParams},
     scope::{FrameTime, PropValues, Routed, Scope},
 };
@@ -306,10 +306,7 @@ impl Clip {
 }
 
 impl GpuCompileNode for Clip {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         ctx.compile_clip(self)
     }
 }

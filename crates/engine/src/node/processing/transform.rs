@@ -6,8 +6,8 @@ use crate::node::{
 };
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, compiler,
+    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -103,10 +103,7 @@ impl Transform {
 }
 
 impl GpuCompileNode for Transform {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         self.reject_ignored_pivot()?;
         let source = ctx.compile_bounded_input(self.id, "source", self.source)?;
         let motion = TransformMotion {
@@ -129,17 +126,17 @@ impl GpuCompileNode for Transform {
         )?;
         ctx.register_compiled_node(CompiledTransform {
             motion,
-            straight_source: source.metadata.alpha_mode == AlphaMode::Unpremultiplied,
+            straight_source: source.alpha_mode == AlphaMode::Unpremultiplied,
             output_origin: [domain.data_rect.x, domain.data_rect.y],
             source_origin: [source.domain.data_rect.x, source.domain.data_rect.y],
             buffer: params,
         });
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain,
-            metadata: source.metadata,
+            alpha_mode: source.alpha_mode,
             bounds: None,
-        }))
+        })
     }
 }
 

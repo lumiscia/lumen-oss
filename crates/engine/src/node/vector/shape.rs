@@ -6,7 +6,7 @@ use super::renderer::{
 };
 use crate::error::RenderError;
 use crate::gpu::{
-    BoundFrame, CompileContext, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    BoundFrame, CompileContext, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 use crate::node::motion::Shutter;
@@ -131,7 +131,7 @@ pub struct Shape {
 }
 
 impl GpuCompileNode for Shape {
-    fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<RasterHandle> {
         // Enum params are always constants, so the pipeline can be chosen here.
         Ok(match self.params.geometry_kind {
             ShapeGeometryKindDelegate::Polygon => compile_polygon_shape(ctx, self),
@@ -141,7 +141,7 @@ impl GpuCompileNode for Shape {
 }
 
 /// Compiles a rectangle or ellipse.
-fn compile_box_shape(ctx: &mut CompileContext<'_>, shape: &Shape) -> CompiledOutput {
+fn compile_box_shape(ctx: &mut CompileContext<'_>, shape: &Shape) -> RasterHandle {
     let bounds = ctx.source_bounds(
         compiler::SourceMotion::of(shape_is_animated(&shape.params), &shape.params),
         |expr| {
@@ -165,11 +165,11 @@ fn compile_box_shape(ctx: &mut CompileContext<'_>, shape: &Shape) -> CompiledOut
         buffer: source.params,
         origin: domain_origin(domain),
     });
-    CompiledOutput::Raster(source.output)
+    source.output
 }
 
 /// Rasterizes a polygon shape with the path shader, as one closed contour.
-fn compile_polygon_shape(ctx: &mut CompileContext<'_>, shape: &Shape) -> CompiledOutput {
+fn compile_polygon_shape(ctx: &mut CompileContext<'_>, shape: &Shape) -> RasterHandle {
     let point_capacity = polygon_point_capacity(&shape.params.polygon_points);
     // Opacity only hides what is drawn, so it is left out of the bounds.
     let opaque = ShapeParamsDelegate {

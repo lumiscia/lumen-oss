@@ -20,8 +20,8 @@ use serde_json::{Map, Value};
 use crate::{
     audio::{AudioClip, AudioTimeline, AudioTrack},
     composition::{
-        Composition, CompositionBuilder, CompositionMetadata, CompositionTemplate, PropDef,
-        PropKind, RenderSettings, TimelineSettings, declared_props,
+        Composition, CompositionBuilder, CompositionTemplate, PropDef, PropKind, RenderSettings,
+        TimelineSettings, declared_props,
     },
     expr::{BuiltinFn, ExprNode, Expression, ExpressionValue, FunctionScope},
     graph::{Connection, Graph},
@@ -65,10 +65,6 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
     let compositions = parse_compositions(obj.get("compositions"), &timeline, &render_settings)?;
     drop(function_scope);
 
-    let metadata = obj.get("metadata").map(|v| CompositionMetadata {
-        name: v.get("name").and_then(|n| n.as_str()).map(String::from),
-    });
-
     let audio = root
         .get("audio")
         .map(|audio| parse_audio_timeline(audio, timeline.fps))
@@ -77,7 +73,6 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
         graph,
         timeline,
         render_settings,
-        metadata,
         audio,
         compositions,
     }

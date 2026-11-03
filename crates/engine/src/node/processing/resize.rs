@@ -3,8 +3,7 @@ use crate::node::{
 };
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("resize.wgsl");
@@ -70,10 +69,7 @@ pub struct Resize {
 }
 
 impl GpuCompileNode for Resize {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let source = ctx.compile_input(self.id, "source", self.source)?;
         let size = ctx.canvas_size();
         let texture = ctx.builder_mut().texture(
@@ -124,12 +120,15 @@ impl GpuCompileNode for Resize {
                 ]),
             },
         ));
-        let mut bindings = compiler::spatial_bindings(source.texture, params, texture);
-        bindings.push(lumen_gpu::Binding::uniform(0, 3, bounds));
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("resize:{}:apply", self.id.0)),
             program,
-            bindings,
+            bindings: vec![
+                lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
+                lumen_gpu::Binding::uniform(0, 1, params),
+                lumen_gpu::Binding::storage_texture(0, 2, texture),
+                lumen_gpu::Binding::uniform(0, 3, bounds),
+            ],
             dispatch: compiler::dispatch_for(size),
         });
         ctx.register_compiled_node(CompiledResize {
@@ -139,12 +138,12 @@ impl GpuCompileNode for Resize {
             default_bounds: default_bounds.map(|buffer| (buffer, source.domain.storage_size)),
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: source.metadata,
+            alpha_mode: source.alpha_mode,
             bounds: None,
-        }))
+        })
     }
 }
 

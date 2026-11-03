@@ -1,8 +1,8 @@
 use crate::node::{Deferred, NodeId, NodeParams};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -64,10 +64,7 @@ impl GpuCompiledNode for CompiledAlphaPremultiply {
 }
 
 impl GpuCompileNode for AlphaPremultiply {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         // The mode decides the output metadata, so it must be known at compile time.
         let Deferred::Value(mode) = &self.params.mode else {
             return Err(crate::error::PropertyError::InvalidType {
@@ -98,14 +95,11 @@ impl GpuCompileNode for AlphaPremultiply {
         } else {
             AlphaMode::Premultiplied
         };
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain: source.domain,
-            metadata: RasterMetadata {
-                alpha_mode,
-                ..source.metadata
-            },
+            alpha_mode,
             bounds: source.bounds,
-        }))
+        })
     }
 }

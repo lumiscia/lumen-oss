@@ -274,7 +274,7 @@ impl GpuCompositionRenderer {
         let compiled = CompileContext::with_options(composition, 0.0, None, output_format, true)
             .render_static(!self.reuse_static_output)
             .full_frame_sources(self.full_frame_sources)
-            .compile()?;
+            .compile_with_atlas(Arc::clone(&self.text_atlas))?;
         self.prepare_compiled(key, compiled)
     }
 
@@ -443,7 +443,7 @@ impl GpuCompositionRenderer {
     fn prepare_compiled(
         &mut self,
         key: CompiledPlanKey,
-        mut compiled: CompiledComposition,
+        compiled: CompiledComposition,
     ) -> crate::Result<()> {
         tracing::debug!(
             target: "lumen_render",
@@ -462,15 +462,13 @@ impl GpuCompositionRenderer {
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        compiled.text_atlas = Arc::clone(&self.text_atlas);
         if let Some(id) = compiled.text_atlas_texture {
-            self.ensure_text_atlas_texture()?;
+            let device = &self.renderer.device;
+            let texture = self
+                .text_atlas_texture
+                .get_or_insert_with(|| Arc::new(super::types::create_text_atlas_texture(device)));
             renderer
-                .replace_texture_arc(
-                    id,
-                    Arc::clone(self.text_atlas_texture.as_ref().expect("atlas texture")),
-                    super::types::text_atlas_desc(),
-                )
+                .replace_texture_arc(id, Arc::clone(texture), super::types::text_atlas_desc())
                 .map_err(|error| RenderError::Gpu {
                     details: error.to_string(),
                 })?
@@ -790,9 +788,6 @@ impl GpuCompositionRenderer {
         }
         let prepared = self.active_prepared_mut()?;
         prepared.cache.upload(&prepared.compiled.cache, None);
-        if bound.text_atlas.is_some() {
-            self.ensure_text_atlas_texture()?;
-        }
         self.upload_media_textures(bound)?;
         let update = bound.frame_update();
         let prepared = self.active_prepared_mut()?;
@@ -872,28 +867,6 @@ impl GpuCompositionRenderer {
             encoder.copy_buffer_to_buffer(bounds, 0, destination, 0, bounds.size());
         }
         to.renderer.queue.submit([encoder.finish()]);
-        Ok(())
-    }
-
-    fn ensure_text_atlas_texture(&mut self) -> crate::Result<()> {
-        if self.text_atlas_texture.is_some() {
-            return Ok(());
-        }
-        let desc = super::types::text_atlas_desc();
-        let texture = Arc::new(super::types::create_text_atlas_texture(
-            &self.renderer.device,
-        ));
-        for prepared in self.compiled_plans.values_mut() {
-            if let Some(id) = prepared.compiled.text_atlas_texture {
-                prepared
-                    .renderer
-                    .replace_texture_arc(id, Arc::clone(&texture), desc)
-                    .map_err(|error| RenderError::Gpu {
-                        details: error.to_string(),
-                    })?;
-            }
-        }
-        self.text_atlas_texture = Some(texture);
         Ok(())
     }
 
@@ -1254,7 +1227,7 @@ impl GpuCompositionRenderer {
         )
         .render_static(!self.reuse_static_output)
         .full_frame_sources(self.full_frame_sources)
-        .compile()
+        .compile_with_atlas(Arc::clone(&self.text_atlas))
         {
             Ok(compiled) => compiled,
             Err(error) => {

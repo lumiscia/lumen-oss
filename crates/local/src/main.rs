@@ -860,7 +860,7 @@ fn render_single_png(
     let size = rendered.domain.storage_size;
     let mut pixels = read_texture_rgba8(renderer.gpu_renderer(), rendered.texture, size)
         .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
-    if rendered.metadata.alpha_mode == AlphaMode::Premultiplied {
+    if rendered.alpha_mode == AlphaMode::Premultiplied {
         unpremultiply_rgba8(&mut pixels);
     }
 

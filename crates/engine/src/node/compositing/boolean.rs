@@ -1,8 +1,8 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -89,10 +89,7 @@ impl GpuCompiledNode for CompiledBoolean {
 }
 
 impl GpuCompileNode for Boolean {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let a = ctx.compile_input(self.id, "a", self.a)?;
         let b = ctx.compile_input(self.id, "b", self.b)?;
         let size = a.domain.storage_size;
@@ -145,24 +142,21 @@ impl GpuCompileNode for Boolean {
         ctx.register_compiled_node(CompiledBoolean {
             node_id: self.id,
             params: self.params.clone(),
-            straight_inputs: [straight_flag(a.metadata), straight_flag(b.metadata)],
+            straight_inputs: [straight_flag(a.alpha_mode), straight_flag(b.alpha_mode)],
             buffer: params,
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: RasterMetadata {
-                alpha_mode: AlphaMode::Premultiplied,
-                ..a.metadata
-            },
+            alpha_mode: AlphaMode::Premultiplied,
             bounds: None,
-        }))
+        })
     }
 }
 
-fn straight_flag(metadata: RasterMetadata) -> f32 {
-    if metadata.alpha_mode == AlphaMode::Unpremultiplied {
+fn straight_flag(alpha_mode: AlphaMode) -> f32 {
+    if alpha_mode == AlphaMode::Unpremultiplied {
         1.0
     } else {
         0.0

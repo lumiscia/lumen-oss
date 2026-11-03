@@ -6,7 +6,7 @@ use std::{
 
 use crate::error::{LumenError, MediaError, RenderError};
 use crate::expr::{ExprNode, ExpressionContext, GlobalVar, GlyphScope};
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
+use crate::gpu::{BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle};
 use crate::media::{FontResolver, MediaStore, TextSession};
 use crate::node::vector::{
     drawable::{DeferredTransform, DrawableMotion, DrawableTransform},
@@ -332,10 +332,7 @@ pub struct Text {
 }
 
 impl GpuCompileNode for Text {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         super::text_compile::compile_text(ctx, self)
     }
 }

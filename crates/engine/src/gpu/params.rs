@@ -267,18 +267,6 @@ pub(crate) fn dispatch_for(size: lumen_gpu::Size) -> lumen_gpu::Dispatch {
     }
 }
 
-pub(crate) fn spatial_bindings(
-    input: lumen_gpu::TextureId,
-    params: lumen_gpu::BufferId,
-    output: lumen_gpu::TextureId,
-) -> Vec<lumen_gpu::Binding> {
-    vec![
-        lumen_gpu::Binding::sampled_texture(0, 0, input),
-        lumen_gpu::Binding::uniform(0, 1, params),
-        lumen_gpu::Binding::storage_texture(0, 2, output),
-    ]
-}
-
 pub(crate) fn alpha_operation(node_id: NodeId, mode: &str) -> crate::Result<f32> {
     match mode.trim().to_ascii_lowercase().as_str() {
         "premultiply" | "premul" | "multiply" => Ok(0.0),

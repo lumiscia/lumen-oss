@@ -14,25 +14,11 @@ pub struct TimelineSettings {
     pub duration_frames: u32,
 }
 
-impl TimelineSettings {
-    pub fn time_seconds(&self, frame: u32) -> f64 {
-        if self.fps <= 0.0 {
-            return 0.0;
-        }
-        frame as f64 / self.fps as f64
-    }
-}
-
 #[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub struct RenderSettings {
     pub width: u32,
     pub height: u32,
     pub background_color: [u8; 4],
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct CompositionMetadata {
-    pub name: Option<String>,
 }
 
 /// A validated composition that can no longer change. It is fingerprinted once when built, so
@@ -51,8 +37,6 @@ pub struct CompositionBuilder {
     pub graph: Graph,
     pub timeline: TimelineSettings,
     pub render_settings: RenderSettings,
-    #[structural_hash(skip)] // Display metadata does not affect rendering.
-    pub metadata: Option<CompositionMetadata>,
     #[structural_hash(skip)] // Audio is independent of compiled video plans and GPU caches.
     pub audio: Option<AudioTimeline>,
     /// Templates that `clip` nodes instantiate, by name.
@@ -176,10 +160,6 @@ impl Composition {
         &self.parts.render_settings
     }
 
-    pub fn metadata(&self) -> Option<&CompositionMetadata> {
-        self.parts.metadata.as_ref()
-    }
-
     pub fn audio(&self) -> Option<&AudioTimeline> {
         self.parts.audio.as_ref()
     }
@@ -206,7 +186,6 @@ impl CompositionBuilder {
             graph,
             timeline,
             render_settings,
-            metadata: None,
             audio: None,
             compositions: BTreeMap::new(),
         }

@@ -613,11 +613,7 @@ fn replacing_a_kept_texture_renders_it_again() {
     let kept = renderer
         .compiled()
         .unwrap()
-        .node_outputs
-        .get(&NodeId::new(3))
-        .unwrap()
-        .clone()
-        .into_raster(NodeId::new(3))
+        .node_output(NodeId::new(3), &[])
         .unwrap();
     let gpu = renderer.gpu_renderer_mut();
     let desc = gpu.texture_desc(kept.texture).unwrap();
