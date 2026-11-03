@@ -594,7 +594,15 @@ fn the_default_encoder_falls_back_to_a_correct_video_with_gpu() {
     let artifact = server.get(&format!("/renders/{id}/artifact"));
     assert_eq!(artifact.status(), StatusCode::OK);
 
-    let log = server.log.lock().unwrap().clone();
+    // The render can finish before the thread reading the server's stderr has caught up.
+    let started = Instant::now();
+    let log = loop {
+        let log = server.log.lock().unwrap().clone();
+        if log.contains("opened video encoder") || started.elapsed() > Duration::from_secs(10) {
+            break log;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
     let lines = |text: &str| {
         log.lines()
             .filter(|line| line.contains(text))
