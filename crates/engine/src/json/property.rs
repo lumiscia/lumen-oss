@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::{
     error::{LumenError, PropertyError},
-    expr::Expression,
+    expr::{Expression, parse_hex_color},
     node::{
         ClipProps, Deferred, DelegateValue, EnumDef, NodeId, OptionalDelegate, Override,
         PropertyDef, PropertyExpression, PropertyKind, PropertyValue, ShaderUniforms,
@@ -273,18 +273,7 @@ pub fn try_parse_color(val: &Value) -> Result<[u8; 4], String> {
     if !matches!(hex.len(), 6 | 8) {
         return Err(format!("hex color `{text}` must be #RRGGBB or #RRGGBBAA"));
     }
-    if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!("hex color `{text}` contains a non-hex digit"));
-    }
-    let byte = |index: usize| {
-        u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).map_err(|error| error.to_string())
-    };
-    Ok([
-        byte(0)?,
-        byte(1)?,
-        byte(2)?,
-        if hex.len() == 8 { byte(3)? } else { 255 },
-    ])
+    parse_hex_color(hex).ok_or_else(|| format!("hex color `{text}` contains a non-hex digit"))
 }
 
 #[cfg(test)]
