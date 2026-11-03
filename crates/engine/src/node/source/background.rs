@@ -2,7 +2,7 @@ use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
 
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
+use crate::gpu::{BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -71,10 +71,7 @@ impl GpuCompiledNode for CompiledBackground {
 }
 
 impl GpuCompileNode for Background {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &ctx.expr_context(),
@@ -99,6 +96,6 @@ impl GpuCompileNode for Background {
             buffer: source.params,
         });
 
-        Ok(CompiledOutput::Raster(source.output))
+        Ok(source.output)
     }
 }

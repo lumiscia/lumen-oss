@@ -4,8 +4,8 @@ use crate::node::{
 };
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
+    compiler,
 };
 
 use super::gaussian;
@@ -60,10 +60,7 @@ pub struct Shadow {
 }
 
 impl GpuCompileNode for Shadow {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let source = ctx.compile_bounded_input(self.id, "source", self.source)?;
         // The shadow is the source's data shifted by the offset and spread by the radius,
         // at their largest over the timeline.
@@ -146,7 +143,7 @@ impl GpuCompileNode for Shadow {
             params: self.params.clone(),
             blurred,
             buffer: params,
-            straight_source: source.metadata.alpha_mode == AlphaMode::Unpremultiplied,
+            straight_source: source.alpha_mode == AlphaMode::Unpremultiplied,
             origins: [
                 domain.data_rect.x,
                 domain.data_rect.y,
@@ -155,15 +152,12 @@ impl GpuCompileNode for Shadow {
             ],
             source_origin: [source.domain.data_rect.x, source.domain.data_rect.y],
         });
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture: output,
             domain,
-            metadata: RasterMetadata {
-                alpha_mode: AlphaMode::Premultiplied,
-                ..source.metadata
-            },
+            alpha_mode: AlphaMode::Premultiplied,
             bounds: None,
-        }))
+        })
     }
 }
 

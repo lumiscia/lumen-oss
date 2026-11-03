@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::error::RenderError;
-use crate::gpu::{CompileContext, CompiledOutput, RasterHandle, RasterMetadata, compiler};
+use crate::gpu::{AlphaMode, CompileContext, RasterHandle, compiler};
 use crate::node::motion::shutter_offset;
 use crate::node::vector::{
     drawable::{DRAWABLE_SHADER, DrawableTransform, GpuDrawableMotion, GpuDrawableTransform},
@@ -65,7 +65,7 @@ pub(crate) struct GpuTextPaint {
 pub(super) fn compile_text(
     ctx: &mut CompileContext<'_>,
     text: &Text,
-) -> crate::Result<CompiledOutput> {
+) -> crate::Result<RasterHandle> {
     let size = ctx.canvas_size();
     // Text that may move during the shutter is drawn still to a layer first, which is
     // then smeared over the shutter's taps into the output. Text with motion blur
@@ -339,12 +339,12 @@ pub(super) fn compile_text(
         state: std::sync::Arc::new(std::sync::Mutex::new(TextState::default())),
     });
 
-    Ok(CompiledOutput::Raster(RasterHandle {
+    Ok(RasterHandle {
         texture,
         domain,
-        metadata: RasterMetadata::default(),
+        alpha_mode: AlphaMode::Premultiplied,
         bounds: None,
-    }))
+    })
 }
 
 /// The canvas pixels unblurred text may draw to, or `None` when it should fill the

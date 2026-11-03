@@ -1,8 +1,8 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, compiler,
+    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("opacity.wgsl");
@@ -68,10 +68,7 @@ impl GpuCompiledNode for CompiledOpacity {
 }
 
 impl GpuCompileNode for Opacity {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
             self.source,
@@ -83,14 +80,14 @@ impl GpuCompileNode for Opacity {
         ctx.register_compiled_node(CompiledOpacity {
             node_id: self.id,
             params: self.params.clone(),
-            alpha_mode: source.metadata.alpha_mode,
+            alpha_mode: source.alpha_mode,
             buffer: params,
         });
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain: source.domain,
-            metadata: source.metadata,
+            alpha_mode: source.alpha_mode,
             bounds: source.bounds,
-        }))
+        })
     }
 }

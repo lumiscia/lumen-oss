@@ -196,7 +196,7 @@ fn shader_output_is_premultiplied() {
             &TestMedia::default(),
         )
         .unwrap();
-    assert_eq!(raster.metadata.alpha_mode, AlphaMode::Premultiplied);
+    assert_eq!(raster.alpha_mode, AlphaMode::Premultiplied);
 }
 
 #[test]

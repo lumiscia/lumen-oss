@@ -3,8 +3,8 @@ use crate::node::{
 };
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -95,17 +95,11 @@ impl GpuCompiledNode for RasterMultiCompiledMerge {
 }
 
 impl GpuCompileNode for RasterMultiMerge {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let layers = self
             .layers
             .iter()
-            .map(|&layer| {
-                ctx.compile_bounded_port(layer)
-                    .and_then(|output| output.into_raster(layer))
-            })
+            .map(|&layer| ctx.compile_bounded_port(layer))
             .collect::<crate::Result<Vec<_>>>()?;
         let Some((&first, overlays)) = layers.split_first() else {
             return Ok(ctx.compile_transparent(self.id));
@@ -189,8 +183,8 @@ impl GpuCompileNode for RasterMultiMerge {
             ];
             compiled_layers.push(CompiledLayer {
                 buffer: params,
-                base_straight: current.metadata.alpha_mode == AlphaMode::Unpremultiplied,
-                overlay_straight: overlay.metadata.alpha_mode == AlphaMode::Unpremultiplied,
+                base_straight: current.alpha_mode == AlphaMode::Unpremultiplied,
+                overlay_straight: overlay.alpha_mode == AlphaMode::Unpremultiplied,
                 origins: [
                     start,
                     origin(&domain),
@@ -212,10 +206,7 @@ impl GpuCompileNode for RasterMultiMerge {
             current = RasterHandle {
                 texture,
                 domain,
-                metadata: RasterMetadata {
-                    alpha_mode: AlphaMode::Premultiplied,
-                    ..current.metadata
-                },
+                alpha_mode: AlphaMode::Premultiplied,
                 bounds: None,
             };
         }
@@ -225,6 +216,6 @@ impl GpuCompileNode for RasterMultiMerge {
             layers: compiled_layers,
         });
 
-        Ok(CompiledOutput::Raster(current))
+        Ok(current)
     }
 }

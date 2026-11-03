@@ -1,8 +1,8 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, compiler,
+    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -43,10 +43,7 @@ pub struct Curves {
 }
 
 impl GpuCompileNode for Curves {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let source = ctx.compile_input(self.id, "source", self.source)?;
         let size = source.domain.storage_size;
         let texture = ctx.builder_mut().texture(
@@ -103,17 +100,17 @@ impl GpuCompileNode for Curves {
         ctx.register_compiled_node(CompiledCurves {
             node_id: self.id,
             params: self.params.clone(),
-            alpha_mode: source.metadata.alpha_mode,
+            alpha_mode: source.alpha_mode,
             params_buffer: params,
             curve_buffer: curve,
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain: source.domain,
-            metadata: source.metadata,
+            alpha_mode: source.alpha_mode,
             bounds: source.bounds,
-        }))
+        })
     }
 }
 

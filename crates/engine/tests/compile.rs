@@ -95,15 +95,8 @@ fn compile(composition: &Composition, frame: Option<u32>) -> CompiledComposition
     try_compile(composition, frame).unwrap()
 }
 
-fn has_output(compiled: &CompiledComposition, node: u64) -> bool {
-    compiled.node_outputs.contains_key(&NodeId::new(node))
-}
-
 fn raster(compiled: &CompiledComposition, node: u64) -> lumen_engine::gpu::RasterHandle {
-    compiled.node_outputs[&NodeId::new(node)]
-        .clone()
-        .into_raster(NodeId::new(node))
-        .unwrap()
+    compiled.node_output(NodeId::new(node), &[]).unwrap()
 }
 
 /// Uniform buffers bound by the passes compiled for `node`, whose labels carry its id.
@@ -733,11 +726,13 @@ fn routing_selects_one_branch() {
     };
     let frame_switch = layers(json!("=if(frame < 6, 0, 1)"));
     // `aliases` must share the texture of `selected`, and `unselected` must not be compiled.
+    // Both branches are reached through the time remaps in `path`.
     struct Row {
         name: &'static str,
         nodes: Value,
         frame: Option<u32>,
         aliases: &'static [u64],
+        path: &'static [u64],
         selected: u64,
         unselected: Option<u64>,
     }
@@ -747,6 +742,7 @@ fn routing_selects_one_branch() {
             nodes: layers(json!(0)),
             frame: None,
             aliases: &[3],
+            path: &[],
             selected: 1,
             unselected: Some(2),
         },
@@ -755,6 +751,7 @@ fn routing_selects_one_branch() {
             nodes: frame_switch.clone(),
             frame: Some(0),
             aliases: &[3],
+            path: &[],
             selected: 1,
             unselected: Some(2),
         },
@@ -763,6 +760,7 @@ fn routing_selects_one_branch() {
             nodes: frame_switch.clone(),
             frame: Some(10),
             aliases: &[3],
+            path: &[],
             selected: 2,
             unselected: Some(1),
         },
@@ -777,6 +775,7 @@ fn routing_selects_one_branch() {
             ]),
             frame: None,
             aliases: &[2, 3],
+            path: &[2],
             selected: 1,
             unselected: None,
         },
@@ -794,6 +793,7 @@ fn routing_selects_one_branch() {
             ]),
             frame: Some(10),
             aliases: &[4],
+            path: &[4],
             selected: 1,
             unselected: Some(2),
         },
@@ -802,7 +802,10 @@ fn routing_selects_one_branch() {
         let composition = scene((8, 4), row.nodes);
         let compiled = try_compile(&composition, row.frame)
             .unwrap_or_else(|error| panic!("{}: {error}", row.name));
-        let selected = raster(&compiled, row.selected);
+        let path: Vec<NodeId> = row.path.iter().copied().map(NodeId::new).collect();
+        let selected = compiled
+            .node_output(NodeId::new(row.selected), &path)
+            .unwrap_or_else(|| panic!("{}: the selected branch has no output", row.name));
         for alias in row.aliases {
             assert_eq!(
                 raster(&compiled, *alias).texture,
@@ -812,7 +815,13 @@ fn routing_selects_one_branch() {
             );
         }
         if let Some(unselected) = row.unselected {
-            assert!(!has_output(&compiled, unselected), "{}", row.name);
+            assert!(
+                compiled
+                    .node_output(NodeId::new(unselected), &path)
+                    .is_none(),
+                "{}",
+                row.name
+            );
         }
         // Only the selected solid is drawn, so the other branch has no pass.
         assert_eq!(compiled.plan.passes().len(), 1, "{}", row.name);
@@ -896,8 +905,8 @@ fn opacity_binds_alpha_flag() {
         let buffer = uniform_buffers_of(&compiled.plan, opacity)[0];
         let (output, source) = (raster(&compiled, opacity), raster(&compiled, input));
         assert_eq!(output.domain, source.domain, "{name}");
-        assert_eq!(output.metadata, source.metadata, "{name}");
-        assert_eq!(output.metadata.alpha_mode, alpha_mode, "{name}");
+        assert_eq!(output.alpha_mode, source.alpha_mode, "{name}");
+        assert_eq!(output.alpha_mode, alpha_mode, "{name}");
         for (frame, expected) in frames {
             let bound = bind(&composition, &compiled, frame);
             assert_eq!(

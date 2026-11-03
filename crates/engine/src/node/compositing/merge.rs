@@ -4,8 +4,8 @@ use crate::node::{
 };
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
+    compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -145,10 +145,7 @@ impl GpuCompiledNode for CompiledMerge {
 }
 
 impl GpuCompileNode for Merge {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let base = ctx.compile_bounded_input(self.id, "base", self.base)?;
         let overlay = ctx.compile_bounded_input(self.id, "overlay", self.overlay)?;
         // A literal feather of zero or less never blurs, so its passes are left out. The
@@ -157,7 +154,7 @@ impl GpuCompileNode for Merge {
             !matches!(&self.params.feather, Deferred::Value(radius) if !(*radius > 0.0));
         let mask = match self.mask {
             Some(mask) => {
-                let mask = ctx.compile_bounded_port(mask)?.into_raster(mask)?;
+                let mask = ctx.compile_bounded_port(mask)?;
                 Some(if feathered {
                     ctx.full_frame(mask)
                 } else {
@@ -174,8 +171,7 @@ impl GpuCompileNode for Merge {
             size,
             base.domain.data_rect.union(overlay.domain.data_rect),
         );
-        let straight =
-            |raster: &RasterHandle| raster.metadata.alpha_mode == AlphaMode::Unpremultiplied;
+        let straight = |raster: &RasterHandle| raster.alpha_mode == AlphaMode::Unpremultiplied;
         // The blur spans the mask and the base, so a mask that extends past the base still
         // feathers the base's edge and a smaller one still feathers into the base.
         let feather = mask.filter(|_| feathered).map(|mask| {
@@ -277,14 +273,11 @@ impl GpuCompileNode for Merge {
             .map(|domain| [domain.data_rect.x, domain.data_rect.y]),
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain,
-            metadata: RasterMetadata {
-                alpha_mode: AlphaMode::Premultiplied,
-                ..base.metadata
-            },
+            alpha_mode: AlphaMode::Premultiplied,
             bounds: None,
-        }))
+        })
     }
 }

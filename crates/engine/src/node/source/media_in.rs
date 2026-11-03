@@ -5,8 +5,8 @@ use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 use crate::scope::FrameTime;
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, MediaTextureKey,
-    RasterHandle, RasterMetadata,
+    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, MediaTextureKey,
+    RasterHandle,
 };
 
 /// What playback does once it leaves the source range.
@@ -179,10 +179,7 @@ pub fn map_to_source_frame(
 }
 
 impl GpuCompileNode for MediaIn {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let size = self
             .native_size(&ctx.expr_context())?
             .unwrap_or_else(|| ctx.canvas_size());
@@ -196,12 +193,12 @@ impl GpuCompileNode for MediaIn {
             size,
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: RasterMetadata::default(),
+            alpha_mode: AlphaMode::Premultiplied,
             bounds: None,
-        }))
+        })
     }
 }
 

@@ -31,8 +31,8 @@ use crate::{
 };
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
+    compiler,
 };
 
 /// WebGPU's default `maxSampledTexturesPerShaderStage`, guaranteed on every adapter.
@@ -112,10 +112,7 @@ struct LumenGlobals {
 }
 
 impl GpuCompileNode for WgslShader {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &ctx.expr_context(),
@@ -123,10 +120,7 @@ impl GpuCompileNode for WgslShader {
         let inputs = self
             .sources
             .iter()
-            .map(|&source| {
-                ctx.compile_port(source)
-                    .and_then(|output| output.into_raster(source))
-            })
+            .map(|&source| ctx.compile_port(source))
             .collect::<crate::Result<Vec<_>>>()?;
         let Some(first) = inputs.first().copied() else {
             return Err(shader_error(self.id, "needs at least one input"));
@@ -228,15 +222,12 @@ impl GpuCompileNode for WgslShader {
             globals_buffer,
             resolution: [size.width as f32, size.height as f32],
         });
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture: output,
             domain: first.domain,
-            metadata: RasterMetadata {
-                alpha_mode: AlphaMode::Premultiplied,
-                ..first.metadata
-            },
+            alpha_mode: AlphaMode::Premultiplied,
             bounds: None,
-        }))
+        })
     }
 }
 
@@ -247,7 +238,7 @@ fn premultiplied_input(
     index: usize,
     input: &RasterHandle,
 ) -> lumen_gpu::TextureId {
-    if input.metadata.alpha_mode == AlphaMode::Premultiplied {
+    if input.alpha_mode == AlphaMode::Premultiplied {
         return input.texture;
     }
     let size = input.domain.storage_size;

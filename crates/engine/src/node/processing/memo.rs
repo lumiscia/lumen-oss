@@ -1,7 +1,7 @@
 use crate::error::RenderError;
 use crate::node::{Deferred, NodeId, NodeParams, required_input};
 
-use crate::gpu::{CompiledOutput, GpuCompileNode, RasterHandle, compiler};
+use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
 
 const SHADER: &str = include_str!("memo.wgsl");
 const UNBOUNDED_SHADER: &str = include_str!("memo_unbounded.wgsl");
@@ -30,20 +30,14 @@ pub struct Memo {
 }
 
 impl GpuCompileNode for Memo {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         if !matches!(self.params.key, Deferred::Expr(_)) {
             return ctx.compile_bounded_port(required_input(self.id, "source", self.source)?);
         }
         // Plans may size a bounded source differently, so the snapshot is taken at full frame
         // for every plan bound with its key to share it.
         let source_id = required_input(self.id, "source", self.source)?;
-        let output = ctx.compile_port(source_id)?;
-        let CompiledOutput::Raster(source) = output else {
-            return Ok(output);
-        };
+        let source = ctx.compile_port(source_id)?;
         let format = ctx
             .builder_mut()
             .texture_desc(source.texture)
@@ -123,10 +117,10 @@ impl GpuCompileNode for Memo {
             dispatch: compiler::dispatch_for(size),
         });
         ctx.record_memo(texture, bounds, copy);
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             bounds: Some(bounds),
             ..source
-        }))
+        })
     }
 }

@@ -95,8 +95,6 @@ pub enum GraphValidationError {
     MissingMediaOutput,
     #[error("exactly one media output node is required, found {count}")]
     MultipleMediaOutputs { count: usize },
-    #[error("target node {node_id} is not reachable or missing")]
-    InvalidEvaluationTarget { node_id: NodeId },
     #[error("{}node {node_id}: {details}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
     InvalidClip {
         /// The template the clip is in, or `None` at the root.
@@ -120,11 +118,6 @@ pub enum GraphValidationError {
 
 #[derive(Debug, Error, Clone)]
 pub enum PropertyError {
-    #[error("property `{property_path}` on node {node_id} is missing")]
-    MissingProperty {
-        node_id: NodeId,
-        property_path: String,
-    },
     #[error(
         "property `{property_path}` on node {node_id} has invalid type: expected {expected}, got {actual}"
     )]
@@ -200,21 +193,6 @@ pub enum RenderError {
         expected: &'static str,
         actual: &'static str,
     },
-    #[error("{backend} backend is busy")]
-    BackendBusy { backend: &'static str },
     #[error("GPU render failed: {details}")]
     Gpu { details: String },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Warning {
-    FpsMismatch {
-        node_id: NodeId,
-        composition_fps: f32,
-        source_fps: f32,
-    },
-    CapabilityMissing {
-        node_id: NodeId,
-        requirement: &'static str,
-    },
 }

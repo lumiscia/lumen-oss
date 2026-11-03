@@ -1,8 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("channel_shuffle.wgsl");
@@ -112,10 +111,7 @@ impl GpuCompiledNode for CompiledChannelShuffle {
 }
 
 impl GpuCompileNode for ChannelShuffle {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
             self.source,
@@ -129,11 +125,11 @@ impl GpuCompileNode for ChannelShuffle {
             params: self.params.clone(),
             buffer: params,
         });
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain: source.domain,
-            metadata: source.metadata,
+            alpha_mode: source.alpha_mode,
             bounds: source.bounds,
-        }))
+        })
     }
 }

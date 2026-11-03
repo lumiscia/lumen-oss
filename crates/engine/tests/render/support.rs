@@ -10,7 +10,7 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, mpsc};
 use lumen_engine::{
     composition::Composition,
     error::MediaError,
-    gpu::{BoundFrame, CompiledOutput, GpuCompositionRenderer},
+    gpu::{BoundFrame, GpuCompositionRenderer},
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
         TextSession, VideoFrameResolver, VideoMetadata,
@@ -656,10 +656,12 @@ impl Case {
                 _ => None,
             })
             .expect("scene has a media_output");
-        match &renderer.compiled().expect("a frame rendered").node_outputs[&source] {
-            CompiledOutput::Raster(raster) => raster.domain,
-            CompiledOutput::Empty => panic!("output source {source:?} is empty"),
-        }
+        renderer
+            .compiled()
+            .expect("a frame rendered")
+            .node_output(source, &[])
+            .expect("the output source compiled")
+            .domain
     }
 }
 

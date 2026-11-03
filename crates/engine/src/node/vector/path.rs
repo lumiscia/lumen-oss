@@ -9,7 +9,7 @@ use super::renderer::{
 };
 use crate::error::RenderError;
 use crate::gpu::{
-    BoundFrame, CompileContext, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    BoundFrame, CompileContext, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
     compiler,
 };
 use crate::node::motion::Shutter;
@@ -112,7 +112,7 @@ pub struct Path {
 }
 
 impl GpuCompileNode for Path {
-    fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<RasterHandle> {
         let fixed_points = fixed_points(&self.params.data, &self.params.scale);
         // Opacity only hides what is drawn, so it is left out of the bounds.
         let opaque = PathParamsDelegate {
@@ -155,7 +155,7 @@ pub(super) fn compile_path_source<'a>(
     point_capacity: usize,
     motion: compiler::SourceMotion,
     frame_at: impl Fn(&crate::expr::ExpressionContext<'_>, usize) -> crate::Result<PathFrame<'a>>,
-) -> (CompiledOutput, PathBuffers) {
+) -> (RasterHandle, PathBuffers) {
     let point_capacity = point_capacity.max(1);
     let band_capacity = super::path_bands::band_capacity(point_capacity);
     let bounds = ctx.source_bounds(motion, |expr| {
@@ -180,7 +180,7 @@ pub(super) fn compile_path_source<'a>(
     );
     let [points, bands] = source.storage;
     (
-        CompiledOutput::Raster(source.output),
+        source.output,
         PathBuffers {
             params: source.params,
             points,

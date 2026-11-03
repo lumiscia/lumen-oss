@@ -9,7 +9,7 @@ use lumen_engine::{
     composition::Composition,
     error::MediaError,
     expr::{Expression, ExpressionContext},
-    gpu::{BoundFrame, CompileContext, CompiledOutput, FrameBindContext, GpuCompositionRenderer},
+    gpu::{BoundFrame, CompileContext, FrameBindContext, GpuCompositionRenderer},
     media::{FontResolver, MediaStore, TextSession},
     node::NodeId,
 };
@@ -358,10 +358,13 @@ fn a_bound_frame_is_not_uploaded_once_a_later_one_is_bound() {
 
 fn text_domain_is_bounded(renderer: &GpuCompositionRenderer) -> bool {
     let text = NodeId::new(1);
-    match &renderer.compiled().expect("a frame rendered").node_outputs[&text] {
-        CompiledOutput::Raster(raster) => !raster.domain.is_full_frame(),
-        CompiledOutput::Empty => panic!("the text is empty"),
-    }
+    !renderer
+        .compiled()
+        .expect("a frame rendered")
+        .node_output(text, &[])
+        .expect("the text compiled")
+        .domain
+        .is_full_frame()
 }
 
 /// Text node 1, `content` in `family` at size 20.

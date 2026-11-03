@@ -10,53 +10,13 @@ pub enum AlphaMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColorSpace {
-    Srgb,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RasterMetadata {
-    pub alpha_mode: AlphaMode,
-    pub color_space: ColorSpace,
-}
-
-impl Default for RasterMetadata {
-    fn default() -> Self {
-        Self {
-            alpha_mode: AlphaMode::Premultiplied,
-            color_space: ColorSpace::Srgb,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RasterHandle {
     pub texture: lumen_gpu::TextureId,
     pub domain: lumen_gpu::TextureDomain,
-    pub metadata: RasterMetadata,
+    pub alpha_mode: AlphaMode,
     /// Uniform holding the raster's logical bounds (`origin: vec2<i32>`, `size: vec2<u32>`)
     /// within its storage texture, or `None` when it fills the whole texture.
     pub bounds: Option<lumen_gpu::BufferId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CompiledOutput {
-    Raster(RasterHandle),
-    Empty,
-}
-
-impl CompiledOutput {
-    pub fn into_raster(self, node_id: NodeId) -> crate::Result<RasterHandle> {
-        match self {
-            Self::Raster(raster) => Ok(raster),
-            Self::Empty => Err(crate::error::RenderError::InvalidNodeOutputType {
-                node_id,
-                expected: "Raster",
-                actual: "Empty",
-            }
-            .into()),
-        }
-    }
 }
 
 /// TimeRemap nodes traversed from the media output to reach a compiled node instance.
@@ -64,6 +24,13 @@ impl CompiledOutput {
 /// A node reached through different remap paths is compiled once per path, so the path (not the
 /// absolute frame) identifies its resources across every frame bound to the same plan.
 pub type TimeRemapPath = Vec<NodeId>;
+
+/// A node instance's output, which is compiled once per path.
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub(super) struct CompiledPortKey {
+    pub(super) node: NodeId,
+    pub(super) time_remaps: TimeRemapPath,
+}
 
 pub trait GpuCompiledNode: std::fmt::Debug + Send + Sync {
     fn node_id(&self) -> NodeId;
@@ -94,11 +61,21 @@ pub struct CompiledComposition {
     pub(crate) text_atlas_texture: Option<lumen_gpu::TextureId>,
     pub(crate) text_atlas: std::sync::Arc<std::sync::Mutex<lumen_text::GlyphAtlas>>,
     pub output: RasterHandle,
-    pub node_outputs: HashMap<NodeId, CompiledOutput>,
+    pub(super) outputs: HashMap<CompiledPortKey, RasterHandle>,
     pub compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
 }
 
 impl CompiledComposition {
+    /// The raster compiled for `node` reached through the time remaps and clips of `path`.
+    #[doc(hidden)]
+    pub fn node_output(&self, node: NodeId, path: &[NodeId]) -> Option<RasterHandle> {
+        let key = CompiledPortKey {
+            node,
+            time_remaps: path.to_vec(),
+        };
+        self.outputs.get(&key).copied()
+    }
+
     /// Installs the 4096² RGBA8 text atlas (64 MiB) after `Renderer::prepare_plan`.
     /// Standalone callers must call this before uploading text; repeated calls retain the atlas.
     /// `GpuCompositionRenderer` installs its shared atlas automatically.
@@ -162,27 +139,13 @@ pub struct BoundFrame {
 }
 
 #[derive(Debug, Clone)]
-enum TextureUpload {
-    Rgba8 {
-        id: lumen_gpu::TextureId,
-        data: Vec<u8>,
-        bytes_per_row: u32,
-        rows_per_image: u32,
-    },
-    Rgba8Region {
-        id: lumen_gpu::TextureId,
-        data: Vec<u8>,
-        origin: [u32; 3],
-        size: lumen_gpu::Size,
-        bytes_per_row: u32,
-        rows_per_image: u32,
-    },
-    Rgba16Float {
-        id: lumen_gpu::TextureId,
-        data: Vec<u16>,
-        bytes_per_row: u32,
-        rows_per_image: u32,
-    },
+struct TextureUpload {
+    id: lumen_gpu::TextureId,
+    data: Vec<u8>,
+    origin: [u32; 3],
+    size: lumen_gpu::Size,
+    bytes_per_row: u32,
+    rows_per_image: u32,
 }
 
 /// Identifies the cached texture of an image.
@@ -212,21 +175,6 @@ impl BoundFrame {
         self.buffer_uploads.push((id, offset, data.into()));
     }
 
-    pub fn write_texture_rgba8(
-        &mut self,
-        id: lumen_gpu::TextureId,
-        data: impl Into<Vec<u8>>,
-        bytes_per_row: u32,
-        rows_per_image: u32,
-    ) {
-        self.texture_uploads.push(TextureUpload::Rgba8 {
-            id,
-            data: data.into(),
-            bytes_per_row,
-            rows_per_image,
-        });
-    }
-
     pub fn write_texture_rgba8_region(
         &mut self,
         id: lumen_gpu::TextureId,
@@ -236,26 +184,11 @@ impl BoundFrame {
         bytes_per_row: u32,
         rows_per_image: u32,
     ) {
-        self.texture_uploads.push(TextureUpload::Rgba8Region {
+        self.texture_uploads.push(TextureUpload {
             id,
             data: data.into(),
             origin,
             size,
-            bytes_per_row,
-            rows_per_image,
-        });
-    }
-
-    pub fn write_texture_rgba16_float(
-        &mut self,
-        id: lumen_gpu::TextureId,
-        data: impl Into<Vec<u16>>,
-        bytes_per_row: u32,
-        rows_per_image: u32,
-    ) {
-        self.texture_uploads.push(TextureUpload::Rgba16Float {
-            id,
-            data: data.into(),
             bytes_per_row,
             rows_per_image,
         });
@@ -307,41 +240,14 @@ impl BoundFrame {
             update.write_buffer(*id, *offset, data);
         }
         for upload in &self.texture_uploads {
-            match upload {
-                TextureUpload::Rgba8 {
-                    id,
-                    data,
-                    bytes_per_row,
-                    rows_per_image,
-                } => {
-                    update.write_texture_rgba8(*id, data, *bytes_per_row, *rows_per_image);
-                }
-                TextureUpload::Rgba8Region {
-                    id,
-                    data,
-                    origin,
-                    size,
-                    bytes_per_row,
-                    rows_per_image,
-                } => {
-                    update.write_texture_rgba8_region(
-                        *id,
-                        data,
-                        *origin,
-                        *size,
-                        *bytes_per_row,
-                        *rows_per_image,
-                    );
-                }
-                TextureUpload::Rgba16Float {
-                    id,
-                    data,
-                    bytes_per_row,
-                    rows_per_image,
-                } => {
-                    update.write_texture_rgba16_float(*id, data, *bytes_per_row, *rows_per_image);
-                }
-            }
+            update.write_texture_rgba8_region(
+                upload.id,
+                &upload.data,
+                upload.origin,
+                upload.size,
+                upload.bytes_per_row,
+                upload.rows_per_image,
+            );
         }
         update
     }

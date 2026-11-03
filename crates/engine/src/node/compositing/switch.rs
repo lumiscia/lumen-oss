@@ -1,6 +1,6 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
-use crate::gpu::{CompiledOutput, GpuCompileNode};
+use crate::gpu::{GpuCompileNode, RasterHandle};
 
 /// Selects one raster input according to a controlled layer index.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -34,10 +34,7 @@ pub fn selected_layer_for_frame(
 }
 
 impl GpuCompileNode for Switch {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let selected_layer = selected_layer_for_frame(self, &ctx.expr_context())?;
         let Some(index) = selected_layer else {
             return Ok(ctx.compile_transparent(self.id));
