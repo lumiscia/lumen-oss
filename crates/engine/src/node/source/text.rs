@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::error::{LumenError, MediaError, RenderError};
-use crate::expr::{ExprNode, ExpressionContext, GlobalVar, GlyphScope};
+use crate::expr::{ExpressionContext, GlyphScope};
 use crate::gpu::{BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle};
 use crate::media::{FontResolver, MediaStore, TextSession};
 use crate::node::vector::{
@@ -1023,16 +1023,13 @@ struct PerGlyph<'a, T> {
 
 impl<'a, T: ParamValue + Copy> PerGlyph<'a, T> {
     fn new(param: &'a Deferred<T>, name: &'static str) -> Self {
-        let mut reads = [false; 4];
-        if let Deferred::Expr(expression) = param {
-            crate::expr::functions::visit(expression.ast(), &mut |node| match node {
-                ExprNode::Global(GlobalVar::Glyph) => reads[0] = true,
-                ExprNode::Global(GlobalVar::Word) => reads[1] = true,
-                ExprNode::Global(GlobalVar::Line) => reads[2] = true,
-                ExprNode::Global(GlobalVar::Span) => reads[3] = true,
-                _ => {}
-            });
-        }
+        let reads = match param {
+            Deferred::Expr(expression) => {
+                let reads = expression.reads;
+                [reads.glyph, reads.word, reads.line, reads.span]
+            }
+            Deferred::Value(_) => [false; 4],
+        };
         Self {
             param,
             name,

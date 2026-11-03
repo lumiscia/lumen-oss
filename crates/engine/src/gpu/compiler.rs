@@ -13,8 +13,7 @@ use crate::{
     },
     media::MediaStore,
     node::{
-        ClipPropValue, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PropertyRead,
-        compositing::clip::Clip, required_input,
+        DelegateEvalContext, DelegateEvaluable, NodeId, compositing::clip::Clip, required_input,
     },
     scope::{FrameTime, PropValues, Routed, Scope},
 };
@@ -153,7 +152,7 @@ pub(crate) enum SourceMotion {
 impl SourceMotion {
     /// The motion of a node whose params are `params`, of which `animated` says whether any
     /// that move the source are expressions.
-    pub(crate) fn of<P: NodeParams>(animated: bool, params: &P) -> Self {
+    pub(crate) fn of(animated: bool, params: &impl DelegateEvaluable) -> Self {
         if !animated {
             Self::Fixed
         } else if reads_outside_node(params) {
@@ -166,38 +165,10 @@ impl SourceMotion {
 
 /// Whether an expression of `params` reads another node or measures text, whose values live
 /// outside of the node and its plan.
-fn reads_outside_node<P: NodeParams>(params: &P) -> bool {
-    P::property_defs().iter().any(|def| {
-        matches!(
-            params.get_property(def.id),
-            Some(PropertyRead::Expr(expr)) if expr_reads_outside_node(expr)
-        )
-    })
-}
-
-fn expr_reads_outside_node(expr: &crate::expr::Expression) -> bool {
-    let mut reads_outside = false;
-    crate::expr::functions::visit(expr.ast(), &mut |node| {
-        reads_outside |= matches!(
-            node,
-            crate::expr::ExprNode::Node(_)
-                | crate::expr::ExprNode::PropertyValue(..)
-                | crate::expr::ExprNode::Builtin(
-                    crate::expr::BuiltinFn::TextWidth | crate::expr::BuiltinFn::TextHeight,
-                    _
-                )
-        );
-    });
-    reads_outside
-}
-
-/// Whether a clip's timing or prop expressions read state outside the node, which edits can
-/// change without changing its definition.
-fn clip_reads_outside_node(clip: &Clip) -> bool {
-    reads_outside_node(&clip.params)
-        || clip.props().0.values().any(
-            |value| matches!(value, ClipPropValue::Expr(expr) if expr_reads_outside_node(expr)),
-        )
+fn reads_outside_node(params: &impl DelegateEvaluable) -> bool {
+    let mut outside = false;
+    params.for_each_expression(&mut |expr| outside |= expr.reads.outside_node);
+    outside
 }
 
 /// Copies the visible part of a clip's raster into a texture of the parent canvas.
@@ -534,7 +505,7 @@ impl<'a> CompileContext<'a> {
     /// this scope at where the clip shows, in the content's time and with its props. `None`
     /// when they are unknown, as when the clip's expressions read state outside of it.
     fn clip_bound_frames(&self, clip: &Clip) -> Option<Arc<[PlanFrame]>> {
-        if clip_reads_outside_node(clip) {
+        if reads_outside_node(&clip.params) {
             return None;
         }
         let frames = self.bound_frames.as_ref()?;

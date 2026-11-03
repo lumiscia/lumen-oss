@@ -86,17 +86,18 @@ fn enum_eval_match_tokens(
     })
 }
 
-fn enum_has_expressions_match_tokens(variant: &Variant) -> proc_macro2::TokenStream {
+fn enum_for_each_expression_match_tokens(variant: &Variant) -> proc_macro2::TokenStream {
     let ident = &variant.ident;
     match &variant.fields {
-        Fields::Unit => quote!(Self::#ident => false),
+        Fields::Unit => quote!(Self::#ident => {}),
         Fields::Unnamed(fields) => {
             let vars = (0..fields.unnamed.len())
                 .map(|index| format_ident!("field_{index}"))
                 .collect::<Vec<_>>();
             quote!(
-                Self::#ident(#(#vars),*) => false
-                    #(|| ::lumen_engine::node::DelegateEvaluable::has_expressions(#vars))*
+                Self::#ident(#(#vars),*) => {
+                    #(::lumen_engine::node::DelegateEvaluable::for_each_expression(#vars, f);)*
+                }
             )
         }
         Fields::Named(fields) => {
@@ -106,8 +107,9 @@ fn enum_has_expressions_match_tokens(variant: &Variant) -> proc_macro2::TokenStr
                 .map(|field| field.ident.clone().expect("named field"))
                 .collect::<Vec<_>>();
             quote!(
-                Self::#ident { #(#vars),* } => false
-                    #(|| ::lumen_engine::node::DelegateEvaluable::has_expressions(#vars))*
+                Self::#ident { #(#vars),* } => {
+                    #(::lumen_engine::node::DelegateEvaluable::for_each_expression(#vars, f);)*
+                }
             )
         }
     }
@@ -180,13 +182,13 @@ pub(crate) fn expand_enum_delegate(
         .iter()
         .map(|variant| enum_eval_match_tokens(ident, variant))
         .collect::<Result<Vec<_>>>()?;
-    let mut has_expressions_matches = variants
+    let mut for_each_expression_matches = variants
         .iter()
-        .map(enum_has_expressions_match_tokens)
+        .map(enum_for_each_expression_match_tokens)
         .collect::<Vec<_>>();
     if expressions {
-        has_expressions_matches.push(quote!(
-            Self::Expr(deferred) => ::lumen_engine::node::DelegateEvaluable::has_expressions(deferred)
+        for_each_expression_matches.push(quote!(
+            Self::Expr(deferred) => ::lumen_engine::node::DelegateEvaluable::for_each_expression(deferred, f)
         ));
         delegate_variants.push(quote!(Expr(::lumen_engine::node::Deferred<#ident>)));
         eval_matches.push(quote!(
@@ -367,9 +369,10 @@ pub(crate) fn expand_enum_delegate(
                 self.try_into_evaluated(ctx)
             }
 
-            fn has_expressions(&self) -> bool {
+            #[allow(unused_variables)]
+            fn for_each_expression(&self, f: &mut dyn FnMut(&::lumen_engine::expr::Expression)) {
                 match self {
-                    #(#has_expressions_matches,)*
+                    #(#for_each_expression_matches,)*
                 }
             }
 

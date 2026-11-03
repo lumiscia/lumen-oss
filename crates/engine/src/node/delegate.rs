@@ -44,8 +44,15 @@ pub trait DelegateEvaluable: Clone {
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated>;
 
+    /// Calls `f` with every expression in this value, however deeply it is held.
+    fn for_each_expression(&self, f: &mut dyn FnMut(&Expression));
+
     /// Whether any part of this value is an expression.
-    fn has_expressions(&self) -> bool;
+    fn has_expressions(&self) -> bool {
+        let mut any = false;
+        self.for_each_expression(&mut |_| any = true);
+        any
+    }
 
     /// Parses the value as written in JSON. Errors name `path`.
     fn from_json_value(value: &Value, path: &str) -> Result<Self, String>;
@@ -135,8 +142,10 @@ impl<D: DelegateEvaluable> DelegateEvaluable for Vec<D> {
             .collect()
     }
 
-    fn has_expressions(&self) -> bool {
-        self.iter().any(DelegateEvaluable::has_expressions)
+    fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
+        for value in self {
+            value.for_each_expression(f);
+        }
     }
 
     fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
@@ -220,8 +229,10 @@ impl<D: DelegateEvaluable> DelegateEvaluable for Override<D> {
         })
     }
 
-    fn has_expressions(&self) -> bool {
-        matches!(self, Self::Set(value) if value.has_expressions())
+    fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
+        if let Self::Set(value) = self {
+            value.for_each_expression(f);
+        }
     }
 
     fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
@@ -264,9 +275,10 @@ impl<D: DelegateEvaluable> DelegateEvaluable for Option<D> {
         self.as_ref().map(|value| value.eval(ctx)).transpose()
     }
 
-    fn has_expressions(&self) -> bool {
-        self.as_ref()
-            .is_some_and(DelegateEvaluable::has_expressions)
+    fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
+        if let Some(value) = self {
+            value.for_each_expression(f);
+        }
     }
 
     fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {

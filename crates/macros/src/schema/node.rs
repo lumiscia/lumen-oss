@@ -187,8 +187,8 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                 ports
             }
 
-            fn has_expressions(&self) -> bool {
-                false #(|| ::lumen_engine::node::DelegateEvaluable::has_expressions(&self.#metas_fields))*
+            fn for_each_expression(&self, f: &mut dyn FnMut(&::lumen_engine::expr::Expression)) {
+                #(::lumen_engine::node::DelegateEvaluable::for_each_expression(&self.#metas_fields, f);)*
             }
         }
 

@@ -61,10 +61,8 @@ pub trait ParamValue: Clone {
     /// Whether `from_expression` can produce this type.
     const ACCEPTS_EXPRESSIONS: bool;
 
-    /// Whether this literal holds expressions of its own.
-    fn has_expressions(&self) -> bool {
-        false
-    }
+    /// Calls `f` with each expression this literal holds of its own.
+    fn for_each_expression(&self, _f: &mut dyn FnMut(&Expression)) {}
 
     /// Parses a literal, already told apart from an `=expression`. Errors name `path`.
     fn from_json_value(value: &Value, path: &str) -> Result<Self, String>;
@@ -92,10 +90,10 @@ where
         Deferred::eval(self, ctx.node_id, "", ctx.expr)
     }
 
-    fn has_expressions(&self) -> bool {
+    fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
         match self {
-            Self::Value(value) => value.has_expressions(),
-            Self::Expr(_) => true,
+            Self::Value(value) => value.for_each_expression(f),
+            Self::Expr(expr) => f(expr),
         }
     }
 
@@ -428,14 +426,16 @@ impl ParamValue for vector::paint::Paint {
 impl ParamValue for ShaderUniforms {
     const ACCEPTS_EXPRESSIONS: bool = false;
 
-    fn has_expressions(&self) -> bool {
-        self.0.values().any(|value| match value {
-            super::ShaderUniformValue::Expr(_) => true,
-            super::ShaderUniformValue::Vector(components) => {
-                components.iter().any(Deferred::is_expr)
+    fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
+        for value in self.0.values() {
+            match value {
+                super::ShaderUniformValue::Expr(expr) => f(expr),
+                super::ShaderUniformValue::Vector(components) => {
+                    components.for_each_expression(f);
+                }
+                super::ShaderUniformValue::Number(_) | super::ShaderUniformValue::Color { .. } => {}
             }
-            super::ShaderUniformValue::Number(_) | super::ShaderUniformValue::Color { .. } => false,
-        })
+        }
     }
 
     fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
@@ -460,10 +460,12 @@ impl ParamValue for ShaderUniforms {
 impl ParamValue for ClipProps {
     const ACCEPTS_EXPRESSIONS: bool = false;
 
-    fn has_expressions(&self) -> bool {
-        self.0
-            .values()
-            .any(|value| matches!(value, super::ClipPropValue::Expr(_)))
+    fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
+        for value in self.0.values() {
+            if let super::ClipPropValue::Expr(expr) = value {
+                f(expr);
+            }
+        }
     }
 
     fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {

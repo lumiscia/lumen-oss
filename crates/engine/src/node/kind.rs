@@ -6,6 +6,7 @@ use super::{
 };
 use crate::{
     error::GraphValidationError,
+    expr::Expression,
     gpu::{CompileContext, GpuCompileNode, RasterHandle},
 };
 
@@ -69,9 +70,9 @@ macro_rules! node_kinds {
                 }
             }
 
-            fn has_expressions(&self) -> bool {
+            fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
                 match self {
-                    $(Self::$variant(node) => node.has_expressions(),)+
+                    $(Self::$variant(node) => node.for_each_expression(f),)+
                 }
             }
         }
