@@ -9,7 +9,7 @@ use lumen_engine::{
     graph::{Connection, Graph},
     media::{
         CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
-        collect_frame_requirements,
+        VideoMetadata, collect_frame_requirements,
     },
     node::{
         Deferred, NodeId, NodeKind, PortRef,
@@ -17,9 +17,11 @@ use lumen_engine::{
         processing::{
             alpha_premultiply::{AlphaPremultiply, AlphaPremultiplyParamsDelegate},
             exposure::Exposure,
+            opacity::Opacity,
             time_remap::TimeRemap,
         },
         source::background::Background,
+        source::media_in::{MediaIn, MediaInParamsDelegate},
         source::text::{Text, TextParamsDelegate},
         source::text_content::TextContentDelegate,
         vector::{
@@ -29,7 +31,10 @@ use lumen_engine::{
     },
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 const RGBA8: lumen_gpu::wgpu::TextureFormat = lumen_gpu::wgpu::TextureFormat::Rgba8Unorm;
 
@@ -73,13 +78,19 @@ fn solid(id: u64, color: [u8; 4]) -> Value {
     } })
 }
 
-fn compile(composition: &Composition, frame: Option<u32>) -> CompiledComposition {
+fn try_compile(
+    composition: &Composition,
+    frame: Option<u32>,
+) -> Result<CompiledComposition, LumenError> {
     match frame {
         Some(frame) => CompileContext::with_frame(composition, frame, RGBA8),
         None => CompileContext::new(composition),
     }
     .compile()
-    .unwrap()
+}
+
+fn compile(composition: &Composition, frame: Option<u32>) -> CompiledComposition {
+    try_compile(composition, frame).unwrap()
 }
 
 fn port(node: u64) -> PortRef {
@@ -198,7 +209,7 @@ impl ImageResolver for TestMediaStore {
     }
 }
 
-fn build_errors(graph: Graph) -> Vec<LumenError> {
+fn build(graph: Graph) -> Result<Composition, Vec<LumenError>> {
     CompositionBuilder::new(
         graph,
         TimelineSettings {
@@ -212,7 +223,10 @@ fn build_errors(graph: Graph) -> Vec<LumenError> {
         },
     )
     .build()
-    .expect_err("invalid graph must be rejected before compilation")
+}
+
+fn build_errors(graph: Graph) -> Vec<LumenError> {
+    build(graph).expect_err("invalid graph must be rejected before compilation")
 }
 
 fn assert_cycle_rejected_at_build(graph: Graph) {
@@ -416,30 +430,88 @@ fn media_input_domain() {
 
 #[test]
 fn media_prediction_follows_direct_ports() {
-    let plate =
-        json!({ "id": 1, "type": "media_in", "params": { "kind": "image", "source": "plate" } });
-    // Each merge reads the one below it twice, so a walk without memory takes 2^40 steps.
-    let mut shared = vec![plate.clone()];
-    for level in 0..40u64 {
-        shared.push(json!({
-            "id": level + 2, "type": "merge",
-            "in": { "base": level + 1, "overlay": level + 1 }
+    let (media, opacity, output) = (NodeId::new(1), NodeId::new(2), NodeId::new(3));
+    let mut graph = Graph::new();
+    graph.nodes.insert(
+        media,
+        NodeKind::MediaIn(MediaIn {
+            id: media,
+            params: MediaInParamsDelegate {
+                kind: Deferred::value(0),
+                source: Deferred::value("plate".to_string()),
+                ..Default::default()
+            },
+        }),
+    );
+    graph.nodes.insert(
+        opacity,
+        NodeKind::Opacity(Opacity {
+            id: opacity,
+            source: port(1),
+            ..Opacity::default()
+        }),
+    );
+    graph.nodes.insert(
+        output,
+        NodeKind::MediaOutput(MediaOutput {
+            id: output,
+            source: port(2),
+        }),
+    );
+    let composition = build(graph).unwrap_or_else(|errors| panic!("{errors:?}"));
+
+    let requirements =
+        collect_frame_requirements(&composition, &TestMediaStore::image("plate", 8, 4), 0).unwrap();
+
+    assert_eq!(requirements.images, vec!["plate"]);
+    assert!(requirements.videos.is_empty());
+}
+
+#[test]
+fn media_prediction_visits_shared_inputs_once() {
+    #[derive(Debug, Default)]
+    struct CountingStore(AtomicUsize);
+    impl MediaStore for CountingStore {
+        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+            None
+        }
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Some(Box::new(OneFrameVideo))
+        }
+    }
+    struct OneFrameVideo;
+    impl VideoFrameResolver for OneFrameVideo {
+        fn id(&self) -> &str {
+            "clip"
+        }
+        fn metadata(&self) -> VideoMetadata {
+            VideoMetadata {
+                width: 8,
+                height: 4,
+                frame_count: 1,
+                fps: 24.0,
+            }
+        }
+        fn frame(&self, _: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+            unreachable!("prediction reads no frames")
+        }
+    }
+
+    // Each merge reads the one below it twice, so a walk without memory reaches the clip 16 times.
+    let mut nodes = vec![
+        json!({ "id": 1, "type": "media_in", "params": { "kind": "video", "source": "clip" } }),
+    ];
+    for level in 1..=4u64 {
+        nodes.push(json!({
+            "id": level + 1, "type": "merge", "in": { "base": level, "overlay": level }
         }));
     }
-    for (name, nodes) in [
-        (
-            "opacity",
-            json!([plate, { "id": 2, "type": "opacity", "in": { "source": 1 } }]),
-        ),
-        ("shared inputs", json!(shared)),
-    ] {
-        let composition = scene((8, 4), nodes);
-        let requirements =
-            collect_frame_requirements(&composition, &TestMediaStore::image("plate", 8, 4), 0)
-                .unwrap();
-        assert_eq!(requirements.images, vec!["plate"], "{name}");
-        assert!(requirements.videos.is_empty(), "{name}");
-    }
+    let store = CountingStore::default();
+
+    collect_frame_requirements(&scene((8, 4), json!(nodes)), &store, 0).unwrap();
+
+    assert_eq!(store.0.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -521,7 +593,8 @@ fn routing_selects_one_branch() {
     ];
     for row in rows {
         let composition = scene((8, 4), row.nodes);
-        let compiled = compile(&composition, row.frame);
+        let compiled = try_compile(&composition, row.frame)
+            .unwrap_or_else(|error| panic!("{}: {error}", row.name));
         let selected = raster(&compiled, row.selected);
         for alias in row.aliases {
             assert_eq!(
