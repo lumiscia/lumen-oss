@@ -876,6 +876,33 @@ mod tests {
         assert!(!interface.declares_input0 && !interface.declares_output);
     }
 
+    #[test]
+    fn declarations_parse_with_any_whitespace() {
+        let interface = ShaderInterface::parse(
+            "struct  Params{ tint :vec3 < f32 > ,alpha : f32 }\n\
+             @ group( 0 ) @binding( 1u ) var< uniform > params : Params ;",
+        )
+        .unwrap();
+        let offsets: Vec<_> = interface
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.offset))
+            .collect();
+        assert_eq!(offsets, [("tint", 0), ("alpha", 12)]);
+        assert_eq!(interface.uniform_size, 16);
+        let bytes = interface
+            .uniform_bytes(
+                NodeId::new(1),
+                &uniforms(json!({ "tint": [0.5, 0.25, 1], "alpha": 1 })),
+                &context(),
+            )
+            .unwrap();
+        assert_eq!(
+            bytemuck::cast_slice::<u8, f32>(&bytes),
+            [0.5, 0.25, 1.0, 1.0]
+        );
+    }
+
     fn uniforms(value: serde_json::Value) -> ShaderUniforms {
         ShaderUniforms::from_json_value(&value, "uniforms").unwrap()
     }
