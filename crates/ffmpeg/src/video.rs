@@ -43,7 +43,6 @@ pub enum VideoCodec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
-    Cuda,
     Rgba8,
     Bgra8,
     Nv12,
@@ -135,7 +134,6 @@ impl PixelFormat {
     pub(crate) fn from_av_pixel_format(format: sys::AVPixelFormat) -> Self {
         match format {
             AV_PIX_FMT_RGBA => Self::Rgba8,
-            AV_PIX_FMT_CUDA => Self::Cuda,
             AV_PIX_FMT_BGRA => Self::Bgra8,
             AV_PIX_FMT_NV12 => Self::Nv12,
             AV_PIX_FMT_P010LE | AV_PIX_FMT_P010BE => Self::P010,
@@ -148,7 +146,6 @@ impl PixelFormat {
     pub(crate) fn to_av_pixel_format(self) -> sys::AVPixelFormat {
         match self {
             Self::Rgba8 => AV_PIX_FMT_RGBA,
-            Self::Cuda => AV_PIX_FMT_CUDA,
             Self::Bgra8 => AV_PIX_FMT_BGRA,
             Self::Nv12 => AV_PIX_FMT_NV12,
             Self::P010 => AV_PIX_FMT_P010LE,
@@ -163,6 +160,13 @@ impl VideoDecoder {
     pub fn open(input: &InputContext, config: VideoDecoderConfig) -> Result<Self> {
         let hw_device = match config.mode {
             DecodeMode::Cpu => None,
+            DecodeMode::Gpu(GpuBackend::Cuda) => {
+                return Err(FfmpegError::new(
+                    "VideoDecoder::open",
+                    "CUDA hardware decode is not supported",
+                )
+                .with_backend(GpuBackend::Cuda));
+            }
             DecodeMode::Gpu(backend) => Some(HwDeviceContext::create(backend)?),
         };
         Self::open_with_device(input, config, hw_device)
@@ -256,7 +260,7 @@ impl VideoDecoder {
                 (*decoder.context).get_format = match backend {
                     GpuBackend::Metal => Some(force_metal_pixel_format),
                     GpuBackend::Vulkan => Some(force_vulkan_pixel_format),
-                    GpuBackend::Cuda => Some(force_cuda_pixel_format),
+                    GpuBackend::Cuda => None,
                 };
             }
         }
@@ -399,10 +403,7 @@ impl VideoDecoder {
     }
 
     fn frame_to_rgba(&mut self, frame: &AvFrame) -> Result<CpuVideoFrame> {
-        if matches!(
-            frame.format(),
-            AV_PIX_FMT_CUDA | AV_PIX_FMT_VULKAN | AV_PIX_FMT_VIDEOTOOLBOX
-        ) {
+        if matches!(frame.format(), AV_PIX_FMT_VULKAN | AV_PIX_FMT_VIDEOTOOLBOX) {
             let mut cpu_frame = AvFrame::new()?;
             unsafe {
                 ffi::check(
@@ -516,14 +517,6 @@ impl VideoDecoder {
 
     fn frame_to_gpu(&self, frame: AvFrame) -> Result<GpuVideoFrame> {
         match (self.mode, frame.format()) {
-            #[cfg(feature = "cuda")]
-            (DecodeMode::Gpu(GpuBackend::Cuda), AV_PIX_FMT_CUDA) => self.frame_to_cuda(frame),
-            #[cfg(not(feature = "cuda"))]
-            (DecodeMode::Gpu(GpuBackend::Cuda), AV_PIX_FMT_CUDA) => Err(FfmpegError::new(
-                "receive_gpu_frame",
-                "crate was built without the cuda feature",
-            )
-            .with_backend(GpuBackend::Cuda)),
             #[cfg(feature = "metal")]
             (DecodeMode::Gpu(GpuBackend::Metal), AV_PIX_FMT_VIDEOTOOLBOX) => {
                 self.frame_to_metal(&frame)
@@ -590,45 +583,6 @@ impl VideoDecoder {
         let yuv_to_rgb = yuv_to_rgb(&frame);
         crate::gpu::VulkanDecodedFrame::new(frame, device.clone(), yuv_to_rgb)
             .map(GpuVideoFrame::Vulkan)
-    }
-
-    #[cfg(feature = "cuda")]
-    fn frame_to_cuda(&self, frame: AvFrame) -> Result<GpuVideoFrame> {
-        let device_ptr = frame.data(0) as u64;
-        let pitch = frame.line_size(0);
-        let width = frame.width();
-        let height = frame.height();
-        let pts = frame.pts();
-        if device_ptr == 0 || pitch <= 0 {
-            return Err(FfmpegError::new(
-                "receive_gpu_frame",
-                "CUDA decoded frame did not contain a valid device pointer and pitch",
-            )
-            .with_backend(GpuBackend::Cuda));
-        }
-        let pixel_format = frame
-            .hw_sw_format()
-            .map(PixelFormat::from_av_pixel_format)
-            .unwrap_or(PixelFormat::Unknown);
-        // The renderer's CUDA converter only reads NV12. Failing here moves the source to the CPU.
-        if pixel_format != PixelFormat::Nv12 {
-            return Err(FfmpegError::new(
-                "receive_gpu_frame",
-                format!("CUDA decoded {pixel_format:?} frames, only NV12 converts to RGBA"),
-            )
-            .with_backend(GpuBackend::Cuda));
-        }
-        Ok(GpuVideoFrame::Cuda(
-            crate::gpu::CudaDecodedFrame::from_av_frame(
-                frame,
-                device_ptr,
-                width,
-                height,
-                pitch as u64,
-                pixel_format,
-                pts,
-            ),
-        ))
     }
 }
 
@@ -735,13 +689,6 @@ unsafe extern "C" fn force_vulkan_pixel_format(
     formats: *const sys::AVPixelFormat,
 ) -> sys::AVPixelFormat {
     force_pixel_format(formats, AV_PIX_FMT_VULKAN)
-}
-
-unsafe extern "C" fn force_cuda_pixel_format(
-    _context: *mut sys::AVCodecContext,
-    formats: *const sys::AVPixelFormat,
-) -> sys::AVPixelFormat {
-    force_pixel_format(formats, AV_PIX_FMT_CUDA)
 }
 
 fn force_pixel_format(

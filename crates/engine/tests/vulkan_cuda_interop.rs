@@ -14,9 +14,8 @@ use std::{
 };
 
 use lumen_ffmpeg::{
-    CudaDriver, DecodeMode, EncodeMode, GpuBackend, GpuVideoFrame, GpuVideoInput, InputContext,
-    MuxedEncoder, VideoCodec, VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
-    import_owned_vulkan_opaque_fd_image,
+    CudaDriver, EncodeMode, GpuBackend, GpuVideoInput, MuxedEncoder, VideoCodec,
+    VideoEncoderConfig, import_owned_vulkan_opaque_fd_image,
 };
 
 #[test]
@@ -101,86 +100,6 @@ fn vulkan_texture_imports_into_cuda_and_encodes_with_nvenc() {
     let metadata = fs::metadata(&path).expect("encoded output exists");
     assert!(metadata.len() > 0);
     let _ = fs::remove_file(path);
-}
-
-#[test]
-#[ignore = "requires NVIDIA and LUMEN_TEST_CUDA_DECODE_MEDIA=/path/to/video.mp4"]
-fn decodes_cuda_frame_into_exportable_vulkan_texture() {
-    let path = std::env::var_os("LUMEN_TEST_CUDA_DECODE_MEDIA")
-        .expect("set LUMEN_TEST_CUDA_DECODE_MEDIA to a video file");
-
-    let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open media");
-    let stream = input.best_video_stream().expect("select video stream");
-    let mut decoder = VideoDecoder::open(
-        &input,
-        VideoDecoderConfig {
-            stream_index: stream.stream_index,
-            mode: DecodeMode::Gpu(GpuBackend::Cuda),
-        },
-    )
-    .expect("open CUDA decoder");
-
-    let decoded = 'decode: loop {
-        let Some(packet) = input.read_packet().expect("read packet") else {
-            panic!("media ended before a CUDA frame was decoded");
-        };
-        decoder.send_packet(&packet).expect("send packet");
-        if let Some(frame) = decoder.receive_gpu_frame().expect("receive CUDA frame") {
-            break 'decode frame;
-        }
-    };
-    let GpuVideoFrame::Cuda(decoded) = decoded else {
-        panic!("CUDA decoder returned a non-CUDA frame");
-    };
-    let (width, height) = decoded.dimensions();
-
-    let renderer = pollster::block_on(lumen_gpu::Renderer::new())
-        .expect("create Vulkan-capable wgpu renderer");
-    let size = lumen_gpu::Size::new(width, height);
-    let exportable = renderer
-        .create_exportable_vulkan_texture(
-            Some("lumen cuda-decode-to-vulkan smoke texture"),
-            size,
-            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-            lumen_gpu::wgpu::TextureUsages::COPY_DST
-                | lumen_gpu::wgpu::TextureUsages::COPY_SRC
-                | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING,
-        )
-        .expect("create exportable Vulkan texture");
-
-    let driver = CudaDriver::load().expect("load CUDA driver");
-    let context = driver
-        .create_primary_context()
-        .expect("create CUDA primary context");
-    let converter = context
-        .create_nv12_to_rgba_converter()
-        .expect("create CUDA NV12 converter");
-    let rgba = context
-        .allocate_rgba_frame(width, height)
-        .expect("allocate CUDA RGBA frame");
-    let imported = import_owned_vulkan_opaque_fd_image(
-        &context,
-        exportable
-            .memory_fd()
-            .try_clone()
-            .expect("duplicate Vulkan memory fd for CUDA import"),
-        exportable.allocation_size(),
-        width,
-        height,
-    )
-    .expect("import exportable Vulkan memory into CUDA");
-
-    converter
-        .convert(&decoded, &rgba)
-        .expect("convert NVDEC frame into CUDA RGBA");
-    context
-        .copy_rgba_frame_to_image(&rgba, &imported)
-        .expect("copy CUDA RGBA into exported Vulkan texture");
-    context
-        .synchronize()
-        .expect("wait for CUDA writes before Vulkan observes the texture");
-
-    assert_ne!(imported.level_zero_raw(), 0);
 }
 
 fn rgba_gradient(width: u32, height: u32) -> Vec<u8> {
