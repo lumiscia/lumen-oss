@@ -42,6 +42,7 @@ struct Server {
     base: String,
     child: Child,
     http: Client,
+    log: Arc<Mutex<String>>,
 }
 
 impl Server {
@@ -71,15 +72,21 @@ impl Server {
             }
         };
         // The server blocks on a full pipe, and printing keeps its log with a failing test's output.
+        let log = Arc::new(Mutex::new(String::new()));
+        let written = Arc::clone(&log);
         thread::spawn(move || {
             for line in stderr.lines().map_while(Result::ok) {
                 eprintln!("{line}");
+                let mut written = written.lock().unwrap();
+                written.push_str(&line);
+                written.push('\n');
             }
         });
         Self {
             base: format!("http://{address}"),
             child,
             http: Client::new(),
+            log,
         }
     }
 
@@ -575,7 +582,9 @@ fn renders_read_only_manifest_media_with_gpu() {
 /// default encoder falls back wherever this runs.
 #[test]
 fn the_default_encoder_falls_back_to_a_correct_video_with_gpu() {
-    let server = Server::start(&[]);
+    let server = Server::start_with(&[], |command| {
+        command.env_remove("LUMEN_VIDEO_ENCODER");
+    });
     let Some((id, progress)) =
         render_outcome(&server, &json!({ "composition": solid_composition() }))
     else {
@@ -584,6 +593,25 @@ fn the_default_encoder_falls_back_to_a_correct_video_with_gpu() {
     assert_eq!(progress["state"], "succeeded", "{progress}");
     let artifact = server.get(&format!("/renders/{id}/artifact"));
     assert_eq!(artifact.status(), StatusCode::OK);
+
+    let log = server.log.lock().unwrap().clone();
+    let lines = |text: &str| {
+        log.lines()
+            .filter(|line| line.contains(text))
+            .collect::<Vec<_>>()
+    };
+    let selected = lines("selected video encoder");
+    assert!(
+        selected.len() == 1 && selected[0].contains("h264_vulkan"),
+        "{log}"
+    );
+    let warnings = lines("h264_vulkan is unavailable, encoding with libx264");
+    assert!(
+        warnings.len() == 1 && warnings[0].contains(id.as_str()),
+        "{log}"
+    );
+    let opened = lines("opened video encoder");
+    assert!(opened.len() == 1 && opened[0].contains("libx264"), "{log}");
 
     let directory = tempfile::tempdir().expect("temp directory");
     let path = directory.path().join("output.mp4");
