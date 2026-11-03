@@ -1,41 +1,6 @@
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::{
-    error::MediaError,
-    media::{CpuMediaFrame, MediaFrame, premultiply_rgba_in_place_if_needed},
-};
-
-pub(super) struct FrameImage {
-    pub source: String,
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-    pub premultiply: bool,
-}
-
-impl FrameImage {
-    pub fn into_media_frame(mut self) -> Result<Arc<CpuMediaFrame>, MediaError> {
-        if self.premultiply {
-            premultiply_rgba_in_place_if_needed(&mut self.rgba);
-        }
-        let expected = self.width as usize * self.height as usize * 4;
-        if self.rgba.len() < expected {
-            return Err(MediaError::Decode {
-                media_source: self.source,
-                details: "decoded frame did not contain enough RGBA data".to_string(),
-            });
-        }
-        Ok(Arc::new(CpuMediaFrame {
-            rgba: Arc::new(self.rgba),
-            width: self.width,
-            height: self.height,
-            row_bytes: self.width as usize * 4,
-        }))
-    }
-}
+use crate::media::MediaFrame;
 
 /// Limits for one video source's cache. Every source has its own, so a job's ceiling is these times
 /// its number of video sources. Evicted frames are only decoded again, so the limits never change
@@ -121,6 +86,8 @@ impl FrameLruCache {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::media::CpuMediaFrame;
 

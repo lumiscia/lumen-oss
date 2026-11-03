@@ -5,18 +5,19 @@ use std::{
 };
 
 use lumen_ffmpeg::{
-    CpuVideoFrame, DecodeMode, GpuBackend, GpuVideoFrame, InputContext, VideoDecoder,
-    VideoDecoderConfig, VideoStreamInfo,
+    CpuVideoFrame, DecodeMode, GpuBackend, InputContext, VideoDecoder, VideoDecoderConfig,
+    VideoStreamInfo,
 };
 
 use crate::{
     error::MediaError,
     media::{
-        GpuVideoMediaFrame, MediaFrame, VideoFrameResolver, VideoMetadata, resolver::CpuRetry,
+        CpuMediaFrame, GpuVideoMediaFrame, MediaFrame, VideoFrameResolver, VideoMetadata,
+        premultiply_rgba_in_place_if_needed, resolver::CpuRetry,
     },
 };
 
-use super::image::{FrameImage, FrameLruCache};
+use super::image::FrameLruCache;
 
 const SEEK_REOPEN_THRESHOLD: u32 = 120;
 
@@ -116,19 +117,6 @@ struct LibavStreamDecoder {
     gpu_decode_status: GpuDecodeStatus,
 }
 
-struct DecoderComponents {
-    input: InputContext,
-    stream_index: usize,
-    width: u32,
-    height: u32,
-    frame_count: u32,
-    fps: f64,
-    time_base_seconds: f64,
-    start_time: i64,
-    decoder: VideoDecoder,
-    gpu_decode_status: GpuDecodeStatus,
-}
-
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum GpuDecodeStatus {
@@ -162,43 +150,18 @@ impl GpuDecodeStatus {
 }
 
 impl LibavStreamDecoder {
+    /// Opens the source, and clears `prefer_hardware_decode` if the hardware decoder won't open, so
+    /// the source stays on the CPU and warns once.
     fn open(
         source: impl Into<String>,
         mut options: FfmpegResolverOptions,
     ) -> Result<Self, MediaError> {
         let source = source.into();
-        let components = Self::open_components(&source, &mut options)?;
-
-        Ok(Self {
-            source,
-            options,
-            worker: None,
-            stream_index: components.stream_index,
-            width: components.width,
-            height: components.height,
-            frame_count: components.frame_count,
-            fps: components.fps,
-            time_base_seconds: components.time_base_seconds,
-            start_time: components.start_time,
-            input: components.input,
-            decoder: components.decoder,
-            next_frame_hint: 0,
-            sent_eof: false,
-            gpu_decode_status: components.gpu_decode_status,
-        })
-    }
-
-    /// Opens the source, and clears `prefer_hardware_decode` if the hardware decoder won't open, so
-    /// the source stays on the CPU and warns once.
-    fn open_components(
-        source: &str,
-        options: &mut FfmpegResolverOptions,
-    ) -> Result<DecoderComponents, MediaError> {
-        let mut input = open_input(source)?;
+        let mut input = open_input(&source)?;
         let stream = input
             .best_video_stream()
             .map_err(|err| MediaError::Decode {
-                media_source: source.to_string(),
+                media_source: source.clone(),
                 details: format!("failed selecting video stream: {err}"),
             })?;
         let stream_index = stream.stream_index;
@@ -207,12 +170,10 @@ impl LibavStreamDecoder {
             .as_f64()
             .filter(|seconds| *seconds > 0.0)
             .ok_or_else(|| MediaError::Decode {
-                media_source: source.to_string(),
+                media_source: source.clone(),
                 details: "stream has no valid time base".to_string(),
             })?;
-        let fps = resolve_stream_fps(&stream, source)?;
-        let width = stream.width;
-        let height = stream.height;
+        let fps = resolve_stream_fps(&stream, &source)?;
         let frame_count = match resolve_frame_count(&stream, input.presented_duration_us(), fps) {
             Some(frame_count) => Some(frame_count),
             None if input.is_image() => {
@@ -220,16 +181,16 @@ impl LibavStreamDecoder {
                 // An image packet can hold the whole file, so the spent input goes before the next
                 // one reads it again.
                 drop(input);
-                input = open_input(source)?;
+                input = open_input(&source)?;
                 frame_count
             }
             None => None,
         }
         .ok_or_else(|| MediaError::Decode {
-            media_source: source.to_string(),
+            media_source: source.clone(),
             details: "unable to determine stream frame count".to_string(),
         })?;
-        let (decoder, gpu_decode_status) = open_video_decoder(source, &input, &stream, options)?;
+        let (decoder, gpu_decode_status) = open_video_decoder(&source, &input, &stream, &options)?;
         if let Some(reason) = gpu_decode_status.unavailable_reason() {
             tracing::warn!(reason, "hardware decode unavailable, decoding on the CPU");
             options.prefer_hardware_decode = false;
@@ -241,18 +202,32 @@ impl LibavStreamDecoder {
             );
         }
 
-        Ok(DecoderComponents {
-            input,
+        Ok(Self {
+            source,
+            options,
+            worker: None,
             stream_index,
-            width,
-            height,
+            width: stream.width,
+            height: stream.height,
             frame_count,
             fps,
             time_base_seconds,
             start_time: stream.start_time,
+            input,
             decoder,
+            next_frame_hint: 0,
+            sent_eof: false,
             gpu_decode_status,
         })
+    }
+
+    fn metadata(&self) -> VideoMetadata {
+        VideoMetadata {
+            width: self.width,
+            height: self.height,
+            frame_count: self.frame_count,
+            fps: self.fps as f32,
+        }
     }
 
     fn decode_frame(&mut self, frame: u32) -> Result<MediaFrame, MediaError> {
@@ -345,7 +320,7 @@ impl LibavStreamDecoder {
             if matches!(self.gpu_decode_status, GpuDecodeStatus::Active { .. }) {
                 match self.decoder.receive_gpu_frame() {
                     Ok(Some(decoded)) => {
-                        let decoded_frame = self.map_gpu_frame_index(&decoded);
+                        let decoded_frame = self.frame_for_pts(decoded.pts());
                         self.next_frame_hint = decoded_frame.saturating_add(1);
                         if decoded_frame < target_frame {
                             continue;
@@ -366,14 +341,13 @@ impl LibavStreamDecoder {
             } else {
                 match self.decoder.receive_rgba_frame() {
                     Ok(Some(decoded)) => {
-                        let decoded_frame = self.map_frame_index(&decoded);
+                        let decoded_frame = self.frame_for_pts(decoded.pts);
                         self.next_frame_hint = decoded_frame.saturating_add(1);
                         if decoded_frame < target_frame {
                             continue;
                         }
                         return self
-                            .frame_to_image(decoded)
-                            .and_then(FrameImage::into_media_frame)
+                            .cpu_media_frame(decoded)
                             .map(MediaFrame::CpuRgba)
                             .map(Some);
                     }
@@ -410,41 +384,37 @@ impl LibavStreamDecoder {
         })
     }
 
-    fn map_frame_index(&self, decoded: &CpuVideoFrame) -> u32 {
-        decoded
-            .pts
-            .map(|timestamp| self.timestamp_to_frame(timestamp))
+    fn frame_for_pts(&self, pts: Option<i64>) -> u32 {
+        pts.map(|timestamp| self.timestamp_to_frame(timestamp))
             .filter(|frame| *frame <= self.frame_count.saturating_sub(1))
             .unwrap_or(self.next_frame_hint)
     }
 
-    fn map_gpu_frame_index(&self, decoded: &GpuVideoFrame) -> u32 {
-        decoded
-            .pts()
-            .map(|timestamp| self.timestamp_to_frame(timestamp))
-            .filter(|frame| *frame <= self.frame_count.saturating_sub(1))
-            .unwrap_or(self.next_frame_hint)
-    }
-
-    fn frame_to_image(&self, decoded: CpuVideoFrame) -> Result<FrameImage, MediaError> {
+    /// Premultiplies a frame that carries alpha, so opaque video skips the per-pixel loop.
+    fn cpu_media_frame(&self, decoded: CpuVideoFrame) -> Result<Arc<CpuMediaFrame>, MediaError> {
         let row_bytes = (decoded.width as usize).saturating_mul(4);
-        if decoded.stride != row_bytes {
+        let expected = row_bytes.saturating_mul(decoded.height as usize);
+        if decoded.stride != row_bytes || decoded.data.len() < expected {
             return Err(MediaError::Decode {
                 media_source: self.source.clone(),
                 details: format!(
-                    "decoded frame stride {} does not match expected RGBA stride {row_bytes}",
-                    decoded.stride
+                    "decoded frame has stride {} and {} bytes, expected RGBA rows of {row_bytes} bytes and {expected} in total",
+                    decoded.stride,
+                    decoded.data.len()
                 ),
             });
         }
 
-        Ok(FrameImage {
-            source: self.source.clone(),
+        let mut rgba = decoded.data;
+        if self.decoder.last_frame_had_alpha() {
+            premultiply_rgba_in_place_if_needed(&mut rgba);
+        }
+        Ok(Arc::new(CpuMediaFrame {
+            rgba: Arc::new(rgba),
             width: decoded.width,
             height: decoded.height,
-            rgba: decoded.data,
-            premultiply: self.decoder.last_frame_had_alpha(),
-        })
+            row_bytes,
+        }))
     }
 
     fn should_seek(&self, target_frame: u32) -> bool {
@@ -492,19 +462,9 @@ impl LibavStreamDecoder {
     }
 
     fn reopen(&mut self) -> Result<(), MediaError> {
-        let components = Self::open_components(&self.source, &mut self.options)?;
-        self.input = components.input;
-        self.stream_index = components.stream_index;
-        self.width = components.width;
-        self.height = components.height;
-        self.frame_count = components.frame_count;
-        self.fps = components.fps;
-        self.time_base_seconds = components.time_base_seconds;
-        self.start_time = components.start_time;
-        self.decoder = components.decoder;
-        self.gpu_decode_status = components.gpu_decode_status;
-        self.next_frame_hint = 0;
-        self.sent_eof = false;
+        let mut reopened = Self::open(self.source.clone(), self.options.clone())?;
+        reopened.worker = self.worker.take();
+        *self = reopened;
         Ok(())
     }
 }
@@ -528,29 +488,31 @@ enum WorkerRequest {
     Shutdown,
 }
 
+/// What the worker reports once its decoder is open.
+type Startup = Result<(VideoMetadata, GpuDecodeStatus), MediaError>;
+
 fn run_decode_worker(
     source: String,
     options: FfmpegResolverOptions,
     request_tx: mpsc::Sender<WorkerRequest>,
     request_rx: mpsc::Receiver<WorkerRequest>,
+    startup_tx: mpsc::Sender<Startup>,
 ) {
-    let mut worker = match LibavStreamDecoder::open(source.clone(), options) {
+    let mut worker = match LibavStreamDecoder::open(source, options) {
         Ok(mut decoder) => {
             decoder.worker = Some(request_tx);
-            Ok(VideoDecodeWorker::new(decoder))
+            let _ = startup_tx.send(Ok((decoder.metadata(), decoder.gpu_decode_status.clone())));
+            VideoDecodeWorker::new(decoder)
         }
-        Err(error) => Err(error),
+        Err(error) => {
+            let _ = startup_tx.send(Err(error));
+            return;
+        }
     };
     let mut pending = BTreeSet::new();
 
     loop {
-        let can_prefetch = |worker: &Result<VideoDecodeWorker, MediaError>| {
-            worker
-                .as_ref()
-                .is_ok_and(VideoDecodeWorker::has_room_to_prefetch)
-        };
-
-        if pending.is_empty() || !can_prefetch(&worker) {
+        if pending.is_empty() || !worker.has_room_to_prefetch() {
             let Ok(request) = request_rx.recv() else {
                 return;
             };
@@ -571,9 +533,8 @@ fn run_decode_worker(
             }
         }
 
-        if can_prefetch(&worker)
+        if worker.has_room_to_prefetch()
             && let Some(frame) = pending.pop_first()
-            && let Ok(worker) = &mut worker
         {
             worker.prefetch_frame(frame);
         }
@@ -582,7 +543,7 @@ fn run_decode_worker(
 
 fn handle_worker_request(
     request: WorkerRequest,
-    worker: &mut Result<VideoDecodeWorker, MediaError>,
+    worker: &mut VideoDecodeWorker,
     pending: &mut BTreeSet<u32>,
 ) -> bool {
     match request {
@@ -592,11 +553,7 @@ fn handle_worker_request(
         }
         WorkerRequest::Resolve { frame, response_tx } => {
             pending.remove(&frame);
-            let result = match worker {
-                Ok(worker) => worker.resolve_frame(frame),
-                Err(error) => Err(error.clone()),
-            };
-            let _ = response_tx.send(result);
+            let _ = response_tx.send(worker.resolve_frame(frame));
             false
         }
         WorkerRequest::ResolveOnCpu {
@@ -605,18 +562,12 @@ fn handle_worker_request(
             response_tx,
         } => {
             pending.remove(&frame);
-            let result = match worker {
-                Ok(worker) => worker.resolve_on_cpu(frame, &reason),
-                Err(error) => Err(error.clone()),
-            };
-            let _ = response_tx.send(result);
+            let _ = response_tx.send(worker.resolve_on_cpu(frame, &reason));
             false
         }
         WorkerRequest::Retain { frames } => {
             pending.retain(|frame| frames.binary_search(frame).is_ok());
-            if let Ok(worker) = worker {
-                worker.retain_frames(&frames);
-            }
+            worker.retain_frames(&frames);
             false
         }
         WorkerRequest::Shutdown => true,
@@ -642,22 +593,26 @@ impl FfmpegVideoResolver {
         options: FfmpegResolverOptions,
     ) -> Result<Self, MediaError> {
         let source = source.into();
-        let decoder = LibavStreamDecoder::open(source.clone(), options)?;
-        let metadata = VideoMetadata {
-            width: decoder.width,
-            height: decoder.height,
-            frame_count: decoder.frame_count,
-            fps: decoder.fps as f32,
-        };
-        let decode_status = decoder.gpu_decode_status.clone();
-        let options = decoder.options.clone();
-        drop(decoder);
-
         let (request_tx, request_rx) = mpsc::channel::<WorkerRequest>();
+        let (startup_tx, startup_rx) = mpsc::channel();
         let worker_source = source.clone();
         let worker_tx = request_tx.clone();
-        let worker_handle =
-            thread::spawn(move || run_decode_worker(worker_source, options, worker_tx, request_rx));
+        let worker_handle = thread::spawn(move || {
+            run_decode_worker(worker_source, options, worker_tx, request_rx, startup_tx)
+        });
+        let startup = startup_rx.recv().unwrap_or_else(|_| {
+            Err(MediaError::Decode {
+                media_source: source.clone(),
+                details: "video decode worker stopped while opening".to_string(),
+            })
+        });
+        let (metadata, decode_status) = match startup {
+            Ok(opened) => opened,
+            Err(error) => {
+                let _ = worker_handle.join();
+                return Err(error);
+            }
+        };
 
         Ok(Self {
             id: source,
@@ -1082,6 +1037,14 @@ mod tests {
         assert_eq!(resolver.metadata().frame_count, 10);
         assert!(resolver.frame(9).is_ok());
         let _ = fs::remove_file(animated);
+    }
+
+    #[test]
+    fn a_missing_file_fails_to_open() {
+        let error = open_cpu(&std::env::temp_dir().join("lumen_engine_no_such_clip.mp4"))
+            .err()
+            .expect("no such file");
+        assert!(error.to_string().contains("failed opening"), "{error}");
     }
 
     #[test]
