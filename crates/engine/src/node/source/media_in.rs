@@ -437,17 +437,14 @@ mod tests {
 
     #[test]
     fn looped_remap_target_keeps_its_source_frame() {
-        use crate::node::processing::time_remap::{TimeRemapSettings, remap_frame};
-        let target = remap_frame(
-            crate::node::NodeId::new(1),
-            TimeRemapSettings {
-                frame: 1.0 / 49.0 * 49.0,
-                loop_enabled: true,
-                loop_start: 1,
-                loop_end: 2,
-            },
-        )
-        .unwrap();
+        use crate::node::processing::time_remap::{TimeRemapParams, remap_frame};
+        let params = TimeRemapParams {
+            frame: 1.0 / 49.0 * 49.0,
+            loop_enabled: true,
+            loop_start: 1,
+            loop_end: 2,
+        };
+        let target = remap_frame(crate::node::NodeId::new(1), &params).unwrap();
         for fps in [24.0, 30.0, 60.0] {
             assert_eq!(
                 map_to_source_frame(target, fps, fps, 10, &(0..u32::MAX), 1.0, LoopMode::Clamp),

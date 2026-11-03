@@ -9,7 +9,7 @@ use super::gaussian;
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct BlurParams {
-    /// Blur radius in pixels. Fractional radii blend smoothly.
+    /// Blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.
     #[meta(min = 0, step = 0.5)]
     pub radius: f64,
 }

@@ -1045,6 +1045,72 @@ fn bind_errors() {
         Stage::Bind,
         "`glyph` is only available",
     ));
+    // An expression can only name a value the enum has.
+    let source = json!({ "source": 1 });
+    for (kind, inputs, param, value, enum_name) in [
+        (
+            "boolean",
+            json!({ "a": 1, "b": 2 }),
+            "operation",
+            "=4",
+            "BooleanOperation",
+        ),
+        (
+            "raster_multimerge",
+            json!({ "layers": [1, 2] }),
+            "blend_mode",
+            "=6",
+            "BlendMode",
+        ),
+        (
+            "merge",
+            json!({ "base": 1, "overlay": 2 }),
+            "blend_mode",
+            "=6",
+            "BlendMode",
+        ),
+        (
+            "color_grade",
+            source.clone(),
+            "interpolation",
+            "=2",
+            "RasterSampling",
+        ),
+        (
+            "resize",
+            source.clone(),
+            "sampling",
+            "=-1",
+            "RasterSampling",
+        ),
+        ("transform", source, "sampling", "=2", "RasterSampling"),
+    ] {
+        rows.push(row(
+            &format!("{kind} {param} outside its enum"),
+            json!([
+                solid(1, [255, 0, 0, 255]),
+                solid(2, [0, 0, 255, 255]),
+                { "id": 3, "type": kind, "in": inputs, "params": { param: value } },
+            ]),
+            Stage::Bind,
+            format!("is not a value of {enum_name}"),
+        ));
+    }
+    rows.push(row(
+        "shadow color that is a gradient",
+        json!([
+            solid(1, [255, 0, 0, 255]),
+            { "id": 2, "type": "shadow", "in": { "source": 1 }, "params": { "color": {
+                "type": "linear_gradient",
+                "stops": [
+                    { "offset": 0.0, "color": [255, 0, 0, 255] },
+                    { "offset": 1.0, "color": [0, 0, 255, 255] }
+                ]
+            } } },
+        ]),
+        Stage::Bind,
+        "property `color` on node 2 has invalid type: expected a solid color, got a gradient",
+    ));
     rows.push(row(
         "malformed path data",
         json!([{ "id": 1, "type": "path", "params": { "data": "M 0 0 L 10 10 C nope" } }]),
@@ -1083,6 +1149,29 @@ fn bind_errors() {
         }
         .to_string();
         assert!(error.contains(&row.message), "{}: {error}", row.name);
+    }
+}
+
+#[test]
+fn color_grade_interpolation_is_a_sampling_name() {
+    let load = |value: Value| {
+        lumen_engine::json::parse_value(&json!({
+            "timeline": { "fps": 24, "duration_frames": 12 },
+            "render_settings": { "width": 8, "height": 4 },
+            "nodes": [
+                solid(1, [255, 0, 0, 255]),
+                { "id": 2, "type": "color_grade", "params": { "interpolation": value } },
+                { "id": 3, "type": "media_output" },
+            ],
+            "connections": [
+                { "from_node": 1, "to_node": 2, "to_port": "source" },
+                { "from_node": 2, "to_node": 3, "to_port": "source" },
+            ],
+        }))
+    };
+    load(json!("nearest")).unwrap();
+    for value in [json!(0), json!("cubic")] {
+        assert!(load(value.clone()).is_err(), "{value}");
     }
 }
 

@@ -1,4 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
+};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -27,8 +29,8 @@ pub struct ColorGradeParams {
     #[meta(min = 0, max = 1, step = 0.01)]
     pub strength: f64,
     /// Sampling filter used when reading LUT data.
-    #[meta(format = "sampling_mode")]
-    pub interpolation: i64,
+    #[meta(kind = "enum", enum_type = RasterSampling)]
+    pub interpolation: RasterSampling,
 }
 
 impl Default for ColorGradeParams {
@@ -36,7 +38,7 @@ impl Default for ColorGradeParams {
         Self {
             lut_source: IDENTITY_LUT.to_string(),
             strength: 1.0,
-            interpolation: 1,
+            interpolation: RasterSampling::Linear,
         }
     }
 }
@@ -152,7 +154,7 @@ impl GpuCompiledNode for CompiledColorGrade {
         })?;
         let gpu_params = compiler::ColorGradeParams {
             strength: evaluated.strength as f32,
-            interpolation: if evaluated.interpolation == 0 { 0 } else { 1 },
+            interpolation: evaluated.interpolation as u32,
             premultiplied: u32::from(self.alpha_mode == AlphaMode::Premultiplied),
             _pad: 0,
         };

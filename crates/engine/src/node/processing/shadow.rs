@@ -1,3 +1,4 @@
+use crate::error::PropertyError;
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
@@ -23,10 +24,10 @@ pub struct ShadowParams {
     /// Vertical shadow offset in pixels.
     #[meta(name = "Offset Y", step = 1)]
     pub offset_y: f64,
-    /// Shadow blur radius in pixels. Fractional radii blend smoothly.
+    /// Shadow blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.
     #[meta(name = "Blur radius", min = 0, step = 0.5)]
     pub radius: f64,
-    /// Shadow color.
+    /// Shadow color. Must be a solid color; a gradient is an error.
     #[meta(role = "color")]
     pub color: Paint,
     /// Shadow opacity.
@@ -189,7 +190,16 @@ impl GpuCompiledNode for CompiledShadow {
             node_id: self.node_id,
             expr: &ctx.expr_context(),
         })?;
-        let color = evaluated.color.to_gpu([0, 0, 0, 255]).colors[0];
+        let Paint::SolidColor(r, g, b, a) = evaluated.color else {
+            return Err(PropertyError::InvalidType {
+                node_id: self.node_id,
+                property_path: "color".to_string(),
+                expected: "a solid color",
+                actual: "a gradient",
+            }
+            .into());
+        };
+        let color = [r, g, b, a].map(|channel| f32::from(channel) / 255.0);
         // The color alpha is folded into the opacity so `color.w` can carry the
         // source's straight-alpha flag.
         self.blurred.write(
