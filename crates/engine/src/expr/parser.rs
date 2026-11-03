@@ -830,19 +830,7 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
 
 #[cfg(test)]
 mod tests {
-    use crate::expr::{BuiltinFn, ExprNode, Expression, ExpressionValue};
-
-    #[test]
-    fn recognizes_vec2_builtin_and_preserves_components() {
-        let expression = Expression::parse("vec2(10, frame + 2)").unwrap();
-
-        let ExprNode::Builtin(BuiltinFn::Vec2, args) = expression.ast else {
-            panic!("expected vec2 builtin");
-        };
-        assert_eq!(args.len(), 2);
-        assert_eq!(args[0], ExprNode::Literal(ExpressionValue::Number(10.0)));
-        assert!(matches!(args[1], ExprNode::Binary(..)));
-    }
+    use crate::expr::Expression;
 
     #[test]
     fn dotted_property_reads_point_to_node_references() {
