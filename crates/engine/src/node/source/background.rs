@@ -38,21 +38,12 @@ impl Default for BackgroundParams {
 }
 
 /// Generates a background raster texture.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "background", name = "Background", category = "source")]
 pub struct Background {
     pub id: NodeId,
     #[params]
     pub params: BackgroundParamsDelegate,
-}
-
-impl Default for Background {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: BackgroundParamsDelegate::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

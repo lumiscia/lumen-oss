@@ -1,7 +1,7 @@
 use std::fmt;
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, lumen_macros::StructuralHash,
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, lumen_macros::StructuralHash,
 )]
 pub struct NodeId(pub u64);
 

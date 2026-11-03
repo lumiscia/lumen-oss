@@ -18,7 +18,7 @@ pub struct MemoParams {
 }
 
 /// Renders its source again only when `key` changes.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "memo", name = "Memo", category = "processing")]
 pub struct Memo {
     pub id: NodeId,
@@ -27,16 +27,6 @@ pub struct Memo {
 
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for Memo {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: MemoParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 impl GpuCompileNode for Memo {

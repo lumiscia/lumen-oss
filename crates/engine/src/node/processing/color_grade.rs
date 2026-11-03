@@ -42,7 +42,7 @@ impl Default for ColorGradeParams {
 }
 
 /// Applies a LUT-driven color transform to a raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "color_grade", name = "Color Grade", category = "processing")]
 pub struct ColorGrade {
     pub id: NodeId,
@@ -51,16 +51,6 @@ pub struct ColorGrade {
 
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for ColorGrade {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ColorGradeParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 impl GpuCompileNode for ColorGrade {

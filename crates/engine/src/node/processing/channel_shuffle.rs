@@ -64,7 +64,7 @@ impl Default for ChannelShuffleParams {
 }
 
 /// Remaps source raster color channels.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "channel_shuffle",
     name = "Channel Shuffle",
@@ -77,16 +77,6 @@ pub struct ChannelShuffle {
 
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for ChannelShuffle {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ChannelShuffleParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

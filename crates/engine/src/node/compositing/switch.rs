@@ -11,7 +11,7 @@ pub struct SwitchParams {
 }
 
 /// Selects one raster input according to a controlled layer index.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "switch", name = "Switch", category = "compositing")]
 pub struct Switch {
     pub id: NodeId,
@@ -20,16 +20,6 @@ pub struct Switch {
 
     #[input(optional, variadic)]
     pub layers: Vec<PortRef>,
-}
-
-impl Default for Switch {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: SwitchParamsDelegate::default(),
-            layers: Vec::new(),
-        }
-    }
 }
 
 pub fn selected_layer_for_frame(

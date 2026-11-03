@@ -36,7 +36,7 @@ impl Default for CropParams {
 }
 
 /// Keeps a raster region in place and clears everything outside it.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "crop", name = "Crop", category = "processing")]
 pub struct Crop {
     pub id: NodeId,
@@ -45,16 +45,6 @@ pub struct Crop {
 
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for Crop {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: CropParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 impl GpuCompileNode for Crop {

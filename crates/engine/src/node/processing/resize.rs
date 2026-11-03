@@ -67,7 +67,7 @@ impl Default for ResizeParams {
 }
 
 /// Resamples a raster into a rectangle placed on the composition canvas.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "resize", name = "Resize", category = "processing")]
 pub struct Resize {
     pub id: NodeId,
@@ -76,16 +76,6 @@ pub struct Resize {
 
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for Resize {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ResizeParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 impl GpuCompileNode for Resize {

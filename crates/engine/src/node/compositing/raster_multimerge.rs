@@ -32,7 +32,7 @@ impl Default for RasterMultiMergeParams {
 }
 
 /// Composites a variadic stack of raster layers in order.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "raster_multimerge",
     name = "Raster Multi Merge",
@@ -45,16 +45,6 @@ pub struct RasterMultiMerge {
 
     #[input(optional, variadic)]
     pub layers: Vec<PortRef>,
-}
-
-impl Default for RasterMultiMerge {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: RasterMultiMergeParamsDelegate::default(),
-            layers: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

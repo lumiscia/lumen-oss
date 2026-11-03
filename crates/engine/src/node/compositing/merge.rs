@@ -62,7 +62,7 @@ impl Default for MergeParams {
 }
 
 /// Composites an overlay raster over a base raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "merge", name = "Merge", category = "compositing")]
 pub struct Merge {
     pub id: NodeId,
@@ -75,18 +75,6 @@ pub struct Merge {
     pub overlay: PortRef,
     #[input(optional)]
     pub mask: PortRef,
-}
-
-impl Default for Merge {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: MergeParamsDelegate::default(),
-            base: PortRef::empty(),
-            overlay: PortRef::empty(),
-            mask: PortRef::empty(),
-        }
-    }
 }
 
 /// `MergeParams::mask_source`: no mask, the feathered mask, or the mask as is. A feather

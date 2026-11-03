@@ -47,7 +47,7 @@ impl Default for ShadowParams {
 }
 
 /// Composites a blurred alpha shadow behind a raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "shadow", name = "Shadow", category = "processing")]
 pub struct Shadow {
     pub id: NodeId,
@@ -56,16 +56,6 @@ pub struct Shadow {
 
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for Shadow {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ShadowParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 impl GpuCompileNode for Shadow {

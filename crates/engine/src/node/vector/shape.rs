@@ -122,21 +122,12 @@ impl Default for ShapeParams {
 }
 
 /// Produces a vector shape layer for GPU rasterization.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "shape", name = "Shape", category = "vector")]
 pub struct Shape {
     pub id: NodeId,
     #[params]
     pub params: ShapeParamsDelegate,
-}
-
-impl Default for Shape {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ShapeParamsDelegate::default(),
-        }
-    }
 }
 
 impl GpuCompileNode for Shape {
