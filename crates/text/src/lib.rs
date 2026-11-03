@@ -3812,6 +3812,7 @@ mod tests {
             let mut atlas = GlyphAtlas::new(128);
             let mode = TextRenderMode::Msdf;
             for half_width in [1000.0, 7000.0] {
+                let start = std::time::Instant::now();
                 atlas.begin_frame();
                 let prepared = system.prepare_stroked_glyphs(
                     &mut atlas,
@@ -3828,6 +3829,11 @@ mod tests {
                 );
                 // Only the glyph's own field is uploaded, never the stroke's.
                 assert_eq!(prepared.uploads.len(), 1, "{half_width}");
+                // Generating the stroke's field and then discarding it would take far longer.
+                assert!(
+                    start.elapsed() < std::time::Duration::from_secs(1),
+                    "{half_width}"
+                );
             }
         }
 

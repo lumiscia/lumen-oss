@@ -191,6 +191,25 @@ mod tests {
 
     #[cfg(feature = "json")]
     #[test]
+    fn paint_parses_gradient_shorthand_type_names() {
+        for (name, kind) in [
+            ("linear", PaintKind::LinearGradient),
+            ("radial", PaintKind::RadialGradient),
+            ("conic", PaintKind::ConicGradient),
+        ] {
+            let json = serde_json::json!({
+                "type": name,
+                "stops": [[0.0, [255, 0, 0, 255]], [1.0, [0, 0, 255, 255]]]
+            });
+            let Paint::Gradient(gradient) = Paint::from_json_value(&json).unwrap() else {
+                panic!("{name}: expected Gradient");
+            };
+            assert_eq!(gradient.kind, kind, "{name}");
+        }
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
     fn paint_parses_scalar_gradient_radius() {
         let json = serde_json::json!({
             "type": "radial_gradient",
