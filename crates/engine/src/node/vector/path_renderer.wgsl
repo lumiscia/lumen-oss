@@ -6,7 +6,7 @@ struct PathUniforms {
     bounds_size: vec2<f32>,
     stroke_width: f32,
     flags: u32,
-    point_count: u32,
+    _flags_pad: u32,
     trim_start: f32,
     trim_end: f32,
     _pad: u32,

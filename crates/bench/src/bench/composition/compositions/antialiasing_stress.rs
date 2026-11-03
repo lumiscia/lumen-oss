@@ -161,8 +161,8 @@ impl CompositionFixture for AntialiasingStress {
             NodeKind::Shape(Shape {
                 id: hard_gradient,
                 params: ShapeParamsDelegate {
-                    width: Deferred::value(460),
-                    height: Deferred::value(220),
+                    width: Deferred::value(460.0),
+                    height: Deferred::value(220.0),
                     position: Deferred::value((222.45, 690.35)),
                     fill_enabled: Deferred::value(true),
                     fill_paint: Paint::Gradient(GradientPaint {

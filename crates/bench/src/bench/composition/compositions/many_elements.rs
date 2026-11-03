@@ -91,8 +91,8 @@ impl CompositionFixture for ManyElements {
                     id: card,
                     params: ShapeParamsDelegate {
                         geometry_kind: ShapeGeometryKind::Rectangle.into(),
-                        width: Deferred::value(60),
-                        height: Deferred::value(36),
+                        width: Deferred::value(60.0),
+                        height: Deferred::value(36.0),
                         border_radius: Deferred::value(6.0),
                         position,
                         fill_enabled: Deferred::value(true),
@@ -165,8 +165,8 @@ impl CompositionFixture for ManyElements {
                     id: dot,
                     params: ShapeParamsDelegate {
                         geometry_kind: ShapeGeometryKind::Ellipse.into(),
-                        width: Deferred::value(12),
-                        height: Deferred::value(12),
+                        width: Deferred::value(12.0),
+                        height: Deferred::value(12.0),
                         position: Deferred::value((x, y)),
                         fill_enabled: Deferred::value(true),
                         fill_paint: Paint::solid([94, 234, 212, 200]).into(),

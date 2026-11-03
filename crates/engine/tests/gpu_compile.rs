@@ -1294,7 +1294,7 @@ fn canvas_background(id: NodeId, color: [u8; 4]) -> NodeKind {
     })
 }
 
-fn square(id: NodeId, position: Deferred<(f64, f64)>, size: i64, color: [u8; 4]) -> NodeKind {
+fn square(id: NodeId, position: Deferred<(f64, f64)>, size: f64, color: [u8; 4]) -> NodeKind {
     NodeKind::Shape(Shape {
         id,
         params: ShapeParamsDelegate {
@@ -1385,7 +1385,7 @@ fn resize_reads_crop_bounds_through_opacity() {
             square(
                 NodeId::new(2),
                 Deferred::value((6.0, 6.0)),
-                6,
+                6.0,
                 [20, 40, 220, 255],
             ),
             multimerge(NodeId::new(3), &[1, 2]),
