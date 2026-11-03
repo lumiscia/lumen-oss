@@ -554,7 +554,6 @@ fn media_prediction_follows_direct_ports() {
         NodeKind::MediaIn(MediaIn {
             id: media,
             params: MediaInParamsDelegate {
-                kind: Deferred::value(0),
                 source: Deferred::value("plate".to_string()),
                 ..Default::default()
             },
@@ -629,6 +628,97 @@ fn media_prediction_visits_shared_inputs_once() {
     collect_frame_requirements(&scene((8, 4), json!(nodes)), &store, 0).unwrap();
 
     assert_eq!(store.0.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn media_prediction_follows_a_videos_range_and_loop_mode() {
+    #[derive(Debug)]
+    struct TenFrameStore;
+    impl MediaStore for TenFrameStore {
+        fn get_video_resolver(
+            &self,
+            _: &str,
+        ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
+            Ok(Box::new(TenFrameVideo))
+        }
+    }
+    struct TenFrameVideo;
+    impl VideoFrameResolver for TenFrameVideo {
+        fn id(&self) -> &str {
+            "clip"
+        }
+        fn metadata(&self) -> VideoMetadata {
+            VideoMetadata {
+                width: 8,
+                height: 4,
+                frame_count: 10,
+                fps: 24.0,
+            }
+        }
+        fn frame(&self, _: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+            unreachable!("prediction reads no frames")
+        }
+    }
+
+    let predicted = |params: Value, frame: u32| {
+        let mut params = params.as_object().unwrap().clone();
+        params.insert("kind".into(), json!("video"));
+        params.insert("source".into(), json!("clip"));
+        let composition = scene(
+            (8, 4),
+            json!([{ "id": 1, "type": "media_in", "params": params }]),
+        );
+        collect_frame_requirements(&composition, &TenFrameStore, frame).map(|requirements| {
+            requirements
+                .videos
+                .into_iter()
+                .flat_map(|video| video.frames)
+                .collect::<Vec<_>>()
+        })
+    };
+
+    // The end is the first frame past the range, and a start alone plays to the source's end.
+    for (params, frame, expected) in [
+        (
+            json!({ "range_start": 4, "range_end": 7, "loop_mode": "repeat" }),
+            3,
+            4,
+        ),
+        (json!({ "range_start": 4, "range_end": 7 }), 9, 6),
+        (json!({ "range_start": 4 }), 9, 9),
+        (json!({ "range_end": 3, "loop_mode": "ping_pong" }), 3, 1),
+        (json!({ "loop_mode": "=1" }), 12, 2),
+    ] {
+        assert_eq!(
+            predicted(params.clone(), frame).unwrap(),
+            [expected],
+            "{params} at {frame}"
+        );
+    }
+
+    let error = predicted(json!({ "range_start": 6, "range_end": 6 }), 0).unwrap_err();
+    assert!(
+        error.to_string().contains("out of range for clip"),
+        "{error}"
+    );
+    let error = predicted(json!({ "loop_mode": "=7" }), 0).unwrap_err();
+    assert!(
+        error.to_string().contains("7 is not a value of LoopMode"),
+        "{error}"
+    );
+}
+
+#[test]
+fn compiling_media_reports_why_the_source_failed() {
+    let composition = scene(
+        (16, 9),
+        json!([{ "id": 1, "type": "media_in", "params": { "kind": "image", "source": "gone" } }]),
+    );
+    let error =
+        CompileContext::with_media(&composition, &TestMediaStore::image("plate", 8, 4), RGBA8)
+            .compile()
+            .unwrap_err();
+    assert!(error.to_string().contains("not the test image"), "{error}");
 }
 
 #[test]

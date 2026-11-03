@@ -64,7 +64,6 @@ fn build_small_media_transform(with_exposure: bool) -> Composition {
         NodeKind::MediaIn(MediaIn {
             id: media,
             params: MediaInParamsDelegate {
-                kind: Deferred::value(0),
                 source: Deferred::value(MEDIA_ID.to_string()),
                 ..Default::default()
             },

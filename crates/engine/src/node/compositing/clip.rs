@@ -366,7 +366,15 @@ mod tests {
         };
         for frame in 3..250 {
             let local = clip.local_time(f64::from(frame).into()).unwrap();
-            let source = map_to_source_frame(local, 24.0, 30.0, 1000, None, 1.0, LoopMode::Clamp);
+            let source = map_to_source_frame(
+                local,
+                24.0,
+                30.0,
+                1000,
+                &(0..u32::MAX),
+                1.0,
+                LoopMode::Clamp,
+            );
             assert_eq!(source, Some(frame - 3 + 5), "at {frame}");
         }
     }
