@@ -289,9 +289,10 @@ fn open_video_device(
         .context("Vulkan device has no compute queue family separate from the render family")?;
     // Listing the render family lets FFmpeg's frames be used on wgpu's queue. FFmpeg's hwcontext
     // and Vulkan Video codecs pick submit queues by compute, transfer or video capabilities, so
-    // they never submit to it. One decode queue, because FFmpeg's session reset on a seek isn't
-    // ordered against decodes on another queue, which corrupts HEVC frames after seeks on hardware
-    // with several.
+    // they never submit to it. A single encode queue keeps NVIDIA's H.264 encoder from stalling at
+    // GOP boundaries when it alternates frames between two queues. A single decode queue, because
+    // FFmpeg's session reset on a seek isn't ordered against decodes on another queue, which
+    // corrupts HEVC frames after seeks on hardware with several.
     let mut queue_families = vec![(0, 1, vk::QueueFlags::GRAPHICS)];
     for (index, count, flags) in [
         Some((
@@ -299,7 +300,7 @@ fn open_video_device(
             compute.1,
             vk::QueueFlags::COMPUTE | vk::QueueFlags::TRANSFER,
         )),
-        encode.map(|(index, count)| (index, count, vk::QueueFlags::VIDEO_ENCODE_KHR)),
+        encode.map(|(index, _)| (index, 1, vk::QueueFlags::VIDEO_ENCODE_KHR)),
         decode.map(|(index, _)| (index, 1, vk::QueueFlags::VIDEO_DECODE_KHR)),
     ]
     .into_iter()
