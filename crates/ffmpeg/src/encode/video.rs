@@ -170,6 +170,7 @@ impl VideoEncoder {
                 .rate_control
                 .unwrap_or_else(|| RateControl::Bitrate(config.bit_rate.max(0) as u64)),
             config.preset.as_deref(),
+            config.mode,
         )
         .map_err(|error| error.with_codec(config.codec))?;
         let stream = unsafe { sys::avformat_new_stream(output.ptr, ptr::null()) };
