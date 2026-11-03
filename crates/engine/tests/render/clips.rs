@@ -424,8 +424,11 @@ fn video_chain(fps: &[u32]) -> Scene {
 #[test]
 fn clips_at_other_frame_rates_land_on_the_source_frame() {
     // Source frames are predicted over the whole range without rendering. The rendered ones are
-    // around the exact multiples where a rate conversion can round down, and one ordinary frame.
-    const RENDERED: [f64; 8] = [0.0, 4.0, 5.0, 6.0, 10.0, 99.0, 149.0, 199.0];
+    // around the exact multiples where a rate conversion can round down, frames where converting
+    // through a float instead of a rational does, and one ordinary frame.
+    const RENDERED: [f64; 12] = [
+        0.0, 4.0, 5.0, 6.0, 10.0, 41.0, 82.0, 99.0, 149.0, 164.0, 169.0, 199.0,
+    ];
     let media = TestMedia::default().numbered_video("v");
     // Root frame n shows source frame n * ratio.0 / ratio.1.
     let rows: [(&[u32], (u32, u32)); 3] = [

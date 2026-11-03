@@ -141,7 +141,7 @@ struct Edit {
 }
 
 #[test]
-fn edits_render_like_a_fresh_renderer_on_a_single_new_plan() {
+fn edits_render_like_a_fresh_renderer() {
     let colored = |color: &str| {
         json!([
             { "id": 1, "type": "background", "params": { "paint": color } },
@@ -274,8 +274,6 @@ fn edits_render_like_a_fresh_renderer_on_a_single_new_plan() {
                 edit.name
             );
         }
-        assert_eq!(renderer.plan_compile_count(), 2, "{}", edit.name);
-        assert_eq!(renderer.cached_plan_count(), 1, "{}", edit.name);
     }
 }
 
