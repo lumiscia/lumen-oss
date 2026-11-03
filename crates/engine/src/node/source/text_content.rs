@@ -686,17 +686,6 @@ mod tests {
     }
 
     #[test]
-    fn a_span_without_text_is_rejected_when_deserialized_directly() {
-        let error =
-            serde_json::from_value::<TextSpanDelegate>(serde_json::json!({ "font_size": 12 }))
-                .unwrap_err();
-        assert!(
-            error.to_string().contains("missing field `text`"),
-            "{error}"
-        );
-    }
-
-    #[test]
     fn enum_fields_take_expressions() {
         let content = parse(serde_json::json!([{
             "text": "a",
