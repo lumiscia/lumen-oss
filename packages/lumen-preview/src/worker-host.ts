@@ -6,7 +6,7 @@ import {
   type MediaRegistration,
 } from "./index.js";
 import type { LumenPreviewPatch } from "./preview.js";
-import { describeError } from "./session/errors.js";
+import { describeError, reportConsoleError } from "./session/errors.js";
 import { EMPTY_PREVIEW_STATS, PlaybackFpsMeter, type LumenPreviewStats } from "./session/stats.js";
 
 type PreviewWasmInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -221,6 +221,7 @@ export function createLumenPreviewWorkerHost({
       lastRenderMs = 0;
       playbackFps.reset();
       postAudioTimeline(null);
+      reportConsoleError("load", error);
       postState({
         error: describeError(error),
         isLoaded: false,
@@ -372,6 +373,7 @@ export function createLumenPreviewWorkerHost({
   }
 
   function reportError(scopeName: string, error: unknown): void {
+    reportConsoleError(scopeName, error);
     scope.postMessage({
       message: describeError(error),
       scope: scopeName,
