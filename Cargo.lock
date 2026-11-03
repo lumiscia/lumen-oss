@@ -1711,9 +1711,7 @@ dependencies = [
  "anyhow",
  "jsonschema",
  "lumen-engine",
- "serde",
  "serde_json",
- "tempfile",
 ]
 
 [[package]]
