@@ -501,7 +501,7 @@ fn text_bounds_match_reference() {
             chain(canvas, vec![text, effect]),
             Expect::Nonblank,
         )
-        .media(TestMedia::default().font("Inter", "effects-inter", INTER))
+        .media(TestMedia::default().font("Inter", "effects-inter", INTER.to_vec()))
         .frames([0.0, 1.0])
         .bounded(true)
     };
