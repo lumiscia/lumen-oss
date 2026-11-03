@@ -139,7 +139,9 @@ fn without_staging_path(message: &str, staged_path: &Path) -> String {
         .into_iter()
         .flatten()
         .fold(message.to_string(), |message, root| {
-            message.replace(&format!("{}/", root.display()), "")
+            message
+                .replace(&format!("{}/", root.display()), "")
+                .replace(&root.display().to_string(), ".")
         })
 }
 

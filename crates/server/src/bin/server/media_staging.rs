@@ -189,10 +189,13 @@ pub(super) async fn stage_remote_media(
     client: &MediaClient,
     media: HashMap<String, String>,
 ) -> Result<TempDir, RenderJobError> {
-    let dir = tempfile::tempdir().map_err(|err| RenderJobError {
-        code: "media_stage_failed".to_string(),
-        message: format!("failed to create media staging directory: {err}"),
-        retryable: true,
+    let dir = tempfile::tempdir().map_err(|err| {
+        tracing::warn!(error = %err, "failed to create media staging directory");
+        RenderJobError {
+            code: "media_stage_failed".to_string(),
+            message: "failed to create media staging directory".to_string(),
+            retryable: true,
+        }
     })?;
     let staged_bytes = AtomicU64::new(0);
     stream::iter(media.into_iter().map(Ok))

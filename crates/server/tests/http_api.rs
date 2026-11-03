@@ -672,6 +672,16 @@ fn corrupt_media_errors_do_not_reveal_where_it_is_staged_with_gpu() {
             "{alias}: {error}"
         );
     }
+
+    let Some((_, progress)) = render_outcome(
+        &server,
+        &json!({ "composition": media_composition("image", ".") }),
+    ) else {
+        return;
+    };
+    assert_eq!(progress["state"], "failed", "{progress}");
+    let error = progress["error"].as_str().unwrap_or_default();
+    assert!(!error.contains(&*temp.to_string_lossy()), "{error}");
 }
 
 #[test]
