@@ -898,7 +898,7 @@ export type MergeMaskMode = "alpha" | "luma";
 export type RasterMultimergeBlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten";
 export type ResizeMode = "stretch" | "fit" | "fill";
 export type ResizeSampling = "nearest" | "linear";
-export type ShapeGeometryKind = "rectangle" | "ellipse" | "polygon";
+export type ShapeGeometryKind = "rectangle" | "ellipse";
 export type TextAlignmentHorizontal = "left" | "center" | "right" | "justify";
 export type TextAlignmentVertical = "top" | "middle" | "bottom";
 export type TextFit = "none" | "shrink";
@@ -1256,7 +1256,6 @@ export interface ShapeNode extends CompositionNodeBase<"shape"> {
     readonly "height"?: ExpressionValue<number>;
     readonly "motion_blur"?: ExpressionValue<number>;
     readonly "opacity"?: ExpressionValue<number>;
-    readonly "polygon_points"?: ExpressionValue<string>;
     readonly "position"?: ExpressionValue<Vec2>;
     readonly "rotation"?: ExpressionValue<number>;
     readonly "scale"?: ExpressionValue<Vec2>;

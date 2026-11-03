@@ -3611,7 +3611,7 @@
                   "geometry_kind": {
                     "default": "rectangle",
                     "description": "Geometry primitive to rasterize.",
-                    "enum": ["rectangle", "ellipse", "polygon"],
+                    "enum": ["rectangle", "ellipse"],
                     "title": "Geometry Kind",
                     "type": "string",
                     "x-lumen-enumOptions": [
@@ -3624,11 +3624,6 @@
                         "label": "Ellipse",
                         "name": "ellipse",
                         "value": 1
-                      },
-                      {
-                        "label": "Polygon",
-                        "name": "polygon",
-                        "value": 2
                       }
                     ],
                     "x-lumen-kind": "enum"
@@ -3644,7 +3639,7 @@
                       }
                     ],
                     "default": 1.0,
-                    "description": "Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel\ntall. Ignored for polygon geometry.",
+                    "description": "Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel\ntall.",
                     "title": "Height",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -3693,25 +3688,6 @@
                       "step": 0.01
                     },
                     "x-lumen-kind": "float"
-                  },
-                  "polygon_points": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": "",
-                    "description": "Polygon vertices in pixels relative to `position`, as `x,y; x,y` (3 to 16384 points).",
-                    "title": "Polygon points",
-                    "x-lumen-constraints": {
-                      "format": "point_list",
-                      "multiline": true,
-                      "recommendedRows": 3
-                    },
-                    "x-lumen-kind": "string"
                   },
                   "position": {
                     "anyOf": [
@@ -3816,7 +3792,7 @@
                       }
                     ],
                     "default": 1.0,
-                    "description": "Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel\nwide. Ignored for polygon geometry.",
+                    "description": "Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel\nwide.",
                     "title": "Width",
                     "x-lumen-constraints": {
                       "min": 0.0,
