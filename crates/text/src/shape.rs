@@ -30,8 +30,8 @@ impl TextSystem {
     /// Shapes text without placing it, so it can be placed at many origins. Measurement, bounds
     /// and drawing of the same text share one recent result.
     pub fn shape(&mut self, request: &TextLayoutRequest) -> Arc<ShapedText> {
-        if let Some((_, shaped)) = self.shapes.iter().find(|(cached, _)| cached == request) {
-            return Arc::clone(shaped);
+        if let Some(shaped) = self.kept_shape(request) {
+            return shaped;
         }
         let shaped = Arc::new(self.shape_fitted(request));
         if self.shapes.len() == SHAPE_CACHE {
@@ -39,6 +39,20 @@ impl TextSystem {
         }
         self.shapes.push((request.clone(), Arc::clone(&shaped)));
         shaped
+    }
+
+    /// Shapes text whose inputs just changed, reusing a kept shape without keeping a new one, so
+    /// text that changes every frame can't push out text that is measured every frame.
+    pub fn shape_changed(&mut self, request: &TextLayoutRequest) -> Arc<ShapedText> {
+        self.kept_shape(request)
+            .unwrap_or_else(|| Arc::new(self.shape_fitted(request)))
+    }
+
+    fn kept_shape(&self, request: &TextLayoutRequest) -> Option<Arc<ShapedText>> {
+        self.shapes
+            .iter()
+            .find(|(cached, _)| cached == request)
+            .map(|(_, shaped)| Arc::clone(shaped))
     }
 
     fn shape_fitted(&mut self, request: &TextLayoutRequest) -> ShapedText {
@@ -1095,6 +1109,22 @@ pub struct GlyphKey(pub CacheKey);
 pub(crate) mod tests {
     use super::*;
     use crate::{TextDecoration, TextDecorationKind, TextLineDecoration, TextLineStyle};
+
+    #[test]
+    fn changed_text_reuses_kept_shapes_without_pushing_them_out() {
+        let mut system = TextSystem::new();
+        let measured: Vec<_> = (0..SHAPE_CACHE)
+            .map(|index| TextLayoutRequest::new(format!("Measured {index}")))
+            .collect();
+        let kept: Vec<_> = measured.iter().map(|text| system.shape(text)).collect();
+
+        assert!(Arc::ptr_eq(&system.shape_changed(&measured[0]), &kept[0]));
+        system.shape_changed(&TextLayoutRequest::new("Animated"));
+
+        for (text, kept) in measured.iter().zip(&kept) {
+            assert!(Arc::ptr_eq(&system.shape(text), kept));
+        }
+    }
 
     #[test]
     fn shape_cache_evicts_the_oldest_request() {

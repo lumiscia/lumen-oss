@@ -472,7 +472,7 @@ impl CompiledText {
             .is_none_or(|(key, _)| !key.holds(&style, &content, &font_features, font_generation))
         {
             let layout_started = trace_started.map(|_| trace_now_ms());
-            let shaped = text_system.shape(&style.request(&content, &font_features));
+            let shaped = text_system.shape_changed(&style.request(&content, &font_features));
             let key = TextShapeKey {
                 style,
                 content: animated(content),
