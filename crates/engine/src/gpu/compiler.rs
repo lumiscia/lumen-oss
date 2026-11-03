@@ -12,7 +12,9 @@ use crate::{
         TimeRemapPath, types::CompiledPortKey,
     },
     media::MediaStore,
-    node::{DelegateEvalContext, DelegateEvaluable, NodeId, compositing::clip::Clip, required_input},
+    node::{
+        DelegateEvalContext, DelegateEvaluable, NodeId, compositing::clip::Clip, required_input,
+    },
     scope::{FrameTime, PropValues, Routed, Scope},
 };
 

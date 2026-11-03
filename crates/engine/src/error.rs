@@ -102,6 +102,13 @@ pub enum GraphValidationError {
         node_id: NodeId,
         details: String,
     },
+    #[error("{}node {node_id}: {details}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
+    InvalidPropRead {
+        /// The template the node is in, or `None` at the root.
+        template: Option<String>,
+        node_id: NodeId,
+        details: String,
+    },
     #[error("audio: {details}")]
     InvalidAudio { details: String },
     #[error("compositions instantiate themselves: {}", .templates.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(" -> "))]

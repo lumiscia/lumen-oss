@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use crate::{
     audio::AudioTimeline,
     error::{GraphValidationError, LumenError},
-    expr::ExpressionValue,
+    expr::{BuiltinFn, ExprNode, ExpressionValue},
     graph::Graph,
-    node::{ClipPropValue, NodeKind, compositing::clip::Clip},
+    node::{ClipPropValue, Node, NodeKind, compositing::clip::Clip},
 };
 
 #[derive(Debug, Clone, lumen_macros::StructuralHash)]
@@ -192,7 +192,8 @@ impl CompositionBuilder {
     }
 
     /// Validates the composition's structure: its graphs, the clips that instantiate templates,
-    /// that no template instantiates itself, and its audio timeline.
+    /// the props its expressions read, that no template instantiates itself, and its audio
+    /// timeline.
     pub fn build(self) -> Result<Composition, Vec<LumenError>> {
         self.validate()?;
         Ok(Composition {
@@ -232,6 +233,21 @@ impl CompositionBuilder {
                         GraphValidationError::InvalidClip {
                             template: template.cloned(),
                             node_id: clip.id,
+                            details,
+                        }
+                        .into(),
+                    );
+                }
+            }
+            let props = template.map(|name| &self.compositions[name].props);
+            let mut nodes = graph.nodes.values().collect::<Vec<_>>();
+            nodes.sort_by_key(|node| node.id());
+            for node in nodes {
+                if let Some(details) = prop_read_problem(node, props) {
+                    errors.push(
+                        GraphValidationError::InvalidPropRead {
+                            template: template.cloned(),
+                            node_id: node.id(),
                             details,
                         }
                         .into(),
@@ -375,8 +391,47 @@ fn as_clip(node: &NodeKind) -> Option<&Clip> {
     }
 }
 
+/// What's wrong with the first `prop('name')` in `node` that is outside a template (`props` is
+/// `None`), has a name that isn't a string literal, or names a prop the template doesn't declare.
+fn prop_read_problem(node: &NodeKind, props: Option<&BTreeMap<String, PropDef>>) -> Option<String> {
+    let mut problem = None;
+    node.for_each_expression(&mut |expression| {
+        let source = &expression.source;
+        crate::expr::functions::visit(expression.ast(), &mut |node| {
+            let ExprNode::Builtin(BuiltinFn::Prop, args) = node else {
+                return;
+            };
+            let [ExprNode::Literal(ExpressionValue::String(name))] = args.as_slice() else {
+                problem.get_or_insert_with(|| {
+                    format!("`prop` takes the prop's name as a string literal, in `={source}`")
+                });
+                return;
+            };
+            match props {
+                None => {
+                    problem.get_or_insert_with(|| {
+                        format!(
+                            "`prop('{name}')` is only available inside a composition template, in `={source}`"
+                        )
+                    });
+                }
+                Some(props) if !props.contains_key(name) => {
+                    problem.get_or_insert_with(|| {
+                        format!(
+                            "unknown prop `{name}` in `={source}`; {}",
+                            declared_props(props)
+                        )
+                    });
+                }
+                Some(_) => {}
+            }
+        });
+    });
+    problem
+}
+
 /// The props a template declares, for error messages.
-pub(crate) fn declared_props(props: &BTreeMap<String, PropDef>) -> String {
+fn declared_props(props: &BTreeMap<String, PropDef>) -> String {
     if props.is_empty() {
         return "the template declares no props".to_string();
     }
@@ -446,6 +501,51 @@ mod fingerprint_tests {
             graph.nodes.extend(nodes);
         }
         assert_eq!(expected, builder.build().unwrap().fingerprint());
+    }
+
+    #[test]
+    fn rebuilding_rejects_prop_reads_the_edit_left_without_a_declaration() {
+        let value = json!({
+            "timeline": { "fps": 30, "duration_frames": 90 },
+            "render_settings": { "width": 640, "height": 360 },
+            "nodes": [
+                { "id": 1, "type": "background" },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }],
+            "compositions": {
+                "card": {
+                    "nodes": [
+                        { "id": 1, "type": "shape", "params": { "opacity": "=prop('alpha')" } },
+                        { "id": 2, "type": "media_output" }
+                    ],
+                    "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }],
+                    "props": { "alpha": { "type": "number", "default": 1 } }
+                }
+            }
+        });
+
+        let mut undeclared = parse(&value).into_builder();
+        undeclared
+            .compositions
+            .get_mut("card")
+            .unwrap()
+            .props
+            .clear();
+        let errors = undeclared.build().unwrap_err();
+        assert_eq!(
+            errors[0].to_string(),
+            "composition `card`: node 1: unknown prop `alpha` in `=prop('alpha')`; the template declares no props"
+        );
+
+        let mut at_root = parse(&value).into_builder();
+        let card = at_root.compositions.remove("card").unwrap();
+        at_root.graph = card.graph;
+        let errors = at_root.build().unwrap_err();
+        assert_eq!(
+            errors[0].to_string(),
+            "node 1: `prop('alpha')` is only available inside a composition template, in `=prop('alpha')`"
+        );
     }
 
     #[test]

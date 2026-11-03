@@ -20,11 +20,11 @@ use crate::{
     audio::{AudioClip, AudioTimeline, AudioTrack},
     composition::{
         Composition, CompositionBuilder, CompositionTemplate, PropDef, PropKind, RenderSettings,
-        TimelineSettings, declared_props,
+        TimelineSettings,
     },
-    expr::{BuiltinFn, ExprNode, ExpressionValue, FunctionScope},
+    expr::FunctionScope,
     graph::{Connection, Graph},
-    node::{Node, NodeId, NodeKind},
+    node::{NodeId, NodeKind},
 };
 
 pub(crate) use property::{
@@ -60,7 +60,7 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
 
     let functions = parse_functions(obj.get("functions"))?;
     let function_scope = FunctionScope::enter(&functions)?;
-    let graph = parse_graph(obj, None)?;
+    let graph = parse_graph(obj)?;
     let compositions = parse_compositions(obj.get("compositions"), &timeline, &render_settings)?;
     drop(function_scope);
 
@@ -97,11 +97,8 @@ fn json_type(value: &Value) -> &'static str {
     }
 }
 
-/// Builds the nodes and connections of the root, or of a template whose props are `props`.
-fn parse_graph(
-    obj: &Map<String, Value>,
-    props: Option<&BTreeMap<String, PropDef>>,
-) -> Result<Graph> {
+/// Builds the nodes and connections of the root or of a template.
+fn parse_graph(obj: &Map<String, Value>) -> Result<Graph> {
     let nodes_arr = obj
         .get("nodes")
         .and_then(|v| v.as_array())
@@ -133,7 +130,6 @@ fn parse_graph(
             ),
         };
         let node_kind = NodeKind::from_json(kind_str, id, params)?;
-        check_prop_reads(&node_kind, props).with_context(|| format!("node {id}"))?;
         if graph.nodes.insert(id, node_kind).is_some() {
             bail!("duplicate node id {id}");
         }
@@ -173,49 +169,6 @@ fn parse_graph(
             .with_context(|| format!("connecting {from_node} -> {to_node}:{to_port}"))?;
     }
     Ok(graph)
-}
-
-/// Rejects `prop('name')` calls outside a template, with a name that isn't a string literal, or
-/// for a prop the template doesn't declare.
-fn check_prop_reads(node: &NodeKind, props: Option<&BTreeMap<String, PropDef>>) -> Result<()> {
-    let mut error = None;
-    node.for_each_expression(&mut |expression| {
-        let source = &expression.source;
-        crate::expr::functions::visit(expression.ast(), &mut |node| {
-            let ExprNode::Builtin(BuiltinFn::Prop, args) = node else {
-                return;
-            };
-            let name = match args.as_slice() {
-                [ExprNode::Literal(ExpressionValue::String(name))] => name,
-                _ => {
-                    error.get_or_insert_with(|| {
-                        format!("`prop` takes the prop's name as a string literal, in `={source}`")
-                    });
-                    return;
-                }
-            };
-            let Some(props) = props else {
-                error.get_or_insert_with(|| {
-                    format!(
-                        "`prop('{name}')` is only available inside a composition template, in `={source}`"
-                    )
-                });
-                return;
-            };
-            if !props.contains_key(name) {
-                error.get_or_insert_with(|| {
-                    format!(
-                        "unknown prop `{name}` in `={source}`; {}",
-                        declared_props(props)
-                    )
-                });
-            }
-        });
-    });
-    match error {
-        Some(error) => bail!(error),
-        None => Ok(()),
-    }
 }
 
 /// Parses the `compositions` templates. A template without `render_settings` takes the root's
@@ -270,7 +223,7 @@ fn parse_template(
         .map(parse_prop_defs)
         .transpose()?
         .unwrap_or_default();
-    let graph = parse_graph(obj, Some(&props))?;
+    let graph = parse_graph(obj)?;
     if let Err(errors) = graph.validate() {
         let details = errors
             .iter()
@@ -511,6 +464,7 @@ fn parse_node_id(val: &Value) -> Result<NodeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{expr::ExpressionValue, node::Node};
 
     #[test]
     fn parses_every_bundled_demo() {
