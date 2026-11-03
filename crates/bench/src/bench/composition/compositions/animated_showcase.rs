@@ -1,4 +1,5 @@
 use lumen_engine::node::source::text_content::TextContentDelegate;
+use lumen_engine::node::vector::drawable::{DrawablePlacementDelegate, DrawableStyleDelegate};
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     expr::Expression,
@@ -64,10 +65,18 @@ impl CompositionFixture for AnimatedShowcase {
                     geometry_kind: ShapeGeometryKind::Ellipse.into(),
                     width: Deferred::value(620.0),
                     height: Deferred::value(620.0),
-                    position: Deferred::value((760.0, -140.0)),
-                    fill_enabled: Deferred::value(true),
-                    fill_paint: lumen_engine::node::vector::paint::Paint::solid([37, 99, 235, 68])
+                    placement: DrawablePlacementDelegate {
+                        position: Deferred::value((760.0, -140.0)),
+                        ..Default::default()
+                    },
+                    style: DrawableStyleDelegate {
+                        fill_enabled: Deferred::value(true),
+                        fill_paint: lumen_engine::node::vector::paint::Paint::solid([
+                            37, 99, 235, 68,
+                        ])
                         .into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
@@ -80,16 +89,24 @@ impl CompositionFixture for AnimatedShowcase {
                     width: Deferred::value(860.0),
                     height: Deferred::value(310.0),
                     border_radius: Deferred::value(28.0),
-                    position: Deferred::value((210.0, 190.0)),
-                    fill_enabled: Deferred::value(true),
-                    fill_paint: lumen_engine::node::vector::paint::Paint::solid([15, 27, 49, 255])
+                    placement: DrawablePlacementDelegate {
+                        position: Deferred::value((210.0, 190.0)),
+                        ..Default::default()
+                    },
+                    style: DrawableStyleDelegate {
+                        fill_enabled: Deferred::value(true),
+                        fill_paint: lumen_engine::node::vector::paint::Paint::solid([
+                            15, 27, 49, 255,
+                        ])
                         .into(),
-                    stroke_enabled: Deferred::value(true),
-                    stroke_paint: lumen_engine::node::vector::paint::Paint::solid([
-                        71, 85, 105, 255,
-                    ])
-                    .into(),
-                    stroke_width: Deferred::value(1.5),
+                        stroke_enabled: Deferred::value(true),
+                        stroke_paint: lumen_engine::node::vector::paint::Paint::solid([
+                            71, 85, 105, 255,
+                        ])
+                        .into(),
+                        stroke_width: Deferred::value(1.5),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
@@ -105,9 +122,12 @@ impl CompositionFixture for AnimatedShowcase {
                     font_size: Deferred::value(42.0),
                     font_weight: Deferred::value(700),
                     max_width: Deferred::value(700.0),
-                    position: Deferred::value((260.0, 255.0)),
                     color: lumen_engine::node::vector::paint::Paint::solid([248, 250, 252, 255])
                         .into(),
+                    placement: DrawablePlacementDelegate {
+                        position: Deferred::value((260.0, 255.0)),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
@@ -123,9 +143,12 @@ impl CompositionFixture for AnimatedShowcase {
                     font_size: Deferred::value(21.0),
                     font_weight: Deferred::value(500),
                     max_width: Deferred::value(730.0),
-                    position: Deferred::value((260.0, 350.0)),
                     color: lumen_engine::node::vector::paint::Paint::solid([148, 163, 184, 255])
                         .into(),
+                    placement: DrawablePlacementDelegate {
+                        position: Deferred::value((260.0, 350.0)),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),

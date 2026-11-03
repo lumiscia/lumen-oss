@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use lumen_engine::node::source::text_content::TextContentDelegate;
+use lumen_engine::node::vector::drawable::DrawablePlacementDelegate;
 use lumen_engine::{
     composition::{CompositionBuilder, RenderSettings, TimelineSettings},
     error::MediaError,
@@ -225,13 +226,16 @@ fn run_case(
                 content: TextContentDelegate::Text(Deferred::value(content)),
                 font_size: Deferred::Expr(Expression::parse("24 + frame % 96")?),
                 max_width: Deferred::value(1300.0),
-                position: Deferred::value((16.0, 16.0)),
                 render_mode: if case == BenchCase::Msdf {
                     TextRenderMode::Msdf
                 } else {
                     TextRenderMode::Raster
                 }
                 .into(),
+                placement: DrawablePlacementDelegate {
+                    position: Deferred::value((16.0, 16.0)),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         }),

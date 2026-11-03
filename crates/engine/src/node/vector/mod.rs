@@ -1,4 +1,4 @@
-pub(crate) mod drawable;
+pub mod drawable;
 pub mod paint;
 pub mod path;
 mod path_bands;

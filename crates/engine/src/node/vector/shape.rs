@@ -1,5 +1,4 @@
-use super::drawable::{DeferredTransform, DrawableMotion, DrawableTransform};
-use super::paint::Paint;
+use super::drawable::{DrawableMotion, DrawablePlacement, DrawableStyle, DrawableTransform};
 use super::renderer::{ShapeUniforms, domain_origin, style_flags};
 use crate::gpu::{
     BoundFrame, CompileContext, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
@@ -44,44 +43,15 @@ pub struct ShapeParams {
     /// Corner radius for rectangle geometry.
     #[meta(min = 0, step = 1)]
     pub border_radius: f64,
-    /// Shape origin in pixels.
-    #[meta()]
-    pub position: (f64, f64),
-    /// Scale multiplier per axis, about the anchor.
-    #[meta()]
-    pub scale: (f64, f64),
-    /// Clockwise rotation in degrees, about the anchor.
-    #[meta(step = 1)]
-    pub rotation: f64,
-    /// Pivot for scale and rotation, in pixels relative to `position`.
-    #[meta()]
-    pub anchor: (f64, f64),
-    /// Opacity multiplier.
-    #[meta(min = 0, max = 1, step = 0.01)]
-    pub opacity: f64,
-    /// Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
-    /// usual film look and 360 smears over the whole frame.
-    #[meta(min = 0, max = 360, step = 1)]
-    pub motion_blur: f64,
-    /// Enables fill rendering.
-    #[meta()]
-    pub fill_enabled: bool,
-    /// Fill paint. Accepts a solid color or gradient.
-    #[meta()]
-    pub fill_paint: Paint,
-    /// Enables stroke rendering.
-    #[meta()]
-    pub stroke_enabled: bool,
-    /// Stroke paint. Accepts a solid color or gradient.
-    #[meta()]
-    pub stroke_paint: Paint,
-    /// Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches
-    /// with the shape, so it is wider across the more scaled axis.
-    #[meta(min = 0, step = 0.5)]
-    pub stroke_width: f64,
-    /// Enables analytic distance-based edge antialiasing.
-    #[meta()]
-    pub edge_antialias: bool,
+    #[meta(flatten, doc(position = "Shape origin in pixels."))]
+    pub placement: DrawablePlacement,
+    #[meta(
+        flatten,
+        doc(
+            stroke_width = "Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches\nwith the shape, so it is wider across the more scaled axis."
+        )
+    )]
+    pub style: DrawableStyle,
 }
 
 impl Default for ShapeParams {
@@ -91,18 +61,8 @@ impl Default for ShapeParams {
             width: 1.0,
             height: 1.0,
             border_radius: 0.0,
-            position: (0.0, 0.0),
-            scale: (1.0, 1.0),
-            rotation: 0.0,
-            anchor: (0.0, 0.0),
-            opacity: 1.0,
-            motion_blur: 0.0,
-            fill_enabled: true,
-            fill_paint: Paint::solid([255, 255, 255, 255]),
-            stroke_enabled: false,
-            stroke_paint: Paint::solid([0, 0, 0, 255]),
-            stroke_width: 1.0,
-            edge_antialias: true,
+            placement: DrawablePlacement::default(),
+            style: DrawableStyle::default(),
         }
     }
 }
@@ -175,7 +135,9 @@ fn shape_frame(
     expr: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<ShapeUniforms> {
     let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
-    let shutter = shape_shutter(params, &evaluated, node_id, expr)?;
+    let shutter = params
+        .placement
+        .shutter(&evaluated.placement, node_id, expr)?;
     Ok(shape_uniforms(&evaluated, shutter.as_ref()))
 }
 
@@ -183,21 +145,20 @@ fn shape_frame(
 fn shape_is_animated(params: &ShapeParamsDelegate) -> bool {
     params.width.is_expr()
         || params.height.is_expr()
-        || params.position.is_expr()
-        || params.scale.is_expr()
-        || params.rotation.is_expr()
-        || params.anchor.is_expr()
-        || params.motion_blur.is_expr()
-        || params.fill_enabled.is_expr()
-        || params.stroke_enabled.is_expr()
-        || params.stroke_width.is_expr()
+        || params.placement.transform_is_animated()
+        || params.placement.motion_blur.is_expr()
+        || params.style.reach_is_animated()
 }
 
 fn shape_uniforms(
     params: &ShapeParams,
     shutter: Option<&Shutter<DrawableTransform>>,
 ) -> ShapeUniforms {
-    let position = [params.position.0 as f32, params.position.1 as f32];
+    let style = &params.style;
+    let position = [
+        params.placement.position.0 as f32,
+        params.placement.position.1 as f32,
+    ];
     let size = [params.width.max(0.0) as f32, params.height.max(0.0) as f32];
     // Also catches NaN, which `max` turned to 0.
     let empty = size.contains(&0.0);
@@ -207,10 +168,10 @@ fn shape_uniforms(
     } else {
         size.map(|side| side.max(1.0))
     };
-    let transform = drawable_transform(params).to_gpu();
+    let transform = params.placement.transform().to_gpu();
     // The stroke reaches half its width beyond the box, and antialiasing a canvas pixel.
-    let margin = if params.stroke_enabled {
-        (params.stroke_width.max(0.0) * 0.5) as f32
+    let margin = if style.stroke_enabled {
+        (style.stroke_width.max(0.0) * 0.5) as f32
     } else {
         0.0
     };
@@ -222,12 +183,12 @@ fn shape_uniforms(
     let motion = DrawableMotion::new(shutter, min, max);
     let [min_x, min_y, max_x, max_y] = motion.canvas_bounds(transform, min, max);
     ShapeUniforms {
-        fill_paint: params.fill_paint.to_gpu(),
-        stroke_paint: params.stroke_paint.to_gpu(),
+        fill_paint: style.fill_paint.to_gpu(),
+        stroke_paint: style.stroke_paint.to_gpu(),
         position,
         size,
         border_radius: params.border_radius.max(0.0) as f32,
-        stroke_width: params.stroke_width as f32,
+        stroke_width: style.stroke_width as f32,
         geometry_kind: params.geometry_kind as u32,
         // Empty shapes disable fill and stroke instead of clamping to the shader's 1px minimum.
         flags: if empty { 0 } else { shape_flags(params) },
@@ -239,41 +200,11 @@ fn shape_uniforms(
     }
 }
 
-fn shape_shutter(
-    deferred: &ShapeParamsDelegate,
-    params: &ShapeParams,
-    node_id: NodeId,
-    expr: &crate::expr::ExpressionContext<'_>,
-) -> crate::Result<Option<Shutter<DrawableTransform>>> {
-    DeferredTransform {
-        position: &deferred.position,
-        scale: &deferred.scale,
-        rotation: &deferred.rotation,
-        anchor: &deferred.anchor,
-    }
-    .shutter(
-        params.motion_blur,
-        drawable_transform(params),
-        node_id,
-        expr,
-    )
-}
-
-fn drawable_transform(params: &ShapeParams) -> DrawableTransform {
-    DrawableTransform {
-        position: params.position,
-        scale: params.scale,
-        rotation: params.rotation,
-        anchor: params.anchor,
-        opacity: params.opacity,
-    }
-}
-
 fn shape_flags(params: &ShapeParams) -> u32 {
     style_flags(
-        params.fill_enabled,
-        params.stroke_enabled,
-        params.edge_antialias,
+        params.style.fill_enabled,
+        params.style.stroke_enabled,
+        params.style.edge_antialias,
     )
 }
 

@@ -1,4 +1,5 @@
 use lumen_engine::node::source::text_content::TextContentDelegate;
+use lumen_engine::node::vector::drawable::{DrawablePlacementDelegate, DrawableStyleDelegate};
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     expr::Expression,
@@ -93,13 +94,19 @@ impl CompositionFixture for ManyElements {
                         width: Deferred::value(60.0),
                         height: Deferred::value(36.0),
                         border_radius: Deferred::value(6.0),
-                        position,
-                        fill_enabled: Deferred::value(true),
-                        fill_paint: Paint::solid([40 + (index % 7) as u8 * 20, 60, 110, 255])
-                            .into(),
-                        stroke_enabled: Deferred::value(true),
-                        stroke_paint: Paint::solid([200, 210, 240, 255]).into(),
-                        stroke_width: Deferred::value(1.5),
+                        placement: DrawablePlacementDelegate {
+                            position,
+                            ..Default::default()
+                        },
+                        style: DrawableStyleDelegate {
+                            fill_enabled: Deferred::value(true),
+                            fill_paint: Paint::solid([40 + (index % 7) as u8 * 20, 60, 110, 255])
+                                .into(),
+                            stroke_enabled: Deferred::value(true),
+                            stroke_paint: Paint::solid([200, 210, 240, 255]).into(),
+                            stroke_width: Deferred::value(1.5),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
                 }),
@@ -112,8 +119,11 @@ impl CompositionFixture for ManyElements {
                     params: TextParamsDelegate {
                         content: TextContentDelegate::Text(Deferred::value(format!("#{index:03}"))),
                         font_size: Deferred::value(14.0),
-                        position: Deferred::value((x + 8.0, y + 46.0)),
                         color: Paint::solid([230, 232, 240, 255]).into(),
+                        placement: DrawablePlacementDelegate {
+                            position: Deferred::value((x + 8.0, y + 46.0)),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
                 }),
@@ -166,9 +176,15 @@ impl CompositionFixture for ManyElements {
                         geometry_kind: ShapeGeometryKind::Ellipse.into(),
                         width: Deferred::value(12.0),
                         height: Deferred::value(12.0),
-                        position: Deferred::value((x, y)),
-                        fill_enabled: Deferred::value(true),
-                        fill_paint: Paint::solid([94, 234, 212, 200]).into(),
+                        placement: DrawablePlacementDelegate {
+                            position: Deferred::value((x, y)),
+                            ..Default::default()
+                        },
+                        style: DrawableStyleDelegate {
+                            fill_enabled: Deferred::value(true),
+                            fill_paint: Paint::solid([94, 234, 212, 200]).into(),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
                 }),

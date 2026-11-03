@@ -41,6 +41,10 @@ struct PropertyAttr {
     /// The field must be set when parsing a `properties` struct's JSON.
     required: bool,
     docs: Vec<String>,
+    /// The field's type is a group whose params are this struct's own, with no path segment.
+    flatten: bool,
+    /// Docs that a flattened group's params have in this struct, by param id.
+    doc_overrides: Vec<(LitStr, LitStr)>,
 }
 
 struct DelegateAttr {
@@ -85,8 +89,27 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
     let mut constant = false;
     let mut required = false;
     let mut constraints = PropertyConstraintsAttr::default();
+    let mut flatten = false;
+    let mut doc_overrides = Vec::new();
+    let mut param_keys = false;
 
     attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("flatten") {
+            flatten = true;
+            return Ok(());
+        }
+        if meta.path.is_ident("doc") {
+            return meta.parse_nested_meta(|param| {
+                let id = param
+                    .path
+                    .get_ident()
+                    .ok_or_else(|| param.error("expected a param id"))?;
+                let id = LitStr::new(&id.to_string(), id.span());
+                doc_overrides.push((id, param.value()?.parse()?));
+                Ok(())
+            });
+        }
+        param_keys = true;
         if meta.path.is_ident("id") {
             id = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("name") {
@@ -104,6 +127,18 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
         }
         Ok(())
     })?;
+    if flatten && param_keys {
+        return Err(syn::Error::new_spanned(
+            attr,
+            "a `flatten` field's params are the group's own, so it only takes `doc(...)`",
+        ));
+    }
+    if !flatten && !doc_overrides.is_empty() {
+        return Err(syn::Error::new_spanned(
+            attr,
+            "`doc(...)` requires `flatten`",
+        ));
+    }
 
     Ok(PropertyAttr {
         id: id.unwrap_or_else(|| LitStr::new(&field.to_string(), field.span())),
@@ -115,6 +150,8 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
         constant,
         required,
         docs: doc_lines(attrs),
+        flatten,
+        doc_overrides,
     })
 }
 

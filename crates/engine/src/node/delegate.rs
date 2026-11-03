@@ -80,8 +80,21 @@ pub trait NodeParams: DelegateEvaluable + Default {
     /// documents.
     fn json_properties(&self) -> Vec<(&'static str, Value)>;
     fn get_property(&self, id: &str) -> Option<PropertyRead<'_>>;
-    /// Parses the fields present in `fields`, with errors naming them under `path`.
-    fn from_json_fields(fields: &Map<String, Value>, path: &str) -> Result<Self, String>;
+    /// The id of each param, in declaration order.
+    fn field_ids() -> Vec<&'static str>;
+    /// The ids of the params a nested object must set.
+    fn required_ids() -> Vec<&'static str>;
+    /// Sets the params present in `fields`, with errors naming them under `path`. Others keep
+    /// their value, so a group flattened into params keeps the defaults those params give it.
+    fn set_json_fields(&mut self, fields: &Map<String, Value>, path: &str) -> Result<(), String>;
+
+    /// Parses the fields present in `fields` over the defaults, with errors naming them under
+    /// `path`.
+    fn from_json_fields(fields: &Map<String, Value>, path: &str) -> Result<Self, String> {
+        let mut params = Self::default();
+        params.set_json_fields(fields, path)?;
+        Ok(params)
+    }
 
     fn from_json(node_id: NodeId, params: Option<&Map<String, Value>>) -> anyhow::Result<Self> {
         params.map_or_else(
@@ -91,6 +104,18 @@ pub trait NodeParams: DelegateEvaluable + Default {
                     .map_err(|error| anyhow!("node {node_id}: {error}"))
             },
         )
+    }
+}
+
+/// Panics when two of `defs`, the params of `params` and the groups flattened into it, share an
+/// id, since JSON could only ever set one of them.
+pub fn assert_unique_params(defs: &[PropertyDef], params: &str) {
+    for (index, def) in defs.iter().enumerate() {
+        assert!(
+            !defs[..index].iter().any(|other| other.id == def.id),
+            "{params} declares the param `{}` twice",
+            def.id
+        );
     }
 }
 
@@ -311,5 +336,126 @@ mod tests {
         let error =
             SpanDelegate::from_json_value(&serde_json::json!({ "size": 12 }), "span").unwrap_err();
         assert_eq!(error, "`span`: missing field `text`");
+    }
+
+    #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
+    pub struct Group {
+        /// The group's docs.
+        #[meta(required)]
+        pub size: f64,
+        #[meta()]
+        pub label: Option<String>,
+    }
+
+    impl Default for Group {
+        fn default() -> Self {
+            Self {
+                size: 1.0,
+                label: None,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
+    pub struct Flat {
+        #[meta()]
+        pub before: f64,
+        #[meta(flatten, doc(size = "The parent's docs."))]
+        pub group: Group,
+    }
+
+    impl Default for Flat {
+        fn default() -> Self {
+            Self {
+                before: 0.0,
+                group: Group {
+                    size: 2.0,
+                    label: None,
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn flattened_params_are_the_parents_own() {
+        use crate::expr::{Expression, ExpressionContext, ExpressionValue};
+        use crate::node::{
+            Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PropertyRead,
+        };
+        use serde_json::json;
+
+        let ids = FlatDelegate::property_defs()
+            .iter()
+            .map(|def| def.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["before", "size", "label"]);
+        assert_eq!(FlatDelegate::field_ids(), ids);
+        assert_eq!(FlatDelegate::required_ids(), ["size"]);
+        assert!(FlatDelegate::is_property("label"));
+        assert!(!FlatDelegate::is_property("group"));
+
+        // Fields the JSON leaves out keep the parent's defaults, not the group's.
+        let parsed =
+            FlatDelegate::from_json_fields(json!({ "label": "=frame" }).as_object().unwrap(), "")
+                .unwrap();
+        assert!(matches!(parsed.group.size, Deferred::Value(2.0)));
+        assert!(matches!(
+            parsed.get_property("size"),
+            Some(PropertyRead::Value(Some(ExpressionValue::Number(2.0))))
+        ));
+        assert!(matches!(
+            parsed.get_property("label"),
+            Some(PropertyRead::Expr(_))
+        ));
+        assert_eq!(parsed.get_property("group"), None);
+        assert_eq!(
+            parsed.to_json_value().unwrap(),
+            json!({ "before": 0.0, "size": 2.0, "label": "=frame" })
+        );
+
+        // A nested object is checked against the group's fields too.
+        let parse = |json| FlatDelegate::from_json_value(&json, "flat").unwrap_err();
+        assert_eq!(parse(json!({})), "`flat`: missing field `size`");
+        assert_eq!(
+            parse(json!({ "size": 1, "group": {} })),
+            "`flat`: unknown field `group`, expected one of `before`, `size`, `label`"
+        );
+        assert_eq!(
+            parse(json!({ "size": "big" })),
+            "`flat.size` expected float"
+        );
+
+        // A group adds no segment to where a failure is located.
+        let failing = FlatDelegate {
+            group: GroupDelegate {
+                size: Deferred::Expr(Expression::parse("vec2(1, vec2(2, 3))").unwrap()),
+                label: None,
+            },
+            ..FlatDelegate::default()
+        };
+        let error = DelegateEvalContext {
+            node_id: NodeId::new(3),
+            expr: &ExpressionContext::default(),
+        }
+        .eval_field("flat", &failing)
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "node 3 `flat.size`: vec2 expects numeric arguments"
+        );
+    }
+
+    #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
+    pub struct Colliding {
+        #[meta()]
+        pub size: f64,
+        #[meta(flatten)]
+        pub group: Group,
+    }
+
+    #[test]
+    #[should_panic(expected = "declares the param `size` twice")]
+    fn a_param_declared_by_a_group_and_its_parent_is_rejected() {
+        <CollidingDelegate as crate::node::NodeParams>::property_defs();
     }
 }
