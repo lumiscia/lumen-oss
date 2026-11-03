@@ -1,13 +1,24 @@
 use super::drawable::{DeferredTransform, DrawableMotion, DrawableTransform};
 use super::paint::Paint;
-use super::path::PathFrame;
+use super::path::{PathFrame, compile_path_source};
 use super::renderer::{
-    MAX_PATH_POINTS, PathBuffers, PathUniforms, ShapeUniforms, VectorRenderer, style_flags,
+    MAX_PATH_POINTS, PathBuffers, PathUniforms, ShapeUniforms, domain_origin, style_flags,
 };
 use crate::error::RenderError;
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
+use crate::gpu::{
+    BoundFrame, CompileContext, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    compiler,
+};
 use crate::node::motion::Shutter;
 use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+
+const SHAPE_SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("paint/paint.wgsl"),
+    include_str!("drawable.wgsl"),
+    include_str!("vector_common.wgsl"),
+    include_str!("shape_renderer.wgsl")
+);
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
@@ -27,12 +38,14 @@ pub struct ShapeParams {
     /// Geometry primitive to rasterize.
     #[meta(kind = "enum", enum_type = ShapeGeometryKind)]
     pub geometry_kind: ShapeGeometryKind,
-    /// Shape width in pixels; 0 draws nothing. Ignored for polygon geometry.
+    /// Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
+    /// wide. Ignored for polygon geometry.
     #[meta(min = 0, step = 1)]
-    pub width: i64,
-    /// Shape height in pixels; 0 draws nothing. Ignored for polygon geometry.
+    pub width: f64,
+    /// Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel
+    /// tall. Ignored for polygon geometry.
     #[meta(min = 0, step = 1)]
-    pub height: i64,
+    pub height: f64,
     /// Corner radius for rectangle geometry.
     #[meta(min = 0, step = 1)]
     pub border_radius: f64,
@@ -88,8 +101,8 @@ impl Default for ShapeParams {
     fn default() -> Self {
         Self {
             geometry_kind: ShapeGeometryKind::Rectangle,
-            width: 1,
-            height: 1,
+            width: 1.0,
+            height: 1.0,
             border_radius: 0.0,
             polygon_points: String::new(),
             position: (0.0, 0.0),
@@ -129,16 +142,71 @@ impl Default for Shape {
 impl GpuCompileNode for Shape {
     fn compile_gpu(
         &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
+        ctx: &mut CompileContext<'_>,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        let mut renderer = VectorRenderer::new(ctx);
-        // Enum params are always constants, so the pipeline can be chosen here.
-        match self.params.geometry_kind {
-            ShapeGeometryKindDelegate::Polygon => renderer.compile_polygon_shape(self, port),
-            _ => renderer.compile_shape(self, port),
+        if port.port != "output" {
+            return Err(ctx.missing_output(self.id, &port.port));
         }
+
+        // Enum params are always constants, so the pipeline can be chosen here.
+        Ok(match self.params.geometry_kind {
+            ShapeGeometryKindDelegate::Polygon => compile_polygon_shape(ctx, self),
+            _ => compile_box_shape(ctx, self),
+        })
     }
+}
+
+/// Compiles a rectangle or ellipse.
+fn compile_box_shape(ctx: &mut CompileContext<'_>, shape: &Shape) -> CompiledOutput {
+    let bounds = ctx.source_bounds(
+        compiler::SourceMotion::of(shape_is_animated(&shape.params), &shape.params),
+        |expr| {
+            shape_frame(&shape.params, shape.id, expr).map(|uniforms| Some(uniforms.screen_bounds))
+        },
+    );
+    let domain = ctx.source_domain(bounds);
+    let source = ctx.compute_source(
+        shape.id,
+        "shape",
+        "rasterize",
+        SHAPE_SHADER,
+        std::mem::size_of::<ShapeUniforms>() as u64,
+        None,
+        [],
+        domain,
+    );
+    ctx.register_compiled_node(CompiledShape {
+        node_id: shape.id,
+        params: shape.params.clone(),
+        buffer: source.params,
+        origin: domain_origin(domain),
+    });
+    CompiledOutput::Raster(source.output)
+}
+
+/// Rasterizes a polygon shape with the path shader, as one closed contour.
+fn compile_polygon_shape(ctx: &mut CompileContext<'_>, shape: &Shape) -> CompiledOutput {
+    let point_capacity = polygon_point_capacity(&shape.params.polygon_points);
+    // Opacity only hides what is drawn, so it is left out of the bounds.
+    let opaque = ShapeParamsDelegate {
+        opacity: Deferred::value(1.0),
+        ..shape.params.clone()
+    };
+    let (output, buffers) = compile_path_source(
+        ctx,
+        shape.id,
+        "shape",
+        point_capacity,
+        compiler::SourceMotion::of(shape_is_animated(&shape.params), &shape.params),
+        |expr, band_capacity| polygon_frame(&opaque, shape.id, expr, point_capacity, band_capacity),
+    );
+    ctx.register_compiled_node(CompiledPolygonShape {
+        node_id: shape.id,
+        params: shape.params.clone(),
+        buffers,
+    });
+    output
 }
 
 #[derive(Debug, Clone)]
@@ -164,7 +232,7 @@ impl GpuCompiledNode for CompiledShape {
 }
 
 /// Evaluates a rectangle or ellipse shape's uniforms at the frame of `expr`.
-pub(super) fn shape_frame(
+fn shape_frame(
     params: &ShapeParamsDelegate,
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
@@ -175,7 +243,7 @@ pub(super) fn shape_frame(
 }
 
 /// Whether a shape's canvas bounds may change between frames.
-pub(super) fn shape_is_animated(params: &ShapeParamsDelegate) -> bool {
+fn shape_is_animated(params: &ShapeParamsDelegate) -> bool {
     params.width.is_expr()
         || params.height.is_expr()
         || params.polygon_points.is_expr()
@@ -215,13 +283,13 @@ impl GpuCompiledNode for CompiledPolygonShape {
 }
 
 /// Evaluates a polygon shape's uniforms, points and bands at the frame of `expr`.
-pub(super) fn polygon_frame(
+fn polygon_frame(
     params: &ShapeParamsDelegate,
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
     point_capacity: usize,
     band_capacity: usize,
-) -> crate::Result<PathFrame> {
+) -> crate::Result<PathFrame<'static>> {
     let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
     // Invalid or incomplete point lists draw nothing, so editing the field never fails the frame.
     let vertices = parse_polygon_points(&evaluated.polygon_points).unwrap_or_default();
@@ -239,11 +307,8 @@ pub(super) fn polygon_frame(
         fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
         stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
         position: [x as f32, y as f32],
-        bounds_min: super::path::bounds_min(&points),
-        bounds_size: super::path::bounds_size(&points),
         stroke_width: evaluated.stroke_width as f32,
         flags: shape_flags(&evaluated),
-        point_count: points.len() as u32,
         trim_start: 0.0,
         trim_end: 1.0,
         ..bytemuck::Zeroable::zeroed()
@@ -251,7 +316,7 @@ pub(super) fn polygon_frame(
     let shutter = shape_shutter(params, &evaluated, node_id, expr)?;
     Ok(PathFrame::new(
         uniforms,
-        points,
+        points.into(),
         &drawable_transform(&evaluated),
         shutter.as_ref(),
         band_capacity,
@@ -263,8 +328,15 @@ fn shape_uniforms(
     shutter: Option<&Shutter<DrawableTransform>>,
 ) -> ShapeUniforms {
     let position = [params.position.0 as f32, params.position.1 as f32];
-    let empty = params.width <= 0 || params.height <= 0;
-    let size = [params.width.max(0) as f32, params.height.max(0) as f32];
+    let size = [params.width.max(0.0) as f32, params.height.max(0.0) as f32];
+    // Also catches NaN, which `max` turned to 0.
+    let empty = size.contains(&0.0);
+    // The shader draws anything thinner than a pixel a pixel across.
+    let drawn = if empty {
+        size
+    } else {
+        size.map(|side| side.max(1.0))
+    };
     let transform = drawable_transform(params).to_gpu();
     // The stroke reaches half its width beyond the box, and antialiasing a canvas pixel.
     let margin = if params.stroke_enabled {
@@ -274,8 +346,8 @@ fn shape_uniforms(
     };
     let min = [position[0] - margin, position[1] - margin];
     let max = [
-        position[0] + size[0] + margin,
-        position[1] + size[1] + margin,
+        position[0] + drawn[0] + margin,
+        position[1] + drawn[1] + margin,
     ];
     let motion = DrawableMotion::new(shutter, min, max);
     let [min_x, min_y, max_x, max_y] = motion.canvas_bounds(transform, min, max);
@@ -329,7 +401,7 @@ fn drawable_transform(params: &ShapeParams) -> DrawableTransform {
 
 /// Points buffer capacity for a polygon: its vertex count when the list is constant, or
 /// `MAX_PATH_POINTS` when it may change per frame.
-pub(super) fn polygon_point_capacity(polygon_points: &Deferred<String>) -> usize {
+fn polygon_point_capacity(polygon_points: &Deferred<String>) -> usize {
     match polygon_points {
         Deferred::Value(text) => parse_polygon_points(text)
             .map_or(1, |vertices| vertices.len())
@@ -380,6 +452,17 @@ mod tests {
             ..ShapeParams::default()
         };
         assert_eq!(shape_uniforms(&params, None).border_radius, 0.0);
+    }
+
+    #[test]
+    fn nan_and_negative_sizes_draw_nothing() {
+        for width in [0.0, -1.0, f64::NAN] {
+            let params = ShapeParams {
+                width,
+                ..ShapeParams::default()
+            };
+            assert_eq!(shape_uniforms(&params, None).flags, 0, "width {width}");
+        }
     }
 
     #[test]

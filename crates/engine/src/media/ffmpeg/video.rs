@@ -138,9 +138,12 @@ impl GpuDecodeStatus {
 }
 
 impl LibavStreamDecoder {
-    fn open(source: impl Into<String>, prefer_hardware_decode: bool) -> Result<Self, MediaError> {
+    fn open(
+        source: impl Into<String>,
+        mut prefer_hardware_decode: bool,
+    ) -> Result<Self, MediaError> {
         let source = source.into();
-        let components = Self::open_components(&source, prefer_hardware_decode)?;
+        let components = Self::open_components(&source, &mut prefer_hardware_decode)?;
 
         Ok(Self {
             source,
@@ -160,9 +163,11 @@ impl LibavStreamDecoder {
         })
     }
 
+    /// Opens the source, and clears `prefer_hardware_decode` if the hardware decoder won't open, so
+    /// the source stays on the CPU and warns once.
     fn open_components(
         source: &str,
-        prefer_hardware_decode: bool,
+        prefer_hardware_decode: &mut bool,
     ) -> Result<DecoderComponents, MediaError> {
         let mut input = open_input(source)?;
         let stream = input
@@ -200,7 +205,11 @@ impl LibavStreamDecoder {
             details: "unable to determine stream frame count".to_string(),
         })?;
         let (decoder, gpu_decode_status) =
-            open_video_decoder(source, &input, &stream, prefer_hardware_decode)?;
+            open_video_decoder(source, &input, &stream, *prefer_hardware_decode)?;
+        if let Some(reason) = gpu_decode_status.unavailable_reason() {
+            tracing::warn!(reason, "hardware decode unavailable, decoding on the CPU");
+            *prefer_hardware_decode = false;
+        }
 
         Ok(DecoderComponents {
             input,
@@ -232,10 +241,23 @@ impl LibavStreamDecoder {
         match self.decode_frame_inner(frame) {
             Ok(decoded) => Ok(decoded),
             Err(primary_error) => {
+                let hardware_failed =
+                    matches!(self.gpu_decode_status, GpuDecodeStatus::Active { .. })
+                        && !matches!(primary_error, MediaError::FrameOutOfRange { .. });
+                if hardware_failed {
+                    tracing::warn!(
+                        source = self.source,
+                        error = %primary_error,
+                        "hardware decode failed, decoding this source on the CPU"
+                    );
+                    self.prefer_hardware_decode = false;
+                }
                 self.reopen()?;
                 self.seek_to_frame(frame)?;
                 self.decode_frame_inner(frame).map_err(|fallback_error| {
-                    if matches!(fallback_error, MediaError::FrameOutOfRange { .. }) {
+                    if hardware_failed
+                        || matches!(fallback_error, MediaError::FrameOutOfRange { .. })
+                    {
                         fallback_error
                     } else {
                         primary_error
@@ -418,7 +440,7 @@ impl LibavStreamDecoder {
     }
 
     fn reopen(&mut self) -> Result<(), MediaError> {
-        let components = Self::open_components(&self.source, self.prefer_hardware_decode)?;
+        let components = Self::open_components(&self.source, &mut self.prefer_hardware_decode)?;
         self.input = components.input;
         self.stream_index = components.stream_index;
         self.width = components.width;
@@ -555,6 +577,9 @@ impl FfmpegVideoResolver {
             fps: decoder.fps as f32,
         };
         let decode_status = decoder.gpu_decode_status.clone();
+        let options = FfmpegResolverOptions {
+            prefer_hardware_decode: decoder.prefer_hardware_decode,
+        };
         drop(decoder);
 
         let (request_tx, request_rx) = mpsc::channel::<WorkerRequest>();
@@ -715,8 +740,9 @@ fn open_video_decoder(
     prefer_hardware_decode: bool,
 ) -> Result<(VideoDecoder, GpuDecodeStatus), MediaError> {
     let stream_index = stream.stream_index;
-    // GPU frames stay in coded orientation, so rotated sources need the CPU path's rotation.
-    if prefer_hardware_decode && stream.rotation == 0 {
+    // GPU frames stay in coded orientation and carry no alpha, so rotated sources need the CPU
+    // path's rotation and sources with alpha its RGBA conversion.
+    if prefer_hardware_decode && stream.rotation == 0 && !stream.has_alpha {
         let backend = preferred_gpu_backend();
         match VideoDecoder::open(
             input,
@@ -850,7 +876,11 @@ mod tests {
     }
 
     fn decoded_frame_index(resolver: &FfmpegVideoResolver, frame: u32) -> u32 {
-        let MediaFrame::CpuRgba(decoded) = resolver.frame(frame).expect("decode frame") else {
+        frame_index(&resolver.frame(frame).expect("decode frame"))
+    }
+
+    fn frame_index(frame: &MediaFrame) -> u32 {
+        let MediaFrame::CpuRgba(decoded) = frame else {
             panic!("expected a CPU frame");
         };
         // Limited-range luma back to full-range grey, then to the index it encodes.
@@ -968,6 +998,90 @@ mod tests {
             .err()
             .expect("no duration to count frames from");
         assert!(error.to_string().contains("frame count"), "{error}");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_failing_hardware_decoder_moves_the_source_to_the_cpu_for_good() {
+        let Some(path) = encode_counting_clip("hardware_failure.mp4", &[]) else {
+            return;
+        };
+        // A CPU decoder marked active as hardware refuses `receive_gpu_frame` on the first frame,
+        // the state a hardware decoder that opens and then can't decode is in, on any machine.
+        let mut decoder =
+            LibavStreamDecoder::open(path.to_string_lossy().to_string(), false).expect("open clip");
+        decoder.prefer_hardware_decode = true;
+        decoder.gpu_decode_status = GpuDecodeStatus::Active {
+            backend: GpuBackend::Vulkan,
+        };
+
+        for frame in [5, 6, 2] {
+            let decoded = decoder.decode_frame(frame).expect("decode on the CPU");
+            assert_eq!(frame_index(&decoded), frame);
+            assert!(!decoder.prefer_hardware_decode);
+            assert!(!matches!(
+                decoder.gpu_decode_status,
+                GpuDecodeStatus::Active { .. }
+            ));
+        }
+        decoder.reopen().expect("reopen");
+        assert!(!matches!(
+            decoder.gpu_decode_status,
+            GpuDecodeStatus::Active { .. }
+        ));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn sources_with_alpha_skip_hardware_decode_and_keep_their_alpha() {
+        let path =
+            std::env::temp_dir().join(format!("lumen_engine_{}_alpha.mov", std::process::id()));
+        let Ok(output) = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args([
+                "-i",
+                "color=c=0x2080ff:s=32x32:r=30:d=0.2,format=rgba,colorchannelmixer=aa=0.5,format=yuva444p10le",
+            ])
+            .args(["-c:v", "prores_ks", "-profile:v", "4444", "-alpha_bits", "16"])
+            .arg(&path)
+            .output()
+        else {
+            eprintln!("ffmpeg CLI not installed; skipping alpha routing test");
+            return;
+        };
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("Unknown encoder"), "{stderr}");
+            eprintln!("prores_ks unavailable; skipping alpha routing test");
+            return;
+        }
+
+        let resolver = FfmpegVideoResolver::open_with_options(
+            path.to_string_lossy().to_string(),
+            FfmpegResolverOptions {
+                prefer_hardware_decode: true,
+            },
+        )
+        .expect("open clip");
+        assert_eq!(resolver.decode_mode_label(), "cpu_not_requested");
+        let MediaFrame::CpuRgba(decoded) = resolver.frame(0).expect("decode frame") else {
+            panic!("expected a CPU frame");
+        };
+        assert!(
+            (i32::from(decoded.rgba[3]) - 128).abs() <= 2,
+            "{:?}",
+            &decoded.rgba[..4]
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn opaque_sources_report_no_alpha() {
+        let Some(path) = encode_counting_clip("opaque.mp4", &[]) else {
+            return;
+        };
+        let input = open_input(&path.to_string_lossy()).expect("open clip");
+        assert!(!input.best_video_stream().expect("video stream").has_alpha);
         let _ = fs::remove_file(path);
     }
 }

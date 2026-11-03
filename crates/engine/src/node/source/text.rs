@@ -14,13 +14,13 @@ use crate::media::{FontResolver, MediaStore, TextSession};
 use crate::node::vector::{
     drawable::{DeferredTransform, DrawableMotion, DrawableTransform},
     paint::Paint,
-    renderer::{GpuTextPaint, TextStyleUniforms},
 };
 use crate::node::{
     Deferred, DeferredValue, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override,
     PortRef,
 };
 
+use super::text_compile::{GpuTextPaint, TextStyleUniforms};
 use super::text_content::{
     FontFeatures, TextContent, TextContentDelegate, TextHighlight, TextHighlightDelegate, TextLine,
     TextLineDelegate, TextLineStyle, TextSpan, TextStroke, TextStrokeAlign, TextStrokeDelegate,
@@ -334,7 +334,7 @@ impl GpuCompileNode for Text {
         ctx: &mut crate::gpu::CompileContext<'_>,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        crate::node::vector::renderer::VectorRenderer::new(ctx).compile_text(self, port)
+        super::text_compile::compile_text(ctx, self, port)
     }
 }
 

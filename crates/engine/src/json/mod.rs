@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn fractional_int_param_says_whole_number() {
-        let err = param_error("shape", r#"{ "height": 23.84 }"#);
+        let err = param_error("crop", r#"{ "height": 23.84 }"#);
         assert!(
             err.contains("`height` must be a whole number, got 23.84"),
             "{err}"
@@ -929,7 +929,7 @@ mod tests {
 
     #[test]
     fn out_of_range_int_param_keeps_range_message() {
-        let err = param_error("shape", r#"{ "height": 1e30 }"#);
+        let err = param_error("crop", r#"{ "height": 1e30 }"#);
         assert!(
             err.contains("`height` must be an integer within the i64 range"),
             "{err}"

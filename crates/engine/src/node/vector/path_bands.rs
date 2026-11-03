@@ -19,10 +19,12 @@ pub(super) fn band_capacity(point_capacity: usize) -> usize {
 ///
 /// The buffer starts with a `(start, count)` pair per band, followed by the index of the
 /// first point of each listed segment. An empty buffer means nothing is drawn. A blurred
-/// path's culling covers every tap of its `motion`.
+/// path's culling covers every tap of its `motion`. `min` and `max` are the box around
+/// `points`.
 pub(super) fn bin_path(
     uniforms: &mut PathUniforms,
     points: &[PathPoint],
+    (min, max): ([f32; 2], [f32; 2]),
     transform: &DrawableTransform,
     motion: &DrawableMotion,
     capacity: usize,
@@ -43,7 +45,7 @@ pub(super) fn bin_path(
                 index + 1
             };
             let open_end = is_end && point.flags & POINT_CLOSED == 0;
-            let (y0, y1) = (point.position[1], points.get(next)?.position[1]);
+            let (y0, y1) = (point.position[1], points[next].position[1]);
             (next != index && (fill || !open_end))
                 .then(|| (index as u32, [f64::from(y0.min(y1)), f64::from(y0.max(y1))]))
         })
@@ -60,14 +62,6 @@ pub(super) fn bin_path(
         0.0
     };
     let reach = 1.0 / motion.smallest_scale(transform) + stroke_reach;
-    let (min, max) = points
-        .iter()
-        .fold(([f32::MAX; 2], [f32::MIN; 2]), |(min, max), point| {
-            (
-                [min[0].min(point.position[0]), min[1].min(point.position[1])],
-                [max[0].max(point.position[0]), max[1].max(point.position[1])],
-            )
-        });
     // Covers rounding differences between this binning and the shader's band lookup.
     let pad = reach + 1e-4 * (1.0 + f64::from(min[1].abs().max(max[1].abs())));
     let origin = f64::from(min[1]) - pad;
@@ -129,6 +123,7 @@ pub(super) fn bin_path(
 
 #[cfg(test)]
 mod tests {
+    use super::super::path::point_bounds;
     use super::*;
     use bytemuck::Zeroable;
 
@@ -151,6 +146,7 @@ mod tests {
         let data = bin_path(
             &mut uniforms,
             &points,
+            point_bounds(&points),
             &transform,
             &DrawableMotion::default(),
             capacity,
@@ -205,6 +201,7 @@ mod tests {
             bin_path(
                 &mut uniforms,
                 &points,
+                point_bounds(&points),
                 &transform,
                 &DrawableMotion::default(),
                 4096

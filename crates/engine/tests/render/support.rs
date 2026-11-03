@@ -10,7 +10,7 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, mpsc};
 use lumen_engine::{
     composition::Composition,
     error::MediaError,
-    gpu::{CompiledOutput, GpuCompositionRenderer},
+    gpu::{BoundFrame, CompiledOutput, GpuCompositionRenderer},
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
         TextSession, VideoFrameResolver, VideoMetadata,
@@ -377,6 +377,31 @@ pub fn render_held(
         rgba: read_rgba8(gpu, &texture, size),
     };
     (frame, texture)
+}
+
+/// Like `render`, but hands the bound frame to `inspect` before it is drawn.
+pub fn render_inspecting(
+    renderer: &mut GpuCompositionRenderer,
+    scene: &Composition,
+    at: f64,
+    media: &impl MediaStore,
+    inspect: impl FnOnce(&GpuCompositionRenderer, &BoundFrame),
+) -> Frame {
+    let bound = renderer
+        .bind_frame_at(scene, at, media)
+        .unwrap_or_else(|error| panic!("frame {at} does not bind: {error}"));
+    inspect(renderer, &bound);
+    let (raster, _) = renderer
+        .submit_bound_frame(&bound)
+        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
+    let size = raster.domain.storage_size;
+    let gpu = renderer.gpu_renderer();
+    Frame {
+        at,
+        width: size.width,
+        height: size.height,
+        rgba: read_rgba8(gpu, gpu.texture(raster.texture).unwrap(), size),
+    }
 }
 
 pub fn read_rgba8(

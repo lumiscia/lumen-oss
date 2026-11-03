@@ -17,6 +17,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use lumen_engine::{
+    ffmpeg::FfmpegVideoResolver,
+    media::{MediaFrame, VideoFrameResolver},
+};
 use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
 use reqwest::{
     StatusCode,
@@ -38,6 +42,7 @@ struct Server {
     base: String,
     child: Child,
     http: Client,
+    log: Arc<Mutex<String>>,
 }
 
 impl Server {
@@ -67,15 +72,21 @@ impl Server {
             }
         };
         // The server blocks on a full pipe, and printing keeps its log with a failing test's output.
+        let log = Arc::new(Mutex::new(String::new()));
+        let written = Arc::clone(&log);
         thread::spawn(move || {
             for line in stderr.lines().map_while(Result::ok) {
                 eprintln!("{line}");
+                let mut written = written.lock().unwrap();
+                written.push_str(&line);
+                written.push('\n');
             }
         });
         Self {
             base: format!("http://{address}"),
             child,
             http: Client::new(),
+            log,
         }
     }
 
@@ -565,6 +576,67 @@ fn renders_read_only_manifest_media_with_gpu() {
     let artifact = server.get(&format!("/renders/{id}/artifact"));
     assert_eq!(artifact.status(), StatusCode::OK);
     assert!(!artifact.bytes().expect("artifact bytes").is_empty());
+}
+
+/// This size is below what hardware H.264 encoders accept, and software Vulkan has none, so the
+/// default encoder falls back wherever this runs.
+#[test]
+fn the_default_encoder_falls_back_to_a_correct_video_with_gpu() {
+    let server = Server::start_with(&[], |command| {
+        command.env_remove("LUMEN_VIDEO_ENCODER");
+    });
+    let Some((id, progress)) =
+        render_outcome(&server, &json!({ "composition": solid_composition() }))
+    else {
+        return;
+    };
+    assert_eq!(progress["state"], "succeeded", "{progress}");
+    let artifact = server.get(&format!("/renders/{id}/artifact"));
+    assert_eq!(artifact.status(), StatusCode::OK);
+
+    // The render can finish before the thread reading the server's stderr has caught up.
+    let started = Instant::now();
+    let log = loop {
+        let log = server.log.lock().unwrap().clone();
+        if log.contains("opened video encoder") || started.elapsed() > Duration::from_secs(10) {
+            break log;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let lines = |text: &str| {
+        log.lines()
+            .filter(|line| line.contains(text))
+            .collect::<Vec<_>>()
+    };
+    let selected = lines("selected video encoder");
+    assert!(
+        selected.len() == 1 && selected[0].contains("h264_vulkan"),
+        "{log}"
+    );
+    let warnings = lines("h264_vulkan is unavailable, encoding with libx264");
+    assert!(
+        warnings.len() == 1 && warnings[0].contains(id.as_str()),
+        "{log}"
+    );
+    let opened = lines("opened video encoder");
+    assert!(opened.len() == 1 && opened[0].contains("libx264"), "{log}");
+
+    let directory = tempfile::tempdir().expect("temp directory");
+    let path = directory.path().join("output.mp4");
+    std::fs::write(&path, artifact.bytes().expect("artifact bytes")).expect("write artifact");
+    let video = FfmpegVideoResolver::open(path.display().to_string()).expect("open artifact");
+    assert_eq!(video.metadata().frame_count, 1);
+    let MediaFrame::CpuRgba(decoded) = video.frame(0).expect("decode frame") else {
+        panic!("expected a CPU frame");
+    };
+    let offset = decoded.row_bytes * 8 + 8 * 4;
+    for (channel, want) in decoded.rgba[offset..offset + 3].iter().zip([255, 0, 0]) {
+        assert!(
+            (i32::from(*channel) - want).abs() <= 3,
+            "{:?}",
+            &decoded.rgba[offset..offset + 3]
+        );
+    }
 }
 
 #[test]

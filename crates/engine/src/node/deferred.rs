@@ -314,6 +314,18 @@ impl DeferredValue for f32 {
     }
 }
 
+/// An expression's number as an integer param takes it: truncated toward zero, or an error when
+/// it is NaN or infinite.
+fn truncated_int(value: f64) -> crate::Result<i64> {
+    if value.is_finite() {
+        Ok(value as i64)
+    } else {
+        Err(LumenError::evaluate(format!(
+            "{value} can't be used as an integer"
+        )))
+    }
+}
+
 impl DeferredValue for i64 {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
@@ -323,7 +335,7 @@ impl DeferredValue for i64 {
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => eval_number(expr, ctx).map(|value| value as i64),
+            Deferred::Expr(expr) => truncated_int(eval_number(expr, ctx)?),
         }
     }
 
@@ -349,7 +361,7 @@ impl DeferredValue for u32 {
     ) -> crate::Result<Self> {
         let value = match deferred {
             Deferred::Value(value) => i64::from(*value),
-            Deferred::Expr(expr) => eval_number(expr, ctx)? as i64,
+            Deferred::Expr(expr) => truncated_int(eval_number(expr, ctx)?)?,
         };
         u32::try_from(value).map_err(|_| {
             LumenError::evaluate(format!("{value} is out of range for an unsigned integer"))
@@ -380,7 +392,7 @@ impl DeferredValue for u8 {
     ) -> crate::Result<Self> {
         let value = match deferred {
             Deferred::Value(value) => i64::from(*value),
-            Deferred::Expr(expr) => eval_number(expr, ctx)? as i64,
+            Deferred::Expr(expr) => truncated_int(eval_number(expr, ctx)?)?,
         };
         u8::try_from(value)
             .map_err(|_| LumenError::evaluate(format!("{value} is out of range for 0 to 255")))
@@ -792,6 +804,35 @@ mod tests {
             media: None,
             glyph: None,
             props: None,
+        }
+    }
+
+    #[test]
+    fn integer_targets_truncate_finite_results_and_reject_the_rest() {
+        fn eval<T: crate::node::DeferredValue>(source: &str) -> crate::Result<T> {
+            Deferred::<T>::Expr(Expression::parse(source).unwrap()).eval(
+                NodeId::new(4),
+                "count",
+                &context(),
+            )
+        }
+        assert_eq!(eval::<i64>("-2.9").unwrap(), -2);
+        assert_eq!(eval::<u32>("2.9").unwrap(), 2);
+        assert_eq!(eval::<u8>("2.9").unwrap(), 2);
+        assert!(eval::<u8>("256").is_err());
+
+        for source in ["pow(-1, 0.5)", "pow(10, 400)"] {
+            for error in [
+                eval::<i64>(source).err(),
+                eval::<u32>(source).err(),
+                eval::<u8>(source).err(),
+            ] {
+                let error = error.expect(source).to_string();
+                assert!(
+                    error.contains("can't be used as an integer"),
+                    "{source}: {error}"
+                );
+            }
         }
     }
 

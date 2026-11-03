@@ -1729,6 +1729,7 @@ dependencies = [
  "pollster",
  "serde_json",
  "tempfile",
+ "tracing-subscriber",
 ]
 
 [[package]]
