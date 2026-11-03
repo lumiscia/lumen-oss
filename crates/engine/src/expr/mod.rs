@@ -21,14 +21,13 @@ impl Expression {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct ExpressionContext<'a> {
     /// Composition frame being evaluated; fractional values sample between frames.
     pub frame: f64,
     pub fps: f32,
     pub width: u32,
     pub height: u32,
-    pub path: Option<String>,
     pub graph: Option<&'a Graph>,
     pub media: Option<&'a dyn crate::media::MediaStore>,
     /// The glyph being drawn, while a text node evaluates its per-glyph params.
@@ -57,7 +56,6 @@ impl ExpressionContext<'_> {
     /// This context outside any glyph scope, for evaluating another node's properties.
     pub fn without_glyph(&self) -> Self {
         Self {
-            path: self.path.clone(),
             glyph: None,
             ..*self
         }
@@ -67,7 +65,6 @@ impl ExpressionContext<'_> {
     pub fn at_subframe(&self, offset: f64) -> Self {
         Self {
             frame: self.frame + offset,
-            path: self.path.clone(),
             ..*self
         }
     }

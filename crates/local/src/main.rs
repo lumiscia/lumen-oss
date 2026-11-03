@@ -28,13 +28,17 @@ use lumen_engine::{
 };
 #[cfg(any(all(target_os = "macos", feature = "metal"), target_os = "linux"))]
 use lumen_ffmpeg::EncodeMode;
+#[cfg(any(all(target_os = "macos", feature = "metal"), target_os = "linux"))]
+use lumen_ffmpeg::GpuBackend;
 #[cfg(target_os = "linux")]
 use lumen_ffmpeg::GpuVideoInput;
+#[cfg(target_os = "linux")]
+use lumen_ffmpeg::gpu_texture_encode_support;
 use lumen_ffmpeg::{
     AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, RateControl,
-    Rational, VideoCodec, VideoEncoderConfig,
+    Rational, VideoCodec, VideoEncoderChoice, VideoEncoderConfig,
 };
-use lumen_ffmpeg::{GpuBackend, gpu_texture_encode_support};
+use tracing_subscriber::EnvFilter;
 
 #[derive(Debug)]
 struct CliArgs {
@@ -697,11 +701,18 @@ fn parse_bitrate(value: &str) -> Result<u64> {
 
 fn print_usage() {
     eprintln!(
-        "usage: lumen-local --composition <path> --output <path.[png|mp4]> [--media-root <path>] [--font-dir <path>] [--encoder <name>] [--bitrate <bps|Nk|NM> | --crf <n> | --qp <n>] [--preset <name>] [--frame <n>]\n\n--font-dir overrides the LUMEN_FONT_DIR environment variable; bundled fonts and system fonts are fallback sources.\n\nOn .mp4 output the default is a 14 Mb/s target. --bitrate, --crf, --qp and --preset override it where the encoder supports them (--crf: libx264, NVENC; --qp: libx264, NVENC, Vulkan, VAAPI; --preset: libx264 ultrafast..placebo, NVENC p1..p7) and fail otherwise."
+        "usage: lumen-local --composition <path> --output <path.[png|mp4]> [--media-root <path>] [--font-dir <path>] [--encoder <name>] [--bitrate <bps|Nk|NM> | --crf <n> | --qp <n>] [--preset <name>] [--frame <n>]\n\n--font-dir overrides the LUMEN_FONT_DIR environment variable; bundled fonts and system fonts are fallback sources.\n\nOn .mp4 output, --encoder or LUMEN_VIDEO_ENCODER names the encoder, and a named encoder that won't open fails the render. With neither set, Linux uses h264_vulkan and falls back to libx264 with a warning when it won't open, which includes --crf and --preset, as h264_vulkan supports neither. macOS uses h264_videotoolbox.\n\nOn .mp4 output the default is a 14 Mb/s target. --bitrate, --crf, --qp and --preset override it where the encoder supports them (--crf: libx264, NVENC; --qp: libx264, NVENC, Vulkan, VAAPI; --preset: libx264 ultrafast..placebo, NVENC p1..p7) and fail otherwise."
     )
 }
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("lumen_engine=warn")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
     if let Err(error) = run() {
         eprintln!("lumen-local failed: {error:#}");
         std::process::exit(1);
@@ -876,11 +887,11 @@ fn render_mp4(
         ));
     }
 
-    let encoder = choose_video_encoder(override_encoder);
+    let choice = VideoEncoderChoice::resolve(override_encoder);
     let width = composition.render_settings().width;
     let height = composition.render_settings().height;
     let total_frames = composition.timeline().duration_frames;
-    if encoder == "h264_videotoolbox_gpu" || encoder == "hevc_videotoolbox_gpu" {
+    if choice.name == "h264_videotoolbox_gpu" || choice.name == "hevc_videotoolbox_gpu" {
         return render_video_gpu_videotoolbox(
             composition,
             media_store,
@@ -888,21 +899,33 @@ fn render_mp4(
             width,
             height,
             total_frames,
-            &encoder,
+            &choice.name,
             quality,
         );
     }
     #[cfg(target_os = "linux")]
-    if is_vulkan_video_encoder(&encoder) {
-        match start_vulkan_video_encode(&composition, output, &encoder, quality) {
+    let choice = if is_vulkan_video_encoder(&choice.name) {
+        match start_vulkan_video_encode(&composition, output, &choice.name, quality) {
             Ok(session) => {
+                println!("video_encoder name={} path=zero_copy", choice.name);
                 return render_video_gpu_vulkan(composition, media_store, total_frames, session);
             }
-            Err(error) => eprintln!(
-                "vulkan zero-copy encode unavailable, uploading frames from the CPU instead: {error}"
-            ),
+            Err(error) => match choice.fall_back(&error) {
+                Some((fallback, warning)) => {
+                    eprintln!("warning: {warning}");
+                    fallback
+                }
+                None => {
+                    eprintln!(
+                        "vulkan zero-copy encode unavailable, uploading frames from the CPU instead: {error}"
+                    );
+                    choice
+                }
+            },
         }
-    }
+    } else {
+        choice
+    };
     let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
         .context("failed to create GPU renderer")?;
     renderer
@@ -915,17 +938,21 @@ fn render_mp4(
     let mut timings = RenderTiming::default();
     let include_audio = has_audio(&composition);
 
-    report_gpu_encode_capabilities();
-
-    let encoder_sink = LumenFfmpegEncoder::create(
-        output,
-        width,
-        height,
-        composition.timeline().fps,
-        &encoder,
-        quality,
-        include_audio,
+    let (encoder_sink, encoder) = choice.open(
+        |encoder| {
+            LumenFfmpegEncoder::create(
+                output,
+                width,
+                height,
+                composition.timeline().fps,
+                encoder,
+                quality,
+                include_audio,
+            )
+        },
+        |warning| eprintln!("warning: {warning}"),
     )?;
+    println!("video_encoder name={encoder} path=cpu_upload");
     let render_started = Instant::now();
     let (pixel_recycle_tx, _pixel_recycle_rx) =
         mpsc::sync_channel::<Vec<u8>>(ENCODER_FRAME_QUEUE_CAPACITY + 2);
@@ -1451,21 +1478,6 @@ fn audio_frame_from_buffer(buffer: &lumen_engine::audio::AudioBuffer) -> AudioFr
     }
 }
 
-fn report_gpu_encode_capabilities() {
-    for backend in [GpuBackend::Metal, GpuBackend::Vulkan] {
-        let support = gpu_texture_encode_support(VideoCodec::H264, backend);
-        eprintln!(
-            "gpu_encode backend={:?} codec={:?} encoder={} available={} direct_texture_path={} reason={}",
-            support.backend,
-            support.codec,
-            support.encoder_name.unwrap_or("none"),
-            support.available,
-            support.direct_texture_path,
-            support.reason.as_deref().unwrap_or("none"),
-        );
-    }
-}
-
 fn read_texture_rgba8(
     renderer: &lumen_gpu::Renderer,
     id: lumen_gpu::TextureId,
@@ -1667,28 +1679,6 @@ fn resolve_local_path_with_root(source: &str, root: &Path) -> Result<PathBuf> {
     Ok(candidate)
 }
 
-fn choose_video_encoder(override_encoder: Option<&str>) -> String {
-    if let Some(encoder) = override_encoder {
-        let encoder = encoder.trim();
-        if !encoder.is_empty() {
-            return encoder.to_string();
-        }
-    }
-
-    if let Ok(encoder) = env::var("LUMEN_VIDEO_ENCODER") {
-        let encoder = encoder.trim();
-        if !encoder.is_empty() {
-            return encoder.to_string();
-        }
-    }
-
-    if cfg!(target_os = "macos") {
-        "h264_videotoolbox".to_string()
-    } else {
-        "libx264".to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -1698,9 +1688,8 @@ mod tests {
     use lumen_engine::media::{FontResolver, MediaStore};
 
     use super::{
-        EncoderQuality, FontCatalog, LocalMediaStore, RateControl, choose_video_encoder,
-        parse_args_from, parse_bitrate, render_to_partial, resolve_font_dir,
-        resolve_local_path_with_root,
+        EncoderQuality, FontCatalog, LocalMediaStore, RateControl, parse_args_from, parse_bitrate,
+        render_to_partial, resolve_font_dir, resolve_local_path_with_root,
     };
 
     #[test]
@@ -2019,11 +2008,6 @@ mod tests {
         let resolver = catalog.resolve(&family).expect("system font resolver");
         assert!(resolver.id().starts_with("local-font:system:"));
         assert!(!resolver.data().expect("system font bytes").is_empty());
-    }
-
-    #[test]
-    fn choose_video_encoder_prefers_override() {
-        assert_eq!(choose_video_encoder(Some("libx265")), "libx265");
     }
 
     #[test]

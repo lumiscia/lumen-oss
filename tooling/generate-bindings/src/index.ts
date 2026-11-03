@@ -155,8 +155,7 @@ async function hashFile(path: string) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-const wasmExportsJs =
-  'export { LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";\n';
+const wasmExportsJs = 'export { LumenPreviewController } from "./lumen_wasm.js";\n';
 
 const bundlerIndexJs = `import previewWorkerModuleUrl from "./preview-worker.js?worker&url";
 import * as previewBindings from "./lumen_wasm.js";
@@ -181,7 +180,7 @@ export function createLumenBindings() {
 
 const browserIndexJs = `import initPreview, * as previewBindings from "./lumen_wasm.js";
 
-export { initSync, LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";
+export { initSync, LumenPreviewController } from "./lumen_wasm.js";
 
 export class LumenBindings {
   target = "browser";
@@ -241,7 +240,7 @@ export interface LumenBindingsLike {
 `;
 
 const bundlerIndexDts = `import type * as previewBindings from "./lumen_wasm.js";
-export { LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";
+export { LumenPreviewController } from "./lumen_wasm.js";
 
 ${bindingsLikeDts}
 export class LumenBindings implements LumenBindingsLike {
@@ -255,7 +254,7 @@ export function createLumenBindings(): LumenBindings;
 
 const browserIndexDts = `import type * as previewBindings from "./lumen_wasm.js";
 export type { InitInput, InitOutput, SyncInitInput } from "./lumen_wasm.js";
-export { initSync, LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";
+export { initSync, LumenPreviewController } from "./lumen_wasm.js";
 
 export interface LumenBrowserBindingsOptions {
   previewWasmUrl?: string | URL | Request | Response | BufferSource | WebAssembly.Module;
@@ -274,7 +273,7 @@ export function createLumenBindings(options?: LumenBrowserBindingsOptions): Lume
 `;
 
 const nodeIndexDts = `import type * as previewBindings from "./lumen_wasm.js";
-export { LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";
+export { LumenPreviewController } from "./lumen_wasm.js";
 
 ${bindingsLikeDts}
 export class LumenBindings implements LumenBindingsLike {

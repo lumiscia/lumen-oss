@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -163,9 +163,9 @@ impl GpuCompiledNode for CompiledColorGrade {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let evaluated = self.params.eval(&NodeParamEvalContext {
+        let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         let gpu_params = compiler::ColorGradeParams {
             strength: evaluated.strength as f32,
@@ -173,7 +173,7 @@ impl GpuCompiledNode for CompiledColorGrade {
             premultiplied: u32::from(self.alpha_mode == AlphaMode::Premultiplied),
             _pad: 0,
         };
-        let lut = compiler::ColorGradeLut::parse(self.node_id, ctx.frame(), &evaluated.lut_source)?;
+        let lut = compiler::ColorGradeLut::parse(self.node_id, &evaluated.lut_source)?;
         bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&gpu_params));
         bound.write_buffer(self.lut_buffer, 0, bytemuck::bytes_of(&lut));
         Ok(())

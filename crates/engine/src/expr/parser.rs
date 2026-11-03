@@ -123,7 +123,6 @@ impl<'a> Lexer<'a> {
                     TokenKind::EqEq
                 } else {
                     return Err(ExpressionError::Parse {
-                        path: None,
                         details: "unexpected `=`; use `==` for equality".to_string(),
                     });
                 }
@@ -153,7 +152,6 @@ impl<'a> Lexer<'a> {
                     TokenKind::AndAnd
                 } else {
                     return Err(ExpressionError::Parse {
-                        path: None,
                         details: "unexpected `&`; use `&&`".to_string(),
                     });
                 }
@@ -165,7 +163,6 @@ impl<'a> Lexer<'a> {
                     TokenKind::OrOr
                 } else {
                     return Err(ExpressionError::Parse {
-                        path: None,
                         details: "unexpected `|`; use `||`".to_string(),
                     });
                 }
@@ -176,7 +173,6 @@ impl<'a> Lexer<'a> {
             c if is_ident_start(c) => TokenKind::Identifier(self.read_identifier()),
             other => {
                 return Err(ExpressionError::Parse {
-                    path: None,
                     details: format!("unexpected character `{other}` at byte {start}"),
                 });
             }
@@ -201,7 +197,6 @@ impl<'a> Lexer<'a> {
         loop {
             let Some(ch) = self.peek_char() else {
                 return Err(ExpressionError::Parse {
-                    path: None,
                     details: format!("unterminated string literal starting at byte {start}"),
                 });
             };
@@ -211,7 +206,6 @@ impl<'a> Lexer<'a> {
                 '\\' => {
                     let Some(escaped) = self.peek_char() else {
                         return Err(ExpressionError::Parse {
-                            path: None,
                             details: "unterminated escape sequence".to_string(),
                         });
                     };
@@ -247,7 +241,6 @@ impl<'a> Lexer<'a> {
         self.source[start..self.position]
             .parse::<f64>()
             .map_err(|error| ExpressionError::Parse {
-                path: None,
                 details: format!("invalid number at byte {start}: {error}"),
             })
     }
@@ -262,7 +255,6 @@ impl<'a> Lexer<'a> {
             "s" => Ok(TokenKind::Seconds(value)),
             "ms" => Ok(TokenKind::Seconds(value / 1000.0)),
             unit => Err(ExpressionError::Parse {
-                path: None,
                 details: format!(
                     "unknown unit `{unit}` after the number at byte {start}; use `s` or `ms`"
                 ),
@@ -280,7 +272,6 @@ impl<'a> Lexer<'a> {
         let hex = &literal[1..];
         if !(matches!(hex.len(), 6 | 8) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())) {
             return Err(ExpressionError::Parse {
-                path: None,
                 details: format!("invalid colour `{literal}`; use #rrggbb or #rrggbbaa"),
             });
         }
@@ -338,7 +329,6 @@ fn tokenize(source: &str) -> Result<Vec<TokenKind>, ExpressionError> {
 /// Splits a function signature such as `rise(start, distance)` into its name and parameters.
 pub(crate) fn parse_signature(signature: &str) -> Result<(String, Vec<String>), ExpressionError> {
     let invalid = || ExpressionError::Parse {
-        path: None,
         details: format!("invalid function signature `{signature}`; expected `name(a, b)`"),
     };
     let tokens = tokenize(signature).map_err(|_| invalid())?;
@@ -401,7 +391,6 @@ impl<'a> Parser<'a> {
     ) -> Result<ExprNode, ExpressionError> {
         if self.depth >= functions::MAX_EXPANDED_DEPTH {
             return Err(ExpressionError::Parse {
-                path: None,
                 details: format!(
                     "expression nests deeper than {} levels",
                     functions::MAX_EXPANDED_DEPTH
@@ -562,7 +551,6 @@ impl<'a> Parser<'a> {
 
     fn parse_primary(&mut self) -> Result<ExprNode, ExpressionError> {
         let token = self.peek().cloned().ok_or(ExpressionError::Parse {
-            path: None,
             details: "unexpected end of expression".to_string(),
         })?;
         match token.kind {
@@ -600,7 +588,6 @@ impl<'a> Parser<'a> {
                 Ok(expr)
             }
             _ => Err(ExpressionError::Parse {
-                path: None,
                 details: format!("expected expression at byte {}", token.span.start),
             }),
         }
@@ -609,7 +596,6 @@ impl<'a> Parser<'a> {
     fn parse_identifier(&mut self, identifier: String) -> Result<ExprNode, ExpressionError> {
         if self.match_token(|kind| matches!(kind, TokenKind::Dot)) {
             return Err(ExpressionError::Parse {
-                path: None,
                 details: format!(
                     "`{identifier}.` is not supported; read another node's property with node(id, 'property')"
                 ),
@@ -643,7 +629,6 @@ impl<'a> Parser<'a> {
             if identifier == "if" {
                 if args.len() != 3 {
                     return Err(ExpressionError::Parse {
-                        path: None,
                         details: "if(cond, then, else) requires exactly 3 arguments".to_string(),
                     });
                 }
@@ -668,7 +653,6 @@ impl<'a> Parser<'a> {
             }
             return functions::expand(&identifier, &args, &mut self.budget)?.ok_or(
                 ExpressionError::Parse {
-                    path: None,
                     details: format!("unknown function `{identifier}`"),
                 },
             );
@@ -696,7 +680,6 @@ impl<'a> Parser<'a> {
     fn parse_node_reference(&mut self, args: Vec<ExprNode>) -> Result<ExprNode, ExpressionError> {
         if args.is_empty() || args.len() > 2 {
             return Err(ExpressionError::Parse {
-                path: None,
                 details: "node(id) or node(id, property_path) requires 1 or 2 arguments"
                     .to_string(),
             });
@@ -706,7 +689,6 @@ impl<'a> Parser<'a> {
             ExprNode::Literal(ExpressionValue::Number(value)) => {
                 if *value < 0.0 || value.fract() != 0.0 {
                     return Err(ExpressionError::Parse {
-                        path: None,
                         details: "node(id, ..) expects an unsigned integer id".to_string(),
                     });
                 }
@@ -714,7 +696,6 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 return Err(ExpressionError::Parse {
-                    path: None,
                     details: "node(id, ..) first argument must be a numeric node id".to_string(),
                 });
             }
@@ -728,7 +709,6 @@ impl<'a> Parser<'a> {
             ExprNode::Literal(ExpressionValue::String(value)) => value.clone(),
             _ => {
                 return Err(ExpressionError::Parse {
-                    path: None,
                     details: "node(.., property_path) second argument must be a string".to_string(),
                 });
             }
@@ -749,8 +729,7 @@ impl<'a> Parser<'a> {
     }
 
     fn expect(&mut self, expected: TokenExpectation) -> Result<(), ExpressionError> {
-        let token = self.peek().ok_or(ExpressionError::Parse {
-            path: None,
+        let token = self.peek().ok_or_else(|| ExpressionError::Parse {
             details: format!("expected {}", expected.describe()),
         })?;
 
@@ -763,8 +742,11 @@ impl<'a> Parser<'a> {
             Ok(())
         } else {
             Err(ExpressionError::Parse {
-                path: None,
-                details: format!("expected {}", expected.describe()),
+                details: format!(
+                    "expected {} at byte {}",
+                    expected.describe(),
+                    token.span.start
+                ),
             })
         }
     }
@@ -791,7 +773,6 @@ impl TokenExpectation {
 /// Checks what can be known before evaluation: arity, easing names and literal spring ranges.
 fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), ExpressionError> {
     let error = |details: String| ExpressionError::Parse {
-        path: None,
         details: format!("`{}`: {details}", spec.name),
     };
     if !spec.accepts_arity(args.len()) {

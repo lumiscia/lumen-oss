@@ -25,6 +25,7 @@ lumen-gpu = { workspace = true }
 lumen-ffmpeg = { workspace = true, features = ["vulkan"] }
 pollster = "1.0.1"
 serde_json = "1.0.145"
+tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 lumen-engine = { workspace = true, features = ["vulkan"] }

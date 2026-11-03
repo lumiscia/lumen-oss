@@ -1,12 +1,27 @@
+use std::borrow::Cow;
+
 use super::drawable::{
     DeferredTransform, DrawableMotion, DrawableTransform, largest_scale, peak_scale,
 };
 use super::paint::Paint;
-use super::renderer::{MAX_PATH_POINTS, PathBuffers, PathPoint, PathUniforms, style_flags};
+use super::renderer::{
+    MAX_PATH_POINTS, PathBuffers, PathPoint, PathUniforms, domain_origin, style_flags,
+};
 use crate::error::RenderError;
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
+use crate::gpu::{
+    BoundFrame, CompileContext, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
+    compiler,
+};
 use crate::node::motion::Shutter;
-use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+
+const PATH_SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("paint/paint.wgsl"),
+    include_str!("drawable.wgsl"),
+    include_str!("vector_common.wgsl"),
+    include_str!("path_renderer.wgsl")
+);
 
 /// Produces a rasterized vector path source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -108,17 +123,98 @@ impl Default for Path {
 impl GpuCompileNode for Path {
     fn compile_gpu(
         &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
+        ctx: &mut CompileContext<'_>,
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        crate::node::vector::renderer::VectorRenderer::new(ctx).compile_path(self, port)
+        if port.port != "output" {
+            return Err(ctx.missing_output(self.id, &port.port));
+        }
+
+        let fixed_points = fixed_points(&self.params.data, &self.params.scale);
+        // Opacity only hides what is drawn, so it is left out of the bounds.
+        let opaque = PathParamsDelegate {
+            opacity: Deferred::value(1.0),
+            ..self.params.clone()
+        };
+        let (output, buffers) = compile_path_source(
+            ctx,
+            self.id,
+            "path",
+            fixed_points.as_ref().map_or(MAX_PATH_POINTS, Vec::len),
+            compiler::SourceMotion::of(path_is_animated(&self.params), &self.params),
+            |expr, band_capacity| {
+                path_frame(
+                    &opaque,
+                    self.id,
+                    expr,
+                    fixed_points.as_deref(),
+                    band_capacity,
+                )
+            },
+        );
+        ctx.register_compiled_node(CompiledPath {
+            node_id: self.id,
+            params: self.params.clone(),
+            fixed_points,
+            buffers,
+        });
+        Ok(output)
     }
+}
+
+/// Compiles a source rasterized by the path shader, sized to the screen bounds that
+/// `frame_at` gives over the frames it may draw. `frame_at` also takes the bands buffer's
+/// capacity.
+pub(super) fn compile_path_source<'a>(
+    ctx: &mut CompileContext<'_>,
+    node_id: NodeId,
+    label: &str,
+    point_capacity: usize,
+    motion: compiler::SourceMotion,
+    frame_at: impl Fn(&crate::expr::ExpressionContext<'_>, usize) -> crate::Result<PathFrame<'a>>,
+) -> (CompiledOutput, PathBuffers) {
+    let point_capacity = point_capacity.max(1);
+    let band_capacity = super::path_bands::band_capacity(point_capacity);
+    let bounds = ctx.source_bounds(motion, |expr| {
+        frame_at(expr, band_capacity).map(|frame| Some(frame.uniforms.screen_bounds))
+    });
+    let domain = ctx.source_domain(bounds);
+    let source = ctx.compute_source(
+        node_id,
+        label,
+        "rasterize",
+        PATH_SHADER,
+        std::mem::size_of::<PathUniforms>() as u64,
+        None,
+        [
+            (
+                "points",
+                (point_capacity * std::mem::size_of::<PathPoint>()) as u64,
+            ),
+            ("bands", (band_capacity * std::mem::size_of::<u32>()) as u64),
+        ],
+        domain,
+    );
+    let [points, bands] = source.storage;
+    (
+        CompiledOutput::Raster(source.output),
+        PathBuffers {
+            params: source.params,
+            points,
+            bands,
+            point_capacity,
+            band_capacity,
+            origin: domain_origin(domain),
+        },
+    )
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CompiledPath {
     pub(crate) node_id: NodeId,
     pub(crate) params: PathParamsDelegate,
+    /// The flattened data, when nothing can change it per frame.
+    pub(crate) fixed_points: Option<Vec<PathPoint>>,
     pub(crate) buffers: PathBuffers,
 }
 
@@ -131,8 +227,8 @@ impl GpuCompiledNode for CompiledPath {
         let frame = path_frame(
             &self.params,
             self.node_id,
-            &ctx.expr_context(self.node_id, "params"),
-            self.buffers.point_capacity,
+            &ctx.expr_context(),
+            self.fixed_points.as_deref(),
             self.buffers.band_capacity,
         )?;
         self.buffers.write(bound, &frame);
@@ -140,15 +236,16 @@ impl GpuCompiledNode for CompiledPath {
     }
 }
 
-/// Evaluates a path node's uniforms, points and bands at the frame of `expr`.
-pub(super) fn path_frame(
+/// Evaluates a path node's uniforms, points and bands at the frame of `expr`. `fixed_points`
+/// stands in for flattening its data.
+fn path_frame<'a>(
     params: &PathParamsDelegate,
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
-    point_capacity: usize,
+    fixed_points: Option<&'a [PathPoint]>,
     band_capacity: usize,
-) -> crate::Result<PathFrame> {
-    let evaluated = params.eval(&NodeParamEvalContext { node_id, expr })?;
+) -> crate::Result<PathFrame<'a>> {
+    let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
     let transform = DrawableTransform {
         position: evaluated.position,
         scale: evaluated.scale,
@@ -163,19 +260,22 @@ pub(super) fn path_frame(
         anchor: &params.anchor,
     }
     .shutter(evaluated.motion_blur, transform, node_id, expr)?;
-    // Curves are flattened for the largest scale that the shutter draws them at.
-    let mut points = parse_path_points(
-        &evaluated.data,
-        flattening_tolerance(peak_scale(evaluated.scale, shutter.as_ref())),
-        point_capacity,
-    )
-    .map_err(|details| RenderError::NodeEvaluation {
-        frame: expr.frame as u32,
-        node_id,
-        node_kind: "Path",
-        details: format!("`data` {details}"),
-    })?;
-    normalize_contour_offsets(&mut points);
+    let points = match fixed_points {
+        Some(points) => Cow::Borrowed(points),
+        // Curves are flattened for the largest scale that the shutter draws them at.
+        None => Cow::Owned(
+            parse_path_points(
+                &evaluated.data,
+                flattening_tolerance(peak_scale(evaluated.scale, shutter.as_ref())),
+                MAX_PATH_POINTS,
+            )
+            .map_err(|details| RenderError::NodeEvaluation {
+                node_id,
+                node_kind: "Path",
+                details: format!("`data` {details}"),
+            })?,
+        ),
+    };
     let (x, y) = evaluated.position;
     let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
 
@@ -183,15 +283,12 @@ pub(super) fn path_frame(
         fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
         stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
         position: [x as f32, y as f32],
-        bounds_min: bounds_min(&points),
-        bounds_size: bounds_size(&points),
         stroke_width: evaluated.stroke_width.max(0.0) as f32,
         flags: style_flags(
             evaluated.fill_enabled,
             evaluated.stroke_enabled && evaluated.stroke_width > 0.0,
             evaluated.edge_antialias,
         ),
-        point_count: points.len() as u32,
         trim_start,
         trim_end,
         ..bytemuck::Zeroable::zeroed()
@@ -206,7 +303,7 @@ pub(super) fn path_frame(
 }
 
 /// Whether a path node's canvas bounds may change between frames.
-pub(super) fn path_is_animated(params: &PathParamsDelegate) -> bool {
+fn path_is_animated(params: &PathParamsDelegate) -> bool {
     params.data.is_expr()
         || params.position.is_expr()
         || params.scale.is_expr()
@@ -219,21 +316,27 @@ pub(super) fn path_is_animated(params: &PathParamsDelegate) -> bool {
 }
 
 /// A frame's uniforms, points and bands for the path shader.
-pub(super) struct PathFrame {
+pub(super) struct PathFrame<'a> {
     pub(super) uniforms: PathUniforms,
-    points: Vec<PathPoint>,
+    points: Cow<'a, [PathPoint]>,
     bands: Vec<u32>,
 }
 
-impl PathFrame {
-    /// Fills in the transform, culling and motion of `uniforms` and bins `points`.
+impl<'a> PathFrame<'a> {
+    /// Fills in the bounds, transform, culling and motion of `uniforms` and bins `points`.
     pub(super) fn new(
         mut uniforms: PathUniforms,
-        points: Vec<PathPoint>,
+        points: Cow<'a, [PathPoint]>,
         transform: &DrawableTransform,
         shutter: Option<&Shutter<DrawableTransform>>,
         band_capacity: usize,
     ) -> Self {
+        let bounds = point_bounds(&points);
+        uniforms.bounds_min = bounds.0;
+        uniforms.bounds_size = [
+            (bounds.1[0] - bounds.0[0]).max(1.0),
+            (bounds.1[1] - bounds.0[1]).max(1.0),
+        ];
         uniforms.transform = transform.to_gpu();
         let [x, y] = uniforms.position;
         let min = [x + uniforms.bounds_min[0], y + uniforms.bounds_min[1]];
@@ -242,8 +345,14 @@ impl PathFrame {
             min[1] + uniforms.bounds_size[1],
         ];
         let motion = DrawableMotion::new(shutter, min, max);
-        let bands =
-            super::path_bands::bin_path(&mut uniforms, &points, transform, &motion, band_capacity);
+        let bands = super::path_bands::bin_path(
+            &mut uniforms,
+            &points,
+            bounds,
+            transform,
+            &motion,
+            band_capacity,
+        );
         uniforms.motion = motion.to_gpu();
         Self {
             uniforms,
@@ -282,31 +391,29 @@ fn flattening_tolerance(scale: (f64, f64)) -> f32 {
     (f64::from(PATH_FLATTENING_TOLERANCE) / largest_scale(scale)) as f32
 }
 
-/// Points buffer capacity for path data: the flattened point count when the data and
-/// scale are constant, or `MAX_PATH_POINTS` when either may change per frame.
-pub(super) fn point_capacity(data: &Deferred<String>, scale: &Deferred<(f64, f64)>) -> usize {
-    match (data, scale) {
-        (Deferred::Value(data), Deferred::Value(scale)) => {
-            parse_path_points(data, flattening_tolerance(*scale), MAX_PATH_POINTS)
-                .map_or(MAX_PATH_POINTS, |points| points.len().max(1))
-        }
-        _ => MAX_PATH_POINTS,
-    }
+/// The flattened points of path data whose data and scale are constant. Data that does not
+/// flatten has none, so that binding it reports why.
+fn fixed_points(data: &Deferred<String>, scale: &Deferred<(f64, f64)>) -> Option<Vec<PathPoint>> {
+    let (Deferred::Value(data), Deferred::Value(scale)) = (data, scale) else {
+        return None;
+    };
+    parse_path_points(data, flattening_tolerance(*scale), MAX_PATH_POINTS).ok()
 }
 
-/// Flattens path data, coarsening `tolerance` until it fits `max_points`. Empty data is
-/// empty geometry. The error says why data is malformed, has an out-of-range coordinate, or
-/// exceeds `max_points` even at the coarsest tolerance.
+/// Flattens path data, coarsening `tolerance` until it fits `max_points`, and measures its
+/// contours. Empty data is empty geometry. The error says why data is malformed, has an
+/// out-of-range coordinate, or exceeds `max_points` even at the coarsest tolerance.
 fn parse_path_points(
     data: &str,
     tolerance: f32,
     max_points: usize,
-) -> Result<Vec<super::renderer::PathPoint>, String> {
+) -> Result<Vec<PathPoint>, String> {
     let path = build_lyon_path(data)?;
 
     let mut tolerance = tolerance;
     for _ in 0..PATH_MAX_FLATTENING_ATTEMPTS {
-        if let Some(points) = flatten_path(&path, tolerance, max_points) {
+        if let Some(mut points) = flatten_path(&path, tolerance, max_points) {
+            normalize_contour_offsets(&mut points);
             return Ok(points);
         }
         tolerance *= 2.0;
@@ -315,10 +422,10 @@ fn parse_path_points(
 }
 
 /// Builds a single closed contour from polygon vertices.
-pub(super) fn closed_contour(vertices: &[[f32; 2]]) -> Vec<super::renderer::PathPoint> {
+pub(super) fn closed_contour(vertices: &[[f32; 2]]) -> Vec<PathPoint> {
     let mut points: Vec<_> = vertices
         .iter()
-        .map(|&position| super::renderer::PathPoint {
+        .map(|&position| PathPoint {
             position,
             contour_start: 0,
             flags: 0,
@@ -502,7 +609,7 @@ fn flatten_path(
     path: &lyon_path::Path,
     tolerance: f32,
     max_points: usize,
-) -> Option<Vec<super::renderer::PathPoint>> {
+) -> Option<Vec<PathPoint>> {
     use lyon_path::{PathEvent, iterator::PathIterator};
 
     let mut points = Vec::new();
@@ -541,7 +648,7 @@ fn flatten_path(
 }
 
 fn push_path_point(
-    points: &mut Vec<super::renderer::PathPoint>,
+    points: &mut Vec<PathPoint>,
     point: lyon_path::math::Point,
     contour_start: u32,
     max_points: usize,
@@ -549,7 +656,7 @@ fn push_path_point(
     if points.len() >= max_points {
         return false;
     }
-    points.push(super::renderer::PathPoint {
+    points.push(PathPoint {
         position: [point.x, point.y],
         contour_start,
         flags: 0,
@@ -559,13 +666,19 @@ fn push_path_point(
     true
 }
 
-pub(super) fn bounds_min(points: &[super::renderer::PathPoint]) -> [f32; 2] {
+/// The corners `(min, max)` of the box around `points`, both the origin when there are none.
+pub(super) fn point_bounds(points: &[PathPoint]) -> ([f32; 2], [f32; 2]) {
     let Some(first) = points.first() else {
-        return [0.0, 0.0];
+        return ([0.0, 0.0], [0.0, 0.0]);
     };
-    points.iter().skip(1).fold(first.position, |acc, point| {
-        [acc[0].min(point.position[0]), acc[1].min(point.position[1])]
-    })
+    points
+        .iter()
+        .fold((first.position, first.position), |(min, max), point| {
+            (
+                [min[0].min(point.position[0]), min[1].min(point.position[1])],
+                [max[0].max(point.position[0]), max[1].max(point.position[1])],
+            )
+        })
 }
 
 fn point_distance(from: [f32; 2], to: [f32; 2]) -> f32 {
@@ -576,7 +689,7 @@ fn normalized_trim_range(start: f64, end: f64) -> (f32, f32) {
     (start.clamp(0.0, 1.0) as f32, end.clamp(0.0, 1.0) as f32)
 }
 
-fn normalize_contour_offsets(points: &mut [super::renderer::PathPoint]) {
+fn normalize_contour_offsets(points: &mut [PathPoint]) {
     let mut start = 0;
     while start < points.len() {
         let end = points[start..]
@@ -603,14 +716,6 @@ fn normalize_contour_offsets(points: &mut [super::renderer::PathPoint]) {
         }
         start = end + 1;
     }
-}
-
-pub(super) fn bounds_size(points: &[super::renderer::PathPoint]) -> [f32; 2] {
-    let min = bounds_min(points);
-    let max = points.iter().fold(min, |acc, point| {
-        [acc[0].max(point.position[0]), acc[1].max(point.position[1])]
-    });
-    [(max[0] - min[0]).max(1.0), (max[1] - min[1]).max(1.0)]
 }
 
 #[cfg(test)]
@@ -787,20 +892,6 @@ mod tests {
             .unwrap_err()
             .contains("more than 4 points")
         );
-        assert_eq!(
-            point_capacity(
-                &Deferred::value("M 0 0 L 10 0 L 10 10 Z".to_string()),
-                &Deferred::value((1.0, 1.0))
-            ),
-            3
-        );
-        assert_eq!(
-            point_capacity(
-                &Deferred::value(String::new()),
-                &Deferred::value((1.0, 1.0))
-            ),
-            1
-        );
     }
 
     #[test]
@@ -825,31 +916,39 @@ mod tests {
             scaled.abs_diff(direct) <= 2,
             "{scaled} points against {direct}"
         );
+        let fixed = |data: Deferred<String>, scale: Deferred<(f64, f64)>| {
+            fixed_points(&data, &scale).map(|points| points.len())
+        };
         assert_eq!(
-            point_capacity(
-                &Deferred::value(circle(10.0)),
-                &Deferred::value((8.0, -4.0))
-            ),
-            scaled
+            fixed(Deferred::value(circle(10.0)), Deferred::value((8.0, -4.0))),
+            Some(scaled)
+        );
+        let frame = || crate::expr::Expression::parse("frame").unwrap();
+        assert_eq!(
+            fixed(Deferred::value(circle(10.0)), Deferred::Expr(frame())),
+            None
         );
         assert_eq!(
-            point_capacity(
-                &Deferred::value(circle(10.0)),
-                &Deferred::Expr(crate::expr::Expression::parse("frame").unwrap())
+            fixed(Deferred::Expr(frame()), Deferred::value((1.0, 1.0))),
+            None
+        );
+        assert_eq!(
+            fixed(
+                Deferred::value("M 0 0 C nope".to_string()),
+                Deferred::value((1.0, 1.0))
             ),
-            MAX_PATH_POINTS
+            None
         );
     }
 
     #[test]
     fn normalizes_each_contour_by_its_drawn_length() {
-        let mut points = parse_path_points(
+        let points = parse_path_points(
             "M 0 0 L 25 0 L 100 0 M 0 10 L 0 30 Z",
             PATH_FLATTENING_TOLERANCE,
             128,
         )
         .unwrap();
-        normalize_contour_offsets(&mut points);
 
         assert_eq!(points[0].offset, 0.0);
         assert_eq!(points[1].offset, 0.25);
@@ -860,8 +959,7 @@ mod tests {
 
     #[test]
     fn degenerate_contour_offsets_remain_finite() {
-        let mut points = parse_path_points("M 5 5 L 5 5", PATH_FLATTENING_TOLERANCE, 128).unwrap();
-        normalize_contour_offsets(&mut points);
+        let points = parse_path_points("M 5 5 L 5 5", PATH_FLATTENING_TOLERANCE, 128).unwrap();
         assert!(points.iter().all(|point| point.offset.is_finite()));
     }
 
