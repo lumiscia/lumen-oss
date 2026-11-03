@@ -1051,6 +1051,7 @@ fn plan_shape() {
     let expression = feathered((24, 64), json!("=0"));
     assert_eq!(feather_passes(&sharp), 0);
     assert_eq!(feather_passes(&negative), 0);
+    assert!(feather_passes(&feathered((24, 64), json!(2.0))) > 0);
     assert!(feather_passes(&expression) > 0);
     assert_eq!(negative.plan.textures().len(), sharp.plan.textures().len());
     assert!(expression.plan.textures().len() > sharp.plan.textures().len());
