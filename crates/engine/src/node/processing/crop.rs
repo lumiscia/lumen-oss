@@ -1,8 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("crop.wgsl");
@@ -48,42 +47,32 @@ pub struct Crop {
 }
 
 impl GpuCompileNode for Crop {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let source = ctx.compile_input(self.id, "source", self.source)?;
         let size = source.domain.storage_size;
-        let texture = ctx.builder_mut().texture(
-            Some(format!("crop:{}:output", self.id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+        let crop = ctx.compute_source(
+            self.id,
+            "crop",
+            "apply",
+            SHADER,
+            std::mem::size_of::<compiler::CropParams>() as u64,
+            Some(source.texture),
+            [],
+            lumen_gpu::TextureDomain::full_frame(size),
         );
-        let params = ctx.builder_mut().buffer(
-            Some(format!("crop:{}:params", self.id.0)),
-            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::CropParams>() as u64),
-        );
-        let program = ctx.spatial_program("crop", SHADER);
-        ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
-            label: Some(format!("crop:{}:apply", self.id.0)),
-            program,
-            bindings: compiler::spatial_bindings(source.texture, params, texture),
-            dispatch: compiler::dispatch_for(size),
-        });
         ctx.register_compiled_node(CompiledCrop {
             node_id: self.id,
             params: self.params.clone(),
-            buffer: params,
+            buffer: crop.params,
             source_size: size,
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
-            texture,
-            domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: source.metadata,
+        Ok(RasterHandle {
             // The params buffer holds the region clamped to the source, which is the output's
             // logical bounds.
-            bounds: Some(params),
-        }))
+            bounds: Some(crop.params),
+            ..crop.output
+        })
     }
 }
 

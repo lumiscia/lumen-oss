@@ -1,33 +1,27 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
+use crate::gpu::compiler::Slot;
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("../../gpu/shaders/sampling.wgsl"),
     include_str!("boolean.wgsl")
 );
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[repr(i64)]
+#[delegate(kind = "enum", expressions)]
 pub enum BooleanOperation {
+    #[default]
     Union = 0,
     Intersect = 1,
     Subtract = 2,
     Xor = 3,
-}
-
-impl BooleanOperation {
-    pub fn from_int(value: i64) -> Self {
-        match value {
-            1 => Self::Intersect,
-            2 => Self::Subtract,
-            3 => Self::Xor,
-            _ => Self::Union,
-        }
-    }
 }
 
 /// Combines two raster alpha masks with boolean operations.
@@ -35,7 +29,7 @@ impl BooleanOperation {
 pub struct BooleanParams {
     /// Boolean operation used to combine the two input masks.
     #[meta(kind = "enum", enum_type = BooleanOperation)]
-    pub operation: i64,
+    pub operation: BooleanOperation,
     /// Alpha above this cutoff counts as opaque; 0 applies no cutoff and keeps antialiased edges.
     #[meta(min = 0, max = 1, step = 0.01)]
     pub threshold: f64,
@@ -44,7 +38,7 @@ pub struct BooleanParams {
 impl Default for BooleanParams {
     fn default() -> Self {
         Self {
-            operation: BooleanOperation::Union as i64,
+            operation: BooleanOperation::Union,
             threshold: 0.0,
         }
     }
@@ -68,7 +62,6 @@ pub struct Boolean {
 struct CompiledBoolean {
     node_id: NodeId,
     params: BooleanParamsDelegate,
-    straight_inputs: [f32; 2],
     buffer: lumen_gpu::BufferId,
 }
 
@@ -83,12 +76,7 @@ impl GpuCompiledNode for CompiledBoolean {
             expr: &ctx.expr_context(),
         })?;
         let gpu_params = compiler::BooleanParams {
-            values: [
-                BooleanOperation::from_int(params.operation) as u32 as f32,
-                params.threshold as f32,
-                self.straight_inputs[0],
-                self.straight_inputs[1],
-            ],
+            values: [params.operation as u32 as f32, params.threshold as f32],
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
         Ok(())
@@ -96,10 +84,7 @@ impl GpuCompiledNode for CompiledBoolean {
 }
 
 impl GpuCompileNode for Boolean {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let a = ctx.compile_input(self.id, "a", self.a)?;
         let b = ctx.compile_input(self.id, "b", self.b)?;
         let size = a.domain.storage_size;
@@ -111,33 +96,11 @@ impl GpuCompileNode for Boolean {
             Some(format!("boolean:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::BooleanParams>() as u64),
         );
-        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some("boolean".to_string()),
-                shader: SHADER.to_string(),
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::texture(
-                        0,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::texture(
-                        1,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        2,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        3,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                ]),
-            },
-        ));
+        let program = ctx.compute_program(
+            "boolean",
+            SHADER,
+            &[Slot::Texture, Slot::Texture, Slot::Uniform, Slot::Output],
+        );
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("boolean:{}:apply", self.id.0)),
             program,
@@ -152,26 +115,13 @@ impl GpuCompileNode for Boolean {
         ctx.register_compiled_node(CompiledBoolean {
             node_id: self.id,
             params: self.params.clone(),
-            straight_inputs: [straight_flag(a.metadata), straight_flag(b.metadata)],
             buffer: params,
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: RasterMetadata {
-                alpha_mode: AlphaMode::Premultiplied,
-                ..a.metadata
-            },
             bounds: None,
-        }))
-    }
-}
-
-fn straight_flag(metadata: RasterMetadata) -> f32 {
-    if metadata.alpha_mode == AlphaMode::Unpremultiplied {
-        1.0
-    } else {
-        0.0
+        })
     }
 }

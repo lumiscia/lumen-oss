@@ -14,25 +14,11 @@ pub struct TimelineSettings {
     pub duration_frames: u32,
 }
 
-impl TimelineSettings {
-    pub fn time_seconds(&self, frame: u32) -> f64 {
-        if self.fps <= 0.0 {
-            return 0.0;
-        }
-        frame as f64 / self.fps as f64
-    }
-}
-
 #[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub struct RenderSettings {
     pub width: u32,
     pub height: u32,
     pub background_color: [u8; 4],
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct CompositionMetadata {
-    pub name: Option<String>,
 }
 
 /// A validated composition that can no longer change. It is fingerprinted once when built, so
@@ -51,8 +37,6 @@ pub struct CompositionBuilder {
     pub graph: Graph,
     pub timeline: TimelineSettings,
     pub render_settings: RenderSettings,
-    #[structural_hash(skip)] // Display metadata does not affect rendering.
-    pub metadata: Option<CompositionMetadata>,
     #[structural_hash(skip)] // Audio is independent of compiled video plans and GPU caches.
     pub audio: Option<AudioTimeline>,
     /// Templates that `clip` nodes instantiate, by name.
@@ -148,7 +132,7 @@ impl PropKind {
                 .as_f64()
                 .map(ExpressionValue::Number)
                 .ok_or_else(invalid),
-            Self::Color => color_literal(value)
+            Self::Color => crate::json::parse_color(value)
                 .map(ExpressionValue::color_from_u8)
                 .ok_or_else(invalid),
             Self::Vec2 => match value.as_array().map(Vec::as_slice) {
@@ -163,27 +147,6 @@ impl PropKind {
     }
 }
 
-fn color_literal(value: &serde_json::Value) -> Option<[u8; 4]> {
-    if let Some(hex) = value.as_str().and_then(|text| text.strip_prefix('#')) {
-        if !matches!(hex.len(), 6 | 8) || !hex.is_ascii() {
-            return None;
-        }
-        let mut color = [255; 4];
-        for (index, channel) in color.iter_mut().take(hex.len() / 2).enumerate() {
-            *channel = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
-        }
-        return Some(color);
-    }
-    let channels = value
-        .as_array()
-        .filter(|items| matches!(items.len(), 3 | 4))?;
-    let mut color = [255; 4];
-    for (channel, item) in color.iter_mut().zip(channels) {
-        *channel = u8::try_from(item.as_u64()?).ok()?;
-    }
-    Some(color)
-}
-
 impl Composition {
     pub fn graph(&self) -> &Graph {
         &self.parts.graph
@@ -195,10 +158,6 @@ impl Composition {
 
     pub fn render_settings(&self) -> &RenderSettings {
         &self.parts.render_settings
-    }
-
-    pub fn metadata(&self) -> Option<&CompositionMetadata> {
-        self.parts.metadata.as_ref()
     }
 
     pub fn audio(&self) -> Option<&AudioTimeline> {
@@ -227,7 +186,6 @@ impl CompositionBuilder {
             graph,
             timeline,
             render_settings,
-            metadata: None,
             audio: None,
             compositions: BTreeMap::new(),
         }

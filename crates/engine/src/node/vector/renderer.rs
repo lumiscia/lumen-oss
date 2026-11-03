@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 
 use super::drawable::{GpuDrawableMotion, GpuDrawableTransform};
 
-/// Most points a path or polygon may flatten to. Points buffers are sized to the
+/// Most points a path may flatten to. Points buffers are sized to the
 /// flattened point count when the geometry is constant, and to this when animated.
 pub(crate) const MAX_PATH_POINTS: usize = 16384;
 
@@ -36,7 +36,6 @@ pub(crate) struct PathBuffers {
     pub(crate) params: lumen_gpu::BufferId,
     pub(crate) points: lumen_gpu::BufferId,
     pub(crate) bands: lumen_gpu::BufferId,
-    pub(crate) point_capacity: usize,
     pub(crate) band_capacity: usize,
     /// Canvas pixel of the output's first texel.
     pub(crate) origin: [i32; 2],

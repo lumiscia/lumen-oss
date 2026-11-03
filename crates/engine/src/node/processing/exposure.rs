@@ -1,9 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams};
 
-use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, compiler,
-};
+use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -44,59 +41,19 @@ pub struct Exposure {
     pub source: Option<NodeId>,
 }
 
-#[derive(Debug, Clone)]
-struct CompiledExposure {
-    node_id: NodeId,
-    params: ExposureParamsDelegate,
-    alpha_mode: AlphaMode,
-    buffer: lumen_gpu::BufferId,
-}
-
-impl GpuCompiledNode for CompiledExposure {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&DelegateEvalContext {
-            node_id: self.node_id,
-            expr: &ctx.expr_context(),
-        })?;
-        let params = compiler::ExposureParams {
-            exposure: params.exposure as f32,
-            contrast: params.contrast as f32,
-            offset: params.offset as f32,
-            premultiplied: u32::from(self.alpha_mode == AlphaMode::Premultiplied),
-        };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
-    }
-}
-
 impl GpuCompileNode for Exposure {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
-        let (source, texture, params) = ctx.compile_unary_filter(
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
+        ctx.unary_filter(
             self.id,
             self.source,
             "exposure",
             SHADER,
-            std::mem::size_of::<compiler::ExposureParams>() as u64,
-            compiler::FilterDomain::PremultipliedSource,
-        )?;
-        ctx.register_compiled_node(CompiledExposure {
-            node_id: self.id,
-            params: self.params.clone(),
-            alpha_mode: source.metadata.alpha_mode,
-            buffer: params,
-        });
-        Ok(CompiledOutput::Raster(RasterHandle {
-            texture,
-            domain: source.domain,
-            metadata: source.metadata,
-            bounds: source.bounds,
-        }))
+            &self.params,
+            |params| compiler::ExposureParams {
+                exposure: params.exposure as f32,
+                contrast: params.contrast as f32,
+                offset: params.offset as f32,
+            },
+        )
     }
 }

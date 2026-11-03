@@ -1,15 +1,14 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 use super::gaussian;
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct BlurParams {
-    /// Blur radius in pixels. Fractional radii blend smoothly.
+    /// Blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.
     #[meta(min = 0, step = 0.5)]
     pub radius: f64,
 }
@@ -36,7 +35,6 @@ struct CompiledBlur {
     node_id: NodeId,
     params: BlurParamsDelegate,
     passes: gaussian::GaussianPasses,
-    straight_source: bool,
 }
 
 impl GpuCompiledNode for CompiledBlur {
@@ -53,7 +51,6 @@ impl GpuCompiledNode for CompiledBlur {
             bound,
             &gaussian::GaussianSettings {
                 radius: params.radius,
-                straight_source: self.straight_source,
                 transparent_edge: false,
                 offset: [0.0; 2],
             },
@@ -63,10 +60,7 @@ impl GpuCompiledNode for CompiledBlur {
 }
 
 impl GpuCompileNode for Blur {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let source = ctx.compile_bounded_input(self.id, "source", self.source)?;
         // The blur spreads the source's data by the radius, up to its largest over the timeline.
         let bounds = ctx.source_bounds(
@@ -97,16 +91,11 @@ impl GpuCompileNode for Blur {
             node_id: self.id,
             params: self.params.clone(),
             passes,
-            straight_source: source.metadata.alpha_mode == AlphaMode::Unpremultiplied,
         });
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture: output,
             domain,
-            metadata: RasterMetadata {
-                alpha_mode: AlphaMode::Premultiplied,
-                ..source.metadata
-            },
             bounds: None,
-        }))
+        })
     }
 }

@@ -1,49 +1,83 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     sync::{Arc, LazyLock, Mutex, Weak},
 };
 
 use crate::error::{LumenError, MediaError, RenderError};
 use crate::expr::{ExprNode, ExpressionContext, GlobalVar, GlyphScope};
-use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
+use crate::gpu::{BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle};
 use crate::media::{FontResolver, MediaStore, TextSession};
 use crate::node::vector::{
     drawable::{DeferredTransform, DrawableMotion, DrawableTransform},
     paint::Paint,
 };
 use crate::node::{
-    Deferred, DeferredValue, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override,
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override, ParamValue,
 };
 
 use super::text_compile::{GpuTextPaint, TextStyleUniforms};
 use super::text_content::{
-    FontFeatures, TextContent, TextContentDelegate, TextHighlight, TextHighlightDelegate, TextLine,
-    TextLineDelegate, TextLineStyle, TextSpan, TextStroke, TextStrokeAlign, TextStrokeDelegate,
+    FontFeatures, FontFeaturesDelegate, TextContent, TextContentDelegate, TextHighlight,
+    TextHighlightDelegate, TextLine, TextLineDelegate, TextSpan, TextStroke, TextStrokeAlign,
+    TextStrokeDelegate,
 };
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum", expressions)]
-pub enum TextFontStyle {
-    #[default]
-    Normal = 0,
-    Italic = 1,
-    Oblique = 2,
+/// A param enum and the conversion to its `lumen_text` twin, which has the same variants.
+macro_rules! text_enum {
+    (
+        $(#$attr:tt)*
+        $name:ident => $twin:path {
+            $($(#$variant_attr:tt)* $variant:ident = $value:tt,)*
+        }
+    ) => {
+        #[derive(
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            Hash,
+            Default,
+            lumen_macros::NodeEnum,
+            lumen_macros::Delegate,
+        )]
+        #[repr(i64)]
+        $(#$attr)*
+        pub enum $name {
+            $($(#$variant_attr)* $variant = $value,)*
+        }
+
+        impl From<$name> for $twin {
+            fn from(value: $name) -> Self {
+                match value {
+                    $($name::$variant => Self::$variant,)*
+                }
+            }
+        }
+    };
+}
+pub(super) use text_enum;
+
+text_enum! {
+    #[delegate(kind = "enum", expressions)]
+    TextFontStyle => lumen_text::TextFontStyle {
+        #[default]
+        Normal = 0,
+        Italic = 1,
+        Oblique = 2,
+    }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum")]
-pub enum TextAlignmentHorizontal {
-    #[default]
-    Left = 0,
-    Center = 1,
-    Right = 2,
-    Justify = 3,
+text_enum! {
+    #[delegate(kind = "enum")]
+    TextAlignmentHorizontal => lumen_text::TextAlign {
+        #[default]
+        Left = 0,
+        Center = 1,
+        Right = 2,
+        Justify = 3,
+    }
 }
 
 #[derive(
@@ -69,27 +103,23 @@ pub enum TextPaintSpace {
     Text = 1,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum")]
-pub enum TextRenderMode {
-    #[default]
-    Raster = 0,
-    Msdf = 1,
-    Auto = 2,
+text_enum! {
+    #[delegate(kind = "enum")]
+    TextRenderMode => lumen_text::TextRenderMode {
+        #[default]
+        Raster = 0,
+        Msdf = 1,
+        Auto = 2,
+    }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum")]
-pub enum TextOverflow {
-    #[default]
-    Clip = 0,
-    Ellipsis = 1,
+text_enum! {
+    #[delegate(kind = "enum")]
+    TextOverflow => lumen_text::TextOverflow {
+        #[default]
+        Clip = 0,
+        Ellipsis = 1,
+    }
 }
 
 #[derive(
@@ -103,28 +133,15 @@ pub enum TextFit {
     Shrink = 1,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum", expressions)]
-pub enum TextTransform {
-    #[default]
-    None = 0,
-    Uppercase = 1,
-    Lowercase = 2,
-    /// Uppercases the first letter of each word.
-    Capitalize = 3,
-}
-
-impl From<TextTransform> for lumen_text::TextTransform {
-    fn from(transform: TextTransform) -> Self {
-        match transform {
-            TextTransform::None => Self::None,
-            TextTransform::Uppercase => Self::Uppercase,
-            TextTransform::Lowercase => Self::Lowercase,
-            TextTransform::Capitalize => Self::Capitalize,
-        }
+text_enum! {
+    #[delegate(kind = "enum", expressions)]
+    TextTransform => lumen_text::TextTransform {
+        #[default]
+        None = 0,
+        Uppercase = 1,
+        Lowercase = 2,
+        /// Uppercases the first letter of each word.
+        Capitalize = 3,
     }
 }
 
@@ -315,10 +332,7 @@ pub struct Text {
 }
 
 impl GpuCompileNode for Text {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         super::text_compile::compile_text(ctx, self)
     }
 }
@@ -326,14 +340,12 @@ impl GpuCompileNode for Text {
 #[derive(Debug)]
 pub(crate) struct CompiledText {
     pub(crate) node_id: NodeId,
-    /// The node's params, less the per-glyph ones in `glyph` and constant `content`.
+    /// The node's params, less the per-glyph ones in `glyph` and those below.
     pub(crate) params: TextParamsDelegate,
     pub(crate) glyph: GlyphParams,
-    /// The content, evaluated at compile when it has no expressions.
-    pub(crate) content: Option<TextContent>,
-    pub(crate) decorations: NodeDecorations,
-    /// The node's font features, evaluated at compile when they have no expressions.
-    pub(crate) font_features: Option<FontFeatures>,
+    pub(crate) content: Stable<TextContentDelegate>,
+    pub(crate) decorations: Stable<DecorationParams>,
+    pub(crate) font_features: Stable<FontFeaturesDelegate>,
     /// Whether the node or any span has a decoration or stroke.
     pub(crate) decorated: bool,
     /// Whether the node or any span has a stroke.
@@ -403,10 +415,11 @@ impl CompiledText {
         let trace_started =
             tracing::enabled!(target: "lumen_text", tracing::Level::TRACE).then(trace_now_ms);
         let mut expr = ctx.expr_context();
-        let mut evaluated = self.params.eval(&DelegateEvalContext {
+        let fields = DelegateEvalContext {
             node_id: self.node_id,
             expr: &expr,
-        })?;
+        };
+        let mut evaluated = self.params.eval(&fields)?;
         let (position_x, position_y) = evaluated.position;
         let drawable = DrawableTransform {
             position: evaluated.position,
@@ -425,32 +438,22 @@ impl CompiledText {
         let style = TextLayoutStyle::take(&mut evaluated);
         let mut content = self
             .content
-            .is_none()
-            .then(|| std::mem::take(&mut evaluated.content));
+            .get(&fields)
+            .map_err(|error| error.in_field("content"))?;
         // Undecorated text only needs the span colors.
-        let (span_paints, span_styles) = match content.as_mut() {
-            Some(content) if self.decorated => (Vec::new(), take_span_styles(content)),
-            Some(content) => (take_span_paints(content), Vec::new()),
-            None => Default::default(),
+        let (span_paints, span_styles) = match &mut content {
+            Cow::Owned(content) if self.decorated => (Vec::new(), take_span_styles(content)),
+            Cow::Owned(content) => (take_span_paints(content), Vec::new()),
+            Cow::Borrowed(_) => Default::default(),
         };
         let font_features = self
             .font_features
-            .is_none()
-            .then(|| std::mem::take(&mut evaluated.font_features));
-        let decorations = match &self.decorations {
-            NodeDecorations::Constant(decorations) => std::borrow::Cow::Borrowed(decorations),
-            NodeDecorations::Animated(params) => {
-                std::borrow::Cow::Owned(params.eval(self.node_id, &expr)?)
-            }
-        };
+            .get(&fields)
+            .map_err(|error| error.in_field("font_features"))?;
+        let decorations = self.decorations.get(&fields)?;
 
         let mut text_system = text_system(ctx.media())?;
-        load_font_families(
-            &mut text_system,
-            ctx.media(),
-            &style,
-            self.content.as_ref().or(content.as_ref()),
-        )?;
+        load_font_families(&mut text_system, ctx.media(), &style, Some(&content))?;
         let mut state = self.state.lock().map_err(|_| {
             LumenError::Render(RenderError::Gpu {
                 details: format!("text node {} state lock was poisoned", self.node_id.0),
@@ -458,29 +461,22 @@ impl CompiledText {
         })?;
         let state = &mut *state;
 
-        let shape_key = TextShapeKey {
-            style,
-            content,
-            font_features,
-            font_generation: text_system.font_generation(),
-        };
+        let font_generation = text_system.font_generation();
         let mut layout_ms = 0.0;
         if state
             .shaped
             .as_ref()
-            .is_none_or(|(key, _)| *key != shape_key)
+            .is_none_or(|(key, _)| !key.holds(&style, &content, &font_features, font_generation))
         {
             let layout_started = trace_started.map(|_| trace_now_ms());
-            let content = match (&shape_key.content, &self.content) {
-                (Some(content), _) | (None, Some(content)) => content,
-                (None, None) => unreachable!("content is constant or evaluated"),
+            let shaped = text_system.shape_changed(&style.request(&content, &font_features));
+            let key = TextShapeKey {
+                style,
+                content: animated(content),
+                font_features: animated(font_features),
+                font_generation,
             };
-            let font_features = match (&shape_key.font_features, &self.font_features) {
-                (Some(features), _) | (None, Some(features)) => features,
-                (None, None) => unreachable!("font features are constant or evaluated"),
-            };
-            let request = shape_key.style.request(content, font_features);
-            state.shaped = Some((shape_key, text_system.shape(&request)));
+            state.shaped = Some((key, shaped));
             if let Some(started) = layout_started {
                 layout_ms = trace_now_ms() - started;
             }
@@ -498,14 +494,16 @@ impl CompiledText {
                 TextAlignmentVertical::Bottom => position_y as f32 - height,
             },
         ];
-        let layout = shaped.place(origin, [1.0; 4]);
+        let layout = shaped.place(origin);
         let spans: &[TextSpan] = match &self.content {
-            Some(TextContent::Spans(spans)) => spans,
-            Some(TextContent::Text(_)) => &[],
-            None => &span_styles,
+            Stable::Constant(TextContent::Spans(spans)) => spans,
+            Stable::Constant(TextContent::Text(_)) => &[],
+            Stable::Animated(_) => &span_styles,
         };
         let span_color = |span: usize| match &self.content {
-            None if !self.decorated => span_paints.get(span).and_then(Option::as_ref),
+            Stable::Animated(_) if !self.decorated => {
+                span_paints.get(span).and_then(Option::as_ref)
+            }
             _ => spans.get(span).and_then(|span| span.color.as_ref()),
         };
         // A span's own gradient spans its box under `TextPaintSpace::Span`, and other paints
@@ -564,11 +562,7 @@ impl CompiledText {
                 );
             }
         }
-        let mode = match evaluated.render_mode {
-            TextRenderMode::Raster => lumen_text::TextRenderMode::Raster,
-            TextRenderMode::Msdf => lumen_text::TextRenderMode::Msdf,
-            TextRenderMode::Auto => lumen_text::TextRenderMode::Auto,
-        };
+        let mode = lumen_text::TextRenderMode::from(evaluated.render_mode);
         let atlas_started = (trace_started.is_some() || mode != lumen_text::TextRenderMode::Raster)
             .then(trace_now_ms);
         let mut atlas = bound
@@ -579,7 +573,7 @@ impl CompiledText {
             .map_err(|_| RenderError::Gpu {
                 details: "text atlas lock was poisoned".to_string(),
             })?;
-        let mut prepared = text_system.prepare_stroked_glyphs(
+        let mut prepared = text_system.prepare_glyphs(
             &mut atlas,
             &layout,
             mode,
@@ -668,80 +662,37 @@ impl CompiledText {
         // glyphs, and centred ones over them.
         state.under_strokes.clear();
         state.over_strokes.clear();
+        state.stroke_at.clear();
+        if !prepared.strokes.is_empty() {
+            state.stroke_at.resize(prepared.instances.len(), None);
+        }
         for (mut instance, &glyph) in prepared.strokes.into_iter().zip(&prepared.stroke_glyphs) {
             let fill = &prepared.instances[glyph];
             let span = layout.glyphs[prepared.sources[glyph]].item.span as usize;
-            let Some(stroke) = state.strokes[span] else {
-                continue;
-            };
+            let stroke = state.strokes[span].expect("a stroked glyph's span has a stroke");
             instance.set_paint(stroke.paint);
             instance.opacity = fill.opacity;
             if fill.flags & lumen_text::GLYPH_TRANSFORMED != 0 {
                 instance.flags |= lumen_text::GLYPH_TRANSFORMED;
                 instance.linear = fill.linear;
                 instance.offset = fill.offset;
-                let [x0, y0, x1, y1] = transformed_bounds(&instance);
-                ink_bounds = Some(ink_bounds.map_or([x0, y0, x1, y1], |bounds| {
-                    [
-                        bounds[0].min(x0),
-                        bounds[1].min(y0),
-                        bounds[2].max(x1),
-                        bounds[3].max(y1),
-                    ]
-                }));
+                ink_bounds = Some(union_bounds(ink_bounds, transformed_bounds(&instance)));
             }
-            if stroke.over {
-                state.over_strokes.push(instance);
+            let list = if stroke.over {
+                &mut state.over_strokes
             } else {
-                state.under_strokes.push(instance);
-            }
+                &mut state.under_strokes
+            };
+            state.stroke_at[glyph] = Some((stroke.over, list.len()));
+            list.push(instance);
         }
-        // A faded glyph's lower layer reads its partner's coverage, so the pair fades as one,
-        // and the strokes of a fading cluster fade as one like its fills.
-        if prepared.instances.iter().any(|fill| fill.opacity < 1.0) {
-            let fills = before_glyphs + state.under_strokes.len();
-            let overs = fills + prepared.instances.len();
-            let mut stroke_at = vec![None; prepared.instances.len()];
-            let (mut under, mut over) = (0, 0);
-            for &glyph in &prepared.stroke_glyphs {
-                let span = layout.glyphs[prepared.sources[glyph]].item.span as usize;
-                let Some(stroke) = state.strokes[span] else {
-                    continue;
-                };
-                let count = if stroke.over { &mut over } else { &mut under };
-                stroke_at[glyph] = Some((stroke.over, *count));
-                *count += 1;
-            }
-            let mut index = 0;
-            while index < prepared.instances.len() {
-                let lead = index;
-                index += 1
-                    + (prepared.instances[lead].flags >> lumen_text::GLYPH_CLUSTER_SHIFT) as usize;
-                if prepared.instances[lead].opacity >= 1.0 {
-                    continue;
-                }
-                let mut strokes = stroke_at[lead..index].iter().flatten();
-                let Some(&(over, first)) = strokes.next() else {
-                    continue;
-                };
-                let list = if over {
-                    &mut state.over_strokes
-                } else {
-                    &mut state.under_strokes
-                };
-                for &(_, at) in strokes.filter(|(other, _)| *other == over) {
-                    list[at].flags |= lumen_text::GLYPH_CLUSTER_FOLLOWER;
-                    list[first].flags += 1 << lumen_text::GLYPH_CLUSTER_SHIFT;
-                }
-                let (lower, partner) = if over {
-                    (&mut prepared.instances[lead], overs + first)
-                } else {
-                    (&mut list[first], fills + lead)
-                };
-                lower.flags |= lumen_text::GLYPH_PARTNER;
-                lower.partner = partner as u32;
-            }
-        }
+        link_fading_strokes(
+            &mut prepared.instances,
+            &mut state.under_strokes,
+            &mut state.over_strokes,
+            &state.stroke_at,
+            before_glyphs,
+        );
         let stroke_count = state.under_strokes.len() + state.over_strokes.len();
         let globals = lumen_text::GpuTextGlobals {
             target_size: [self.layer_size.width as f32, self.layer_size.height as f32],
@@ -750,28 +701,12 @@ impl CompiledText {
         };
         bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
         bound.write_buffer(self.paints_buffer, 0, bytemuck::cast_slice(&state.paints));
-        let [x, y, width, height] = layout.bounds;
-        let (mut min, mut max) =
-            ink_bounds.map_or(([x, y], [x + width, y + height]), |[x0, y0, x1, y1]| {
-                (
-                    [x0.min(x), y0.min(y)],
-                    [x1.max(x + width), y1.max(y + height)],
-                )
-            });
-        for decoration in &state.decorations {
-            let [x0, y0, x1, y1] = decoration.rect_bounds();
-            min = [min[0].min(x0), min[1].min(y0)];
-            max = [max[0].max(x1), max[1].max(y1)];
-        }
-        // Strokes reach past the glyphs, and a pixel further when antialiased.
-        let reach = state
-            .strokes
-            .iter()
-            .flatten()
-            .map(|stroke| lumen_text::stroke_reach(stroke.half_width) + 1.0)
-            .fold(0.0, f32::max);
-        min = min.map(|bound| bound - reach);
-        max = max.map(|bound| bound + reach);
+        let (min, max) = draw_bounds(
+            layout.bounds,
+            ink_bounds,
+            &state.decorations,
+            &state.strokes,
+        );
         let motion = DrawableMotion::new(shutter.as_ref(), min, max);
         let canvas = [self.size.width as f32, self.size.height as f32];
         let layer = [self.layer_size.width as f32, self.layer_size.height as f32];
@@ -783,23 +718,17 @@ impl CompiledText {
         // Highlights and underlines are drawn under the glyphs and their strokes, and
         // strikethroughs over them.
         let (under, over) = state.decorations.split_at(before_glyphs);
-        let mut offset = 0;
-        for instances in [
-            under,
-            &state.under_strokes,
-            &prepared.instances,
-            &state.over_strokes,
-            over,
-        ] {
-            if !instances.is_empty() {
-                bound.write_buffer(
-                    self.instances_buffer,
-                    (offset * std::mem::size_of::<lumen_text::GpuGlyphInstance>()) as u64,
-                    bytemuck::cast_slice(instances),
-                );
-            }
-            offset += instances.len();
-        }
+        write_instances(
+            bound,
+            self.instances_buffer,
+            [
+                under,
+                &state.under_strokes,
+                &prepared.instances,
+                &state.over_strokes,
+                over,
+            ],
+        );
 
         if let Some(started) = trace_started {
             trace_text_bind(
@@ -812,6 +741,98 @@ impl CompiledText {
             );
         }
         Ok(true)
+    }
+}
+
+/// A faded glyph's lower layer reads its partner's coverage, so the pair fades as one, and the
+/// strokes of a fading cluster fade as one like its fills. `stroke_at` is
+/// [`TextState::stroke_at`], and `before_glyphs` counts the decorations drawn under `under`.
+fn link_fading_strokes(
+    fills: &mut [lumen_text::GpuGlyphInstance],
+    under: &mut [lumen_text::GpuGlyphInstance],
+    over: &mut [lumen_text::GpuGlyphInstance],
+    stroke_at: &[Option<(bool, usize)>],
+    before_glyphs: usize,
+) {
+    if stroke_at.is_empty() || !fills.iter().any(|fill| fill.opacity < 1.0) {
+        return;
+    }
+    let first_fill = before_glyphs + under.len();
+    let first_over = first_fill + fills.len();
+    let mut index = 0;
+    while index < fills.len() {
+        let lead = index;
+        index += 1 + (fills[lead].flags >> lumen_text::GLYPH_CLUSTER_SHIFT) as usize;
+        if fills[lead].opacity >= 1.0 {
+            continue;
+        }
+        let mut strokes = stroke_at[lead..index].iter().flatten();
+        let Some(&(is_over, first)) = strokes.next() else {
+            continue;
+        };
+        let list = if is_over { &mut *over } else { &mut *under };
+        for &(_, at) in strokes.filter(|(other, _)| *other == is_over) {
+            list[at].flags |= lumen_text::GLYPH_CLUSTER_FOLLOWER;
+            list[first].flags += 1 << lumen_text::GLYPH_CLUSTER_SHIFT;
+        }
+        let (lower, partner) = if is_over {
+            (&mut fills[lead], first_over + first)
+        } else {
+            (&mut list[first], first_fill + lead)
+        };
+        lower.flags |= lumen_text::GLYPH_PARTNER;
+        lower.partner = partner as u32;
+    }
+}
+
+/// The corners a text may draw between before its own transform: its advance box, the ink of
+/// transformed glyphs, its decorations and the reach of its strokes.
+fn draw_bounds(
+    [x, y, width, height]: [f32; 4],
+    ink_bounds: Option<[f32; 4]>,
+    decorations: &[lumen_text::GpuGlyphInstance],
+    strokes: &[Option<SpanStroke>],
+) -> ([f32; 2], [f32; 2]) {
+    let (mut min, mut max) =
+        ink_bounds.map_or(([x, y], [x + width, y + height]), |[x0, y0, x1, y1]| {
+            (
+                [x0.min(x), y0.min(y)],
+                [x1.max(x + width), y1.max(y + height)],
+            )
+        });
+    for decoration in decorations {
+        let [x0, y0, x1, y1] = decoration.rect_bounds();
+        min = [min[0].min(x0), min[1].min(y0)];
+        max = [max[0].max(x1), max[1].max(y1)];
+    }
+    // Strokes reach past the glyphs, and a pixel further when antialiased.
+    let reach = strokes
+        .iter()
+        .flatten()
+        .map(|stroke| lumen_text::stroke_reach(stroke.half_width) + 1.0)
+        .fold(0.0, f32::max);
+    (
+        min.map(|bound| bound - reach),
+        max.map(|bound| bound + reach),
+    )
+}
+
+/// Writes `lists` of instances to `buffer` one after another, in draw order.
+fn write_instances<const N: usize>(
+    bound: &mut BoundFrame,
+    buffer: lumen_gpu::BufferId,
+    lists: [&[lumen_text::GpuGlyphInstance]; N],
+) {
+    let mut offset = 0;
+    for instances in lists {
+        if !instances.is_empty() {
+            bound.write_buffer(
+                buffer,
+                (offset * std::mem::size_of::<lumen_text::GpuGlyphInstance>()) as u64,
+                bytemuck::cast_slice(instances),
+            );
+        }
+        offset += instances.len();
     }
 }
 
@@ -885,20 +906,21 @@ impl GlyphParams {
         let mut fading: Option<(usize, (u32, u32))> = None;
         for (index, &source) in sources.iter().enumerate() {
             let glyph = &layout.glyphs[source];
+            let item = glyph.item;
             expr.glyph = Some(GlyphScope {
-                item: glyph.item,
+                item,
                 counts: layout.counts,
             });
             let [x, y] = glyph.pivot.map(f64::from);
             let transform = DrawableTransform {
                 position: (x, y),
-                scale: scale.eval(node_id, expr)?,
-                rotation: rotation.eval(node_id, expr)?,
+                scale: scale.eval(item, node_id, expr)?,
+                rotation: rotation.eval(item, node_id, expr)?,
                 anchor: (0.0, 0.0),
-                opacity: opacity.eval(node_id, expr)?,
+                opacity: opacity.eval(item, node_id, expr)?,
             }
             .to_gpu();
-            let (offset_x, offset_y) = offset.eval(node_id, expr)?;
+            let (offset_x, offset_y) = offset.eval(item, node_id, expr)?;
             let instance = &mut instances[index];
             instance.opacity *= transform.opacity;
             if transform.flags != 0 || (offset_x, offset_y) != (0.0, 0.0) {
@@ -931,19 +953,23 @@ impl GlyphParams {
             if instance.flags & lumen_text::GLYPH_TRANSFORMED == 0 {
                 continue;
             }
-            let [x0, y0, x1, y1] = transformed_bounds(instance);
-            bounds = Some(bounds.map_or([x0, y0, x1, y1], |bounds| {
-                [
-                    bounds[0].min(x0),
-                    bounds[1].min(y0),
-                    bounds[2].max(x1),
-                    bounds[3].max(y1),
-                ]
-            }));
+            bounds = Some(union_bounds(bounds, transformed_bounds(instance)));
         }
         expr.glyph = None;
         Ok(bounds)
     }
+}
+
+/// The box `[min_x, min_y, max_x, max_y]` around `bounds`, if any, and `other`.
+fn union_bounds(bounds: Option<[f32; 4]>, other: [f32; 4]) -> [f32; 4] {
+    bounds.map_or(other, |bounds| {
+        [
+            bounds[0].min(other[0]),
+            bounds[1].min(other[1]),
+            bounds[2].max(other[2]),
+            bounds[3].max(other[3]),
+        ]
+    })
 }
 
 /// The box `[min_x, min_y, max_x, max_y]` that a transformed glyph instance's rect covers
@@ -995,7 +1021,7 @@ struct PerGlyph<'a, T> {
     last: Option<([u32; 4], T)>,
 }
 
-impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
+impl<'a, T: ParamValue + Copy> PerGlyph<'a, T> {
     fn new(param: &'a Deferred<T>, name: &'static str) -> Self {
         let mut reads = [false; 4];
         if let Deferred::Expr(expression) = param {
@@ -1015,11 +1041,15 @@ impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
         }
     }
 
-    fn eval(&mut self, node_id: NodeId, expr: &ExpressionContext<'_>) -> crate::Result<T> {
+    fn eval(
+        &mut self,
+        item: lumen_text::TextItem,
+        node_id: NodeId,
+        expr: &ExpressionContext<'_>,
+    ) -> crate::Result<T> {
         if let Deferred::Value(value) = self.param {
             return Ok(*value);
         }
-        let item = expr.glyph.map(|scope| scope.item).unwrap_or_default();
         let key = [item.glyph, item.word, item.line, item.span];
         let key: [u32; 4] =
             std::array::from_fn(|index| if self.reads[index] { key[index] } else { 0 });
@@ -1036,7 +1066,7 @@ impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
 
 #[derive(Debug, Default)]
 pub(crate) struct TextState {
-    shaped: Option<(TextShapeKey, lumen_text::ShapedText)>,
+    shaped: Option<(TextShapeKey, Arc<lumen_text::ShapedText>)>,
     paints: Vec<GpuTextPaint>,
     /// Rect instances of the decorations: those under the glyphs, then those over them.
     decorations: Vec<lumen_text::GpuGlyphInstance>,
@@ -1049,9 +1079,12 @@ pub(crate) struct TextState {
     /// Stroke instances drawn under the glyphs, and those drawn over them.
     under_strokes: Vec<lumen_text::GpuGlyphInstance>,
     over_strokes: Vec<lumen_text::GpuGlyphInstance>,
+    /// Where each glyph's stroke is, if any: whether over the glyphs, and its place in that list.
+    /// Empty when no glyph has a stroke.
+    stroke_at: Vec<Option<(bool, usize)>>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 struct TextShapeKey {
     style: TextLayoutStyle,
     /// The content, or `None` when it is constant.
@@ -1059,6 +1092,81 @@ struct TextShapeKey {
     /// The font features, or `None` when they are constant.
     font_features: Option<FontFeatures>,
     font_generation: u64,
+}
+
+impl TextShapeKey {
+    /// Whether this is the key of text evaluated to these values.
+    fn holds(
+        &self,
+        style: &TextLayoutStyle,
+        content: &TextContent,
+        font_features: &FontFeatures,
+        font_generation: u64,
+    ) -> bool {
+        self.font_generation == font_generation
+            && self.style == *style
+            && self.content.as_ref().is_none_or(|own| own == content)
+            && self
+                .font_features
+                .as_ref()
+                .is_none_or(|own| own == font_features)
+    }
+}
+
+/// What [`Stable`] needs of a value.
+pub(crate) trait StableValue {
+    type Evaluated;
+
+    fn evaluate(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated>;
+    fn is_animated(&self) -> bool;
+}
+
+impl<D: DelegateEvaluable> StableValue for D {
+    type Evaluated = D::Evaluated;
+
+    fn evaluate(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<D::Evaluated> {
+        self.eval(ctx)
+    }
+
+    fn is_animated(&self) -> bool {
+        self.has_expressions()
+    }
+}
+
+/// A value evaluated at compile when it has no expressions, or else on each bind.
+#[derive(Debug)]
+pub(crate) enum Stable<D: StableValue> {
+    Constant(D::Evaluated),
+    Animated(D),
+}
+
+impl<D> Stable<D>
+where
+    D: StableValue,
+    D::Evaluated: Clone,
+{
+    pub(crate) fn new(delegate: D, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self> {
+        Ok(if delegate.is_animated() {
+            Self::Animated(delegate)
+        } else {
+            Self::Constant(delegate.evaluate(ctx)?)
+        })
+    }
+
+    fn get(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Cow<'_, D::Evaluated>> {
+        Ok(match self {
+            Self::Constant(value) => Cow::Borrowed(value),
+            Self::Animated(delegate) => Cow::Owned(delegate.evaluate(ctx)?),
+        })
+    }
+}
+
+/// The value of an animated `Stable`, or `None` for a constant one's.
+fn animated<T: Clone>(value: Cow<'_, T>) -> Option<T> {
+    match value {
+        Cow::Owned(value) => Some(value),
+        Cow::Borrowed(_) => None,
+    }
 }
 
 /// What a text's layout reads besides its content: the style its spans inherit, and how its
@@ -1142,24 +1250,16 @@ impl TextLayoutStyle {
                 .collect(),
         };
         let mut request = lumen_text::TextLayoutRequest::from_spans(spans);
-        request.max_width = (self.max_width > 0.0).then_some(self.max_width as f32);
+        request.max_width = Some(self.max_width as f32).filter(|width| *width > 0.0);
         request.line_height = (self.line_height > 0.0).then_some(self.line_height as f32);
         request.paragraph_spacing = self.paragraph_spacing.max(0.0) as f32;
-        request.align = match self.alignment_horizontal {
-            TextAlignmentHorizontal::Center => lumen_text::TextAlign::Center,
-            TextAlignmentHorizontal::Right => lumen_text::TextAlign::Right,
-            TextAlignmentHorizontal::Justify => lumen_text::TextAlign::Justified,
-            TextAlignmentHorizontal::Left => lumen_text::TextAlign::Left,
-        };
+        request.align = self.alignment_horizontal.into();
         let limits = &self.limits;
         request.max_lines = limits
             .max_lines
             .map(|lines| lines.clamp(0, u32::MAX.into()) as u32);
         request.max_height = limits.max_height.map(|height| height.max(0.0) as f32);
-        request.overflow = match limits.overflow {
-            TextOverflow::Clip => lumen_text::TextOverflow::Clip,
-            TextOverflow::Ellipsis => lumen_text::TextOverflow::Ellipsis,
-        };
+        request.overflow = limits.overflow.into();
         request.min_fit_scale = (limits.fit == TextFit::Shrink)
             .then(|| (limits.min_font_size / self.font_size.max(1.0)) as f32);
         request
@@ -1187,11 +1287,7 @@ impl TextLayoutStyle {
                 .and_then(|span| span.font_weight)
                 .unwrap_or(self.font_weight)
                 .clamp(1, 1000) as u16,
-            font_style: match font_style {
-                TextFontStyle::Italic => lumen_text::TextFontStyle::Italic,
-                TextFontStyle::Oblique => lumen_text::TextFontStyle::Oblique,
-                TextFontStyle::Normal => lumen_text::TextFontStyle::Normal,
-            },
+            font_style: font_style.into(),
             letter_spacing: span
                 .and_then(|span| span.letter_spacing)
                 .unwrap_or(self.letter_spacing) as f32,
@@ -1270,21 +1366,12 @@ impl DecorationParams {
             stroke: params.stroke.take(),
         }
     }
+}
 
-    pub(crate) fn has_expressions(&self) -> bool {
-        use crate::node::DelegateEvaluable;
-        DelegateEvaluable::has_expressions(&self.underline)
-            || DelegateEvaluable::has_expressions(&self.strikethrough)
-            || DelegateEvaluable::has_expressions(&self.highlight)
-            || DelegateEvaluable::has_expressions(&self.stroke)
-    }
+impl StableValue for DecorationParams {
+    type Evaluated = TextDecorations;
 
-    pub(crate) fn eval(
-        &self,
-        node_id: NodeId,
-        expr: &ExpressionContext<'_>,
-    ) -> crate::Result<TextDecorations> {
-        let ctx = DelegateEvalContext { node_id, expr };
+    fn evaluate(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<TextDecorations> {
         Ok(TextDecorations {
             underline: ctx.eval_field("underline", &self.underline)?,
             strikethrough: ctx.eval_field("strikethrough", &self.strikethrough)?,
@@ -1292,17 +1379,13 @@ impl DecorationParams {
             stroke: ctx.eval_field("stroke", &self.stroke)?,
         })
     }
-}
 
-/// The node's decorations: evaluated at compile when constant, else each frame.
-#[derive(Debug)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "each compiled text node holds one, so its size does not matter"
-)]
-pub(crate) enum NodeDecorations {
-    Constant(TextDecorations),
-    Animated(DecorationParams),
+    fn is_animated(&self) -> bool {
+        self.underline.has_expressions()
+            || self.strikethrough.has_expressions()
+            || self.highlight.has_expressions()
+            || self.stroke.has_expressions()
+    }
 }
 
 /// Appends the rect instances of the decorations of `shaped`, placed at `origin`, to
@@ -1401,13 +1484,7 @@ pub(crate) fn decorate<'a>(
             },
             |range, line, own| {
                 let decoration = lumen_text::TextLineDecoration {
-                    style: match line.style {
-                        TextLineStyle::Solid => lumen_text::TextLineStyle::Solid,
-                        TextLineStyle::Double => lumen_text::TextLineStyle::Double,
-                        TextLineStyle::Dotted => lumen_text::TextLineStyle::Dotted,
-                        TextLineStyle::Dashed => lumen_text::TextLineStyle::Dashed,
-                        TextLineStyle::Wavy => lumen_text::TextLineStyle::Wavy,
-                    },
+                    style: line.style.into(),
                     thickness: line.thickness.map(|thickness| thickness as f32),
                     offset: line.offset.map(|offset| offset as f32),
                 };
@@ -1453,7 +1530,7 @@ pub(crate) fn decoration_paints(params: &TextParamsDelegate) -> Option<usize> {
     let mut painted =
         usize::from(params.highlight.is_some()) + usize::from(params.stroke.is_some());
     if let TextContentDelegate::Spans(spans) = &params.content {
-        for span in &spans.items {
+        for span in spans {
             for line in [&span.underline, &span.strikethrough] {
                 if let Override::Set(line) = line {
                     lines.push(line);
@@ -1471,7 +1548,7 @@ pub(crate) fn decoration_paints(params: &TextParamsDelegate) -> Option<usize> {
 pub(crate) fn stroked(params: &TextParamsDelegate) -> bool {
     params.stroke.is_some()
         || matches!(&params.content, TextContentDelegate::Spans(spans)
-            if spans.items.iter().any(|span| matches!(span.stroke, Override::Set(_))))
+            if spans.iter().any(|span| matches!(span.stroke, Override::Set(_))))
 }
 
 /// A span's stroke: how far it reaches to each side of the glyph edge, whether it is drawn

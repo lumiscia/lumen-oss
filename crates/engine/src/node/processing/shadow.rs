@@ -1,10 +1,11 @@
+use crate::error::PropertyError;
 use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
 
+use crate::gpu::compiler::Slot;
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 use super::gaussian;
@@ -23,10 +24,10 @@ pub struct ShadowParams {
     /// Vertical shadow offset in pixels.
     #[meta(name = "Offset Y", step = 1)]
     pub offset_y: f64,
-    /// Shadow blur radius in pixels. Fractional radii blend smoothly.
+    /// Shadow blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.
     #[meta(name = "Blur radius", min = 0, step = 0.5)]
     pub radius: f64,
-    /// Shadow color.
+    /// Shadow color. Must be a solid color; a gradient is an error.
     #[meta(role = "color")]
     pub color: Paint,
     /// Shadow opacity.
@@ -59,10 +60,7 @@ pub struct Shadow {
 }
 
 impl GpuCompileNode for Shadow {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let source = ctx.compile_bounded_input(self.id, "source", self.source)?;
         // The shadow is the source's data shifted by the offset and spread by the radius,
         // at their largest over the timeline.
@@ -110,25 +108,18 @@ impl GpuCompileNode for Shadow {
             Some(format!("shadow:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::ShadowParams>() as u64),
         );
-        let stage = lumen_gpu::wgpu::ShaderStages::COMPUTE;
-        let program = builder.program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some("shadow-composite".to_string()),
-                shader: COMPOSITE_SHADER.to_string(),
-                entry: "composite_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::texture(0, stage),
-                    lumen_gpu::BindingLayoutEntry::texture(1, stage),
-                    lumen_gpu::BindingLayoutEntry::uniform(2, stage),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        3,
-                        stage,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                ]),
-            },
-        ));
+        let program = compiler::compute_program_at(
+            builder,
+            "shadow-composite",
+            COMPOSITE_SHADER,
+            "composite_main",
+            &[
+                (0, Slot::Texture),
+                (1, Slot::Texture),
+                (2, Slot::Uniform),
+                (3, Slot::Output),
+            ],
+        );
         builder.compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("shadow:{}:composite", self.id.0)),
             program,
@@ -145,7 +136,6 @@ impl GpuCompileNode for Shadow {
             params: self.params.clone(),
             blurred,
             buffer: params,
-            straight_source: source.metadata.alpha_mode == AlphaMode::Unpremultiplied,
             origins: [
                 domain.data_rect.x,
                 domain.data_rect.y,
@@ -154,15 +144,11 @@ impl GpuCompileNode for Shadow {
             ],
             source_origin: [source.domain.data_rect.x, source.domain.data_rect.y],
         });
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture: output,
             domain,
-            metadata: RasterMetadata {
-                alpha_mode: AlphaMode::Premultiplied,
-                ..source.metadata
-            },
             bounds: None,
-        }))
+        })
     }
 }
 
@@ -172,7 +158,6 @@ struct CompiledShadow {
     params: ShadowParamsDelegate,
     blurred: gaussian::GaussianPasses,
     buffer: lumen_gpu::BufferId,
-    straight_source: bool,
     /// Canvas pixel of the first texel of the output and of the blurred shadow.
     origins: [i32; 4],
     /// Canvas pixel of the source's first texel.
@@ -189,27 +174,28 @@ impl GpuCompiledNode for CompiledShadow {
             node_id: self.node_id,
             expr: &ctx.expr_context(),
         })?;
-        let color = evaluated.color.to_gpu([0, 0, 0, 255]).colors[0];
-        // The color alpha is folded into the opacity so `color.w` can carry the
-        // source's straight-alpha flag.
+        let Paint::SolidColor(r, g, b, a) = evaluated.color else {
+            return Err(PropertyError::InvalidType {
+                node_id: self.node_id,
+                property_path: "color".to_string(),
+                expected: "a solid color",
+                actual: "a gradient",
+            }
+            .into());
+        };
+        let color = [r, g, b, a].map(|channel| f32::from(channel) / 255.0);
+        // The color alpha is folded into the opacity.
         self.blurred.write(
             bound,
             &gaussian::GaussianSettings {
                 radius: evaluated.radius,
-                straight_source: self.straight_source,
                 transparent_edge: true,
                 offset: [evaluated.offset_x, evaluated.offset_y],
             },
         );
         let opacity = evaluated.opacity.clamp(0.0, 1.0) as f32 * color[3];
         let gpu_params = compiler::ShadowParams {
-            color: [
-                color[0],
-                color[1],
-                color[2],
-                if self.straight_source { 1.0 } else { 0.0 },
-            ],
-            values: [0.0, 0.0, 0.0, opacity],
+            color: [color[0], color[1], color[2], opacity],
             origins: self.origins,
             source_origin: [self.source_origin[0], self.source_origin[1], 0, 0],
         };

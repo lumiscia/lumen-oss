@@ -1,19 +1,11 @@
 struct BooleanParams {
-    values: vec4<f32>,
+    values: vec2<f32>,
 }
 
 @group(0) @binding(0) var a_tex: texture_2d<f32>;
 @group(0) @binding(1) var b_tex: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> params: BooleanParams;
 @group(0) @binding(3) var output_tex: texture_storage_2d<rgba8unorm, write>;
-
-fn sample_or_transparent(tex: texture_2d<f32>, pixel: vec2<u32>) -> vec4<f32> {
-    let size = textureDimensions(tex);
-    if (pixel.x >= size.x || pixel.y >= size.y) {
-        return vec4<f32>(0.0);
-    }
-    return textureLoad(tex, vec2<i32>(pixel), 0);
-}
 
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -22,8 +14,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let a = to_premultiplied_alpha(sample_or_transparent(a_tex, id.xy), params.values.z >= 0.5);
-    let b = to_premultiplied_alpha(sample_or_transparent(b_tex, id.xy), params.values.w >= 0.5);
+    let a = sample_or_transparent(a_tex, vec2<i32>(id.xy), vec2<i32>(0));
+    let b = sample_or_transparent(b_tex, vec2<i32>(id.xy), vec2<i32>(0));
     let operation = u32(params.values.x);
     let threshold = clamp(params.values.y, 0.0, 1.0);
     // A zero threshold applies no cutoff, so antialiased coverage passes through.

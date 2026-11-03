@@ -6,7 +6,6 @@ mod video;
 
 use std::sync::OnceLock;
 
-use ffmpeg::util::rational::Rational;
 use ffmpeg_next as ffmpeg;
 
 use crate::error::MediaError;
@@ -22,12 +21,4 @@ fn ensure_ffmpeg_init() -> Result<(), MediaError> {
         media_source: "ffmpeg".to_string(),
         details,
     })
-}
-
-fn rational_to_f64(value: Rational) -> Option<f64> {
-    let denominator = value.denominator();
-    if denominator == 0 {
-        return None;
-    }
-    Some(f64::from(value.numerator()) / f64::from(denominator))
 }

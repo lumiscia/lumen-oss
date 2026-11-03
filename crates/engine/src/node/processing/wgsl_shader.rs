@@ -15,8 +15,7 @@
 //! them out; bindings 3 and up belong to the prelude. The entry point is `cs_main` with
 //! `@workgroup_size(8, 8, 1)`, dispatched over input0's size.
 //!
-//! Every input is bound as premultiplied alpha, converting straight-alpha rasters first, and the
-//! output is treated as premultiplied alpha.
+//! Every input is bound as premultiplied alpha, and the output is treated as premultiplied alpha.
 //!
 //! Uniform fields are read from the struct behind the shader's single `var<uniform>`, laid out
 //! with WGSL's uniform rules, and set by name through `uniforms`. Unset fields are zero.
@@ -30,9 +29,9 @@ use crate::{
     },
 };
 
+use crate::gpu::compiler::Slot;
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 /// WebGPU's default `maxSampledTexturesPerShaderStage`, guaranteed on every adapter.
@@ -59,21 +58,6 @@ const DEFAULT_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
     include_str!("wgsl_shader.wgsl")
 );
-
-const PREMULTIPLY_SHADER: &str = "
-@group(0) @binding(0) var straight: texture_2d<f32>;
-@group(0) @binding(2) var premultiplied: texture_storage_2d<rgba8unorm, write>;
-
-@compute @workgroup_size(8, 8, 1)
-fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let size = textureDimensions(premultiplied);
-    if (id.x >= size.x || id.y >= size.y) {
-        return;
-    }
-    let color = textureLoad(straight, vec2<i32>(id.xy), 0);
-    textureStore(premultiplied, vec2<i32>(id.xy), vec4<f32>(color.rgb * color.a, color.a));
-}
-";
 
 /// Runs a custom WGSL compute shader over one or more rasters.
 #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
@@ -112,10 +96,7 @@ struct LumenGlobals {
 }
 
 impl GpuCompileNode for WgslShader {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &ctx.expr_context(),
@@ -123,10 +104,7 @@ impl GpuCompileNode for WgslShader {
         let inputs = self
             .sources
             .iter()
-            .map(|&source| {
-                ctx.compile_port(source)
-                    .and_then(|output| output.into_raster(source))
-            })
+            .map(|&source| ctx.compile_port(source))
             .collect::<crate::Result<Vec<_>>>()?;
         let Some(first) = inputs.first().copied() else {
             return Err(shader_error(self.id, "needs at least one input"));
@@ -177,22 +155,11 @@ impl GpuCompileNode for WgslShader {
             },
         );
 
-        let input_textures: Vec<_> = inputs
-            .iter()
-            .enumerate()
-            .map(|(index, input)| premultiplied_input(builder, self.id, index, input))
-            .collect();
-        let stage = lumen_gpu::wgpu::ShaderStages::COMPUTE;
-        let mut layout = vec![
-            lumen_gpu::BindingLayoutEntry::uniform(1, stage),
-            lumen_gpu::BindingLayoutEntry::storage_texture(
-                OUTPUT_BINDING,
-                stage,
-                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-            ),
-            lumen_gpu::BindingLayoutEntry::uniform(3, stage),
-            lumen_gpu::BindingLayoutEntry::sampler(4, stage),
+        let mut slots = vec![
+            (1, Slot::Uniform),
+            (OUTPUT_BINDING, Slot::Output),
+            (3, Slot::Uniform),
+            (4, Slot::Sampler),
         ];
         let mut bindings = vec![
             lumen_gpu::Binding::uniform(0, 1, params_buffer),
@@ -200,19 +167,22 @@ impl GpuCompileNode for WgslShader {
             lumen_gpu::Binding::uniform(0, 3, globals_buffer),
             lumen_gpu::Binding::sampler(0, 4, sampler),
         ];
-        for (index, texture) in input_textures.into_iter().enumerate() {
+        for (index, input) in inputs.iter().enumerate() {
             let binding = input_binding(index);
-            layout.push(lumen_gpu::BindingLayoutEntry::texture(binding, stage));
-            bindings.push(lumen_gpu::Binding::sampled_texture(0, binding, texture));
+            slots.push((binding, Slot::Texture));
+            bindings.push(lumen_gpu::Binding::sampled_texture(
+                0,
+                binding,
+                input.texture,
+            ));
         }
-        let program = builder.program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some(format!("wgsl-shader:{}", self.id.0)),
-                shader,
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
-            },
-        ));
+        let program = compiler::compute_program_at(
+            builder,
+            &format!("wgsl-shader:{}", self.id.0),
+            &shader,
+            "cs_main",
+            &slots,
+        );
         builder.compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("wgsl-shader:{}:apply", self.id.0)),
             program,
@@ -228,66 +198,12 @@ impl GpuCompileNode for WgslShader {
             globals_buffer,
             resolution: [size.width as f32, size.height as f32],
         });
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture: output,
             domain: first.domain,
-            metadata: RasterMetadata {
-                alpha_mode: AlphaMode::Premultiplied,
-                ..first.metadata
-            },
             bounds: None,
-        }))
+        })
     }
-}
-
-/// The texture to bind for `input`, premultiplying a straight-alpha raster in an extra pass.
-fn premultiplied_input(
-    builder: &mut lumen_gpu::RenderPlanBuilder,
-    node_id: NodeId,
-    index: usize,
-    input: &RasterHandle,
-) -> lumen_gpu::TextureId {
-    if input.metadata.alpha_mode == AlphaMode::Premultiplied {
-        return input.texture;
-    }
-    let size = input.domain.storage_size;
-    let texture = builder.texture(
-        Some(format!(
-            "wgsl-shader:{}:input{index}:premultiplied",
-            node_id.0
-        )),
-        lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
-    );
-    let stage = lumen_gpu::wgpu::ShaderStages::COMPUTE;
-    let program = builder.program(lumen_gpu::ProgramDesc::Compute(
-        lumen_gpu::ComputeProgramDesc {
-            label: Some("wgsl-shader-premultiply".to_string()),
-            shader: PREMULTIPLY_SHADER.to_string(),
-            entry: "cs_main".to_string(),
-            bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                lumen_gpu::BindingLayoutEntry::texture(0, stage),
-                lumen_gpu::BindingLayoutEntry::storage_texture(
-                    OUTPUT_BINDING,
-                    stage,
-                    lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                    lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                ),
-            ]),
-        },
-    ));
-    builder.compute_pass(lumen_gpu::ComputePassDesc {
-        label: Some(format!(
-            "wgsl-shader:{}:premultiply-input{index}",
-            node_id.0
-        )),
-        program,
-        bindings: vec![
-            lumen_gpu::Binding::sampled_texture(0, 0, input.texture),
-            lumen_gpu::Binding::storage_texture(0, OUTPUT_BINDING, texture),
-        ],
-        dispatch: compiler::dispatch_for(size),
-    });
-    texture
 }
 
 /// `input0` sits at binding 0; later inputs follow the prelude's sampler.

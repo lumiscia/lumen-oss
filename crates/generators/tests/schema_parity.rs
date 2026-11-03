@@ -92,7 +92,7 @@ fn expression_support_matches_engine_parsing() {
 #[test]
 fn text_kind_schemas_match_engine_parsing() {
     use lumen_engine::node::{
-        Delegated,
+        DelegateEvaluable, Delegated,
         source::text_content::{
             TextContent, TextContentDelegate, TextHighlightDelegate, TextLineDelegate,
             TextSpanDelegate, TextStrokeDelegate,
@@ -112,23 +112,26 @@ fn text_kind_schemas_match_engine_parsing() {
     for (def, value) in [
         (
             "textContent",
-            TextContent::default().into_delegate().to_json_value(),
+            TextContent::default()
+                .into_delegate()
+                .to_json_value()
+                .unwrap(),
         ),
         (
             "textSpan",
-            Value::Object(TextSpanDelegate::default().to_json()),
+            TextSpanDelegate::default().to_json_value().unwrap(),
         ),
         (
             "textLine",
-            Value::Object(TextLineDelegate::default().to_json()),
+            TextLineDelegate::default().to_json_value().unwrap(),
         ),
         (
             "textHighlight",
-            Value::Object(TextHighlightDelegate::default().to_json()),
+            TextHighlightDelegate::default().to_json_value().unwrap(),
         ),
         (
             "textStroke",
-            Value::Object(TextStrokeDelegate::default().to_json()),
+            TextStrokeDelegate::default().to_json_value().unwrap(),
         ),
     ] {
         assert!(validator(def).is_valid(&value), "{def} default: {value}");
@@ -162,8 +165,8 @@ fn text_kind_schemas_match_engine_parsing() {
             "stroke": { "paint": [0, 0, 0, 255], "width": "=frame / 4", "align": "center" }
         }
     ]);
-    let parsed = TextContentDelegate::from_json_value(&example).unwrap();
-    assert_eq!(parsed.to_json_value(), example);
+    let parsed = TextContentDelegate::from_json_value(&example, "content").unwrap();
+    assert_eq!(parsed.to_json_value(), Some(example.clone()));
     assert!(content.is_valid(&example));
 
     let enum_expressions = json!([{
@@ -172,7 +175,7 @@ fn text_kind_schemas_match_engine_parsing() {
         "underline": { "style": "=1" }
     }]);
     assert!(content.is_valid(&enum_expressions));
-    assert!(TextContentDelegate::from_json_value(&enum_expressions).is_ok());
+    assert!(TextContentDelegate::from_json_value(&enum_expressions, "content").is_ok());
 
     for invalid in [
         json!(5),
@@ -192,7 +195,7 @@ fn text_kind_schemas_match_engine_parsing() {
     ] {
         assert!(!content.is_valid(&invalid), "{invalid}");
         assert!(
-            TextContentDelegate::from_json_value(&invalid).is_err(),
+            TextContentDelegate::from_json_value(&invalid, "content").is_err(),
             "{invalid}"
         );
     }
@@ -446,15 +449,9 @@ fn expression_placement_matches_engine_parsing() {
         ),
         (
             "expression for a literal-only enum",
-            node("alpha_premultiply", json!({ "mode": "='premultiply'" })),
+            node("shape", json!({ "geometry_kind": "='ellipse'" })),
             false,
             false,
-        ),
-        (
-            "escaped literal for a literal-only enum",
-            node("alpha_premultiply", json!({ "mode": "==premultiply" })),
-            true,
-            true,
         ),
         (
             "expression as a paint",

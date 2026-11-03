@@ -3,37 +3,24 @@
 //! A node instance is one node reached through one path of time remaps and clips from the root,
 //! so each clip of a template has its own instances of the template's nodes. The compiler
 //! records which instance created each texture, buffer and pass, and which instances feed it.
-//! From that, a plan knows two kinds of output it can keep instead of rendering again:
-//!
-//! - Static instances: a node whose params hold no expression and that reads no media, built-in
-//!   time or other frame-dependent state, fed only by static instances, renders the same output
-//!   on every frame bound to its plan. Once rendered it is not dispatched again until the plan's
-//!   epoch changes. Text under kept output still places its glyphs in the shared atlas each
-//!   frame, in the order a full bind would, so the atlas evicts and drops exactly the glyphs it
-//!   would without kept output; kept text whose glyphs are dropped or placed again renders again,
-//!   along with what reads it.
-//! - Keyed memos: a `memo` whose `key` is an expression copies its source, with the bounds
-//!   published for it or ones covering all of it, into its own texture, and only when the key's value changes. While it
-//!   holds, instances that only it reaches are neither bound nor dispatched.
-//!
-//! A memo's snapshot belongs to the renderer rather than to a plan: it is identified by the memo
-//! node and its path, and holds only across frames of the exact composition it was
-//! taken from, as fingerprinted by `Composition::fingerprint`, and while the key keeps its value.
-//! A plan bound with a held key that does not have the snapshot yet copies it from a plan that
-//! does. Snapshots live in their plans' textures, so they count against the plan cache budget;
-//! once every plan holding one is evicted or recompiled, the next frame renders the source again
-//! and takes a new snapshot.
+//! From that, a plan knows which output it can keep instead of rendering again: a static
+//! instance, a node whose params hold no expression and that reads no media, built-in time or
+//! other frame-dependent state, fed only by static instances, renders the same output on every
+//! frame bound to its plan. Once rendered it is not dispatched again until the plan's epoch
+//! changes. Text under kept output still places its glyphs in the shared atlas each frame, in the
+//! order a full bind would, so the atlas evicts and drops exactly the glyphs it would without
+//! kept output; kept text whose glyphs are dropped or placed again renders again, along with what
+//! reads it.
 //!
 //! Compiled nodes bind the params they were compiled with, so a plan's static instances bind the
 //! same values whatever edits the composition gets until it is compiled again. The epoch hashes
-//! what else their output depends on: the loaded fonts and the textures static instances and memos
-//! write or read. Any change renders the kept output again.
+//! what else their output depends on: the loaded fonts and the textures static instances write or
+//! read. Any change renders the kept output again.
 //!
 //! A pass runs only when the instance that created it was bound on the frame, so kept output is
 //! only ever overwritten by the instance that owns it, and the pass's uniforms are always the ones
 //! its own bind wrote. When that cannot be relied on, as when several instances write one
-//! texture, nothing is kept but memo snapshots, whose sources are then bound and dispatched every
-//! frame.
+//! texture, nothing is kept.
 
 use std::collections::HashMap;
 use std::hash::Hasher;
@@ -41,17 +28,17 @@ use std::hash::Hasher;
 use crate::{
     composition::Composition,
     gpu::TimeRemapPath,
-    node::{NodeId, NodeKind},
+    node::{Node, NodeId, NodeKind},
 };
 
-/// A memo node reached through one path of time remaps and clips.
-pub(crate) type MemoId = (NodeId, TimeRemapPath);
+/// A node reached through one path of time remaps and clips.
+pub(crate) type InstanceId = (NodeId, TimeRemapPath);
 
 /// What the compiler records for the cache while it builds a plan.
 #[derive(Debug, Default)]
 pub(crate) struct CacheRecorder {
     /// Each instance's node and path.
-    instances: Vec<MemoId>,
+    instances: Vec<InstanceId>,
     index: foldhash::HashMap<NodeId, foldhash::HashMap<TimeRemapPath, usize>>,
     inputs: Vec<Vec<usize>>,
     /// Instances being compiled, innermost last; new resources belong to the last.
@@ -59,15 +46,8 @@ pub(crate) struct CacheRecorder {
     texture_owners: Vec<Option<usize>>,
     buffer_owners: Vec<Option<usize>>,
     pass_owners: Vec<Option<usize>>,
-    memos: Vec<MemoRecord>,
-    /// Disables automatic reuse of static node output; memos with an unchanged key still hold.
+    /// Disables automatic reuse of static node output.
     pub(crate) render_static: bool,
-}
-
-#[derive(Debug, Clone)]
-struct MemoRecord {
-    instance: usize,
-    memo: LayoutMemo,
 }
 
 impl CacheRecorder {
@@ -125,33 +105,6 @@ impl CacheRecorder {
             .flatten()
     }
 
-    /// Records a keyed memo's texture, the bounds buffer copied with it and the pass that copies
-    /// its source into them, all created by the instance being compiled.
-    pub(crate) fn record_memo(
-        &mut self,
-        texture: lumen_gpu::TextureId,
-        bounds: lumen_gpu::BufferId,
-        copy_pass: lumen_gpu::PassId,
-    ) {
-        if let Some(&instance) = self.stack.last() {
-            self.memos.push(MemoRecord {
-                instance,
-                memo: LayoutMemo {
-                    id: self.instances[instance].clone(),
-                    texture,
-                    bounds,
-                    copy_pass: copy_pass.0 as usize,
-                },
-            });
-        }
-    }
-
-    pub(crate) fn is_memo_texture(&self, texture: lumen_gpu::TextureId) -> bool {
-        self.memos
-            .iter()
-            .any(|record| record.memo.texture == texture)
-    }
-
     fn attribute(&mut self, builder: &lumen_gpu::RenderPlanBuilder) {
         let owner = self.stack.last().copied();
         self.texture_owners.resize(builder.texture_count(), owner);
@@ -185,16 +138,7 @@ impl CacheRecorder {
                 .iter()
                 .map(|node| matches!(node, Some(NodeKind::Text(_))))
                 .collect(),
-            guarded_textures: self
-                .memos
-                .iter()
-                .map(|record| record.memo.texture)
-                .collect(),
-            memos: self
-                .memos
-                .into_iter()
-                .map(|record| (record.instance, record.memo))
-                .collect(),
+            guarded_textures: Vec::new(),
         };
         loop {
             let mut changed = false;
@@ -276,7 +220,6 @@ impl CacheRecorder {
             target: "lumen_render",
             instances = count,
             static_instances = layout.static_instances.iter().filter(|s| **s).count(),
-            keyed_memos = layout.memos.len(),
             "plan output kept across frames"
         );
 
@@ -308,24 +251,13 @@ fn is_static_candidate(node: &NodeKind) -> bool {
 #[derive(Debug, Default)]
 pub(crate) struct CacheLayout {
     index: foldhash::HashMap<NodeId, foldhash::HashMap<TimeRemapPath, usize>>,
-    /// The instance that created each pass; empty when no output but memo snapshots may be kept.
+    /// The instance that created each pass; empty when no output may be kept.
     pass_owners: Vec<Option<usize>>,
     static_instances: Vec<bool>,
     /// Whether each instance is text or reads text.
     reaches_text: Vec<bool>,
-    /// Keyed memos, by memo instance.
-    memos: HashMap<usize, LayoutMemo>,
     /// Textures whose replacement loses kept output.
     guarded_textures: Vec<lumen_gpu::TextureId>,
-}
-
-/// Where a plan keeps a keyed memo's snapshot.
-#[derive(Debug, Clone)]
-pub(crate) struct LayoutMemo {
-    pub(crate) id: MemoId,
-    pub(crate) texture: lumen_gpu::TextureId,
-    pub(crate) bounds: lumen_gpu::BufferId,
-    copy_pass: usize,
 }
 
 impl CacheLayout {
@@ -337,25 +269,8 @@ impl CacheLayout {
         self.static_instances.len()
     }
 
-    /// Whether passes may be skipped for instances that were not bound.
-    pub(crate) fn enabled(&self) -> bool {
-        !self.pass_owners.is_empty()
-    }
-
-    pub(crate) fn is_keyed_memo(&self, instance: usize) -> bool {
-        self.memos.contains_key(&instance)
-    }
-
     pub(crate) fn reaches_text(&self, instance: usize) -> bool {
         self.reaches_text[instance]
-    }
-
-    pub(crate) fn memo(&self, instance: usize) -> Option<&LayoutMemo> {
-        self.memos.get(&instance)
-    }
-
-    pub(crate) fn memo_by_id(&self, id: &MemoId) -> Option<&LayoutMemo> {
-        self.memos.values().find(|memo| memo.id == *id)
     }
 
     /// Hashes what kept output depends on beyond the plan key and compiled params, as
@@ -374,79 +289,9 @@ impl CacheLayout {
     }
 }
 
-/// Memo snapshots kept across the plans of one renderer.
-#[derive(Debug, Default)]
-pub(crate) struct MemoSnapshots(HashMap<MemoId, MemoSnapshot>);
-
-#[derive(Debug)]
-struct MemoSnapshot {
-    key: u64,
-    /// `Composition::fingerprint` of the composition the snapshot was taken from.
-    fingerprint: u64,
-    /// The plans whose memo texture holds the snapshot, with the epoch they copied it at.
-    holders: HashMap<u64, u64>,
-}
-
-impl MemoSnapshots {
-    /// The snapshots plan `plan`, bound at `epoch`, can show, by memo instance. `copy_from`
-    /// tells whether another plan, given its id and the epoch it took the snapshot at, still
-    /// holds it in a texture the plan can copy.
-    pub(crate) fn held(
-        &self,
-        layout: &CacheLayout,
-        plan: u64,
-        epoch: u64,
-        copy_from: impl Fn(u64, u64, &LayoutMemo) -> bool,
-    ) -> HashMap<usize, HeldMemo> {
-        layout
-            .memos
-            .iter()
-            .filter_map(|(instance, memo)| {
-                let snapshot = self.0.get(&memo.id)?;
-                let from = if snapshot.holders.get(&plan) == Some(&epoch) {
-                    None
-                } else {
-                    let (from, _) = snapshot
-                        .holders
-                        .iter()
-                        .find(|(holder, at)| **holder != plan && copy_from(**holder, **at, memo))?;
-                    Some(*from)
-                };
-                Some((
-                    *instance,
-                    HeldMemo {
-                        key: snapshot.key,
-                        from,
-                    },
-                ))
-            })
-            .collect()
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.0.clear();
-    }
-
-    /// Drops the snapshots taken from any composition but the one with `fingerprint`.
-    pub(crate) fn retain_composition(&mut self, fingerprint: u64) {
-        self.0
-            .retain(|_, snapshot| snapshot.fingerprint == fingerprint);
-    }
-}
-
-/// A memo snapshot a plan can show without rendering the memo's source.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct HeldMemo {
-    key: u64,
-    /// The plan to copy the snapshot from, unless the plan's own texture holds it.
-    from: Option<u64>,
-}
-
 /// What a plan has kept from the frames submitted to it.
 #[derive(Debug, Default)]
 pub(crate) struct CacheState {
-    /// Identifies the plan among the renderer's plans, including ones compiled again.
-    plan: u64,
     /// The epoch each static instance's output was last rendered at.
     rendered: Vec<Option<u64>>,
     /// What the uploaded frame skips and keeps once submitted.
@@ -460,17 +305,6 @@ struct PendingFrame {
 }
 
 impl CacheState {
-    pub(crate) fn new(plan: u64) -> Self {
-        Self {
-            plan,
-            ..Self::default()
-        }
-    }
-
-    pub(crate) fn plan(&self) -> u64 {
-        self.plan
-    }
-
     /// Whether a static instance's output rendered at `epoch` is kept.
     pub(crate) fn keeps_static(&self, layout: &CacheLayout, instance: usize, epoch: u64) -> bool {
         layout.static_instances[instance] && self.rendered.get(instance) == Some(&Some(epoch))
@@ -478,35 +312,13 @@ impl CacheState {
 
     /// Readies the passes `bound` skips for the next submit.
     pub(crate) fn upload(&mut self, layout: &CacheLayout, bound: Option<&BoundCache>) {
-        self.pending = bound.map(|bound| {
-            let copies =
-                |instance: usize| !bound.refreshed.iter().any(|(memo, _)| *memo == instance);
-            let skip = if layout.enabled() {
-                layout
-                    .pass_owners
-                    .iter()
-                    .enumerate()
-                    .map(|(pass, owner)| {
-                        let owner = owner.expect("owned pass");
-                        !bound.bound[owner]
-                            || (layout.memos.get(&owner).map(|memo| memo.copy_pass) == Some(pass)
-                                && copies(owner))
-                    })
-                    .collect()
-            } else {
-                let mut skip = Vec::new();
-                for (instance, memo) in &layout.memos {
-                    if copies(*instance) {
-                        skip.resize(skip.len().max(memo.copy_pass + 1), false);
-                        skip[memo.copy_pass] = true;
-                    }
-                }
-                skip
-            };
-            PendingFrame {
-                skip,
-                commit: Some(bound.clone()),
-            }
+        self.pending = bound.map(|bound| PendingFrame {
+            skip: layout
+                .pass_owners
+                .iter()
+                .map(|owner| !bound.bound[owner.expect("owned pass")])
+                .collect(),
+            commit: Some(bound.clone()),
         });
     }
 
@@ -516,7 +328,7 @@ impl CacheState {
     }
 
     /// Keeps what the submitted frame rendered.
-    pub(crate) fn submitted(&mut self, layout: &CacheLayout, snapshots: &mut MemoSnapshots) {
+    pub(crate) fn submitted(&mut self, layout: &CacheLayout) {
         let Some(bound) = self
             .pending
             .as_mut()
@@ -530,30 +342,6 @@ impl CacheState {
                 self.rendered[instance] = bound.keep.then_some(bound.epoch);
             }
         }
-        for (instance, key) in &bound.refreshed {
-            let memo = &layout.memos[instance];
-            if bound.keep {
-                snapshots.0.insert(
-                    memo.id.clone(),
-                    MemoSnapshot {
-                        key: *key,
-                        fingerprint: bound.fingerprint,
-                        holders: HashMap::from([(self.plan, bound.epoch)]),
-                    },
-                );
-            } else {
-                // The source was copied here under a new key and nothing retains it, so no
-                // plan's copy of the previous snapshot may be shown again.
-                snapshots.0.remove(&memo.id);
-            }
-        }
-        for (instance, _) in &bound.adopted {
-            if let Some(snapshot) = snapshots.0.get_mut(&layout.memos[instance].id)
-                && snapshot.fingerprint == bound.fingerprint
-            {
-                snapshot.holders.insert(self.plan, bound.epoch);
-            }
-        }
     }
 }
 
@@ -561,13 +349,7 @@ impl CacheState {
 #[derive(Debug, Clone)]
 pub(crate) struct BoundCache {
     epoch: u64,
-    /// `Composition::fingerprint` of the composition the frame was bound from.
-    fingerprint: u64,
     bound: Vec<bool>,
-    /// Keyed memos that copy their source this frame, with their key.
-    refreshed: Vec<(usize, u64)>,
-    /// Keyed memos that copy their snapshot from another plan, with that plan.
-    adopted: Vec<(usize, u64)>,
     /// Whether what the frame renders may be kept once submitted.
     keep: bool,
 }
@@ -577,11 +359,6 @@ impl BoundCache {
     pub(crate) fn keep_nothing(&mut self) {
         self.keep = false;
     }
-
-    /// Memo instances whose snapshot is copied from another plan, with that plan.
-    pub(crate) fn adopted(&self) -> &[(usize, u64)] {
-        &self.adopted
-    }
 }
 
 /// The cache a bind reads and what it records.
@@ -589,29 +366,18 @@ pub(crate) struct BindCache<'a> {
     pub(crate) layout: &'a CacheLayout,
     pub(crate) state: &'a CacheState,
     pub(crate) epoch: u64,
-    held: HashMap<usize, HeldMemo>,
     pub(crate) bound: BoundCache,
 }
 
 impl<'a> BindCache<'a> {
-    pub(crate) fn new(
-        layout: &'a CacheLayout,
-        state: &'a CacheState,
-        epoch: u64,
-        fingerprint: u64,
-        held: HashMap<usize, HeldMemo>,
-    ) -> Self {
+    pub(crate) fn new(layout: &'a CacheLayout, state: &'a CacheState, epoch: u64) -> Self {
         Self {
             layout,
             state,
             epoch,
-            held,
             bound: BoundCache {
                 epoch,
-                fingerprint,
                 bound: vec![false; layout.instance_count()],
-                refreshed: Vec::new(),
-                adopted: Vec::new(),
                 keep: true,
             },
         }
@@ -619,23 +385,6 @@ impl<'a> BindCache<'a> {
 
     pub(crate) fn mark_bound(&mut self, instance: usize) {
         self.bound.bound[instance] = true;
-    }
-
-    /// Whether the keyed memo `instance` shows a snapshot taken for `key` instead of copying
-    /// its source this frame.
-    pub(crate) fn hold_memo(&mut self, instance: usize, key: u64) -> bool {
-        match self.held.get(&instance) {
-            Some(held) if held.key == key => {
-                if let Some(from) = held.from {
-                    self.bound.adopted.push((instance, from));
-                }
-                true
-            }
-            _ => {
-                self.bound.refreshed.push((instance, key));
-                false
-            }
-        }
     }
 }
 

@@ -30,10 +30,7 @@ use lumen_ffmpeg::{GpuVideoInput, VulkanDevice, gpu_texture_encode_support};
 
 use crate::bench::media::BenchmarkMediaStore;
 
-use super::{
-    profile::{PhaseTimes, print_plan_memory, print_plan_profile, timed},
-    readback::read_texture_rgba8,
-};
+use super::profile::{PhaseTimes, print_plan_memory, print_plan_profile, timed};
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
 const GPU_ENCODER_FRAMES_IN_FLIGHT: usize = 3;
@@ -113,8 +110,7 @@ pub struct Workload<'a> {
     pub composition: &'a Composition,
     pub media: &'a BenchmarkMediaStore,
     pub frames: u32,
-    /// Disables the automatic reuse of static node output. Memos whose key is unchanged still
-    /// hold.
+    /// Disables the automatic reuse of static node output.
     pub full_render: bool,
 }
 
@@ -226,6 +222,21 @@ fn render_frame(
     Ok(raster)
 }
 
+/// Reads the frame `raster` back to the CPU.
+fn read_frame(
+    renderer: &GpuCompositionRenderer,
+    raster: &RasterHandle,
+    phases: &mut Option<&mut PhaseTimes>,
+) -> anyhow::Result<Vec<u8>> {
+    let gpu = renderer.gpu_renderer();
+    let texture = gpu
+        .texture(raster.texture)
+        .ok_or_else(|| anyhow!("unknown texture"))?;
+    timed(phases, "readback", || {
+        gpu.read_texture_rgba8(texture, raster.domain.storage_size)
+    })
+}
+
 async fn render_only(
     workload: &Workload<'_>,
     phases: &mut Option<&mut PhaseTimes>,
@@ -265,12 +276,7 @@ async fn readback(
     let mut times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
         let raster = render_frame(&mut renderer, workload, frame, phases)?;
-        read_texture_rgba8(
-            renderer.gpu_renderer(),
-            raster.texture,
-            raster.domain.storage_size,
-            phases,
-        )?;
+        read_frame(&renderer, &raster, phases)?;
         times.frame_done(frame);
     }
     Ok(times.finish())
@@ -296,12 +302,7 @@ async fn cpu_encode(
     let times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
         let raster = render_frame(&mut renderer, workload, frame, phases)?;
-        let pixels = read_texture_rgba8(
-            renderer.gpu_renderer(),
-            raster.texture,
-            raster.domain.storage_size,
-            phases,
-        )?;
+        let pixels = read_frame(&renderer, &raster, phases)?;
         timed(phases, "encode", || {
             encoder.write_video_frame(&CpuVideoFrame {
                 width,

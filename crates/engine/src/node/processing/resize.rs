@@ -1,8 +1,10 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
+};
 
+use crate::gpu::compiler::Slot;
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("resize.wgsl");
@@ -17,17 +19,6 @@ pub enum ResizeMode {
     Stretch = 0,
     Fit = 1,
     Fill = 2,
-}
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum")]
-pub enum ResizeSampling {
-    Nearest = 0,
-    #[default]
-    Linear = 1,
 }
 
 /// Resamples a raster into a rectangle placed on the composition canvas.
@@ -49,8 +40,8 @@ pub struct ResizeParams {
     #[meta(kind = "enum", enum_type = ResizeMode)]
     pub mode: ResizeMode,
     /// Sampling filter used when resizing.
-    #[meta(kind = "enum", enum_type = ResizeSampling)]
-    pub sampling: ResizeSampling,
+    #[meta(kind = "enum", enum_type = RasterSampling)]
+    pub sampling: RasterSampling,
 }
 
 impl Default for ResizeParams {
@@ -61,7 +52,7 @@ impl Default for ResizeParams {
             width: 1,
             height: 1,
             mode: ResizeMode::Stretch,
-            sampling: ResizeSampling::Linear,
+            sampling: RasterSampling::Linear,
         }
     }
 }
@@ -79,10 +70,7 @@ pub struct Resize {
 }
 
 impl GpuCompileNode for Resize {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let source = ctx.compile_input(self.id, "source", self.source)?;
         let size = ctx.canvas_size();
         let texture = ctx.builder_mut().texture(
@@ -106,39 +94,20 @@ impl GpuCompileNode for Resize {
                 (bounds, Some(bounds))
             }
         };
-        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some("resize".to_string()),
-                shader: SHADER.to_string(),
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::texture(
-                        0,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        1,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        2,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        3,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                ]),
-            },
-        ));
-        let mut bindings = compiler::spatial_bindings(source.texture, params, texture);
-        bindings.push(lumen_gpu::Binding::uniform(0, 3, bounds));
+        let program = ctx.compute_program(
+            "resize",
+            SHADER,
+            &[Slot::Texture, Slot::Uniform, Slot::Output, Slot::Uniform],
+        );
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("resize:{}:apply", self.id.0)),
             program,
-            bindings,
+            bindings: vec![
+                lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
+                lumen_gpu::Binding::uniform(0, 1, params),
+                lumen_gpu::Binding::storage_texture(0, 2, texture),
+                lumen_gpu::Binding::uniform(0, 3, bounds),
+            ],
             dispatch: compiler::dispatch_for(size),
         });
         ctx.register_compiled_node(CompiledResize {
@@ -148,12 +117,11 @@ impl GpuCompileNode for Resize {
             default_bounds: default_bounds.map(|buffer| (buffer, source.domain.storage_size)),
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: source.metadata,
             bounds: None,
-        }))
+        })
     }
 }
 

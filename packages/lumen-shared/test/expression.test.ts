@@ -29,7 +29,6 @@ import {
   inOutQuad,
   inQuad,
   lerp,
-  linear,
   lowercase,
   max,
   min,
@@ -90,7 +89,6 @@ const cases: Readonly<Record<string, Case>> = {
   mod: { expression: mod(-7, 3), expected: -1 },
   fract: { expression: fract(2.25), expected: 0.25 },
   smoothstep: { expression: smoothstep(0, 1, 0.5), expected: 0.5 },
-  linear: { expression: linear(0, 100, 0.5), expected: 50 },
   step: { expression: step(1, 2, 1), expected: 2 },
   text_height: { expression: textHeight("Hello") },
   text_width: { expression: textWidth("Hello", 32, 300, "Roboto") },
@@ -206,10 +204,8 @@ describe("expression helpers", () => {
   });
 
   test("format numbers deterministically", () => {
-    expect(String(vec2(-0, 1e-7))).toBe("=vec2(0, 0.0000001)");
-    expect(String(vec2(-1.5e21, 0.1 + 0.2))).toBe(
-      "=vec2(-1500000000000000000000, 0.30000000000000004)",
-    );
+    expect(String(vec2(-0, 1e-7))).toBe("=vec2(0, 1e-7)");
+    expect(String(vec2(-1.5e21, 0.1 + 0.2))).toBe("=vec2(-1.5e+21, 0.30000000000000004)");
     expect(() => vec2(Number.NaN, 0)).toThrow("Expressions cannot contain `NaN`.");
   });
 

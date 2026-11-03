@@ -1,9 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams};
 
-use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, compiler,
-};
+use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
 
 pub(crate) const SHADER: &str = include_str!("opacity.wgsl");
 
@@ -32,65 +29,17 @@ pub struct Opacity {
     pub source: Option<NodeId>,
 }
 
-#[derive(Debug, Clone)]
-struct CompiledOpacity {
-    node_id: NodeId,
-    params: OpacityParamsDelegate,
-    alpha_mode: AlphaMode,
-    buffer: lumen_gpu::BufferId,
-}
-
-impl GpuCompiledNode for CompiledOpacity {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let evaluated = self.params.eval(&DelegateEvalContext {
-            node_id: self.node_id,
-            expr: &ctx.expr_context(),
-        })?;
-        let premultiplied = match self.alpha_mode {
-            AlphaMode::Premultiplied => 1.0,
-            AlphaMode::Unpremultiplied => 0.0,
-        };
-        let params = compiler::OpacityParams {
-            values: [
-                evaluated.opacity.clamp(0.0, 1.0) as f32,
-                premultiplied,
-                0.0,
-                0.0,
-            ],
-        };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
-    }
-}
-
 impl GpuCompileNode for Opacity {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
-        let (source, texture, params) = ctx.compile_unary_filter(
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
+        ctx.unary_filter(
             self.id,
             self.source,
             "opacity",
             SHADER,
-            std::mem::size_of::<compiler::OpacityParams>() as u64,
-            compiler::FilterDomain::Source,
-        )?;
-        ctx.register_compiled_node(CompiledOpacity {
-            node_id: self.id,
-            params: self.params.clone(),
-            alpha_mode: source.metadata.alpha_mode,
-            buffer: params,
-        });
-        Ok(CompiledOutput::Raster(RasterHandle {
-            texture,
-            domain: source.domain,
-            metadata: source.metadata,
-            bounds: source.bounds,
-        }))
+            &self.params,
+            |params| compiler::OpacityParams {
+                opacity: params.opacity.clamp(0.0, 1.0) as f32,
+            },
+        )
     }
 }

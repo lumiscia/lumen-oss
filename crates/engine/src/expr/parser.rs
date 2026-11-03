@@ -3,11 +3,13 @@ use std::ops::Range;
 use crate::{
     error::ExpressionError,
     expr::{
-        ast::{BinaryOp, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
+        ast::{
+            BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp,
+            parse_hex_color,
+        },
         builtins::range_error,
-        easing::Easing,
         functions,
-        spec::{BuiltinSpec, ValueKind, builtin_for_name},
+        spec::{BuiltinSpec, Easing, ValueKind, builtin_for_name},
     },
     node::NodeId,
 };
@@ -71,102 +73,26 @@ impl<'a> Lexer<'a> {
         };
 
         let kind = match ch {
-            '(' => {
-                self.bump_char();
-                TokenKind::LParen
-            }
-            ')' => {
-                self.bump_char();
-                TokenKind::RParen
-            }
-            ',' => {
-                self.bump_char();
-                TokenKind::Comma
-            }
-            '.' => {
-                self.bump_char();
-                TokenKind::Dot
-            }
-            '+' => {
-                self.bump_char();
-                TokenKind::Plus
-            }
-            '-' => {
-                self.bump_char();
-                TokenKind::Minus
-            }
-            '*' => {
-                self.bump_char();
-                TokenKind::Star
-            }
-            '/' => {
-                self.bump_char();
-                TokenKind::Slash
-            }
-            '%' => {
-                self.bump_char();
-                TokenKind::Percent
-            }
-            '!' => {
-                self.bump_char();
-                if self.peek_char() == Some('=') {
-                    self.bump_char();
-                    TokenKind::Neq
-                } else {
-                    TokenKind::Bang
-                }
-            }
-            '=' => {
-                self.bump_char();
-                if self.peek_char() == Some('=') {
-                    self.bump_char();
-                    TokenKind::EqEq
-                } else {
-                    return Err(ExpressionError::Parse {
-                        details: "unexpected `=`; use `==` for equality".to_string(),
-                    });
-                }
-            }
-            '>' => {
-                self.bump_char();
-                if self.peek_char() == Some('=') {
-                    self.bump_char();
-                    TokenKind::Gte
-                } else {
-                    TokenKind::Gt
-                }
-            }
-            '<' => {
-                self.bump_char();
-                if self.peek_char() == Some('=') {
-                    self.bump_char();
-                    TokenKind::Lte
-                } else {
-                    TokenKind::Lt
-                }
-            }
-            '&' => {
-                self.bump_char();
-                if self.peek_char() == Some('&') {
-                    self.bump_char();
-                    TokenKind::AndAnd
-                } else {
-                    return Err(ExpressionError::Parse {
-                        details: "unexpected `&`; use `&&`".to_string(),
-                    });
-                }
-            }
-            '|' => {
-                self.bump_char();
-                if self.peek_char() == Some('|') {
-                    self.bump_char();
-                    TokenKind::OrOr
-                } else {
-                    return Err(ExpressionError::Parse {
-                        details: "unexpected `|`; use `||`".to_string(),
-                    });
-                }
-            }
+            '(' => self.one(TokenKind::LParen),
+            ')' => self.one(TokenKind::RParen),
+            ',' => self.one(TokenKind::Comma),
+            '.' if self.digit_follows_dot() => self.read_number_or_duration()?,
+            '.' => self.one(TokenKind::Dot),
+            '+' => self.one(TokenKind::Plus),
+            '-' => self.one(TokenKind::Minus),
+            '*' => self.one(TokenKind::Star),
+            '/' => self.one(TokenKind::Slash),
+            '%' => self.one(TokenKind::Percent),
+            '!' => self.two('=', TokenKind::Neq, TokenKind::Bang),
+            '>' => self.two('=', TokenKind::Gte, TokenKind::Gt),
+            '<' => self.two('=', TokenKind::Lte, TokenKind::Lt),
+            '=' => self.doubled(
+                '=',
+                TokenKind::EqEq,
+                "unexpected `=`; use `==` for equality",
+            )?,
+            '&' => self.doubled('&', TokenKind::AndAnd, "unexpected `&`; use `&&`")?,
+            '|' => self.doubled('|', TokenKind::OrOr, "unexpected `|`; use `||`")?,
             '#' => TokenKind::Color(self.read_color()?),
             '\'' | '"' => TokenKind::String(self.read_string(ch)?),
             c if c.is_ascii_digit() => self.read_number_or_duration()?,
@@ -184,10 +110,52 @@ impl<'a> Lexer<'a> {
         })
     }
 
+    fn one(&mut self, kind: TokenKind) -> TokenKind {
+        self.bump_char();
+        kind
+    }
+
+    /// `pair` when the current character is followed by `second`, otherwise `single`.
+    fn two(&mut self, second: char, pair: TokenKind, single: TokenKind) -> TokenKind {
+        self.bump_char();
+        if self.peek_char() == Some(second) {
+            self.one(pair)
+        } else {
+            single
+        }
+    }
+
+    /// `pair` when the current character is followed by `second`, otherwise a failure.
+    fn doubled(
+        &mut self,
+        second: char,
+        pair: TokenKind,
+        alone: &str,
+    ) -> Result<TokenKind, ExpressionError> {
+        self.bump_char();
+        if self.peek_char() == Some(second) {
+            Ok(self.one(pair))
+        } else {
+            Err(ExpressionError::Parse {
+                details: alone.to_string(),
+            })
+        }
+    }
+
     fn skip_whitespace(&mut self) {
         while matches!(self.peek_char(), Some(ch) if ch.is_whitespace()) {
             self.bump_char();
         }
+    }
+
+    fn skip_digits(&mut self) {
+        while matches!(self.peek_char(), Some(ch) if ch.is_ascii_digit()) {
+            self.bump_char();
+        }
+    }
+
+    fn digit_follows_dot(&self) -> bool {
+        self.source[self.position + 1..].starts_with(|ch: char| ch.is_ascii_digit())
     }
 
     fn read_string(&mut self, quote: char) -> Result<String, ExpressionError> {
@@ -200,6 +168,7 @@ impl<'a> Lexer<'a> {
                     details: format!("unterminated string literal starting at byte {start}"),
                 });
             };
+            let escape = self.position;
             self.bump_char();
             match ch {
                 c if c == quote => return Ok(output),
@@ -217,7 +186,11 @@ impl<'a> Lexer<'a> {
                         'n' => '\n',
                         't' => '\t',
                         'r' => '\r',
-                        other => other,
+                        other => {
+                            return Err(ExpressionError::Parse {
+                                details: format!("unknown escape `\\{other}` at byte {escape}"),
+                            });
+                        }
                     };
                     output.push(decoded);
                 }
@@ -228,21 +201,33 @@ impl<'a> Lexer<'a> {
 
     fn read_number(&mut self) -> Result<f64, ExpressionError> {
         let start = self.position;
-        while matches!(self.peek_char(), Some(ch) if ch.is_ascii_digit()) {
-            self.bump_char();
-        }
+        self.skip_digits();
         if self.peek_char() == Some('.') {
             self.bump_char();
-            while matches!(self.peek_char(), Some(ch) if ch.is_ascii_digit()) {
-                self.bump_char();
+            self.skip_digits();
+        }
+        // Without digits, the `e` starts a unit such as `2em`, which is reported as unknown.
+        if let Some(exponent) = self.source[self.position..].strip_prefix(['e', 'E']) {
+            let digits = exponent.strip_prefix(['+', '-']).unwrap_or(exponent);
+            if digits.starts_with(|ch: char| ch.is_ascii_digit()) {
+                self.position = self.source.len() - digits.len();
+                self.skip_digits();
             }
         }
 
-        self.source[start..self.position]
+        let literal = &self.source[start..self.position];
+        let value = literal
             .parse::<f64>()
             .map_err(|error| ExpressionError::Parse {
                 details: format!("invalid number at byte {start}: {error}"),
+            })?;
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(ExpressionError::Parse {
+                details: format!("number `{literal}` at byte {start} is too large"),
             })
+        }
     }
 
     fn read_number_or_duration(&mut self) -> Result<TokenKind, ExpressionError> {
@@ -269,17 +254,9 @@ impl<'a> Lexer<'a> {
             self.bump_char();
         }
         let literal = &self.source[start..self.position];
-        let hex = &literal[1..];
-        if !(matches!(hex.len(), 6 | 8) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())) {
-            return Err(ExpressionError::Parse {
-                details: format!("invalid colour `{literal}`; use #rrggbb or #rrggbbaa"),
-            });
-        }
-        let mut color = [255; 4];
-        for (index, channel) in color.iter_mut().take(hex.len() / 2).enumerate() {
-            *channel = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).expect("hex digits");
-        }
-        Ok(color)
+        parse_hex_color(&literal[1..]).ok_or_else(|| ExpressionError::Parse {
+            details: format!("invalid colour `{literal}`; use #rrggbb or #rrggbbaa"),
+        })
     }
 
     fn read_identifier(&mut self) -> String {
@@ -311,19 +288,35 @@ fn is_ident_continue(ch: char) -> bool {
 }
 
 pub fn parse_expression(source: &str) -> Result<Expression, ExpressionError> {
-    let mut parser = Parser::new(source);
-    parser.parse()
+    let ast = Parser::new(source, &[])?.parse()?;
+    Ok(Expression::new(ast, source.to_string()))
 }
 
-fn tokenize(source: &str) -> Result<Vec<TokenKind>, ExpressionError> {
+/// Parses the body of a composition function, where `params` are in scope.
+pub(crate) fn parse_function_body(
+    source: &str,
+    params: &[String],
+) -> Result<ExprNode, ExpressionError> {
+    Parser::new(source, params)?.parse()
+}
+
+/// The tokens of `source`, ending with `TokenKind::Eof`.
+fn tokenize(source: &str) -> Result<Vec<Token>, ExpressionError> {
     let mut lexer = Lexer::new(source);
     let mut tokens = Vec::new();
     loop {
-        match lexer.next_token()?.kind {
-            TokenKind::Eof => return Ok(tokens),
-            kind => tokens.push(kind),
+        let token = lexer.next_token()?;
+        let is_eof = token.kind == TokenKind::Eof;
+        tokens.push(token);
+        if is_eof {
+            return Ok(tokens);
         }
     }
+}
+
+fn token_kinds(source: &str) -> Result<Vec<TokenKind>, ExpressionError> {
+    let tokens = tokenize(source)?;
+    Ok(tokens.into_iter().map(|token| token.kind).collect())
 }
 
 /// Splits a function signature such as `rise(start, distance)` into its name and parameters.
@@ -331,12 +324,13 @@ pub(crate) fn parse_signature(signature: &str) -> Result<(String, Vec<String>), 
     let invalid = || ExpressionError::Parse {
         details: format!("invalid function signature `{signature}`; expected `name(a, b)`"),
     };
-    let tokens = tokenize(signature).map_err(|_| invalid())?;
+    let tokens = token_kinds(signature).map_err(|_| invalid())?;
     let [
         TokenKind::Identifier(name),
         TokenKind::LParen,
         rest @ ..,
         TokenKind::RParen,
+        TokenKind::Eof,
     ] = &tokens[..]
     else {
         return Err(invalid());
@@ -354,8 +348,7 @@ pub(crate) fn parse_signature(signature: &str) -> Result<(String, Vec<String>), 
 
 /// Names called anywhere in `source`, such as `rise` in `rise(4) + 1`.
 pub(crate) fn called_names(source: &str) -> Result<Vec<String>, ExpressionError> {
-    let tokens = tokenize(source)?;
-    Ok(tokens
+    Ok(token_kinds(source)?
         .windows(2)
         .filter_map(|pair| match pair {
             [TokenKind::Identifier(name), TokenKind::LParen] => Some(name.clone()),
@@ -364,24 +357,49 @@ pub(crate) fn called_names(source: &str) -> Result<Vec<String>, ExpressionError>
         .collect())
 }
 
+/// The largest node id an expression's number can hold exactly.
+const MAX_NODE_ID_LITERAL: f64 = 9_007_199_254_740_992.0;
+
+/// The binary operator a token stands for and how tightly it binds, where higher binds tighter.
+fn binary_op(kind: &TokenKind) -> Option<(BinaryOp, u8)> {
+    Some(match kind {
+        TokenKind::OrOr => (BinaryOp::Or, 1),
+        TokenKind::AndAnd => (BinaryOp::And, 2),
+        TokenKind::EqEq => (BinaryOp::Eq, 3),
+        TokenKind::Neq => (BinaryOp::Neq, 3),
+        TokenKind::Gte => (BinaryOp::Gte, 4),
+        TokenKind::Lte => (BinaryOp::Lte, 4),
+        TokenKind::Gt => (BinaryOp::Gt, 4),
+        TokenKind::Lt => (BinaryOp::Lt, 4),
+        TokenKind::Plus => (BinaryOp::Add, 5),
+        TokenKind::Minus => (BinaryOp::Sub, 5),
+        TokenKind::Star => (BinaryOp::Mul, 6),
+        TokenKind::Slash => (BinaryOp::Div, 6),
+        TokenKind::Percent => (BinaryOp::Mod, 6),
+        _ => return None,
+    })
+}
+
 struct Parser<'a> {
-    source: &'a str,
+    /// Always ends with `TokenKind::Eof`.
     tokens: Vec<Token>,
     position: usize,
     budget: functions::Budget,
     /// Parenthesised groups, call arguments and prefix operators the parser is inside.
     depth: usize,
+    /// The parameters of the composition function being parsed.
+    params: &'a [String],
 }
 
 impl<'a> Parser<'a> {
-    fn new(source: &'a str) -> Self {
-        Self {
-            source,
-            tokens: Vec::new(),
+    fn new(source: &str, params: &'a [String]) -> Result<Self, ExpressionError> {
+        Ok(Self {
+            tokens: tokenize(source)?,
             position: 0,
             budget: functions::Budget::default(),
             depth: 0,
-        }
+            params,
+        })
     }
 
     /// Runs `parse` one nesting level deeper, so that input cannot recurse the parser without limit.
@@ -403,11 +421,23 @@ impl<'a> Parser<'a> {
         node
     }
 
-    fn parse(&mut self) -> Result<Expression, ExpressionError> {
-        self.tokenize()?;
-        let ast = self.parse_or()?;
-        self.expect(TokenExpectation::Eof)?;
-        Ok(Expression::new(ast, self.source.to_string()))
+    fn parse(&mut self) -> Result<ExprNode, ExpressionError> {
+        let ast = self.parse_binary(0)?;
+        self.expect(TokenKind::Eof, "end of input")?;
+        Ok(ast)
+    }
+
+    /// Parses operators binding at least as tightly as `min`, grouping equal ones to the left.
+    fn parse_binary(&mut self, min: u8) -> Result<ExprNode, ExpressionError> {
+        let mut node = self.parse_unary()?;
+        while let Some((op, binding)) = binary_op(&self.peek().kind)
+            && binding >= min
+        {
+            self.position += 1;
+            let rhs = self.parse_binary(binding + 1)?;
+            node = self.binary(node, op, rhs)?;
+        }
+        Ok(node)
     }
 
     fn binary(
@@ -420,181 +450,52 @@ impl<'a> Parser<'a> {
             .push(ExprNode::Binary(Box::new(lhs), op, Box::new(rhs)))
     }
 
-    fn tokenize(&mut self) -> Result<(), ExpressionError> {
-        let mut lexer = Lexer::new(self.source);
-        loop {
-            let token = lexer.next_token()?;
-            let is_eof = matches!(token.kind, TokenKind::Eof);
-            self.tokens.push(token);
-            if is_eof {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    fn parse_or(&mut self) -> Result<ExprNode, ExpressionError> {
-        let mut node = self.parse_and()?;
-        while self.match_token(|kind| matches!(kind, TokenKind::OrOr)) {
-            let rhs = self.parse_and()?;
-            node = self.binary(node, BinaryOp::Or, rhs)?;
-        }
-        Ok(node)
-    }
-
-    fn parse_and(&mut self) -> Result<ExprNode, ExpressionError> {
-        let mut node = self.parse_equality()?;
-        while self.match_token(|kind| matches!(kind, TokenKind::AndAnd)) {
-            let rhs = self.parse_equality()?;
-            node = self.binary(node, BinaryOp::And, rhs)?;
-        }
-        Ok(node)
-    }
-
-    fn parse_equality(&mut self) -> Result<ExprNode, ExpressionError> {
-        let mut node = self.parse_comparison()?;
-        loop {
-            let op = if self.match_token(|kind| matches!(kind, TokenKind::EqEq)) {
-                Some(BinaryOp::Eq)
-            } else if self.match_token(|kind| matches!(kind, TokenKind::Neq)) {
-                Some(BinaryOp::Neq)
-            } else {
-                None
-            };
-            let Some(op) = op else {
-                break;
-            };
-            let rhs = self.parse_comparison()?;
-            node = self.binary(node, op, rhs)?;
-        }
-        Ok(node)
-    }
-
-    fn parse_comparison(&mut self) -> Result<ExprNode, ExpressionError> {
-        let mut node = self.parse_term()?;
-        loop {
-            let op = if self.match_token(|kind| matches!(kind, TokenKind::Gte)) {
-                Some(BinaryOp::Gte)
-            } else if self.match_token(|kind| matches!(kind, TokenKind::Lte)) {
-                Some(BinaryOp::Lte)
-            } else if self.match_token(|kind| matches!(kind, TokenKind::Gt)) {
-                Some(BinaryOp::Gt)
-            } else if self.match_token(|kind| matches!(kind, TokenKind::Lt)) {
-                Some(BinaryOp::Lt)
-            } else {
-                None
-            };
-            let Some(op) = op else {
-                break;
-            };
-            let rhs = self.parse_term()?;
-            node = self.binary(node, op, rhs)?;
-        }
-        Ok(node)
-    }
-
-    fn parse_term(&mut self) -> Result<ExprNode, ExpressionError> {
-        let mut node = self.parse_factor()?;
-        loop {
-            let op = if self.match_token(|kind| matches!(kind, TokenKind::Plus)) {
-                Some(BinaryOp::Add)
-            } else if self.match_token(|kind| matches!(kind, TokenKind::Minus)) {
-                Some(BinaryOp::Sub)
-            } else {
-                None
-            };
-            let Some(op) = op else {
-                break;
-            };
-            let rhs = self.parse_factor()?;
-            node = self.binary(node, op, rhs)?;
-        }
-        Ok(node)
-    }
-
-    fn parse_factor(&mut self) -> Result<ExprNode, ExpressionError> {
-        let mut node = self.parse_unary()?;
-        loop {
-            let op = if self.match_token(|kind| matches!(kind, TokenKind::Star)) {
-                Some(BinaryOp::Mul)
-            } else if self.match_token(|kind| matches!(kind, TokenKind::Slash)) {
-                Some(BinaryOp::Div)
-            } else if self.match_token(|kind| matches!(kind, TokenKind::Percent)) {
-                Some(BinaryOp::Mod)
-            } else {
-                None
-            };
-            let Some(op) = op else {
-                break;
-            };
-            let rhs = self.parse_unary()?;
-            node = self.binary(node, op, rhs)?;
-        }
-        Ok(node)
-    }
-
     fn parse_unary(&mut self) -> Result<ExprNode, ExpressionError> {
-        if self.match_token(|kind| matches!(kind, TokenKind::Bang)) {
-            let value = self.nested(Self::parse_unary)?;
-            return self
-                .budget
-                .push(ExprNode::Unary(UnaryOp::Not, Box::new(value)));
-        }
-        if self.match_token(|kind| matches!(kind, TokenKind::Minus)) {
-            let value = self.nested(Self::parse_unary)?;
-            return self
-                .budget
-                .push(ExprNode::Unary(UnaryOp::Neg, Box::new(value)));
-        }
-        self.parse_primary()
+        let op = if self.eat(TokenKind::Bang) {
+            UnaryOp::Not
+        } else if self.eat(TokenKind::Minus) {
+            UnaryOp::Neg
+        } else {
+            return self.parse_primary();
+        };
+        let value = self.nested(Self::parse_unary)?;
+        self.budget.push(ExprNode::Unary(op, Box::new(value)))
     }
 
     fn parse_primary(&mut self) -> Result<ExprNode, ExpressionError> {
-        let token = self.peek().cloned().ok_or(ExpressionError::Parse {
-            details: "unexpected end of expression".to_string(),
-        })?;
-        match token.kind {
-            TokenKind::Number(value) => {
-                self.position += 1;
-                self.budget
-                    .push(ExprNode::Literal(ExpressionValue::Number(value)))
-            }
+        let Token { kind, span } = self.peek().clone();
+        self.position += 1;
+        match kind {
+            TokenKind::Number(value) => self
+                .budget
+                .push(ExprNode::Literal(ExpressionValue::Number(value))),
             TokenKind::Seconds(value) => {
-                self.position += 1;
                 let seconds = self
                     .budget
                     .push(ExprNode::Literal(ExpressionValue::Number(value)))?;
                 let fps = self.budget.push(ExprNode::Global(GlobalVar::Fps))?;
                 self.binary(seconds, BinaryOp::Mul, fps)
             }
-            TokenKind::String(value) => {
-                self.position += 1;
-                self.budget
-                    .push(ExprNode::Literal(ExpressionValue::String(value)))
-            }
-            TokenKind::Color(value) => {
-                self.position += 1;
-                self.budget
-                    .push(ExprNode::Literal(ExpressionValue::color_from_u8(value)))
-            }
-            TokenKind::Identifier(identifier) => {
-                self.position += 1;
-                self.parse_identifier(identifier)
-            }
+            TokenKind::String(value) => self
+                .budget
+                .push(ExprNode::Literal(ExpressionValue::String(value))),
+            TokenKind::Color(value) => self
+                .budget
+                .push(ExprNode::Literal(ExpressionValue::color_from_u8(value))),
+            TokenKind::Identifier(identifier) => self.parse_identifier(identifier),
             TokenKind::LParen => {
-                self.position += 1;
-                let expr = self.nested(Self::parse_or)?;
-                self.expect(TokenExpectation::RParen)?;
+                let expr = self.nested(|parser| parser.parse_binary(0))?;
+                self.expect(TokenKind::RParen, "`)`")?;
                 Ok(expr)
             }
             _ => Err(ExpressionError::Parse {
-                details: format!("expected expression at byte {}", token.span.start),
+                details: format!("expected expression at byte {}", span.start),
             }),
         }
     }
 
     fn parse_identifier(&mut self, identifier: String) -> Result<ExprNode, ExpressionError> {
-        if self.match_token(|kind| matches!(kind, TokenKind::Dot)) {
+        if self.eat(TokenKind::Dot) {
             return Err(ExpressionError::Parse {
                 details: format!(
                     "`{identifier}.` is not supported; read another node's property with node(id, 'property')"
@@ -602,79 +503,68 @@ impl<'a> Parser<'a> {
             });
         }
 
-        if identifier == "true" {
-            return self
-                .budget
-                .push(ExprNode::Literal(ExpressionValue::Boolean(true)));
-        }
-        if identifier == "false" {
-            return self
-                .budget
-                .push(ExprNode::Literal(ExpressionValue::Boolean(false)));
+        if identifier == "true" || identifier == "false" {
+            return self.budget.push(ExprNode::Literal(ExpressionValue::Boolean(
+                identifier == "true",
+            )));
         }
 
-        if self.match_token(|kind| matches!(kind, TokenKind::LParen)) {
-            let mut args = Vec::new();
-            if !self.match_token(|kind| matches!(kind, TokenKind::RParen)) {
-                loop {
-                    args.push(self.nested(Self::parse_or)?);
-                    if self.match_token(|kind| matches!(kind, TokenKind::Comma)) {
-                        continue;
-                    }
-                    self.expect(TokenExpectation::RParen)?;
-                    break;
-                }
-            }
-
-            if identifier == "if" {
-                if args.len() != 3 {
-                    return Err(ExpressionError::Parse {
-                        details: "if(cond, then, else) requires exactly 3 arguments".to_string(),
-                    });
-                }
-                let mut args = args.into_iter();
-                let (condition, when_true, when_false) = (
-                    Box::new(args.next().expect("3 args")),
-                    Box::new(args.next().expect("3 args")),
-                    Box::new(args.next().expect("3 args")),
-                );
-                return self
-                    .budget
-                    .push(ExprNode::Conditional(condition, when_true, when_false));
-            }
-
-            if identifier == "node" {
-                return self.parse_node_reference(args);
-            }
-
-            if let Some(spec) = builtin_for_name(&identifier) {
-                validate_builtin_call(spec, &args)?;
-                return self.budget.push(ExprNode::Builtin(spec.builtin, args));
-            }
-            return functions::expand(&identifier, &args, &mut self.budget)?.ok_or(
-                ExpressionError::Parse {
-                    details: format!("unknown function `{identifier}`"),
-                },
-            );
+        if self.eat(TokenKind::LParen) {
+            let args = self.parse_call_args()?;
+            return self.parse_call(&identifier, args);
         }
 
-        self.budget
-            .push(ExprNode::Global(match identifier.as_str() {
-                "frame" => GlobalVar::Frame,
-                "time" => GlobalVar::Time,
-                "fps" => GlobalVar::Fps,
-                "width" => GlobalVar::Width,
-                "height" => GlobalVar::Height,
-                "glyph" => GlobalVar::Glyph,
-                "word" => GlobalVar::Word,
-                "line" => GlobalVar::Line,
-                "span" => GlobalVar::Span,
-                "glyph_count" => GlobalVar::GlyphCount,
-                "word_count" => GlobalVar::WordCount,
-                "line_count" => GlobalVar::LineCount,
-                "span_count" => GlobalVar::SpanCount,
-                _ => GlobalVar::Custom(identifier),
-            }))
+        if let Some(index) = self.params.iter().position(|param| *param == identifier) {
+            return self.budget.push(ExprNode::Param(index));
+        }
+        let global = GlobalVar::from_name(&identifier).ok_or_else(|| ExpressionError::Parse {
+            details: format!("unknown variable `{identifier}`"),
+        })?;
+        self.budget.push(ExprNode::Global(global))
+    }
+
+    fn parse_call_args(&mut self) -> Result<Vec<ExprNode>, ExpressionError> {
+        let mut args = Vec::new();
+        if self.eat(TokenKind::RParen) {
+            return Ok(args);
+        }
+        loop {
+            args.push(self.nested(|parser| parser.parse_binary(0))?);
+            if !self.eat(TokenKind::Comma) {
+                self.expect(TokenKind::RParen, "`)`")?;
+                return Ok(args);
+            }
+        }
+    }
+
+    fn parse_call(
+        &mut self,
+        identifier: &str,
+        args: Vec<ExprNode>,
+    ) -> Result<ExprNode, ExpressionError> {
+        if identifier == "if" {
+            let [condition, when_true, when_false] =
+                <[ExprNode; 3]>::try_from(args).map_err(|_| ExpressionError::Parse {
+                    details: "if(cond, then, else) requires exactly 3 arguments".to_string(),
+                })?;
+            return self.budget.push(ExprNode::Conditional(
+                Box::new(condition),
+                Box::new(when_true),
+                Box::new(when_false),
+            ));
+        }
+
+        if identifier == "node" {
+            return self.parse_node_reference(args);
+        }
+
+        if let Some(spec) = builtin_for_name(identifier) {
+            validate_builtin_call(spec, &args)?;
+            return self.budget.push(ExprNode::Builtin(spec.builtin, args));
+        }
+        functions::expand(identifier, &args, &mut self.budget)?.ok_or(ExpressionError::Parse {
+            details: format!("unknown function `{identifier}`"),
+        })
     }
 
     fn parse_node_reference(&mut self, args: Vec<ExprNode>) -> Result<ExprNode, ExpressionError> {
@@ -690,6 +580,13 @@ impl<'a> Parser<'a> {
                 if *value < 0.0 || value.fract() != 0.0 {
                     return Err(ExpressionError::Parse {
                         details: "node(id, ..) expects an unsigned integer id".to_string(),
+                    });
+                }
+                if *value > MAX_NODE_ID_LITERAL {
+                    return Err(ExpressionError::Parse {
+                        details: format!(
+                            "node(id, ..) id {value} is above 2^53, where numbers skip integers"
+                        ),
                     });
                 }
                 NodeId(*value as u64)
@@ -718,59 +615,30 @@ impl<'a> Parser<'a> {
             .push(ExprNode::PropertyValue(node_id, property_path))
     }
 
-    fn match_token(&mut self, predicate: impl Fn(&TokenKind) -> bool) -> bool {
-        match self.peek() {
-            Some(token) if predicate(&token.kind) => {
-                self.position += 1;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn expect(&mut self, expected: TokenExpectation) -> Result<(), ExpressionError> {
-        let token = self.peek().ok_or_else(|| ExpressionError::Parse {
-            details: format!("expected {}", expected.describe()),
-        })?;
-
-        let matches = match expected {
-            TokenExpectation::RParen => matches!(token.kind, TokenKind::RParen),
-            TokenExpectation::Eof => matches!(token.kind, TokenKind::Eof),
-        };
+    fn eat(&mut self, kind: TokenKind) -> bool {
+        let matches = self.peek().kind == kind;
         if matches {
             self.position += 1;
-            Ok(())
-        } else {
-            Err(ExpressionError::Parse {
-                details: format!(
-                    "expected {} at byte {}",
-                    expected.describe(),
-                    token.span.start
-                ),
-            })
         }
+        matches
     }
 
-    fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.position)
-    }
-}
-
-enum TokenExpectation {
-    RParen,
-    Eof,
-}
-
-impl TokenExpectation {
-    fn describe(&self) -> &'static str {
-        match self {
-            Self::RParen => "`)`",
-            Self::Eof => "end of input",
+    fn expect(&mut self, kind: TokenKind, description: &str) -> Result<(), ExpressionError> {
+        if self.eat(kind) {
+            return Ok(());
         }
+        Err(ExpressionError::Parse {
+            details: format!("expected {description} at byte {}", self.peek().span.start),
+        })
+    }
+
+    fn peek(&self) -> &Token {
+        &self.tokens[self.position]
     }
 }
 
-/// Checks what can be known before evaluation: arity, easing names and literal spring ranges.
+/// Checks what can be known before evaluation: arity, easing names, literal spring ranges and
+/// measuring a node with overrides.
 fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), ExpressionError> {
     let error = |details: String| ExpressionError::Parse {
         details: format!("`{}`: {details}", spec.name),
@@ -781,6 +649,13 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
             spec.arity_description(),
             args.len()
         )));
+    }
+    if matches!(spec.builtin, BuiltinFn::TextHeight | BuiltinFn::TextWidth)
+        && matches!(args, [ExprNode::Node(_), _, ..])
+    {
+        return Err(error(
+            "`node(id)` does not accept override arguments".to_string(),
+        ));
     }
     for (arg, param) in args.iter().zip(spec.args) {
         if param.kind != ValueKind::Easing {
@@ -811,7 +686,10 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
 
 #[cfg(test)]
 mod tests {
-    use crate::expr::Expression;
+    use crate::{
+        expr::{ExprNode, Expression, ExpressionValue},
+        node::NodeId,
+    };
 
     #[test]
     fn dotted_property_reads_point_to_node_references() {
@@ -841,6 +719,11 @@ mod tests {
             format!("{}1{}", "abs(".repeat(deep), ")".repeat(deep)),
             format!("{}1{}", "if(true, 1, ".repeat(deep), ")".repeat(deep)),
             format!("{}1{}", "-(abs(".repeat(deep), "))".repeat(deep)),
+            format!(
+                "{}1{}",
+                "1 || 1 && 1 == 1 < 1 + 1 * (".repeat(deep),
+                ")".repeat(deep)
+            ),
         ] {
             let error = parse_on_worker_stack(source).expect_err("too deep");
             assert!(
@@ -862,5 +745,85 @@ mod tests {
     fn wide_calls_are_not_nested() {
         let args = vec!["1"; 3_000].join(", ");
         Expression::parse(&format!("max({args})")).expect("wide call");
+    }
+
+    fn number(source: &str) -> f64 {
+        match Expression::parse(source).map(|expression| expression.ast().clone()) {
+            Ok(ExprNode::Literal(ExpressionValue::Number(value))) => value,
+            other => panic!("{source}: {other:?}"),
+        }
+    }
+
+    fn parse_error(source: &str) -> String {
+        Expression::parse(source).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn numbers_accept_exponents_and_leading_dots() {
+        for (source, expected) in [
+            ("1e3", 1000.0),
+            ("1E3", 1000.0),
+            ("1.5e-3", 0.0015),
+            ("2e+2", 200.0),
+            (".5", 0.5),
+            (".5e1", 5.0),
+            ("5.", 5.0),
+            ("5.e1", 50.0),
+            ("1e21", 1e21),
+            ("1e-7", 1e-7),
+        ] {
+            assert_eq!(number(source), expected, "{source}");
+        }
+        for (source, expected) in [
+            ("2em", "unknown unit `em`"),
+            ("2e", "unknown unit `e`"),
+            ("2e+", "unknown unit `e`"),
+            ("1e999", "`1e999` at byte 0 is too large"),
+            (".", "expected expression at byte 0"),
+            ("1.5.5", "expected end of input at byte 3"),
+        ] {
+            let error = parse_error(source);
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+        assert!(Expression::parse("1e3s").is_ok());
+    }
+
+    #[test]
+    fn operators_bind_and_group_as_the_table_says() {
+        let bound = |source: &str| match Expression::parse(source) {
+            Ok(expression) => expression.ast().clone(),
+            Err(error) => panic!("{source}: {error}"),
+        };
+        for (source, grouped) in [
+            ("1 + 2 * 3", "1 + (2 * 3)"),
+            ("1 * 2 + 3", "(1 * 2) + 3"),
+            ("1 - 2 - 3", "(1 - 2) - 3"),
+            ("8 / 4 % 3", "(8 / 4) % 3"),
+            ("1 + 2 < 3 + 4", "(1 + 2) < (3 + 4)"),
+            ("1 < 2 == 3 > 4", "(1 < 2) == (3 > 4)"),
+            ("1 == 2 && 3 != 4", "(1 == 2) && (3 != 4)"),
+            ("1 && 2 || 3 && 4", "(1 && 2) || (3 && 4)"),
+            ("1 || 2 || 3", "(1 || 2) || 3"),
+            ("-1 + !2", "(-1) + (!2)"),
+        ] {
+            assert_eq!(bound(source), bound(grouped), "{source}");
+        }
+    }
+
+    #[test]
+    fn unknown_names_and_escapes_fail_at_parse() {
+        for (source, expected) in [
+            ("frmae + 1", "unknown variable `frmae`"),
+            ("if(false, frmae, 1)", "unknown variable `frmae`"),
+            ("'a\\qb'", "unknown escape `\\q` at byte 2"),
+            ("node(9007199254740994)", "above 2^53"),
+        ] {
+            let error = parse_error(source);
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+        assert_eq!(
+            Expression::parse("node(9007199254740992)").unwrap().ast(),
+            &ExprNode::Node(NodeId(1 << 53))
+        );
     }
 }

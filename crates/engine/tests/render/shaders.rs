@@ -1,6 +1,6 @@
 //! What a `wgsl_shader` node binds for its shader, and what it reports when the shader is wrong.
 
-use lumen_engine::{composition::Composition, gpu::AlphaMode};
+use lumen_engine::composition::Composition;
 use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, Scene, TestMedia, check, gpu, render, scene};
@@ -104,21 +104,6 @@ struct Uniforms {
 @group(0) @binding(1) var<uniform> uniforms: Uniforms;
 ";
 
-/// An opaque blue input and a half-transparent red one, converted to straight alpha, behind a
-/// shader that returns the second.
-fn straight_input_scene() -> Scene {
-    let read_second = fill_shader("textureLoad(input1, vec2<i32>(id.xy), 0)");
-    scene(
-        (8, 4),
-        json!([
-            background(1, [0, 0, 255, 255]),
-            background(2, [255, 0, 0, 128]),
-            { "id": 3, "type": "alpha_premultiply", "in": { "source": 2 }, "params": { "mode": "unpremultiply" } },
-            { "id": 4, "type": "wgsl_shader", "in": { "source": [1, 3] }, "params": { "shader": read_second } },
-        ]),
-    )
-}
-
 #[test]
 fn shader_abi() {
     check(vec![
@@ -164,11 +149,6 @@ fn shader_abi() {
             Expect::Uniform([128, 0, 0, 255]),
         ),
         Case::new(
-            "a straight input is premultiplied for the shader",
-            straight_input_scene(),
-            Expect::Uniform([128, 0, 0, 128]),
-        ),
-        Case::new(
             "uniforms from composition JSON",
             shader_scene(
                 JSON_UNIFORMS_SHADER,
@@ -183,20 +163,6 @@ fn shader_abi() {
         )
         .frames([6.0]),
     ]);
-}
-
-#[test]
-fn shader_output_is_premultiplied() {
-    let gpu = gpu();
-    let mut renderer = gpu.renderer();
-    let raster = renderer
-        .render_frame_at(
-            &Composition::from(straight_input_scene()),
-            0.0,
-            &TestMedia::default(),
-        )
-        .unwrap();
-    assert_eq!(raster.metadata.alpha_mode, AlphaMode::Premultiplied);
 }
 
 #[test]

@@ -1,23 +1,14 @@
 use super::*;
 
-fn is_type_named(ty: &Type, names: &[&str]) -> bool {
+fn is_vec_type(ty: &Type) -> bool {
     if let Type::Path(path) = ty {
         path.path
             .segments
             .last()
-            .is_some_and(|segment| names.iter().any(|name| segment.ident == name))
+            .is_some_and(|segment| segment.ident == "Vec")
     } else {
         false
     }
-}
-
-pub(crate) fn is_vec_type(ty: &Type) -> bool {
-    is_type_named(ty, &["Vec"])
-}
-
-/// `Option` and `Override` fields, whose delegates implement `OptionalDelegate`.
-pub(crate) fn is_optional_type(ty: &Type) -> bool {
-    is_type_named(ty, &["Option", "Override"])
 }
 
 pub(crate) fn expand_struct_delegate(
@@ -71,223 +62,39 @@ pub(crate) fn expand_struct_delegate(
         let name = &meta.property.id;
         quote!(#name)
     });
-    let default_properties = metas.iter().map(|meta| {
+    let json_properties = metas.iter().map(|meta| {
         let ident = &meta.ident;
         let name = &meta.property.id;
-        let ty = &meta.ty;
-        if is_vec_type(ty) {
-            quote!(properties.push((#name, ::lumen_engine::node::PropertyValue::String(String::from("[]"))));)
-        } else if is_optional_type(ty) {
-            quote! {
-                if let ::lumen_engine::node::Override::Set(value) =
-                    ::lumen_engine::node::OptionalDelegate::as_override(&self.#ident)
-                {
-                    properties.push((#name, ::lumen_engine::node::DelegateValue::to_property_value(value)));
-                }
+        quote! {
+            if let Some(value) = ::lumen_engine::node::DelegateEvaluable::to_json_value(&self.#ident) {
+                properties.push((#name, value));
             }
-        } else {
-            quote!(properties.push((#name, ::lumen_engine::node::DelegateValue::to_property_value(&self.#ident)));)
         }
     });
     let property_matches = metas.iter().map(|meta| {
         let ident = &meta.ident;
         let name = &meta.property.id;
-        let ty = &meta.ty;
-        if is_vec_type(ty) {
-            quote!(#name => None)
-        } else if is_optional_type(ty) {
-            quote! {
-                #name => match ::lumen_engine::node::OptionalDelegate::as_override(&self.#ident) {
-                    ::lumen_engine::node::Override::Set(value) => {
-                        Some(::lumen_engine::node::DelegateValue::to_property_expression(value))
-                    }
-                    _ => None,
-                }
-            }
-        } else {
-            quote!(#name => Some(::lumen_engine::node::DelegateValue::to_property_expression(&self.#ident)))
-        }
+        quote!(#name => ::lumen_engine::node::DelegateEvaluable::read(&self.#ident))
     });
     let json_sets = metas.iter().map(|meta| {
         let ident = &meta.ident;
         let name = &meta.property.id;
-        let ty = &meta.ty;
-        if is_vec_type(ty) {
-            return quote! {
-                if let Some(value) = params.and_then(|params| params.get(#name)) {
-                    metas.#ident = ::serde_json::from_value(value.clone()).map_err(|error| {
-                        ::anyhow::anyhow!("`{}` on node {node_id}: {error}", #name)
-                    })?;
-                }
-            };
-        }
-        let property_def = property_def_tokens(&meta.property, ty);
         let reject_expression = meta.property.constant.then(|| {
-            quote! {
-                if matches!(parsed, ::lumen_engine::node::PropertyExpression::Expr(_)) {
-                    ::anyhow::bail!(
-                        "`{}` on node {node_id} does not support expressions",
-                        #name
-                    );
-                }
-            }
+            quote!(::lumen_engine::json::reject_expression(value, &path)?;)
         });
-        let parse = quote! {
-            let def = #property_def;
-            let parsed = ::lumen_engine::json::parse_property(value, &def, #name)
-                .map_err(|error| ::anyhow::anyhow!("node {node_id}: {error:#}"))?;
-            #reject_expression
-            ::lumen_engine::node::DelegateValue::from_property_expression(parsed, node_id, #name)?
-        };
-        let set = if is_optional_type(ty) {
-            let delegate = quote!(<#ty as ::lumen_engine::node::Delegated>::Delegate);
-            quote! {
-                metas.#ident = if value.is_null()
-                    && <#delegate as ::lumen_engine::node::OptionalDelegate>::NULLABLE
-                {
-                    ::lumen_engine::node::OptionalDelegate::from_override(
-                        ::lumen_engine::node::Override::Clear,
-                    )
-                } else {
-                    ::lumen_engine::node::OptionalDelegate::from_override(
-                        ::lumen_engine::node::Override::Set({ #parse }),
-                    )
-                };
-            }
-        } else {
-            quote!(metas.#ident = { #parse };)
-        };
         quote! {
-            if let Some(value) = params.and_then(|params| params.get(#name)) {
-                #set
+            if let Some(value) = fields.get(#name) {
+                let path = ::lumen_engine::node::field_path(path, #name);
+                #reject_expression
+                delegate.#ident = ::lumen_engine::node::DelegateEvaluable::from_json_value(value, &path)?;
             }
         }
     });
-    let nested_json = delegate.properties.then(|| {
-        let json_gets = metas.iter().map(|meta| {
-            let ident = &meta.ident;
-            let name = &meta.property.id;
-            let ty = &meta.ty;
-            if is_vec_type(ty) {
-                return quote! {
-                    fields.insert(
-                        #name.to_string(),
-                        ::serde_json::Value::Array(
-                            self.#ident
-                                .items
-                                .iter()
-                                .map(|item| ::serde_json::Value::Object(item.to_json()))
-                                .collect(),
-                        ),
-                    );
-                };
-            }
-            let property_def = property_def_tokens(&meta.property, ty);
-            if is_optional_type(ty) {
-                quote! {
-                    match ::lumen_engine::node::OptionalDelegate::as_override(&self.#ident) {
-                        ::lumen_engine::node::Override::Inherit => {}
-                        ::lumen_engine::node::Override::Clear => {
-                            fields.insert(#name.to_string(), ::serde_json::Value::Null);
-                        }
-                        ::lumen_engine::node::Override::Set(value) => {
-                            let def = #property_def;
-                            fields.insert(
-                                #name.to_string(),
-                                ::lumen_engine::json::property_to_json(
-                                    &::lumen_engine::node::DelegateValue::to_property_expression(value),
-                                    def.enum_def,
-                                ),
-                            );
-                        }
-                    }
-                }
-            } else {
-                quote! {
-                    let def = #property_def;
-                    fields.insert(
-                        #name.to_string(),
-                        ::lumen_engine::json::property_to_json(
-                            &::lumen_engine::node::DelegateValue::to_property_expression(&self.#ident),
-                            def.enum_def,
-                        ),
-                    );
-                }
-            }
-        });
-        let nested_json_sets = metas.iter().map(|meta| {
-            let ident = &meta.ident;
-            let name = &meta.property.id;
-            let ty = &meta.ty;
-            let parse = if is_vec_type(ty) {
-                quote! {
-                    ::serde_json::from_value(value.clone())
-                        .map_err(|error| format!("`{}`: {error}", #name))
-                }
-            } else {
-                let property_def = property_def_tokens(&meta.property, ty);
-                let constant = meta.property.constant;
-                let parse_field = if is_optional_type(ty) {
-                    quote!(::lumen_engine::json::parse_nested_optional_field)
-                } else {
-                    quote!(::lumen_engine::json::parse_nested_field)
-                };
-                quote!(#parse_field(value, &#property_def, #constant))
-            };
-            quote! {
-                #name => {
-                    delegate.#ident = #parse.map_err(<D::Error as ::serde::de::Error>::custom)?;
-                }
-            }
-        });
-
-        let field_ids = metas.iter().map(|meta| &meta.property.id);
-        let required_ids = metas
-            .iter()
-            .filter(|meta| meta.property.required)
-            .map(|meta| &meta.property.id);
-        quote! {
-            impl #delegate_ident {
-                /// The params as a JSON object that deserializing parses back. Unset optional
-                /// fields are left out.
-                pub fn to_json(&self) -> ::serde_json::Map<::std::string::String, ::serde_json::Value> {
-                    let mut fields = ::serde_json::Map::new();
-                    #(#json_gets)*
-                    fields
-                }
-            }
-
-            // Parses the nested delegate field by field the way node params parse.
-            impl<'de> ::serde::Deserialize<'de> for #delegate_ident {
-                fn deserialize<D>(deserializer: D) -> ::core::result::Result<Self, D::Error>
-                where
-                    D: ::serde::Deserializer<'de>,
-                {
-                    let fields = <::serde_json::Map<::std::string::String, ::serde_json::Value> as ::serde::Deserialize>::deserialize(deserializer)?;
-                    for field in [#(#required_ids),*] {
-                        if !fields.contains_key(field) {
-                            return Err(<D::Error as ::serde::de::Error>::missing_field(field));
-                        }
-                    }
-                    let mut delegate = <Self as ::core::default::Default>::default();
-                    for (key, value) in &fields {
-                        match key.as_str() {
-                            #(#nested_json_sets)*
-                            _ => {
-                                return Err(<D::Error as ::serde::de::Error>::unknown_field(
-                                    key,
-                                    &[#(#field_ids),*],
-                                ));
-                            }
-                        }
-                    }
-                    Ok(delegate)
-                }
-            }
-        }
-    });
-    let serde_derive =
-        (!delegate.properties).then(|| quote!(#[derive(::serde::Deserialize)] #[serde(default)]));
+    let field_ids = metas.iter().map(|meta| &meta.property.id);
+    let required_ids = metas
+        .iter()
+        .filter(|meta| meta.property.required)
+        .map(|meta| &meta.property.id);
     let has_vec_fields = metas.iter().any(|meta| is_vec_type(&meta.ty));
     let field_idents = metas.iter().map(|meta| &meta.ident).collect::<Vec<_>>();
     let assert_field_types = metas
@@ -300,7 +107,6 @@ pub(crate) fn expand_struct_delegate(
 
     Ok(quote! {
         #[derive(Debug, Clone, ::lumen_engine::fingerprint::StructuralHash)]
-        #serde_derive
         pub struct #delegate_ident {
             #(#delegate_fields,)*
         }
@@ -325,29 +131,26 @@ pub(crate) fn expand_struct_delegate(
                 matches!(id, #(#is_property_matches)|*)
             }
 
-            fn default_properties(&self) -> ::std::vec::Vec<(&'static str, ::lumen_engine::node::PropertyValue)> {
+            fn json_properties(&self) -> ::std::vec::Vec<(&'static str, ::serde_json::Value)> {
                 let mut properties = ::std::vec::Vec::new();
-                #(#default_properties)*
+                #(#json_properties)*
                 properties
             }
 
-            fn get_property(&self, id: &str) -> ::core::option::Option<::lumen_engine::node::PropertyExpression> {
+            fn get_property(&self, id: &str) -> ::core::option::Option<::lumen_engine::node::PropertyRead<'_>> {
                 match id {
                     #(#property_matches,)*
                     _ => None,
                 }
             }
 
-            fn from_json(
-                node_id: ::lumen_engine::node::NodeId,
-                params: ::core::option::Option<&::serde_json::Map<::std::string::String, ::serde_json::Value>>,
-            ) -> ::anyhow::Result<Self>
-            where
-                Self: Sized,
-            {
-                let mut metas = <Self as ::core::default::Default>::default();
+            fn from_json_fields(
+                fields: &::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                path: &str,
+            ) -> ::core::result::Result<Self, ::std::string::String> {
+                let mut delegate = <Self as ::core::default::Default>::default();
                 #(#json_sets)*
-                Ok(metas)
+                Ok(delegate)
             }
         }
 
@@ -365,6 +168,8 @@ pub(crate) fn expand_struct_delegate(
         impl ::lumen_engine::node::DelegateEvaluable for #delegate_ident {
             type Evaluated = #ident;
 
+            const ACCEPTS_EXPRESSIONS: bool = false;
+
             fn eval(
                 &self,
                 ctx: &::lumen_engine::node::DelegateEvalContext<'_>,
@@ -377,9 +182,34 @@ pub(crate) fn expand_struct_delegate(
             fn has_expressions(&self) -> bool {
                 false #(|| ::lumen_engine::node::DelegateEvaluable::has_expressions(&self.#field_idents))*
             }
-        }
 
-        #nested_json
+            fn from_json_value(
+                value: &::serde_json::Value,
+                path: &str,
+            ) -> ::core::result::Result<Self, ::std::string::String> {
+                let fields = ::lumen_engine::node::nested_fields(
+                    value,
+                    path,
+                    &[#(#field_ids),*],
+                    &[#(#required_ids),*],
+                )?;
+                <Self as ::lumen_engine::node::NodeParams>::from_json_fields(fields, path)
+            }
+
+            fn to_json_value(&self) -> ::core::option::Option<::serde_json::Value> {
+                let properties = <Self as ::lumen_engine::node::NodeParams>::json_properties(self);
+                Some(::serde_json::Value::Object(
+                    properties
+                        .into_iter()
+                        .map(|(name, value)| (name.to_string(), value))
+                        .collect(),
+                ))
+            }
+
+            fn read(&self) -> ::core::option::Option<::lumen_engine::node::PropertyRead<'_>> {
+                Some(::lumen_engine::node::PropertyRead::Value(None))
+            }
+        }
 
         const _: fn() = || {
             fn __lumen_delegate_assert_delegated<T: ::lumen_engine::node::Delegated>() {}

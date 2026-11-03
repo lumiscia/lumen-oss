@@ -28,7 +28,7 @@
 // `i` covers canvas pixels `(first + i - pad) * factor ..`, where `first` is the output's
 // origin in blocks of `factor`, so reduced blocks stay aligned to the canvas.
 
-// `values`: x sigma, y straight-alpha source, z transparent edges.
+// `values`: x sigma, y transparent edges.
 // `offset.xy`: whole-pixel shift of the source.
 // `region.xy`: canvas pixel of the output's first texel.
 // `source.xy`: canvas pixel of the source's first texel, `source.zw`: its display size.
@@ -68,42 +68,16 @@ fn gaussian_coverage(pos: vec2<f32>, dims: vec2<f32>) -> f32 {
     return x * y;
 }
 
-fn gaussian_load_premultiplied(tex: texture_2d<f32>, coord: vec2<f32>, dims: vec2<f32>) -> vec4<f32> {
-    let clamped = clamp(coord, vec2<f32>(0.0), dims - vec2<f32>(1.0));
-    return premultiply(textureLoad(tex, vec2<i32>(clamped), 0));
-}
-
-// Bilinear fetch. Straight-alpha sources are premultiplied before
-// interpolating, so transparent texels do not drag their color into the edge.
-// Texels outside the texture clamp to the edge, or read as transparent when
+// Bilinear fetch. Texels outside the texture clamp to the edge, or read as transparent when
 // `transparent_edge` is set.
 fn gaussian_tap(
     tex: texture_2d<f32>,
     samp: sampler,
     pos: vec2<f32>,
-    straight: bool,
     transparent_edge: bool,
 ) -> vec4<f32> {
     let dims = vec2<f32>(textureDimensions(tex));
-    var color: vec4<f32>;
-    if (straight) {
-        let p = pos - vec2<f32>(0.5);
-        let base = floor(p);
-        let f = p - base;
-        let top = mix(
-            gaussian_load_premultiplied(tex, base, dims),
-            gaussian_load_premultiplied(tex, base + vec2<f32>(1.0, 0.0), dims),
-            f.x,
-        );
-        let bottom = mix(
-            gaussian_load_premultiplied(tex, base + vec2<f32>(0.0, 1.0), dims),
-            gaussian_load_premultiplied(tex, base + vec2<f32>(1.0, 1.0), dims),
-            f.x,
-        );
-        color = mix(top, bottom, f.y);
-    } else {
-        color = textureSampleLevel(tex, samp, pos / dims, 0.0);
-    }
+    var color = textureSampleLevel(tex, samp, pos / dims, 0.0);
     if (transparent_edge) {
         color = color * gaussian_coverage(pos, dims);
     }
@@ -112,15 +86,14 @@ fn gaussian_tap(
 
 // The source texel at canvas pixel `coord`: clamped to the canvas, then transparent where the
 // source stores nothing.
-fn gaussian_source_texel(tex: texture_2d<f32>, coord: vec2<f32>, straight: bool) -> vec4<f32> {
+fn gaussian_source_texel(tex: texture_2d<f32>, coord: vec2<f32>) -> vec4<f32> {
     let display = vec2<f32>(params.source.zw);
     let local = clamp(coord, vec2<f32>(0.0), display - vec2<f32>(1.0)) - vec2<f32>(params.source.xy);
     let size = vec2<f32>(textureDimensions(tex));
     if (any(local < vec2<f32>(0.0)) || any(local >= size)) {
         return vec4<f32>(0.0);
     }
-    let color = textureLoad(tex, vec2<i32>(local), 0);
-    return select(color, premultiply(color), straight);
+    return textureLoad(tex, vec2<i32>(local), 0);
 }
 
 // `gaussian_tap` for the source, at canvas position `pos`. Where the bilinear footprint stays
@@ -130,7 +103,6 @@ fn gaussian_source_tap(
     tex: texture_2d<f32>,
     samp: sampler,
     pos: vec2<f32>,
-    straight: bool,
     transparent_edge: bool,
 ) -> vec4<f32> {
     let p = pos - vec2<f32>(0.5);
@@ -144,17 +116,17 @@ fn gaussian_source_tap(
     let inside_low = (local >= vec2<f32>(0.0)) | at_low_edge;
     let inside_high = (local + vec2<f32>(1.0) < size) | at_high_edge;
     var color: vec4<f32>;
-    if (!straight && all(inside_low & inside_high)) {
+    if (all(inside_low & inside_high)) {
         color = textureSampleLevel(tex, samp, (pos - origin) / size, 0.0);
     } else {
         let top = mix(
-            gaussian_source_texel(tex, base, straight),
-            gaussian_source_texel(tex, base + vec2<f32>(1.0, 0.0), straight),
+            gaussian_source_texel(tex, base),
+            gaussian_source_texel(tex, base + vec2<f32>(1.0, 0.0)),
             f.x,
         );
         let bottom = mix(
-            gaussian_source_texel(tex, base + vec2<f32>(0.0, 1.0), straight),
-            gaussian_source_texel(tex, base + vec2<f32>(1.0, 1.0), straight),
+            gaussian_source_texel(tex, base + vec2<f32>(0.0, 1.0)),
+            gaussian_source_texel(tex, base + vec2<f32>(1.0, 1.0)),
             f.x,
         );
         color = mix(top, bottom, f.y);
@@ -169,18 +141,17 @@ fn gaussian_fetch(
     tex: texture_2d<f32>,
     samp: sampler,
     pos: vec2<f32>,
-    straight: bool,
     transparent_edge: bool,
     from_source: bool,
 ) -> vec4<f32> {
     if (from_source) {
-        return gaussian_source_tap(tex, samp, pos, straight, transparent_edge);
+        return gaussian_source_tap(tex, samp, pos, transparent_edge);
     }
-    return gaussian_tap(tex, samp, pos, straight, transparent_edge);
+    return gaussian_tap(tex, samp, pos, transparent_edge);
 }
 
 // One normalized Gaussian pass of standard deviation `sigma` along `axis`,
-// truncated at three sigma. The result is premultiplied when the input is. `from_source` reads
+// truncated at three sigma. `from_source` reads
 // `tex` as the source, at canvas positions.
 fn gaussian_blur_1d(
     tex: texture_2d<f32>,
@@ -188,11 +159,10 @@ fn gaussian_blur_1d(
     center: vec2<f32>,
     axis: vec2<f32>,
     sigma: f32,
-    straight: bool,
     transparent_edge: bool,
     from_source: bool,
 ) -> vec4<f32> {
-    var acc = gaussian_fetch(tex, samp, center, straight, transparent_edge, from_source);
+    var acc = gaussian_fetch(tex, samp, center, transparent_edge, from_source);
     if (sigma < GAUSSIAN_MIN_SIGMA) {
         return acc;
     }
@@ -209,8 +179,8 @@ fn gaussian_blur_1d(
         }
         let offset = axis * ((i * w0 + (i + 1.0) * w1) / weight);
         acc = acc + weight * (
-            gaussian_fetch(tex, samp, center + offset, straight, transparent_edge, from_source)
-            + gaussian_fetch(tex, samp, center - offset, straight, transparent_edge, from_source)
+            gaussian_fetch(tex, samp, center + offset, transparent_edge, from_source)
+            + gaussian_fetch(tex, samp, center - offset, transparent_edge, from_source)
         );
         total = total + 2.0 * weight;
     }
@@ -237,7 +207,7 @@ fn gaussian_uses_sixteenth(sigma: f32) -> bool {
 }
 
 fn gaussian_edge() -> bool {
-    return params.values.z >= 0.5;
+    return params.values.y >= 0.5;
 }
 
 // Blurs the source along x for every padded row of the horizontal texture.
@@ -250,7 +220,7 @@ fn horizontal_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let canvas = vec2<f32>(id.xy) + vec2<f32>(params.region.xy) + vec2<f32>(0.5, 0.5 - GAUSSIAN_FULL_PAD);
-    let color = gaussian_blur_1d(tex_a, linear_sampler, canvas - params.offset.xy, vec2<f32>(1.0, 0.0), sigma, params.values.y >= 0.5, gaussian_edge(), true);
+    let color = gaussian_blur_1d(tex_a, linear_sampler, canvas - params.offset.xy, vec2<f32>(1.0, 0.0), sigma, gaussian_edge(), true);
     textureStore(out_float, vec2<i32>(id.xy), color);
 }
 
@@ -268,14 +238,13 @@ fn gaussian_reduce(id: vec3<u32>, factor: f32, pad: f32) {
     }
 
     let center = (vec2<f32>(id.xy) + gaussian_first_block(factor) + vec2<f32>(0.5 - pad)) * factor - params.offset.xy;
-    let straight = params.values.y >= 0.5;
     let edge = gaussian_edge();
     let taps = i32(factor) / 2;
     var color = vec4<f32>(0.0);
     for (var y = 0; y < taps; y = y + 1) {
         for (var x = 0; x < taps; x = x + 1) {
             let delta = vec2<f32>(f32(2 * x - (taps - 1)), f32(2 * y - (taps - 1)));
-            color = color + gaussian_source_tap(tex_a, linear_sampler, center + delta, straight, edge);
+            color = color + gaussian_source_tap(tex_a, linear_sampler, center + delta, edge);
         }
     }
     textureStore(out_float, vec2<i32>(id.xy), color / f32(taps * taps));
@@ -288,7 +257,7 @@ fn gaussian_reduced_blur(id: vec3<u32>, axis: vec2<f32>, factor: f32, used: bool
     }
 
     let center = vec2<f32>(id.xy) + vec2<f32>(0.5);
-    let color = gaussian_blur_1d(tex_a, linear_sampler, center, axis, gaussian_level_sigma(params.values.x, factor), false, gaussian_edge(), false);
+    let color = gaussian_blur_1d(tex_a, linear_sampler, center, axis, gaussian_level_sigma(params.values.x, factor), gaussian_edge(), false);
     textureStore(out_float, vec2<i32>(id.xy), color);
 }
 
@@ -350,7 +319,7 @@ fn resolve_main(@builtin(global_invocation_id) id: vec3<u32>) {
     var color = vec4<f32>(0.0);
     if (gaussian_uses_full(sigma)) {
         let center = local + vec2<f32>(0.0, GAUSSIAN_FULL_PAD);
-        color = (1.0 - reduced) * gaussian_blur_1d(tex_a, linear_sampler, center, vec2<f32>(0.0, 1.0), sigma, false, gaussian_edge(), false);
+        color = (1.0 - reduced) * gaussian_blur_1d(tex_a, linear_sampler, center, vec2<f32>(0.0, 1.0), sigma, gaussian_edge(), false);
     }
     if (gaussian_uses_quarter(sigma)) {
         color = color + reduced * (1.0 - sixteenth) * gaussian_sample_reduced(tex_b, canvas, 4.0, GAUSSIAN_QUARTER_PAD);

@@ -5,11 +5,10 @@
 //!
 //! # Modules
 //!
-//! - [`property`] — JSON value → [`PropertyValue`](crate::node::PropertyValue) conversion
+//! - [`property`] — the JSON forms params share: a leading `=`, whole numbers and colors
 //! - [`node`] — per-node-type construction, property application, and port wiring
 
 mod migrations;
-mod node;
 mod property;
 
 use std::collections::BTreeMap;
@@ -20,17 +19,17 @@ use serde_json::{Map, Value};
 use crate::{
     audio::{AudioClip, AudioTimeline, AudioTrack},
     composition::{
-        Composition, CompositionBuilder, CompositionMetadata, CompositionTemplate, PropDef,
-        PropKind, RenderSettings, TimelineSettings, declared_props,
+        Composition, CompositionBuilder, CompositionTemplate, PropDef, PropKind, RenderSettings,
+        TimelineSettings, declared_props,
     },
     expr::{BuiltinFn, ExprNode, Expression, ExpressionValue, FunctionScope},
     graph::{Connection, Graph},
-    node::NodeId,
+    node::{NodeId, NodeKind},
 };
 
 pub(crate) use property::{
-    StringParam, classify_string, integer_mismatch, integral_i64, nested_from_json,
-    parse_nested_field, parse_nested_optional_field, parse_property, property_to_json,
+    StringParam, classify_string, expression_unsupported, integer_mismatch, integral_i64,
+    reject_expression,
 };
 pub use property::{parse_color, try_parse_color, unknown_param_error};
 
@@ -65,10 +64,6 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
     let compositions = parse_compositions(obj.get("compositions"), &timeline, &render_settings)?;
     drop(function_scope);
 
-    let metadata = obj.get("metadata").map(|v| CompositionMetadata {
-        name: v.get("name").and_then(|n| n.as_str()).map(String::from),
-    });
-
     let audio = root
         .get("audio")
         .map(|audio| parse_audio_timeline(audio, timeline.fps))
@@ -77,7 +72,6 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
         graph,
         timeline,
         render_settings,
-        metadata,
         audio,
         compositions,
     }
@@ -119,7 +113,12 @@ fn parse_graph(
             .and_then(|v| v.as_str())
             .context("node missing `type` string")?;
 
-        let node_kind = node::build_node(kind_str, id, node_obj)?;
+        let params = match node_obj.get("params") {
+            None => None,
+            Some(Value::Object(params)) => Some(params),
+            Some(_) => bail!("node {id} (`{kind_str}`): `params` must be an object"),
+        };
+        let node_kind = NodeKind::from_json(kind_str, id, params)?;
         if let Some(params) = node_obj.get("params") {
             check_prop_reads(params, props).with_context(|| format!("node {id}"))?;
         }
@@ -514,7 +513,7 @@ fn parse_node_id(val: &Value) -> Result<NodeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::NodeKind;
+    use crate::node::Node;
 
     #[test]
     fn parses_every_bundled_demo() {
@@ -652,6 +651,25 @@ mod tests {
         }))
         .unwrap_err();
         format!("{error:#}")
+    }
+
+    #[test]
+    fn unknown_variables_name_the_node_param_and_variable_at_load() {
+        for (params, param) in [
+            (serde_json::json!({ "opacity": "=foo + 1" }), "opacity"),
+            (
+                serde_json::json!({ "content": [{ "text": "a", "font_size": "=foo + 1" }] }),
+                "font_size",
+            ),
+        ] {
+            let error = graph_error(
+                serde_json::json!([{ "id": 3, "type": "text", "params": params }]),
+                serde_json::json!([]),
+            );
+            for expected in ["node 3", param, "unknown variable `foo`"] {
+                assert!(error.contains(expected), "{expected}: {error}");
+            }
+        }
     }
 
     #[test]
@@ -1177,7 +1195,7 @@ mod tests {
             ),
             (
                 serde_json::json!({ "composition": "card", "props": "=1" }),
-                "`props` on node 1 does not support expressions",
+                "node 1: `props` does not support expressions",
             ),
         ] {
             let error = clip_error(clip.clone(), paint);
@@ -1224,6 +1242,10 @@ mod tests {
             (
                 serde_json::json!({ "a": { "type": "color", "default": "red" } }),
                 "prop `a` default: expected a color, got \"red\"",
+            ),
+            (
+                serde_json::json!({ "a": { "type": "color", "default": "#+f+f+f" } }),
+                "prop `a` default: expected a color, got \"#+f+f+f\"",
             ),
             (
                 serde_json::json!({ "a": { "type": "vec2", "default": [1] } }),

@@ -97,36 +97,22 @@ pub struct AudioClip {
     pub volume: f32,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct AudioMetadata {
-    pub sample_rate: u32,
-    pub channels: u16,
-    pub duration_samples: u64,
-}
-
+/// Samples at [`AUDIO_SAMPLE_RATE`], one list per channel, all the same length.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioBuffer {
     channels: Vec<Vec<f32>>,
-    sample_rate: u32,
 }
 
 impl AudioBuffer {
-    pub fn silent(sample_rate: u32, channel_count: usize, frames: usize) -> Self {
-        Self {
-            channels: vec![vec![0.0; frames]; channel_count],
-            sample_rate,
+    /// Panics if the channels differ in length.
+    pub fn from_channels(channels: Vec<Vec<f32>>) -> Self {
+        if let Some(first) = channels.first() {
+            assert!(
+                channels.iter().all(|channel| channel.len() == first.len()),
+                "audio channels must be the same length"
+            );
         }
-    }
-
-    pub fn from_channels(sample_rate: u32, channels: Vec<Vec<f32>>) -> Self {
-        Self {
-            sample_rate,
-            channels,
-        }
-    }
-
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
+        Self { channels }
     }
 
     pub fn channel_count(&self) -> usize {
@@ -139,10 +125,6 @@ impl AudioBuffer {
 
     pub fn channels(&self) -> &[Vec<f32>] {
         &self.channels
-    }
-
-    pub fn channels_mut(&mut self) -> &mut [Vec<f32>] {
-        &mut self.channels
     }
 
     pub fn interleaved_f32(&self) -> Vec<f32> {
@@ -159,10 +141,8 @@ impl AudioBuffer {
 }
 
 pub trait AudioResolver: Send + Sync {
-    fn id(&self) -> &str;
-
-    fn metadata(&self) -> AudioMetadata;
-
+    /// `frames` frames from `start_sample`, at [`AUDIO_SAMPLE_RATE`]. A source that ends early
+    /// returns fewer, or pads with silence.
     fn resolve_range(
         &self,
         start_sample: u64,
@@ -181,21 +161,7 @@ impl<'a, P: MediaStore> AudioMixer<'a, P> {
     }
 
     pub fn mix_range(&self, start_sample: u64, frames: usize) -> Result<AudioBuffer, MediaError> {
-        let mut output = AudioBuffer::silent(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS, frames);
-        self.mix_into(start_sample, output.channels_mut())?;
-        Ok(output)
-    }
-
-    pub fn mix_into(&self, start_sample: u64, output: &mut [Vec<f32>]) -> Result<(), MediaError> {
-        let output_frames = output.first().map_or(0, Vec::len);
-        if output_frames == 0 || output.is_empty() {
-            return Ok(());
-        }
-
-        for channel in output.iter_mut() {
-            channel.fill(0.0);
-        }
-
+        let mut output = vec![vec![0.0; frames]; AUDIO_CHANNELS];
         let has_solo = self.timeline.tracks.iter().any(|track| track.solo);
 
         for clip in &self.timeline.clips {
@@ -216,15 +182,16 @@ impl<'a, P: MediaStore> AudioMixer<'a, P> {
             let clip_start = ms_to_sample(clip.start_ms);
             let clip_duration = ms_to_sample(clip.duration_ms).max(1);
             let clip_end = clip_start.saturating_add(clip_duration);
-            let output_end = start_sample.saturating_add(output_frames as u64);
+            let output_end = start_sample.saturating_add(frames as u64);
             let overlap_start = start_sample.max(clip_start);
             let overlap_end = output_end.min(clip_end);
             if overlap_end <= overlap_start {
                 continue;
             }
 
-            let frames_to_mix = usize::try_from(overlap_end - overlap_start).unwrap_or(0);
-            let output_offset = usize::try_from(overlap_start - start_sample).unwrap_or(0);
+            // Both lie within the output's `frames`.
+            let frames_to_mix = (overlap_end - overlap_start) as usize;
+            let output_offset = (overlap_start - start_sample) as usize;
             let clip_offset = overlap_start - clip_start;
             let source_start = ms_to_sample(clip.source_start_ms).saturating_add(clip_offset);
             let source = self.provider.get_audio_resolver(&clip.source_id)?;
@@ -233,26 +200,20 @@ impl<'a, P: MediaStore> AudioMixer<'a, P> {
 
             for i in 0..frames_to_mix.min(source_buffer.frames()) {
                 let clip_sample = clip_offset.saturating_add(i as u64);
-                let envelope = clip_envelope(clip_sample, clip_duration);
-                let sample_gain = gain * envelope;
-                for (out_channel_index, output_channel) in output.iter_mut().enumerate() {
-                    let source_sample =
-                        sample_for_output_channel(&source_buffer, out_channel_index, i);
-                    let Some(output_sample) = output_channel.get_mut(output_offset + i) else {
-                        continue;
-                    };
-                    *output_sample += source_sample * sample_gain;
+                let sample_gain = gain * clip_envelope(clip_sample, clip_duration);
+                for (channel, output_channel) in output.iter_mut().enumerate() {
+                    let source_channel = channel.min(source_buffer.channel_count() - 1);
+                    output_channel[output_offset + i] +=
+                        source_buffer.channels()[source_channel][i] * sample_gain;
                 }
             }
         }
 
-        for channel in output {
-            for sample in channel {
-                *sample = sample.clamp(-1.0, 1.0);
-            }
+        for sample in output.iter_mut().flatten() {
+            *sample = sample.clamp(-1.0, 1.0);
         }
 
-        Ok(())
+        Ok(AudioBuffer::from_channels(output))
     }
 }
 
@@ -265,17 +226,6 @@ pub fn duration_samples(duration_frames: u32, fps: f32) -> u64 {
         return 0;
     }
     ((duration_frames as f64 / fps as f64) * f64::from(AUDIO_SAMPLE_RATE)).round() as u64
-}
-
-fn sample_for_output_channel(buffer: &AudioBuffer, output_channel: usize, frame: usize) -> f32 {
-    match buffer.channel_count() {
-        0 => 0.0,
-        1 => buffer.channels()[0].get(frame).copied().unwrap_or(0.0),
-        count => buffer.channels()[output_channel.min(count - 1)]
-            .get(frame)
-            .copied()
-            .unwrap_or(0.0),
-    }
 }
 
 fn clip_envelope(clip_sample: u64, clip_duration: u64) -> f32 {
@@ -312,12 +262,7 @@ mod tests {
             self.sources
                 .get(source_id)
                 .cloned()
-                .map(|buffer| {
-                    Box::new(TestResolver {
-                        id: source_id.to_string(),
-                        buffer,
-                    }) as Box<dyn AudioResolver>
-                })
+                .map(|buffer| Box::new(TestResolver { buffer }) as Box<dyn AudioResolver>)
                 .ok_or_else(|| {
                     crate::error::MediaError::source_not_found(source_id, "not registered")
                 })
@@ -325,23 +270,10 @@ mod tests {
     }
 
     struct TestResolver {
-        id: String,
         buffer: Arc<AudioBuffer>,
     }
 
     impl AudioResolver for TestResolver {
-        fn id(&self) -> &str {
-            &self.id
-        }
-
-        fn metadata(&self) -> AudioMetadata {
-            AudioMetadata {
-                sample_rate: self.buffer.sample_rate(),
-                channels: self.buffer.channel_count() as u16,
-                duration_samples: self.buffer.frames() as u64,
-            }
-        }
-
         fn resolve_range(
             &self,
             start_sample: u64,
@@ -358,10 +290,7 @@ mod tests {
                 }
                 channels.push(out);
             }
-            Ok(Arc::new(AudioBuffer::from_channels(
-                self.buffer.sample_rate(),
-                channels,
-            )))
+            Ok(Arc::new(AudioBuffer::from_channels(channels)))
         }
     }
 
@@ -380,10 +309,11 @@ mod tests {
         let provider = TestProvider {
             sources: HashMap::from([(
                 "tone".to_string(),
-                Arc::new(AudioBuffer::from_channels(
-                    AUDIO_SAMPLE_RATE,
-                    vec![vec![0.5; AUDIO_SAMPLE_RATE as usize]],
-                )),
+                Arc::new(AudioBuffer::from_channels(vec![vec![
+                    0.5;
+                    AUDIO_SAMPLE_RATE
+                        as usize
+                ]])),
             )]),
         };
         let timeline = AudioTimeline {
@@ -413,13 +343,10 @@ mod tests {
         let provider = TestProvider {
             sources: HashMap::from([(
                 "tone".to_string(),
-                Arc::new(AudioBuffer::from_channels(
-                    AUDIO_SAMPLE_RATE,
-                    vec![
-                        vec![1.0; AUDIO_SAMPLE_RATE as usize],
-                        vec![0.5; AUDIO_SAMPLE_RATE as usize],
-                    ],
-                )),
+                Arc::new(AudioBuffer::from_channels(vec![
+                    vec![1.0; AUDIO_SAMPLE_RATE as usize],
+                    vec![0.5; AUDIO_SAMPLE_RATE as usize],
+                ])),
             )]),
         };
         let mut solo = track("solo");
@@ -490,10 +417,11 @@ mod tests {
         let provider = TestProvider {
             sources: HashMap::from([(
                 "tone".to_string(),
-                Arc::new(AudioBuffer::from_channels(
-                    AUDIO_SAMPLE_RATE,
-                    vec![vec![0.75; AUDIO_SAMPLE_RATE as usize]],
-                )),
+                Arc::new(AudioBuffer::from_channels(vec![vec![
+                    0.75;
+                    AUDIO_SAMPLE_RATE
+                        as usize
+                ]])),
             )]),
         };
         let timeline = AudioTimeline {
@@ -587,8 +515,7 @@ mod tests {
                             .map(|frame| pattern[frame % pattern.len()][index])
                             .collect::<Vec<_>>()
                     };
-                    let buffer =
-                        AudioBuffer::from_channels(AUDIO_SAMPLE_RATE, vec![channel(0), channel(1)]);
+                    let buffer = AudioBuffer::from_channels(vec![channel(0), channel(1)]);
                     (id.to_string(), Arc::new(buffer))
                 })
                 .collect(),

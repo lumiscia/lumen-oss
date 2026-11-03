@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::error::RenderError;
-use crate::gpu::{CompileContext, CompiledOutput, RasterHandle, RasterMetadata, compiler};
+use crate::gpu::{CompileContext, RasterHandle, compiler};
 use crate::node::motion::shutter_offset;
 use crate::node::vector::{
     drawable::{DRAWABLE_SHADER, DrawableTransform, GpuDrawableMotion, GpuDrawableTransform},
@@ -10,7 +10,7 @@ use crate::node::vector::{
 use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, Override};
 
 use super::text::{
-    CompiledText, DecorationParams, GlyphParams, NodeDecorations, Text, TextAlignmentVertical,
+    CompiledText, DecorationParams, GlyphParams, Stable, Text, TextAlignmentVertical,
     TextDecorations, TextLayoutStyle, TextParamsDelegate, TextState, decorate, decoration_paints,
     load_font_families, span_strokes, stroked, text_system,
 };
@@ -30,7 +30,7 @@ const MAX_TEXT_GLYPHS: usize = 2048;
 
 /// A text node's layout and decorations when none of them are animated.
 struct ConstantText {
-    shaped: lumen_text::ShapedText,
+    shaped: std::sync::Arc<lumen_text::ShapedText>,
     alignment: TextAlignmentVertical,
     /// The rect instances of its decorations, placed at the origin.
     decorations: Vec<lumen_text::GpuGlyphInstance>,
@@ -65,7 +65,7 @@ pub(crate) struct GpuTextPaint {
 pub(super) fn compile_text(
     ctx: &mut CompileContext<'_>,
     text: &Text,
-) -> crate::Result<CompiledOutput> {
+) -> crate::Result<RasterHandle> {
     let size = ctx.canvas_size();
     // Text that may move during the shutter is drawn still to a layer first, which is
     // then smeared over the shutter's taps into the output. Text with motion blur
@@ -137,7 +137,7 @@ pub(super) fn compile_text(
         lumen_gpu::BufferDesc::uniform(std::mem::size_of::<TextStyleUniforms>() as u64),
     );
     let paint_count = match &params.content {
-        TextContentDelegate::Spans(spans) => spans.items.len().max(1),
+        TextContentDelegate::Spans(spans) => spans.len().max(1),
         TextContentDelegate::Text(_) => 1,
     };
     let decoration_paints = decoration_paints(params);
@@ -309,36 +309,15 @@ pub(super) fn compile_text(
     let mut params = text.params.clone();
     let glyph = GlyphParams::take(&mut params);
     let expr = ctx.expr_context();
-    let decorations = DecorationParams::take(&mut params);
-    let decorations = if decorations.has_expressions() {
-        NodeDecorations::Animated(decorations)
-    } else {
-        NodeDecorations::Constant(decorations.eval(text.id, &expr)?)
+    let fields = DelegateEvalContext {
+        node_id: text.id,
+        expr: &expr,
     };
-    let font_features = if crate::node::DelegateEvaluable::has_expressions(&params.font_features) {
-        None
-    } else {
-        let features = std::mem::take(&mut params.font_features);
-        Some(
-            DelegateEvalContext {
-                node_id: text.id,
-                expr: &expr,
-            }
-            .eval_field("font_features", &features)?,
-        )
-    };
-    let content = if crate::node::DelegateEvaluable::has_expressions(&params.content) {
-        None
-    } else {
-        let content = std::mem::take(&mut params.content);
-        Some(
-            DelegateEvalContext {
-                node_id: text.id,
-                expr: &expr,
-            }
-            .eval_field("content", &content)?,
-        )
-    };
+    let decorations = Stable::new(DecorationParams::take(&mut params), &fields)?;
+    let font_features = Stable::new(std::mem::take(&mut params.font_features), &fields)
+        .map_err(|error| error.in_field("font_features"))?;
+    let content = Stable::new(std::mem::take(&mut params.content), &fields)
+        .map_err(|error| error.in_field("content"))?;
     ctx.register_compiled_node(CompiledText {
         node_id: text.id,
         params,
@@ -360,12 +339,11 @@ pub(super) fn compile_text(
         state: std::sync::Arc::new(std::sync::Mutex::new(TextState::default())),
     });
 
-    Ok(CompiledOutput::Raster(RasterHandle {
+    Ok(RasterHandle {
         texture,
         domain,
-        metadata: RasterMetadata::default(),
         bounds: None,
-    }))
+    })
 }
 
 /// The canvas pixels unblurred text may draw to, or `None` when it should fill the
@@ -396,7 +374,7 @@ fn text_bounds(
     if GlyphParams::any(params)
         || !solid(&params.color)
         || matches!(&params.content, TextContentDelegate::Spans(spans)
-            if !spans.items.iter().all(solid_span))
+            if !spans.iter().all(solid_span))
         || !params
             .stroke
             .as_ref()

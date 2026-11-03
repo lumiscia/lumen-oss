@@ -9,7 +9,7 @@ use lumen_engine::{
     composition::Composition,
     error::MediaError,
     expr::{Expression, ExpressionContext},
-    gpu::{BoundFrame, CompileContext, CompiledOutput, FrameBindContext, GpuCompositionRenderer},
+    gpu::{BoundFrame, CompileContext, FrameBindContext, GpuCompositionRenderer},
     media::{FontResolver, MediaStore, TextSession},
     node::NodeId,
 };
@@ -358,10 +358,13 @@ fn a_bound_frame_is_not_uploaded_once_a_later_one_is_bound() {
 
 fn text_domain_is_bounded(renderer: &GpuCompositionRenderer) -> bool {
     let text = NodeId::new(1);
-    match &renderer.compiled().expect("a frame rendered").node_outputs[&text] {
-        CompiledOutput::Raster(raster) => !raster.domain.is_full_frame(),
-        CompiledOutput::Empty => panic!("the text is empty"),
-    }
+    !renderer
+        .compiled()
+        .expect("a frame rendered")
+        .node_output(text, &[])
+        .expect("the text compiled")
+        .domain
+        .is_full_frame()
 }
 
 /// Text node 1, `content` in `family` at size 20.
@@ -536,48 +539,48 @@ fn kept_text_is_drawn_again_once_its_font_arrives() {
     let arriving = |family: &str| {
         TestMedia::default().font(family, &format!("{family}:2"), roboto_scaled(family, 2))
     };
-    let memoized = |content: Value| {
+    let under_square = |text: Value| {
         scene(
             (128, 64),
             json!([
-                text_node(1, json!({ "content": content, "font_size": 20, "position": [10, 10] })),
-                { "id": 2, "type": "memo", "params": { "key": "=frame * 0" }, "in": { "source": 1 } },
+                text,
+                { "id": 2, "type": "shape", "params": {
+                    "position": "=vec2(frame * 4, 0)", "width": 4, "height": 4,
+                    "fill_paint": [255, 255, 255, 255]
+                } },
+                { "id": 3, "type": "raster_multimerge", "in": { "layers": [1, 2] } },
             ]),
         )
+    };
+    let spans = |spans: Value| {
+        under_square(text_node(
+            1,
+            json!({ "content": spans, "font_size": 20, "position": [10, 10] }),
+        ))
     };
     let rows = vec![
         (
             "static node family, kept under a moving square",
             FontArrival {
-                scene: scene(
-                    (128, 64),
-                    json!([
-                        small_text("WWW", "Cachey", 1.2, [10, 10]),
-                        { "id": 2, "type": "shape", "params": {
-                            "position": "=vec2(frame * 4, 0)", "width": 4, "height": 4,
-                            "fill_paint": [255, 255, 255, 255]
-                        } },
-                        { "id": 3, "type": "raster_multimerge", "in": { "layers": [1, 2] } },
-                    ]),
-                ),
+                scene: under_square(small_text("WWW", "Cachey", 1.2, [10, 10])),
                 media: arriving("Cachey"),
                 before: vec![0.0, 1.0],
                 after: 2.0,
             },
         ),
         (
-            "memo, literal span family",
+            "literal span family",
             FontArrival {
-                scene: memoized(json!([{ "text": "WWW", "font_family": "Spanny" }])),
+                scene: spans(json!([{ "text": "WWW", "font_family": "Spanny" }])),
                 media: arriving("Spanny"),
                 before: vec![0.0, 1.0],
                 after: 2.0,
             },
         ),
         (
-            "memo, expression span family",
+            "expression span family",
             FontArrival {
-                scene: memoized(json!([{ "text": "WWW", "font_family": "=\"Dyfont\"" }])),
+                scene: spans(json!([{ "text": "WWW", "font_family": "=\"Dyfont\"" }])),
                 media: arriving("Dyfont"),
                 before: vec![0.0],
                 after: 1.0,
@@ -585,30 +588,6 @@ fn kept_text_is_drawn_again_once_its_font_arrives() {
         ),
     ];
     check_each(rows, FontArrival::run);
-}
-
-#[test]
-fn a_memo_holds_text_whose_family_would_fail_to_evaluate() {
-    let gpu = gpu();
-    let composition: Composition = scene(
-        (128, 64),
-        json!([
-            text_node(1, json!({
-                "content": "WWW", "font_size": 20, "position": [10, 10],
-                "font_family": "=if(frame == 0, \"Roboto\", node(999, \"font_family\"))"
-            })),
-            { "id": 2, "type": "memo", "params": { "key": "=frame * 0" }, "in": { "source": 1 } },
-        ]),
-    )
-    .into();
-    let media = TestMedia::default();
-    let mut renderer = gpu.renderer();
-    let first = render(&mut renderer, &composition, 0.0, &media);
-    assert!(drawn(&first.rgba));
-    assert!(
-        render(&mut renderer, &composition, 1.0, &media).rgba == first.rgba,
-        "the memo draws a frame other than the one it holds"
-    );
 }
 
 #[test]

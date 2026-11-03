@@ -5,29 +5,29 @@ use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 use crate::scope::FrameTime;
 
 use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, MediaTextureKey,
-    RasterHandle, RasterMetadata,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, MediaTextureKey, RasterHandle,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+/// What playback does once it leaves the source range.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum", expressions)]
 pub enum LoopMode {
-    Clamp,
-    Repeat,
-    PingPong,
+    #[default]
+    Clamp = 0,
+    Repeat = 1,
+    PingPong = 2,
 }
 
-impl LoopMode {
-    pub fn from_int(value: i64) -> Self {
-        match value {
-            1 => Self::Repeat,
-            2 => Self::PingPong,
-            _ => Self::Clamp,
-        }
-    }
-}
-
-#[derive(lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum", expressions)]
 pub enum MediaInSourceKind {
+    #[default]
     Image = 0,
     Video = 1,
 }
@@ -39,7 +39,7 @@ pub enum MediaInKind {
     },
     Video {
         stream_id: String,
-        range: Option<Range<u32>>,
+        range: Range<u32>,
         speed: f32,
         loop_mode: LoopMode,
     },
@@ -50,33 +50,33 @@ pub enum MediaInKind {
 pub struct MediaInParams {
     /// Type of external media source.
     #[meta(kind = "enum", name = "Media type", enum_type = MediaInSourceKind)]
-    pub kind: i64,
+    pub kind: MediaInSourceKind,
     /// External media source identifier.
     #[meta(role = "source_id")]
     pub source: String,
     /// First source frame to include.
     #[meta(min = 0, step = 1)]
     pub range_start: i64,
-    /// Last source frame to include.
+    /// First source frame past the range; the source's end when unset.
     #[meta(min = 0, step = 1)]
-    pub range_end: i64,
+    pub range_end: Option<i64>,
     /// Playback speed multiplier.
     #[meta(step = 0.1)]
     pub speed: f64,
     /// Behavior when playback leaves the source range.
     #[meta(kind = "enum", enum_type = LoopMode)]
-    pub loop_mode: i64,
+    pub loop_mode: LoopMode,
 }
 
 impl Default for MediaInParams {
     fn default() -> Self {
         Self {
-            kind: 0,
+            kind: MediaInSourceKind::Image,
             source: String::new(),
             range_start: 0,
-            range_end: 0,
+            range_end: None,
             speed: 1.0,
-            loop_mode: 0,
+            loop_mode: LoopMode::Clamp,
         }
     }
 }
@@ -90,42 +90,37 @@ pub struct MediaIn {
     pub params: MediaInParamsDelegate,
 }
 
-pub fn resolve_for_context(
-    media_in: &MediaIn,
-    ctx: &crate::expr::ExpressionContext<'_>,
-) -> crate::Result<MediaInKind> {
-    let params = media_in.params.eval(&DelegateEvalContext {
-        node_id: media_in.id,
-        expr: ctx,
-    })?;
-    let kind = params.kind;
-    let source = params.source;
-    let range_start = params.range_start;
-    let range_end = params.range_end;
-    let speed = params.speed as f32;
-    let loop_mode = LoopMode::from_int(params.loop_mode);
-
-    if kind == 1 {
-        Ok(MediaInKind::Video {
-            stream_id: source,
-            range: resolve_range(range_start, range_end),
-            speed,
-            loop_mode,
+impl MediaIn {
+    /// What the node shows at `ctx`'s frame.
+    pub fn resolve(&self, ctx: &crate::expr::ExpressionContext<'_>) -> crate::Result<MediaInKind> {
+        let params = self.params.eval(&DelegateEvalContext {
+            node_id: self.id,
+            expr: ctx,
+        })?;
+        Ok(match params.kind {
+            MediaInSourceKind::Image => MediaInKind::Image {
+                image_id: params.source,
+            },
+            MediaInSourceKind::Video => MediaInKind::Video {
+                stream_id: params.source,
+                range: saturate_frame(params.range_start)
+                    ..params.range_end.map_or(u32::MAX, saturate_frame),
+                speed: params.speed as f32,
+                loop_mode: params.loop_mode,
+            },
         })
-    } else {
-        Ok(MediaInKind::Image { image_id: source })
     }
 }
 
-pub fn resolve_range(start: i64, end: i64) -> Option<Range<u32>> {
-    if end <= start {
-        return None;
-    }
-    Some(start.max(0) as u32..end.max(0) as u32)
+fn saturate_frame(frame: i64) -> u32 {
+    u32::try_from(frame).unwrap_or(if frame < 0 { 0 } else { u32::MAX })
 }
 
 /// Maps a (possibly fractional) composition frame to the source frame shown at that instant.
 /// The source position is floored, so a frame stays on screen until the next one starts.
+///
+/// `range` is the source frames to play, up to but not including its end, which is clamped to
+/// the source's `frame_count`.
 ///
 /// Frame rates are `f32`, so a rate with no exact binary form, like NTSC's 30000/1001, converts
 /// whole frames only to within `f64` rounding.
@@ -134,18 +129,12 @@ pub fn map_to_source_frame(
     composition_fps: f32,
     source_fps: f32,
     frame_count: u32,
-    range: Option<&Range<u32>>,
+    range: &Range<u32>,
     speed: f32,
     loop_mode: LoopMode,
 ) -> Option<u32> {
-    if frame_count == 0 {
-        return None;
-    }
-    let start = range.map(|range| range.start).unwrap_or(0);
-    let end = range
-        .map(|range| range.end)
-        .unwrap_or(frame_count)
-        .min(frame_count);
+    let start = i64::from(range.start);
+    let end = i64::from(range.end.min(frame_count));
     if end <= start {
         return None;
     }
@@ -166,115 +155,94 @@ pub fn map_to_source_frame(
     } else {
         (frame.num() * media_fps as f64 * scale) / (frame.den() * comp_fps as f64)
     }
-    .floor() as u32;
-    let forward = speed >= 0.0;
-    let mapped = match loop_mode {
-        LoopMode::Clamp => {
-            if forward {
-                start + relative.min(span.saturating_sub(1))
-            } else {
-                end - 1 - relative.min(span.saturating_sub(1))
-            }
-        }
-        LoopMode::Repeat => {
-            let offset = relative % span;
-            start + if forward { offset } else { span - 1 - offset }
-        }
+    .floor() as i64;
+    let offset = match loop_mode {
+        LoopMode::Clamp => relative.clamp(0, span - 1),
+        LoopMode::Repeat => relative.rem_euclid(span),
         LoopMode::PingPong => {
-            let period = span.saturating_mul(2).saturating_sub(2).max(1);
-            let offset = relative % period;
-            let offset = if offset < span {
+            let period = (span * 2 - 2).max(1);
+            let offset = relative.rem_euclid(period);
+            if offset < span {
                 offset
             } else {
                 period - offset
-            };
-            start + if forward { offset } else { span - 1 - offset }
+            }
         }
     };
-    (mapped < frame_count).then_some(mapped)
+    let offset = if speed >= 0.0 {
+        offset
+    } else {
+        span - 1 - offset
+    };
+    u32::try_from(start + offset).ok()
 }
 
 impl GpuCompileNode for MediaIn {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
-        let size = ctx
-            .media()
-            .and_then(|media| self.native_size(&ctx.expr_context(), media))
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
+        let size = self
+            .native_size(&ctx.expr_context())?
             .unwrap_or_else(|| ctx.canvas_size());
         let texture = ctx.builder_mut().texture(
             Some(format!("media-in:{}:frame", self.id.0)),
             lumen_gpu::TextureDesc::sampled(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
         ctx.register_compiled_node(CompiledMediaInput {
-            node_id: self.id,
-            params: self.params.clone(),
+            media_in: self.clone(),
             texture,
             size,
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: RasterMetadata::default(),
             bounds: None,
-        }))
+        })
     }
 }
 
 impl MediaIn {
     /// The size of the media the node shows at `ctx`'s frame, which its texture is compiled to.
-    /// `None` when the media can't be opened, which binding the node reports.
+    /// `None` without a media store.
     pub(crate) fn native_size(
         &self,
         ctx: &crate::expr::ExpressionContext<'_>,
-        media: &dyn crate::media::MediaStore,
-    ) -> Option<lumen_gpu::Size> {
-        match resolve_for_context(self, ctx).ok()? {
+    ) -> crate::Result<Option<lumen_gpu::Size>> {
+        let Some(media) = ctx.media else {
+            return Ok(None);
+        };
+        let (width, height) = match self.resolve(ctx)? {
             MediaInKind::Image { image_id } => {
-                let metadata = media.get_image_resolver(&image_id).ok()?.metadata();
-                Some(lumen_gpu::Size::new(
-                    metadata.width.max(1),
-                    metadata.height.max(1),
-                ))
+                let metadata = media.get_image_resolver(&image_id)?.metadata();
+                (metadata.width, metadata.height)
             }
             MediaInKind::Video { stream_id, .. } => {
-                let metadata = media.get_video_resolver(&stream_id).ok()?.metadata();
-                Some(lumen_gpu::Size::new(
-                    metadata.width.max(1),
-                    metadata.height.max(1),
-                ))
+                let metadata = media.get_video_resolver(&stream_id)?.metadata();
+                (metadata.width, metadata.height)
             }
-        }
+        };
+        Ok(Some(lumen_gpu::Size::new(width.max(1), height.max(1))))
     }
 }
 
 #[derive(Debug, Clone)]
 struct CompiledMediaInput {
-    node_id: NodeId,
-    params: MediaInParamsDelegate,
+    media_in: MediaIn,
     texture: lumen_gpu::TextureId,
     size: lumen_gpu::Size,
 }
 
 impl GpuCompiledNode for CompiledMediaInput {
     fn node_id(&self) -> NodeId {
-        self.node_id
+        self.media_in.id
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
         let media = ctx.media().ok_or_else(|| RenderError::NodeEvaluation {
-            node_id: self.node_id,
+            node_id: self.media_in.id,
             node_kind: "MediaIn",
             details: "media store is required for media input nodes".to_string(),
         })?;
-        let node = MediaIn {
-            id: self.node_id,
-            params: self.params.clone(),
-        };
-        let kind = resolve_for_context(&node, &ctx.expr_context())?;
-        let (frame, key) = match kind {
+        let (frame, key) = match self.media_in.resolve(&ctx.expr_context())? {
             MediaInKind::Image { image_id } => {
                 let resolver = media.get_image_resolver(&image_id)?;
                 let key = MediaTextureKey {
@@ -297,7 +265,7 @@ impl GpuCompiledNode for CompiledMediaInput {
                     ctx.expr_context().fps,
                     metadata.fps,
                     metadata.frame_count,
-                    range.as_ref(),
+                    &range,
                     speed,
                     loop_mode,
                 )
@@ -324,7 +292,7 @@ mod tests {
         source_fps: f32,
         speed: f32,
         mode: LoopMode,
-        range: Option<std::ops::Range<u32>>,
+        range: std::ops::Range<u32>,
         frame_count: u32,
         frames: Vec<(f64, u32)>,
     }
@@ -336,7 +304,7 @@ mod tests {
             source_fps,
             speed: 1.0,
             mode: LoopMode::Clamp,
-            range: None,
+            range: 0..u32::MAX,
             frame_count: 100,
             frames,
         }
@@ -377,12 +345,51 @@ mod tests {
             ),
             Row {
                 speed: -1.0,
-                range: Some(2..7),
+                range: 2..7,
                 frame_count: 10,
                 ..forward(
                     "negative speed plays the range in reverse and clamps",
                     30.0,
                     vec![(0.0, 6), (3.0, 3), (99.0, 2)],
+                )
+            },
+            Row {
+                range: 4..u32::MAX,
+                frame_count: 10,
+                ..forward(
+                    "a range with only a start plays from it to the source's end",
+                    30.0,
+                    vec![(0.0, 4), (5.0, 9), (50.0, 9)],
+                )
+            },
+            Row {
+                range: 2..5,
+                mode: LoopMode::Repeat,
+                frame_count: 10,
+                ..forward(
+                    "the range's end is the first frame past it",
+                    30.0,
+                    vec![(0.0, 2), (2.0, 4), (3.0, 2), (-1.0, 4)],
+                )
+            },
+            Row {
+                range: 2..3,
+                mode: LoopMode::PingPong,
+                frame_count: 10,
+                ..forward(
+                    "a one-frame range ping-pongs in place",
+                    30.0,
+                    vec![(0.0, 2), (1.0, 2), (7.0, 2)],
+                )
+            },
+            Row {
+                range: 5..50,
+                mode: LoopMode::Repeat,
+                frame_count: 8,
+                ..forward(
+                    "a range past the source's end is cut to it",
+                    30.0,
+                    vec![(0.0, 5), (2.0, 7), (3.0, 5)],
                 )
             },
             ping_pong(
@@ -403,7 +410,7 @@ mod tests {
                     row.composition_fps,
                     row.source_fps,
                     row.frame_count,
-                    row.range.as_ref(),
+                    &row.range,
                     row.speed,
                     row.mode,
                 );
@@ -413,21 +420,29 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_range_maps_no_frame() {
+        for range in [3..3, 20..30] {
+            assert_eq!(
+                map_to_source_frame(0.0, 30.0, 30.0, 10, &range, 1.0, LoopMode::Clamp),
+                None,
+                "{range:?}"
+            );
+        }
+    }
+
+    #[test]
     fn looped_remap_target_keeps_its_source_frame() {
-        use crate::node::processing::time_remap::{TimeRemapSettings, remap_frame};
-        let target = remap_frame(
-            crate::node::NodeId::new(1),
-            TimeRemapSettings {
-                frame: 1.0 / 49.0 * 49.0,
-                loop_enabled: true,
-                loop_start: 1,
-                loop_end: 2,
-            },
-        )
-        .unwrap();
+        use crate::node::processing::time_remap::{TimeRemapParams, remap_frame};
+        let params = TimeRemapParams {
+            frame: 1.0 / 49.0 * 49.0,
+            loop_enabled: true,
+            loop_start: 1,
+            loop_end: 2,
+        };
+        let target = remap_frame(crate::node::NodeId::new(1), &params).unwrap();
         for fps in [24.0, 30.0, 60.0] {
             assert_eq!(
-                map_to_source_frame(target, fps, fps, 10, None, 1.0, LoopMode::Clamp),
+                map_to_source_frame(target, fps, fps, 10, &(0..u32::MAX), 1.0, LoopMode::Clamp),
                 Some(1)
             );
         }

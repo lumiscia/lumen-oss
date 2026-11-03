@@ -1,9 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams};
 
-use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, compiler,
-};
+use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -50,59 +47,19 @@ pub struct HueSaturation {
     pub source: Option<NodeId>,
 }
 
-#[derive(Debug, Clone)]
-struct CompiledHueSaturation {
-    node_id: NodeId,
-    params: HueSaturationParamsDelegate,
-    alpha_mode: AlphaMode,
-    buffer: lumen_gpu::BufferId,
-}
-
-impl GpuCompiledNode for CompiledHueSaturation {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&DelegateEvalContext {
-            node_id: self.node_id,
-            expr: &ctx.expr_context(),
-        })?;
-        let gpu_params = compiler::HueSaturationParams {
-            hue_offset: (params.hue_degrees / 360.0) as f32,
-            saturation: params.saturation as f32,
-            lightness: params.lightness as f32,
-            premultiplied: u32::from(self.alpha_mode == AlphaMode::Premultiplied),
-        };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
-        Ok(())
-    }
-}
-
 impl GpuCompileNode for HueSaturation {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
-        let (source, texture, params) = ctx.compile_unary_filter(
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
+        ctx.unary_filter(
             self.id,
             self.source,
             "hue-saturation",
             SHADER,
-            std::mem::size_of::<compiler::HueSaturationParams>() as u64,
-            compiler::FilterDomain::PremultipliedSource,
-        )?;
-        ctx.register_compiled_node(CompiledHueSaturation {
-            node_id: self.id,
-            params: self.params.clone(),
-            alpha_mode: source.metadata.alpha_mode,
-            buffer: params,
-        });
-        Ok(CompiledOutput::Raster(RasterHandle {
-            texture,
-            domain: source.domain,
-            metadata: source.metadata,
-            bounds: source.bounds,
-        }))
+            &self.params,
+            |params| compiler::HueSaturationParams {
+                hue_offset: (params.hue_degrees / 360.0) as f32,
+                saturation: params.saturation as f32,
+                lightness: params.lightness as f32,
+            },
+        )
     }
 }

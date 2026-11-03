@@ -5,12 +5,12 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, mpsc};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 
 use lumen_engine::{
     composition::Composition,
     error::MediaError,
-    gpu::{BoundFrame, CompiledOutput, GpuCompositionRenderer},
+    gpu::{BoundFrame, GpuCompositionRenderer},
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
         TextSession, VideoFrameResolver, VideoMetadata,
@@ -483,45 +483,8 @@ pub fn read_rgba8(
     texture: &wgpu::Texture,
     size: lumen_gpu::Size,
 ) -> Vec<u8> {
-    let row = size.width as usize * 4;
-    let padded_row = (size.width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("lumen-engine render test readback"),
-        size: u64::from(padded_row) * u64::from(size.height),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = gpu.device.create_command_encoder(&Default::default());
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_row),
-                rows_per_image: Some(size.height),
-            },
-        },
-        size.as_extent(),
-    );
-    gpu.queue.submit([encoder.finish()]);
-
-    let (sender, receiver) = mpsc::channel();
-    buffer
-        .slice(..)
-        .map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).unwrap()
-        });
-    gpu.device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .unwrap();
-    receiver.recv().unwrap().unwrap();
-    let mapped = buffer.slice(..).get_mapped_range().unwrap();
-    mapped
-        .chunks(padded_row as usize)
-        .flat_map(|padded| &padded[..row])
-        .copied()
-        .collect()
+    gpu.read_texture_rgba8(texture, size)
+        .unwrap_or_else(|error| panic!("readback fails: {error}"))
 }
 
 type FramesCheck = dyn Fn(&[Frame]);
@@ -656,10 +619,12 @@ impl Case {
                 _ => None,
             })
             .expect("scene has a media_output");
-        match &renderer.compiled().expect("a frame rendered").node_outputs[&source] {
-            CompiledOutput::Raster(raster) => raster.domain,
-            CompiledOutput::Empty => panic!("output source {source:?} is empty"),
-        }
+        renderer
+            .compiled()
+            .expect("a frame rendered")
+            .node_output(source, &[])
+            .expect("the output source compiled")
+            .domain
     }
 }
 
