@@ -97,47 +97,8 @@ fn assert_rgba8_near(actual: &[u8], expected: [u8; 4]) {
 }
 
 #[test]
-fn compute_pass_writes_storage_texture() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
-    let size = Size::new(4, 4);
-    let mut builder = RenderPlan::builder();
-    let output = builder.texture(
-        Some("output".to_string()),
-        TextureDesc::storage(size, wgpu::TextureFormat::Rgba8Unorm),
-    );
-    let program = builder.program(ProgramDesc::Compute(ComputeProgramDesc {
-        label: Some("fill texture".to_string()),
-        shader: COMPUTE_TEXTURE_SHADER.to_string(),
-        entry: "cs_main".to_string(),
-        bind_groups: BindGroupLayoutSpec::single(vec![BindingLayoutEntry::storage_texture(
-            0,
-            wgpu::ShaderStages::COMPUTE,
-            wgpu::TextureFormat::Rgba8Unorm,
-            wgpu::StorageTextureAccess::WriteOnly,
-        )]),
-    }));
-    builder.compute_pass(ComputePassDesc {
-        label: Some("fill".to_string()),
-        program,
-        bindings: vec![Binding::storage_texture(0, 0, output)],
-        dispatch: Dispatch { x: 1, y: 1, z: 1 },
-    });
-    let plan = builder.build();
-
-    renderer.prepare_plan(&plan).unwrap();
-    renderer.execute(&plan, &FrameUpdate::new()).unwrap();
-
-    let bytes = read_texture_rgba8(&renderer, output, size);
-    assert_rgba8_near(&bytes[0..4], [64, 128, 191, 255]);
-}
-
-#[test]
-fn replaced_texture_is_bound_on_next_submit() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
+fn compute_pass_writes_storage_texture_and_rebinds_a_replacement() {
+    let mut renderer = renderer();
     let size = Size::new(4, 4);
     let desc = TextureDesc::storage(size, wgpu::TextureFormat::Rgba8Unorm);
     let mut builder = RenderPlan::builder();
@@ -162,6 +123,8 @@ fn replaced_texture_is_bound_on_next_submit() {
     let plan = builder.build();
     renderer.prepare_plan(&plan).unwrap();
     renderer.execute(&plan, &FrameUpdate::new()).unwrap();
+    let bytes = read_texture_rgba8(&renderer, output, size);
+    assert_rgba8_near(&bytes[0..4], [64, 128, 191, 255]);
 
     let replacement = renderer.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("replacement output"),
@@ -174,6 +137,8 @@ fn replaced_texture_is_bound_on_next_submit() {
         view_formats: &[],
     });
     renderer.replace_texture(output, replacement, desc).unwrap();
+    let bytes = read_texture_rgba8(&renderer, output, size);
+    assert_eq!(&bytes[0..4], &[0, 0, 0, 0], "replacement starts blank");
     renderer.execute(&plan, &FrameUpdate::new()).unwrap();
 
     let bytes = read_texture_rgba8(&renderer, output, size);
@@ -182,9 +147,7 @@ fn replaced_texture_is_bound_on_next_submit() {
 
 #[test]
 fn uniform_upload_updates_compute_shader_output_without_replanning() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
+    let mut renderer = renderer();
     let size = Size::new(1, 1);
     let mut builder = RenderPlan::builder();
     let uniforms = builder.buffer(Some("color".to_string()), BufferDesc::uniform(16));
@@ -252,9 +215,7 @@ fn uniform_upload_updates_compute_shader_output_without_replanning() {
 
 #[test]
 fn skipped_passes_leave_their_targets_as_last_written() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
+    let mut renderer = renderer();
     let size = Size::new(1, 1);
     let mut builder = RenderPlan::builder();
     let uniforms = builder.buffer(Some("color".to_string()), BufferDesc::uniform(16));
@@ -311,9 +272,7 @@ fn skipped_passes_leave_their_targets_as_last_written() {
 
 #[test]
 fn consecutive_compute_passes_share_one_pass_across_skipped_passes() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
+    let mut renderer = renderer();
     let size = Size::new(1, 1);
     let compute = wgpu::ShaderStages::COMPUTE;
     let storage =
@@ -438,9 +397,7 @@ fn consecutive_compute_passes_share_one_pass_across_skipped_passes() {
 
 #[test]
 fn sibling_renderers_never_accept_an_invalid_program() {
-    let Some(root) = renderer() else {
-        return;
-    };
+    let root = renderer();
     let mut builder = RenderPlan::builder();
     builder.program(ProgramDesc::Compute(ComputeProgramDesc {
         label: Some("invalid".to_string()),
@@ -472,75 +429,8 @@ fn sibling_renderers_never_accept_an_invalid_program() {
 }
 
 #[test]
-fn invalid_program_is_rejected_on_every_prepare() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
-    let mut builder = RenderPlan::builder();
-    builder.program(ProgramDesc::Compute(ComputeProgramDesc {
-        label: Some("invalid".to_string()),
-        shader: "@compute @workgroup_size(1) fn cs_main() { missing(); }".to_string(),
-        entry: "cs_main".to_string(),
-        bind_groups: vec![],
-    }));
-    let plan = builder.build();
-    assert!(renderer.prepare_plan(&plan).is_err());
-    assert!(renderer.prepare_plan(&plan).is_err());
-}
-
-#[test]
-fn render_pass_draws_fullscreen_triangle_to_target() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
-    let size = Size::new(2, 2);
-    let mut builder = RenderPlan::builder();
-    let output = builder.texture(
-        Some("output".to_string()),
-        TextureDesc::render_target(size, wgpu::TextureFormat::Rgba8Unorm),
-    );
-    let program = builder.program(ProgramDesc::Render(RenderProgramDesc {
-        label: Some("orange".to_string()),
-        shader: RENDER_SHADER.to_string(),
-        vertex_entry: "vs_main".to_string(),
-        fragment_entry: "fs_main".to_string(),
-        bind_groups: Vec::new(),
-        targets: vec![Some(wgpu::ColorTargetState {
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            blend: Some(wgpu::BlendState::REPLACE),
-            write_mask: wgpu::ColorWrites::ALL,
-        })],
-        primitive: wgpu::PrimitiveState::default(),
-    }));
-    builder.render_pass(RenderPassDesc {
-        label: Some("draw".to_string()),
-        program,
-        targets: vec![RenderTargetRef {
-            texture: output,
-            load: LoadOp::Clear(wgpu::Color::BLACK),
-            store: wgpu::StoreOp::Store,
-        }],
-        bindings: Vec::new(),
-        draw: Draw {
-            vertices: 0..3,
-            instances: 0..1,
-        },
-        viewport: None,
-    });
-    let plan = builder.build();
-
-    renderer.prepare_plan(&plan).unwrap();
-    renderer.execute(&plan, &FrameUpdate::new()).unwrap();
-
-    let bytes = read_texture_rgba8(&renderer, output, size);
-    assert_rgba8_near(&bytes[0..4], [255, 128, 0, 255]);
-}
-
-#[test]
-fn submit_plan_with_external_texture_restores_slot_and_retains_target() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
+fn render_pass_draws_to_its_target_or_to_an_external_texture() {
+    let mut renderer = renderer();
     let size = Size::new(2, 2);
     let desc = TextureDesc::render_target(size, wgpu::TextureFormat::Rgba8Unorm);
     let mut builder = RenderPlan::builder();
@@ -602,16 +492,19 @@ fn submit_plan_with_external_texture_restores_slot_and_retains_target() {
     ));
     assert!(std::ptr::eq(submitted.texture(), external.as_ref()));
     submitted.wait(&renderer.device).unwrap();
-
     let bytes = read_wgpu_texture_rgba8(&renderer, submitted.texture(), size);
+    assert_rgba8_near(&bytes[0..4], [255, 128, 0, 255]);
+    let bytes = read_texture_rgba8(&renderer, output, size);
+    assert_eq!(&bytes[0..4], &[0, 0, 0, 0], "internal target is untouched");
+
+    renderer.execute(&plan, &FrameUpdate::new()).unwrap();
+    let bytes = read_texture_rgba8(&renderer, output, size);
     assert_rgba8_near(&bytes[0..4], [255, 128, 0, 255]);
 }
 
 #[test]
 fn copy_texture_pass_copies_uploaded_texture_data() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
+    let mut renderer = renderer();
     let size = Size::new(2, 2);
     let mut builder = RenderPlan::builder();
     let source = builder.texture(
@@ -646,9 +539,7 @@ fn copy_texture_pass_copies_uploaded_texture_data() {
 
 #[test]
 fn execute_rejects_unprepared_or_changed_plans() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
+    let mut renderer = renderer();
     let one_buffer = || {
         let mut builder = RenderPlan::builder();
         builder.buffer(None, BufferDesc::uniform(16));
@@ -677,9 +568,7 @@ fn execute_rejects_unprepared_or_changed_plans() {
 
 #[test]
 fn rejected_buffer_upload_is_not_cached_as_written() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
+    let mut renderer = renderer();
     let mut builder = RenderPlan::builder();
     let buffer = builder.buffer(None, BufferDesc::uniform(16));
     let plan = builder.build();
@@ -700,9 +589,7 @@ fn rejected_buffer_upload_is_not_cached_as_written() {
 
 #[test]
 fn execute_rejects_buffer_uploads_past_declared_size() {
-    let Some(mut renderer) = renderer() else {
-        return;
-    };
+    let mut renderer = renderer();
     let mut builder = RenderPlan::builder();
     let buffer = builder.buffer(None, BufferDesc::uniform(4));
     let plan = builder.build();
@@ -719,14 +606,8 @@ fn execute_rejects_buffer_uploads_past_declared_size() {
     );
 }
 
-fn renderer() -> Option<Renderer> {
-    match pollster::block_on(Renderer::new()) {
-        Ok(renderer) => Some(renderer),
-        Err(error) => {
-            eprintln!("skipping GPU-backed lumen-gpu test: {error:#}");
-            None
-        }
-    }
+fn renderer() -> Renderer {
+    pollster::block_on(Renderer::new()).expect("lumen-gpu tests need a wgpu adapter")
 }
 
 fn read_buffer_u32(renderer: &Renderer, id: BufferId, count: usize) -> Vec<u32> {
