@@ -1,6 +1,6 @@
 import type * as previewBindings from "./lumen_wasm.js";
 export type { InitInput, InitOutput, SyncInitInput } from "./lumen_wasm.js";
-export { initSync, LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";
+export { initSync, LumenPreviewController } from "./lumen_wasm.js";
 
 export interface LumenBrowserBindingsOptions {
   previewWasmUrl?: string | URL | Request | Response | BufferSource | WebAssembly.Module;

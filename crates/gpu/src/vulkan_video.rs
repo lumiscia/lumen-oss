@@ -39,7 +39,9 @@ impl Renderer {
                 power_preference: wgpu::PowerPreference::from_env()
                     .unwrap_or(wgpu::PowerPreference::HighPerformance),
                 compatible_surface: None,
-                force_fallback_adapter: false,
+                force_fallback_adapter: crate::renderer::env_flag(
+                    "LUMEN_GPU_FORCE_FALLBACK_ADAPTER",
+                ),
                 apply_limit_buckets: false,
             })
             .await
