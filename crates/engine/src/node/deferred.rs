@@ -35,14 +35,20 @@ impl<T> Deferred<T> {
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<T>
     where
-        T: DeferredValue,
+        T: ParamValue,
     {
-        T::eval_deferred(self, ctx).map_err(|error| error.located(node_id, field))
+        match self {
+            Self::Value(value) => Ok(value.clone()),
+            Self::Expr(expr) => expr
+                .evaluate(ctx)
+                .and_then(T::from_expression)
+                .map_err(|error| error.located(node_id, field)),
+        }
     }
 
     pub fn to_property_value(&self) -> PropertyValue
     where
-        T: DeferredValue,
+        T: ParamValue,
     {
         match self {
             Self::Value(value) => T::to_property_value(value),
@@ -56,7 +62,7 @@ impl<T> Deferred<T> {
 
     pub fn to_property_expression(&self) -> PropertyExpression
     where
-        T: DeferredValue,
+        T: ParamValue,
     {
         match self {
             Self::Value(value) => PropertyExpression::Value(T::to_property_value(value)),
@@ -70,7 +76,7 @@ impl<T> Deferred<T> {
         property_path: &str,
     ) -> crate::Result<Self>
     where
-        T: DeferredValue,
+        T: ParamValue,
     {
         match value {
             PropertyExpression::Value(value) => T::from_property_value(value)
@@ -102,7 +108,7 @@ impl<T> From<T> for Deferred<T> {
 
 impl<'de, T> serde::Deserialize<'de> for Deferred<T>
 where
-    T: DeferredJsonValue + DeferredValue,
+    T: DeferredJsonValue + ParamValue,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -136,8 +142,8 @@ pub trait DeferredJsonValue: Sized {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String>;
 }
 
-pub trait DeferredValue: Clone {
-    /// Whether `eval_deferred` can resolve a `Deferred::Expr` to this type.
+pub trait ParamValue: Clone {
+    /// Whether `from_expression` can produce this type.
     const ACCEPTS_EXPRESSIONS: bool;
 
     /// Whether a literal `value` holds expressions of its own.
@@ -145,12 +151,8 @@ pub trait DeferredValue: Clone {
         false
     }
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self>
-    where
-        Self: Sized;
+    /// This type from what an expression evaluated to.
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self>;
 
     fn to_property_value(value: &Self) -> PropertyValue;
     fn from_property_value(value: PropertyValue) -> Option<Self>
@@ -161,7 +163,7 @@ pub trait DeferredValue: Clone {
 
 impl<T> DelegateEvaluable for Deferred<T>
 where
-    T: DeferredValue,
+    T: ParamValue,
 {
     type Evaluated = T;
 
@@ -179,7 +181,7 @@ where
 
 impl<T> DelegateValue for Deferred<T>
 where
-    T: DeferredValue,
+    T: ParamValue,
 {
     const ACCEPTS_EXPRESSIONS: bool = T::ACCEPTS_EXPRESSIONS;
 
@@ -238,18 +240,14 @@ fn wrong_type(expected: &str, value: &ExpressionValue) -> LumenError {
     ))
 }
 
-pub fn eval_number(
-    expr: &Expression,
-    ctx: &crate::expr::ExpressionContext<'_>,
-) -> crate::Result<f64> {
-    let value = expr.evaluate(ctx)?;
+fn number(value: ExpressionValue) -> crate::Result<f64> {
     value.as_f64().ok_or_else(|| wrong_type("a number", &value))
 }
 
 /// An expression's number as an integer param takes it: truncated toward zero, or an error when
 /// it is NaN or infinite.
-pub fn eval_int(expr: &Expression, ctx: &crate::expr::ExpressionContext<'_>) -> crate::Result<i64> {
-    let value = eval_number(expr, ctx)?;
+pub fn truncated_int(value: ExpressionValue) -> crate::Result<i64> {
+    let value = number(value)?;
     if value.is_finite() {
         Ok(value as i64)
     } else {
@@ -259,57 +257,41 @@ pub fn eval_int(expr: &Expression, ctx: &crate::expr::ExpressionContext<'_>) -> 
     }
 }
 
-fn eval_vec2(
-    expr: &Expression,
-    ctx: &crate::expr::ExpressionContext<'_>,
-) -> crate::Result<(f64, f64)> {
-    let value = expr.evaluate(ctx)?;
+fn vec2(value: ExpressionValue) -> crate::Result<(f64, f64)> {
     value.as_vec2().ok_or_else(|| wrong_type("a vec2", &value))
 }
 
-macro_rules! impl_deferred_float_expr {
-    ($ty:ty, $conv:expr) => {
-        impl DeferredValue for $ty {
-            const ACCEPTS_EXPRESSIONS: bool = true;
-
-            fn eval_deferred(
-                deferred: &Deferred<Self>,
-                ctx: &crate::expr::ExpressionContext<'_>,
-            ) -> crate::Result<Self> {
-                match deferred {
-                    Deferred::Value(value) => Ok(*value),
-                    Deferred::Expr(expr) => eval_number(expr, ctx).map($conv),
-                }
-            }
-
-            fn to_property_value(value: &Self) -> PropertyValue {
-                PropertyValue::Float(f64::from(*value))
-            }
-
-            fn from_property_value(value: PropertyValue) -> Option<Self> {
-                value.coerce_float().map($conv)
-            }
-
-            fn property_kind_name() -> &'static str {
-                "Float"
-            }
-        }
-    };
+fn color(value: ExpressionValue) -> crate::Result<[u8; 4]> {
+    value
+        .as_color_u8()
+        .ok_or_else(|| wrong_type("a color", &value))
 }
 
-impl_deferred_float_expr!(f64, |value: f64| value);
-
-impl DeferredValue for f32 {
+impl ParamValue for f64 {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        match deferred {
-            Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => eval_number(expr, ctx).map(|value| value as f32),
-        }
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        number(value)
+    }
+
+    fn to_property_value(value: &Self) -> PropertyValue {
+        PropertyValue::Float(*value)
+    }
+
+    fn from_property_value(value: PropertyValue) -> Option<Self> {
+        value.coerce_float()
+    }
+
+    fn property_kind_name() -> &'static str {
+        "Float"
+    }
+}
+
+impl ParamValue for f32 {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        number(value).map(|value| value as f32)
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -325,17 +307,11 @@ impl DeferredValue for f32 {
     }
 }
 
-impl DeferredValue for i64 {
+impl ParamValue for i64 {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        match deferred {
-            Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => eval_int(expr, ctx),
-        }
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        truncated_int(value)
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -351,17 +327,11 @@ impl DeferredValue for i64 {
     }
 }
 
-impl DeferredValue for u32 {
+impl ParamValue for u32 {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        let value = match deferred {
-            Deferred::Value(value) => i64::from(*value),
-            Deferred::Expr(expr) => eval_int(expr, ctx)?,
-        };
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        let value = truncated_int(value)?;
         u32::try_from(value).map_err(|_| {
             LumenError::evaluate(format!("{value} is out of range for an unsigned integer"))
         })
@@ -382,17 +352,11 @@ impl DeferredValue for u32 {
     }
 }
 
-impl DeferredValue for u8 {
+impl ParamValue for u8 {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        let value = match deferred {
-            Deferred::Value(value) => i64::from(*value),
-            Deferred::Expr(expr) => eval_int(expr, ctx)?,
-        };
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        let value = truncated_int(value)?;
         u8::try_from(value)
             .map_err(|_| LumenError::evaluate(format!("{value} is out of range for 0 to 255")))
     }
@@ -412,17 +376,11 @@ impl DeferredValue for u8 {
     }
 }
 
-impl DeferredValue for bool {
+impl ParamValue for bool {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        match deferred {
-            Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => Ok(expr.evaluate(ctx)?.as_bool()),
-        }
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        Ok(value.as_bool())
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -438,17 +396,11 @@ impl DeferredValue for bool {
     }
 }
 
-impl DeferredValue for String {
+impl ParamValue for String {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        match deferred {
-            Deferred::Value(value) => Ok(value.clone()),
-            Deferred::Expr(expr) => Ok(expr.evaluate(ctx)?.as_string()),
-        }
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        Ok(value.as_string())
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -464,27 +416,11 @@ impl DeferredValue for String {
     }
 }
 
-fn eval_color(
-    expr: &Expression,
-    ctx: &crate::expr::ExpressionContext<'_>,
-) -> crate::Result<[u8; 4]> {
-    let value = expr.evaluate(ctx)?;
-    value
-        .as_color_u8()
-        .ok_or_else(|| wrong_type("a color", &value))
-}
-
-impl DeferredValue for [u8; 4] {
+impl ParamValue for [u8; 4] {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        match deferred {
-            Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => eval_color(expr, ctx),
-        }
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        color(value)
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -503,17 +439,11 @@ impl DeferredValue for [u8; 4] {
     }
 }
 
-impl DeferredValue for vector::paint::Paint {
+impl ParamValue for vector::paint::Paint {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        match deferred {
-            Deferred::Value(value) => Ok(value.clone()),
-            Deferred::Expr(expr) => eval_color(expr, ctx).map(vector::paint::Paint::solid),
-        }
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        color(value).map(vector::paint::Paint::solid)
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -533,7 +463,7 @@ impl DeferredValue for vector::paint::Paint {
     }
 }
 
-impl DeferredValue for ShaderUniforms {
+impl ParamValue for ShaderUniforms {
     const ACCEPTS_EXPRESSIONS: bool = false;
 
     fn has_expressions(value: &Self) -> bool {
@@ -546,16 +476,10 @@ impl DeferredValue for ShaderUniforms {
         })
     }
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        _ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        match deferred {
-            Deferred::Value(value) => Ok(value.clone()),
-            Deferred::Expr(_) => Err(LumenError::evaluate(
-                "ShaderUniforms can't be an expression",
-            )),
-        }
+    fn from_expression(_value: ExpressionValue) -> crate::Result<Self> {
+        Err(LumenError::evaluate(
+            "ShaderUniforms can't be an expression",
+        ))
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -574,7 +498,7 @@ impl DeferredValue for ShaderUniforms {
     }
 }
 
-impl DeferredValue for ClipProps {
+impl ParamValue for ClipProps {
     const ACCEPTS_EXPRESSIONS: bool = false;
 
     fn has_expressions(value: &Self) -> bool {
@@ -584,14 +508,8 @@ impl DeferredValue for ClipProps {
             .any(|value| matches!(value, super::ClipPropValue::Expr(_)))
     }
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        _ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        match deferred {
-            Deferred::Value(value) => Ok(value.clone()),
-            Deferred::Expr(_) => Err(LumenError::evaluate("ClipProps can't be an expression")),
-        }
+    fn from_expression(_value: ExpressionValue) -> crate::Result<Self> {
+        Err(LumenError::evaluate("ClipProps can't be an expression"))
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -610,17 +528,11 @@ impl DeferredValue for ClipProps {
     }
 }
 
-impl DeferredValue for (f64, f64) {
+impl ParamValue for (f64, f64) {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        match deferred {
-            Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => eval_vec2(expr, ctx),
-        }
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        vec2(value)
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -639,17 +551,11 @@ impl DeferredValue for (f64, f64) {
     }
 }
 
-impl DeferredValue for [f32; 2] {
+impl ParamValue for [f32; 2] {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn eval_deferred(
-        deferred: &Deferred<Self>,
-        ctx: &crate::expr::ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        match deferred {
-            Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => eval_vec2(expr, ctx).map(|(x, y)| [x as f32, y as f32]),
-        }
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        vec2(value).map(|(x, y)| [x as f32, y as f32])
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -798,7 +704,7 @@ mod tests {
 
     #[test]
     fn integer_targets_truncate_finite_results_and_reject_the_rest() {
-        fn eval<T: crate::node::DeferredValue>(source: &str) -> crate::Result<T> {
+        fn eval<T: crate::node::ParamValue>(source: &str) -> crate::Result<T> {
             Deferred::<T>::Expr(Expression::parse(source).unwrap()).eval(
                 NodeId::new(4),
                 "count",

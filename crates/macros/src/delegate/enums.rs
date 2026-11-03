@@ -214,25 +214,19 @@ pub(crate) fn expand_enum_delegate(
             .map(enum_from_int_match_tokens)
             .collect::<Result<Vec<_>>>()?;
         quote! {
-            impl ::lumen_engine::node::DeferredValue for #ident {
+            impl ::lumen_engine::node::ParamValue for #ident {
                 const ACCEPTS_EXPRESSIONS: bool = true;
 
-                fn eval_deferred(
-                    deferred: &::lumen_engine::node::Deferred<Self>,
-                    ctx: &::lumen_engine::expr::ExpressionContext<'_>,
+                fn from_expression(
+                    value: ::lumen_engine::expr::ExpressionValue,
                 ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
-                    match deferred {
-                        ::lumen_engine::node::Deferred::Value(value) => Ok(*value),
-                        ::lumen_engine::node::Deferred::Expr(expr) => {
-                            let value = ::lumen_engine::node::eval_int(expr, ctx)?;
-                            Self::from_i64(value).ok_or_else(|| {
-                                ::lumen_engine::error::LumenError::evaluate(::std::format!(
-                                    "{value} is not a value of {}",
-                                    ::core::stringify!(#ident)
-                                ))
-                            })
-                        }
-                    }
+                    let value = ::lumen_engine::node::truncated_int(value)?;
+                    Self::from_i64(value).ok_or_else(|| {
+                        ::lumen_engine::error::LumenError::evaluate(::std::format!(
+                            "{value} is not a value of {}",
+                            ::core::stringify!(#ident)
+                        ))
+                    })
                 }
 
                 fn to_property_value(value: &Self) -> ::lumen_engine::node::PropertyValue {
@@ -296,13 +290,13 @@ pub(crate) fn expand_enum_delegate(
         }
     });
     let accepts_expressions = if expressions {
-        quote!(<#ident as ::lumen_engine::node::DeferredValue>::ACCEPTS_EXPRESSIONS)
+        quote!(<#ident as ::lumen_engine::node::ParamValue>::ACCEPTS_EXPRESSIONS)
     } else {
         quote!(false)
     };
     let enum_property_methods = quote! {
         fn to_property_value(&self) -> ::lumen_engine::node::PropertyValue {
-            <#ident as ::lumen_engine::node::DeferredValue>::to_property_value(
+            <#ident as ::lumen_engine::node::ParamValue>::to_property_value(
                 &self
                     .clone()
                     .into_evaluated()
@@ -315,10 +309,10 @@ pub(crate) fn expand_enum_delegate(
             node_id: ::lumen_engine::node::NodeId,
             property_path: &str,
         ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
-            let expected = <#ident as ::lumen_engine::node::DeferredValue>::property_kind_name();
+            let expected = <#ident as ::lumen_engine::node::ParamValue>::property_kind_name();
             match value {
                 ::lumen_engine::node::PropertyExpression::Value(value) => {
-                    <#ident as ::lumen_engine::node::DeferredValue>::from_property_value(value)
+                    <#ident as ::lumen_engine::node::ParamValue>::from_property_value(value)
                         .map(::core::convert::Into::into)
                         .ok_or_else(|| {
                             ::lumen_engine::node::PropertyValue::invalid_type(

@@ -24,7 +24,7 @@ pub mod vector;
 pub use clip_props::{ClipPropValue, ClipProps};
 pub use deferred::Deferred;
 pub use deferred::DeferredJsonValue;
-pub use deferred::{DeferredValue, eval_int, eval_number};
+pub use deferred::{ParamValue, truncated_int};
 pub use delegate::{
     DelegateEvalContext, DelegateEvaluable, DelegateValue, DelegateVec, Delegated, NodeParams,
     OptionalDelegate, Override,
