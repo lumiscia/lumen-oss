@@ -229,9 +229,10 @@ fn parse_lut_stops(node_id: NodeId, source: &str) -> crate::Result<Vec<[f32; 3]>
         let components = triplet
             .split([',', ' ', '\t'])
             .filter(|part| !part.is_empty())
-            .map(str::parse::<f32>)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| lut_error(node_id, "LUT contains a non-numeric component"))?;
+            // `str::parse` also accepts `nan` and `inf`, which no clamp below would remove.
+            .map(|part| part.parse::<f32>().ok().filter(|value| value.is_finite()))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| lut_error(node_id, "LUT components must be finite numbers"))?;
         if components.len() != 3 {
             return Err(lut_error(
                 node_id,
