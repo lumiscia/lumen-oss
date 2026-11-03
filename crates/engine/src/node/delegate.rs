@@ -1,5 +1,3 @@
-use crate::error::{ExpressionError, LumenError, PropertyError};
-
 use super::{
     ids::NodeId,
     property::{PropertyExpression, PropertyValue},
@@ -8,91 +6,18 @@ use super::{
 
 pub struct DelegateEvalContext<'a> {
     pub node_id: NodeId,
-    pub property_path: &'a str,
     pub expr: &'a crate::expr::ExpressionContext<'a>,
 }
 
-impl<'a> DelegateEvalContext<'a> {
-    pub fn child(&'a self, property_path: &'a str) -> Self {
-        Self {
-            node_id: self.node_id,
-            property_path,
-            expr: self.expr,
-        }
-    }
-    /// Evaluates `field` of the value at `property_path`, naming it in the path of the error a
-    /// failure carries, such as `content[1].font_size`. The path is built only on failure.
+impl DelegateEvalContext<'_> {
+    /// Evaluates `field` of the value being evaluated, naming it in the path of the failure.
     pub fn eval_field<D: DelegateEvaluable>(
         &self,
         field: &str,
         value: &D,
     ) -> crate::Result<D::Evaluated> {
-        value.eval(self).map_err(|error| match error {
-            LumenError::Property(PropertyError::InvalidType {
-                node_id,
-                property_path,
-                expected,
-                actual,
-            }) => LumenError::Property(PropertyError::InvalidType {
-                node_id,
-                property_path: path_in_field(&property_path, self.property_path, field),
-                expected,
-                actual,
-            }),
-            LumenError::Expression(ExpressionError::Evaluate { path, details }) => {
-                LumenError::Expression(ExpressionError::Evaluate {
-                    path: self.expression_path_in_field(path, field),
-                    details,
-                })
-            }
-            LumenError::Expression(ExpressionError::UndefinedVariable { path, name }) => {
-                LumenError::Expression(ExpressionError::UndefinedVariable {
-                    path: self.expression_path_in_field(path, field),
-                    name,
-                })
-            }
-            error => error,
-        })
+        value.eval(self).map_err(|error| error.in_field(field))
     }
-
-    /// An expression error's path starts with the path of the expression context, which names
-    /// the node, and continues with the path within the param.
-    fn expression_path_in_field(&self, path: Option<String>, field: &str) -> Option<String> {
-        let base = self.expr.path.as_deref().unwrap_or_default();
-        let within = path
-            .as_deref()
-            .unwrap_or_default()
-            .strip_prefix(base)?
-            .trim_start_matches('.');
-        let within = path_in_field(within, self.property_path, field);
-        Some(if base.is_empty() {
-            within
-        } else {
-            format!("{base}.{within}")
-        })
-    }
-}
-
-/// `path`, a path within the value at `parent` or `parent` itself, with `field` after `parent`.
-/// A `path` outside `parent` is returned as it is.
-fn path_in_field(path: &str, parent: &str, field: &str) -> String {
-    let rest = if parent.is_empty() {
-        path
-    } else if path.is_empty() || path == parent {
-        ""
-    } else if let Some(rest) = path
-        .strip_prefix(parent)
-        .and_then(|rest| rest.strip_prefix('.'))
-    {
-        rest
-    } else {
-        return path.to_string();
-    };
-    [parent, field, rest]
-        .into_iter()
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>()
-        .join(".")
 }
 
 pub trait DelegateEvaluable: Clone {
@@ -127,14 +52,7 @@ pub trait Delegated: Clone + Default + Sized {
     fn into_delegate(self) -> Self::Delegate;
 }
 
-pub struct NodeParamEvalContext<'a> {
-    pub node_id: NodeId,
-    pub expr: &'a crate::expr::ExpressionContext<'a>,
-}
-
-pub trait NodeParams: Clone + Default {
-    type Evaluated;
-
+pub trait NodeParams: DelegateEvaluable + Default {
     /// Whether any field is a `Vec`, which the node schema cannot describe.
     const HAS_VEC_FIELDS: bool = false;
 
@@ -142,8 +60,6 @@ pub trait NodeParams: Clone + Default {
     fn is_property(id: &str) -> bool;
     fn default_properties(&self) -> Vec<(&'static str, PropertyValue)>;
     fn get_property(&self, id: &str) -> Option<PropertyExpression>;
-    fn eval(&self, ctx: &NodeParamEvalContext<'_>) -> crate::Result<Self::Evaluated>;
-
     #[cfg(feature = "json")]
     fn from_json(
         node_id: NodeId,
@@ -184,10 +100,7 @@ where
         self.items
             .iter()
             .enumerate()
-            .map(|(index, value)| {
-                let path = format!("{}[{index}]", ctx.property_path);
-                value.eval(&ctx.child(&path))
-            })
+            .map(|(index, value)| value.eval(ctx).map_err(|error| error.in_index(index)))
             .collect()
     }
 

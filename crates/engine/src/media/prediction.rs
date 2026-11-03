@@ -137,10 +137,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
         media_in_node: &media_in::MediaIn,
         collector: &mut RenderRequirements,
     ) -> Result<(), LumenError> {
-        match media_in::resolve_for_context(
-            media_in_node,
-            &self.expr_context("media_requirements"),
-        )? {
+        match media_in::resolve_for_context(media_in_node, &self.expr_context())? {
             media_in::MediaInKind::Image { image_id } => {
                 tracing::trace!(
                     target: "lumen_media",
@@ -186,8 +183,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
         Ok(())
     }
 
-    fn expr_context(&self, path: &str) -> ExpressionContext<'_> {
-        self.scope
-            .expr_context(self.frame, path.to_string(), Some(self.media_store))
+    fn expr_context(&self) -> ExpressionContext<'_> {
+        self.scope.expr_context(self.frame, Some(self.media_store))
     }
 }

@@ -62,8 +62,8 @@ impl CompositionFixture for AnimatedShowcase {
                 id: glow,
                 params: ShapeParamsDelegate {
                     geometry_kind: ShapeGeometryKind::Ellipse.into(),
-                    width: Deferred::value(620),
-                    height: Deferred::value(620),
+                    width: Deferred::value(620.0),
+                    height: Deferred::value(620.0),
                     position: Deferred::value((760.0, -140.0)),
                     fill_enabled: Deferred::value(true),
                     fill_paint: lumen_engine::node::vector::paint::Paint::solid([37, 99, 235, 68])
@@ -77,8 +77,8 @@ impl CompositionFixture for AnimatedShowcase {
             NodeKind::Shape(Shape {
                 id: card,
                 params: ShapeParamsDelegate {
-                    width: Deferred::value(860),
-                    height: Deferred::value(310),
+                    width: Deferred::value(860.0),
+                    height: Deferred::value(310.0),
                     border_radius: Deferred::value(28.0),
                     position: Deferred::value((210.0, 190.0)),
                     fill_enabled: Deferred::value(true),

@@ -1,9 +1,9 @@
 use axum::{
     Json,
     body::Bytes,
-    extract::{Path, State, ws::WebSocketUpgrade},
+    extract::{Path, State, rejection::JsonRejection, ws::WebSocketUpgrade},
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use lumen_server::render::convert_project_payload;
 
@@ -14,7 +14,7 @@ use crate::server::{
 };
 
 use super::{
-    errors::{error_response, not_found_response},
+    errors::ApiError,
     progress::{
         RenderProgressPatch, apply_render_progress, broadcast_progress, update_render_progress,
     },
@@ -37,32 +37,27 @@ pub(super) async fn health() -> Json<HealthResponse> {
 
 pub(super) async fn create_render(
     State(state): State<AppState>,
-    Json(input): Json<RenderJobInput>,
-) -> impl IntoResponse {
+    input: Result<Json<RenderJobInput>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let Json(input) = input?;
     if input.webhook_url.is_some() {
-        return error_response(
+        return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
-            RenderJobError {
-                code: "webhooks_unsupported".to_string(),
-                message: "lumen-server does not deliver webhooks; remove webhookUrl and poll the render or use its socket".to_string(),
-                retryable: false,
-            },
-        );
+            "webhooks_unsupported",
+            "lumen-server does not deliver webhooks; remove webhookUrl and poll the render or use its socket",
+        ));
     }
-    if let Err(error) = validate_media_manifest(&input.media) {
-        return error_response(StatusCode::UNPROCESSABLE_ENTITY, error);
-    }
-    let bundle = match convert_project_payload(&input.composition) {
-        Ok(bundle) => bundle,
-        Err(error) => {
-            return error_response(StatusCode::UNPROCESSABLE_ENTITY, map_execution_error(error));
-        }
-    };
+    validate_media_manifest(&input.media)
+        .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let bundle = convert_project_payload(&input.composition).map_err(|error| {
+        ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, map_execution_error(error))
+    })?;
 
     let id = new_render_id();
     let render = ApiRenderJob {
         cost_micros: 0,
         created_at: current_timestamp(),
+        error: None,
         id: id.clone(),
         input_hash: input_hash(&input.composition, &input.media),
         organization_id: "self-hosted".to_string(),
@@ -72,11 +67,13 @@ pub(super) async fn create_render(
         artifact_url: None,
         duration_ms: None,
         error: None,
+        error_code: None,
         organization_id: "self-hosted".to_string(),
         output_bytes: None,
         progress: 0.0,
         render_id: id.clone(),
         resolution: None,
+        retryable: None,
         stage: Some("queued"),
         state: "queued",
         updated_at: current_timestamp(),
@@ -103,14 +100,14 @@ pub(super) async fn create_render(
         },
     );
 
-    (
+    Ok((
         StatusCode::ACCEPTED,
         Json(CreateRenderResponse {
             cached: false,
             render,
         }),
     )
-        .into_response()
+        .into_response())
 }
 
 pub(super) async fn get_render(
@@ -124,7 +121,7 @@ pub(super) async fn get_render(
         .and_then(|renders| renders.records.get(&id).map(|stored| stored.render.clone()));
     match render {
         Some(render) => (StatusCode::OK, Json(GetRenderResponse { render })).into_response(),
-        None => not_found_response(),
+        None => ApiError::not_found().into_response(),
     }
 }
 
@@ -143,7 +140,7 @@ pub(super) async fn get_render_progress(
     });
     match result {
         Some(result) => (StatusCode::OK, Json(result)).into_response(),
-        None => not_found_response(),
+        None => ApiError::not_found().into_response(),
     }
 }
 
@@ -157,7 +154,7 @@ pub(super) async fn render_socket(
         .read()
         .is_ok_and(|renders| renders.records.contains_key(&id));
     if !known {
-        return not_found_response();
+        return ApiError::not_found().into_response();
     }
 
     ws.on_upgrade(move |socket| render_socket_session(socket, state, id))
@@ -184,7 +181,7 @@ pub(super) async fn get_render_artifact(
             );
             (StatusCode::OK, headers, bytes).into_response()
         }
-        None => not_found_response(),
+        None => ApiError::not_found().into_response(),
     }
 }
 
@@ -259,7 +256,7 @@ fn complete_render(state: &AppState, id: &str, completed: crate::server::Complet
 
 fn fail_render(state: &AppState, id: &str, error: RenderJobError) {
     let patch = RenderProgressPatch {
-        error: Some(error.message),
+        failure: Some(error),
         progress: Some(1.0),
         stage: Some("failed"),
         state: Some("failed"),
@@ -281,6 +278,7 @@ fn finish_render(
         let stored = renders.records.get_mut(id)?;
         stored.bytes = bytes;
         stored.render.status = status;
+        stored.render.error = patch.failure.clone();
         let notification = apply_render_progress(&mut renders, state, id, "completed", patch);
         renders.retain_finished(id, state.retained_renders);
         notification
@@ -303,6 +301,7 @@ mod tests {
         let render = ApiRenderJob {
             cost_micros: 0,
             created_at: String::new(),
+            error: None,
             id: id.to_string(),
             input_hash: String::new(),
             organization_id: "self-hosted".to_string(),

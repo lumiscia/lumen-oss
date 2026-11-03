@@ -1,9 +1,8 @@
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, vector::paint::Paint};
-
-use crate::gpu::{
-    BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    RasterMetadata, compiler,
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
+
+use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -69,9 +68,9 @@ impl GpuCompiledNode for CompiledBackground {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&NodeParamEvalContext {
+        let params = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         let mut paint = params.paint.to_gpu([0, 0, 0, 255]);
         paint.paint_supersample = u32::from(params.paint_supersample);
@@ -90,62 +89,28 @@ impl GpuCompileNode for Background {
             return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let params = self.params.eval(&NodeParamEvalContext {
+        let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
-            expr: &ctx.expr_context(self.id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         let width = ctx.static_dimension_value(i64::from(params.width), "width");
         let height = ctx.static_dimension_value(i64::from(params.height), "height");
-        let size = lumen_gpu::Size::new(width, height);
-        let texture = ctx.builder_mut().texture(
-            Some(format!("background:{}:output", self.id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+        let source = ctx.compute_source(
+            self.id,
+            "background",
+            "fill",
+            SHADER,
+            std::mem::size_of::<crate::node::vector::paint::GpuPaint>() as u64,
+            None,
+            [],
+            lumen_gpu::TextureDomain::full_frame(lumen_gpu::Size::new(width, height)),
         );
-        let buffer = ctx.builder_mut().buffer(
-            Some(format!("background:{}:params", self.id.0)),
-            lumen_gpu::BufferDesc::uniform(
-                std::mem::size_of::<crate::node::vector::paint::GpuPaint>() as u64,
-            ),
-        );
-        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some("background".to_string()),
-                shader: SHADER.to_string(),
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        0,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        1,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                ]),
-            },
-        ));
-        ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
-            label: Some(format!("background:{}:fill", self.id.0)),
-            program,
-            bindings: vec![
-                lumen_gpu::Binding::uniform(0, 0, buffer),
-                lumen_gpu::Binding::storage_texture(0, 1, texture),
-            ],
-            dispatch: compiler::dispatch_for(size),
-        });
         ctx.register_compiled_node(CompiledBackground {
             node_id: self.id,
             params: self.params.clone(),
-            buffer,
+            buffer: source.params,
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
-            texture,
-            domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: RasterMetadata::default(),
-            bounds: None,
-        }))
+        Ok(CompiledOutput::Raster(source.output))
     }
 }

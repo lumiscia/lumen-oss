@@ -31,8 +31,8 @@ pub(crate) struct ColorGradeLut {
 }
 
 impl ColorGradeLut {
-    pub(crate) fn parse(node_id: NodeId, frame: u32, source: &str) -> crate::Result<Self> {
-        let stops = parse_lut_stops(node_id, frame, source)?;
+    pub(crate) fn parse(node_id: NodeId, source: &str) -> crate::Result<Self> {
+        let stops = parse_lut_stops(node_id, source)?;
         let mut table = [[0.0; 4]; LUT_TABLE_SIZE];
         for (index, entry) in table.iter_mut().enumerate() {
             let value = index as f32 / (LUT_TABLE_SIZE - 1) as f32;
@@ -107,8 +107,8 @@ pub(crate) struct CurvesTable {
 }
 
 impl CurvesTable {
-    pub(crate) fn parse(node_id: NodeId, frame: u32, source: &str) -> crate::Result<Self> {
-        let stops = parse_lut_stops(node_id, frame, source)?;
+    pub(crate) fn parse(node_id: NodeId, source: &str) -> crate::Result<Self> {
+        let stops = parse_lut_stops(node_id, source)?;
         let mut entries = [[0.0; 4]; LUT_TABLE_SIZE];
         for (index, entry) in entries.iter_mut().enumerate() {
             let value = index as f32 / (LUT_TABLE_SIZE - 1) as f32;
@@ -345,7 +345,7 @@ pub(crate) fn channel_selector(
     }
 }
 
-fn parse_lut_stops(node_id: NodeId, frame: u32, source: &str) -> crate::Result<Vec<[f32; 3]>> {
+fn parse_lut_stops(node_id: NodeId, source: &str) -> crate::Result<Vec<[f32; 3]>> {
     let source = source.trim();
     if source.is_empty()
         || source.eq_ignore_ascii_case(crate::node::processing::color_grade::IDENTITY_LUT)
@@ -368,11 +368,10 @@ fn parse_lut_stops(node_id: NodeId, frame: u32, source: &str) -> crate::Result<V
             .filter(|part| !part.is_empty())
             .map(str::parse::<f32>)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| lut_error(node_id, frame, "LUT contains a non-numeric component"))?;
+            .map_err(|_| lut_error(node_id, "LUT contains a non-numeric component"))?;
         if components.len() != 3 {
             return Err(lut_error(
                 node_id,
-                frame,
                 format!("LUT triplet `{triplet}` must contain exactly three RGB components"),
             ));
         }
@@ -385,7 +384,6 @@ fn parse_lut_stops(node_id: NodeId, frame: u32, source: &str) -> crate::Result<V
     if stops.len() < 2 {
         return Err(lut_error(
             node_id,
-            frame,
             "LUT must contain at least two RGB triplets",
         ));
     }
@@ -400,9 +398,8 @@ fn normalize_lut_component(value: f32) -> f32 {
     }
 }
 
-fn lut_error(node_id: NodeId, frame: u32, details: impl Into<String>) -> crate::error::LumenError {
+fn lut_error(node_id: NodeId, details: impl Into<String>) -> crate::error::LumenError {
     RenderError::NodeEvaluation {
-        frame,
         node_id,
         node_kind: "ColorGrade",
         details: details.into(),

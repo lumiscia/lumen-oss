@@ -56,23 +56,6 @@ pub(crate) fn expand_struct_delegate(
             quote!(#ident: ::lumen_engine::node::Delegated::into_delegate(evaluated.#ident))
         })
         .collect::<Vec<_>>();
-    let param_evaluated_fields = metas
-        .iter()
-        .map(|meta| {
-            let ident = &meta.ident;
-            let name = &meta.property.id;
-            quote! {
-                #ident: ::lumen_engine::node::DelegateEvaluable::eval(
-                    &self.#ident,
-                    &::lumen_engine::node::DelegateEvalContext {
-                        node_id: ctx.node_id,
-                        property_path: #name,
-                        expr: ctx.expr,
-                    },
-                )?
-            }
-        })
-        .collect::<Vec<_>>();
     let nested_evaluated_fields = metas
         .iter()
         .map(|meta| {
@@ -335,8 +318,6 @@ pub(crate) fn expand_struct_delegate(
         }
 
         impl ::lumen_engine::node::NodeParams for #delegate_ident {
-            type Evaluated = #ident;
-
             const HAS_VEC_FIELDS: bool = #has_vec_fields;
 
             fn property_defs() -> ::std::vec::Vec<::lumen_engine::node::PropertyDef> {
@@ -358,15 +339,6 @@ pub(crate) fn expand_struct_delegate(
                     #(#property_matches,)*
                     _ => None,
                 }
-            }
-
-            fn eval(
-                &self,
-                ctx: &::lumen_engine::node::NodeParamEvalContext<'_>,
-            ) -> ::core::result::Result<Self::Evaluated, ::lumen_engine::error::LumenError> {
-                Ok(#ident {
-                    #(#param_evaluated_fields,)*
-                })
             }
 
             #[cfg(feature = "json")]

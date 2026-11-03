@@ -820,7 +820,6 @@ mod tests {
                 fps: 24.0,
                 width: 800,
                 height: 600,
-                path: Some("1.position".to_string()),
                 graph: Some(composition.graph()),
                 media: None,
                 glyph: None,
@@ -921,7 +920,7 @@ mod tests {
 
     #[test]
     fn fractional_int_param_says_whole_number() {
-        let err = param_error("shape", r#"{ "height": 23.84 }"#);
+        let err = param_error("crop", r#"{ "height": 23.84 }"#);
         assert!(
             err.contains("`height` must be a whole number, got 23.84"),
             "{err}"
@@ -930,7 +929,7 @@ mod tests {
 
     #[test]
     fn out_of_range_int_param_keeps_range_message() {
-        let err = param_error("shape", r#"{ "height": 1e30 }"#);
+        let err = param_error("crop", r#"{ "height": 1e30 }"#);
         assert!(
             err.contains("`height` must be an integer within the i64 range"),
             "{err}"
@@ -1370,7 +1369,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            error.contains("prop `index`: expected a number, got string"),
+            error.contains("node 1 `props.index`: expected a number, got string"),
             "{error}"
         );
     }

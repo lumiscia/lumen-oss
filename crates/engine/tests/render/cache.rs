@@ -138,6 +138,20 @@ fn memo_renders_its_source_only_when_the_key_changes() {
 }
 
 #[test]
+fn plan_cache_budget_keeps_the_plan_a_bound_frame_copies_from() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let media = TestMedia::default();
+    let composition: Composition = memo_shader(Some("frame * 0")).into();
+    let first = render(&mut renderer, &composition, 0.0, &media).rgba;
+    assert!(nonblank(&first));
+    let bound = renderer.bind_frame_at(&composition, 0.5, &media).unwrap();
+    renderer.set_plan_cache_budget(0);
+    let (raster, _) = renderer.submit_bound_frame(&bound).unwrap();
+    assert!(read_raster(&renderer, raster) == first);
+}
+
+#[test]
 fn memo_key_is_evaluated_at_fractional_frame_times() {
     let gpu = gpu();
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());

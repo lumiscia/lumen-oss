@@ -388,7 +388,6 @@ impl MeasurementFixture {
             fps: 24.0,
             width: 1400,
             height: 900,
-            path: Some("text_benchmark".to_string()),
             graph: self.graph.as_ref(),
             media: None,
             glyph: None,

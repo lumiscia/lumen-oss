@@ -242,7 +242,17 @@ impl VideoEncoder {
             ffi::check(
                 sys::avcodec_open2(context, codec, ptr::null_mut()),
                 "avcodec_open2",
-            )?;
+            )
+            .map_err(|mut error| {
+                // FFmpeg's Vulkan encoders only say why in their log, and return ENOSYS.
+                if encoder_name.ends_with("_vulkan") && error.code == Some(sys::AVERROR(libc::ENOSYS))
+                {
+                    error.message = format!(
+                        "the Vulkan device can't run `{encoder_name}`: it has no video encode queue or doesn't support encoding this codec"
+                    );
+                }
+                error
+            })?;
             ffi::check(
                 sys::avcodec_parameters_from_context((*stream).codecpar, context),
                 "avcodec_parameters_from_context",

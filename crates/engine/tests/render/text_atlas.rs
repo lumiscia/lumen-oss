@@ -3,10 +3,14 @@
 //! left behind, and rows that load a font need not hold the device to keep fonts apart.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use lumen_engine::{
     composition::Composition,
+    error::MediaError,
+    expr::{Expression, ExpressionContext},
     gpu::{BoundFrame, CompileContext, CompiledOutput, FrameBindContext, GpuCompositionRenderer},
+    media::{FontResolver, MediaStore, TextSession},
     node::{NodeId, PortRef},
 };
 use lumen_gpu::{Upload, wgpu};
@@ -677,4 +681,386 @@ fn measuring_text_through_a_time_remap_loads_the_family_it_names_once_per_id() {
         .font("RemapX", "remap-x:2", roboto_scaled("RemapX", 2));
     assert_eq!(first_rect(&replaced), rect);
     assert_eq!(media.font_requests(), 2);
+}
+
+const ROBOTO: &[u8] = lumen_text::ROBOTO_REGULAR_BYTES;
+const INTER: &[u8] = include_bytes!("../../../text/assets/inter/InterVariable-Latin.ttf");
+
+/// `font` with the family name `family`, which fits in its names' space.
+fn font_named(font: &[u8], family: &str) -> Vec<u8> {
+    let mut font = font.to_vec();
+    let read = |font: &[u8], at: usize| u16::from_be_bytes([font[at], font[at + 1]]) as usize;
+    let tables = read(&font, 4);
+    let name = font[12..12 + tables * 16]
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .find(|table| &table[..4] == b"name")
+        .unwrap();
+    let table = u32::from_be_bytes(name[8..12].try_into().unwrap()) as usize;
+    let strings = table + read(&font, table + 4);
+    let encoded: Vec<u8> = family.encode_utf16().flat_map(u16::to_be_bytes).collect();
+    for record in 0..read(&font, table + 2) {
+        let at = table + 6 + record * 12;
+        if read(&font, at) == 3 && matches!(read(&font, at + 6), 1 | 16) {
+            let start = strings + read(&font, at + 10);
+            font[start..start + encoded.len()].copy_from_slice(&encoded);
+            font[at + 8..at + 10].copy_from_slice(&(encoded.len() as u16).to_be_bytes());
+        }
+    }
+    font
+}
+
+/// A text media that serves `family` under no font file, so its session is its own.
+fn private_session() -> TestMedia {
+    TestMedia::default().font("Absent", "job-font-absent", Vec::new())
+}
+
+#[test]
+fn a_family_only_one_job_has_does_not_reach_another_jobs_measurements() {
+    let measure = |media: &TestMedia| {
+        Expression::parse("text_width(\"WWW\", 32, 0, \"OnlyIn\")")
+            .unwrap()
+            .evaluate(&ExpressionContext {
+                media: Some(media),
+                ..Default::default()
+            })
+            .unwrap()
+            .as_f64()
+            .unwrap()
+    };
+    let with_font =
+        TestMedia::default().font("OnlyIn", "job-font-only-in-one", roboto_scaled("OnlyIn", 2));
+    let without = private_session();
+
+    let fallback = measure(&without);
+    let own = measure(&with_font);
+    assert!(
+        own > fallback * 1.5,
+        "{own} should differ from fallback {fallback}"
+    );
+    assert_eq!(measure(&without), fallback);
+    assert_eq!(measure(&with_font), own);
+}
+
+#[test]
+fn jobs_draw_one_family_name_with_their_own_font_files() {
+    let gpu = gpu();
+    // What is drawn and where both depend on the font: measuring must read the job's too.
+    let composition = |family: &str| -> Composition {
+        one_text(json!({
+            "content": "Rag Wave 28", "font_family": family, "font_size": 64,
+            "position": format!("=vec2(text_width(\"WWWWWW\", 32, 0, \"{family}\"), 40)")
+        }))
+        .into()
+    };
+    let jobs = || {
+        [
+            TestMedia::default().font("Face", "job-font-roboto", font_named(ROBOTO, "Face")),
+            TestMedia::default().font("Face", "job-font-inter", font_named(INTER, "Face")),
+        ]
+    };
+    let shared_family = composition("Face");
+    let mut renderer = gpu.renderer();
+
+    // The true faces under their own names, which is how each file must draw under the shared one.
+    let roboto = render(
+        &mut renderer,
+        &composition("Roboto"),
+        0.0,
+        &TestMedia::default(),
+    )
+    .rgba;
+    let inter_job = TestMedia::default().font("Inter", "job-font-true-inter", INTER.to_vec());
+    let inter = render(&mut gpu.renderer(), &composition("Inter"), 0.0, &inter_job).rgba;
+    assert!(drawn(&roboto));
+    assert_ne!(roboto, inter);
+    let expected = [&roboto, &inter];
+
+    // In turns on one renderer, whose plans and atlas outlive each store's frame.
+    let turns = jobs();
+    for job in [0, 1, 0, 1, 1, 0] {
+        let pixels = render(&mut renderer, &shared_family, 0.0, &turns[job]).rgba;
+        assert!(pixels == *expected[job], "job {job} drew another's font");
+    }
+
+    // Files alike in all but size number their glyphs alike, so their atlas keys match.
+    let sized = |scale: u16| {
+        TestMedia::default().font(
+            "Sizing",
+            &format!("job-font-sized-{scale}"),
+            roboto_scaled("Sizing", scale),
+        )
+    };
+    let glyphs: Composition = one_text(json!({
+        "content": "W", "font_family": "Sizing", "font_size": 64, "position": [16, 40]
+    }))
+    .into();
+    let alone = [1, 2].map(|scale| render(&mut gpu.renderer(), &glyphs, 0.0, &sized(scale)).rgba);
+    assert_ne!(alone[0], alone[1]);
+    let (large, larger) = (sized(1), sized(2));
+    for (job, expected) in [
+        (&large, &alone[0]),
+        (&larger, &alone[1]),
+        (&large, &alone[0]),
+    ] {
+        let pixels = render(&mut renderer, &glyphs, 0.0, job).rgba;
+        assert!(pixels == *expected, "another job's glyphs were drawn");
+    }
+
+    // At once, each job on a renderer of its own as `lumen-server` runs them.
+    let together = jobs();
+    let renderers = [gpu.renderer(), gpu.renderer()];
+    std::thread::scope(|scope| {
+        for ((job, expected), mut renderer) in together.iter().zip(expected).zip(renderers) {
+            let shared_family = &shared_family;
+            scope.spawn(move || {
+                for _ in 0..8 {
+                    let pixels = render(&mut renderer, shared_family, 0.0, job).rgba;
+                    assert!(pixels == *expected, "a job drew another's font");
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn replacing_a_font_mid_job_leaves_no_stale_glyph_on_screen() {
+    let gpu = gpu();
+    let glyph: Composition = one_text(json!({
+        "content": "W", "font_family": "Sizing", "font_size": 64, "position": [16, 40]
+    }))
+    .into();
+    let data = |scale: u16| roboto_scaled("Sizing", scale);
+    let alone = [1, 2].map(|scale| {
+        let job = TestMedia::default().font("Sizing", &format!("alone-{scale}"), data(scale));
+        render(&mut gpu.renderer(), &glyph, 0.0, &job).rgba
+    });
+    assert_ne!(alone[0], alone[1]);
+
+    // Rebuilt fonts number their faces alike and these their glyphs alike, so only the rebuild
+    // tells one font's atlas keys from the other's. The clones keep the job's text session.
+    let mut renderer = gpu.renderer();
+    let job = private_session();
+    for (turn, scale) in [1, 2, 1].into_iter().enumerate() {
+        let media = job
+            .clone()
+            .font("Sizing", &format!("turn-{turn}"), data(scale));
+        let pixels = render(&mut renderer, &glyph, 0.0, &media).rgba;
+        assert!(pixels == alone[usize::from(scale) - 1], "turn {turn}");
+    }
+
+    // Only the merge asks for this font, once the text has placed its glyphs. It goes by the name
+    // the text draws in, and being the latest load it takes over the text.
+    let both: Composition = scene(
+        (256, 128),
+        json!([
+            text_node(1, json!({
+                "content": "W", "font_family": "Sizing", "font_size": 64, "position": [16, 40]
+            })),
+            text_node(2, json!({
+                "content": "W", "font_family": "Sizing", "font_size": 64, "position": [128, 40]
+            })),
+            { "id": 3, "type": "merge", "in": { "base": 1, "overlay": 2 }, "params": {
+                "opacity": "=min(text_width(\"W\", 32, 0, \"Second\"), 1)"
+            } },
+        ]),
+    )
+    .into();
+    let job = TestMedia::default()
+        .font("Sizing", "both-sizing", data(1))
+        .font("Second", "both-second", data(2));
+    let mut renderer = gpu.renderer();
+    let first = render(&mut renderer, &both, 0.0, &job).rgba;
+    let settled = render(&mut renderer, &both, 0.0, &job).rgba;
+    assert!(first == settled);
+    assert!(drawn(&first));
+}
+
+/// Renders `nodes` on a 128 × 64 canvas, which must not fail and must draw something.
+fn drawn_in(gpu: &Gpu, nodes: Value, media: &TestMedia) {
+    let composition: Composition = scene((128, 64), nodes).into();
+    let pixels = render(&mut gpu.renderer(), &composition, 0.0, media).rgba;
+    assert!(drawn(&pixels));
+}
+
+#[test]
+fn a_font_loaded_while_binding_resizes_constant_text_instead_of_failing() {
+    let gpu = gpu();
+    // The first text measures a node whose font loads as the frame binds. That font, unlike the
+    // bundled one, has no "ffi" ligature, so the second text, sized for one glyph, needs three.
+    let media = TestMedia::default()
+        .font("Loader", "late-font", font_named(INTER, "Qzxvj"))
+        .font("Qzxvj", "no-font", Vec::new());
+    drawn_in(
+        &gpu,
+        json!([
+            text_node(99, json!({ "content": "x", "font_family": "Loader" })),
+            text_node(1, json!({
+                "content": "a",
+                "glyph_offset": "=vec2(0 * text_width(node(99)), 0)"
+            })),
+            text_node(2, json!({
+                "content": "ffi", "font_family": "Qzxvj", "font_size": 40, "position": [4, 10]
+            })),
+            { "id": 3, "type": "raster_multimerge", "in": { "layers": [1, 2] } },
+        ]),
+        &media,
+    );
+}
+
+#[test]
+fn many_fonts_loaded_while_binding_settle_in_one_render() {
+    let gpu = gpu();
+    // Each pair is a text measuring a node whose font loads as the frame binds, then a text that
+    // font outgrows, so every font stops a bind.
+    let mut media = TestMedia::default();
+    let mut nodes = Vec::new();
+    let mut layers = Vec::new();
+    for font in 0..5 {
+        let (measured, measuring, outgrown) = (200 + font, 2 * font + 1, 2 * font + 2);
+        media = media
+            .font(
+                &format!("Load{font}"),
+                &format!("Load{font}"),
+                font_named(INTER, &format!("Late{font}")),
+            )
+            .font(&format!("Late{font}"), &format!("Late{font}"), Vec::new());
+        nodes.extend([
+            text_node(
+                measured,
+                json!({
+                    "content": "x", "font_family": format!("Load{font}")
+                }),
+            ),
+            text_node(
+                measuring,
+                json!({
+                    "content": "a",
+                    "glyph_offset": format!("=vec2(0 * text_width(node({measured})), 0)")
+                }),
+            ),
+            text_node(
+                outgrown,
+                json!({
+                    "content": "ffi", "font_family": format!("Late{font}"), "font_size": 40
+                }),
+            ),
+        ]);
+        layers.extend([measuring, outgrown]);
+    }
+    nodes.push(json!({ "id": 100, "type": "raster_multimerge", "in": { "layers": layers } }));
+    drawn_in(&gpu, json!(nodes), &media);
+}
+
+/// Gives "Churn" a resolver with a new id each time it is asked, so its font never settles.
+#[derive(Debug, Default)]
+struct ChurningFont {
+    asked: AtomicU32,
+    session: TextSession,
+}
+
+struct ChurningResolver(String);
+
+impl FontResolver for ChurningResolver {
+    fn id(&self) -> &str {
+        &self.0
+    }
+
+    fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
+        Ok(vec![font_named(INTER, "Churn")])
+    }
+}
+
+impl MediaStore for ChurningFont {
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family == "Churn").then(|| format!("churn-{}", self.asked.fetch_add(1, Ordering::Relaxed)))
+    }
+
+    fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
+        let id = self.font_resolver_id(family)?;
+        Some(Box::new(ChurningResolver(id)))
+    }
+
+    fn text_session(&self) -> Option<&TextSession> {
+        Some(&self.session)
+    }
+}
+
+#[test]
+fn a_font_that_never_settles_fails_the_render() {
+    let gpu = gpu();
+    let composition: Composition = scene(
+        (64, 64),
+        json!([text_node(
+            1,
+            json!({ "content": "x", "font_family": "Churn" })
+        )]),
+    )
+    .into();
+    let error = gpu
+        .renderer()
+        .render_frame_at(&composition, 0.0, &ChurningFont::default())
+        .expect_err("the font loads again on every bind")
+        .to_string();
+    assert!(error.contains("fonts kept loading"), "{error}");
+}
+
+#[test]
+fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let media = TestMedia::default();
+    // The animated size gives the text the full limit, and the constant one a limit of its own.
+    for font_size in [json!(8), json!("=8 + frame * 0")] {
+        let composition = |content: String| -> Composition {
+            scene(
+                (64, 64),
+                json!([text_node(
+                    1,
+                    json!({ "content": content, "font_size": font_size })
+                )]),
+            )
+            .into()
+        };
+        // Whitespace is not drawn, so it does not count toward the limit.
+        let spaced = composition(format!("ab{}", " ".repeat(3000)));
+        assert!(drawn(&render(&mut renderer, &spaced, 0.0, &media).rgba));
+
+        let long = composition("a".repeat(2049));
+        let error = renderer
+            .render_frame_at(&long, 0.0, &media)
+            .expect_err("2049 glyphs exceed the limit")
+            .to_string();
+        assert!(
+            error.contains("Text node 1") && error.contains("2049") && error.contains("2048"),
+            "{font_size}: {error}"
+        );
+    }
+}
+
+#[test]
+fn text_dropped_by_a_full_atlas_still_counts_toward_the_instance_limit() {
+    let gpu = gpu();
+    // Glyphs this large overflow the atlas, which drops some of them.
+    let composition: Composition = scene(
+        (64, 64),
+        json!([text_node(
+            1,
+            json!({
+                "content": "ABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat(80),
+                "font_size": "=1500 + frame * 0", "render_mode": "raster"
+            })
+        )]),
+    )
+    .into();
+    let error = gpu
+        .renderer()
+        .render_frame_at(&composition, 0.0, &TestMedia::default())
+        .expect_err("2080 glyphs exceed the limit")
+        .to_string();
+    assert!(
+        error.contains("Text node 1") && error.contains("2080") && error.contains("2048"),
+        "{error}"
+    );
 }
