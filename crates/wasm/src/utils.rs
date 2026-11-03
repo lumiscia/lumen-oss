@@ -1,8 +1,24 @@
 use lumen_engine::{
     composition::Composition,
+    error::{LumenError, MediaError},
     media::{CpuMediaFrame, premultiply_rgba_in_place_if_needed},
 };
 use std::sync::Arc;
+use wasm_bindgen::JsValue;
+
+/// The JS `Error` for a failed render. A video frame that isn't loaded yet has the code
+/// `media_frame_out_of_range`, on which callers load the frame and render again.
+pub fn render_failure(error: &LumenError) -> JsValue {
+    let js_error = js_sys::Error::new(&error.to_string());
+    if matches!(error, LumenError::Media(MediaError::FrameOutOfRange { .. })) {
+        let _ = js_sys::Reflect::set(
+            &js_error,
+            &JsValue::from_str("code"),
+            &JsValue::from_str("media_frame_out_of_range"),
+        );
+    }
+    js_error.into()
+}
 
 pub fn validate_rgba_len(width: u32, height: u32, len: usize) -> bool {
     u64::from(width)

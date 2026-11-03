@@ -7,7 +7,7 @@ use crate::{
     debug_error, install_panic_hook,
     media::{LumenMediaStore, WasmMediaStore},
     types::FrameRequirementsPayload,
-    utils::composition_json_to_composition,
+    utils::{composition_json_to_composition, render_failure},
 };
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -307,7 +307,7 @@ impl Drop for SurfaceCompositionRenderer {
 
 fn render_error(frame: u32, error: lumen_engine::error::LumenError) -> JsValue {
     debug_error(&format!("[lumen-wasm] render frame={frame} error: {error}"));
-    JsValue::from_str(&error.to_string())
+    render_failure(&error)
 }
 
 struct SurfaceGpu {

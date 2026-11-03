@@ -12,7 +12,9 @@ use crate::{
     media::WasmMediaStore,
     renderer::{SurfaceCompositionRenderer, collect_requirement_window},
     types::{AudioTimelinePayload, FrameRequirementsPayload},
-    utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
+    utils::{
+        composition_json_to_composition, image_frame_from_rgba, render_failure, validate_rgba_len,
+    },
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -736,7 +738,7 @@ fn frame_ready(state: &PreviewState, media: &WasmMediaStore, frame: u32) -> Resu
         .as_ref()
         .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
     let requirements = collect_frame_requirements(composition, media, frame)
-        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        .map_err(|error| render_failure(&error))?;
 
     let images_ready = requirements
         .images
