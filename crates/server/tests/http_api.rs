@@ -417,6 +417,43 @@ fn a_failed_render_keeps_its_code_on_every_read() {
 }
 
 #[test]
+fn errors_axum_answers_itself_carry_the_same_body() {
+    let server = Server::start(&[]);
+    for (path, status, code) in [
+        ("/missing", StatusCode::NOT_FOUND, "route_not_found"),
+        (
+            "/renders",
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+        ),
+        (
+            "/renders/%FF/artifact",
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+        (
+            "/renders/nope/socket",
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+    ] {
+        let response = server.get(path);
+        assert_eq!(response.status(), status, "{path}");
+        if status == StatusCode::METHOD_NOT_ALLOWED {
+            assert_eq!(response.headers()["allow"], "POST", "{path}");
+        }
+        let body: Value = response.json().expect("error body");
+        assert_eq!(body["code"], code, "{path}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty()),
+            "{path}: {body}"
+        );
+    }
+}
+
+#[test]
 fn rejects_bad_requests_before_downloading_anything() {
     let media = MediaServer::start();
     let server = Server::start(&["--allow-media-host", "localhost"]);

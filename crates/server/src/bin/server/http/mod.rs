@@ -88,6 +88,7 @@ fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token))
         .route("/health", get(health))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        .layer(middleware::from_fn(errors::json_errors))
         .with_state(state)
 }
 
