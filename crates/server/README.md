@@ -1,10 +1,10 @@
 # lumen-server
 
-`lumen-server` provides provider-neutral rendering service primitives for Lumen plus a small local HTTP binary.
+`lumen-server` provides the Lumen render library plus a small local HTTP binary.
 
-For production usage, the smoothest path is the hosted platform at [lumiscia.com](https://lumiscia.com). Self-hosting this crate is possible, but you will still need GPU machines, queueing, artifact storage, auth, deployment, monitoring, and provider-specific worker logic.
+For production usage, the smoothest path is the hosted platform at [lumiscia.com](https://lumiscia.com). Self-hosting this crate is possible, but you will still need GPU machines, queueing, artifact storage, auth, deployment, and monitoring.
 
-This crate is experimental and its service traits may change.
+This crate is experimental and its library API may change.
 
 ## Platform Notes
 
@@ -19,7 +19,7 @@ Supported targets today are:
 
 `lumen-server` ships both:
 
-- a library target, `lumen_server`, for embedding in custom render platforms
+- a library target, `lumen_server`, whose `render` module renders a project payload to an MP4 for embedding in custom render platforms
 - a binary target, `lumen-server`, for local HTTP rendering
 
 The exposed Axum API is intentionally binary-owned. The HTTP binary accepts the same public render payload shape as the hosted Lumen API:
@@ -128,26 +128,6 @@ cargo run -p lumen-server --features cli,vulkan --bin lumen-server
 On Linux CI, the SDK integration test also points Vulkan at lavapipe with
 `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`. This is a portability
 baseline, not a hardware performance target.
-
-## Service Layer
-
-The public service layer is built around four extension points:
-
-- `RenderQueue`: enqueue, lease, acknowledge, retry, and heartbeat render jobs.
-- `RenderExecutor`: execute a leased render job.
-- `ArtifactStore`: persist render artifacts and return stable artifact refs.
-- `ProgressSink`: publish render progress events.
-
-Included building blocks:
-
-- `InMemoryRenderQueue` for tests and single-process development.
-- `LocalRenderExecutor` for executing renders in the current process.
-- `NoopProgressSink` for callers that do not need progress events.
-- `CallbackProgressSink` for generic HTTP progress callbacks.
-- `PresignedUrlArtifactStore` for S3-compatible or R2-style pre-signed uploads.
-- `RenderService::process_next` for leasing, executing, storing, and acking one queued job.
-
-Downstream applications that need different job contracts should build their own API around these service traits instead of depending on the binary request/response types.
 
 ## Development
 
