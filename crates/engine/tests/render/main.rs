@@ -1,3 +1,5 @@
+#[cfg(all(feature = "ffmpeg", feature = "image"))]
+mod alpha;
 mod cache;
 mod clips;
 mod effects;

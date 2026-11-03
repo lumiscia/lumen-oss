@@ -108,7 +108,7 @@ pub struct VideoStreamInfo {
     /// Clockwise rotation in degrees (0, 90, 180 or 270) that RGBA decode applies to each frame.
     pub rotation: u32,
     pub pixel_format: PixelFormat,
-    /// Whether the stream's pixel format carries an alpha channel.
+    /// Whether the stream carries alpha, in its pixel format or in a VP8 or VP9 alpha layer.
     pub has_alpha: bool,
     pub time_base: Rational,
     pub avg_frame_rate: Rational,
@@ -373,8 +373,9 @@ impl InputContext {
                 height,
                 rotation,
                 pixel_format: PixelFormat::from_av_pixel_format(format),
-                has_alpha: !descriptor.is_null()
-                    && (*descriptor).flags & sys::AV_PIX_FMT_FLAG_ALPHA as u64 != 0,
+                has_alpha: self.has_alpha_layer(index)
+                    || (!descriptor.is_null()
+                        && (*descriptor).flags & sys::AV_PIX_FMT_FLAG_ALPHA as u64 != 0),
                 time_base: (*stream).time_base.into(),
                 avg_frame_rate: (*stream).avg_frame_rate.into(),
                 frame_rate: stream_frame_rate(self.ptr, stream),
@@ -444,6 +445,20 @@ impl InputContext {
                 "av_seek_frame",
             )
             .map_err(|error| error.with_path(self.path.clone()))
+        }
+    }
+
+    /// Whether the stream has a separate VP8 or VP9 alpha layer. Its pixel format doesn't show one,
+    /// so this reads the tag the Matroska demuxer sets from the track header.
+    pub(crate) fn has_alpha_layer(&self, stream_index: usize) -> bool {
+        unsafe {
+            if stream_index >= (*self.ptr).nb_streams as usize {
+                return false;
+            }
+            let stream = *(*self.ptr).streams.add(stream_index);
+            let entry =
+                sys::av_dict_get((*stream).metadata, c"alpha_mode".as_ptr(), ptr::null(), 0);
+            !entry.is_null() && CStr::from_ptr((*entry).value).to_bytes() == b"1"
         }
     }
 

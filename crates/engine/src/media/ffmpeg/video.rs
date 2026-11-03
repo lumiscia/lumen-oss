@@ -109,6 +109,7 @@ struct LibavStreamDecoder {
     fps: f64,
     time_base_seconds: f64,
     start_time: i64,
+    has_alpha: bool,
     input: InputContext,
     decoder: VideoDecoder,
     next_frame_hint: u32,
@@ -125,6 +126,7 @@ struct DecoderComponents {
     fps: f64,
     time_base_seconds: f64,
     start_time: i64,
+    has_alpha: bool,
     decoder: VideoDecoder,
     gpu_decode_status: GpuDecodeStatus,
 }
@@ -180,6 +182,7 @@ impl LibavStreamDecoder {
             fps: components.fps,
             time_base_seconds: components.time_base_seconds,
             start_time: components.start_time,
+            has_alpha: components.has_alpha,
             input: components.input,
             decoder: components.decoder,
             next_frame_hint: 0,
@@ -234,6 +237,12 @@ impl LibavStreamDecoder {
             tracing::warn!(reason, "hardware decode unavailable, decoding on the CPU");
             options.prefer_hardware_decode = false;
         }
+        if decoder.drops_alpha() {
+            tracing::warn!(
+                source,
+                "this FFmpeg has no libvpx decoder, so the video's alpha layer is dropped and it renders opaque"
+            );
+        }
 
         Ok(DecoderComponents {
             input,
@@ -244,6 +253,7 @@ impl LibavStreamDecoder {
             fps,
             time_base_seconds,
             start_time: stream.start_time,
+            has_alpha: stream.has_alpha,
             decoder,
             gpu_decode_status,
         })
@@ -437,7 +447,7 @@ impl LibavStreamDecoder {
             width: decoded.width,
             height: decoded.height,
             rgba: decoded.data,
-            premultiply: false,
+            premultiply: self.has_alpha,
         })
     }
 
@@ -495,6 +505,7 @@ impl LibavStreamDecoder {
         self.fps = components.fps;
         self.time_base_seconds = components.time_base_seconds;
         self.start_time = components.start_time;
+        self.has_alpha = components.has_alpha;
         self.decoder = components.decoder;
         self.gpu_decode_status = components.gpu_decode_status;
         self.next_frame_hint = 0;
@@ -1190,6 +1201,51 @@ mod tests {
         };
         assert!(
             (i32::from(decoded.rgba[3]) - 128).abs() <= 2,
+            "{:?}",
+            &decoded.rgba[..4]
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    /// 0x2080ff at half alpha, whose blue channel is 255 straight and 128 premultiplied.
+    #[test]
+    fn vp9_alpha_layers_are_detected_and_decoded_premultiplied() {
+        let path =
+            std::env::temp_dir().join(format!("lumen_engine_{}_alpha.webm", std::process::id()));
+        let Ok(output) = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args([
+                "-i",
+                "color=c=0x2080ff:s=32x32:r=30:d=0.2,format=rgba,colorchannelmixer=aa=0.5,format=yuva420p",
+            ])
+            .args(["-c:v", "libvpx-vp9", "-crf", "10", "-b:v", "0"])
+            .arg(&path)
+            .output()
+        else {
+            eprintln!("ffmpeg CLI not installed; skipping VP9 alpha test");
+            return;
+        };
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("Unknown encoder"), "{stderr}");
+            eprintln!("libvpx-vp9 unavailable; skipping VP9 alpha test");
+            return;
+        }
+
+        let source = path.to_string_lossy().to_string();
+        let input = open_input(&source).expect("open clip");
+        assert!(input.best_video_stream().expect("video stream").has_alpha);
+        let resolver =
+            FfmpegVideoResolver::open_with_options(source, FfmpegResolverOptions::default())
+                .expect("open clip");
+        let MediaFrame::CpuRgba(decoded) = resolver.frame(0).expect("decode frame") else {
+            panic!("expected a CPU frame");
+        };
+        let [_, _, blue, alpha] = decoded.rgba[..4] else {
+            panic!("expected a pixel");
+        };
+        assert!(
+            alpha.abs_diff(128) <= 2 && blue.abs_diff(128) <= 4,
             "{:?}",
             &decoded.rgba[..4]
         );

@@ -2,7 +2,9 @@ use std::{fs, path::Path, sync::Arc};
 
 use crate::error::MediaError;
 
-use super::{CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame};
+use super::{
+    CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, premultiply_rgba_in_place_if_needed,
+};
 
 #[derive(Debug, Clone)]
 struct CachedImage {
@@ -52,13 +54,15 @@ fn load_cached_image(source: &str) -> Result<CachedImage, MediaError> {
         width: rgba.width(),
         height: rgba.height(),
     };
+    let mut pixels = rgba.into_raw();
+    premultiply_rgba_in_place_if_needed(&mut pixels);
     Ok(CachedImage {
         metadata,
         frame: Arc::new(CpuMediaFrame {
             row_bytes: metadata.width as usize * 4,
             width: metadata.width,
             height: metadata.height,
-            rgba: Arc::new(rgba.into_raw()),
+            rgba: Arc::new(pixels),
         }),
     })
 }

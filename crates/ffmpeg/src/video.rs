@@ -13,7 +13,7 @@ use crate::{
 use sys::{
     AVCodecID::{
         AV_CODEC_ID_AV1, AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_NONE, AV_CODEC_ID_PRORES,
-        AV_CODEC_ID_VP9,
+        AV_CODEC_ID_VP8, AV_CODEC_ID_VP9,
     },
     AVColorRange::AVCOL_RANGE_JPEG,
     AVColorSpace::{
@@ -102,6 +102,7 @@ pub struct VideoDecoder {
     vulkan_device: Option<crate::gpu::VulkanDevice>,
     /// Timestamps of the packets an edit list discards, for decoders where `drops_by_timestamp`.
     discarded_pts: HashSet<i64>,
+    drops_alpha: bool,
 }
 
 unsafe impl Send for VideoDecoder {}
@@ -209,9 +210,18 @@ impl VideoDecoder {
         let parameters = input.stream_parameters(config.stream_index)?;
         let codec_id = unsafe { (*parameters).codec_id };
         let stable_codec = VideoCodec::from_av_codec_id(codec_id);
-        let codec = match config.mode {
-            DecodeMode::Cpu => find_decoder(codec_id)?,
-            DecodeMode::Gpu(backend) => find_hardware_decoder(codec_id, stable_codec, backend)?,
+        let alpha_layer = input.has_alpha_layer(config.stream_index);
+        let alpha_decoder = if alpha_layer && config.mode == DecodeMode::Cpu {
+            find_alpha_layer_decoder(codec_id)
+        } else {
+            None
+        };
+        let codec = match (alpha_decoder, config.mode) {
+            (Some(decoder), _) => decoder,
+            (None, DecodeMode::Cpu) => find_decoder(codec_id)?,
+            (None, DecodeMode::Gpu(backend)) => {
+                find_hardware_decoder(codec_id, stable_codec, backend)?
+            }
         };
         let context = unsafe { sys::avcodec_alloc_context3(codec) };
         if context.is_null() {
@@ -233,6 +243,7 @@ impl VideoDecoder {
             #[cfg(feature = "vulkan")]
             vulkan_device: None,
             discarded_pts: HashSet::new(),
+            drops_alpha: alpha_layer && alpha_decoder.is_none(),
         };
 
         unsafe {
@@ -282,6 +293,11 @@ impl VideoDecoder {
 
     pub fn codec(&self) -> VideoCodec {
         self.codec
+    }
+
+    /// Whether the stream has an alpha layer this decoder ignores, so its frames come out opaque.
+    pub fn drops_alpha(&self) -> bool {
+        self.drops_alpha
     }
 
     pub fn stream_index(&self) -> usize {
@@ -773,6 +789,17 @@ impl Drop for HwDeviceContext {
     fn drop(&mut self) {
         unsafe { sys::av_buffer_unref(&mut self.ptr) };
     }
+}
+
+/// libvpx, for a VP8 or VP9 stream with an alpha layer. FFmpeg's native decoders ignore that layer.
+fn find_alpha_layer_decoder(codec_id: sys::AVCodecID) -> Option<*const sys::AVCodec> {
+    let name = match codec_id {
+        AV_CODEC_ID_VP9 => c"libvpx-vp9",
+        AV_CODEC_ID_VP8 => c"libvpx",
+        _ => return None,
+    };
+    let decoder = unsafe { sys::avcodec_find_decoder_by_name(name.as_ptr()) };
+    (!decoder.is_null()).then_some(decoder)
 }
 
 fn find_decoder(codec_id: sys::AVCodecID) -> Result<*const sys::AVCodec> {
