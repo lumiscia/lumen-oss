@@ -1,4 +1,3 @@
-#[cfg(feature = "json")]
 use super::{ids::NodeId, ports::PortRef};
 use super::{ports::InputPortDef, property::PropertyValue};
 
@@ -22,25 +21,21 @@ pub enum PropertyKind {
     TextStroke = 14,
 }
 
-#[cfg(any(feature = "json", feature = "metadata"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnumOptionDef {
     pub name: &'static str,
     pub label: &'static str,
     pub value: i64,
-    /// Other names JSON accepts for the option, from its `#[serde(alias)]` attributes. Empty
-    /// without the `json` feature.
+    /// Other names JSON accepts for the option, from its `#[serde(alias)]` attributes.
     pub aliases: &'static [&'static str],
 }
 
-#[cfg(any(feature = "json", feature = "metadata"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnumDef {
     pub name: &'static str,
     pub options: &'static [EnumOptionDef],
 }
 
-#[cfg(any(feature = "json", feature = "metadata"))]
 pub trait NodeEnum {
     fn enum_def() -> &'static EnumDef;
 }
@@ -49,7 +44,6 @@ pub trait NodeEnum {
 pub struct PropertyDef {
     pub id: &'static str,
     pub expected: PropertyKind,
-    #[cfg(any(feature = "json", feature = "metadata"))]
     pub enum_def: Option<&'static EnumDef>,
     #[cfg(feature = "metadata")]
     pub name: &'static str,
@@ -106,7 +100,6 @@ pub trait NodeSchema: Default {
     fn schema() -> NodeSchemaDef;
 }
 
-#[cfg(feature = "json")]
 pub trait JsonNode: Default {
     fn from_json(
         id: NodeId,

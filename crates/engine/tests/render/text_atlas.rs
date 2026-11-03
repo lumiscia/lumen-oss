@@ -189,15 +189,14 @@ fn glyphs_beyond_the_atlas_are_not_uploaded_again_on_every_bind() {
         renderer.upload_bound_frame(&repeated).unwrap();
     }
 
-    // With distance fields a glyph too big for the atlas is drawn from one field, uploaded once.
-    // Without them it is dropped.
+    // A glyph too big for the atlas is drawn from one distance field, uploaded once.
     let oversized = text("W", 20000);
     renderer.release_resources();
     for frame in 4..7 {
         let bound = renderer.bind_frame(&oversized, frame, &media).unwrap();
         assert_eq!(
             bound.texture_upload_count(),
-            usize::from(cfg!(feature = "msdf") && frame == 4),
+            usize::from(frame == 4),
             "frame {frame}"
         );
         renderer.upload_bound_frame(&bound).unwrap();

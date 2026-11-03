@@ -218,7 +218,6 @@ impl DelegateEvaluable for FontFeaturesDelegate {
     }
 }
 
-#[cfg(feature = "json")]
 impl FontFeaturesDelegate {
     /// Parses a JSON object of tags to non-negative integers or `=expression`s.
     pub fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
@@ -266,7 +265,6 @@ impl FontFeaturesDelegate {
     }
 }
 
-#[cfg(feature = "json")]
 impl<'de> serde::Deserialize<'de> for FontFeaturesDelegate {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -342,7 +340,6 @@ impl Default for TextContentDelegate {
     }
 }
 
-#[cfg(feature = "json")]
 impl TextContentDelegate {
     /// Parses `value` as written in JSON, where a string starting with `=` is an expression.
     pub fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
@@ -365,7 +362,6 @@ impl TextContentDelegate {
     }
 }
 
-#[cfg(feature = "json")]
 impl<'de> serde::Deserialize<'de> for TextContentDelegate {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -532,7 +528,7 @@ impl_struct_kind_value!(TextHighlightDelegate, TextHighlight);
 impl_struct_kind_value!(FontFeaturesDelegate, FontFeatures);
 impl_struct_kind_value!(TextStrokeDelegate, TextStroke);
 
-#[cfg(all(test, feature = "json"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{expr::ExpressionContext, node::NodeParams};

@@ -257,7 +257,7 @@ impl LumenPreviewController {
 
     #[wasm_bindgen(js_name = "setLogLevel")]
     pub fn set_log_level(&self, level: &str) -> Result<(), JsValue> {
-        lumen_engine::set_log_level_from_str(level).map_err(|error| JsValue::from_str(&error))?;
+        crate::set_log_level(level).map_err(|error| JsValue::from_str(&error))?;
         tracing::debug!(target: "lumen_wasm", level, "set log level");
         Ok(())
     }

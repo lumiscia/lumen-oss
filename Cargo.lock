@@ -1025,17 +1025,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
 
 [[package]]
-name = "glemu"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b5da3d39f186b9e0f1c38988dd7cbf6c7c461805b8a78a65149d9b229259f8b"
-dependencies = [
- "js-sys",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1627,10 +1616,8 @@ dependencies = [
  "bytemuck",
  "ffmpeg-next",
  "foldhash",
- "glemu",
  "image",
  "js-sys",
- "lumen-engine",
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",
  "lumen-engine-macros",
@@ -1646,8 +1633,6 @@ dependencies = [
  "svgtypes",
  "thiserror",
  "tracing",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

@@ -10,16 +10,13 @@ description = "Text layout and glyph data helpers for the Lumen engine."
 name = "lumen_text"
 path = "src/lib.rs"
 
-[features]
-msdf = ["dep:fdsm", "dep:image", "dep:kurbo"]
-
 [dependencies]
 bytemuck = { version = "1.25.0", features = ["derive"] }
 cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
 etagere = "0.3.0"
-fdsm = { version = "0.8.0", optional = true }
-image = { version = "0.25.10", default-features = false, optional = true }
-kurbo = { version = "0.13.1", optional = true }
+fdsm = "0.8.0"
+image = { version = "0.25.10", default-features = false }
+kurbo = "0.13.1"
 foldhash = "0.2.0"
 swash = { version = "0.2.10", default-features = false, features = ["scale"] }
 unicode-bidi = { version = "0.3.18", default-features = false }

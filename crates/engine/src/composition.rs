@@ -430,7 +430,7 @@ pub(crate) fn declared_props(props: &BTreeMap<String, PropDef>) -> String {
     format!("the template declares {names}")
 }
 
-#[cfg(all(test, feature = "json"))]
+#[cfg(test)]
 mod fingerprint_tests {
     use super::*;
     use serde_json::{Value, json};

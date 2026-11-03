@@ -10,10 +10,6 @@ This crate targets `wasm32-unknown-unknown` and browser GPU APIs through `web-sy
 
 The native Linux/macOS GPU targets do not apply directly here, but the renderer model is shared with the native crates. Browser support depends on the browser's WebGPU/WebGL support.
 
-## Features
-
-- `msdf`: enables multi-channel signed distance field text through `lumen-engine/msdf`.
-
 ## Development
 
 ```bash

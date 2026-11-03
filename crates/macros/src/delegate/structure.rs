@@ -247,7 +247,6 @@ pub(crate) fn expand_struct_delegate(
             .filter(|meta| meta.property.required)
             .map(|meta| &meta.property.id);
         quote! {
-            #[cfg(feature = "json")]
             impl #delegate_ident {
                 /// The params as a JSON object that deserializing parses back. Unset optional
                 /// fields are left out.
@@ -259,7 +258,6 @@ pub(crate) fn expand_struct_delegate(
             }
 
             // Parses the nested delegate field by field the way node params parse.
-            #[cfg(feature = "json")]
             impl<'de> ::serde::Deserialize<'de> for #delegate_ident {
                 fn deserialize<D>(deserializer: D) -> ::core::result::Result<Self, D::Error>
                 where
@@ -288,9 +286,8 @@ pub(crate) fn expand_struct_delegate(
             }
         }
     });
-    let serde_derive = (!delegate.properties).then(
-        || quote!(#[cfg_attr(feature = "json", derive(::serde::Deserialize), serde(default))]),
-    );
+    let serde_derive =
+        (!delegate.properties).then(|| quote!(#[derive(::serde::Deserialize)] #[serde(default)]));
     let has_vec_fields = metas.iter().any(|meta| is_vec_type(&meta.ty));
     let field_idents = metas.iter().map(|meta| &meta.ident).collect::<Vec<_>>();
     let assert_field_types = metas
@@ -341,7 +338,6 @@ pub(crate) fn expand_struct_delegate(
                 }
             }
 
-            #[cfg(feature = "json")]
             fn from_json(
                 node_id: ::lumen_engine::node::NodeId,
                 params: ::core::option::Option<&::serde_json::Map<::std::string::String, ::serde_json::Value>>,
