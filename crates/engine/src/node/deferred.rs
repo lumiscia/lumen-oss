@@ -5,7 +5,7 @@ use crate::{
 
 use super::{
     clip_props::ClipProps,
-    delegate::{DelegateEvalContext, DelegateEvaluable, DelegateValue, Delegated},
+    delegate::{DelegateEvalContext, DelegateEvaluable, DelegateValue, Delegated, PropertyRead},
     ids::NodeId,
     property::{PropertyExpression, PropertyValue},
     shader_uniforms::ShaderUniforms,
@@ -43,30 +43,6 @@ impl<T> Deferred<T> {
                 .evaluate(ctx)
                 .and_then(T::from_expression)
                 .map_err(|error| error.located(node_id, field)),
-        }
-    }
-
-    pub fn to_property_value(&self) -> PropertyValue
-    where
-        T: ParamValue,
-    {
-        match self {
-            Self::Value(value) => T::to_property_value(value),
-            Self::Expr(_) => {
-                panic!(
-                    "Deferred::to_property_value called on expression; use to_property_expression"
-                )
-            }
-        }
-    }
-
-    pub fn to_property_expression(&self) -> PropertyExpression
-    where
-        T: ParamValue,
-    {
-        match self {
-            Self::Value(value) => PropertyExpression::Value(T::to_property_value(value)),
-            Self::Expr(expr) => PropertyExpression::Expr(expr.clone()),
         }
     }
 
@@ -154,7 +130,13 @@ pub trait ParamValue: Clone {
     /// This type from what an expression evaluated to.
     fn from_expression(value: ExpressionValue) -> crate::Result<Self>;
 
-    fn to_property_value(value: &Self) -> PropertyValue;
+    /// The JSON that parses to this literal.
+    fn to_json_value(&self) -> serde_json::Value;
+
+    /// This literal as `node(id, 'param')` reads it, or `None` for a kind expressions have no
+    /// value for, such as a paint.
+    fn to_expression(&self) -> Option<ExpressionValue>;
+
     fn from_property_value(value: PropertyValue) -> Option<Self>
     where
         Self: Sized;
@@ -185,12 +167,23 @@ where
 {
     const ACCEPTS_EXPRESSIONS: bool = T::ACCEPTS_EXPRESSIONS;
 
-    fn to_property_value(&self) -> PropertyValue {
-        Deferred::to_property_value(self)
+    fn to_json_value(&self) -> serde_json::Value {
+        match self {
+            Self::Expr(expr) => serde_json::Value::from(format!("={}", expr.source)),
+            Self::Value(value) => match value.to_json_value() {
+                serde_json::Value::String(text) if text.starts_with('=') => {
+                    serde_json::Value::from(format!("={text}"))
+                }
+                json => json,
+            },
+        }
     }
 
-    fn to_property_expression(&self) -> PropertyExpression {
-        Deferred::to_property_expression(self)
+    fn read(&self) -> PropertyRead<'_> {
+        match self {
+            Self::Expr(expr) => PropertyRead::Expr(expr),
+            Self::Value(value) => PropertyRead::Value(value.to_expression()),
+        }
     }
 
     fn from_property_expression(
@@ -274,8 +267,12 @@ impl ParamValue for f64 {
         number(value)
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::Float(*value)
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::Value::from(*self)
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::Number(*self))
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -294,8 +291,12 @@ impl ParamValue for f32 {
         number(value).map(|value| value as f32)
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::Float(f64::from(*value))
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::Value::from(f64::from(*self))
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::Number(f64::from(*self)))
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -314,8 +315,12 @@ impl ParamValue for i64 {
         truncated_int(value)
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::Int(*value)
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::Value::from(*self)
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::Number(*self as f64))
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -337,8 +342,12 @@ impl ParamValue for u32 {
         })
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::Int(i64::from(*value))
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::Value::from(*self)
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::Number(f64::from(*self)))
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -361,8 +370,12 @@ impl ParamValue for u8 {
             .map_err(|_| LumenError::evaluate(format!("{value} is out of range for 0 to 255")))
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::Int(i64::from(*value))
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::Value::from(*self)
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::Number(f64::from(*self)))
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -383,8 +396,12 @@ impl ParamValue for bool {
         Ok(value.as_bool())
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::Bool(*value)
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::Value::from(*self)
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::Boolean(*self))
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -403,8 +420,12 @@ impl ParamValue for String {
         Ok(value.as_string())
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::String(value.clone())
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::Value::from(self.as_str())
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::String(self.clone()))
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -423,8 +444,12 @@ impl ParamValue for [u8; 4] {
         color(value)
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::Color(*value)
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::Value::from(self.to_vec())
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::color_from_u8(*self))
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -446,8 +471,12 @@ impl ParamValue for vector::paint::Paint {
         color(value).map(vector::paint::Paint::solid)
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::Paint(value.clone())
+    fn to_json_value(&self) -> serde_json::Value {
+        vector::paint::Paint::to_json_value(self)
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        None
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -482,8 +511,12 @@ impl ParamValue for ShaderUniforms {
         ))
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::ShaderUniforms(value.clone())
+    fn to_json_value(&self) -> serde_json::Value {
+        ShaderUniforms::to_json_value(self)
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        None
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -512,8 +545,12 @@ impl ParamValue for ClipProps {
         Err(LumenError::evaluate("ClipProps can't be an expression"))
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::ClipProps(value.clone())
+    fn to_json_value(&self) -> serde_json::Value {
+        ClipProps::to_json_value(self)
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        None
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -535,8 +572,12 @@ impl ParamValue for (f64, f64) {
         vec2(value)
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::Vec2(*value)
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::Value::from(vec![self.0, self.1])
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::Vec2(*self))
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -558,8 +599,15 @@ impl ParamValue for [f32; 2] {
         vec2(value).map(|(x, y)| [x as f32, y as f32])
     }
 
-    fn to_property_value(value: &Self) -> PropertyValue {
-        PropertyValue::Vec2((f64::from(value[0]), f64::from(value[1])))
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::Value::from(vec![f64::from(self[0]), f64::from(self[1])])
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::Vec2((
+            f64::from(self[0]),
+            f64::from(self[1]),
+        )))
     }
 
     fn from_property_value(value: PropertyValue) -> Option<Self> {
@@ -813,7 +861,7 @@ mod tests {
     fn paint_delegate_evaluates_colour_expressions() {
         use crate::node::{
             DelegateEvalContext, DelegateEvaluable, DelegateValue, PropertyExpression,
-            vector::paint::PaintDelegate,
+            PropertyRead, vector::paint::PaintDelegate,
         };
 
         let expression = Expression::parse("tween(#ff0000, #0000ff, 0, 24)").unwrap();
@@ -823,10 +871,7 @@ mod tests {
             "fill_paint",
         )
         .unwrap();
-        assert!(matches!(
-            delegate.to_property_expression(),
-            PropertyExpression::Expr(_)
-        ));
+        assert!(matches!(delegate.read(), PropertyRead::Expr(_)));
         let ctx = DelegateEvalContext {
             node_id: NodeId::new(3),
             expr: &context(),

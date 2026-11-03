@@ -76,17 +76,17 @@ pub(crate) fn expand_struct_delegate(
         let name = &meta.property.id;
         let ty = &meta.ty;
         if is_vec_type(ty) {
-            quote!(properties.push((#name, ::lumen_engine::node::PropertyValue::String(String::from("[]"))));)
+            quote!()
         } else if is_optional_type(ty) {
             quote! {
                 if let ::lumen_engine::node::Override::Set(value) =
                     ::lumen_engine::node::OptionalDelegate::as_override(&self.#ident)
                 {
-                    properties.push((#name, ::lumen_engine::node::DelegateValue::to_property_value(value)));
+                    properties.push((#name, ::lumen_engine::node::DelegateValue::to_json_value(value)));
                 }
             }
         } else {
-            quote!(properties.push((#name, ::lumen_engine::node::DelegateValue::to_property_value(&self.#ident)));)
+            quote!(properties.push((#name, ::lumen_engine::node::DelegateValue::to_json_value(&self.#ident)));)
         }
     });
     let property_matches = metas.iter().map(|meta| {
@@ -99,13 +99,13 @@ pub(crate) fn expand_struct_delegate(
             quote! {
                 #name => match ::lumen_engine::node::OptionalDelegate::as_override(&self.#ident) {
                     ::lumen_engine::node::Override::Set(value) => {
-                        Some(::lumen_engine::node::DelegateValue::to_property_expression(value))
+                        Some(::lumen_engine::node::DelegateValue::read(value))
                     }
                     _ => None,
                 }
             }
         } else {
-            quote!(#name => Some(::lumen_engine::node::DelegateValue::to_property_expression(&self.#ident)))
+            quote!(#name => Some(::lumen_engine::node::DelegateValue::read(&self.#ident)))
         }
     });
     let json_sets = metas.iter().map(|meta| {
@@ -182,7 +182,6 @@ pub(crate) fn expand_struct_delegate(
                     );
                 };
             }
-            let property_def = property_def_tokens(&meta.property, ty);
             if is_optional_type(ty) {
                 quote! {
                     match ::lumen_engine::node::OptionalDelegate::as_override(&self.#ident) {
@@ -191,26 +190,18 @@ pub(crate) fn expand_struct_delegate(
                             fields.insert(#name.to_string(), ::serde_json::Value::Null);
                         }
                         ::lumen_engine::node::Override::Set(value) => {
-                            let def = #property_def;
                             fields.insert(
                                 #name.to_string(),
-                                ::lumen_engine::json::property_to_json(
-                                    &::lumen_engine::node::DelegateValue::to_property_expression(value),
-                                    def.enum_def,
-                                ),
+                                ::lumen_engine::node::DelegateValue::to_json_value(value),
                             );
                         }
                     }
                 }
             } else {
                 quote! {
-                    let def = #property_def;
                     fields.insert(
                         #name.to_string(),
-                        ::lumen_engine::json::property_to_json(
-                            &::lumen_engine::node::DelegateValue::to_property_expression(&self.#ident),
-                            def.enum_def,
-                        ),
+                        ::lumen_engine::node::DelegateValue::to_json_value(&self.#ident),
                     );
                 }
             }
@@ -325,13 +316,13 @@ pub(crate) fn expand_struct_delegate(
                 matches!(id, #(#is_property_matches)|*)
             }
 
-            fn default_properties(&self) -> ::std::vec::Vec<(&'static str, ::lumen_engine::node::PropertyValue)> {
+            fn default_properties(&self) -> ::std::vec::Vec<(&'static str, ::serde_json::Value)> {
                 let mut properties = ::std::vec::Vec::new();
                 #(#default_properties)*
                 properties
             }
 
-            fn get_property(&self, id: &str) -> ::core::option::Option<::lumen_engine::node::PropertyExpression> {
+            fn get_property(&self, id: &str) -> ::core::option::Option<::lumen_engine::node::PropertyRead<'_>> {
                 match id {
                     #(#property_matches,)*
                     _ => None,

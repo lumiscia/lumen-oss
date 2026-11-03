@@ -7,8 +7,8 @@ use crate::{
     error::{LumenError, PropertyError},
     expr::{Expression, parse_hex_color},
     node::{
-        ClipProps, Deferred, DelegateValue, EnumDef, NodeId, OptionalDelegate, Override,
-        PropertyDef, PropertyExpression, PropertyKind, PropertyValue, ShaderUniforms,
+        ClipProps, Deferred, DelegateValue, NodeId, OptionalDelegate, Override, PropertyDef,
+        PropertyExpression, PropertyKind, PropertyValue, ShaderUniforms,
         source::text_content::{FontFeaturesDelegate, TextContentDelegate},
     },
 };
@@ -181,33 +181,6 @@ pub(crate) fn parse_nested_optional_field<T: OptionalDelegate>(
         return Ok(T::from_override(Override::Clear));
     }
     parse_nested_field(value, def, constant).map(|value| T::from_override(Override::Set(value)))
-}
-
-/// The JSON that parses to `property`, naming enum values from `enum_def`.
-pub(crate) fn property_to_json(property: &PropertyExpression, enum_def: Option<&EnumDef>) -> Value {
-    let value = match property {
-        PropertyExpression::Expr(expr) => return Value::from(format!("={}", expr.source)),
-        PropertyExpression::Value(value) => value,
-    };
-    match value {
-        PropertyValue::Float(value) => Value::from(*value),
-        PropertyValue::Int(value) => enum_def
-            .and_then(|def| def.options.iter().find(|option| option.value == *value))
-            .map_or_else(|| Value::from(*value), |option| Value::from(option.name)),
-        PropertyValue::Bool(value) => Value::from(*value),
-        PropertyValue::String(text) if text.starts_with('=') => Value::from(format!("={text}")),
-        PropertyValue::String(text) => Value::from(text.as_str()),
-        PropertyValue::Color(color) => Value::from(color.to_vec()),
-        PropertyValue::Paint(paint) => paint.to_json_value(),
-        PropertyValue::Vec2((x, y)) => Value::from(vec![*x, *y]),
-        PropertyValue::ShaderUniforms(uniforms) => uniforms.to_json_value(),
-        PropertyValue::ClipProps(props) => props.to_json_value(),
-        PropertyValue::TextContent(content) => content.to_json_value(),
-        PropertyValue::TextLine(line) => Value::Object(line.to_json()),
-        PropertyValue::TextHighlight(highlight) => Value::Object(highlight.to_json()),
-        PropertyValue::FontFeatures(features) => features.to_json_value(),
-        PropertyValue::TextStroke(stroke) => Value::Object(stroke.to_json()),
-    }
 }
 
 /// Reads a JSON number as an `i64`, accepting integral floats such as `3.0`.

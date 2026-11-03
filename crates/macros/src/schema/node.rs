@@ -189,7 +189,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             fn get_property(
                 &self,
                 id: &str,
-            ) -> ::core::option::Option<::lumen_engine::node::PropertyExpression> {
+            ) -> ::core::option::Option<::lumen_engine::node::PropertyRead<'_>> {
                 #(#metas_property_matches)*
                 None
             }
