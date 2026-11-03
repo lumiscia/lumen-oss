@@ -14,17 +14,6 @@ pub struct RenderJobInput {
 }
 
 #[derive(Debug, Serialize)]
-pub struct RenderJobResponse {
-    pub ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub artifact: Option<ArtifactOutput>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metrics: Option<RenderJobMetrics>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<RenderJobError>,
-}
-
-#[derive(Debug, Serialize)]
 pub struct ArtifactOutput {
     pub download_url: String,
     pub content_type: &'static str,
@@ -38,7 +27,8 @@ pub struct RenderJobMetrics {
     pub total_frames: u64,
 }
 
-#[derive(Debug, Serialize)]
+/// Why a render failed, kept with the render and returned by every read of it.
+#[derive(Debug, Clone, Serialize)]
 pub struct RenderJobError {
     pub code: String,
     pub message: String,
@@ -51,6 +41,8 @@ pub struct ApiRenderJob {
     pub cost_micros: u64,
     #[serde(rename = "createdAt")]
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<RenderJobError>,
     pub id: String,
     #[serde(rename = "inputHash")]
     pub input_hash: String,
@@ -78,6 +70,8 @@ pub struct RenderQueueState {
     pub duration_ms: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
     #[serde(rename = "organizationId")]
     pub organization_id: String,
     #[serde(rename = "outputBytes", skip_serializing_if = "Option::is_none")]
@@ -87,6 +81,8 @@ pub struct RenderQueueState {
     pub render_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retryable: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<&'static str>,
     pub state: &'static str,

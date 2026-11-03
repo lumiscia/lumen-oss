@@ -8,7 +8,7 @@ mod ws;
 use std::{net::SocketAddr, num::NonZeroUsize};
 
 use anyhow::bail;
-use axum::{Router, middleware, routing::get, routing::post};
+use axum::{Router, extract::DefaultBodyLimit, middleware, routing::get, routing::post};
 use clap::Parser;
 
 use self::{
@@ -18,6 +18,10 @@ use self::{
     },
     state::AppState,
 };
+
+/// Largest `POST /renders` body. Compositions reference media through the manifest, so they stay
+/// small.
+pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Run a provider-neutral Lumen render HTTP server.")]
@@ -83,6 +87,7 @@ fn router(state: AppState) -> Router {
         .route("/renders/{id}/artifact", get(get_render_artifact))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token))
         .route("/health", get(health))
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(state)
 }
 

@@ -1,30 +1,78 @@
-use axum::{Json, http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    extract::rejection::JsonRejection,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 
-use crate::server::{RenderJobError, RenderJobResponse};
+use crate::server::RenderJobError;
 
-pub(super) fn error_response(
+use super::MAX_REQUEST_BODY_BYTES;
+
+/// A request that failed, answered with the status and a `{ "code", "error" }` body.
+#[derive(Debug)]
+pub(super) struct ApiError {
     status: StatusCode,
-    error: RenderJobError,
-) -> axum::response::Response {
-    (
-        status,
-        Json(RenderJobResponse {
-            ok: false,
-            artifact: None,
-            metrics: None,
-            error: Some(error),
-        }),
-    )
-        .into_response()
+    code: String,
+    message: String,
 }
 
-pub(super) fn not_found_response() -> axum::response::Response {
-    error_response(
-        StatusCode::NOT_FOUND,
-        RenderJobError {
-            code: "render_not_found".to_string(),
-            message: "render was not found".to_string(),
-            retryable: false,
-        },
-    )
+#[derive(serde::Serialize)]
+struct ApiErrorBody {
+    code: String,
+    error: String,
+}
+
+impl ApiError {
+    pub fn new(status: StatusCode, code: &str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code: code.to_string(),
+            message: message.into(),
+        }
+    }
+
+    pub fn rejected(status: StatusCode, error: RenderJobError) -> Self {
+        Self {
+            status,
+            code: error.code,
+            message: error.message,
+        }
+    }
+
+    pub fn not_found() -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            "render_not_found",
+            "render was not found",
+        )
+    }
+}
+
+impl From<JsonRejection> for ApiError {
+    fn from(rejection: JsonRejection) -> Self {
+        let status = rejection.status();
+        if status == StatusCode::PAYLOAD_TOO_LARGE {
+            Self::new(
+                status,
+                "request_too_large",
+                format!("request body exceeds the {MAX_REQUEST_BODY_BYTES} byte limit"),
+            )
+        } else {
+            Self::new(status, "invalid_request_body", rejection.body_text())
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            Json(ApiErrorBody {
+                code: self.code,
+                error: self.message,
+            }),
+        )
+            .into_response()
+    }
 }
