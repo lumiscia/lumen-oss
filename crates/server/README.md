@@ -113,9 +113,8 @@ broadcast. The value is a `0.0` to `1.0` fraction; the default is `0.02`.
 Terminal updates, state changes, and stage changes are still broadcast
 immediately. Set it to `0` to emit every renderer progress update.
 
-Verbose render diagnostics are off by default. Set `--verbose-debug` or
-`LUMEN_SERVER_VERBOSE_DEBUG=true` to enable detailed per-frame render progress
-logs, CUDA/Vulkan device diagnostics, and frame timing output.
+Set `RUST_LOG=lumen_server=debug` for detailed per-frame render progress logs
+and CUDA/Vulkan device diagnostics.
 
 The renderer logs the selected adapter name, backend, device type, vendor,
 device, driver, and driver details when a render starts. For software Vulkan or

@@ -19,7 +19,6 @@ pub(super) struct AppState {
     pub renders: Arc<RwLock<RenderRegistry>>,
     pub retained_renders: usize,
     pub progress_tx: tokio::sync::broadcast::Sender<RenderNotification>,
-    pub verbose_debug: bool,
 }
 
 impl AppState {
@@ -32,7 +31,6 @@ impl AppState {
             renders: Arc::new(RwLock::new(RenderRegistry::default())),
             retained_renders: args.retained_renders.get(),
             progress_tx: tokio::sync::broadcast::channel(256).0,
-            verbose_debug: args.verbose_debug,
         })
     }
 }

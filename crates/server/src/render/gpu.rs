@@ -5,7 +5,7 @@ use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, media:
 use lumen_ffmpeg::{EncoderFamily, VideoEncoderChoice};
 
 use super::{
-    ProjectBundle, RenderError, RenderOptions, RenderProgress,
+    RenderError, RenderOptions, RenderProgress,
     encoder::{
         ENCODER_FRAME_QUEUE_CAPACITY, EncoderFrame, LumenFfmpegEncoder, has_audio,
         write_composited_audio,
@@ -15,22 +15,17 @@ use super::{
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 mod linux_cuda;
-#[cfg(not(all(target_os = "linux", feature = "cuda", feature = "vulkan")))]
-mod unsupported_cuda;
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 use linux_cuda::render_project_mp4_cuda;
-#[cfg(not(all(target_os = "linux", feature = "cuda", feature = "vulkan")))]
-use unsupported_cuda::render_project_mp4_cuda;
 
 pub(super) const MEDIA_PREFETCH_LOOKAHEAD_FRAMES: u32 = 30;
 
 pub fn render_project_mp4(
-    bundle: &ProjectBundle,
+    composition: &Composition,
     options: &RenderOptions,
     on_progress: &mut dyn FnMut(RenderProgress),
 ) -> Result<Vec<u8>, RenderError> {
-    let composition = &bundle.composition;
     let width = composition.render_settings().width;
     let height = composition.render_settings().height;
     let fps = composition.timeline().fps;
@@ -43,12 +38,15 @@ pub fn render_project_mp4(
             message: err.to_string(),
             retryable: false,
         })?;
-    let cuda_fast_path = encoder.family == EncoderFamily::Nvenc;
+    let cuda_fast_path = cfg!(all(
+        target_os = "linux",
+        feature = "cuda",
+        feature = "vulkan"
+    )) && encoder.family == EncoderFamily::Nvenc;
     tracing::info!(
         encoder = choice.name,
         codec = ?encoder.codec,
-        cuda_fast_path = cfg!(all(target_os = "linux", feature = "cuda", feature = "vulkan"))
-            && cuda_fast_path,
+        cuda_fast_path,
         "selected video encoder"
     );
 
@@ -91,6 +89,7 @@ pub fn render_project_mp4(
             retryable: false,
         })?;
 
+    #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
     if cuda_fast_path {
         return render_project_mp4_cuda(
             renderer,
@@ -102,7 +101,6 @@ pub fn render_project_mp4(
             total_frames,
             &choice.name,
             &options.quality,
-            options.verbose_debug,
             on_progress,
         );
     }
@@ -274,11 +272,9 @@ pub(super) fn prefetch_media_frames(
 fn create_gpu_renderer(
     media_store: &mut LocalMediaStore,
 ) -> anyhow::Result<GpuCompositionRenderer> {
-    let handle = tokio::runtime::Handle::try_current()
-        .context("GPU renderer creation requires a Tokio runtime")?;
     #[cfg(all(target_os = "linux", feature = "vulkan"))]
     if media_store.video_options.prefer_hardware_decode {
-        match handle.block_on(GpuCompositionRenderer::new_vulkan_decode()) {
+        match pollster::block_on(GpuCompositionRenderer::new_vulkan_decode()) {
             Ok((renderer, device)) => {
                 media_store.video_options.vulkan_device = Some(device);
                 return Ok(renderer);
@@ -288,9 +284,7 @@ fn create_gpu_renderer(
     }
     #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
     let _ = media_store;
-    handle
-        .block_on(GpuCompositionRenderer::new())
-        .context("failed to initialize wgpu renderer")
+    pollster::block_on(GpuCompositionRenderer::new()).context("failed to initialize wgpu renderer")
 }
 
 #[cfg(test)]
@@ -300,7 +294,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn encoder_that_cannot_open_is_not_retryable() {
-        let bundle = super::super::convert_project_payload(&serde_json::json!({
+        let composition = super::super::parse_composition(&serde_json::json!({
             "timeline": { "fps": 24, "duration_frames": 1 },
             "render_settings": { "width": 16, "height": 16 },
             "nodes": [
@@ -316,18 +310,15 @@ mod tests {
             ..RenderOptions::default()
         };
 
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _runtime = runtime.enter();
-        let error = render_project_mp4(&bundle, &options, &mut |_| {}).unwrap_err();
+        let error = render_project_mp4(&composition, &options, &mut |_| {}).unwrap_err();
 
         assert_eq!(error.code, "encode_failed", "{error}");
         assert!(!error.retryable, "{error}");
     }
 
-    /// Fails on a missing Tokio runtime if the lookup ever moves after renderer creation.
     #[test]
-    fn unknown_encoder_is_rejected_before_any_gpu_setup() {
-        let bundle = super::super::convert_project_payload(&serde_json::json!({
+    fn an_unknown_encoder_is_an_invalid_render_profile() {
+        let composition = super::super::parse_composition(&serde_json::json!({
             "timeline": { "fps": 24, "duration_frames": 1 },
             "render_settings": { "width": 16, "height": 16 },
             "nodes": [
@@ -342,7 +333,7 @@ mod tests {
             ..RenderOptions::default()
         };
 
-        let error = render_project_mp4(&bundle, &options, &mut |_| {}).unwrap_err();
+        let error = render_project_mp4(&composition, &options, &mut |_| {}).unwrap_err();
 
         assert_eq!(error.code, "invalid_render_profile", "{error}");
         assert!(

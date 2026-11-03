@@ -5,7 +5,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use lumen_server::render::convert_project_payload;
+use lumen_server::render::parse_composition;
 
 use crate::server::{
     ApiRenderJob, CreateRenderResponse, GetRenderResponse, RenderJob, RenderJobError,
@@ -49,7 +49,7 @@ pub(super) async fn create_render(
     }
     validate_media_manifest(&input.media)
         .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    let bundle = convert_project_payload(&input.composition).map_err(|error| {
+    let composition = parse_composition(&input.composition).map_err(|error| {
         ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, map_execution_error(error))
     })?;
 
@@ -95,7 +95,7 @@ pub(super) async fn create_render(
         state.clone(),
         RenderJob {
             id,
-            bundle,
+            composition,
             media: input.media,
         },
     );
@@ -207,25 +207,19 @@ fn spawn_render_task(state: AppState, job: RenderJob) {
         );
         let progress_state = state.clone();
         let progress_id = id.clone();
-        let result = execute_render_job(
-            job,
-            &state.media_client,
-            artifact_url,
-            state.verbose_debug,
-            move |event| {
-                update_render_progress(
-                    &progress_state,
-                    &progress_id,
-                    "progress",
-                    RenderProgressPatch {
-                        progress: Some((0.05 + 0.90 * event.ratio).clamp(0.0, 0.99)),
-                        stage: Some(event.stage),
-                        state: Some("processing"),
-                        ..RenderProgressPatch::default()
-                    },
-                );
-            },
-        )
+        let result = execute_render_job(job, &state.media_client, artifact_url, move |event| {
+            update_render_progress(
+                &progress_state,
+                &progress_id,
+                "progress",
+                RenderProgressPatch {
+                    progress: Some((0.05 + 0.90 * event.ratio).clamp(0.0, 0.99)),
+                    stage: Some(event.stage),
+                    state: Some("processing"),
+                    ..RenderProgressPatch::default()
+                },
+            );
+        })
         .await;
 
         match result {
