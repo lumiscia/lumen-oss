@@ -1,8 +1,5 @@
-//! Text layout and GPU-facing text data for Lumen.
-//!
-//! This crate deliberately owns text shaping, measurement, atlas bookkeeping,
-//! and WGSL-facing buffer formats. Lumen nodes should depend on this layer
-//! rather than coupling directly to a specific renderer such as glyphon.
+//! Text layout and GPU-facing text data for Lumen: shaping, measurement, atlas bookkeeping and
+//! WGSL-facing buffer formats.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, hash_map::DefaultHasher};
@@ -133,10 +130,9 @@ pub struct TextSystem {
     font_generation: u64,
     /// Latest first.
     registrations: Vec<Registration>,
-    /// Recent fits as the request, without its origin and color, the factor it chose and how
-    /// text wraps at it, newest last.
+    /// Recent fits as the request, the factor it chose and how text wraps at it, newest last.
     fits: Vec<(TextLayoutRequest, f32, Wrap)>,
-    /// Recent measurements keyed without origin and color, newest last.
+    /// Recent measurements, newest last.
     measurements: Vec<(TextLayoutRequest, TextMeasurement)>,
 }
 
@@ -257,8 +253,10 @@ impl TextSystem {
     }
 
     pub fn measure(&mut self, request: &TextLayoutRequest) -> TextMeasurement {
-        let key = request.cache_key();
-        if let Some((_, measurement)) = self.measurements.iter().find(|(cached, _)| *cached == key)
+        if let Some((_, measurement)) = self
+            .measurements
+            .iter()
+            .find(|(cached, _)| cached == request)
         {
             return *measurement;
         }
@@ -266,12 +264,8 @@ impl TextSystem {
         if self.measurements.len() == MEASUREMENT_CACHE {
             self.measurements.remove(0);
         }
-        self.measurements.push((key, measurement));
+        self.measurements.push((request.clone(), measurement));
         measurement
-    }
-
-    pub fn layout(&mut self, request: &TextLayoutRequest) -> TextLayout {
-        self.shape(request).place(request.origin, request.color)
     }
 
     /// Shapes text without placing it, so it can be placed at many origins.
@@ -280,8 +274,7 @@ impl TextSystem {
             return self.shape_lines(request, Wrap::WordOrGlyph, true);
         };
         // Measurement, bounds and drawing each shape the same text, so they share its fit.
-        let key = request.cache_key();
-        let cached = self.fits.iter().find(|(fitted, ..)| *fitted == key);
+        let cached = self.fits.iter().find(|(fitted, ..)| fitted == request);
         let (scale, wrap, fitted) = match cached {
             Some(&(_, scale, wrap)) => (scale, wrap, None),
             None => {
@@ -301,7 +294,7 @@ impl TextSystem {
                 if self.fits.len() == FIT_CACHE {
                     self.fits.remove(0);
                 }
-                self.fits.push((key, scale, wrap));
+                self.fits.push((request.clone(), scale, wrap));
                 (scale, wrap, fitted)
             }
         };
@@ -369,17 +362,13 @@ impl TextSystem {
                 };
                 let mut attrs = Attrs::new()
                     .family(Family::Name(family))
-                    .weight(Weight(span.font_weight.clamp(1, 1000)))
+                    .weight(Weight(span.font_weight))
                     .style(match span.font_style {
                         TextFontStyle::Italic => Style::Italic,
                         TextFontStyle::Oblique => Style::Oblique,
                         TextFontStyle::Normal => Style::Normal,
                     })
-                    .cache_key_flags(if request.disable_hinting {
-                        CacheKeyFlags::DISABLE_HINTING
-                    } else {
-                        CacheKeyFlags::empty()
-                    })
+                    .cache_key_flags(CacheKeyFlags::DISABLE_HINTING)
                     // Each line is as tall as its tallest glyph's line height.
                     .metrics(metrics)
                     .metadata(index);
@@ -398,7 +387,6 @@ impl TextSystem {
             })
             .collect();
         let mut buffer = Buffer::new(&mut self.font_system, request.span_metrics(&spans[0]));
-        let wraps = request.max_width.is_some_and(|width| width > 0.0);
         // cosmic-text adds tracking after every glyph, including the last on a
         // line, so every line is its last glyph's `letter_spacing` wider than its
         // ink. Widening the layout width by the narrowest spacing makes wrapping
@@ -409,12 +397,13 @@ impl TextSystem {
             .iter()
             .map(|span| span.letter_spacing)
             .fold(f32::INFINITY, f32::min);
-        let layout_width = request
-            .max_width
-            .filter(|width| *width > 0.0)
-            .map(|width| width + widening);
+        let layout_width = request.max_width.map(|width| width + widening);
         buffer.set_size(layout_width, None);
-        buffer.set_wrap(if wraps { wrap } else { Wrap::None });
+        buffer.set_wrap(if request.max_width.is_some() {
+            wrap
+        } else {
+            Wrap::None
+        });
         let transformed = spans
             .iter()
             .any(|span| span.transform != TextTransform::None)
@@ -449,7 +438,7 @@ impl TextSystem {
                 TextAlign::Left => Align::Left,
                 TextAlign::Center => Align::Center,
                 TextAlign::Right => Align::Right,
-                TextAlign::Justified => Align::Justified,
+                TextAlign::Justify => Align::Justified,
             }),
         );
         for (line, paragraph) in buffer.lines.iter_mut().zip(&paragraphs) {
@@ -476,16 +465,12 @@ impl TextSystem {
         }
         buffer.shape_until_scroll(&mut self.font_system, true);
 
-        let spacing = |glyph: &LayoutGlyph| {
-            spans
-                .get(glyph.metadata)
-                .map_or(0.0, |span| span.letter_spacing)
-        };
-        let lift = |span: usize| spans.get(span).map_or(0.0, |span| span.baseline_shift);
+        let spacing = |glyph: &LayoutGlyph| spans[glyph.metadata].letter_spacing;
+        let lift = |span: usize| spans[span].baseline_shift;
         let align_factor = match request.align {
             TextAlign::Center => 0.5,
             TextAlign::Right => 1.0,
-            TextAlign::Left | TextAlign::Justified => 0.0,
+            TextAlign::Left | TextAlign::Justify => 0.0,
         };
 
         let mut fonts = HashMap::new();
@@ -504,7 +489,7 @@ impl TextSystem {
         let mut y_min: f32 = 0.0;
         let mut y_max: f32 = 0.0;
         let runs: Vec<_> = buffer.layout_runs().collect();
-        let max_width = request.max_width.filter(|_| wraps);
+        let max_width = request.max_width;
         let shown = if limit && (request.max_lines.is_some() || request.max_height.is_some()) {
             runs.iter()
                 .take(request.max_lines.map_or(usize::MAX, |lines| lines as usize))
@@ -563,7 +548,7 @@ impl TextSystem {
                 .get(run_index + 1)
                 .is_none_or(|next| next.line_i != run.line_i);
             if let Some(max_width) = max_width
-                && request.align == TextAlign::Justified
+                && request.align == TextAlign::Justify
                 && !ends_paragraph
                 && ellipsis.is_empty()
             {
@@ -610,7 +595,7 @@ impl TextSystem {
             let first = glyphs.len();
             for (index, mut glyph) in line_glyphs.into_iter().enumerate() {
                 glyph.x += shift;
-                let span = glyph.metadata.min(spans.len() - 1);
+                let span = glyph.metadata;
                 x_min = x_min.min(glyph.x);
                 x_max = x_max.max(glyph.x + glyph.w - spacing(&glyph));
                 clusters.push((
@@ -747,16 +732,15 @@ impl TextSystem {
         for segment in &segments {
             let top = segment.line_top - segment.shift;
             let edges = [segment.x[0], top, segment.x[1], top + segment.line_height];
-            if let Some(span) = span_boxes.get_mut(segment.span as usize) {
-                *span = Some(span.map_or(edges, |a| {
-                    [
-                        a[0].min(edges[0]),
-                        a[1].min(edges[1]),
-                        a[2].max(edges[2]),
-                        a[3].max(edges[3]),
-                    ]
-                }));
-            }
+            let span = &mut span_boxes[segment.span as usize];
+            *span = Some(span.map_or(edges, |a| {
+                [
+                    a[0].min(edges[0]),
+                    a[1].min(edges[1]),
+                    a[2].max(edges[2]),
+                    a[3].max(edges[3]),
+                ]
+            }));
         }
         for [x0, y0, x1, y1] in span_boxes.iter_mut().flatten() {
             (*x1, *y1) = (*x1 - *x0, *y1 - *y0);
@@ -818,11 +802,7 @@ impl TextSystem {
         aligned: f32,
         fallback_span: usize,
     ) -> (f32, Range<usize>) {
-        let spacing = |glyph: &LayoutGlyph| {
-            spans
-                .get(glyph.metadata)
-                .map_or(0.0, |span| span.letter_spacing)
-        };
+        let spacing = |glyph: &LayoutGlyph| spans[glyph.metadata].letter_spacing;
         let left = line
             .iter()
             .map(|glyph| glyph.x)
@@ -838,9 +818,7 @@ impl TextSystem {
         let mut kept_width: f32 = line.iter().map(|glyph| glyph.w).sum();
         let mut ellipsis = loop {
             let last = kept.checked_sub(1).map(|last| &line[order[last]]);
-            let span = last
-                .map_or(fallback_span, |glyph| glyph.metadata)
-                .min(spans.len() - 1);
+            let span = last.map_or(fallback_span, |glyph| glyph.metadata);
             let ellipsis = ellipses.entry(span).or_insert_with(|| {
                 let mut buffer =
                     Buffer::new(&mut self.font_system, request.span_metrics(&spans[span]));
@@ -947,7 +925,7 @@ impl TextSystem {
 
     /// The pixels `shaped` may draw to, as `[min_x, min_y, max_x, max_y]` from its origin, in any
     /// render mode. This is the union of its glyph outlines grown by a margin for antialiasing,
-    /// subpixel snapping and distance field padding. `None` when a glyph's extent is unknown.
+    /// subpixel snapping and distance field padding. `None` when the bounds are not finite.
     pub fn ink_bounds(&mut self, shaped: &ShapedText) -> Option<[f32; 4]> {
         let mut outlines: HashMap<CacheKey, Option<[f32; 4]>> = HashMap::new();
         let mut ink: Option<[f32; 4]> = None;
@@ -965,14 +943,9 @@ impl TextSystem {
                 glyph.font_weight,
                 glyph.cache_key_flags,
             );
-            let outline = match outlines.get(&key) {
-                Some(outline) => *outline,
-                None => {
-                    let outline = self.glyph_extent(key)?;
-                    outlines.insert(key, outline);
-                    outline
-                }
-            };
+            let outline = *outlines
+                .entry(key)
+                .or_insert_with(|| self.glyph_extent(key));
             let Some([min_x, min_y, max_x, max_y]) = outline else {
                 continue;
             };
@@ -1001,39 +974,32 @@ impl TextSystem {
     }
 
     /// A glyph's `[min_x, min_y, max_x, max_y]` with Y pointing up from its pen position, or
-    /// `Some(None)` when it draws nothing. `None` when its extent cannot be determined.
-    fn glyph_extent(&mut self, key: CacheKey) -> Option<Option<[f32; 4]>> {
+    /// `None` when it draws nothing.
+    fn glyph_extent(&mut self, key: CacheKey) -> Option<[f32; 4]> {
         if self.is_plain_outline(key)
             && let Some(commands) = self
                 .swash_cache
                 .get_outline_commands_uncached(&mut self.font_system, key)
         {
-            return Some(outline_bounds(&commands));
+            return msdf::outline_bounds(&commands);
         }
-        let Some(image) = self
+        let placement = self
             .swash_cache
-            .get_image_uncached(&mut self.font_system, key)
-        else {
-            return Some(None);
-        };
-        let placement = image.placement;
-        Some((placement.width > 0 && placement.height > 0).then_some([
+            .get_image_uncached(&mut self.font_system, key)?
+            .placement;
+        (placement.width > 0 && placement.height > 0).then_some([
             placement.left as f32,
             placement.top as f32 - placement.height as f32,
             placement.left as f32 + placement.width as f32,
             placement.top as f32,
-        ]))
+        ])
     }
 
     /// Whether the glyph's font draws it from its outline alone, with no colour or bitmap tables.
     fn is_plain_outline(&mut self, key: CacheKey) -> bool {
         self.font_system
             .get_font(key.font_id, key.font_weight)
-            .is_some_and(|font| {
-                ![b"COLR", b"CBDT", b"sbix", b"EBDT"]
-                    .iter()
-                    .any(|tag| font.as_swash().table(u32::from_be_bytes(**tag)).is_some())
-            })
+            .is_some_and(|font| !msdf::has_colour_tables(&font))
     }
 
     /// Whether `key` is an outline glyph with nothing to draw, such as whitespace.
@@ -1045,34 +1011,6 @@ impl TextSystem {
                 .is_none_or(|commands| commands.is_empty())
     }
 
-    /// Draws `layout` into a fresh `size`² atlas and returns its pixels.
-    #[cfg(test)]
-    fn render_atlas(
-        &mut self,
-        layout: &TextLayout,
-        mode: TextRenderMode,
-        size: u32,
-    ) -> AtlasRender {
-        let mut atlas = GlyphAtlas::new(size);
-        atlas.begin_frame();
-        let prepared = self.prepare_glyphs(&mut atlas, layout, mode, &mut None);
-        let mut pixels = vec![0_u8; size as usize * size as usize * 4];
-        for upload in &prepared.uploads {
-            let row_len = upload.size[0] as usize * 4;
-            for row in 0..upload.size[1] as usize {
-                let dst = ((upload.origin[1] as usize + row) * size as usize
-                    + upload.origin[0] as usize)
-                    * 4;
-                pixels[dst..dst + row_len]
-                    .copy_from_slice(&upload.pixels[row * row_len..(row + 1) * row_len]);
-            }
-        }
-        AtlasRender {
-            pixels,
-            instances: prepared.instances,
-        }
-    }
-
     /// Places `layout` in `atlas` for its current frame, generating glyphs that
     /// are not resident yet one at a time.
     ///
@@ -1082,23 +1020,13 @@ impl TextSystem {
     /// Glyphs that still do not fit are dropped.
     /// `overfull` suppresses retries until the working set or reclaimable space
     /// changes. Uploads become resident after [`GlyphAtlas::commit`].
+    ///
+    /// The outline glyphs of each span `strokes` gives a positive half width are stroked by that
+    /// many pixels to each side. A stroke follows the path its glyph takes: a true distance field
+    /// where the glyph draws one, else the stroked raster outline, or a true distance field where
+    /// that is too large for the atlas. A field's range doubles as often as the stroke needs, and
+    /// a stroke whose field is too large for the atlas is dropped.
     pub fn prepare_glyphs(
-        &mut self,
-        atlas: &mut GlyphAtlas,
-        layout: &TextLayout,
-        mode: TextRenderMode,
-        overfull: &mut Option<u64>,
-    ) -> PreparedGlyphs {
-        self.prepare_stroked_glyphs(atlas, layout, mode, &[], overfull)
-    }
-
-    /// [`Self::prepare_glyphs`], also stroking the outline glyphs of each span `strokes` gives
-    /// a positive half width, by that many pixels to each side. A stroke follows the path its
-    /// glyph takes: a true distance field where the glyph draws one, else the stroked raster
-    /// outline, or a true distance field where that is too large for the atlas. A field's range
-    /// doubles as often as the stroke needs, and a stroke whose field is too large for the
-    /// atlas is dropped.
-    pub fn prepare_stroked_glyphs(
         &mut self,
         atlas: &mut GlyphAtlas,
         layout: &TextLayout,
@@ -1123,9 +1051,9 @@ impl TextSystem {
         };
         let retry_new = overfull.is_none_or(|key| key != overflow_key(atlas));
         let mut uploads = Vec::new();
-        let compacted = !self.place_glyphs(atlas, glyphs, mode, strokes, retry_new, &mut uploads)
-            && atlas.layouts_this_frame == 0;
-        if compacted {
+        if !self.place_glyphs(atlas, glyphs, mode, strokes, retry_new, &mut uploads)
+            && atlas.layouts_this_frame == 0
+        {
             atlas.clear();
             uploads.clear();
             self.place_glyphs(atlas, glyphs, mode, strokes, true, &mut uploads);
@@ -1177,14 +1105,12 @@ impl TextSystem {
 
         atlas.layouts_this_frame += 1;
         PreparedGlyphs {
-            frame: atlas.frame,
             instances,
             sources,
             strokes: stroke_instances,
             stroke_glyphs,
             uploads,
             dropped_glyphs: capacity_dropped,
-            compacted,
         }
     }
 
@@ -1412,45 +1338,13 @@ impl Default for TextSystem {
     }
 }
 
-/// `[min_x, min_y, max_x, max_y]` of an outline's control points, or `None` when it is empty.
-fn outline_bounds(commands: &[swash::zeno::Command]) -> Option<[f32; 4]> {
-    use swash::zeno::Command;
-    let mut bounds: Option<[f32; 4]> = None;
-    let mut include = |point: swash::zeno::Vector| {
-        bounds = Some(match bounds {
-            Some([min_x, min_y, max_x, max_y]) => [
-                min_x.min(point.x),
-                min_y.min(point.y),
-                max_x.max(point.x),
-                max_y.max(point.y),
-            ],
-            None => [point.x, point.y, point.x, point.y],
-        });
-    };
-    for command in commands {
-        match *command {
-            Command::MoveTo(p) | Command::LineTo(p) => include(p),
-            Command::QuadTo(c, p) => {
-                include(c);
-                include(p);
-            }
-            Command::CurveTo(c0, c1, p) => {
-                include(c0);
-                include(c1);
-                include(p);
-            }
-            Command::Close => {}
-        }
-    }
-    bounds
-}
-
 /// A run of text with one font and spacing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextSpan {
     pub text: String,
     pub font_family: String,
     pub font_size: f32,
+    /// From 1 to 1000.
     pub font_weight: u16,
     pub font_style: TextFontStyle,
     /// Extra advance in pixels after every glyph. May be negative.
@@ -1589,18 +1483,16 @@ impl TextSpan {
 pub struct TextLayoutRequest {
     /// Text in order, as styled runs that may span lines and paragraphs.
     pub spans: Vec<TextSpan>,
+    /// Width lines wrap at, which must be positive.
     pub max_width: Option<f32>,
     /// Line pitch in pixels; `None` is 1.2 × the largest font size on each line.
     pub line_height: Option<f32>,
     /// Extra space in pixels after each paragraph but the last.
     pub paragraph_spacing: f32,
     pub align: TextAlign,
-    pub origin: [f32; 2],
-    pub color: [f32; 4],
-    pub disable_hinting: bool,
     /// Most lines to show.
     pub max_lines: Option<u32>,
-    /// Most height of the lines to show.
+    /// Most height of the lines to show, which must not be negative.
     pub max_height: Option<f32>,
     /// How the last line shown ends when lines past `max_lines` or `max_height` are dropped.
     pub overflow: TextOverflow,
@@ -1624,9 +1516,6 @@ impl TextLayoutRequest {
             line_height: None,
             paragraph_spacing: 0.0,
             align: TextAlign::Left,
-            origin: [0.0, 0.0],
-            color: [1.0, 1.0, 1.0, 1.0],
-            disable_hinting: true,
             max_lines: None,
             max_height: None,
             overflow: TextOverflow::Clip,
@@ -1634,19 +1523,8 @@ impl TextLayoutRequest {
         }
     }
 
-    /// Placement and color cannot affect shaping, fitting or measurement.
-    fn cache_key(&self) -> Self {
-        Self {
-            origin: [0.0; 2],
-            color: [1.0; 4],
-            ..self.clone()
-        }
-    }
-
     fn is_limited(&self) -> bool {
-        self.max_width.is_some_and(|width| width > 0.0)
-            || self.max_lines.is_some()
-            || self.max_height.is_some()
+        self.max_width.is_some() || self.max_lines.is_some() || self.max_height.is_some()
     }
 
     /// This request with every size scaled by `scale`.
@@ -1666,10 +1544,10 @@ impl TextLayoutRequest {
     /// below 1 of the factor that would make it fit. Wrapped lines hold more text as it shrinks,
     /// so wrapped height shrinks about as the square of the factor.
     fn fit_ratio(&self, shaped: &ShapedText) -> f32 {
-        let wraps = self.max_width.is_some_and(|width| width > 0.0);
+        let wraps = self.max_width.is_some();
         let TextMeasurement { width, height } = shaped.measurement;
         let mut ratio: f32 = 1.0;
-        if let Some(max) = self.max_width.filter(|_| wraps)
+        if let Some(max) = self.max_width
             && width > max + FIT_TOLERANCE
         {
             ratio = ratio.min(max / width);
@@ -1684,7 +1562,7 @@ impl TextLayoutRequest {
         if let Some(max) = self.max_height
             && height > max + FIT_TOLERANCE
         {
-            let heights = max.max(0.0) / height;
+            let heights = max / height;
             ratio = ratio.min(if wraps { heights.sqrt() } else { heights });
         }
         ratio
@@ -1724,7 +1602,7 @@ pub enum TextAlign {
     Left,
     Center,
     Right,
-    Justified,
+    Justify,
 }
 
 /// Where a glyph lies in its text, for animating glyphs, words or lines apart.
@@ -1950,7 +1828,7 @@ impl ShapedText {
 
     /// Places glyphs at `origin`. The fractional origin selects each glyph's
     /// subpixel bins, and raster glyph positions are snapped to whole pixels.
-    pub fn place(&self, origin: [f32; 2], color: [f32; 4]) -> TextLayout {
+    pub fn place(&self, origin: [f32; 2]) -> TextLayout {
         let glyphs = self
             .glyphs
             .iter()
@@ -1974,14 +1852,12 @@ impl ShapedText {
                     x: x as f32,
                     y: -y as f32,
                     position,
-                    color,
                     item: shaped.item,
                     pivot: [shaped.pivot[0] + origin[0], shaped.pivot[1] + origin[1]],
                 }
             })
             .collect();
         TextLayout {
-            measurement: self.measurement,
             counts: self.counts,
             bounds: [
                 origin[0] + self.bounds[0],
@@ -2147,7 +2023,6 @@ impl ShapedText {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextLayout {
-    pub measurement: TextMeasurement,
     /// Advance box of all glyphs as `[x, y, width, height]`.
     pub bounds: [f32; 4],
     /// Number of glyphs, words and lines.
@@ -2164,7 +2039,6 @@ pub struct TextGlyph {
     pub y: f32,
     /// Exact pen position, used by distance-field glyphs.
     pub position: [f32; 2],
-    pub color: [f32; 4],
     pub item: TextItem,
     /// Centre of the glyph's cluster: the middle of its advance and of its line.
     pub pivot: [f32; 2],
@@ -2310,15 +2184,6 @@ impl GlyphAtlas {
                 glyph.resident = true;
             }
         }
-    }
-
-    /// Number of cached glyphs, including empty ones.
-    pub fn len(&self) -> usize {
-        self.glyphs.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.glyphs.is_empty()
     }
 
     /// Whether `key` holds a marker of the given kind, which routes the keys it is read for.
@@ -2505,7 +2370,7 @@ impl PlacedGlyph {
         GpuGlyphInstance {
             rect,
             uv_rect,
-            opacity: glyph.color[3],
+            opacity: 1.0,
             partner: 0,
             _padding: [0; 2],
             mode: self.mode,
@@ -2591,8 +2456,6 @@ pub struct GlyphUpload {
 
 #[derive(Debug, Clone)]
 pub struct PreparedGlyphs {
-    /// Pass to [`GlyphAtlas::commit`] once `uploads` have been written.
-    pub frame: u64,
     pub instances: Vec<GpuGlyphInstance>,
     /// Index in the layout's glyphs of each instance.
     pub sources: Vec<usize>,
@@ -2603,15 +2466,6 @@ pub struct PreparedGlyphs {
     pub uploads: Vec<GlyphUpload>,
     /// Glyph and stroke instances not drawn because the atlas is full.
     pub dropped_glyphs: usize,
-    /// The atlas was cleared and repacked this frame.
-    pub compacted: bool,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone)]
-struct AtlasRender {
-    pixels: Vec<u8>,
-    instances: Vec<GpuGlyphInstance>,
 }
 
 #[cfg(test)]
@@ -2619,13 +2473,48 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    #[derive(Debug, Clone)]
+    struct AtlasRender {
+        pixels: Vec<u8>,
+        instances: Vec<GpuGlyphInstance>,
+    }
+
+    impl TextSystem {
+        /// Draws `layout` into a fresh `size`² atlas and returns its pixels.
+        fn render_atlas(
+            &mut self,
+            layout: &TextLayout,
+            mode: TextRenderMode,
+            size: u32,
+        ) -> AtlasRender {
+            let mut atlas = GlyphAtlas::new(size);
+            atlas.begin_frame();
+            let prepared = self.prepare_glyphs(&mut atlas, layout, mode, &[], &mut None);
+            let mut pixels = vec![0_u8; size as usize * size as usize * 4];
+            for upload in &prepared.uploads {
+                let row_len = upload.size[0] as usize * 4;
+                for row in 0..upload.size[1] as usize {
+                    let dst = ((upload.origin[1] as usize + row) * size as usize
+                        + upload.origin[0] as usize)
+                        * 4;
+                    pixels[dst..dst + row_len]
+                        .copy_from_slice(&upload.pixels[row * row_len..(row + 1) * row_len]);
+                }
+            }
+            AtlasRender {
+                pixels,
+                instances: prepared.instances,
+            }
+        }
+    }
+
     fn prepare(
         system: &mut TextSystem,
         atlas: &mut GlyphAtlas,
         layout: &TextLayout,
         mode: TextRenderMode,
     ) -> PreparedGlyphs {
-        system.prepare_glyphs(atlas, layout, mode, &mut None)
+        system.prepare_glyphs(atlas, layout, mode, &[], &mut None)
     }
 
     #[test]
@@ -2636,7 +2525,7 @@ mod tests {
     #[test]
     fn repeated_measurement_uses_cache_without_affecting_layout() {
         let mut system = TextSystem::new();
-        let mut request = TextLayoutRequest::new("Cached text");
+        let request = TextLayoutRequest::new("Cached text");
         let measurement = system.measure(&request);
         assert_eq!(system.measure(&request), measurement);
         assert_eq!(system.measurements.len(), 1);
@@ -2648,14 +2537,9 @@ mod tests {
         };
         system.measurements[0].1 = cached;
         assert_eq!(system.measure(&request), cached);
-        request.origin = [24.0, 48.0];
-        assert_eq!(system.measure(&request), cached);
-        request.color = [0.2, 0.4, 0.6, 0.8];
-        assert_eq!(system.measure(&request), cached);
         assert_eq!(system.measurements.len(), 1);
 
-        let layout = system.layout(&request);
-        assert_eq!(layout.measurement, measurement);
+        let layout = system.shape(&request).place([0.0; 2]);
         assert!(!layout.glyphs.is_empty());
     }
 
@@ -2846,7 +2730,13 @@ mod tests {
             .unwrap();
 
         let request = in_family("Ω", "Inter", 400);
-        assert_ne!(system.layout(&request).glyphs[0].key.0.glyph_id, 0);
+        assert_ne!(
+            system.shape(&request).place([0.0; 2]).glyphs[0]
+                .key
+                .0
+                .glyph_id,
+            0
+        );
         assert!((system.measure(&request).width * 2.0 - bundled).abs() < 1.0);
     }
 
@@ -3008,7 +2898,9 @@ mod tests {
         // Text shaped under one generation must not pass for another system's.
         assert_ne!(systems[0].font_generation(), systems[1].font_generation());
         let request = TextLayoutRequest::new("W");
-        let [first, mut second] = systems.each_mut().map(|system| system.layout(&request));
+        let [first, mut second] = systems
+            .each_mut()
+            .map(|system| system.shape(&request).place([0.0; 2]));
         // Each text system numbers its fonts alike, so only the baseline's bin differs.
         assert_eq!(
             first.glyphs[0].key.0.font_id,
@@ -3021,7 +2913,7 @@ mod tests {
         let [system_first, system_second] = &mut systems;
         let prepared = prepare(system_first, &mut atlas, &first, TextRenderMode::Raster);
         assert_eq!(prepared.uploads.len(), 1);
-        atlas.commit(prepared.frame);
+        atlas.commit(atlas.frame);
         atlas.begin_frame();
         let again = prepare(system_first, &mut atlas, &first, TextRenderMode::Raster);
         assert!(again.uploads.is_empty());
@@ -3039,18 +2931,18 @@ mod tests {
         system
             .load_family(DEFAULT_FONT_FAMILY, "half", vec![scaled_roboto(2)])
             .unwrap();
-        let old = system.layout(&request);
+        let old = system.shape(&request).place([0.0; 2]);
         let shaped = system.shape(&request);
         let old_ink = system.ink_bounds(&shaped).unwrap();
         let mut atlas = GlyphAtlas::new(1024);
         atlas.begin_frame();
         let prepared = prepare(&mut system, &mut atlas, &old, TextRenderMode::Raster);
-        atlas.commit(prepared.frame);
+        atlas.commit(atlas.frame);
 
         system
             .load_family(DEFAULT_FONT_FAMILY, "quarter", vec![scaled_roboto(4)])
             .unwrap();
-        let mut new = system.layout(&request);
+        let mut new = system.shape(&request).place([0.0; 2]);
         // A rebuild numbers the fonts alike, so only the baseline's bin differs here.
         assert_eq!(old.glyphs[0].key.0.font_id, new.glyphs[0].key.0.font_id);
         assert_eq!(old.glyphs[0].key.0.glyph_id, new.glyphs[0].key.0.glyph_id);
@@ -3103,7 +2995,7 @@ mod tests {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("A");
         request.spans[0].font_size = 48.0;
-        let layout = system.layout(&request);
+        let layout = system.shape(&request).place([0.0; 2]);
         let render = system.render_atlas(&layout, TextRenderMode::Raster, 128);
 
         assert_eq!(render.instances.len(), 1);
@@ -3120,7 +3012,8 @@ mod tests {
         image.placement.height = 1;
         image.data = vec![255, 0, 0, 128, 0, 100, 200, 255];
         let key = TextSystem::new()
-            .layout(&TextLayoutRequest::new("A"))
+            .shape(&TextLayoutRequest::new("A"))
+            .place([0.0; 2])
             .glyphs[0]
             .key
             .0;
@@ -3155,7 +3048,7 @@ mod tests {
             let mut previous = f32::NEG_INFINITY;
             for step in 0..=8 {
                 let y = start + step as f32 * 0.125;
-                let layout = shaped.place([3.3, y], [1.0; 4]);
+                let layout = shaped.place([3.3, y]);
                 let glyph = &layout.glyphs[0];
                 let pixels = raster_pixels(&image, glyph.key.0);
                 let placed = PlacedGlyph {
@@ -3183,7 +3076,12 @@ mod tests {
     #[test]
     fn atlas_evicts_before_running_out_of_allocator_ids() {
         let mut system = TextSystem::new();
-        let template = system.layout(&TextLayoutRequest::new("A")).glyphs[0].key.0;
+        let template = system
+            .shape(&TextLayoutRequest::new("A"))
+            .place([0.0; 2])
+            .glyphs[0]
+            .key
+            .0;
         let mut atlas = GlyphAtlas::new(512);
         for index in 0..70_000_u32 {
             if index % 1000 == 0 {
@@ -3206,7 +3104,7 @@ mod tests {
                 }),
             );
         }
-        assert_eq!(atlas.len(), MAX_ATLAS_GLYPHS);
+        assert_eq!(atlas.glyphs.len(), MAX_ATLAS_GLYPHS);
     }
 
     #[test]
@@ -3218,8 +3116,8 @@ mod tests {
         request.align = TextAlign::Center;
         let shaped = system.shape(&request);
 
-        let first = shaped.place([10.1, 5.3], [1.0; 4]);
-        let second = shaped.place([10.6, 5.3], [1.0; 4]);
+        let first = shaped.place([10.1, 5.3]);
+        let second = shaped.place([10.6, 5.3]);
         let render = system.render_atlas(&second, TextRenderMode::Raster, 1024);
 
         assert_ne!(first.glyphs[0].key, second.glyphs[0].key);
@@ -3247,7 +3145,7 @@ mod tests {
         let shaped = system.shape(&request);
         let size = 64;
         let ink_center = |system: &mut TextSystem, y: f32| {
-            let layout = shaped.place([4.0, y], [1.0; 4]);
+            let layout = shaped.place([4.0, y]);
             let render = system.render_atlas(&layout, TextRenderMode::Raster, size);
             let instance = render.instances[0];
             let [left, top] = [instance.uv_rect[0] as usize, instance.uv_rect[1] as usize];
@@ -3263,7 +3161,7 @@ mod tests {
             sum / weight
         };
 
-        let bin = |y: f32| shaped.place([4.0, y], [1.0; 4]).glyphs[0].key.0.y_bin;
+        let bin = |y: f32| shaped.place([4.0, y]).glyphs[0].key.0.y_bin;
         assert_ne!(bin(20.0), bin(20.5));
         let base = ink_center(&mut system, 20.0);
         for step in [0.25, 0.5, 0.75, 1.0, -0.25, -0.75] {
@@ -3282,11 +3180,16 @@ mod tests {
         let mut overfull = None;
         let mut request = TextLayoutRequest::new("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
         request.spans[0].font_size = 40.0;
-        let mut layout = system.layout(&request);
+        let mut layout = system.shape(&request).place([0.0; 2]);
         atlas.begin_frame();
-        let full =
-            system.prepare_glyphs(&mut atlas, &layout, TextRenderMode::Raster, &mut overfull);
-        atlas.commit(full.frame);
+        let full = system.prepare_glyphs(
+            &mut atlas,
+            &layout,
+            TextRenderMode::Raster,
+            &[],
+            &mut overfull,
+        );
+        atlas.commit(atlas.frame);
         assert!(full.dropped_glyphs > 0);
         let dropped = layout
             .glyphs
@@ -3297,8 +3200,13 @@ mod tests {
         layout.glyphs = vec![dropped];
 
         atlas.begin_frame();
-        let recovered =
-            system.prepare_glyphs(&mut atlas, &layout, TextRenderMode::Raster, &mut overfull);
+        let recovered = system.prepare_glyphs(
+            &mut atlas,
+            &layout,
+            TextRenderMode::Raster,
+            &[],
+            &mut overfull,
+        );
         assert_eq!(recovered.dropped_glyphs, 0);
         assert!(!recovered.instances.is_empty());
         assert!(!recovered.uploads.is_empty());
@@ -3310,7 +3218,7 @@ mod tests {
         let mut dropped = |text: &str| {
             let mut request = TextLayoutRequest::new(text);
             request.spans[0].font_size = 40.0;
-            let layout = system.layout(&request);
+            let layout = system.shape(&request).place([0.0; 2]);
             let mut atlas = GlyphAtlas::new(64);
             atlas.begin_frame();
             prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster).dropped_glyphs
@@ -3330,25 +3238,40 @@ mod tests {
         let mut atlas = GlyphAtlas::new(64);
         let mut first = TextLayoutRequest::new("W");
         first.spans[0].font_size = 64.0;
-        let first = system.layout(&first);
+        let first = system.shape(&first).place([0.0; 2]);
         let mut second = TextLayoutRequest::new("A");
         second.spans[0].font_size = 40.0;
-        let second = system.layout(&second);
+        let second = system.shape(&second).place([0.0; 2]);
         let mut overfull = None;
         atlas.begin_frame();
         let placed = prepare(&mut system, &mut atlas, &first, TextRenderMode::Raster);
         assert!(!placed.instances.is_empty());
-        let blocked =
-            system.prepare_glyphs(&mut atlas, &second, TextRenderMode::Raster, &mut overfull);
+        let blocked = system.prepare_glyphs(
+            &mut atlas,
+            &second,
+            TextRenderMode::Raster,
+            &[],
+            &mut overfull,
+        );
         assert!(blocked.dropped_glyphs > 0);
-        atlas.commit(blocked.frame);
+        atlas.commit(atlas.frame);
         atlas.begin_frame();
-        let suppressed =
-            system.prepare_glyphs(&mut atlas, &second, TextRenderMode::Raster, &mut overfull);
+        let suppressed = system.prepare_glyphs(
+            &mut atlas,
+            &second,
+            TextRenderMode::Raster,
+            &[],
+            &mut overfull,
+        );
         assert!(suppressed.uploads.is_empty());
         atlas.begin_frame();
-        let recovered =
-            system.prepare_glyphs(&mut atlas, &second, TextRenderMode::Raster, &mut overfull);
+        let recovered = system.prepare_glyphs(
+            &mut atlas,
+            &second,
+            TextRenderMode::Raster,
+            &[],
+            &mut overfull,
+        );
         assert_eq!(recovered.dropped_glyphs, 0);
         assert!(!recovered.uploads.is_empty());
     }
@@ -3358,31 +3281,34 @@ mod tests {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("Spacing");
         request.spans[0].font_size = 40.0;
-        let base = system.layout(&request);
+        let base = system.shape(&request);
+        let base_glyphs = base.place([0.0; 2]);
         let glyph_x = |layout: &TextLayout, index: usize| layout.glyphs[index].position[0];
 
         request.spans[0].letter_spacing = 6.0;
-        let tracked = system.layout(&request);
-        let count = base.glyphs.len();
+        let tracked = system.shape(&request);
+        let count = base.glyph_count();
         assert!(
             (tracked.measurement.width - base.measurement.width - 6.0 * (count - 1) as f32).abs()
                 < 0.01
         );
         assert!(
-            (glyph_x(&tracked, count - 1) - glyph_x(&base, count - 1) - 6.0 * (count - 1) as f32)
+            (glyph_x(&tracked.place([0.0; 2]), count - 1)
+                - glyph_x(&base_glyphs, count - 1)
+                - 6.0 * (count - 1) as f32)
                 .abs()
                 < 0.01
         );
 
         request.spans[0].letter_spacing = -2.0;
-        let tight = system.layout(&request);
+        let tight = system.shape(&request);
         assert!(tight.measurement.width < base.measurement.width);
 
         let line_gap = |system: &mut TextSystem, line_height| {
             let mut request = TextLayoutRequest::new("a\nb");
             request.spans[0].font_size = 40.0;
             request.line_height = line_height;
-            let layout = system.layout(&request);
+            let layout = system.shape(&request).place([0.0; 2]);
             layout.glyphs[1].position[1] - layout.glyphs[0].position[1]
         };
         assert!((line_gap(&mut system, None) - 48.0).abs() < 0.01);
@@ -3398,7 +3324,7 @@ mod tests {
             request.max_width = Some(200.0);
             request.align = align;
             request.spans[0].letter_spacing = spacing;
-            system.layout(&request).glyphs[0].position[0]
+            system.shape(&request).place([0.0; 2]).glyphs[0].position[0]
         };
         for align in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
             let base = h_x(&mut system, align, 0.0);
@@ -3427,7 +3353,7 @@ mod tests {
         let natural = system.measure(&request).width;
         let line_count = |system: &mut TextSystem, request: &mut TextLayoutRequest, width| {
             request.max_width = Some(width);
-            let layout = system.layout(request);
+            let layout = system.shape(request).place([0.0; 2]);
             let mut ys: Vec<_> = layout
                 .glyphs
                 .iter()
@@ -3473,7 +3399,7 @@ mod tests {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("ABCDE");
         request.spans[0].font_size = 24.0;
-        let mut layout = system.layout(&request);
+        let mut layout = system.shape(&request).place([0.0; 2]);
         let mut atlas = GlyphAtlas::new(64);
         atlas.begin_frame();
         let mut origins = Vec::new();
@@ -3497,7 +3423,6 @@ mod tests {
         atlas.begin_frame();
         let replaced = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster);
         assert_eq!(replaced.dropped_glyphs, 0);
-        assert!(!replaced.compacted);
         assert!(!atlas.glyphs.contains_key(&replaced_key));
         for (glyph, origin) in layout.glyphs.iter().zip(origins).take(3) {
             let AtlasImage::Placed(placed) = atlas.glyphs[&AtlasKey::Raster(glyph.key.0)].image
@@ -3517,15 +3442,15 @@ mod tests {
         for frame in 0..60 {
             let mut request = TextLayoutRequest::new("Lumen text");
             request.spans[0].font_size = 32.0 + frame as f32 * (568.0 / 59.0);
-            let layout = system.layout(&request);
+            let layout = system.shape(&request).place([0.0; 2]);
             seen.extend(layout.glyphs.iter().map(|glyph| glyph.key));
             atlas.begin_frame();
             let prepared = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster);
-            atlas.commit(prepared.frame);
+            atlas.commit(atlas.frame);
             assert_eq!(prepared.dropped_glyphs, 0, "frame {frame}");
         }
 
-        assert!(atlas.len() < seen.len() / 2);
+        assert!(atlas.glyphs.len() < seen.len() / 2);
         assert!(system.swash_cache.image_cache.is_empty());
     }
 
@@ -3533,13 +3458,15 @@ mod tests {
     fn uncommitted_uploads_are_repeated() {
         let mut system = TextSystem::new();
         let mut atlas = GlyphAtlas::new(256);
-        let layout = system.layout(&TextLayoutRequest::new("Retry"));
+        let layout = system
+            .shape(&TextLayoutRequest::new("Retry"))
+            .place([0.0; 2]);
 
         atlas.begin_frame();
         let dropped = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster);
         atlas.begin_frame();
         let retried = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster);
-        atlas.commit(retried.frame);
+        atlas.commit(atlas.frame);
         atlas.begin_frame();
         let committed = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster);
 
@@ -3554,7 +3481,7 @@ mod tests {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new(format!("{}ab", " ".repeat(200)));
         request.spans[0].font_size = 8.0;
-        let layout = system.layout(&request);
+        let layout = system.shape(&request).place([0.0; 2]);
         let mut atlas = GlyphAtlas::new(1024);
         atlas.begin_frame();
         let prepared = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster);
@@ -3582,7 +3509,7 @@ mod tests {
             let mut request = TextLayoutRequest::new(content);
             request.spans[0].font_size = 28.0;
             request.max_width = Some(900.0);
-            system.layout(&request)
+            system.shape(&request).place([0.0; 2])
         };
         let first = layout(&mut system, first);
         let second = layout(&mut system, second);
@@ -3594,7 +3521,6 @@ mod tests {
             atlas.commit(frame);
 
             assert_eq!((a.dropped_glyphs, b.dropped_glyphs), (0, 0), "{mode:?}");
-            assert!(!a.compacted && !b.compacted, "{mode:?}");
             let first_glyphs = atlas.keys_for(&first.glyphs, mode, &[]);
             assert!(
                 first_glyphs
@@ -3626,7 +3552,7 @@ mod tests {
             let shaped = system.shape(&request);
             let mut atlas = GlyphAtlas::new(1024);
             for y in [24.0, 24.6, -24.6] {
-                let layout = shaped.place([40.3, y], [1.0; 4]);
+                let layout = shaped.place([40.3, y]);
                 atlas.begin_frame();
                 // Exercise mixed rendering without depending on system fonts' overlaps.
                 atlas.insert(
@@ -3671,8 +3597,7 @@ mod tests {
             for frame in 0..40 {
                 let mut request = TextLayoutRequest::new("Lumen MSDF text");
                 request.spans[0].font_size = 32.0 + frame as f32 * (968.0 / 39.0);
-                request.origin = [frame as f32 * 0.37, 0.0];
-                let layout = system.layout(&request);
+                let layout = system.shape(&request).place([frame as f32 * 0.37, 0.0]);
                 fields.extend(
                     layout
                         .glyphs
@@ -3681,7 +3606,7 @@ mod tests {
                 );
                 atlas.begin_frame();
                 let prepared = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Msdf);
-                atlas.commit(prepared.frame);
+                atlas.commit(atlas.frame);
 
                 assert_eq!(prepared.dropped_glyphs, 0, "frame {frame}");
                 assert!(msdf_instances(&prepared) > 0);
@@ -3709,13 +3634,13 @@ mod tests {
             let mut system = TextSystem::new();
             let mut request = TextLayoutRequest::new("H");
             request.spans[0].font_size = 1500.0;
-            let layout = system.layout(&request);
+            let layout = system.shape(&request).place([0.0; 2]);
             let mut atlas = GlyphAtlas::new(512);
             atlas.begin_frame();
             let raster = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Raster);
             assert_eq!(raster.dropped_glyphs, 0);
             assert_eq!(msdf_instances(&raster), 1);
-            atlas.commit(raster.frame);
+            atlas.commit(atlas.frame);
 
             // The oversized raster key is remembered, so the next frame does not
             // rasterize it again.
@@ -3729,7 +3654,7 @@ mod tests {
             let mut colour = TextLayoutRequest::new("A");
             colour.spans[0].font_family = "Roboto COLR Test".to_string();
             colour.spans[0].font_size = 1500.0;
-            let colour = system.layout(&colour);
+            let colour = system.shape(&colour).place([0.0; 2]);
             atlas.begin_frame();
             let colour = prepare(&mut system, &mut atlas, &colour, TextRenderMode::Raster);
             assert_eq!(colour.instances.len(), 0);
@@ -3742,10 +3667,10 @@ mod tests {
             system.load_font_data(COLR_FONT.to_vec());
             let mut colour = TextLayoutRequest::new("AA");
             colour.spans[0].font_family = "Roboto COLR Test".to_string();
-            let colour = system.layout(&colour);
+            let colour = system.shape(&colour).place([0.0; 2]);
             let mut atlas = GlyphAtlas::new(1024);
             atlas.begin_frame();
-            let colour = system.prepare_stroked_glyphs(
+            let colour = system.prepare_glyphs(
                 &mut atlas,
                 &colour,
                 TextRenderMode::Raster,
@@ -3761,13 +3686,12 @@ mod tests {
             let mut system = TextSystem::new();
             let mut request = TextLayoutRequest::new("I");
             request.spans[0].font_size = 192.0;
-            let layout = system.layout(&request);
+            let layout = system.shape(&request).place([0.0; 2]);
             let mut atlas = GlyphAtlas::new(256);
             for mode in [TextRenderMode::Msdf, TextRenderMode::Raster] {
                 atlas.begin_frame();
-                let prepared =
-                    system.prepare_stroked_glyphs(&mut atlas, &layout, mode, &[64.0], &mut None);
-                atlas.commit(prepared.frame);
+                let prepared = system.prepare_glyphs(&mut atlas, &layout, mode, &[64.0], &mut None);
+                atlas.commit(atlas.frame);
                 let [stroke] = prepared.strokes[..] else {
                     panic!("{mode:?}: expected one stroke");
                 };
@@ -3786,19 +3710,14 @@ mod tests {
             let mut system = TextSystem::new();
             let mut request = TextLayoutRequest::new("I");
             request.spans[0].font_size = 48.0;
-            let layout = system.layout(&request);
+            let layout = system.shape(&request).place([0.0; 2]);
             let mut atlas = GlyphAtlas::new(128);
             let mode = TextRenderMode::Msdf;
             for half_width in [1000.0, 7000.0] {
                 let start = std::time::Instant::now();
                 atlas.begin_frame();
-                let prepared = system.prepare_stroked_glyphs(
-                    &mut atlas,
-                    &layout,
-                    mode,
-                    &[half_width],
-                    &mut None,
-                );
+                let prepared =
+                    system.prepare_glyphs(&mut atlas, &layout, mode, &[half_width], &mut None);
                 assert_eq!(prepared.instances.len(), 1, "{half_width}");
                 assert_eq!(
                     (prepared.strokes.len(), prepared.dropped_glyphs),
@@ -3820,12 +3739,12 @@ mod tests {
             let mut system = TextSystem::new();
             let mut atlas = GlyphAtlas::new(256);
             let mut prepare_text = |atlas: &mut GlyphAtlas, text: &str| {
-                let layout = system.layout(&TextLayoutRequest::new(text));
+                let layout = system.shape(&TextLayoutRequest::new(text)).place([0.0; 2]);
                 atlas.begin_frame();
                 prepare(&mut system, atlas, &layout, TextRenderMode::Msdf);
             };
             prepare_text(&mut atlas, "A B");
-            assert!(atlas.len() > 2);
+            assert!(atlas.glyphs.len() > 2);
             prepare_text(&mut atlas, "A");
             prepare_text(&mut atlas, "A");
             assert!(
@@ -3841,22 +3760,21 @@ mod tests {
             let mut system = TextSystem::new();
             let mut request = TextLayoutRequest::new("IOH");
             request.spans[0].font_size = 48.0;
-            let layout = system.layout(&request);
+            let layout = system.shape(&request).place([0.0; 2]);
             let mut atlas = GlyphAtlas::new(64);
             let mut overfull = None;
             for (frame, half_width) in [0.25, 0.25, 0.4, 0.7, 0.9].into_iter().enumerate() {
                 atlas.begin_frame();
-                let prepared = system.prepare_stroked_glyphs(
+                let prepared = system.prepare_glyphs(
                     &mut atlas,
                     &layout,
                     TextRenderMode::Msdf,
                     &[half_width],
                     &mut overfull,
                 );
-                atlas.commit(prepared.frame);
+                atlas.commit(atlas.frame);
                 assert!(prepared.dropped_glyphs > 0, "frame {frame}");
                 if frame > 0 {
-                    assert!(!prepared.compacted, "frame {frame} compacted");
                     assert!(prepared.uploads.is_empty(), "frame {frame} uploaded");
                 }
             }
@@ -3871,16 +3789,16 @@ mod tests {
             let mut atlas = GlyphAtlas::new(64);
             let mut overfull = None;
             for (frame, origin) in [0.0, 0.0, 0.5].into_iter().enumerate() {
-                let layout = shaped.place([origin, 0.0], [1.0; 4]);
+                let layout = shaped.place([origin, 0.0]);
                 atlas.begin_frame();
-                let prepared = system.prepare_stroked_glyphs(
+                let prepared = system.prepare_glyphs(
                     &mut atlas,
                     &layout,
                     TextRenderMode::Msdf,
                     &[0.25],
                     &mut overfull,
                 );
-                atlas.commit(prepared.frame);
+                atlas.commit(atlas.frame);
                 assert!(prepared.dropped_glyphs > 0, "frame {frame}");
                 // Fields do not depend on the subpixel position, so the working set is the same.
                 if frame > 0 {
@@ -3894,7 +3812,7 @@ mod tests {
             let mut system = TextSystem::new();
             let mut request = TextLayoutRequest::new("HWI");
             request.spans[0].font_size = 1500.0;
-            let layout = system.layout(&request);
+            let layout = system.shape(&request).place([0.0; 2]);
             let mut atlas = GlyphAtlas::new(512);
             let mut overfull = None;
             let mut frames = Vec::new();
@@ -3904,9 +3822,10 @@ mod tests {
                     &mut atlas,
                     &layout,
                     TextRenderMode::Raster,
+                    &[],
                     &mut overfull,
                 );
-                atlas.commit(prepared.frame);
+                atlas.commit(atlas.frame);
                 frames.push((prepared.instances.len(), prepared.uploads.len()));
             }
             let (instances, _) = frames[0];
@@ -3928,7 +3847,7 @@ mod tests {
             ] {
                 let mut request = TextLayoutRequest::new("H");
                 request.spans[0].font_size = size;
-                let layout = system.layout(&request);
+                let layout = system.shape(&request).place([0.0; 2]);
                 atlas.begin_frame();
                 let prepared = prepare(&mut system, &mut atlas, &layout, TextRenderMode::Auto);
                 assert_eq!(prepared.dropped_glyphs, 0);
@@ -4005,8 +3924,7 @@ mod tests {
             for text in ["R", "W", "a", "4"] {
                 let mut request = TextLayoutRequest::new(text);
                 request.spans[0].font_size = 1000.0;
-                request.disable_hinting = true;
-                let layout = system.layout(&request);
+                let layout = system.shape(&request).place([0.0; 2]);
                 let [x, y] = layout.glyphs[0].position.map(|axis| axis.floor() as i32);
                 let window = [x - 50, y - 800, 800, 1100];
                 let raster = glyph_coverage(&mut system, &layout, TextRenderMode::Raster, window);
@@ -4037,9 +3955,9 @@ mod tests {
             let mut colour = TextLayoutRequest::new("A");
             colour.spans[0].font_family = "Roboto COLR Test".to_string();
             colour.spans[0].font_size = 48.0;
-            let colour = system.layout(&colour);
+            let colour = system.shape(&colour).place([0.0; 2]);
 
-            let mut overlapping = system.layout(&TextLayoutRequest::new("O"));
+            let mut overlapping = system.shape(&TextLayoutRequest::new("O")).place([0.0; 2]);
             let mut atlas = GlyphAtlas::new(512);
             atlas.begin_frame();
             let colour = prepare(&mut system, &mut atlas, &colour, TextRenderMode::Msdf);
@@ -4067,7 +3985,7 @@ mod tests {
     }
 
     fn items(system: &mut TextSystem, request: &TextLayoutRequest) -> (Vec<[u32; 3]>, TextItem) {
-        let layout = system.layout(request);
+        let layout = system.shape(request).place([0.0; 2]);
         let items = layout
             .glyphs
             .iter()
@@ -4144,7 +4062,7 @@ mod tests {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::new("A\u{338}x fix");
         request.spans[0].font_size = 40.0;
-        let layout = system.layout(&request);
+        let layout = system.shape(&request).place([0.0; 2]);
         let (items, counts) = items(&mut system, &request);
         // The overlay mark is a glyph of its own, numbered and pivoting with its base.
         assert_eq!(items[0], [0, 0, 0]);
@@ -4203,7 +4121,7 @@ mod tests {
             request.max_width = Some(260.0);
             request.align = align;
             let shaped = system.shape(&request);
-            let layout = shaped.place([0.0, 0.0], [1.0; 4]);
+            let layout = shaped.place([0.0, 0.0]);
             let close = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-3);
             let measured = [shaped.measurement.width, shaped.measurement.height];
             assert!(close(&measured, &measurement), "{spacing}: {measured:?}");
@@ -4236,7 +4154,7 @@ mod tests {
         };
         let request =
             TextLayoutRequest::from_spans(vec![span("small ", 16.0), bold, span("\nsmall", 16.0)]);
-        let layout = system.layout(&request);
+        let layout = system.shape(&request).place([0.0; 2]);
 
         let spans: Vec<_> = layout.glyphs.iter().map(|glyph| glyph.item.span).collect();
         assert_eq!(spans, [0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2]);
@@ -4248,7 +4166,7 @@ mod tests {
         // Both glyph sizes share the first line's baseline, and each line is 1.2 × its
         // largest size.
         assert_eq!(layout.glyphs[0].position[1], layout.glyphs[6].position[1]);
-        assert!((layout.measurement.height - (57.6 + 19.2)).abs() < 0.01);
+        assert!((system.measure(&request).height - (57.6 + 19.2)).abs() < 0.01);
         let lines: Vec<_> = layout.glyphs.iter().map(|glyph| glyph.item.line).collect();
         assert_eq!(lines[9..], [1; 5]);
     }
@@ -4303,13 +4221,14 @@ mod tests {
                 },
             ])
         };
-        let base = system.layout(&tracked(0.0, 0.0));
-        let layout = system.layout(&tracked(10.0, 30.0));
+        let base = system.shape(&tracked(0.0, 0.0));
+        let shaped = system.shape(&tracked(10.0, 30.0));
         // The last glyph's own spacing is trimmed.
         let expected = base.measurement.width + 10.0 * 2.0 + 30.0;
-        assert!((layout.measurement.width - expected).abs() < 0.01);
-        assert!((layout.bounds[2] - expected).abs() < 0.01);
-        assert!((layout.glyphs[3].position[0] - base.glyphs[3].position[0] - 50.0).abs() < 0.01);
+        assert!((shaped.measurement.width - expected).abs() < 0.01);
+        assert!((shaped.bounds[2] - expected).abs() < 0.01);
+        let x = |shaped: &ShapedText| shaped.place([0.0; 2]).glyphs[3].position[0];
+        assert!((x(&shaped) - x(&base) - 50.0).abs() < 0.01);
 
         let mut request = tracked(10.0, 30.0);
         request.max_width = Some(400.0);
@@ -4443,7 +4362,7 @@ mod tests {
         assert!((trailing.measurement.height - 38.4).abs() < 0.01);
         let carriage = system.shape(&TextLayoutRequest::new("a\rB"));
         assert_eq!(carriage.counts.line, 2);
-        assert_eq!(carriage.place([0.0; 2], [1.0; 4]).glyphs.len(), 2);
+        assert_eq!(carriage.place([0.0; 2]).glyphs.len(), 2);
         assert_eq!(carriage.segments[1].bytes, 2..3);
     }
 
@@ -4455,7 +4374,7 @@ mod tests {
             span("i", 80.0),
         ]));
         let spans: Vec<_> = shaped
-            .place([0.0; 2], [1.0; 4])
+            .place([0.0; 2])
             .glyphs
             .iter()
             .map(|glyph| glyph.item.span)
@@ -4481,7 +4400,7 @@ mod tests {
         let mut system = TextSystem::new();
         let mut request = TextLayoutRequest::from_spans(vec![span("שלום עולם", 30.0)]);
         request.max_width = Some(260.0);
-        request.align = TextAlign::Justified;
+        request.align = TextAlign::Justify;
         let shaped = system.shape(&request);
         assert!((shaped.measurement.width - 113.83301).abs() < 0.01);
         assert!((shaped.measurement.width - shaped.bounds[2]).abs() < 0.01);
@@ -4512,7 +4431,7 @@ mod tests {
             span("H H H H H H H H H H", 30.0),
         ]);
         request.max_width = Some(260.0);
-        request.align = TextAlign::Justified;
+        request.align = TextAlign::Justify;
         let shaped = system.shape(&request);
         assert!((shaped.measurement.width - 260.0).abs() < 0.01);
     }
@@ -4579,7 +4498,7 @@ mod tests {
             },
         ]);
         request.max_width = Some(200.0);
-        request.align = TextAlign::Justified;
+        request.align = TextAlign::Justify;
         let shaped = system.shape(&request);
         // The fourth line is a single word, which has no spaces to widen.
         for line in 0..3 {
@@ -5010,9 +4929,10 @@ mod tests {
         let mut system = TextSystem::new();
         let mut glyphs = |features| {
             system
-                .layout(&TextLayoutRequest::from_spans(vec![featured(
+                .shape(&TextLayoutRequest::from_spans(vec![featured(
                     "fi", features,
                 )]))
+                .place([0.0; 2])
                 .glyphs
                 .len()
         };
@@ -5031,7 +4951,7 @@ mod tests {
             span("end", 30.0),
         ]));
         // "ß" becomes "SS" and "ﬁ" "FI", so the span is "MASSFI " in seven bytes, not eight.
-        let layout = shaped.place([0.0; 2], [1.0; 4]);
+        let layout = shaped.place([0.0; 2]);
         assert_eq!(shaped.span_starts, [0, 7, 10]);
         assert_eq!(shaped.counts.glyph, 10);
         assert_eq!(shaped.counts.word, 2);
@@ -5136,10 +5056,7 @@ mod tests {
         let plain = system.shape(&request(0.0));
         let raised = system.shape(&request(12.0));
         assert_eq!(raised.measurement, plain.measurement);
-        let (plain_layout, raised_layout) = (
-            plain.place([0.0; 2], [1.0; 4]),
-            raised.place([0.0; 2], [1.0; 4]),
-        );
+        let (plain_layout, raised_layout) = (plain.place([0.0; 2]), raised.place([0.0; 2]));
         for (index, (before, after)) in plain_layout
             .glyphs
             .iter()
@@ -5242,10 +5159,7 @@ mod tests {
             spaced.segments[1].line_top,
             plain.segments[1].line_top + 9.0
         );
-        let (spaced, plain) = (
-            spaced.place([0.0; 2], [1.0; 4]),
-            plain.place([0.0; 2], [1.0; 4]),
-        );
+        let (spaced, plain) = (spaced.place([0.0; 2]), plain.place([0.0; 2]));
         assert_eq!(
             spaced.glyphs[1].position[1],
             plain.glyphs[1].position[1] + 9.0

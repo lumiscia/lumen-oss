@@ -71,16 +71,13 @@ pub(crate) fn render_msdf_glyph(
     let Some(font) = font_system.get_font(key.font_id, key.font_weight) else {
         return RenderedGlyph::RasterOnly;
     };
-    if [b"COLR", b"CBDT", b"sbix", b"EBDT"]
-        .iter()
-        .any(|tag| font.as_swash().table(u32::from_be_bytes(**tag)).is_some())
-    {
+    if has_colour_tables(&font) {
         return RenderedGlyph::RasterOnly;
     }
     let Some(commands) = swash_cache.get_outline_commands_uncached(font_system, key) else {
         return RenderedGlyph::RasterOnly;
     };
-    let Some((min, max)) = bounds(&commands) else {
+    let Some([min_x, min_y, max_x, max_y]) = outline_bounds(&commands) else {
         return RenderedGlyph::Empty;
     };
 
@@ -88,10 +85,10 @@ pub(crate) fn render_msdf_glyph(
     // Field texels kept around the outline: half the range plus one texel that the drawn quad
     // insets by half a texel.
     let padding = range / 2.0 + 1.0;
-    let left = (min.x - padding).floor();
-    let top = (max.y + padding).ceil();
-    let width = ((max.x + padding).ceil() - left) as u32;
-    let height = (top - (min.y - padding).floor()) as u32;
+    let left = (min_x - padding).floor();
+    let top = (max_y + padding).ceil();
+    let width = ((max_x + padding).ceil() - left) as u32;
+    let height = (top - (min_y - padding).floor()) as u32;
     let contours = contours(&commands, |p| {
         Point::new(f64::from(p.x - left), f64::from(top - p.y))
     });
@@ -154,20 +151,44 @@ pub(crate) fn render_msdf_glyph(
     })
 }
 
-fn bounds(commands: &[Command]) -> Option<(Vector, Vector)> {
-    let mut points = commands.iter().flat_map(|command| match *command {
-        Command::MoveTo(p) | Command::LineTo(p) => vec![p],
-        Command::QuadTo(c, p) => vec![c, p],
-        Command::CurveTo(c0, c1, p) => vec![c0, c1, p],
-        Command::Close => Vec::new(),
-    });
-    let first = points.next()?;
-    Some(points.fold((first, first), |(min, max), p| {
-        (
-            Vector::new(min.x.min(p.x), min.y.min(p.y)),
-            Vector::new(max.x.max(p.x), max.y.max(p.y)),
-        )
-    }))
+/// Whether `font` holds colour or bitmap glyphs, which are drawn from those tables rather than
+/// their outlines.
+pub(crate) fn has_colour_tables(font: &cosmic_text::Font) -> bool {
+    [b"COLR", b"CBDT", b"sbix", b"EBDT"]
+        .iter()
+        .any(|tag| font.as_swash().table(u32::from_be_bytes(**tag)).is_some())
+}
+
+/// `[min_x, min_y, max_x, max_y]` of an outline's control points, or `None` when it is empty.
+pub(crate) fn outline_bounds(commands: &[Command]) -> Option<[f32; 4]> {
+    let mut bounds: Option<[f32; 4]> = None;
+    let mut include = |point: Vector| {
+        bounds = Some(match bounds {
+            Some([min_x, min_y, max_x, max_y]) => [
+                min_x.min(point.x),
+                min_y.min(point.y),
+                max_x.max(point.x),
+                max_y.max(point.y),
+            ],
+            None => [point.x, point.y, point.x, point.y],
+        });
+    };
+    for command in commands {
+        match *command {
+            Command::MoveTo(p) | Command::LineTo(p) => include(p),
+            Command::QuadTo(c, p) => {
+                include(c);
+                include(p);
+            }
+            Command::CurveTo(c0, c1, p) => {
+                include(c0);
+                include(c1);
+                include(p);
+            }
+            Command::Close => {}
+        }
+    }
+    bounds
 }
 
 /// Splits Swash outline commands into closed contours, mapping each point.

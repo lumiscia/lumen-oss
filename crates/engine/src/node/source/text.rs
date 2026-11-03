@@ -18,32 +18,64 @@ use crate::node::{
 use super::text_compile::{GpuTextPaint, TextStyleUniforms};
 use super::text_content::{
     FontFeatures, TextContent, TextContentDelegate, TextHighlight, TextHighlightDelegate, TextLine,
-    TextLineDelegate, TextLineStyle, TextSpan, TextStroke, TextStrokeAlign, TextStrokeDelegate,
+    TextLineDelegate, TextSpan, TextStroke, TextStrokeAlign, TextStrokeDelegate,
 };
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum", expressions)]
-pub enum TextFontStyle {
-    #[default]
-    Normal = 0,
-    Italic = 1,
-    Oblique = 2,
+/// A param enum and the conversion to its `lumen_text` twin, which has the same variants.
+macro_rules! text_enum {
+    (
+        $(#$attr:tt)*
+        $name:ident => $twin:path {
+            $($(#$variant_attr:tt)* $variant:ident = $value:tt,)*
+        }
+    ) => {
+        #[derive(
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            Hash,
+            Default,
+            lumen_macros::NodeEnum,
+            lumen_macros::Delegate,
+        )]
+        #[repr(i64)]
+        $(#$attr)*
+        pub enum $name {
+            $($(#$variant_attr)* $variant = $value,)*
+        }
+
+        impl From<$name> for $twin {
+            fn from(value: $name) -> Self {
+                match value {
+                    $($name::$variant => Self::$variant,)*
+                }
+            }
+        }
+    };
+}
+pub(super) use text_enum;
+
+text_enum! {
+    #[delegate(kind = "enum", expressions)]
+    TextFontStyle => lumen_text::TextFontStyle {
+        #[default]
+        Normal = 0,
+        Italic = 1,
+        Oblique = 2,
+    }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum")]
-pub enum TextAlignmentHorizontal {
-    #[default]
-    Left = 0,
-    Center = 1,
-    Right = 2,
-    Justify = 3,
+text_enum! {
+    #[delegate(kind = "enum")]
+    TextAlignmentHorizontal => lumen_text::TextAlign {
+        #[default]
+        Left = 0,
+        Center = 1,
+        Right = 2,
+        Justify = 3,
+    }
 }
 
 #[derive(
@@ -69,27 +101,23 @@ pub enum TextPaintSpace {
     Text = 1,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum")]
-pub enum TextRenderMode {
-    #[default]
-    Raster = 0,
-    Msdf = 1,
-    Auto = 2,
+text_enum! {
+    #[delegate(kind = "enum")]
+    TextRenderMode => lumen_text::TextRenderMode {
+        #[default]
+        Raster = 0,
+        Msdf = 1,
+        Auto = 2,
+    }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum")]
-pub enum TextOverflow {
-    #[default]
-    Clip = 0,
-    Ellipsis = 1,
+text_enum! {
+    #[delegate(kind = "enum")]
+    TextOverflow => lumen_text::TextOverflow {
+        #[default]
+        Clip = 0,
+        Ellipsis = 1,
+    }
 }
 
 #[derive(
@@ -103,28 +131,15 @@ pub enum TextFit {
     Shrink = 1,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum", expressions)]
-pub enum TextTransform {
-    #[default]
-    None = 0,
-    Uppercase = 1,
-    Lowercase = 2,
-    /// Uppercases the first letter of each word.
-    Capitalize = 3,
-}
-
-impl From<TextTransform> for lumen_text::TextTransform {
-    fn from(transform: TextTransform) -> Self {
-        match transform {
-            TextTransform::None => Self::None,
-            TextTransform::Uppercase => Self::Uppercase,
-            TextTransform::Lowercase => Self::Lowercase,
-            TextTransform::Capitalize => Self::Capitalize,
-        }
+text_enum! {
+    #[delegate(kind = "enum", expressions)]
+    TextTransform => lumen_text::TextTransform {
+        #[default]
+        None = 0,
+        Uppercase = 1,
+        Lowercase = 2,
+        /// Uppercases the first letter of each word.
+        Capitalize = 3,
     }
 }
 
@@ -498,7 +513,7 @@ impl CompiledText {
                 TextAlignmentVertical::Bottom => position_y as f32 - height,
             },
         ];
-        let layout = shaped.place(origin, [1.0; 4]);
+        let layout = shaped.place(origin);
         let spans: &[TextSpan] = match &self.content {
             Some(TextContent::Spans(spans)) => spans,
             Some(TextContent::Text(_)) => &[],
@@ -564,11 +579,7 @@ impl CompiledText {
                 );
             }
         }
-        let mode = match evaluated.render_mode {
-            TextRenderMode::Raster => lumen_text::TextRenderMode::Raster,
-            TextRenderMode::Msdf => lumen_text::TextRenderMode::Msdf,
-            TextRenderMode::Auto => lumen_text::TextRenderMode::Auto,
-        };
+        let mode = lumen_text::TextRenderMode::from(evaluated.render_mode);
         let atlas_started = (trace_started.is_some() || mode != lumen_text::TextRenderMode::Raster)
             .then(trace_now_ms);
         let mut atlas = bound
@@ -579,7 +590,7 @@ impl CompiledText {
             .map_err(|_| RenderError::Gpu {
                 details: "text atlas lock was poisoned".to_string(),
             })?;
-        let mut prepared = text_system.prepare_stroked_glyphs(
+        let mut prepared = text_system.prepare_glyphs(
             &mut atlas,
             &layout,
             mode,
@@ -671,9 +682,7 @@ impl CompiledText {
         for (mut instance, &glyph) in prepared.strokes.into_iter().zip(&prepared.stroke_glyphs) {
             let fill = &prepared.instances[glyph];
             let span = layout.glyphs[prepared.sources[glyph]].item.span as usize;
-            let Some(stroke) = state.strokes[span] else {
-                continue;
-            };
+            let stroke = state.strokes[span].expect("a stroked glyph's span has a stroke");
             instance.set_paint(stroke.paint);
             instance.opacity = fill.opacity;
             if fill.flags & lumen_text::GLYPH_TRANSFORMED != 0 {
@@ -705,9 +714,7 @@ impl CompiledText {
             let (mut under, mut over) = (0, 0);
             for &glyph in &prepared.stroke_glyphs {
                 let span = layout.glyphs[prepared.sources[glyph]].item.span as usize;
-                let Some(stroke) = state.strokes[span] else {
-                    continue;
-                };
+                let stroke = state.strokes[span].expect("a stroked glyph's span has a stroke");
                 let count = if stroke.over { &mut over } else { &mut under };
                 stroke_at[glyph] = Some((stroke.over, *count));
                 *count += 1;
@@ -885,20 +892,21 @@ impl GlyphParams {
         let mut fading: Option<(usize, (u32, u32))> = None;
         for (index, &source) in sources.iter().enumerate() {
             let glyph = &layout.glyphs[source];
+            let item = glyph.item;
             expr.glyph = Some(GlyphScope {
-                item: glyph.item,
+                item,
                 counts: layout.counts,
             });
             let [x, y] = glyph.pivot.map(f64::from);
             let transform = DrawableTransform {
                 position: (x, y),
-                scale: scale.eval(node_id, expr)?,
-                rotation: rotation.eval(node_id, expr)?,
+                scale: scale.eval(item, node_id, expr)?,
+                rotation: rotation.eval(item, node_id, expr)?,
                 anchor: (0.0, 0.0),
-                opacity: opacity.eval(node_id, expr)?,
+                opacity: opacity.eval(item, node_id, expr)?,
             }
             .to_gpu();
-            let (offset_x, offset_y) = offset.eval(node_id, expr)?;
+            let (offset_x, offset_y) = offset.eval(item, node_id, expr)?;
             let instance = &mut instances[index];
             instance.opacity *= transform.opacity;
             if transform.flags != 0 || (offset_x, offset_y) != (0.0, 0.0) {
@@ -1015,11 +1023,15 @@ impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
         }
     }
 
-    fn eval(&mut self, node_id: NodeId, expr: &ExpressionContext<'_>) -> crate::Result<T> {
+    fn eval(
+        &mut self,
+        item: lumen_text::TextItem,
+        node_id: NodeId,
+        expr: &ExpressionContext<'_>,
+    ) -> crate::Result<T> {
         if let Deferred::Value(value) = self.param {
             return Ok(*value);
         }
-        let item = expr.glyph.map(|scope| scope.item).unwrap_or_default();
         let key = [item.glyph, item.word, item.line, item.span];
         let key: [u32; 4] =
             std::array::from_fn(|index| if self.reads[index] { key[index] } else { 0 });
@@ -1142,24 +1154,16 @@ impl TextLayoutStyle {
                 .collect(),
         };
         let mut request = lumen_text::TextLayoutRequest::from_spans(spans);
-        request.max_width = (self.max_width > 0.0).then_some(self.max_width as f32);
+        request.max_width = Some(self.max_width as f32).filter(|width| *width > 0.0);
         request.line_height = (self.line_height > 0.0).then_some(self.line_height as f32);
         request.paragraph_spacing = self.paragraph_spacing.max(0.0) as f32;
-        request.align = match self.alignment_horizontal {
-            TextAlignmentHorizontal::Center => lumen_text::TextAlign::Center,
-            TextAlignmentHorizontal::Right => lumen_text::TextAlign::Right,
-            TextAlignmentHorizontal::Justify => lumen_text::TextAlign::Justified,
-            TextAlignmentHorizontal::Left => lumen_text::TextAlign::Left,
-        };
+        request.align = self.alignment_horizontal.into();
         let limits = &self.limits;
         request.max_lines = limits
             .max_lines
             .map(|lines| lines.clamp(0, u32::MAX.into()) as u32);
         request.max_height = limits.max_height.map(|height| height.max(0.0) as f32);
-        request.overflow = match limits.overflow {
-            TextOverflow::Clip => lumen_text::TextOverflow::Clip,
-            TextOverflow::Ellipsis => lumen_text::TextOverflow::Ellipsis,
-        };
+        request.overflow = limits.overflow.into();
         request.min_fit_scale = (limits.fit == TextFit::Shrink)
             .then(|| (limits.min_font_size / self.font_size.max(1.0)) as f32);
         request
@@ -1187,11 +1191,7 @@ impl TextLayoutStyle {
                 .and_then(|span| span.font_weight)
                 .unwrap_or(self.font_weight)
                 .clamp(1, 1000) as u16,
-            font_style: match font_style {
-                TextFontStyle::Italic => lumen_text::TextFontStyle::Italic,
-                TextFontStyle::Oblique => lumen_text::TextFontStyle::Oblique,
-                TextFontStyle::Normal => lumen_text::TextFontStyle::Normal,
-            },
+            font_style: font_style.into(),
             letter_spacing: span
                 .and_then(|span| span.letter_spacing)
                 .unwrap_or(self.letter_spacing) as f32,
@@ -1401,13 +1401,7 @@ pub(crate) fn decorate<'a>(
             },
             |range, line, own| {
                 let decoration = lumen_text::TextLineDecoration {
-                    style: match line.style {
-                        TextLineStyle::Solid => lumen_text::TextLineStyle::Solid,
-                        TextLineStyle::Double => lumen_text::TextLineStyle::Double,
-                        TextLineStyle::Dotted => lumen_text::TextLineStyle::Dotted,
-                        TextLineStyle::Dashed => lumen_text::TextLineStyle::Dashed,
-                        TextLineStyle::Wavy => lumen_text::TextLineStyle::Wavy,
-                    },
+                    style: line.style.into(),
                     thickness: line.thickness.map(|thickness| thickness as f32),
                     offset: line.offset.map(|offset| offset as f32),
                 };
