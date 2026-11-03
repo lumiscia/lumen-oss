@@ -132,7 +132,7 @@ export function schemaType(schema: JsonSchema, context: TypeContext, indent: str
   return name;
 }
 
-function typeBody(schema: JsonSchema, context: TypeContext, indent: string): string {
+function assertSupportedKeywords(schema: JsonSchema): void {
   for (const keyword of Object.keys(schema)) {
     if (
       !typeKeywords.has(keyword) &&
@@ -142,6 +142,10 @@ function typeBody(schema: JsonSchema, context: TypeContext, indent: string): str
       throw new Error(`unsupported schema keyword \`${keyword}\` in ${JSON.stringify(schema)}`);
     }
   }
+}
+
+function typeBody(schema: JsonSchema, context: TypeContext, indent: string): string {
+  assertSupportedKeywords(schema);
   const type = (value: unknown): string => schemaType(object(value), context, indent);
   const reference = (name: string): string => {
     context.used.add(name);
@@ -158,6 +162,7 @@ function typeBody(schema: JsonSchema, context: TypeContext, indent: string): str
     return schema.enum.map((value) => JSON.stringify(value)).join(" | ");
   const branches = array(schema.anyOf ?? schema.oneOf);
   if (branches.length > 0) {
+    for (const branch of branches) assertSupportedKeywords(object(branch));
     const isExpression = (branch: unknown): boolean => object(branch).$ref === expressionRef;
     const literal = branches
       .filter((branch) => !isExpression(branch))

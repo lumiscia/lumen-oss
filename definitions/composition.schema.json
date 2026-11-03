@@ -46,7 +46,8 @@
         }
       },
       "required": ["id", "source_id", "track_id"],
-      "type": "object"
+      "type": "object",
+      "x-lumen-type": "AudioClip"
     },
     "audioTrack": {
       "additionalProperties": true,
@@ -70,7 +71,8 @@
         }
       },
       "required": ["id"],
-      "type": "object"
+      "type": "object",
+      "x-lumen-type": "AudioTrack"
     },
     "clipPropValue": {
       "anyOf": [
@@ -171,7 +173,8 @@
           "required": ["type"],
           "type": "object"
         }
-      ]
+      ],
+      "x-lumen-type": "CompositionPropDeclaration"
     },
     "compositionTemplate": {
       "additionalProperties": false,
@@ -197,44 +200,15 @@
           "type": "object"
         },
         "render_settings": {
-          "additionalProperties": true,
-          "properties": {
-            "background_color": {
-              "$ref": "#/$defs/color"
-            },
-            "height": {
-              "maximum": 4294967295,
-              "minimum": 1,
-              "type": "integer"
-            },
-            "width": {
-              "maximum": 4294967295,
-              "minimum": 1,
-              "type": "integer"
-            }
-          },
-          "required": ["width", "height"],
-          "type": "object"
+          "$ref": "#/$defs/renderSettings"
         },
         "timeline": {
-          "additionalProperties": true,
-          "properties": {
-            "duration_frames": {
-              "maximum": 4294967295,
-              "minimum": 1,
-              "type": "integer"
-            },
-            "fps": {
-              "exclusiveMinimum": 0,
-              "type": "number"
-            }
-          },
-          "required": ["duration_frames"],
-          "type": "object"
+          "$ref": "#/$defs/timeline"
         }
       },
       "required": ["nodes", "connections"],
-      "type": "object"
+      "type": "object",
+      "x-lumen-type": "CompositionTemplate"
     },
     "connection": {
       "additionalProperties": false,
@@ -253,7 +227,8 @@
         }
       },
       "required": ["from_node", "to_node", "to_port"],
-      "type": "object"
+      "type": "object",
+      "x-lumen-type": "Connection"
     },
     "expression": {
       "description": "An expression evaluated per frame in place of a literal value.",
@@ -501,6 +476,27 @@
       "enum": ["linear_gradient", "radial_gradient", "conic_gradient", "linear", "radial", "conic"],
       "type": "string",
       "x-lumen-type": "PaintKind"
+    },
+    "renderSettings": {
+      "additionalProperties": true,
+      "properties": {
+        "background_color": {
+          "$ref": "#/$defs/color"
+        },
+        "height": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "width": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": ["width", "height"],
+      "type": "object",
+      "x-lumen-type": "RenderSettings"
     },
     "shaderUniformComponent": {
       "anyOf": [
@@ -1089,6 +1085,24 @@
       "type": "string",
       "x-lumen-type": "TextTransform"
     },
+    "timeline": {
+      "additionalProperties": true,
+      "description": "Length and frame rate. `fps` defaults to 30 at the root, and a template's timeline takes the root's `fps`.",
+      "properties": {
+        "duration_frames": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "fps": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": ["duration_frames"],
+      "type": "object",
+      "x-lumen-type": "Timeline"
+    },
     "vec2": {
       "items": false,
       "maxItems": 2,
@@ -1151,7 +1165,8 @@
       "propertyNames": {
         "pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*\\s*(,\\s*[A-Za-z_][A-Za-z0-9_]*\\s*)*)?\\)\\s*$"
       },
-      "type": "object"
+      "type": "object",
+      "x-lumen-keyType": "`${string}(${string})`"
     },
     "lumenSchemaVersion": {
       "description": "Version of the composition format. Absent means the current version.",
@@ -1320,7 +1335,8 @@
                     "anyOf": [
                       {
                         "enum": ["union", "intersect", "subtract", "xor"],
-                        "type": "string"
+                        "type": "string",
+                        "x-lumen-type": "BooleanOperation"
                       },
                       {
                         "$ref": "#/$defs/expression"
@@ -1468,7 +1484,8 @@
                         "value": 2
                       }
                     ],
-                    "x-lumen-kind": "enum"
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "ClipEnd"
                   },
                   "offset": {
                     "anyOf": [
@@ -1568,7 +1585,8 @@
                     "anyOf": [
                       {
                         "enum": ["nearest", "linear"],
-                        "type": "string"
+                        "type": "string",
+                        "x-lumen-type": "RasterSampling"
                       },
                       {
                         "$ref": "#/$defs/expression"
@@ -2094,7 +2112,8 @@
                     "anyOf": [
                       {
                         "enum": ["image", "video"],
-                        "type": "string"
+                        "type": "string",
+                        "x-lumen-type": "MediaInSourceKind"
                       },
                       {
                         "$ref": "#/$defs/expression"
@@ -2121,7 +2140,8 @@
                     "anyOf": [
                       {
                         "enum": ["clamp", "repeat", "ping_pong"],
-                        "type": "string"
+                        "type": "string",
+                        "x-lumen-type": "LoopMode"
                       },
                       {
                         "$ref": "#/$defs/expression"
@@ -2288,7 +2308,8 @@
                     "anyOf": [
                       {
                         "enum": ["normal", "multiply", "screen", "overlay", "darken", "lighten"],
-                        "type": "string"
+                        "type": "string",
+                        "x-lumen-type": "BlendMode"
                       },
                       {
                         "$ref": "#/$defs/expression"
@@ -2382,7 +2403,8 @@
                         "value": 1
                       }
                     ],
-                    "x-lumen-kind": "enum"
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "MaskMode"
                   },
                   "opacity": {
                     "anyOf": [
@@ -2794,7 +2816,8 @@
                     "anyOf": [
                       {
                         "enum": ["normal", "multiply", "screen", "overlay", "darken", "lighten"],
-                        "type": "string"
+                        "type": "string",
+                        "x-lumen-type": "BlendMode"
                       },
                       {
                         "$ref": "#/$defs/expression"
@@ -2936,13 +2959,15 @@
                         "value": 2
                       }
                     ],
-                    "x-lumen-kind": "enum"
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "ResizeMode"
                   },
                   "sampling": {
                     "anyOf": [
                       {
                         "enum": ["nearest", "linear"],
-                        "type": "string"
+                        "type": "string",
+                        "x-lumen-type": "RasterSampling"
                       },
                       {
                         "$ref": "#/$defs/expression"
@@ -3274,7 +3299,8 @@
                         "value": 1
                       }
                     ],
-                    "x-lumen-kind": "enum"
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "ShapeGeometryKind"
                   },
                   "height": {
                     "anyOf": [
@@ -3560,7 +3586,8 @@
                         "value": 3
                       }
                     ],
-                    "x-lumen-kind": "enum"
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "TextAlignmentHorizontal"
                   },
                   "alignment_vertical": {
                     "default": "top",
@@ -3585,7 +3612,8 @@
                         "value": 2
                       }
                     ],
-                    "x-lumen-kind": "enum"
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "TextAlignmentVertical"
                   },
                   "anchor": {
                     "anyOf": [
@@ -3654,7 +3682,8 @@
                         "value": 1
                       }
                     ],
-                    "x-lumen-kind": "enum"
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "TextFit"
                   },
                   "font_family": {
                     "anyOf": [
@@ -3703,7 +3732,8 @@
                     "anyOf": [
                       {
                         "enum": ["normal", "italic", "oblique"],
-                        "type": "string"
+                        "type": "string",
+                        "x-lumen-type": "TextFontStyle"
                       },
                       {
                         "$ref": "#/$defs/expression"
@@ -3993,7 +4023,8 @@
                         "value": 1
                       }
                     ],
-                    "x-lumen-kind": "enum"
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "TextOverflow"
                   },
                   "paint_space": {
                     "default": "span",
@@ -4013,7 +4044,8 @@
                         "value": 1
                       }
                     ],
-                    "x-lumen-kind": "enum"
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "TextPaintSpace"
                   },
                   "paint_supersample": {
                     "anyOf": [
@@ -4085,7 +4117,8 @@
                         "value": 2
                       }
                     ],
-                    "x-lumen-kind": "enum"
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "TextRenderMode"
                   },
                   "rotation": {
                     "anyOf": [
@@ -4134,7 +4167,8 @@
                     "anyOf": [
                       {
                         "enum": ["none", "uppercase", "lowercase", "capitalize"],
-                        "type": "string"
+                        "type": "string",
+                        "x-lumen-type": "TextTransform"
                       },
                       {
                         "$ref": "#/$defs/expression"
@@ -4399,7 +4433,8 @@
                     "anyOf": [
                       {
                         "enum": ["nearest", "linear"],
-                        "type": "string"
+                        "type": "string",
+                        "x-lumen-type": "RasterSampling"
                       },
                       {
                         "$ref": "#/$defs/expression"
@@ -4583,45 +4618,14 @@
       "type": "array"
     },
     "render_settings": {
-      "additionalProperties": true,
-      "properties": {
-        "background_color": {
-          "$ref": "#/$defs/color"
-        },
-        "height": {
-          "maximum": 4294967295,
-          "minimum": 1,
-          "type": "integer"
-        },
-        "width": {
-          "maximum": 4294967295,
-          "minimum": 1,
-          "type": "integer"
-        }
-      },
-      "required": ["width", "height"],
-      "type": "object"
+      "$ref": "#/$defs/renderSettings"
     },
     "schemaVersion": {
       "description": "Older name of `lumenSchemaVersion`, read when that is absent.",
       "type": "string"
     },
     "timeline": {
-      "additionalProperties": true,
-      "properties": {
-        "duration_frames": {
-          "maximum": 4294967295,
-          "minimum": 1,
-          "type": "integer"
-        },
-        "fps": {
-          "default": 30,
-          "exclusiveMinimum": 0,
-          "type": "number"
-        }
-      },
-      "required": ["duration_frames"],
-      "type": "object"
+      "$ref": "#/$defs/timeline"
     }
   },
   "required": ["timeline", "render_settings", "nodes", "connections"],
