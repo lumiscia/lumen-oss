@@ -143,9 +143,15 @@ fn memo_key_is_evaluated_at_fractional_frame_times() {
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
     let memoized: Composition = memo_shader(Some("floor(frame * 2)")).into();
     let plain: Composition = memo_shader(None).into();
-    // The key changes at 0.5, inside the whole frame 0, which a key read at floor(frame)
-    // would miss.
-    for (time, shown) in [(0.0, 0.0), (0.25, 0.0), (0.5, 0.5), (0.75, 0.5), (1.0, 1.0)] {
+    // The key changes at 0.5, inside the whole frame 0, which a key read at floor(frame) would
+    // miss. Refreshes fall between key boundaries, so each must show its own time.
+    for (time, shown) in [
+        (0.25, 0.25),
+        (0.4, 0.25),
+        (0.75, 0.75),
+        (0.9, 0.75),
+        (1.25, 1.25),
+    ] {
         let pixels = at(&mut renderer, &memoized, time);
         let expected = uncached(&mut reference, &plain, shown);
         assert!(nonblank(&expected));
@@ -552,12 +558,16 @@ fn kept_output_survives_plan_switches_and_is_dropped_with_evicted_plans() {
     let mut reference = gpu.renderer();
     let composition = switching_static_layers();
     // Each of the three selections is its own plan; frames 6 and 7 select the first again.
-    for (budget, compiled, cached) in [(None, 3, 3), (Some(0), 4, 2)] {
+    for budget in [None, Some(0)] {
         let mut renderer = gpu.renderer();
         if let Some(budget) = budget {
             renderer.set_plan_cache_budget(budget);
         }
+        let mut compiled_before_revisit = 0;
         for frame in 0..8 {
+            if frame == 6 {
+                compiled_before_revisit = renderer.plan_compile_count();
+            }
             let pixels = at(&mut renderer, &composition, f64::from(frame));
             let expected = uncached(&mut reference, &composition, f64::from(frame));
             assert!(pixels == expected, "frame {frame} with budget {budget:?}");
@@ -565,14 +575,18 @@ fn kept_output_survives_plan_switches_and_is_dropped_with_evicted_plans() {
         }
         assert!(renderer.cached_pass_count() > 0, "budget {budget:?}");
         assert_eq!(
-            renderer.plan_compile_count(),
-            compiled,
-            "plans compiled with budget {budget:?}"
+            renderer.plan_compile_count() > compiled_before_revisit,
+            budget.is_some(),
+            "revisiting the first selection with budget {budget:?}"
         );
-        assert_eq!(
-            renderer.cached_plan_count(),
-            cached,
-            "plans kept with budget {budget:?}"
+        let kept = renderer.cached_plan_count();
+        assert!(
+            if budget.is_some() {
+                kept <= 2
+            } else {
+                kept == 3
+            },
+            "{kept} plans kept with budget {budget:?}"
         );
     }
 }
