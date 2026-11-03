@@ -371,8 +371,15 @@ impl GpuCompositionRenderer {
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
-        self.ensure_compiled_for_frame(composition, 0.0, Some(media), PlanUse::Render)
-            .map(drop)
+        // Frame 0 is only compiled ahead of time. The frames being rendered may never reach a
+        // source it can't open, and those that do fail with the same error.
+        match self.ensure_compiled_for_frame(composition, 0.0, Some(media), PlanUse::Render) {
+            Err(crate::error::LumenError::Media(error)) => {
+                tracing::debug!(target: "lumen_render", %error, "frame 0 did not compile ahead of time");
+                Ok(())
+            }
+            result => result.map(drop),
+        }
     }
 
     /// Drops every compiled plan and cached media texture, destroying the GPU textures and
