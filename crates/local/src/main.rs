@@ -31,13 +31,13 @@ use lumen_ffmpeg::EncodeMode;
 #[cfg(any(all(target_os = "macos", feature = "metal"), target_os = "linux"))]
 use lumen_ffmpeg::GpuBackend;
 #[cfg(target_os = "linux")]
-use lumen_ffmpeg::GpuVideoInput;
-#[cfg(target_os = "linux")]
 use lumen_ffmpeg::gpu_texture_encode_support;
 use lumen_ffmpeg::{
     AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, RateControl,
     Rational, VideoCodec, VideoEncoderChoice, VideoEncoderConfig,
 };
+#[cfg(target_os = "linux")]
+use lumen_ffmpeg::{GpuVideoInput, VulkanDevice};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug)]
@@ -188,7 +188,7 @@ impl LocalMediaStore {
 
         let resolver = Arc::new(FfmpegVideoResolver::open_with_options(
             source.to_string(),
-            self.video_options,
+            self.video_options.clone(),
         )?);
         if let Ok(mut cache) = self.videos.write() {
             cache
@@ -709,7 +709,7 @@ fn run() -> Result<()> {
     let composition = load_composition(&args.composition)?;
     let media_root = media_root(args.media_root.as_deref())?;
     let font_dir = resolve_font_dir(args.font_dir, env::var_os("LUMEN_FONT_DIR"));
-    let media_store = LocalMediaStore::new(media_root, font_dir);
+    let mut media_store = LocalMediaStore::new(media_root, font_dir);
 
     let extension = args
         .output
@@ -725,7 +725,7 @@ fn run() -> Result<()> {
                     "--bitrate, --crf, --qp and --preset are only supported when output is .mp4"
                 ));
             }
-            render_single_png(&composition, &media_store, &args.output, args.frame)
+            render_single_png(&composition, &mut media_store, &args.output, args.frame)
         }
         "mp4" => {
             if args.frame.is_some() {
@@ -818,9 +818,27 @@ fn load_composition(path: &Path) -> Result<Composition> {
         .with_context(|| format!("failed to parse composition {}", path.display()))
 }
 
+/// Creates a renderer that hardware decode can share a device with, when decode is asked for and
+/// the hardware has it.
+fn create_renderer(media_store: &mut LocalMediaStore) -> Result<GpuCompositionRenderer> {
+    #[cfg(target_os = "linux")]
+    if media_store.video_options.prefer_hardware_decode {
+        match pollster::block_on(GpuCompositionRenderer::new_vulkan_decode()) {
+            Ok((renderer, device)) => {
+                media_store.video_options.vulkan_device = Some(device);
+                return Ok(renderer);
+            }
+            Err(error) => eprintln!("renderer has no Vulkan decode device: {error}"),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = media_store;
+    pollster::block_on(GpuCompositionRenderer::new()).context("failed to create GPU renderer")
+}
+
 fn render_single_png(
     composition: &Composition,
-    media_store: &LocalMediaStore,
+    media_store: &mut LocalMediaStore,
     output: &Path,
     frame_override: Option<u32>,
 ) -> Result<()> {
@@ -832,13 +850,12 @@ fn render_single_png(
         ));
     }
 
-    let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
-        .context("failed to create GPU renderer")?;
+    let mut renderer = create_renderer(media_store)?;
     renderer
         .compile(composition)
         .context("failed to compile composition")?;
     let rendered = renderer
-        .render_frame(composition, frame, media_store)
+        .render_frame(composition, frame, &*media_store)
         .with_context(|| format!("render failed at frame {frame}"))?;
     let size = rendered.domain.storage_size;
     let mut pixels = read_texture_rgba8(renderer.gpu_renderer(), rendered.texture, size)
@@ -855,7 +872,7 @@ fn render_single_png(
 
 fn render_mp4(
     composition: Composition,
-    media_store: LocalMediaStore,
+    mut media_store: LocalMediaStore,
     output: &Path,
     override_encoder: Option<&str>,
     quality: &EncoderQuality,
@@ -911,8 +928,7 @@ fn render_mp4(
     } else {
         choice
     };
-    let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
-        .context("failed to create GPU renderer")?;
+    let mut renderer = create_renderer(&mut media_store)?;
     renderer
         .compile_with_media(
             &composition,
@@ -1217,6 +1233,7 @@ fn is_vulkan_video_encoder(encoder: &str) -> bool {
 #[cfg(target_os = "linux")]
 struct VulkanVideoSession {
     renderer: GpuCompositionRenderer,
+    device: VulkanDevice,
     target: VulkanVideoTarget,
     encoder: MuxedEncoder,
 }
@@ -1248,7 +1265,7 @@ fn start_vulkan_video_encode(
         video_codec_for_encoder(encoder),
     );
     config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
-    config.vulkan_device = Some(device);
+    config.vulkan_device = Some(device.clone());
     config.bit_rate = 14_000_000;
     quality.apply(&mut config);
     let audio = has_audio(composition)
@@ -1259,6 +1276,7 @@ fn start_vulkan_video_encode(
     warn_if_container_cropped(&encoder);
     Ok(VulkanVideoSession {
         renderer,
+        device,
         target,
         encoder,
     })
@@ -1267,15 +1285,17 @@ fn start_vulkan_video_encode(
 #[cfg(target_os = "linux")]
 fn render_video_gpu_vulkan(
     composition: Composition,
-    media_store: LocalMediaStore,
+    mut media_store: LocalMediaStore,
     total_frames: u32,
     session: VulkanVideoSession,
 ) -> Result<()> {
     let VulkanVideoSession {
         mut renderer,
+        device,
         target,
         mut encoder,
     } = session;
+    media_store.video_options.vulkan_device = device.can_decode().then_some(device);
     renderer
         .compile_with_media(
             &composition,
@@ -1599,12 +1619,12 @@ fn resolve_font_dir(
 }
 
 fn video_resolver_options_from_env() -> FfmpegResolverOptions {
-    FfmpegResolverOptions {
-        prefer_hardware_decode: env::var("LUMEN_HARDWARE_DECODE")
+    FfmpegResolverOptions::with_hardware_decode(
+        env::var("LUMEN_HARDWARE_DECODE")
             .ok()
             .map(|value| matches_flag(&value))
             .unwrap_or_default(),
-    }
+    )
 }
 
 fn matches_flag(value: &str) -> bool {
