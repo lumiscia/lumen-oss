@@ -205,33 +205,28 @@ fn a_gap_in_the_timestamps_reads_as_silence() {
             "lavfi",
             "-i",
             "sine=frequency=440:sample_rate=48000:duration=3",
-        ]
-        .iter()
-        .chain(&[
             "-af",
-            "aselect=not(between(t\\,1\\,2))",
+            "asetpts=PTS+if(gte(T\\,1)\\,1/TB\\,0)",
             "-c:a",
             "pcm_s16le",
-        ])
-        .copied()
-        .collect::<Vec<_>>(),
+        ],
         &path,
     ) {
         return;
     }
     let mut reader = AudioRangeReader::open(path.to_string_lossy().to_string()).expect("open");
-    let range = reader.read(0, 3 * SAMPLE_RATE).expect("read range");
+    let range = reader.read(0, 5 * SAMPLE_RATE).expect("read range");
     let _ = fs::remove_file(path);
 
     // Matroska timestamps are whole milliseconds, so the end can be up to a millisecond off.
     assert!(
-        range.samples.abs_diff(3 * SAMPLE_RATE) < 48,
+        range.samples.abs_diff(4 * SAMPLE_RATE) < 48,
         "{} samples",
         range.samples
     );
     assert!(peak(&range, 10_000, 40_000) > 0.05, "before the gap");
-    assert_eq!(peak(&range, 50_000, 94_000), 0.0, "in the gap");
-    assert!(peak(&range, 100_000, 140_000) > 0.05, "after the gap");
+    assert_eq!(peak(&range, 52_800, 91_200), 0.0, "in the gap");
+    assert!(peak(&range, 100_000, 180_000) > 0.05, "after the gap");
 }
 
 const CHIRP: &str = "aevalsrc=0.4*sin(2*PI*(300+200*t)*t):d=6:s=48000";
