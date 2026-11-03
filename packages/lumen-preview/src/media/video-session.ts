@@ -137,6 +137,7 @@ export class VideoSession {
         throw new LumenMediaError(
           "source_not_registered",
           `video source "${this.streamId}" was removed`,
+          { sourceId: this.streamId },
         );
       }
       input = new Input({
@@ -153,6 +154,7 @@ export class VideoSession {
         throw new LumenMediaError(
           "track_not_decodable",
           `video source "${this.streamId}" cannot be decoded in this browser`,
+          { sourceId: this.streamId },
         );
       }
 
@@ -173,6 +175,7 @@ export class VideoSession {
       input?.dispose();
       throw toMediaError(
         "unsupported_container",
+        this.streamId,
         `video source "${this.streamId}" could not be opened`,
         error,
       );
@@ -186,6 +189,7 @@ export class VideoSession {
         throw new LumenMediaError(
           "track_not_decodable",
           `video source "${this.streamId}" does not contain a video track`,
+          { sourceId: this.streamId },
         );
       }
       return track;
@@ -197,6 +201,7 @@ export class VideoSession {
       throw new LumenMediaError(
         "track_not_decodable",
         `video source "${this.streamId}" does not contain video track ${this.registration.track}`,
+        { sourceId: this.streamId },
       );
     }
 
@@ -245,6 +250,7 @@ export class VideoSession {
           throw new LumenMediaError(
             "frame_unavailable",
             `video frame ${request.frame} is unavailable for "${this.streamId}"`,
+            { sourceId: this.streamId },
           );
         }
 
@@ -258,6 +264,7 @@ export class VideoSession {
     } catch (error) {
       throw toMediaError(
         "decode_failed",
+        this.streamId,
         activeFrame === undefined
           ? `video frames failed to decode for "${this.streamId}"`
           : `video frame ${activeFrame} failed to decode for "${this.streamId}"`,
@@ -270,6 +277,7 @@ export class VideoSession {
         throw new LumenMediaError(
           "frame_unavailable",
           `video frame ${request.frame} is unavailable for "${this.streamId}"`,
+          { sourceId: this.streamId },
         );
       }
     }
@@ -291,6 +299,7 @@ export class VideoSession {
           throw new LumenMediaError(
             "frame_unavailable",
             `video frame ${request.frame} is unavailable for "${this.streamId}"`,
+            { sourceId: this.streamId },
           );
         }
 
@@ -303,6 +312,7 @@ export class VideoSession {
       this.resetSequentialDecodeState();
       throw toMediaError(
         "decode_failed",
+        this.streamId,
         activeFrame === undefined
           ? `video frames failed to decode for "${this.streamId}"`
           : `video frame ${activeFrame} failed to decode for "${this.streamId}"`,

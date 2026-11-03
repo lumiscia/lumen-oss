@@ -1,7 +1,7 @@
 use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer};
 use wasm_bindgen::prelude::*;
 
-use crate::debug_error;
+use crate::{debug_error, utils::render_failure};
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[derive(Debug)]
@@ -91,7 +91,7 @@ impl Drop for SurfaceCompositionRenderer {
 
 fn render_error(frame: u32, error: lumen_engine::error::LumenError) -> JsValue {
     debug_error(&format!("[lumen-wasm] render frame={frame} error: {error}"));
-    JsValue::from_str(&error.to_string())
+    render_failure(&error)
 }
 
 struct SurfaceGpu {
