@@ -124,7 +124,7 @@ fn build_small_media_transform(with_exposure: bool) -> Composition {
         })
         .expect("connect pipeline -> output");
 
-    CompositionBuilder::new(graph, timeline(30.0, 1_200), render_1080p([0, 0, 0, 255]))
+    CompositionBuilder::new(graph, timeline(30.0, 1_200), render_1080p())
         .build()
         .expect("valid benchmark composition")
 }
@@ -179,12 +179,10 @@ mod tests {
             (
                 filtered.render_settings().width,
                 filtered.render_settings().height,
-                filtered.render_settings().background_color,
             ),
             (
                 direct.render_settings().width,
                 direct.render_settings().height,
-                direct.render_settings().background_color,
             )
         );
         assert_eq!(filtered.timeline().fps, direct.timeline().fps);

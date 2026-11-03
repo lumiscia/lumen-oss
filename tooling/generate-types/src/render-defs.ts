@@ -26,8 +26,8 @@ const typeKeywords = new Set([
 
 /**
  * Keywords with no effect on the TypeScript type: annotations, and value checks left to the
- * schema, such as the `allOf` that requires one of an audio clip's start keys. Any other keyword
- * is an error, so a new one can't be dropped unnoticed.
+ * schema, such as the `not` that retires an audio clip's old timing keys. Any other keyword is an
+ * error, so a new one can't be dropped unnoticed.
  */
 const ignoredKeywords = new Set([
   "$schema",
@@ -42,7 +42,6 @@ const ignoredKeywords = new Set([
   "maxLength",
   "propertyNames",
   "not",
-  "allOf",
 ]);
 
 export interface TypeContext {

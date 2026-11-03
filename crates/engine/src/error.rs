@@ -109,6 +109,12 @@ pub enum GraphValidationError {
         node_id: NodeId,
         details: String,
     },
+    #[error("{}{details}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
+    InvalidSettings {
+        /// The template the settings are in, or `None` at the root.
+        template: Option<String>,
+        details: String,
+    },
     #[error("audio: {details}")]
     InvalidAudio { details: String },
     #[error("compositions instantiate themselves: {}", .templates.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(" -> "))]

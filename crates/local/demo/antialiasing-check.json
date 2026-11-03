@@ -5,8 +5,7 @@
   },
   "render_settings": {
     "width": 960,
-    "height": 540,
-    "background_color": [8, 10, 14, 255]
+    "height": 540
   },
   "metadata": {
     "title": "Antialiasing Check",

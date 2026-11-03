@@ -5,8 +5,7 @@
   },
   "render_settings": {
     "width": 1280,
-    "height": 720,
-    "background_color": [11, 16, 32, 255]
+    "height": 720
   },
   "metadata": {
     "title": "Kinetic Type",

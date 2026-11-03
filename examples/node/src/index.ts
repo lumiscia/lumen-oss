@@ -31,7 +31,6 @@ const composition = new Composition({
   renderSettings: {
     width: 1920,
     height: 1080,
-    background_color: [12, 12, 16, 255],
   },
   timeline: {
     fps: 24,

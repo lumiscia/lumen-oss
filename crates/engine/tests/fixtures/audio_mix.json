@@ -5,7 +5,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -16,7 +15,6 @@
           "id": "clip",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "clip",
           "startMs": 100,
           "durationMs": 1000,
           "sourceStartMs": 2,
@@ -54,7 +52,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 0.5
@@ -65,7 +62,6 @@
           "id": "clip",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "clip",
           "startMs": 100,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -104,7 +100,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -115,7 +110,6 @@
           "id": "clip",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "clip",
           "startMs": 100,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -154,7 +148,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -165,7 +158,6 @@
           "id": "clip",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "clip",
           "startMs": 100,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -204,7 +196,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -215,7 +206,6 @@
           "id": "clip",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "clip",
           "startMs": 100,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -254,7 +244,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -265,7 +254,6 @@
           "id": "clip",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "clip",
           "startMs": 100,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -304,7 +292,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -315,7 +302,6 @@
           "id": "clip",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "clip",
           "startMs": 0,
           "durationMs": 10,
           "sourceStartMs": 0,
@@ -354,7 +340,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -365,7 +350,6 @@
           "id": "clip",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "clip",
           "startMs": 0,
           "durationMs": 1,
           "sourceStartMs": 0,
@@ -409,14 +393,12 @@
       "tracks": [
         {
           "id": "solo",
-          "name": "solo",
           "muted": false,
           "solo": true,
           "volume": 1.0
         },
         {
           "id": "other",
-          "name": "other",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -427,7 +409,6 @@
           "id": "kept",
           "sourceId": "tone",
           "trackId": "solo",
-          "name": "kept",
           "startMs": 0,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -437,7 +418,6 @@
           "id": "dropped",
           "sourceId": "tone",
           "trackId": "other",
-          "name": "dropped",
           "startMs": 0,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -475,14 +455,12 @@
       "tracks": [
         {
           "id": "muted",
-          "name": "muted",
           "muted": true,
           "solo": false,
           "volume": 1.0
         },
         {
           "id": "audible",
-          "name": "audible",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -493,7 +471,6 @@
           "id": "dropped",
           "sourceId": "tone",
           "trackId": "muted",
-          "name": "dropped",
           "startMs": 0,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -503,7 +480,6 @@
           "id": "kept",
           "sourceId": "tone",
           "trackId": "audible",
-          "name": "kept",
           "startMs": 0,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -541,7 +517,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 0.0
@@ -552,7 +527,6 @@
           "id": "clip",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "clip",
           "startMs": 100,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -589,7 +563,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -600,7 +573,6 @@
           "id": "a",
           "sourceId": "up",
           "trackId": "main",
-          "name": "a",
           "startMs": 0,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -610,7 +582,6 @@
           "id": "b",
           "sourceId": "up",
           "trackId": "main",
-          "name": "b",
           "startMs": 0,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -620,7 +591,6 @@
           "id": "c",
           "sourceId": "down",
           "trackId": "main",
-          "name": "c",
           "startMs": 0,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -650,7 +620,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -661,7 +630,6 @@
           "id": "a",
           "sourceId": "up",
           "trackId": "main",
-          "name": "a",
           "startMs": 0,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -671,7 +639,6 @@
           "id": "b",
           "sourceId": "up",
           "trackId": "main",
-          "name": "b",
           "startMs": 0,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -701,7 +668,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -712,7 +678,6 @@
           "id": "clip",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "clip",
           "startMs": 0,
           "durationMs": 1000,
           "sourceStartMs": 0,
@@ -749,7 +714,6 @@
       "tracks": [
         {
           "id": "main",
-          "name": "main",
           "muted": false,
           "solo": false,
           "volume": 1.0
@@ -760,7 +724,6 @@
           "id": "first",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "first",
           "startMs": 0,
           "durationMs": 10,
           "sourceStartMs": 0,
@@ -770,7 +733,6 @@
           "id": "second",
           "sourceId": "tone",
           "trackId": "main",
-          "name": "second",
           "startMs": 11,
           "durationMs": 10,
           "sourceStartMs": 0,

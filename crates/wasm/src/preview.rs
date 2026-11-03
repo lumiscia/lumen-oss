@@ -703,9 +703,9 @@ mod tests {
                 "id": "intro",
                 "source_id": "song",
                 "track_id": "music",
-                "start_frame": 1,
+                "start_ms": 33,
                 "duration_ms": 1500,
-                "source_start_seconds": 0.25
+                "source_start_ms": 250
             }]
         });
         controller
@@ -724,7 +724,6 @@ mod tests {
             serde_json::json!({
                 "tracks": [{
                     "id": "music",
-                    "name": "Track",
                     "muted": false,
                     "solo": false,
                     "volume": 0.5,
@@ -733,8 +732,6 @@ mod tests {
                     "id": "intro",
                     "sourceId": "song",
                     "trackId": "music",
-                    "name": "Audio clip",
-                    // One frame at 30 fps, rounded to whole milliseconds as export does.
                     "startMs": 33,
                     "durationMs": 1500,
                     "sourceStartMs": 250,

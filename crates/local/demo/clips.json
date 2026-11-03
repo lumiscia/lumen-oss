@@ -2,7 +2,7 @@
   "lumenSchemaVersion": "0.1.0",
   "metadata": { "name": "Clips" },
   "timeline": { "fps": 30, "duration_frames": 300 },
-  "render_settings": { "width": 1280, "height": 720, "background_color": [11, 16, 32, 255] },
+  "render_settings": { "width": 1280, "height": 720 },
   "compositions": {
     "title_card": {
       "render_settings": { "width": 960, "height": 360 },

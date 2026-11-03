@@ -221,7 +221,6 @@ fn build(graph: Graph) -> Result<Composition, Vec<LumenError>> {
         RenderSettings {
             width: 100,
             height: 100,
-            background_color: [0, 0, 0, 255],
         },
     )
     .build()
@@ -1192,7 +1191,6 @@ fn glyph_scope_crosses_functions() {
             RenderSettings {
                 width: 8,
                 height: 4,
-                background_color: [0, 0, 0, 255],
             },
         )
         .build()
@@ -1386,7 +1384,6 @@ fn atlas_composition(nodes: impl FnOnce(&mut Graph) -> NodeId) -> Composition {
         RenderSettings {
             width: 8,
             height: 4,
-            background_color: [0, 0, 0, 255],
         },
     )
     .build()

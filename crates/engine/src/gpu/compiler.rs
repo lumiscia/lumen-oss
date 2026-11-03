@@ -346,7 +346,7 @@ impl<'a> CompileContext<'a> {
         mut self,
         text_atlas: Arc<Mutex<lumen_text::GlyphAtlas>>,
     ) -> crate::Result<CompiledComposition> {
-        let output_node = self.scope.media_output()?;
+        let output_node = self.scope.output;
         let output = self.compile_port(output_node)?;
         let plan = self.builder.build();
         let cache = self.cache.finish(
@@ -495,7 +495,7 @@ impl<'a> CompileContext<'a> {
             return Ok(self.compile_transparent(clip.id));
         };
         let settings = routed.scope.render_settings;
-        let content = lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1));
+        let content = lumen_gpu::Size::new(settings.width, settings.height);
         let bound_frames = self.clip_bound_frames(clip);
         let raster = self.compile_routed(routed, bound_frames)?;
         Ok(self.place_on_canvas(clip.id, raster, content))
@@ -674,7 +674,7 @@ impl<'a> CompileContext<'a> {
     /// The canvas size of the composition being compiled, which its sources are drawn at.
     pub(crate) fn canvas_size(&self) -> lumen_gpu::Size {
         let settings = self.scope.render_settings;
-        lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1))
+        lumen_gpu::Size::new(settings.width, settings.height)
     }
 
     /// Compiles a compute pass from the `source` input into a new texture of the domain `domain`

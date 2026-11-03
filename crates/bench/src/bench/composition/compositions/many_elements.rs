@@ -222,7 +222,7 @@ impl CompositionFixture for ManyElements {
         );
         connect(&mut graph, scene, output, "source");
 
-        CompositionBuilder::new(graph, timeline(60.0, 240), render_1080p([12, 14, 20, 255]))
+        CompositionBuilder::new(graph, timeline(60.0, 240), render_1080p())
             .build()
             .expect("valid benchmark composition")
     }

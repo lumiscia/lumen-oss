@@ -17,7 +17,7 @@ export type LumenComposition = {
   /** Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used. */
   readonly functions?: Readonly<Record<`${string}(${string})`, string>>;
   /** Version of the composition format. Absent means the current version. */
-  readonly lumenSchemaVersion?: string;
+  readonly lumenSchemaVersion?: "0.1.0";
   readonly metadata?: {
     /** Display name of the composition. */
     readonly name?: string;
@@ -25,8 +25,6 @@ export type LumenComposition = {
   };
   readonly nodes: readonly CompositionNode[];
   readonly render_settings: RenderSettings;
-  /** Older name of `lumenSchemaVersion`, read when that is absent. */
-  readonly schemaVersion?: string;
   readonly timeline: Timeline;
   readonly [key: string]: unknown;
 };

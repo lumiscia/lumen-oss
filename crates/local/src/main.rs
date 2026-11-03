@@ -878,18 +878,6 @@ fn render_mp4(
     override_encoder: Option<&str>,
     quality: &EncoderQuality,
 ) -> Result<()> {
-    if composition.timeline().fps <= 0.0 {
-        return Err(anyhow!(
-            "invalid timeline fps: {}",
-            composition.timeline().fps
-        ));
-    }
-    if composition.timeline().duration_frames == 0 {
-        return Err(anyhow!(
-            "composition duration_frames must be greater than zero"
-        ));
-    }
-
     let choice = VideoEncoderChoice::resolve(override_encoder);
     let width = composition.render_settings().width;
     let height = composition.render_settings().height;

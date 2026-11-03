@@ -291,7 +291,7 @@ impl CompositionFixture for AnimatedShowcase {
             })
             .expect("connect merge -> output");
 
-        CompositionBuilder::new(graph, timeline(30.0, 180), render_720p([9, 17, 31, 255]))
+        CompositionBuilder::new(graph, timeline(30.0, 180), render_720p())
             .build()
             .expect("valid benchmark composition")
     }

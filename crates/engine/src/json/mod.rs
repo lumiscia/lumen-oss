@@ -1,23 +1,23 @@
 //! JSON deserialization for Lumen compositions.
 //!
 //! Parses a JSON object into a [`Composition`] containing a validated [`Graph`]
-//! of renderer-agnostic nodes and connections.
+//! of renderer-agnostic nodes and connections. The `*Json` structs are the shape of the document;
+//! [`CompositionBuilder::build`] checks what their values mean.
 //!
 //! # Modules
 //!
 //! - [`property`] — the JSON forms params share: a leading `=`, whole numbers and colors
-//! - [`node`] — per-node-type construction, property application, and port wiring
 
-mod migrations;
 mod property;
 
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
-use serde_json::{Map, Value};
+use serde::{Deserialize, Deserializer, de::Error as _};
+use serde_json::{Number, Value};
 
 use crate::{
-    audio::{AudioClip, AudioTimeline, AudioTrack},
+    audio::{AudioClip, AudioTimeline, AudioTrack, default_volume},
     composition::{
         Composition, CompositionBuilder, CompositionTemplate, PropDef, PropKind, RenderSettings,
         TimelineSettings,
@@ -34,6 +34,209 @@ pub(crate) use property::{
 pub use property::{parse_color, try_parse_color, unknown_param_error};
 
 const DEFAULT_FPS: f32 = 30.0;
+const SCHEMA_VERSION: &str = "0.1.0";
+
+/// The document root. Keys it doesn't name are ignored.
+#[derive(Deserialize)]
+#[serde(expecting = "a composition object")]
+struct DocumentJson {
+    timeline: TimelineJson,
+    render_settings: RenderSettingsJson,
+    #[serde(default)]
+    functions: BTreeMap<String, String>,
+    #[serde(default)]
+    compositions: BTreeMap<String, TemplateJson>,
+    #[serde(default, deserialize_with = "present")]
+    audio: Option<AudioJson>,
+    /// Nothing reads `$schema` or `metadata`, but they must hold what the schema says they hold.
+    #[serde(rename = "$schema", default, deserialize_with = "present")]
+    _schema: Option<String>,
+    #[serde(rename = "metadata", default, deserialize_with = "present")]
+    _metadata: Option<MetadataJson>,
+    nodes: Vec<NodeJson>,
+    connections: Vec<ConnectionJson>,
+}
+
+/// Keys other than `name` are ignored.
+#[derive(Deserialize)]
+struct MetadataJson {
+    #[serde(rename = "name", default, deserialize_with = "present")]
+    _name: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TimelineJson {
+    #[serde(default, deserialize_with = "present")]
+    fps: Option<f32>,
+    #[serde(deserialize_with = "whole_u32")]
+    duration_frames: u32,
+}
+
+impl TimelineJson {
+    fn settings(&self, default_fps: f32) -> TimelineSettings {
+        TimelineSettings {
+            fps: self.fps.unwrap_or(default_fps),
+            duration_frames: self.duration_frames,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenderSettingsJson {
+    #[serde(deserialize_with = "whole_u32")]
+    width: u32,
+    #[serde(deserialize_with = "whole_u32")]
+    height: u32,
+    #[serde(default, deserialize_with = "retired_background_color")]
+    background_color: (),
+}
+
+impl RenderSettingsJson {
+    fn settings(&self) -> RenderSettings {
+        let Self {
+            width,
+            height,
+            background_color: (),
+        } = *self;
+        RenderSettings { width, height }
+    }
+}
+
+/// A composition a `clip` plays. A template without `render_settings` takes the root's size, and
+/// without `timeline` the root's timeline; a `timeline` without `fps` takes the root's fps.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TemplateJson {
+    #[serde(default, deserialize_with = "present")]
+    render_settings: Option<RenderSettingsJson>,
+    #[serde(default, deserialize_with = "present")]
+    timeline: Option<TimelineJson>,
+    #[serde(default)]
+    props: BTreeMap<String, PropDefJson>,
+    nodes: Vec<NodeJson>,
+    connections: Vec<ConnectionJson>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PropDefJson {
+    #[serde(rename = "type")]
+    kind: PropKind,
+    #[serde(default, deserialize_with = "present")]
+    default: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NodeJson {
+    id: u64,
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default, deserialize_with = "present")]
+    params: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectionJson {
+    from_node: u64,
+    /// Every node has the one output, so `from_port` only has to name it.
+    #[serde(default, deserialize_with = "present")]
+    from_port: Option<String>,
+    to_node: u64,
+    to_port: String,
+}
+
+/// Keys other than the clips' retired timing keys are ignored, here and on tracks and clips.
+#[derive(Deserialize)]
+struct AudioJson {
+    tracks: Vec<AudioTrack>,
+    clips: Vec<AudioClipJson>,
+}
+
+#[derive(Deserialize)]
+struct AudioClipJson {
+    id: String,
+    source_id: String,
+    track_id: String,
+    start_ms: u64,
+    duration_ms: u64,
+    #[serde(default)]
+    source_start_ms: u64,
+    #[serde(default = "default_volume")]
+    volume: f32,
+    #[serde(default, deserialize_with = "retired_clip_time")]
+    start_frame: (),
+    #[serde(default, deserialize_with = "retired_clip_time")]
+    duration_frames: (),
+    #[serde(default, deserialize_with = "retired_clip_time")]
+    source_start_seconds: (),
+}
+
+impl From<AudioClipJson> for AudioClip {
+    fn from(clip: AudioClipJson) -> Self {
+        let AudioClipJson {
+            id,
+            source_id,
+            track_id,
+            start_ms,
+            duration_ms,
+            source_start_ms,
+            volume,
+            start_frame: (),
+            duration_frames: (),
+            source_start_seconds: (),
+        } = clip;
+        Self {
+            id,
+            source_id,
+            track_id,
+            start_ms,
+            duration_ms,
+            source_start_ms,
+            volume,
+        }
+    }
+}
+
+/// An optional key that must hold a value when it is there, so `null` fails as the schema says.
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
+}
+
+/// Reads a `u32`, accepting whole floats such as `1.0` like JSON Schema does.
+fn whole_u32<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    let number = Number::deserialize(deserializer)?;
+    let whole = match number.as_u64() {
+        Some(integer) => u32::try_from(integer).ok(),
+        None => number.as_f64().and_then(|float| {
+            (float.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&float))
+                .then_some(float as u32)
+        }),
+    };
+    whole.ok_or_else(|| {
+        D::Error::custom(format!(
+            "must be a whole number from 0 to {}, got {number}",
+            u32::MAX
+        ))
+    })
+}
+
+fn retired_background_color<'de, D: Deserializer<'de>>(_: D) -> Result<(), D::Error> {
+    Err(D::Error::custom(
+        "is no longer supported and was never drawn; connect a `background` node to color the canvas",
+    ))
+}
+
+fn retired_clip_time<'de, D: Deserializer<'de>>(_: D) -> Result<(), D::Error> {
+    Err(D::Error::custom(
+        "is no longer supported; clips take `start_ms`, `duration_ms` and `source_start_ms` in whole milliseconds",
+    ))
+}
 
 /// Parse a JSON string into a [`Composition`].
 pub fn parse(json: &str) -> Result<Composition> {
@@ -43,31 +246,28 @@ pub fn parse(json: &str) -> Result<Composition> {
 
 /// Parse a [`serde_json::Value`] into a [`Composition`].
 pub fn parse_value(root: &Value) -> Result<Composition> {
-    let migrated = migrations::migrate_to_current(root)?;
-    parse_current_value(&migrated)
-}
+    check_schema_version(root)?;
+    let document: DocumentJson = serde_path_to_error::deserialize(root)?;
+    let timeline = document.timeline.settings(DEFAULT_FPS);
+    let render_settings = document.render_settings.settings();
 
-fn parse_current_value(root: &Value) -> Result<Composition> {
-    let obj = root.as_object().context("root must be an object")?;
-    let timeline = parse_timeline(
-        obj.get("timeline").context("missing `timeline`")?,
-        DEFAULT_FPS,
-    )?;
-    let render_settings = parse_render_settings(
-        obj.get("render_settings")
-            .context("missing `render_settings`")?,
-    )?;
-
-    let functions = parse_functions(obj.get("functions"))?;
-    let function_scope = FunctionScope::enter(&functions)?;
-    let graph = parse_graph(obj)?;
-    let compositions = parse_compositions(obj.get("compositions"), &timeline, &render_settings)?;
+    let function_scope = FunctionScope::enter(&document.functions)?;
+    let graph = build_graph(&document.nodes, &document.connections)?;
+    let compositions = document
+        .compositions
+        .iter()
+        .map(|(name, template)| {
+            build_template(template, &timeline, &render_settings)
+                .with_context(|| format!("composition `{name}`"))
+                .map(|template| (name.clone(), template))
+        })
+        .collect::<Result<_>>()?;
     drop(function_scope);
 
-    let audio = root
-        .get("audio")
-        .map(|audio| parse_audio_timeline(audio, timeline.fps))
-        .transpose()?;
+    let audio = document.audio.map(|audio| AudioTimeline {
+        tracks: audio.tracks,
+        clips: audio.clips.into_iter().map(AudioClip::from).collect(),
+    });
     CompositionBuilder {
         graph,
         timeline,
@@ -86,6 +286,15 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
     })
 }
 
+fn check_schema_version(root: &Value) -> Result<()> {
+    match root.get("lumenSchemaVersion") {
+        None => Ok(()),
+        Some(Value::String(version)) if version == SCHEMA_VERSION => Ok(()),
+        Some(Value::String(version)) => bail!("unsupported Lumen schema version `{version}`"),
+        Some(_) => bail!("`lumenSchemaVersion` must be a string"),
+    }
+}
+
 fn json_type(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -98,68 +307,37 @@ fn json_type(value: &Value) -> &'static str {
 }
 
 /// Builds the nodes and connections of the root or of a template.
-fn parse_graph(obj: &Map<String, Value>) -> Result<Graph> {
-    let nodes_arr = obj
-        .get("nodes")
-        .and_then(|v| v.as_array())
-        .context("`nodes` must be an array")?;
-    let connections_arr = obj
-        .get("connections")
-        .and_then(|v| v.as_array())
-        .context("`connections` must be an array")?;
-
+fn build_graph(nodes: &[NodeJson], connections: &[ConnectionJson]) -> Result<Graph> {
     let mut graph = Graph::new();
 
     // First pass: create all nodes
-    for node_val in nodes_arr {
-        let node_obj = node_val.as_object().context("node must be an object")?;
-        let id = parse_node_id(node_obj.get("id").context("node missing `id`")?)?;
-        reject_unknown_keys(node_obj, &["id", "type", "params"], "a node")
-            .with_context(|| format!("node {id}"))?;
-        let kind_str = node_obj
-            .get("type")
-            .and_then(|v| v.as_str())
-            .context("node missing `type` string")?;
-
-        let params = match node_obj.get("params") {
+    for node in nodes {
+        let id = NodeId::new(node.id);
+        let params = match &node.params {
             None => None,
             Some(Value::Object(params)) => Some(params),
             Some(other) => bail!(
-                "node {id} (`{kind_str}`): `params` must be an object, got {}",
+                "node {id} (`{}`): `params` must be an object, got {}",
+                node.kind,
                 json_type(other)
             ),
         };
-        let node_kind = NodeKind::from_json(kind_str, id, params)?;
+        let node_kind = NodeKind::from_json(&node.kind, id, params)?;
         if graph.nodes.insert(id, node_kind).is_some() {
             bail!("duplicate node id {id}");
         }
     }
 
     // Second pass: write each connection into its target node
-    for (index, conn_val) in connections_arr.iter().enumerate() {
-        let conn_obj = conn_val
-            .as_object()
-            .context("connection must be an object")?;
-        reject_unknown_keys(
-            conn_obj,
-            &["from_node", "from_port", "to_node", "to_port"],
-            "a connection",
-        )
-        .with_context(|| format!("connection {index}"))?;
-        let from_node = parse_node_id(conn_obj.get("from_node").context("missing `from_node`")?)?;
-        // Every node has the one output, so `from_port` only has to name it.
-        if let Some(from_port) = conn_obj.get("from_port")
-            && from_port.as_str() != Some("output")
+    for (index, connection) in connections.iter().enumerate() {
+        if let Some(from_port) = &connection.from_port
+            && from_port != "output"
         {
-            bail!("connection {index}: `from_port` must be `output`, got {from_port}");
+            bail!("connection {index}: `from_port` must be `output`, got {from_port:?}");
         }
-        let to_node = parse_node_id(conn_obj.get("to_node").context("missing `to_node`")?)?;
-        let to_port = conn_obj
-            .get("to_port")
-            .and_then(|v| v.as_str())
-            .context("missing `to_port`")?
-            .to_string();
-
+        let from_node = NodeId::new(connection.from_node);
+        let to_node = NodeId::new(connection.to_node);
+        let to_port = &connection.to_port;
         graph
             .connect(Connection {
                 from_node,
@@ -171,294 +349,41 @@ fn parse_graph(obj: &Map<String, Value>) -> Result<Graph> {
     Ok(graph)
 }
 
-/// Parses the `compositions` templates. A template without `render_settings` takes the root's
-/// size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's
-/// fps.
-fn parse_compositions(
-    val: Option<&Value>,
-    root_timeline: &TimelineSettings,
-    root_settings: &RenderSettings,
-) -> Result<BTreeMap<String, CompositionTemplate>> {
-    let Some(val) = val else {
-        return Ok(BTreeMap::new());
-    };
-    val.as_object()
-        .context("`compositions` must be an object of templates by name")?
-        .iter()
-        .map(|(name, template)| {
-            parse_template(template, root_timeline, root_settings)
-                .with_context(|| format!("composition `{name}`"))
-                .map(|template| (name.clone(), template))
-        })
-        .collect()
-}
-
-fn parse_template(
-    val: &Value,
+fn build_template(
+    template: &TemplateJson,
     root_timeline: &TimelineSettings,
     root_settings: &RenderSettings,
 ) -> Result<CompositionTemplate> {
-    let obj = val.as_object().context("template must be an object")?;
-    reject_unknown_keys(
-        obj,
-        &[
-            "render_settings",
-            "timeline",
-            "props",
-            "nodes",
-            "connections",
-        ],
-        "a template",
-    )?;
-    let timeline = match obj.get("timeline") {
-        Some(timeline) => parse_timeline(timeline, root_timeline.fps)?,
-        None => root_timeline.clone(),
-    };
-    let render_settings = match obj.get("render_settings") {
-        Some(settings) => parse_render_settings(settings)?,
-        None => root_settings.clone(),
-    };
-    let props = obj
-        .get("props")
-        .map(parse_prop_defs)
-        .transpose()?
-        .unwrap_or_default();
-    let graph = parse_graph(obj)?;
-    if let Err(errors) = graph.validate() {
-        let details = errors
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("; ");
-        bail!("structure validation failed: {details}");
-    }
+    let timeline = template.timeline.as_ref().map_or_else(
+        || root_timeline.clone(),
+        |timeline| timeline.settings(root_timeline.fps),
+    );
+    let render_settings = template
+        .render_settings
+        .as_ref()
+        .map_or_else(|| root_settings.clone(), RenderSettingsJson::settings);
+    let props = template
+        .props
+        .iter()
+        .map(|(name, def)| {
+            let default = match &def.default {
+                Some(value) => def
+                    .kind
+                    .literal(value)
+                    .map_err(|error| anyhow::anyhow!("prop `{name}` default: {error}"))?,
+                None => def.kind.zero(),
+            };
+            let kind = def.kind;
+            Ok((name.clone(), PropDef { kind, default }))
+        })
+        .collect::<Result<_>>()?;
+    let graph = build_graph(&template.nodes, &template.connections)?;
     Ok(CompositionTemplate {
         graph,
         timeline,
         render_settings,
         props,
     })
-}
-
-fn parse_prop_defs(val: &Value) -> Result<BTreeMap<String, PropDef>> {
-    val.as_object()
-        .context("`props` must be an object of prop declarations by name")?
-        .iter()
-        .map(|(name, def)| {
-            let obj = def
-                .as_object()
-                .with_context(|| format!("prop `{name}` must be an object with a `type`"))?;
-            if let Some(key) = obj
-                .keys()
-                .find(|key| !matches!(key.as_str(), "type" | "default"))
-            {
-                bail!("prop `{name}` has unknown key `{key}`; a prop has `type` and `default`");
-            }
-            let kind = obj
-                .get("type")
-                .and_then(Value::as_str)
-                .and_then(PropKind::parse)
-                .with_context(|| {
-                    format!("prop `{name}` needs a `type` of string, number, color or vec2")
-                })?;
-            let default = match obj.get("default") {
-                Some(value) => kind
-                    .literal(value)
-                    .map_err(|error| anyhow::anyhow!("prop `{name}` default: {error}"))?,
-                None => kind.zero(),
-            };
-            Ok((name.clone(), PropDef { kind, default }))
-        })
-        .collect()
-}
-
-fn reject_unknown_keys(obj: &Map<String, Value>, keys: &[&str], owner: &str) -> Result<()> {
-    if let Some(key) = obj.keys().find(|key| !keys.contains(&key.as_str())) {
-        let keys = keys
-            .iter()
-            .map(|key| format!("`{key}`"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        bail!("unknown key `{key}`; {owner} has {keys}");
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Section parsers
-// ---------------------------------------------------------------------------
-
-fn parse_functions(val: Option<&Value>) -> Result<BTreeMap<String, String>> {
-    let Some(val) = val else {
-        return Ok(BTreeMap::new());
-    };
-    val.as_object()
-        .context("`functions` must be an object")?
-        .iter()
-        .map(|(signature, body)| {
-            let body = body
-                .as_str()
-                .with_context(|| format!("`functions.{signature}` must be a string"))?;
-            Ok((signature.clone(), body.to_string()))
-        })
-        .collect()
-}
-
-fn parse_timeline(val: &Value, default_fps: f32) -> Result<TimelineSettings> {
-    let obj = val.as_object().context("`timeline` must be an object")?;
-    let fps = match obj.get("fps") {
-        None => default_fps,
-        Some(value) => value
-            .as_f64()
-            .map(|fps| fps as f32)
-            .filter(|fps| fps.is_finite() && *fps > 0.0)
-            .context("`timeline.fps` must be a positive, finite number")?,
-    };
-    let duration_frames = obj
-        .get("duration_frames")
-        .context("missing `timeline.duration_frames`")?;
-    let duration_frames = integral_u32(duration_frames)
-        .filter(|frames| *frames >= 1)
-        .context("`timeline.duration_frames` must be an integer of at least 1")?;
-    Ok(TimelineSettings {
-        fps,
-        duration_frames,
-    })
-}
-
-fn parse_render_settings(val: &Value) -> Result<RenderSettings> {
-    let obj = val
-        .as_object()
-        .context("`render_settings` must be an object")?;
-    Ok(RenderSettings {
-        width: render_dimension(obj, "width")?,
-        height: render_dimension(obj, "height")?,
-        background_color: obj
-            .get("background_color")
-            .map(|value| {
-                try_parse_color(value).map_err(|error| {
-                    anyhow::anyhow!("`render_settings.background_color` expected a color: {error}")
-                })
-            })
-            .transpose()?
-            .unwrap_or([0, 0, 0, 255]),
-    })
-}
-
-fn render_dimension(obj: &Map<String, Value>, key: &str) -> Result<u32> {
-    obj.get(key)
-        .and_then(integral_u32)
-        .filter(|size| *size >= 1)
-        .with_context(|| format!("`render_settings.{key}` must be an integer of at least 1"))
-}
-
-/// Reads a JSON number as a `u32`, accepting integral floats such as `1.0` like JSON Schema does.
-fn integral_u32(value: &Value) -> Option<u32> {
-    if let Some(integer) = value.as_u64() {
-        return u32::try_from(integer).ok();
-    }
-    let float = value.as_f64()?;
-    (float.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&float)).then_some(float as u32)
-}
-
-fn parse_audio_timeline(val: &Value, fps: f32) -> Result<AudioTimeline> {
-    let obj = val.as_object().context("`audio` must be an object")?;
-    let tracks = obj
-        .get("tracks")
-        .and_then(Value::as_array)
-        .context("audio.tracks must be an array")?
-        .iter()
-        .map(parse_audio_track)
-        .collect::<Result<Vec<_>>>()?;
-    let clips = obj
-        .get("clips")
-        .and_then(Value::as_array)
-        .context("audio.clips must be an array")?
-        .iter()
-        .map(|clip| parse_audio_clip(clip, fps))
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(AudioTimeline { tracks, clips })
-}
-
-fn parse_audio_track(val: &Value) -> Result<AudioTrack> {
-    let obj = val.as_object().context("audio track must be an object")?;
-    Ok(AudioTrack {
-        id: required_string(obj, "id")?,
-        name: obj
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("Track")
-            .to_string(),
-        muted: obj.get("muted").and_then(Value::as_bool).unwrap_or(false),
-        solo: obj.get("solo").and_then(Value::as_bool).unwrap_or(false),
-        volume: audio_volume(obj, "audio track")?,
-    })
-}
-
-fn parse_audio_clip(val: &Value, fps: f32) -> Result<AudioClip> {
-    let obj = val.as_object().context("audio clip must be an object")?;
-    let start_ms = audio_time_ms(obj, "start_ms", "start_frame", fps)?;
-    let duration_ms = audio_time_ms(obj, "duration_ms", "duration_frames", fps)?;
-
-    Ok(AudioClip {
-        id: required_string(obj, "id")?,
-        source_id: required_string(obj, "source_id")?,
-        track_id: required_string(obj, "track_id")?,
-        name: obj
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("Audio clip")
-            .to_string(),
-        start_ms,
-        duration_ms,
-        source_start_ms: obj
-            .get("source_start_ms")
-            .and_then(Value::as_u64)
-            .or_else(|| {
-                obj.get("source_start_seconds")
-                    .and_then(Value::as_f64)
-                    .map(|seconds| (seconds.max(0.0) * 1_000.0).round() as u64)
-            })
-            .unwrap_or(0),
-        volume: audio_volume(obj, "audio clip")?,
-    })
-}
-
-/// Reads an optional `volume` gain, which defaults to 1.
-fn audio_volume(obj: &Map<String, Value>, owner: &str) -> Result<f32> {
-    let Some(value) = obj.get("volume") else {
-        return Ok(1.0);
-    };
-    value
-        .as_f64()
-        .filter(|volume| *volume >= 0.0)
-        .map(|volume| volume as f32)
-        .filter(|volume| volume.is_finite())
-        .with_context(|| format!("{owner} `volume` must be a finite number of at least 0"))
-}
-
-fn audio_time_ms(obj: &Map<String, Value>, ms_key: &str, frame_key: &str, fps: f32) -> Result<u64> {
-    if let Some(ms) = obj.get(ms_key).and_then(Value::as_u64) {
-        return Ok(ms);
-    }
-    if let Some(frames) = obj.get(frame_key).and_then(Value::as_u64) {
-        // Frame compatibility for current editor payloads. Canonical output should emit *_ms.
-        return Ok(((frames as f64 / f64::from(fps)) * 1_000.0).round() as u64);
-    }
-    anyhow::bail!("audio clip missing `{ms_key}`")
-}
-
-fn required_string(obj: &Map<String, Value>, key: &str) -> Result<String> {
-    obj.get(key)
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-        .with_context(|| format!("missing `{key}` string"))
-}
-
-fn parse_node_id(val: &Value) -> Result<NodeId> {
-    let n = val.as_u64().context("node id must be a u64")?;
-    Ok(NodeId::new(n))
 }
 
 #[cfg(test)]
@@ -661,7 +586,7 @@ mod tests {
             serde_json::json!([]),
         );
         assert!(
-            error.contains("node 7: unknown key `properties`; a node has `id`, `type`, `params`"),
+            error.contains("nodes[0].properties: unknown field `properties`, expected one of `id`, `type`, `params`"),
             "{error}"
         );
 
@@ -675,7 +600,7 @@ mod tests {
             ]),
         );
         assert!(
-            error.contains("connection 0: unknown key `toPort`; a connection has"),
+            error.contains("connections[0].toPort: unknown field `toPort`"),
             "{error}"
         );
     }
@@ -736,55 +661,90 @@ mod tests {
         assert_eq!(audio.tracks[0].volume, 0.0);
         assert_eq!(audio.clips[0].volume, 2.5);
 
-        for invalid in [
-            serde_json::json!(-0.5),
-            serde_json::json!(-1e-50),
-            serde_json::json!(1e300),
-            serde_json::json!("loud"),
+        for (invalid, track, clip) in [
+            (
+                serde_json::json!(-0.5),
+                "track `track-1` volume",
+                "clip `clip-1` volume",
+            ),
+            (
+                serde_json::json!(-1e-50),
+                "track `track-1` volume",
+                "clip `clip-1` volume",
+            ),
+            (
+                serde_json::json!(1e300),
+                "track `track-1` volume",
+                "clip `clip-1` volume",
+            ),
+            (
+                serde_json::json!("loud"),
+                "audio.tracks[0].volume",
+                "audio.clips[0].volume",
+            ),
         ] {
             let track_error = parse_audio(invalid.clone(), serde_json::json!(1)).unwrap_err();
             assert!(
-                track_error.to_string().contains("audio track `volume`"),
+                track_error.to_string().contains(track),
                 "{invalid}: {track_error}"
             );
             let clip_error = parse_audio(serde_json::json!(1), invalid.clone()).unwrap_err();
             assert!(
-                clip_error.to_string().contains("audio clip `volume`"),
+                clip_error.to_string().contains(clip),
                 "{invalid}: {clip_error}"
             );
         }
     }
 
     #[test]
-    fn audio_frame_fields_convert_at_the_timeline_fps() {
-        let json = r#"{
-            "timeline": { "fps": 60, "duration_frames": 120 },
-            "render_settings": { "width": 1920, "height": 1080 },
-            "audio": {
-                "tracks": [{ "id": "track-1" }],
-                "clips": [
-                    {
-                        "id": "clip-1",
-                        "source_id": "voice",
-                        "track_id": "track-1",
-                        "start_frame": 60,
-                        "duration_frames": 30
-                    }
-                ]
-            },
-            "nodes": [
-                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255], "width": 1920, "height": 1080 } },
-                { "id": 2, "type": "media_output" }
-            ],
-            "connections": [
-                { "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }
-            ]
-        }"#;
+    fn audio_clip_times_are_whole_milliseconds_and_retired_keys_fail() {
+        let error = |clip: Value| {
+            let audio = serde_json::json!({ "tracks": [{ "id": "main" }], "clips": [clip] });
+            format!("{:#}", audio_composition(audio).unwrap_err())
+        };
+        let clip = |extra: Value| {
+            let mut clip = serde_json::json!({
+                "id": "a", "source_id": "voice", "track_id": "main", "start_ms": 0, "duration_ms": 100
+            });
+            clip.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            clip
+        };
+        for key in ["start_frame", "duration_frames", "source_start_seconds"] {
+            let message = error(clip(serde_json::json!({ key: 1 })));
+            assert!(
+                message.contains(&format!("audio.clips[0].{key}: is no longer supported")),
+                "{message}"
+            );
+        }
+        // A retired key is named even when the key it was replaced by is missing.
+        let message = error(serde_json::json!({
+            "id": "a", "source_id": "voice", "track_id": "main", "start_frame": 1, "duration_ms": 1
+        }));
+        assert!(message.contains("start_frame: is no longer"), "{message}");
 
-        let comp = parse(json).expect("should parse");
-        let clip = &comp.audio().expect("audio timeline").clips[0];
-        assert_eq!(clip.start_ms, 1_000);
-        assert_eq!(clip.duration_ms, 500);
+        for (key, value) in [
+            ("start_ms", serde_json::json!(1.5)),
+            ("start_ms", serde_json::json!(1.0)),
+            ("duration_ms", serde_json::json!(1.5)),
+            ("source_start_ms", serde_json::json!(1.5)),
+            ("source_start_ms", serde_json::json!(-1)),
+        ] {
+            let message = error(clip(serde_json::json!({ key: value })));
+            assert!(
+                message.contains(&format!("audio.clips[0].{key}: invalid")),
+                "{message}"
+            );
+        }
+
+        let audio = serde_json::json!({
+            "editor": true,
+            "tracks": [{ "id": "main", "name": "Voice", "color": "#fff" }],
+            "clips": [clip(serde_json::json!({ "name": "take 2", "color": "#fff" }))]
+        });
+        let composition = audio_composition(audio).unwrap();
+        assert_eq!(composition.audio().unwrap().clips[0].source_start_ms, 0);
     }
 
     #[test]
@@ -994,6 +954,58 @@ mod tests {
     }
 
     #[test]
+    fn schema_version_is_absent_or_current() {
+        let with_version = |version: Value| {
+            let mut value: Value = serde_json::from_str(&composition_json(
+                r#"{ "duration_frames": 1 }"#,
+                r#"{ "width": 1, "height": 1 }"#,
+            ))
+            .unwrap();
+            value["lumenSchemaVersion"] = version;
+            parse_value(&value)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        };
+        assert_eq!(with_version(serde_json::json!("0.1.0")), Ok(()));
+        assert_eq!(
+            with_version(serde_json::json!(1)),
+            Err("`lumenSchemaVersion` must be a string".to_string())
+        );
+    }
+
+    #[test]
+    fn root_keys_it_does_not_name_are_ignored_but_timeline_and_render_settings_keys_fail() {
+        let timeline = r#"{ "duration_frames": 1 }"#;
+        let settings = r#"{ "width": 1, "height": 1 }"#;
+        let mut root: Value = serde_json::from_str(&composition_json(timeline, settings)).unwrap();
+        root["schemaVersion"] = serde_json::json!("99.0.0");
+        root["editor"] = serde_json::json!({ "zoom": 2 });
+        assert!(parse_value(&root).is_ok());
+
+        let error = parse(&composition_json(
+            r#"{ "fpss": 60, "duration_frames": 1 }"#,
+            settings,
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("timeline.fpss: unknown field `fpss`"),
+            "{error}"
+        );
+
+        let error = parse(&composition_json(
+            timeline,
+            r#"{ "width": 1, "height": 1, "scale": 2 }"#,
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("render_settings.scale: unknown field"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn parse_rejects_invalid_fps() {
         for fps in ["0", "-30", "\"30\"", "null", "1e300"] {
             let json = composition_json(
@@ -1016,30 +1028,23 @@ mod tests {
         ] {
             let json = composition_json(timeline, r#"{ "width": 100, "height": 100 }"#);
             let err = parse(&json).unwrap_err().to_string();
-            assert!(
-                err.contains("timeline.duration_frames"),
-                "{timeline}: {err}"
-            );
+            assert!(err.contains("duration_frames"), "{timeline}: {err}");
         }
     }
 
     #[test]
-    fn background_color_defaults_to_black_but_rejects_malformed_values() {
+    fn background_color_fails_and_says_what_to_use_instead() {
         let timeline = r#"{ "fps": 30, "duration_frames": 10 }"#;
-        let json = composition_json(timeline, r#"{ "width": 100, "height": 100 }"#);
-        assert_eq!(
-            parse(&json).unwrap().render_settings().background_color,
-            [0, 0, 0, 255]
-        );
-
-        for color in [r#""red""#, "[256, 0, 0]", "null"] {
-            let json = composition_json(
+        for color in ["[9, 17, 31, 255]", "\"#000000\"", "null"] {
+            let err = parse(&composition_json(
                 timeline,
                 &format!(r#"{{ "width": 100, "height": 100, "background_color": {color} }}"#),
-            );
-            let err = parse(&json).unwrap_err().to_string();
+            ))
+            .unwrap_err()
+            .to_string();
             assert!(
-                err.contains("render_settings.background_color"),
+                err.contains("render_settings.background_color: is no longer supported")
+                    && err.contains("`background` node"),
                 "{color}: {err}"
             );
         }
@@ -1233,7 +1238,7 @@ mod tests {
         for (props, expected) in [
             (
                 serde_json::json!({ "a": { "type": "bool" } }),
-                "prop `a` needs a `type` of string, number, color or vec2",
+                "props.a.type: unknown variant `bool`, expected one of `string`, `number`, `color`, `vec2`",
             ),
             (
                 serde_json::json!({ "a": { "type": "color", "default": "red" } }),
@@ -1249,7 +1254,7 @@ mod tests {
             ),
             (
                 serde_json::json!({ "a": { "type": "number", "deflt": 1 } }),
-                "prop `a` has unknown key `deflt`",
+                "props.a.deflt: unknown field `deflt`",
             ),
         ] {
             let mut comp = clip_composition(

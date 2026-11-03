@@ -30,10 +30,10 @@ fn default_param<'a>(schema: &'a Value, kind: &str, id: &str) -> Option<&'a Valu
         .pointer(&format!("/properties/params/properties/{id}/default"))
 }
 
-fn composition(node: Value, connections: Vec<Value>, background_color: Value) -> Value {
+fn composition(node: Value, connections: Vec<Value>) -> Value {
     json!({
         "timeline": { "fps": 30, "duration_frames": 10 },
-        "render_settings": { "width": 16, "height": 16, "background_color": background_color },
+        "render_settings": { "width": 16, "height": 16 },
         "nodes": [
             node,
             { "id": SOURCE_ID, "type": "background" },
@@ -56,7 +56,6 @@ fn composition_with_node(node: &NodeSchemaDef, params: Value) -> Value {
     composition(
         json!({ "id": 1, "type": node.kind, "params": params }),
         connections,
-        json!([0, 0, 0, 255]),
     )
 }
 
@@ -418,6 +417,11 @@ fn timeline_schema_matches_engine_parsing() {
             json!({ "fps": 30, "duration_frames": 4294967296u64 }),
             false,
         ),
+        (json!({ "fpss": 30, "duration_frames": 10 }), false),
+        (
+            json!({ "durationSeconds": 2, "duration_frames": 10 }),
+            false,
+        ),
     ] {
         let composition = with_timeline(timeline.clone());
         assert_eq!(validator.is_valid(&composition), valid, "{timeline}");
@@ -436,8 +440,11 @@ fn version_keys_match_engine_parsing() {
     for (key, version, valid) in [
         ("lumenSchemaVersion", json!("0.1.0"), true),
         ("lumenSchemaVersion", json!(1), false),
+        ("lumenSchemaVersion", json!("99.0.0"), false),
+        // Retired, so like any unknown root key it can hold anything.
         ("schemaVersion", json!("0.1.0"), true),
-        ("schemaVersion", json!(1), false),
+        ("schemaVersion", json!("99.0.0"), true),
+        ("schemaVersion", json!(1), true),
     ] {
         let mut composition = composition_with_node(&node_schema("exposure"), json!({}));
         composition[key] = version.clone();
@@ -446,6 +453,108 @@ fn version_keys_match_engine_parsing() {
             lumen_engine::json::parse_value(&composition).is_ok(),
             valid,
             "{key}: {version}"
+        );
+    }
+}
+
+#[test]
+fn document_keys_schema_matches_engine_parsing() {
+    let validator = schema_validator();
+    let base = composition_with_node(&node_schema("exposure"), json!({}));
+    let with_key = |path: &[&str], value: Value| {
+        let mut document = base.clone();
+        let (last, parents) = path.split_last().unwrap();
+        let mut target = &mut document;
+        for key in parents {
+            target = &mut target[*key];
+        }
+        target[*last] = value;
+        document
+    };
+    let audio = |clip: Value| {
+        let mut with_audio = base.clone();
+        let mut full = json!({
+            "id": "a", "source_id": "voice", "track_id": "main", "start_ms": 0, "duration_ms": 100
+        });
+        for (key, value) in clip.as_object().unwrap() {
+            if value.is_null() {
+                full.as_object_mut().unwrap().remove(key);
+            } else {
+                full[key] = value.clone();
+            }
+        }
+        with_audio["audio"] = json!({ "tracks": [{ "id": "main" }], "clips": [full] });
+        with_audio
+    };
+    for (label, document, valid) in [
+        ("unknown root key", with_key(&["editor"], json!(1)), true),
+        (
+            "retired root key",
+            with_key(&["schemaVersion"], json!("1")),
+            true,
+        ),
+        ("$schema", with_key(&["$schema"], json!("lumen.json")), true),
+        (
+            "non-string $schema",
+            with_key(&["$schema"], json!(1)),
+            false,
+        ),
+        (
+            "metadata",
+            with_key(&["metadata"], json!({ "name": "Card", "author": 1 })),
+            true,
+        ),
+        (
+            "non-object metadata",
+            with_key(&["metadata"], json!(1)),
+            false,
+        ),
+        (
+            "non-string metadata name",
+            with_key(&["metadata"], json!({ "name": 1 })),
+            false,
+        ),
+        (
+            "unknown render setting",
+            with_key(&["render_settings", "scale"], json!(2)),
+            false,
+        ),
+        (
+            "background_color",
+            with_key(&["render_settings", "background_color"], json!([0, 0, 0])),
+            false,
+        ),
+        ("whole clip", audio(json!({})), true),
+        ("unknown clip key", audio(json!({ "color": "#fff" })), true),
+        ("clip name", audio(json!({ "name": "take" })), true),
+        ("no start_ms", audio(json!({ "start_ms": null })), false),
+        (
+            "no duration_ms",
+            audio(json!({ "duration_ms": null })),
+            false,
+        ),
+        (
+            "fractional time",
+            audio(json!({ "source_start_ms": 1.5 })),
+            false,
+        ),
+        ("start_frame", audio(json!({ "start_frame": 1 })), false),
+        (
+            "duration_frames",
+            audio(json!({ "duration_frames": 1 })),
+            false,
+        ),
+        (
+            "source_start_seconds",
+            audio(json!({ "source_start_seconds": 1 })),
+            false,
+        ),
+    ] {
+        assert_eq!(validator.is_valid(&document), valid, "{label} schema");
+        assert_eq!(
+            lumen_engine::json::parse_value(&document).is_ok(),
+            valid,
+            "{label} engine"
         );
     }
 }
@@ -510,16 +619,6 @@ fn expression_placement_matches_engine_parsing() {
         (
             "function signature without `)`",
             with_function("rise(start"),
-            false,
-            false,
-        ),
-        (
-            "background colour expression",
-            composition(
-                json!({ "id": 1, "type": "background" }),
-                vec![json!({ "from_node": 1, "to_node": OUTPUT_ID, "to_port": "source" })],
-                json!("=frame"),
-            ),
             false,
             false,
         ),
@@ -683,12 +782,12 @@ fn ids_and_audio_clips_match_engine_parsing() {
         (
             "audio clip in frames",
             with_clip(json!({ "start_frame": 0, "duration_frames": 15 })),
-            true,
+            false,
         ),
         (
             "audio clip starting in frames and lasting in milliseconds",
             with_clip(json!({ "start_frame": 3, "duration_ms": 500 })),
-            true,
+            false,
         ),
     ];
     for (label, composition, accepted) in rows {

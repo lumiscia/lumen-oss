@@ -44,6 +44,14 @@ impl Graph {
         Ok(target.set_input(&to_port, from_node)?)
     }
 
+    /// The `media_output` node of a graph that passed [`Graph::validate`].
+    pub(crate) fn output(&self) -> NodeId {
+        self.nodes
+            .iter()
+            .find_map(|(id, node)| matches!(node, NodeKind::MediaOutput(_)).then_some(*id))
+            .expect("validation requires one media_output node")
+    }
+
     pub fn validate(&self) -> Result<(), Vec<LumenError>> {
         let mut errors = Vec::new();
 

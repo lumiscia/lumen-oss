@@ -5,7 +5,7 @@ use crate::{
     error::{GraphValidationError, LumenError},
     expr::{BuiltinFn, ExprNode, ExpressionValue},
     graph::Graph,
-    node::{ClipPropValue, Node, NodeKind, compositing::clip::Clip},
+    node::{ClipPropValue, Node, NodeId, NodeKind, compositing::clip::Clip},
 };
 
 #[derive(Debug, Clone, lumen_macros::StructuralHash)]
@@ -18,7 +18,6 @@ pub struct TimelineSettings {
 pub struct RenderSettings {
     pub width: u32,
     pub height: u32,
-    pub background_color: [u8; 4],
 }
 
 /// A validated composition that can no longer change. It is fingerprinted once when built, so
@@ -28,6 +27,9 @@ pub struct RenderSettings {
 pub struct Composition {
     parts: CompositionBuilder,
     fingerprint: u64,
+    /// The `media_output` node of the root graph, and of each template's.
+    output: NodeId,
+    template_outputs: BTreeMap<String, NodeId>,
 }
 
 /// The parts of a composition, assembled or edited before [`CompositionBuilder::build`] validates
@@ -61,7 +63,8 @@ pub struct PropDef {
     pub default: ExpressionValue,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::StructuralHash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, lumen_macros::StructuralHash)]
+#[serde(rename_all = "lowercase")]
 pub enum PropKind {
     String,
     Number,
@@ -70,16 +73,6 @@ pub enum PropKind {
 }
 
 impl PropKind {
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "string" => Some(Self::String),
-            "number" => Some(Self::Number),
-            "color" => Some(Self::Color),
-            "vec2" => Some(Self::Vec2),
-            _ => None,
-        }
-    }
-
     pub fn name(self) -> &'static str {
         match self {
             Self::String => "string",
@@ -169,6 +162,17 @@ impl Composition {
         &self.parts.compositions
     }
 
+    /// The root graph's `media_output` node.
+    pub(crate) fn output(&self) -> NodeId {
+        self.output
+    }
+
+    /// The template named `name` with its `media_output` node.
+    pub(crate) fn template(&self, name: &str) -> Option<(&CompositionTemplate, NodeId)> {
+        let template = self.parts.compositions.get(name)?;
+        Some((template, self.template_outputs[name]))
+    }
+
     /// Identifies the composition's content: equal for compositions built from equal parts.
     pub(crate) fn fingerprint(&self) -> u64 {
         self.fingerprint
@@ -191,13 +195,19 @@ impl CompositionBuilder {
         }
     }
 
-    /// Validates the composition's structure: its graphs, the clips that instantiate templates,
-    /// the props its expressions read, that no template instantiates itself, and its audio
-    /// timeline.
+    /// Validates the composition: the timeline and canvas of the root and each template, its
+    /// graphs, the clips that instantiate templates, the props its expressions read, that no
+    /// template instantiates itself, the defaults of template props, and its audio timeline.
     pub fn build(self) -> Result<Composition, Vec<LumenError>> {
         self.validate()?;
         Ok(Composition {
             fingerprint: fingerprint(&self),
+            output: self.graph.output(),
+            template_outputs: self
+                .compositions
+                .iter()
+                .map(|(name, template)| (name.clone(), template.graph.output()))
+                .collect(),
             parts: self,
         })
     }
@@ -205,11 +215,38 @@ impl CompositionBuilder {
     fn validate(&self) -> Result<(), Vec<LumenError>> {
         let mut errors = Vec::new();
 
+        errors.extend(
+            settings_problems(&self.timeline, &self.render_settings)
+                .into_iter()
+                .map(|details| {
+                    GraphValidationError::InvalidSettings {
+                        template: None,
+                        details,
+                    }
+                    .into()
+                }),
+        );
         match self.graph.validate() {
             Ok(_) => {}
             Err(graph_errors) => errors.extend(graph_errors),
         }
         for (name, template) in &self.compositions {
+            let defaults = template.props.iter().filter_map(|(prop, def)| {
+                let error = def.kind.check(def.default.clone()).err()?;
+                Some(format!("prop `{prop}` default: {error}"))
+            });
+            errors.extend(
+                settings_problems(&template.timeline, &template.render_settings)
+                    .into_iter()
+                    .chain(defaults)
+                    .map(|details| {
+                        GraphValidationError::InvalidSettings {
+                            template: Some(name.clone()),
+                            details,
+                        }
+                        .into()
+                    }),
+            );
             if let Err(graph_errors) = template.graph.validate() {
                 errors.extend(graph_errors.into_iter().map(|error| {
                     LumenError::from(GraphValidationError::InTemplate {
@@ -378,6 +415,29 @@ impl CompositionBuilder {
     }
 }
 
+/// What stops a timeline and canvas from rendering: a frame rate that isn't positive and finite,
+/// and no frames or pixels.
+fn settings_problems(timeline: &TimelineSettings, settings: &RenderSettings) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !(timeline.fps.is_finite() && timeline.fps > 0.0) {
+        problems.push(format!(
+            "`timeline.fps` must be a positive, finite number, got {}",
+            timeline.fps
+        ));
+    }
+    let counts = [
+        ("timeline.duration_frames", timeline.duration_frames),
+        ("render_settings.width", settings.width),
+        ("render_settings.height", settings.height),
+    ];
+    for (name, count) in counts {
+        if count == 0 {
+            problems.push(format!("`{name}` must be at least 1"));
+        }
+    }
+    problems
+}
+
 /// Identifies the exact content of a composition and its templates: their canvases, timelines,
 /// props, and every node's inputs, params, literal values and expression sources.
 fn fingerprint(composition: &CompositionBuilder) -> u64 {
@@ -441,6 +501,89 @@ fn declared_props(props: &BTreeMap<String, PropDef>) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("the template declares {names}")
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn builder() -> CompositionBuilder {
+        let nodes = json!([
+            { "id": 1, "type": "background" },
+            { "id": 2, "type": "media_output" }
+        ]);
+        let connections = json!([{ "from_node": 1, "to_node": 2, "to_port": "source" }]);
+        crate::json::parse_value(&json!({
+            "timeline": { "fps": 30, "duration_frames": 10 },
+            "render_settings": { "width": 16, "height": 16 },
+            "compositions": { "card": {
+                "props": { "title": { "type": "string" } },
+                "nodes": nodes,
+                "connections": connections
+            } },
+            "nodes": nodes,
+            "connections": connections
+        }))
+        .unwrap()
+        .into_builder()
+    }
+
+    #[test]
+    fn build_checks_the_settings_of_the_root_and_each_template() {
+        type Edit = fn(&mut TimelineSettings, &mut RenderSettings);
+        let rows: [(Edit, &str); 6] = [
+            (|timeline, _| timeline.fps = 0.0, "`timeline.fps`"),
+            (|timeline, _| timeline.fps = -30.0, "`timeline.fps`"),
+            (|timeline, _| timeline.fps = f32::NAN, "`timeline.fps`"),
+            (
+                |timeline, _| timeline.duration_frames = 0,
+                "`timeline.duration_frames`",
+            ),
+            (|_, settings| settings.width = 0, "`render_settings.width`"),
+            (
+                |_, settings| settings.height = 0,
+                "`render_settings.height`",
+            ),
+        ];
+        for (edit, expected) in rows {
+            let mut root = builder();
+            edit(&mut root.timeline, &mut root.render_settings);
+            let errors = root.build().unwrap_err();
+            assert!(errors[0].to_string().starts_with(expected), "{}", errors[0]);
+
+            let mut template = builder();
+            let card = template.compositions.get_mut("card").unwrap();
+            edit(&mut card.timeline, &mut card.render_settings);
+            let errors = template.build().unwrap_err();
+            assert!(
+                errors[0]
+                    .to_string()
+                    .starts_with(&format!("composition `card`: {expected}")),
+                "{}",
+                errors[0]
+            );
+        }
+    }
+
+    #[test]
+    fn build_checks_prop_defaults_against_their_kind() {
+        let mut builder = builder();
+        let card = builder.compositions.get_mut("card").unwrap();
+        card.props.get_mut("title").unwrap().default = ExpressionValue::Number(1.0);
+        let errors = builder.build().unwrap_err();
+        assert_eq!(
+            errors[0].to_string(),
+            "composition `card`: prop `title` default: expected a string, got number"
+        );
+    }
+
+    #[test]
+    fn build_stores_the_output_node_of_every_graph() {
+        let composition = builder().build().unwrap();
+        assert_eq!(composition.output(), NodeId::new(2));
+        assert_eq!(composition.template("card").unwrap().1, NodeId::new(2));
+    }
 }
 
 #[cfg(test)]

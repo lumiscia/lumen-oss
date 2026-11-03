@@ -1,5 +1,4 @@
 import type {
-  Color,
   CompositionNode,
   CompositionTemplate,
   Connection,
@@ -21,7 +20,6 @@ import type {
 } from "./types.js";
 
 const defaultRenderSettings = {
-  background_color: [0, 0, 0, 0] as const,
   height: 1080,
   width: 1920,
 } satisfies LumenComposition["render_settings"];
@@ -48,17 +46,15 @@ export class Composition {
   readonly #nodes: CompositionNode[] = [];
   #nextNodeId = 0;
   #audio: AudioTimelineInput | undefined;
-  #lumenSchemaVersion: string | undefined;
+  #lumenSchemaVersion: LumenComposition["lumenSchemaVersion"] | undefined;
   #metadata: LumenComposition["metadata"] | undefined;
   #renderSettings: LumenComposition["render_settings"];
-  #schemaVersion: string | undefined;
   #timeline: LumenComposition["timeline"];
 
   constructor(options: CompositionOptions = {}) {
     this.#audio = audioTimeline(options.audio);
     this.#metadata = options.metadata;
     this.#lumenSchemaVersion = options.lumenSchemaVersion;
-    this.#schemaVersion = options.schemaVersion;
     this.#renderSettings = renderSettings(options.renderSettings);
     this.#timeline = timeline(options.timeline);
   }
@@ -172,14 +168,6 @@ export class Composition {
     return this;
   }
 
-  setBackgroundColor(color: Color): this {
-    this.#renderSettings = {
-      ...this.#renderSettings,
-      background_color: color,
-    };
-    return this;
-  }
-
   setFps(fps: number): this {
     this.#timeline = {
       ...this.#timeline,
@@ -252,7 +240,6 @@ export class Composition {
         ? { lumenSchemaVersion: this.#lumenSchemaVersion }
         : {}),
       ...(this.#metadata !== undefined ? { metadata: this.#metadata } : {}),
-      ...(this.#schemaVersion !== undefined ? { schemaVersion: this.#schemaVersion } : {}),
     };
   }
 }
@@ -301,8 +288,6 @@ function renderSettings(
 function timeline(input: TimelineInput | undefined): LumenComposition["timeline"] {
   const fps = input?.fps ?? defaultTimeline.fps;
   return {
-    ...defaultTimeline,
-    ...input,
     duration_frames:
       input?.durationSeconds === undefined
         ? (input?.duration_frames ?? defaultTimeline.duration_frames)

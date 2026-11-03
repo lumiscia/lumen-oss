@@ -5,8 +5,7 @@
   },
   "render_settings": {
     "width": 1280,
-    "height": 720,
-    "background_color": [8, 10, 18, 255]
+    "height": 720
   },
   "metadata": {
     "title": "GPU Feature Showcase",

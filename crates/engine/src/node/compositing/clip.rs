@@ -170,22 +170,21 @@ impl Clip {
         }
     }
 
-    /// The template this clip plays in `scope`, or `None` when it plays its source.
-    fn template<'a>(&self, scope: &Scope<'a>) -> crate::Result<Option<&'a CompositionTemplate>> {
+    /// The template this clip plays in `scope` with its `media_output` node, or `None` when it
+    /// plays its source.
+    fn template<'a>(
+        &self,
+        scope: &Scope<'a>,
+    ) -> crate::Result<Option<(&'a CompositionTemplate, NodeId)>> {
         let Some(name) = self.template_name() else {
             return Ok(None);
         };
-        scope
-            .root
-            .compositions()
-            .get(name)
-            .map(Some)
-            .ok_or_else(|| {
-                self.error(
-                    "composition",
-                    format!("composition `{name}` is not defined in `compositions`"),
-                )
-            })
+        scope.root.template(name).map(Some).ok_or_else(|| {
+            self.error(
+                "composition",
+                format!("composition `{name}` is not defined in `compositions`"),
+            )
+        })
     }
 
     /// When the clip shows in `scope`, evaluated at `ctx`'s frame.
@@ -210,7 +209,7 @@ impl Clip {
         if speed <= 0.0 {
             return Err(self.error("speed", format!("must be greater than 0, got {speed}")));
         }
-        let template = self.template(scope)?;
+        let template = self.template(scope)?.map(|(template, _)| template);
         let content_fps = template.map_or(scope.timeline.fps, |template| template.timeline.fps);
         let window = ClipWindow {
             start,
@@ -250,7 +249,7 @@ impl Clip {
         let Some(local) = self.window(scope, &ctx)?.local_time(frame) else {
             return Ok(None);
         };
-        let Some(template) = self.template(scope)? else {
+        let Some((template, output)) = self.template(scope)? else {
             return Ok(self.source.map(|source| Routed {
                 node: source,
                 frame: local,
@@ -258,10 +257,10 @@ impl Clip {
                 instance: Some(self.id),
             }));
         };
-        let child = Scope::template(scope.root, template, self.instance_props(template, &ctx)?);
-        let output = child.media_output()?;
+        let props = self.instance_props(template, &ctx)?;
+        let child = Scope::template(scope.root, template, output, props);
         let Some(crate::node::NodeKind::MediaOutput(output)) = child.node(output) else {
-            unreachable!("media_output returns a media output node");
+            unreachable!("a scope's output is a media output node");
         };
         Ok(output.source.map(|source| Routed {
             node: source,
