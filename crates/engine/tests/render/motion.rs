@@ -161,6 +161,11 @@ impl Row {
             mean <= MEAN_TOLERANCE,
             "blurred differs from its expected render by {mean:.3} on average"
         );
+        let coverage = alpha(&blurred) as f64 / alpha(&expected) as f64;
+        assert!(
+            (coverage - 1.0).abs() <= COVERAGE_TOLERANCE,
+            "blurred has {coverage:.3} of its expected render's coverage"
+        );
         let (moved, at) = worst_difference(&blurred, &held);
         assert!(
             moved > 16,
@@ -234,6 +239,9 @@ fn worst_difference(a: &Frame, b: &Frame) -> (u8, (u32, u32)) {
 
 /// Bounds the average difference of a row whose largest allowed difference is wide.
 const MEAN_TOLERANCE: f64 = 0.5;
+/// How far total coverage may be from the expected render, as a fraction. Sparse canvases dilute
+/// `MEAN_TOLERANCE`, so losing a tap can pass it.
+const COVERAGE_TOLERANCE: f64 = 0.03;
 
 fn mean_difference(a: &Frame, b: &Frame) -> f64 {
     let sum: u64 = a
