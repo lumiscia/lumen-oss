@@ -74,7 +74,7 @@ pub fn check_rows<R>(rows: Vec<(String, R)>, run: impl Fn(&Gpu, &R)) {
 #[derive(Clone, Copy, Debug)]
 pub enum Mode {
     Raster,
-    /// Distance fields, or raster without the `msdf` feature.
+    /// Distance fields.
     Msdf,
     /// Colour glyphs, which have no outline for a distance field.
     Color,
@@ -92,8 +92,7 @@ impl Mode {
     fn instance_mode(self) -> u32 {
         match self {
             Self::Raster => lumen_text::GLYPH_MODE_RASTER_MASK,
-            Self::Msdf if cfg!(feature = "msdf") => lumen_text::GLYPH_MODE_MSDF,
-            Self::Msdf => lumen_text::GLYPH_MODE_RASTER_MASK,
+            Self::Msdf => lumen_text::GLYPH_MODE_MSDF,
             Self::Color => lumen_text::GLYPH_MODE_RASTER_COLOR,
         }
     }
@@ -1110,12 +1109,7 @@ fn glyphs_larger_than_the_atlas_are_drawn_as_distance_fields() {
     let params = json!({ "content": "I", "font_size": 6000, "position": [-700, -2000] });
     let scene = text_scene((128, 128), json!({}), params);
     let frame = frame_checked(&mut gpu.renderer(), scene, &media(), |modes| {
-        let expected = if cfg!(feature = "msdf") {
-            vec![lumen_text::GLYPH_MODE_MSDF]
-        } else {
-            vec![]
-        };
-        assert_eq!(modes, expected);
+        assert_eq!(modes, vec![lumen_text::GLYPH_MODE_MSDF]);
     });
     let solid = frame
         .rgba
@@ -1124,16 +1118,7 @@ fn glyphs_larger_than_the_atlas_are_drawn_as_distance_fields() {
         .iter()
         .filter(|pixel| pixel[3] == 255)
         .count();
-    // Without distance fields the raster glyph is too big to draw.
-    let expected = if cfg!(feature = "msdf") {
-        128 * 128 / 2 + 1
-    } else {
-        0
-    };
-    assert!(
-        solid >= expected && (cfg!(feature = "msdf") || solid == 0),
-        "{solid} solid pixels"
-    );
+    assert!(solid > 128 * 128 / 2, "{solid} solid pixels");
 }
 
 #[test]

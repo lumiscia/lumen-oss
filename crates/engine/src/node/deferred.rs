@@ -100,7 +100,6 @@ impl<T> From<T> for Deferred<T> {
     }
 }
 
-#[cfg(feature = "json")]
 impl<'de, T> serde::Deserialize<'de> for Deferred<T>
 where
     T: DeferredJsonValue + DeferredValue,
@@ -133,7 +132,6 @@ where
     }
 }
 
-#[cfg(feature = "json")]
 pub trait DeferredJsonValue: Sized {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String>;
 }
@@ -670,7 +668,6 @@ impl DeferredValue for [f32; 2] {
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for f64 {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         value
@@ -680,21 +677,18 @@ impl DeferredJsonValue for f64 {
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for f32 {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         f64::from_json_value(value).map(|value| value as f32)
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for i64 {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         crate::json::integral_i64(value).ok_or_else(|| crate::json::integer_mismatch(value))
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for u8 {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         let value = i64::from_json_value(value)?;
@@ -702,7 +696,6 @@ impl DeferredJsonValue for u8 {
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for u32 {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         let value = i64::from_json_value(value)?;
@@ -710,7 +703,6 @@ impl DeferredJsonValue for u32 {
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for bool {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         value
@@ -720,7 +712,6 @@ impl DeferredJsonValue for bool {
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for String {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         value
@@ -730,35 +721,30 @@ impl DeferredJsonValue for String {
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for [u8; 4] {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         crate::json::try_parse_color(value).map_err(|error| format!("expected color: {error}"))
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for vector::paint::Paint {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         vector::paint::Paint::from_json_value(value)
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for ShaderUniforms {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         ShaderUniforms::from_json_value(value, "uniforms")
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for ClipProps {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         ClipProps::from_json_value(value, "props")
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for (f64, f64) {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         let values = value
@@ -780,7 +766,6 @@ impl DeferredJsonValue for (f64, f64) {
     }
 }
 
-#[cfg(feature = "json")]
 impl DeferredJsonValue for [f32; 2] {
     fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         let (x, y) = <(f64, f64)>::from_json_value(value)?;
@@ -946,7 +931,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "json")]
     #[test]
     fn color_and_paint_accept_expressions_when_deserialized() {
         let color = serde_json::from_value::<Deferred<[u8; 4]>>("=rgb(255, 0, 0)".into()).unwrap();
@@ -957,7 +941,6 @@ mod tests {
         assert!(matches!(literal, Deferred::Value(_)));
     }
 
-    #[cfg(feature = "json")]
     #[test]
     fn parse_errors_name_the_node_and_property() {
         let json = r#"{
@@ -983,7 +966,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "json")]
     #[test]
     fn deserializes_leading_equals_as_expression_or_escaped_literal() {
         for (input, expected) in [("==wow", "=wow"), ("===", "==")] {

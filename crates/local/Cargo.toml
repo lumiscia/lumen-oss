@@ -20,7 +20,7 @@ anyhow = "1.0.101"
 fontdb = "0.23.0"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 tempfile = "3.23.0"
-lumen-engine = { workspace = true, features = ["ffmpeg", "image", "json"] }
+lumen-engine = { workspace = true, features = ["ffmpeg", "image"] }
 lumen-gpu = { workspace = true }
 lumen-ffmpeg = { workspace = true, features = ["vulkan"] }
 pollster = "1.0.1"

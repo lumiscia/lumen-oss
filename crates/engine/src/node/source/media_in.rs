@@ -26,7 +26,6 @@ impl LoopMode {
     }
 }
 
-#[cfg(any(feature = "json", feature = "metadata"))]
 #[derive(lumen_macros::NodeEnum)]
 pub enum MediaInSourceKind {
     Image = 0,
