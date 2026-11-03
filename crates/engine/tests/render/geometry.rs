@@ -238,6 +238,13 @@ fn shape_coverage() -> Vec<Case> {
             path((80, 80), json!({ "data": closed })),
             Expect::Probes(vec![(34, 34, WHITE), (70, 60, CLEAR), (5, 70, CLEAR)]),
         ),
+        Case::new(
+            "a closed path antialiases its oblique edges",
+            path((80, 80), json!({ "data": closed })),
+            Expect::Custom(Box::new(|frames| {
+                assert!(partially_covered(&frames[0]) > 0, "no antialiased edge");
+            })),
+        ),
         Case::new("a stroke 4 wide draws", line(4.0), {
             Expect::Probes(vec![(30, 10, BLACK), (30, 14, CLEAR), (30, 6, CLEAR)])
         }),
@@ -374,28 +381,50 @@ fn equivalent_to_direct(
     Case::new(name, scaled, Expect::Matches(direct().into())).tolerance(tolerance)
 }
 
+fn ellipse_stroke(params: Value) -> Value {
+    with(
+        json!({
+            "geometry_kind": "ellipse", "position": [20.25, 30.5], "stroke_enabled": true,
+            "fill_paint": RED, "stroke_paint": BLUE
+        }),
+        params,
+    )
+}
+
+fn direct_ellipse() -> Scene {
+    shape(
+        (128, 128),
+        ellipse_stroke(json!({ "width": 80, "height": 72, "stroke_width": 6 })),
+    )
+}
+
+fn scaled_ellipse() -> Scene {
+    shape(
+        (128, 128),
+        ellipse_stroke(json!({
+            "width": 10, "height": 9, "scale": [8, 8], "stroke_width": 0.75
+        })),
+    )
+}
+
+fn direct_rectangle() -> Scene {
+    shape(
+        (128, 128),
+        json!({ "width": 80, "height": 60, "position": [25.3, 25.6] }),
+    )
+}
+
+fn scaled_rectangle() -> Scene {
+    shape(
+        (128, 128),
+        json!({
+            "width": 10, "height": 30, "position": [60.3, 40.6], "anchor": [5, 15],
+            "scale": [8, 2]
+        }),
+    )
+}
+
 fn transform_equivalence() -> Vec<Case> {
-    let ellipse_stroke = |params: Value| {
-        with(
-            json!({
-                "geometry_kind": "ellipse", "position": [20.25, 30.5], "stroke_enabled": true,
-                "fill_paint": RED, "stroke_paint": BLUE
-            }),
-            params,
-        )
-    };
-    let direct_ellipse = || {
-        shape(
-            (128, 128),
-            ellipse_stroke(json!({ "width": 80, "height": 72, "stroke_width": 6 })),
-        )
-    };
-    let direct_rectangle = || {
-        shape(
-            (128, 128),
-            json!({ "width": 80, "height": 60, "position": [25.3, 25.6] }),
-        )
-    };
     let edge_rectangle = || {
         shape(
             (128, 128),
@@ -408,12 +437,7 @@ fn transform_equivalence() -> Vec<Case> {
         equivalent_to_direct(
             "stroked ellipse scaled 8x",
             2,
-            shape(
-                (128, 128),
-                ellipse_stroke(json!({
-                    "width": 10, "height": 9, "scale": [8, 8], "stroke_width": 0.75
-                })),
-            ),
+            scaled_ellipse(),
             direct_ellipse,
         ),
         Case::new(
@@ -425,13 +449,7 @@ fn transform_equivalence() -> Vec<Case> {
         equivalent_to_direct(
             "rectangle scaled 8x2 about an anchor",
             32,
-            shape(
-                (128, 128),
-                json!({
-                    "width": 10, "height": 30, "position": [60.3, 40.6], "anchor": [5, 15],
-                    "scale": [8, 2]
-                }),
-            ),
+            scaled_rectangle(),
             direct_rectangle,
         ),
         Case::new(
@@ -463,6 +481,36 @@ fn transform_equivalence() -> Vec<Case> {
             Expect::Probes(vec![(58, 8, [204; 4]), (30, 12, WHITE), (30, 4, CLEAR)]),
         ),
     ]
+}
+
+fn partially_covered(frame: &Frame) -> usize {
+    pixels(frame)
+        .filter(|pixel| pixel[3] > 0 && pixel[3] < 255)
+        .count()
+}
+
+/// A wider antialiasing ramp can stay inside the rows' per-pixel tolerance.
+#[test]
+fn scaling_keeps_the_edge_as_narrow_as_the_direct_drawing() {
+    let gpu = gpu();
+    let media = TestMedia::default();
+    for (name, scaled, direct) in [
+        ("stroked ellipse", scaled_ellipse(), direct_ellipse()),
+        ("rectangle", scaled_rectangle(), direct_rectangle()),
+    ] {
+        let scaled = render(&mut gpu.renderer(), &scaled.into(), 0.0, &media);
+        let direct = render(&mut gpu.renderer(), &direct.into(), 0.0, &media);
+        assert!(
+            partially_covered(&direct) > 0,
+            "{name}: no antialiased edge"
+        );
+        assert!(
+            partially_covered(&scaled).abs_diff(partially_covered(&direct)) <= 2,
+            "{name}: {} partly covered pixels against {}",
+            partially_covered(&scaled),
+            partially_covered(&direct)
+        );
+    }
 }
 
 /// A shape's own rotation, scale and anchor against a transform node about the same pivot.
@@ -977,12 +1025,14 @@ fn ellipse_distance_rows() -> Vec<Case> {
     ]
 }
 
-fn gradient_columns() -> Vec<(u32, u32, [u8; 4])> {
-    (0..8)
-        .map(|x| {
-            let t = (f64::from(x) + 0.5) / 8.0;
-            let channel = |value: f64| (value * 255.0).round() as u8;
-            (x, 1, [channel(1.0 - t), 0, channel(t), 255])
+fn gradient_pixels() -> Vec<(u32, u32, [u8; 4])> {
+    (0..4)
+        .flat_map(|y| {
+            (0..8).map(move |x| {
+                let t = (f64::from(x) + 0.5) / 8.0;
+                let channel = |value: f64| (value * 255.0).round() as u8;
+                (x, y, [channel(1.0 - t), 0, channel(t), 255])
+            })
         })
         .collect()
 }
@@ -1012,7 +1062,7 @@ fn sampling_rows() -> Vec<Case> {
         Case::new(
             "a gradient is red to blue across its width",
             scene((8, 4), json!([gradient(8, 4)])),
-            Expect::Probes(gradient_columns()),
+            Expect::Probes(gradient_pixels()),
         ),
         Case::new(
             "an identity transform with linear sampling reproduces the gradient",
@@ -1025,12 +1075,12 @@ fn sampling_rows() -> Vec<Case> {
                     } },
                 ]),
             ),
-            Expect::Probes(gradient_columns()),
+            Expect::Probes(gradient_pixels()),
         ),
         Case::new(
             "an identity linear resize reproduces the gradient",
             resized((8, 4)),
-            Expect::Probes(gradient_columns()),
+            Expect::Probes(gradient_pixels()),
         ),
         Case::new(
             "a linear upscale keeps the source's edges opaque",
