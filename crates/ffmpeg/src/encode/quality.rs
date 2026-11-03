@@ -74,6 +74,11 @@ pub(crate) fn quality_options(
 
     let mut options = Vec::new();
     let mut global_quality = None;
+    // NVIDIA's Vulkan H.264 encode can stall forever at a GOP boundary with more than one frame in
+    // flight, with or without B-frames.
+    if encoder == "h264_vulkan" {
+        options.push(("async_depth", "1".to_string()));
+    }
     if let Some(preset) = preset {
         let presets: &[&str] = match family {
             EncoderFamily::X264 => &X264_PRESETS,
