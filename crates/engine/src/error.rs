@@ -207,26 +207,14 @@ pub enum RenderError {
     },
     #[error("node {node_id} is referenced but missing from the graph")]
     MissingNode { node_id: NodeId },
-    #[error("surface allocation failed for {width}x{height}")]
-    SurfaceAllocation { width: u32, height: u32 },
-    #[error("output of node {node_id} is missing")]
-    MissingNodeOutput { node_id: NodeId },
     #[error("output of node {node_id} has invalid type: expected {expected}, got {actual}")]
     InvalidNodeOutputType {
         node_id: NodeId,
         expected: &'static str,
         actual: &'static str,
     },
-    #[error("media output node {node_id} did not produce raster output")]
-    InvalidMediaOutputType { node_id: NodeId },
-    #[error("pixel readback failed for {width}x{height}")]
-    PixelReadbackFailed { width: u32, height: u32 },
-    #[error("all scratch surfaces are currently in use")]
-    ScratchSurfaceUnavailable,
     #[error("{backend} backend is busy")]
     BackendBusy { backend: &'static str },
-    #[error("render cancelled")]
-    Cancelled,
     #[error("GPU render failed: {details}")]
     Gpu { details: String },
 }
