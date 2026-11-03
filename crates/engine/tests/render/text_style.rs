@@ -6,7 +6,7 @@ use lumen_engine::composition::Composition;
 use lumen_engine::gpu::GpuCompositionRenderer;
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Frame, Gpu, Scene, check, render};
+use crate::support::{Case, Expect, Frame, Gpu, Scene, check, render, scene};
 use crate::text_pixels::{
     Mode, alpha, changes, check_rows, frame_of, frame_with, ink_box, ink_columns, ink_rows,
     inter_text, mass, media, merged, text_scene, whole,
@@ -229,6 +229,35 @@ fn decoration_dots_stretch_with_a_nonuniform_scale() {
         )
         .media(media()),
     ]);
+}
+
+#[test]
+fn decorations_split_by_span_paint_fit_the_size_counted_at_compile() {
+    let spans = scene(
+        (64, 32),
+        json!([{ "id": 1, "type": "text", "params": {
+            "content": [
+                { "text": "a", "color": "#ff0000" },
+                { "text": "b", "color": "#0000ff" }
+            ],
+            "font_size": 24, "position": [4, 2], "underline": {}
+        } }]),
+    );
+    check(vec![Case::new(
+        "an underline over two span colours",
+        spans,
+        Expect::Custom(Box::new(|frames| {
+            let has = |color: [u8; 3]| {
+                frames[0]
+                    .rgba
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|pixel| pixel[3] == 255 && pixel[..3] == color)
+            };
+            assert!(has([255, 0, 0]) && has([0, 0, 255]));
+        })),
+    )]);
 }
 
 #[test]
