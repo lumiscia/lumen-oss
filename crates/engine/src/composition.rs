@@ -32,13 +32,19 @@ pub struct Composition {
     template_outputs: BTreeMap<String, NodeId>,
 }
 
+/// What the root and each template are made of: a graph, its timeline and its canvas.
+#[derive(Debug, lumen_macros::StructuralHash)]
+pub struct Scene {
+    pub graph: Graph,
+    pub timeline: TimelineSettings,
+    pub render_settings: RenderSettings,
+}
+
 /// The parts of a composition, assembled or edited before [`CompositionBuilder::build`] validates
 /// them into a [`Composition`].
 #[derive(Debug, lumen_macros::StructuralHash)]
 pub struct CompositionBuilder {
-    pub graph: Graph,
-    pub timeline: TimelineSettings,
-    pub render_settings: RenderSettings,
+    pub scene: Scene,
     #[structural_hash(skip)] // Audio is independent of compiled video plans and GPU caches.
     pub audio: Option<AudioTimeline>,
     /// Templates that `clip` nodes instantiate, by name.
@@ -49,9 +55,7 @@ pub struct CompositionBuilder {
 /// they never collide with the root's or another template's.
 #[derive(Debug, lumen_macros::StructuralHash)]
 pub struct CompositionTemplate {
-    pub graph: Graph,
-    pub timeline: TimelineSettings,
-    pub render_settings: RenderSettings,
+    pub scene: Scene,
     pub props: BTreeMap<String, PropDef>,
 }
 
@@ -141,16 +145,20 @@ impl PropKind {
 }
 
 impl Composition {
+    pub fn scene(&self) -> &Scene {
+        &self.parts.scene
+    }
+
     pub fn graph(&self) -> &Graph {
-        &self.parts.graph
+        &self.parts.scene.graph
     }
 
     pub fn timeline(&self) -> &TimelineSettings {
-        &self.parts.timeline
+        &self.parts.scene.timeline
     }
 
     pub fn render_settings(&self) -> &RenderSettings {
-        &self.parts.render_settings
+        &self.parts.scene.render_settings
     }
 
     pub fn audio(&self) -> Option<&AudioTimeline> {
@@ -187,9 +195,11 @@ impl Composition {
 impl CompositionBuilder {
     pub fn new(graph: Graph, timeline: TimelineSettings, render_settings: RenderSettings) -> Self {
         Self {
-            graph,
-            timeline,
-            render_settings,
+            scene: Scene {
+                graph,
+                timeline,
+                render_settings,
+            },
             audio: None,
             compositions: BTreeMap::new(),
         }
@@ -202,11 +212,11 @@ impl CompositionBuilder {
         self.validate()?;
         Ok(Composition {
             fingerprint: fingerprint(&self),
-            output: self.graph.output(),
+            output: self.scene.graph.output(),
             template_outputs: self
                 .compositions
                 .iter()
-                .map(|(name, template)| (name.clone(), template.graph.output()))
+                .map(|(name, template)| (name.clone(), template.scene.graph.output()))
                 .collect(),
             parts: self,
         })
@@ -215,18 +225,14 @@ impl CompositionBuilder {
     fn validate(&self) -> Result<(), Vec<LumenError>> {
         let mut errors = Vec::new();
 
-        errors.extend(
-            settings_problems(&self.timeline, &self.render_settings)
-                .into_iter()
-                .map(|details| {
-                    GraphValidationError::InvalidSettings {
-                        template: None,
-                        details,
-                    }
-                    .into()
-                }),
-        );
-        match self.graph.validate() {
+        errors.extend(settings_problems(&self.scene).into_iter().map(|details| {
+            GraphValidationError::InvalidSettings {
+                template: None,
+                details,
+            }
+            .into()
+        }));
+        match self.scene.graph.validate() {
             Ok(_) => {}
             Err(graph_errors) => errors.extend(graph_errors),
         }
@@ -236,7 +242,7 @@ impl CompositionBuilder {
                 Some(format!("prop `{prop}` default: {error}"))
             });
             errors.extend(
-                settings_problems(&template.timeline, &template.render_settings)
+                settings_problems(&template.scene)
                     .into_iter()
                     .chain(defaults)
                     .map(|details| {
@@ -247,7 +253,7 @@ impl CompositionBuilder {
                         .into()
                     }),
             );
-            if let Err(graph_errors) = template.graph.validate() {
+            if let Err(graph_errors) = template.scene.graph.validate() {
                 errors.extend(graph_errors.into_iter().map(|error| {
                     LumenError::from(GraphValidationError::InTemplate {
                         template: name.clone(),
@@ -256,10 +262,10 @@ impl CompositionBuilder {
                 }));
             }
         }
-        let graphs = std::iter::once((None, &self.graph)).chain(
+        let graphs = std::iter::once((None, &self.scene.graph)).chain(
             self.compositions
                 .iter()
-                .map(|(name, template)| (Some(name), &template.graph)),
+                .map(|(name, template)| (Some(name), &template.scene.graph)),
         );
         for (template, graph) in graphs {
             let mut clips = graph.nodes.values().filter_map(as_clip).collect::<Vec<_>>();
@@ -398,6 +404,7 @@ impl CompositionBuilder {
         // An undefined template is reported by `check_clip`.
         let template = self.compositions.get(name)?;
         let mut used = template
+            .scene
             .graph
             .nodes
             .values()
@@ -417,7 +424,12 @@ impl CompositionBuilder {
 
 /// What stops a timeline and canvas from rendering: a frame rate that isn't positive and finite,
 /// and no frames or pixels.
-fn settings_problems(timeline: &TimelineSettings, settings: &RenderSettings) -> Vec<String> {
+fn settings_problems(scene: &Scene) -> Vec<String> {
+    let Scene {
+        timeline,
+        render_settings: settings,
+        ..
+    } = scene;
     let mut problems = Vec::new();
     if !(timeline.fps.is_finite() && timeline.fps > 0.0) {
         problems.push(format!(
@@ -531,30 +543,32 @@ mod validation_tests {
 
     #[test]
     fn build_checks_the_settings_of_the_root_and_each_template() {
-        type Edit = fn(&mut TimelineSettings, &mut RenderSettings);
+        type Edit = fn(&mut Scene);
         let rows: [(Edit, &str); 6] = [
-            (|timeline, _| timeline.fps = 0.0, "`timeline.fps`"),
-            (|timeline, _| timeline.fps = -30.0, "`timeline.fps`"),
-            (|timeline, _| timeline.fps = f32::NAN, "`timeline.fps`"),
+            (|scene| scene.timeline.fps = 0.0, "`timeline.fps`"),
+            (|scene| scene.timeline.fps = -30.0, "`timeline.fps`"),
+            (|scene| scene.timeline.fps = f32::NAN, "`timeline.fps`"),
             (
-                |timeline, _| timeline.duration_frames = 0,
+                |scene| scene.timeline.duration_frames = 0,
                 "`timeline.duration_frames`",
             ),
-            (|_, settings| settings.width = 0, "`render_settings.width`"),
             (
-                |_, settings| settings.height = 0,
+                |scene| scene.render_settings.width = 0,
+                "`render_settings.width`",
+            ),
+            (
+                |scene| scene.render_settings.height = 0,
                 "`render_settings.height`",
             ),
         ];
         for (edit, expected) in rows {
             let mut root = builder();
-            edit(&mut root.timeline, &mut root.render_settings);
+            edit(&mut root.scene);
             let errors = root.build().unwrap_err();
             assert!(errors[0].to_string().starts_with(expected), "{}", errors[0]);
 
             let mut template = builder();
-            let card = template.compositions.get_mut("card").unwrap();
-            edit(&mut card.timeline, &mut card.render_settings);
+            edit(&mut template.compositions.get_mut("card").unwrap().scene);
             let errors = template.build().unwrap_err();
             assert!(
                 errors[0]
@@ -632,11 +646,11 @@ mod fingerprint_tests {
         let expected = parse(&value).fingerprint();
         assert_eq!(expected, parse(&value).fingerprint());
         let mut builder = parse(&value).into_builder();
-        for graph in std::iter::once(&mut builder.graph).chain(
+        for graph in std::iter::once(&mut builder.scene.graph).chain(
             builder
                 .compositions
                 .values_mut()
-                .map(|template| &mut template.graph),
+                .map(|template| &mut template.scene.graph),
         ) {
             let mut nodes = graph.nodes.drain().collect::<Vec<_>>();
             nodes.sort_unstable_by_key(|(id, _)| std::cmp::Reverse(*id));
@@ -683,7 +697,7 @@ mod fingerprint_tests {
 
         let mut at_root = parse(&value).into_builder();
         let card = at_root.compositions.remove("card").unwrap();
-        at_root.graph = card.graph;
+        at_root.scene.graph = card.scene.graph;
         let errors = at_root.build().unwrap_err();
         assert_eq!(
             errors[0].to_string(),

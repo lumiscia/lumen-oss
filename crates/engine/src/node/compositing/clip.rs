@@ -210,14 +210,16 @@ impl Clip {
             return Err(self.error("speed", format!("must be greater than 0, got {speed}")));
         }
         let template = self.template(scope)?.map(|(template, _)| template);
-        let content_fps = template.map_or(scope.timeline.fps, |template| template.timeline.fps);
+        let content_fps = template.map_or(scope.scene.timeline.fps, |template| {
+            template.scene.timeline.fps
+        });
         let window = ClipWindow {
             start,
             duration: 0.0,
             offset,
             speed,
             content_fps: f64::from(content_fps),
-            fps: f64::from(scope.timeline.fps),
+            fps: f64::from(scope.scene.timeline.fps),
             end: DelegateEvalContext {
                 node_id: self.id,
                 expr: ctx,
@@ -229,9 +231,9 @@ impl Clip {
         } else {
             match template {
                 Some(template) => {
-                    (f64::from(template.timeline.duration_frames) - offset) / window.rate()
+                    (f64::from(template.scene.timeline.duration_frames) - offset) / window.rate()
                 }
-                None => f64::from(scope.timeline.duration_frames) - start,
+                None => f64::from(scope.scene.timeline.duration_frames) - start,
             }
         };
         Ok(ClipWindow { duration, ..window })

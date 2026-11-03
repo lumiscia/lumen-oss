@@ -221,7 +221,6 @@ pub(crate) struct PlanFrame {
 
 #[derive(Debug)]
 pub struct CompileContext<'a> {
-    composition: &'a Composition,
     /// The composition the nodes being compiled belong to.
     scope: Scope<'a>,
     frame: FrameTime,
@@ -318,7 +317,6 @@ impl<'a> CompileContext<'a> {
                         .collect()
                 });
         Self {
-            composition,
             scope: Scope::root(composition),
             frame: frame.into(),
             time_remaps: TimeRemapPath::new(),
@@ -350,7 +348,7 @@ impl<'a> CompileContext<'a> {
         let output = self.compile_port(output_node)?;
         let plan = self.builder.build();
         let cache = self.cache.finish(
-            self.composition,
+            self.scope.root,
             &plan,
             output.texture,
             self.text_atlas_texture,
@@ -366,8 +364,9 @@ impl<'a> CompileContext<'a> {
         })
     }
 
+    /// The root composition, whichever scope is being compiled.
     pub(crate) fn composition(&self) -> &Composition {
-        self.composition
+        self.scope.root
     }
 
     pub(crate) fn media(&self) -> Option<&dyn MediaStore> {
@@ -494,7 +493,7 @@ impl<'a> CompileContext<'a> {
         let Some(routed) = routed else {
             return Ok(self.compile_transparent(clip.id));
         };
-        let settings = routed.scope.render_settings;
+        let settings = &routed.scope.scene.render_settings;
         let content = lumen_gpu::Size::new(settings.width, settings.height);
         let bound_frames = self.clip_bound_frames(clip);
         let raster = self.compile_routed(routed, bound_frames)?;
@@ -673,7 +672,7 @@ impl<'a> CompileContext<'a> {
 
     /// The canvas size of the composition being compiled, which its sources are drawn at.
     pub(crate) fn canvas_size(&self) -> lumen_gpu::Size {
-        let settings = self.scope.render_settings;
+        let settings = &self.scope.scene.render_settings;
         lumen_gpu::Size::new(settings.width, settings.height)
     }
 

@@ -1367,7 +1367,7 @@ fn max_font_rebinds(composition: &Composition) -> usize {
     let templates: usize = composition
         .compositions()
         .values()
-        .map(|template| template.graph.nodes.len())
+        .map(|template| template.scene.graph.nodes.len())
         .sum();
     composition.graph().nodes.len() + templates + 3
 }

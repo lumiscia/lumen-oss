@@ -7,7 +7,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    composition::{Composition, CompositionTemplate, RenderSettings, TimelineSettings},
+    composition::{Composition, CompositionTemplate, Scene},
     expr::{ExpressionContext, ExpressionValue},
     graph::Graph,
     media::MediaStore,
@@ -73,9 +73,7 @@ pub type PropValues = BTreeMap<String, ExpressionValue>;
 #[derive(Debug, Clone)]
 pub struct Scope<'a> {
     pub root: &'a Composition,
-    pub graph: &'a Graph,
-    pub timeline: &'a TimelineSettings,
-    pub render_settings: &'a RenderSettings,
+    pub scene: &'a Scene,
     /// The graph's `media_output` node.
     pub output: NodeId,
     /// `None` at the root.
@@ -86,9 +84,7 @@ impl<'a> Scope<'a> {
     pub fn root(composition: &'a Composition) -> Self {
         Self {
             root: composition,
-            graph: composition.graph(),
-            timeline: composition.timeline(),
-            render_settings: composition.render_settings(),
+            scene: composition.scene(),
             output: composition.output(),
             props: None,
         }
@@ -102,16 +98,14 @@ impl<'a> Scope<'a> {
     ) -> Self {
         Self {
             root,
-            graph: &template.graph,
-            timeline: &template.timeline,
-            render_settings: &template.render_settings,
+            scene: &template.scene,
             output,
             props: Some(Arc::new(props)),
         }
     }
 
     pub fn node(&self, id: NodeId) -> Option<&'a NodeKind> {
-        self.graph.nodes.get(&id)
+        self.scene.graph.nodes.get(&id)
     }
 
     /// The context expressions of this scope are evaluated in at `frame`.
@@ -122,10 +116,10 @@ impl<'a> Scope<'a> {
     ) -> ExpressionContext<'s> {
         ExpressionContext {
             frame: frame.value(),
-            fps: self.timeline.fps,
-            width: self.render_settings.width,
-            height: self.render_settings.height,
-            graph: Some(self.graph),
+            fps: self.scene.timeline.fps,
+            width: self.scene.render_settings.width,
+            height: self.scene.render_settings.height,
+            graph: Some(&self.scene.graph),
             media,
             glyph: None,
             props: self.props.as_deref(),
@@ -142,7 +136,7 @@ impl<'a> Scope<'a> {
                     Some(name) => root
                         .compositions()
                         .get(name)
-                        .map(|template| &template.graph),
+                        .map(|template| &template.scene.graph),
                     None => Some(graph),
                 },
                 _ => None,

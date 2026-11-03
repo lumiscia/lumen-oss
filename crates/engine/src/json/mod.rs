@@ -23,7 +23,7 @@ use crate::{
     audio::{AudioClip, AudioTimeline, AudioTrack, default_volume, deserialize_gain},
     composition::{
         Composition, CompositionBuilder, CompositionTemplate, PropDef, PropKind, RenderSettings,
-        TimelineSettings,
+        Scene, TimelineSettings,
     },
     expr::FunctionScope,
     graph::{Connection, Graph},
@@ -307,9 +307,11 @@ pub fn parse_value(root: &Value) -> Result<Composition> {
             .collect(),
     });
     CompositionBuilder {
-        graph,
-        timeline,
-        render_settings,
+        scene: Scene {
+            graph,
+            timeline,
+            render_settings,
+        },
         audio,
         compositions,
     }
@@ -420,9 +422,11 @@ fn build_template(
         .collect::<Result<_>>()?;
     let graph = build_graph(&template.nodes, &template.connections)?;
     Ok(CompositionTemplate {
-        graph,
-        timeline,
-        render_settings,
+        scene: Scene {
+            graph,
+            timeline,
+            render_settings,
+        },
         props,
     })
 }
@@ -1249,7 +1253,7 @@ mod tests {
         .unwrap();
         let card = &comp.compositions()["card"];
         assert!(matches!(
-            card.graph.nodes[&NodeId::new(1)],
+            card.scene.graph.nodes[&NodeId::new(1)],
             NodeKind::Background(_)
         ));
         assert!(matches!(
@@ -1258,7 +1262,7 @@ mod tests {
         ));
         assert_eq!(card.props["index"].default, ExpressionValue::Number(0.0));
         assert_eq!(
-            card.timeline.duration_frames, 60,
+            card.scene.timeline.duration_frames, 60,
             "a template without a timeline takes the root's"
         );
     }
@@ -1426,12 +1430,12 @@ mod tests {
         ))
         .unwrap()
         .into_builder();
-        let NodeKind::Clip(clip) = &comp.graph.nodes[&NodeId::new(1)] else {
+        let NodeKind::Clip(clip) = &comp.scene.graph.nodes[&NodeId::new(1)] else {
             unreachable!("node 1 is the clip");
         };
         let clip = NodeKind::Clip(clip.clone());
         let card = comp.compositions.get_mut("card").unwrap();
-        card.graph.nodes.insert(NodeId::new(1), clip);
+        card.scene.graph.nodes.insert(NodeId::new(1), clip);
         let errors = comp.build().unwrap_err();
         assert!(
             errors
