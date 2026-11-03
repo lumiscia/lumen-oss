@@ -434,10 +434,13 @@ impl VideoDecoder {
         let stride = (width as usize).checked_mul(4).ok_or_else(|| {
             FfmpegError::new("receive_rgba_frame", "decoded frame row is too large")
         })?;
-        let av_stride = i32::try_from(stride).map_err(|_| {
+        // swscale's x86 YUV-to-RGBA kernels convert whole groups of pixels and drop the tail of a row
+        // that has no padding, so it converts into rows padded to 64 bytes and packs them afterwards.
+        let padded_stride = stride.div_ceil(64) * 64;
+        let av_stride = i32::try_from(padded_stride).map_err(|_| {
             FfmpegError::new("receive_rgba_frame", "decoded frame row is too large")
         })?;
-        let len = stride
+        let len = padded_stride
             .checked_mul(height as usize)
             .ok_or_else(|| FfmpegError::new("receive_rgba_frame", "decoded frame is too large"))?;
         let mut data = vec![0; len];
@@ -488,6 +491,16 @@ impl VideoDecoder {
                 ),
                 "sws_scale",
             )?;
+        }
+
+        if padded_stride != stride {
+            for row in 1..height as usize {
+                data.copy_within(
+                    row * padded_stride..row * padded_stride + stride,
+                    row * stride,
+                );
+            }
+            data.truncate(stride * height as usize);
         }
 
         let (width, height, data) = rotate_rgba(width, height, data, self.rotation);
