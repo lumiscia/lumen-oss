@@ -1632,6 +1632,7 @@ dependencies = [
  "svgtypes",
  "tempfile",
  "thiserror",
+ "tiff",
  "tracing",
 ]
 

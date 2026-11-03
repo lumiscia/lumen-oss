@@ -365,7 +365,6 @@ impl InputContext {
                 (coded_height, coded_width)
             };
             let format = std::mem::transmute::<i32, sys::AVPixelFormat>((*params).format);
-            let descriptor = sys::av_pix_fmt_desc_get(format);
             VideoStreamInfo {
                 stream_index: index,
                 codec: VideoCodec::from_av_codec_id((*params).codec_id),
@@ -373,9 +372,7 @@ impl InputContext {
                 height,
                 rotation,
                 pixel_format: PixelFormat::from_av_pixel_format(format),
-                has_alpha: self.has_alpha_layer(index)
-                    || (!descriptor.is_null()
-                        && (*descriptor).flags & sys::AV_PIX_FMT_FLAG_ALPHA as u64 != 0),
+                has_alpha: self.has_alpha_layer(index) || pixel_format_has_alpha(format),
                 time_base: (*stream).time_base.into(),
                 avg_frame_rate: (*stream).avg_frame_rate.into(),
                 frame_rate: stream_frame_rate(self.ptr, stream),
@@ -516,6 +513,11 @@ unsafe fn stream_frame_rate(
 }
 
 /// Reads the clockwise quarter turn a stream's display matrix asks for. Any other matrix reads as 0.
+pub(crate) fn pixel_format_has_alpha(format: sys::AVPixelFormat) -> bool {
+    let descriptor = unsafe { sys::av_pix_fmt_desc_get(format) };
+    !descriptor.is_null() && unsafe { (*descriptor).flags } & sys::AV_PIX_FMT_FLAG_ALPHA as u64 != 0
+}
+
 pub(crate) fn display_rotation(params: *const sys::AVCodecParameters) -> u32 {
     const DISPLAY_MATRIX_BYTES: usize = 9 * size_of::<i32>();
     unsafe {

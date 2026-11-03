@@ -103,6 +103,7 @@ pub struct VideoDecoder {
     /// Timestamps of the packets an edit list discards, for decoders where `drops_by_timestamp`.
     discarded_pts: HashSet<i64>,
     drops_alpha: bool,
+    last_frame_had_alpha: bool,
 }
 
 unsafe impl Send for VideoDecoder {}
@@ -244,6 +245,7 @@ impl VideoDecoder {
             vulkan_device: None,
             discarded_pts: HashSet::new(),
             drops_alpha: alpha_layer && alpha_decoder.is_none(),
+            last_frame_had_alpha: false,
         };
 
         unsafe {
@@ -298,6 +300,12 @@ impl VideoDecoder {
     /// Whether the stream has an alpha layer this decoder ignores, so its frames come out opaque.
     pub fn drops_alpha(&self) -> bool {
         self.drops_alpha
+    }
+
+    /// Whether the last frame [`Self::receive_rgba_frame`] returned was decoded with an alpha
+    /// channel, which can change from frame to frame within a stream.
+    pub fn last_frame_had_alpha(&self) -> bool {
+        self.last_frame_had_alpha
     }
 
     pub fn stream_index(&self) -> usize {
@@ -520,6 +528,7 @@ impl VideoDecoder {
             data.truncate(stride * height as usize);
         }
 
+        self.last_frame_had_alpha = crate::format::pixel_format_has_alpha(frame.format());
         let (width, height, data) = rotate_rgba(width, height, data, self.rotation);
         Ok(CpuVideoFrame {
             width,

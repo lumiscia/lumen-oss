@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [features]
 ffmpeg = ["dep:ffmpeg-next", "dep:lumen-ffmpeg"]
-image = ["dep:image"]
+image = ["dep:image", "dep:tiff"]
 metadata = []
 metal = ["dep:objc2-metal", "lumen-ffmpeg?/metal", "lumen-gpu/metal"]
 vulkan = ["lumen-ffmpeg?/vulkan", "lumen-gpu/vulkan"]
@@ -32,6 +32,7 @@ image = { version = "0.25.9", default-features = false, features = [
   "tiff",
   "ico",
 ], optional = true }
+tiff = { version = "0.11.3", default-features = false, optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145" }
 serde_path_to_error = "0.1.20"
