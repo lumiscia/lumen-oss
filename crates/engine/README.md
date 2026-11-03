@@ -19,7 +19,7 @@ JSON composition parsing is always available. In JSON params, a string starting 
 
 ## Features
 
-- `ffmpeg`: enable FFmpeg-backed media handling through `ffmpeg-next` and `lumen-engine-ffmpeg`.
+- `ffmpeg`: enable FFmpeg-backed media handling through `lumen-engine-ffmpeg`.
 - `image`: enable image decoding helpers.
 - `metal`: enable Metal support through `lumen-engine-gpu` and optional FFmpeg interop.
 - `vulkan`: enable Vulkan support through `lumen-engine-gpu` and optional FFmpeg interop.

@@ -12,7 +12,7 @@ pub mod video;
 
 #[cfg(feature = "vulkan")]
 pub use ash;
-pub use audio::{AudioDecoder, AudioFrame, AudioResampler, AudioResamplerConfig};
+pub use audio::{AudioDecoder, AudioFrame, AudioRangeReader, AudioResampler, AudioResamplerConfig};
 pub use encode::{
     AudioEncoderConfig, ContainerCrop, GpuTextureEncodeSupport, MuxedEncoder, RateControl,
     VideoEncoderChoice, VideoEncoderConfig, gpu_texture_encode_support,
