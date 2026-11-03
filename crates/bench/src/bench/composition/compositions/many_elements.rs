@@ -11,7 +11,7 @@ use lumen_engine::{
         processing::opacity::{Opacity, OpacityParamsDelegate},
         source::{
             background::{Background, BackgroundParamsDelegate},
-            text::{Text, TextParamsDelegate},
+            text::{Text, TextDrawParamsDelegate, TextLayoutParamsDelegate, TextParamsDelegate},
         },
         vector::{
             paint::Paint,
@@ -117,11 +117,19 @@ impl CompositionFixture for ManyElements {
                 NodeKind::Text(Text {
                     id: label,
                     params: TextParamsDelegate {
-                        content: TextContentDelegate::Text(Deferred::value(format!("#{index:03}"))),
-                        font_size: Deferred::value(14.0),
-                        color: Paint::solid([230, 232, 240, 255]).into(),
                         placement: DrawablePlacementDelegate {
                             position: Deferred::value((x + 8.0, y + 46.0)),
+                            ..Default::default()
+                        },
+                        layout: TextLayoutParamsDelegate {
+                            content: TextContentDelegate::Text(Deferred::value(format!(
+                                "#{index:03}"
+                            ))),
+                            font_size: Deferred::value(14.0),
+                            ..Default::default()
+                        },
+                        draw: TextDrawParamsDelegate {
+                            color: Paint::solid([230, 232, 240, 255]).into(),
                             ..Default::default()
                         },
                         ..Default::default()

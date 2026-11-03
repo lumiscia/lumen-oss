@@ -12,7 +12,7 @@ use lumen_engine::{
     graph::Graph,
     node::{
         Deferred, NodeId, NodeKind,
-        source::text::{Text, TextParamsDelegate},
+        source::text::{Text, TextLayoutParamsDelegate, TextParamsDelegate},
     },
 };
 
@@ -127,8 +127,11 @@ fn graph() -> anyhow::Result<Graph> {
         NodeKind::Text(Text {
             id,
             params: TextParamsDelegate {
-                font_size: Deferred::Expr(Expression::parse("24 + frame")?),
-                max_width: Deferred::value(1400.0),
+                layout: TextLayoutParamsDelegate {
+                    font_size: Deferred::Expr(Expression::parse("24 + frame")?),
+                    max_width: Deferred::value(1400.0),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         }),

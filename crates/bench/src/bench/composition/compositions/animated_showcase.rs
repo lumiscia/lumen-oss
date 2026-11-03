@@ -10,7 +10,7 @@ use lumen_engine::{
         media_output::MediaOutput,
         source::{
             background::{Background, BackgroundParamsDelegate},
-            text::{Text, TextParamsDelegate},
+            text::{Text, TextDrawParamsDelegate, TextLayoutParamsDelegate, TextParamsDelegate},
         },
         vector::shape::{Shape, ShapeGeometryKind, ShapeParamsDelegate},
     },
@@ -116,16 +116,24 @@ impl CompositionFixture for AnimatedShowcase {
             NodeKind::Text(Text {
                 id: headline,
                 params: TextParamsDelegate {
-                    content: TextContentDelegate::Text(Deferred::value(
-                        "GPU-native previews.".to_string(),
-                    )),
-                    font_size: Deferred::value(42.0),
-                    font_weight: Deferred::value(700),
-                    max_width: Deferred::value(700.0),
-                    color: lumen_engine::node::vector::paint::Paint::solid([248, 250, 252, 255])
-                        .into(),
                     placement: DrawablePlacementDelegate {
                         position: Deferred::value((260.0, 255.0)),
+                        ..Default::default()
+                    },
+                    layout: TextLayoutParamsDelegate {
+                        content: TextContentDelegate::Text(Deferred::value(
+                            "GPU-native previews.".to_string(),
+                        )),
+                        font_size: Deferred::value(42.0),
+                        font_weight: Deferred::value(700),
+                        max_width: Deferred::value(700.0),
+                        ..Default::default()
+                    },
+                    draw: TextDrawParamsDelegate {
+                        color: lumen_engine::node::vector::paint::Paint::solid([
+                            248, 250, 252, 255,
+                        ])
+                        .into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -137,16 +145,24 @@ impl CompositionFixture for AnimatedShowcase {
             NodeKind::Text(Text {
                 id: subhead,
                 params: TextParamsDelegate {
-                    content: TextContentDelegate::Text(Deferred::value(
-                        "Expressions update uniforms per frame.".to_string(),
-                    )),
-                    font_size: Deferred::value(21.0),
-                    font_weight: Deferred::value(500),
-                    max_width: Deferred::value(730.0),
-                    color: lumen_engine::node::vector::paint::Paint::solid([148, 163, 184, 255])
-                        .into(),
                     placement: DrawablePlacementDelegate {
                         position: Deferred::value((260.0, 350.0)),
+                        ..Default::default()
+                    },
+                    layout: TextLayoutParamsDelegate {
+                        content: TextContentDelegate::Text(Deferred::value(
+                            "Expressions update uniforms per frame.".to_string(),
+                        )),
+                        font_size: Deferred::value(21.0),
+                        font_weight: Deferred::value(500),
+                        max_width: Deferred::value(730.0),
+                        ..Default::default()
+                    },
+                    draw: TextDrawParamsDelegate {
+                        color: lumen_engine::node::vector::paint::Paint::solid([
+                            148, 163, 184, 255,
+                        ])
+                        .into(),
                         ..Default::default()
                     },
                     ..Default::default()

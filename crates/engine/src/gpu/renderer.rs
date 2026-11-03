@@ -1243,12 +1243,16 @@ impl<'a> PlanKeyCollector<'a> {
                 self.push_entry(clip.id, PlanChoice::ClipShown(!routes.is_empty()));
             }
             NodeKind::Text(text) => {
-                let spans = match &text.params.content {
+                let layout = &text.params.layout;
+                let spans = match &layout.content {
                     TextContentDelegate::Spans(spans) => &spans[..],
                     TextContentDelegate::Text(_) => &[],
                 };
-                let families = std::iter::once(&text.params.font_family)
-                    .chain(spans.iter().filter_map(|span| span.font_family.as_ref()));
+                let families = std::iter::once(&layout.font_family).chain(
+                    spans
+                        .iter()
+                        .filter_map(|span| span.layout.font_family.as_ref()),
+                );
                 // An animated family is keyed by the family it names at this frame. One that fails
                 // to evaluate is left for binding to report.
                 let mut ctx = None;
