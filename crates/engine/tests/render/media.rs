@@ -37,6 +37,36 @@ fn plate(id: &str, size: (u32, u32), color: [u8; 4]) -> TestMedia {
 }
 
 #[test]
+fn a_missing_source_only_fails_the_frames_that_reach_it() {
+    let gpu = gpu();
+    let composition: lumen_engine::composition::Composition = scene(
+        CANVAS,
+        json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "gone" } },
+            { "id": 2, "type": "background", "params": { "paint": "#00ff00" } },
+            { "id": 3, "type": "switch", "params": { "selected_layer": "=if(frame < 5, 0, 1)" },
+              "in": { "layers": [1, 2] } },
+        ]),
+    )
+    .frames(12)
+    .into();
+    let media = TestMedia::default();
+    let mut renderer = gpu.renderer();
+    renderer
+        .compile_with_media(&composition, &media, wgpu::TextureFormat::Rgba8Unorm)
+        .expect("frame 0 is only compiled ahead of time");
+
+    assert_eq!(
+        render(&mut renderer, &composition, 10.0, &media).pixel(0, 0),
+        GREEN
+    );
+    let error = renderer
+        .render_frame_at(&composition, 0.0, &media)
+        .unwrap_err();
+    assert!(error.to_string().contains("gone"), "{error}");
+}
+
+#[test]
 fn media_of_another_size_renders_at_its_own_size() {
     check(vec![
         Case::new(
