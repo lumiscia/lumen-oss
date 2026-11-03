@@ -1,5 +1,7 @@
 //! Decorations, strokes, overflow and fit of text, checked on pixels.
 
+use std::collections::HashMap;
+
 use lumen_engine::gpu::GpuCompositionRenderer;
 use serde_json::{Value, json};
 
@@ -456,6 +458,74 @@ fn typography_params_move_ink() {
             assert_eq!(spaced[0], tight[0]);
             assert_eq!(spaced[1].start, tight[1].start + 10);
         }),
+        (
+            "weights between hundreds grow the ink step by step",
+            |gpu| {
+                let media = media();
+                for mode in [Mode::Raster, Mode::Msdf] {
+                    let mut renderer = gpu.renderer();
+                    let ink = [400, 425, 450, 475, 500].map(|weight| {
+                        let params = json!({
+                            "font_size": 96, "font_weight": weight, "render_mode": mode.name()
+                        });
+                        let scene = styled(160, json!("H"), params);
+                        mass(&frame_with(&mut renderer, scene, &media, mode))
+                    });
+                    assert!(
+                        ink.windows(2).all(|pair| pair[0] < pair[1]),
+                        "{mode:?}: {ink:?}"
+                    );
+                }
+            },
+        ),
+        ("letter spacing and line height lay text out", |gpu| {
+            let media = media();
+            for mode in [Mode::Raster, Mode::Msdf] {
+                let mut renderer = gpu.renderer();
+                let mut draw = |params: Value| {
+                    let params = merged(
+                        json!({ "font_size": 40, "render_mode": mode.name() }),
+                        params,
+                    );
+                    frame_with(
+                        &mut renderer,
+                        styled(192, json!("Hi\nHo"), params),
+                        &media,
+                        mode,
+                    )
+                };
+                let end = |frame: &Frame| {
+                    let right = ink_columns(frame).last().expect("ink").end;
+                    (right, ink_rows(frame).last().expect("ink").end)
+                };
+                let auto = draw(json!({}));
+                let (right, bottom) = end(&auto);
+                assert!(right > 20, "{mode:?}: nothing rendered");
+                let explicit = draw(json!({ "line_height": f64::from(40.0_f32 * 1.2) }));
+                assert!(
+                    auto.rgba == explicit.rgba,
+                    "{mode:?}: an explicit automatic line height differs"
+                );
+                let spaced = end(&draw(json!({ "letter_spacing": 20 })));
+                assert!(
+                    spaced.0 >= right + 15 && spaced.1 == bottom,
+                    "{mode:?}: spaced {spaced:?}, automatic {:?}",
+                    (right, bottom)
+                );
+                let tight = end(&draw(json!({ "letter_spacing": -4 })));
+                assert!(
+                    tight.0 < right && tight.1 == bottom,
+                    "{mode:?}: tight {tight:?}, automatic {:?}",
+                    (right, bottom)
+                );
+                let tall = end(&draw(json!({ "line_height": 100 })));
+                assert!(
+                    tall.0 == right && tall.1 >= bottom + 40,
+                    "{mode:?}: tall {tall:?}, automatic {:?}",
+                    (right, bottom)
+                );
+            }
+        }),
     ]);
 }
 
@@ -698,43 +768,69 @@ fn stroke_continuity() {
         .collect();
     check_rows(rows, |gpu, row| {
         let mut renderer = gpu.renderer();
-        let mut draw = |width: Option<f32>| row.draw(&mut renderer, width);
-        let off = draw(None);
+        let off = row.draw(&mut renderer, None);
+        // Each width is drawn once. Crossing a tier is compared with a width 0.001 px either side.
+        let mut widths: Vec<f32> = row
+            .growth
+            .iter()
+            .flat_map(|&(narrow, wide)| [narrow, wide])
+            .chain(row.tiers.iter().copied())
+            .collect();
+        if row.allowed.is_some() {
+            widths.extend(
+                row.tiers
+                    .iter()
+                    .flat_map(|&limit| [limit - 0.001, limit + 0.001]),
+            );
+        }
+        let mut frames = HashMap::new();
+        for width in widths {
+            frames
+                .entry(width.to_bits())
+                .or_insert_with(|| row.draw(&mut renderer, Some(width)));
+        }
+        let at = |width: f32| &frames[&width.to_bits()];
+        // A stroke that draws nothing would pass every comparison below.
+        let widest = row
+            .growth
+            .last()
+            .map(|&(_, wide)| wide)
+            .or(row.tiers.last().copied());
+        let widest = widest.expect("a row draws strokes");
+        assert!(mass(&off) > 0, "blank control");
+        assert!(
+            changes(&off, at(widest)).0 > 0,
+            "a stroke of {widest} draws nothing"
+        );
         for &(narrow, wide) in row.growth {
-            let frames = (draw(Some(narrow)), draw(Some(wide)));
             assert_grows(
                 &off,
-                &frames.0,
-                &frames.1,
+                at(narrow),
+                at(wide),
                 row.reach(wide) - row.reach(narrow),
             );
         }
         // A tier's field covers a wider range, so crossing it changes the render by no more than
         // the rounding that moving the width by 0.001 px does inside a field.
-        let mut ladder = Vec::new();
-        for &limit in row.tiers {
-            let narrow = draw(Some(limit));
-            if let Some(allowed) = row.allowed {
-                let [narrower, wide] =
-                    [limit - 0.001, limit + 0.001].map(|width| draw(Some(width)));
-                let within = changes(&narrower, &narrow).0;
-                let (changed, most) = changes(&narrow, &wide);
+        if let Some(allowed) = row.allowed {
+            for &limit in row.tiers {
+                let within = changes(at(limit - 0.001), at(limit)).0;
+                let (changed, most) = changes(at(limit), at(limit + 0.001));
                 assert!(
                     changed <= 2 * within.max(1) && most <= allowed,
                     "width {limit}: {changed} pixels changed by up to {most}, against {within} within a field"
                 );
             }
-            ladder.push((limit, narrow));
         }
         let mut previous = (0.0, &off);
-        for (width, frame) in ladder.iter().filter(|_| row.ladder) {
+        for &width in row.tiers.iter().filter(|_| row.ladder) {
             assert_grows(
                 &off,
                 previous.1,
-                frame,
-                row.reach(*width) - row.reach(previous.0),
+                at(width),
+                row.reach(width) - row.reach(previous.0),
             );
-            previous = (*width, frame);
+            previous = (width, at(width));
         }
     });
 }
@@ -831,8 +927,9 @@ fn distance_field_stroke_follows_its_fill_across_font_sizes() {
             )
         };
         let size = f64::from(size);
-        let fill = changes(&draw(size - 0.001, false), &draw(size, false)).1;
-        let (plain, stroked) = (draw(size, false), draw(size, true));
+        let plain = draw(size, false);
+        let fill = changes(&draw(size - 0.001, false), &plain).1;
+        let stroked = draw(size, true);
         let (changed, most) = changes(&draw(size - 0.001, true), &stroked);
         assert!(mass(&stroked) > mass(&plain), "the stroke adds no coverage");
         assert!(

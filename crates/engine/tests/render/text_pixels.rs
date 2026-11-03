@@ -935,25 +935,39 @@ fn retained_style() {
             row.from,
             row.to - row.from
         )));
+        let media = media();
         let mut renderer = gpu.renderer();
-        let composition = Composition::from(node(animated));
+        let composition = Composition::from(node(animated).frames(2));
         // One renderer and its compiled plan draw the frames in turn, going back to the first.
-        let drawn = [0.0, 1.0, 0.0].map(|at| render(&mut renderer, &composition, at, &media()));
-        for (frame, value) in [
-            (&drawn[0], row.from),
-            (&drawn[1], row.to),
-            (&drawn[2], row.from),
+        let mut compiled = Vec::new();
+        let drawn = [0.0, 1.0, 0.0].map(|at| {
+            let frame = render(&mut renderer, &composition, at, &media);
+            compiled.push(renderer.plan_compile_count());
+            frame
+        });
+        assert!(
+            compiled.iter().all(|&count| count == compiled[0]),
+            "later frames recompiled the plan: compile counts {compiled:?}"
+        );
+        let [from, to] = [row.from, row.to].map(|value| {
+            let literal = frame_of(gpu, node((row.with)(json!(value))), &media);
+            assert!(mass(&literal) > 0, "blank control for {value}");
+            literal
+        });
+        for (frame, literal, value) in [
+            (&drawn[0], &from, row.from),
+            (&drawn[1], &to, row.to),
+            (&drawn[2], &from, row.from),
         ] {
-            let literal = frame_of(gpu, node((row.with)(json!(value))), &media());
-            assert!(mass(&literal) > 0, "blank control");
-            assert_eq!(
-                frame.rgba, literal.rgba,
-                "frame {} against the literal {value}",
+            let (changed, most) = changes(frame, literal);
+            assert!(
+                changed == 0,
+                "frame {} differs from the literal {value} in {changed} pixels, by up to {most}",
                 frame.at
             );
         }
         assert!(
-            changes(&drawn[0], &drawn[1]).0 > 0,
+            changes(&from, &to).0 > 0,
             "{} makes no difference to the render",
             row.name
         );
