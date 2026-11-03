@@ -241,7 +241,7 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
         source::text_content::{
             TextHighlightDelegate, TextLineDelegate, TextSpanDelegate, TextStrokeDelegate,
         },
-        vector::paint::{GradientPaintDelegate, GradientStopDelegate},
+        vector::paint::{GradientPaintDelegate, GradientStopDelegate, MAX_GRADIENT_STOPS},
     };
 
     let mut defs = Map::new();
@@ -282,6 +282,7 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
                 json!({
                     "type": "array",
                     "minItems": 1,
+                    "maxItems": MAX_GRADIENT_STOPS,
                     "items": { "$ref": "#/$defs/gradientStop" }
                 }),
             ),

@@ -248,6 +248,15 @@ fn paint_shader_uniform_and_clip_props_schemas_match_engine_parsing() {
         (json!({ "stops": stops }), false),
         (json!({ "type": "linear" }), false),
         (gradient("stops", json!([])), false),
+        (
+            gradient("stops", json!(vec![json!([0, [0, 0, 0]]); 8])),
+            true,
+        ),
+        (
+            gradient("stops", json!(vec![json!([0, [0, 0, 0]]); 9])),
+            false,
+        ),
+        (gradient("colour", json!(1)), false),
         (gradient("type", json!("diamond")), false),
         (gradient("units", json!("user")), false),
         (gradient("spread", json!("mirror")), false),

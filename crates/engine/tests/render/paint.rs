@@ -14,6 +14,10 @@ fn ramp(width: u32, height: u32, mut paint: Value) -> crate::support::Scene {
         { "offset": 0, "color": [0, 0, 0, 255] },
         { "offset": 1, "color": [255, 255, 255, 255] },
     ]);
+    background(width, height, paint)
+}
+
+fn background(width: u32, height: u32, paint: Value) -> crate::support::Scene {
     scene(
         (width, height),
         json!([{ "id": 1, "type": "background", "params": {
@@ -103,4 +107,31 @@ fn conic_gradients_sweep_clockwise_from_the_left_and_ignore_the_spread() {
         .tolerance(2),
     );
     check(cases);
+}
+
+/// Seven black stops, then a white one at the end of a 16 × 1 linear gradient.
+fn black_then_white(black_stops: usize) -> Value {
+    let mut stops = vec![json!([1.0, [255, 255, 255]])];
+    stops.extend((0..black_stops).map(|index| json!([index as f64 / 7.0, [0, 0, 0]])));
+    json!({ "type": "linear_gradient", "stops": stops })
+}
+
+#[test]
+fn a_gradient_uses_all_eight_stops_and_refuses_a_ninth() {
+    check(vec![
+        Case::new(
+            "eight stops",
+            background(16, 1, black_then_white(7)),
+            Expect::Probes(vec![(0, 0, grey(0)), (15, 0, grey(199))]),
+        )
+        .tolerance(2),
+    ]);
+
+    let error = lumen_engine::json::parse_value(&background(16, 1, black_then_white(8)).0)
+        .expect_err("nine stops must not load");
+    let error = format!("{error:#}");
+    assert!(
+        error.contains("9 stops") && error.contains("at most 8"),
+        "{error}"
+    );
 }

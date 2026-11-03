@@ -509,7 +509,7 @@ impl CompiledText {
         // A span's own gradient spans its box under `TextPaintSpace::Span`, and other paints
         // the whole text.
         let text_paint = |paint: &Paint, span: Option<usize>| {
-            let mut gpu = paint.to_gpu([255, 255, 255, 255]);
+            let mut gpu = paint.to_gpu();
             gpu.paint_supersample = u32::from(evaluated.paint_supersample);
             let own_box = span
                 .filter(|_| {

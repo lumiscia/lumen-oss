@@ -378,10 +378,11 @@
           "x-lumen-kind": "vec2"
         },
         "stops": {
-          "description": "Colors along the gradient. Required, with at least one stop.",
+          "description": "Colors along the gradient. Required, with one to eight stops.",
           "items": {
             "$ref": "#/$defs/gradientStop"
           },
+          "maxItems": 8,
           "minItems": 1,
           "title": "Stops",
           "type": "array"
