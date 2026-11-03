@@ -82,7 +82,7 @@ impl Default for ClipParams {
 }
 
 /// Plays a composition template, or its source, over a window of time.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "clip", name = "Clip", category = "compositing")]
 pub struct Clip {
     pub id: NodeId,
@@ -91,16 +91,6 @@ pub struct Clip {
     /// The branch to play when no `composition` is set.
     #[input(optional)]
     pub source: PortRef,
-}
-
-impl Default for Clip {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ClipParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 /// When a clip shows and at which of its content's frames.

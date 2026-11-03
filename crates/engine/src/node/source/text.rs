@@ -307,21 +307,12 @@ impl Default for TextParams {
 }
 
 /// Produces a text source.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "text", name = "Text", category = "source")]
 pub struct Text {
     pub id: NodeId,
     #[params]
     pub params: TextParamsDelegate,
-}
-
-impl Default for Text {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: TextParamsDelegate::default(),
-        }
-    }
 }
 
 impl GpuCompileNode for Text {

@@ -77,7 +77,7 @@ impl Default for TransformParams {
 }
 
 /// Transforms a raster into the composition canvas bounds.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "transform", name = "Transform", category = "processing")]
 pub struct Transform {
     pub id: NodeId,
@@ -86,16 +86,6 @@ pub struct Transform {
 
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for Transform {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: TransformParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 impl Transform {

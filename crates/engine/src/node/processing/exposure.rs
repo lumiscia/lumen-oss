@@ -34,7 +34,7 @@ impl Default for ExposureParams {
 }
 
 /// Adjusts raster exposure, contrast, and offset.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "exposure", name = "Exposure", category = "processing")]
 pub struct Exposure {
     pub id: NodeId,
@@ -42,16 +42,6 @@ pub struct Exposure {
     pub params: ExposureParamsDelegate,
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for Exposure {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: ExposureParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

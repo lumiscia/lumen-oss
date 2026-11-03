@@ -82,21 +82,12 @@ impl Default for MediaInParams {
 }
 
 /// Binds an external image or video frame as a GPU texture.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "media_in", name = "Media In", category = "source")]
 pub struct MediaIn {
     pub id: NodeId,
     #[params]
     pub params: MediaInParamsDelegate,
-}
-
-impl Default for MediaIn {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: MediaInParamsDelegate::default(),
-        }
-    }
 }
 
 pub fn resolve_for_context(

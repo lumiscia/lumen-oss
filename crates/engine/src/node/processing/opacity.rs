@@ -22,7 +22,7 @@ impl Default for OpacityParams {
 }
 
 /// Uniformly adjusts raster opacity.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "opacity", name = "Opacity", category = "processing")]
 pub struct Opacity {
     pub id: NodeId,
@@ -30,16 +30,6 @@ pub struct Opacity {
     pub params: OpacityParamsDelegate,
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for Opacity {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: OpacityParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

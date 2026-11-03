@@ -51,7 +51,7 @@ impl Default for BooleanParams {
 }
 
 /// Combines two raster alpha masks with boolean operations.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "boolean", name = "Boolean", category = "compositing")]
 pub struct Boolean {
     pub id: NodeId,
@@ -62,17 +62,6 @@ pub struct Boolean {
     pub a: PortRef,
     #[input()]
     pub b: PortRef,
-}
-
-impl Default for Boolean {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: BooleanParamsDelegate::default(),
-            a: PortRef::empty(),
-            b: PortRef::empty(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -20,7 +20,7 @@ pub struct TimeRemapParams {
 }
 
 /// Evaluates a raster input at another frame.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "time_remap", name = "Time Remap", category = "processing")]
 pub struct TimeRemap {
     pub id: NodeId,
@@ -37,16 +37,6 @@ pub struct TimeRemapSettings {
     pub loop_enabled: bool,
     pub loop_start: i64,
     pub loop_end: i64,
-}
-
-impl Default for TimeRemap {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: TimeRemapParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 const MAX_FRAME: f64 = 9_007_199_254_740_992.0;

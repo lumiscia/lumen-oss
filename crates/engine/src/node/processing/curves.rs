@@ -31,7 +31,7 @@ impl Default for CurvesParams {
 }
 
 /// Applies a 1D RGB curve table to a raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "curves", name = "Curves", category = "processing")]
 pub struct Curves {
     pub id: NodeId,
@@ -40,16 +40,6 @@ pub struct Curves {
 
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for Curves {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: CurvesParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 impl GpuCompileNode for Curves {

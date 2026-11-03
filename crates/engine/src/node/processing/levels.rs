@@ -43,7 +43,7 @@ impl Default for LevelsParams {
 }
 
 /// Remaps raster black, white, gamma, and output range.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "levels", name = "Levels", category = "processing")]
 pub struct Levels {
     pub id: NodeId,
@@ -52,16 +52,6 @@ pub struct Levels {
 
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for Levels {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: LevelsParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

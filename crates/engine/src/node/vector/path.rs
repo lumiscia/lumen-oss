@@ -103,21 +103,12 @@ impl Default for PathParams {
 }
 
 /// Produces a rasterized vector path source.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "path", name = "Path", category = "vector")]
 pub struct Path {
     pub id: NodeId,
     #[params]
     pub params: PathParamsDelegate,
-}
-
-impl Default for Path {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: PathParamsDelegate::default(),
-        }
-    }
 }
 
 impl GpuCompileNode for Path {

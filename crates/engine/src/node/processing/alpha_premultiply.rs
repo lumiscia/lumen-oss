@@ -27,7 +27,7 @@ impl Default for AlphaPremultiplyParams {
 }
 
 /// Converts raster alpha between premultiplied and unpremultiplied representations.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "alpha_premultiply",
     name = "Alpha Premultiply",
@@ -40,16 +40,6 @@ pub struct AlphaPremultiply {
 
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for AlphaPremultiply {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: AlphaPremultiplyParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

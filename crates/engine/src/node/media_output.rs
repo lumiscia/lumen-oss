@@ -5,21 +5,12 @@ use crate::gpu::{CompiledOutput, GpuCompileNode, RasterHandle};
 const SHADER: &str = include_str!("media_output.wgsl");
 
 /// Copies the compiled raster into the final composition output.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "media_output", name = "Media Output", category = "output")]
 pub struct MediaOutput {
     pub id: NodeId,
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for MediaOutput {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 impl GpuCompileNode for MediaOutput {

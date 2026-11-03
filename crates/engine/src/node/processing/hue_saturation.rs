@@ -35,7 +35,7 @@ impl Default for HueSaturationParams {
 }
 
 /// Adjusts raster hue, saturation, and lightness.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "hue_saturation",
     name = "Hue Saturation",
@@ -48,16 +48,6 @@ pub struct HueSaturation {
 
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for HueSaturation {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: HueSaturationParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -21,7 +21,7 @@ pub enum PortKind {
     Vector = 1,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, lumen_macros::StructuralHash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, lumen_macros::StructuralHash)]
 pub struct PortRef {
     pub id: NodeId,
     pub port: String,
@@ -30,13 +30,6 @@ pub struct PortRef {
 impl PortRef {
     pub fn new(id: NodeId, port: String) -> Self {
         Self { id, port }
-    }
-
-    pub fn empty() -> Self {
-        Self {
-            id: NodeId::new(0),
-            port: String::new(),
-        }
     }
 
     /// Node ids start at 0, so only the port name marks an unconnected input.
@@ -56,7 +49,7 @@ mod tests {
 
     #[test]
     fn port_from_node_zero_is_connected() {
-        assert!(PortRef::empty().is_empty());
+        assert!(PortRef::default().is_empty());
         assert!(!PortRef::new(NodeId::new(0), "output".to_string()).is_empty());
     }
 }

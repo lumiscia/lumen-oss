@@ -21,7 +21,7 @@ impl Default for BlurParams {
 }
 
 /// Applies a separable Gaussian blur to a raster.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "blur", name = "Blur", category = "processing")]
 pub struct Blur {
     pub id: NodeId,
@@ -29,16 +29,6 @@ pub struct Blur {
     pub params: BlurParamsDelegate,
     #[input()]
     pub source: PortRef,
-}
-
-impl Default for Blur {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: BlurParamsDelegate::default(),
-            source: PortRef::empty(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

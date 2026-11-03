@@ -92,7 +92,7 @@ pub struct WgslShaderParams {
 }
 
 /// Runs a custom WGSL compute shader over one or more rasters.
-#[derive(Debug, Clone, lumen_macros::Node)]
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "wgsl_shader", name = "WGSL Shader", category = "processing")]
 pub struct WgslShader {
     pub id: NodeId,
@@ -101,16 +101,6 @@ pub struct WgslShader {
     /// Bound as `input0..inputN` in connection order.
     #[input(name = "source", variadic)]
     pub sources: Vec<PortRef>,
-}
-
-impl Default for WgslShader {
-    fn default() -> Self {
-        Self {
-            id: NodeId::new(0),
-            params: WgslShaderParamsDelegate::default(),
-            sources: Vec::new(),
-        }
-    }
 }
 
 #[repr(C)]
