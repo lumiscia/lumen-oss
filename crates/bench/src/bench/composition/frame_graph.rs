@@ -106,6 +106,17 @@ fn parse_args() -> anyhow::Result<Args> {
 
 pub fn run() -> anyhow::Result<()> {
     let args = parse_args()?;
+    if let Ok(dir) = std::env::var("LUMEN_BENCH_DUMP_JSON") {
+        for (name, value) in [
+            ("dynamic_text", dynamic_text()),
+            ("dynamic_path", dynamic_path()),
+            ("motion_blur", motion_blur()),
+            ("shader_switch", shader_switch()),
+        ] {
+            std::fs::write(format!("{dir}/{name}.json"), value.to_string())?;
+        }
+        return Ok(());
+    }
     let (composition, media) = load(&args)?;
     let result = pollster::block_on(async {
         match args.compare {

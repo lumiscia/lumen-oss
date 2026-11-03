@@ -130,6 +130,8 @@ fn font_database(registrations: &[Registration]) -> fontdb::Database {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoFontFaces;
 
+const MAX_GLYPH_EXTENTS: usize = 1 << 14;
+
 #[derive(Debug)]
 pub struct TextSystem {
     font_system: FontSystem,
@@ -142,6 +144,8 @@ pub struct TextSystem {
     fits: Vec<(TextLayoutRequest, f32, Wrap)>,
     /// Recent measurements keyed without origin and color, newest last.
     measurements: Vec<(TextLayoutRequest, TextMeasurement)>,
+    /// The extent of each glyph measured under these fonts.
+    glyph_extents: HashMap<CacheKey, Option<[f32; 4]>>,
 }
 
 impl TextSystem {
@@ -155,6 +159,7 @@ impl TextSystem {
             registrations: Vec::new(),
             fits: Vec::new(),
             measurements: Vec::new(),
+            glyph_extents: HashMap::new(),
         }
     }
 
@@ -250,6 +255,7 @@ impl TextSystem {
     fn rebuild_fonts(&mut self) {
         self.font_system = new_font_system(font_database(&self.registrations));
         self.font_generation = next_font_generation();
+        self.glyph_extents.clear();
         self.fits.clear();
         self.measurements.clear();
     }
@@ -953,7 +959,6 @@ impl TextSystem {
     /// render mode. This is the union of its glyph outlines grown by a margin for antialiasing,
     /// subpixel snapping and distance field padding. `None` when a glyph's extent is unknown.
     pub fn ink_bounds(&mut self, shaped: &ShapedText) -> Option<[f32; 4]> {
-        let mut outlines: HashMap<CacheKey, Option<[f32; 4]>> = HashMap::new();
         let mut ink: Option<[f32; 4]> = None;
         for shaped_glyph in &shaped.glyphs {
             let glyph = &shaped_glyph.glyph;
@@ -969,11 +974,14 @@ impl TextSystem {
                 glyph.font_weight,
                 glyph.cache_key_flags,
             );
-            let outline = match outlines.get(&key) {
+            let outline = match self.glyph_extents.get(&key) {
                 Some(outline) => *outline,
                 None => {
                     let outline = self.glyph_extent(key)?;
-                    outlines.insert(key, outline);
+                    if self.glyph_extents.len() == MAX_GLYPH_EXTENTS {
+                        self.glyph_extents.clear();
+                    }
+                    self.glyph_extents.insert(key, outline);
                     outline
                 }
             };
