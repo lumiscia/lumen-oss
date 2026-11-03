@@ -335,7 +335,7 @@ impl CompositionBuilder {
                 }
             ));
         };
-        if !clip.source.is_empty() {
+        if clip.source.is_some() {
             return Err(
                 "a clip plays either a `composition` or its `source` input, not both".to_string(),
             );

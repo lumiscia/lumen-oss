@@ -32,7 +32,8 @@ pub use delegate::{
 pub use ids::NodeId;
 pub use kind::NodeKind;
 pub use param_type::NodeParamType;
-pub use ports::{InputPortDef, OutputPortDef, PortKind, PortRef, SINGLE_RASTER_OUTPUT};
+pub use ports::InputPortDef;
+pub(crate) use ports::required_input;
 pub use property::{PropertyExpression, PropertyValue};
 pub use schema::JsonNode;
 pub use schema::{EnumDef, EnumOptionDef, NodeEnum};
@@ -44,10 +45,9 @@ pub use shader_uniforms::{ShaderUniformValue, ShaderUniforms};
 pub trait Node: Send + Sync {
     fn id(&self) -> NodeId;
     fn input_port_defs(&self) -> &'static [InputPortDef];
-    fn input_ports(&self) -> Vec<PortRef>;
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        SINGLE_RASTER_OUTPUT
-    }
+    /// The node wired to each input, in the order of `input_port_defs`, with a variadic input
+    /// expanded in place. `None` is an unconnected input.
+    fn input_ports(&self) -> Vec<Option<NodeId>>;
 }
 
 pub trait PropertyEval {

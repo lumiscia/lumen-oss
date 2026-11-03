@@ -10,7 +10,7 @@ use crate::gpu::{
     compiler,
 };
 use crate::node::motion::Shutter;
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 const SHAPE_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -131,15 +131,7 @@ pub struct Shape {
 }
 
 impl GpuCompileNode for Shape {
-    fn compile_gpu(
-        &self,
-        ctx: &mut CompileContext<'_>,
-        port: &PortRef,
-    ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
+    fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<CompiledOutput> {
         // Enum params are always constants, so the pipeline can be chosen here.
         Ok(match self.params.geometry_kind {
             ShapeGeometryKindDelegate::Polygon => compile_polygon_shape(ctx, self),

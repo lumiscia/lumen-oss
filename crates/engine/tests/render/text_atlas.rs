@@ -11,7 +11,7 @@ use lumen_engine::{
     expr::{Expression, ExpressionContext},
     gpu::{BoundFrame, CompileContext, CompiledOutput, FrameBindContext, GpuCompositionRenderer},
     media::{FontResolver, MediaStore, TextSession},
-    node::{NodeId, PortRef},
+    node::NodeId,
 };
 use lumen_gpu::{Upload, wgpu};
 use serde_json::{Value, json};
@@ -357,7 +357,7 @@ fn a_bound_frame_is_not_uploaded_once_a_later_one_is_bound() {
 }
 
 fn text_domain_is_bounded(renderer: &GpuCompositionRenderer) -> bool {
-    let text = PortRef::new(NodeId::new(1), "output".to_string());
+    let text = NodeId::new(1);
     match &renderer.compiled().expect("a frame rendered").node_outputs[&text] {
         CompiledOutput::Raster(raster) => !raster.domain.is_full_frame(),
         CompiledOutput::Empty => panic!("the text is empty"),

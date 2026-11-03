@@ -240,7 +240,7 @@ fn run_case(
         NodeId::new(2),
         NodeKind::MediaOutput(MediaOutput {
             id: NodeId::new(2),
-            source: lumen_engine::node::PortRef::new(NodeId::new(1), "output".to_string()),
+            source: Some(NodeId::new(1)),
         }),
     );
     let composition = CompositionBuilder::new(

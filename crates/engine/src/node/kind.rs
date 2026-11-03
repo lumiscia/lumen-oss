@@ -1,8 +1,8 @@
 #[cfg(feature = "metadata")]
 use super::schema::NodeSchema;
 use super::{
-    DelegateEvaluable, Node, OutputPortDef, PortRef, PropertyEval, PropertyExpression, compositing,
-    ids::NodeId, media_output, ports::SINGLE_RASTER_OUTPUT, processing, source, vector,
+    DelegateEvaluable, Node, PropertyEval, PropertyExpression, compositing, ids::NodeId,
+    media_output, processing, source, vector,
 };
 
 #[derive(Debug, lumen_macros::StructuralHash)]
@@ -70,7 +70,7 @@ impl NodeKind {
         }
     }
 
-    pub fn input_ports(&self) -> Vec<PortRef> {
+    pub fn input_ports(&self) -> Vec<Option<NodeId>> {
         match self {
             Self::MediaIn(node) => node.input_ports(),
             Self::Background(node) => node.input_ports(),
@@ -206,12 +206,8 @@ impl Node for NodeKind {
         }
     }
 
-    fn input_ports(&self) -> Vec<PortRef> {
+    fn input_ports(&self) -> Vec<Option<NodeId>> {
         self.input_ports()
-    }
-
-    fn output_port_defs(&self) -> &'static [OutputPortDef] {
-        SINGLE_RASTER_OUTPUT
     }
 }
 

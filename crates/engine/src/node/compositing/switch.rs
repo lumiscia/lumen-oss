@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 
@@ -19,7 +19,7 @@ pub struct Switch {
     pub params: SwitchParamsDelegate,
 
     #[input(optional, variadic)]
-    pub layers: Vec<PortRef>,
+    pub layers: Vec<NodeId>,
 }
 
 pub fn selected_layer_for_frame(
@@ -37,12 +37,7 @@ impl GpuCompileNode for Switch {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
         let selected_layer = selected_layer_for_frame(self, &ctx.expr_context())?;
         ctx.register_compiled_node(CompiledSwitch {
             node_id: self.id,
@@ -55,10 +50,7 @@ impl GpuCompileNode for Switch {
         let Some(layer) = self.layers.get(index) else {
             return Ok(ctx.compile_transparent(self.id));
         };
-        if layer.is_empty() {
-            return Ok(ctx.compile_transparent(self.id));
-        }
-        ctx.compile_bounded_port(layer)
+        ctx.compile_bounded_port(*layer)
     }
 }
 

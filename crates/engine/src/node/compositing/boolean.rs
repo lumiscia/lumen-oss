@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -59,9 +59,9 @@ pub struct Boolean {
     pub params: BooleanParamsDelegate,
 
     #[input()]
-    pub a: PortRef,
+    pub a: Option<NodeId>,
     #[input()]
-    pub b: PortRef,
+    pub b: Option<NodeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,18 +99,9 @@ impl GpuCompileNode for Boolean {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
-        let a = ctx
-            .compile_port(&self.a)?
-            .into_raster(self.a.id, &self.a.port)?;
-        let b = ctx
-            .compile_port(&self.b)?
-            .into_raster(self.b.id, &self.b.port)?;
+        let a = ctx.compile_input(self.id, "a", self.a)?;
+        let b = ctx.compile_input(self.id, "b", self.b)?;
         let size = a.domain.storage_size;
         let texture = ctx.builder_mut().texture(
             Some(format!("boolean:{}:output", self.id.0)),

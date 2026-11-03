@@ -19,7 +19,7 @@ use crate::{
     error::LumenError,
     expr::ExpressionContext,
     gpu::{CompiledOutput, GpuCompileNode},
-    node::{ClipPropValue, ClipProps, Deferred, DelegateEvalContext, NodeId, NodeParams, PortRef},
+    node::{ClipPropValue, ClipProps, Deferred, DelegateEvalContext, NodeId, NodeParams},
     scope::{FrameTime, PropValues, Routed, Scope},
 };
 
@@ -90,7 +90,7 @@ pub struct Clip {
     pub params: ClipParamsDelegate,
     /// The branch to play when no `composition` is set.
     #[input(optional)]
-    pub source: PortRef,
+    pub source: Option<NodeId>,
 }
 
 /// When a clip shows and at which of its content's frames.
@@ -251,8 +251,8 @@ impl Clip {
             return Ok(None);
         };
         let Some(template) = self.template(scope)? else {
-            return Ok(Some(Routed {
-                port: self.source.clone(),
+            return Ok(self.source.map(|source| Routed {
+                node: source,
                 frame: local,
                 scope: scope.clone(),
                 instance: Some(self.id),
@@ -263,8 +263,8 @@ impl Clip {
         let Some(crate::node::NodeKind::MediaOutput(output)) = child.node(output) else {
             unreachable!("media_output returns a media output node");
         };
-        Ok(Some(Routed {
-            port: output.source.clone(),
+        Ok(output.source.map(|source| Routed {
+            node: source,
             frame: local,
             scope: child,
             instance: Some(self.id),
@@ -309,11 +309,7 @@ impl GpuCompileNode for Clip {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
         ctx.compile_clip(self)
     }
 }

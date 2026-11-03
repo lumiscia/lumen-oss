@@ -1,4 +1,4 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 
@@ -28,7 +28,7 @@ pub struct TimeRemap {
     pub params: TimeRemapParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
+    pub source: Option<NodeId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -82,11 +82,7 @@ impl GpuCompileNode for TimeRemap {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
         ctx.register_compiled_node(CompiledTimeRemap {
             node_id: self.id,
             params: self.params.clone(),

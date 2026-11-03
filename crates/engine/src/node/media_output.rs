@@ -1,4 +1,4 @@
-use crate::node::{NodeId, PortRef};
+use crate::node::NodeId;
 
 use crate::gpu::{CompiledOutput, GpuCompileNode, RasterHandle};
 
@@ -10,22 +10,15 @@ const SHADER: &str = include_str!("media_output.wgsl");
 pub struct MediaOutput {
     pub id: NodeId,
     #[input()]
-    pub source: PortRef,
+    pub source: Option<NodeId>,
 }
 
 impl GpuCompileNode for MediaOutput {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
-
-        let source = ctx
-            .compile_port(&self.source)?
-            .into_raster(self.source.id, &self.source.port)?;
+        let source = ctx.compile_input(self.id, "source", self.source)?;
         let size = lumen_gpu::Size::new(
             ctx.composition().render_settings().width.max(1),
             ctx.composition().render_settings().height.max(1),

@@ -13,7 +13,7 @@ use crate::{
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{
-        Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, PortRef,
+        Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
         source::text_content::TextContentDelegate,
     },
     scope::{FrameTime, Routed, Scope},
@@ -1296,7 +1296,7 @@ impl GpuCompositionRenderer {
         media: Option<&dyn MediaStore>,
     ) -> crate::Result<CompiledPlanKey> {
         let root = Scope::root(composition);
-        let output = PortRef::new(root.media_output()?, "output".to_string());
+        let output = root.media_output()?;
         let mut collector = PlanKeyCollector {
             media,
             time_remaps: TimeRemapPath::new(),
@@ -1304,7 +1304,7 @@ impl GpuCompositionRenderer {
             entries: Vec::new(),
             has_text: false,
         };
-        collector.collect(&root, &output, frame.into())?;
+        collector.collect(&root, output, frame.into())?;
         let mut entries = collector.entries;
         entries.sort();
         entries.dedup();
@@ -1341,18 +1341,15 @@ impl<'a> PlanKeyCollector<'a> {
     fn collect(
         &mut self,
         scope: &Scope<'_>,
-        port: &PortRef,
+        node_id: NodeId,
         frame: FrameTime,
     ) -> crate::Result<()> {
-        if port.is_empty() {
-            return Ok(());
-        }
-        if !self.visited.insert((port.id, self.time_remaps.clone())) {
+        if !self.visited.insert((node_id, self.time_remaps.clone())) {
             return Ok(());
         }
         let node = scope
-            .node(port.id)
-            .ok_or(RenderError::MissingNode { node_id: port.id })?;
+            .node(node_id)
+            .ok_or(RenderError::MissingNode { node_id })?;
         self.collect_node(scope, node, frame)
     }
 
@@ -1373,8 +1370,7 @@ impl<'a> PlanKeyCollector<'a> {
                 self.push_entry(switch.id, PlanChoice::SwitchSelection(selection));
             }
             NodeKind::Clip(clip) => {
-                let shown = routes.first().is_some_and(|routed| !routed.port.is_empty());
-                self.push_entry(clip.id, PlanChoice::ClipShown(shown));
+                self.push_entry(clip.id, PlanChoice::ClipShown(!routes.is_empty()));
             }
             NodeKind::Text(text) => {
                 let spans = match &text.params.content {
@@ -1423,14 +1419,14 @@ impl<'a> PlanKeyCollector<'a> {
             _ => {}
         }
         for Routed {
-            port,
+            node,
             frame,
             scope,
             instance,
         } in routes
         {
             self.time_remaps.extend(instance);
-            let result = self.collect(&scope, &port, frame);
+            let result = self.collect(&scope, node, frame);
             if instance.is_some() {
                 self.time_remaps.pop();
             }

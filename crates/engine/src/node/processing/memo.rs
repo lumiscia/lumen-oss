@@ -1,5 +1,5 @@
 use crate::error::RenderError;
-use crate::node::{Deferred, NodeId, NodeParams, PortRef};
+use crate::node::{Deferred, NodeId, NodeParams, required_input};
 
 use crate::gpu::{CompiledOutput, GpuCompileNode, RasterHandle, compiler};
 
@@ -26,24 +26,21 @@ pub struct Memo {
     pub params: MemoParamsDelegate,
 
     #[input()]
-    pub source: PortRef,
+    pub source: Option<NodeId>,
 }
 
 impl GpuCompileNode for Memo {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
         if !matches!(self.params.key, Deferred::Expr(_)) {
-            return ctx.compile_bounded_port(&self.source);
+            return ctx.compile_bounded_port(required_input(self.id, "source", self.source)?);
         }
         // Plans may size a bounded source differently, so the snapshot is taken at full frame
         // for every plan bound with its key to share it.
-        let output = ctx.compile_port(&self.source)?;
+        let source_id = required_input(self.id, "source", self.source)?;
+        let output = ctx.compile_port(source_id)?;
         let CompiledOutput::Raster(source) = output else {
             return Ok(output);
         };
@@ -53,7 +50,7 @@ impl GpuCompileNode for Memo {
             .map(|desc| desc.format);
         if format != Some(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm) {
             return Err(RenderError::InvalidNodeOutputType {
-                node_id: self.source.id,
+                node_id: source_id,
                 expected: "an RGBA8 raster for memo to keep",
                 actual: "a raster of another format",
             }

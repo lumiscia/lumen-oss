@@ -52,7 +52,6 @@ impl CompositionFixture for ManyElements {
             graph
                 .connect(Connection {
                     from_node: from,
-                    from_port: "output".to_string(),
                     to_node: to,
                     to_port: port.to_string(),
                 })

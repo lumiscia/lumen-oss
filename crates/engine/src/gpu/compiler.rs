@@ -10,8 +10,8 @@ use crate::{
     },
     media::MediaStore,
     node::{
-        ClipPropValue, NodeId, NodeKind, NodeParams, PortRef, PropertyExpression,
-        compositing::clip::Clip,
+        ClipPropValue, NodeId, NodeKind, NodeParams, PropertyExpression, compositing::clip::Clip,
+        required_input,
     },
     scope::{FrameTime, PropValues, Routed, Scope},
 };
@@ -19,11 +19,7 @@ use crate::{
 pub(crate) use super::params::*;
 
 pub trait GpuCompileNode {
-    fn compile_gpu(
-        &self,
-        ctx: &mut CompileContext<'_>,
-        port: &PortRef,
-    ) -> crate::Result<CompiledOutput>;
+    fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<CompiledOutput>;
 }
 
 /// Longest timeline that animated sources are bounded over, which costs an evaluation of
@@ -164,7 +160,7 @@ pub(crate) struct PlanFrame {
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct CompiledPortKey {
-    port: PortRef,
+    node: NodeId,
     time_remaps: TimeRemapPath,
 }
 
@@ -178,7 +174,7 @@ pub struct CompileContext<'a> {
     media: Option<&'a dyn MediaStore>,
     builder: lumen_gpu::RenderPlanBuilder,
     outputs: HashMap<CompiledPortKey, CompiledOutput>,
-    public_outputs: HashMap<PortRef, CompiledOutput>,
+    public_outputs: HashMap<NodeId, CompiledOutput>,
     compiled_nodes: HashMap<NodeId, HashMap<TimeRemapPath, Box<dyn GpuCompiledNode>>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
     text_atlas_texture: Option<lumen_gpu::TextureId>,
@@ -290,10 +286,7 @@ impl<'a> CompileContext<'a> {
     /// Compiles a plan whose text atlas must be injected with `CompiledComposition::prepare_text_atlas`.
     pub fn compile(mut self) -> crate::Result<CompiledComposition> {
         let output_node = self.scope.media_output()?;
-        let output_ref = PortRef::new(output_node, "output".to_string());
-        let output = self
-            .compile_port(&output_ref)?
-            .into_raster(output_node, "output")?;
+        let output = self.compile_port(output_node)?.into_raster(output_node)?;
         let plan = self.builder.build();
         let cache = self.cache.finish(
             self.composition,
@@ -368,70 +361,95 @@ impl<'a> CompileContext<'a> {
             .insert(self.time_remaps.clone(), Box::new(node));
     }
 
-    /// Compiles `port` to a raster that fills its display, for consumers that read their
+    /// Compiles `node_id` to a raster that fills its display, for consumers that read their
     /// inputs texel for texel.
-    pub(crate) fn compile_port(&mut self, port: &PortRef) -> crate::Result<CompiledOutput> {
-        Ok(match self.compile_bounded_port(port)? {
+    pub(crate) fn compile_port(&mut self, node_id: NodeId) -> crate::Result<CompiledOutput> {
+        Ok(match self.compile_bounded_port(node_id)? {
             CompiledOutput::Raster(raster) => CompiledOutput::Raster(self.full_frame(raster)),
             CompiledOutput::Empty => CompiledOutput::Empty,
         })
     }
 
-    /// Compiles `port` as is, for consumers that read a raster's texels through its domain.
-    pub(crate) fn compile_bounded_port(&mut self, port: &PortRef) -> crate::Result<CompiledOutput> {
+    /// Compiles the required input `port` of `node_id` to a raster that fills its display.
+    pub(crate) fn compile_input(
+        &mut self,
+        node_id: NodeId,
+        port: &str,
+        input: Option<NodeId>,
+    ) -> crate::Result<RasterHandle> {
+        let source = required_input(node_id, port, input)?;
+        self.compile_port(source)?.into_raster(source)
+    }
+
+    /// Compiles the required input `port` of `node_id` as is.
+    pub(crate) fn compile_bounded_input(
+        &mut self,
+        node_id: NodeId,
+        port: &str,
+        input: Option<NodeId>,
+    ) -> crate::Result<RasterHandle> {
+        let source = required_input(node_id, port, input)?;
+        self.compile_bounded_port(source)?.into_raster(source)
+    }
+
+    /// Compiles `node_id` as is, for consumers that read a raster's texels through its domain.
+    pub(crate) fn compile_bounded_port(
+        &mut self,
+        node_id: NodeId,
+    ) -> crate::Result<CompiledOutput> {
         let key = CompiledPortKey {
-            port: port.clone(),
+            node: node_id,
             time_remaps: self.time_remaps.clone(),
         };
-        self.cache.enter(&self.builder, port.id, &self.time_remaps);
+        self.cache.enter(&self.builder, node_id, &self.time_remaps);
         let output = match self.outputs.get(&key) {
             Some(output) => Ok(output.clone()),
-            None => self.compile_node(port),
+            None => self.compile_node(node_id),
         };
         self.cache.pop(&self.builder);
         let output = output?;
         self.outputs.insert(key, output.clone());
         if std::ptr::eq(self.scope.graph, self.composition.graph()) {
             self.public_outputs
-                .entry(port.clone())
+                .entry(node_id)
                 .or_insert_with(|| output.clone());
         }
         Ok(output)
     }
 
-    fn compile_node(&mut self, port: &PortRef) -> crate::Result<CompiledOutput> {
+    fn compile_node(&mut self, node_id: NodeId) -> crate::Result<CompiledOutput> {
         let node = self
             .scope
-            .node(port.id)
-            .ok_or(RenderError::MissingNode { node_id: port.id })?;
+            .node(node_id)
+            .ok_or(RenderError::MissingNode { node_id })?;
         Ok(match node {
-            NodeKind::MediaIn(node) => node.compile_gpu(self, port)?,
-            NodeKind::Background(node) => node.compile_gpu(self, port)?,
-            NodeKind::Text(node) => node.compile_gpu(self, port)?,
-            NodeKind::Path(node) => node.compile_gpu(self, port)?,
-            NodeKind::Shape(node) => node.compile_gpu(self, port)?,
-            NodeKind::Boolean(node) => node.compile_gpu(self, port)?,
-            NodeKind::Merge(node) => node.compile_gpu(self, port)?,
-            NodeKind::RasterMultiMerge(node) => node.compile_gpu(self, port)?,
-            NodeKind::AlphaPremultiply(node) => node.compile_gpu(self, port)?,
-            NodeKind::Blur(node) => node.compile_gpu(self, port)?,
-            NodeKind::ChannelShuffle(node) => node.compile_gpu(self, port)?,
-            NodeKind::ColorGrade(node) => node.compile_gpu(self, port)?,
-            NodeKind::Curves(node) => node.compile_gpu(self, port)?,
-            NodeKind::Exposure(node) => node.compile_gpu(self, port)?,
-            NodeKind::HueSaturation(node) => node.compile_gpu(self, port)?,
-            NodeKind::Levels(node) => node.compile_gpu(self, port)?,
-            NodeKind::Memo(node) => node.compile_gpu(self, port)?,
-            NodeKind::Opacity(node) => node.compile_gpu(self, port)?,
-            NodeKind::TimeRemap(node) => node.compile_gpu(self, port)?,
-            NodeKind::Transform(node) => node.compile_gpu(self, port)?,
-            NodeKind::Crop(node) => node.compile_gpu(self, port)?,
-            NodeKind::Resize(node) => node.compile_gpu(self, port)?,
-            NodeKind::Shadow(node) => node.compile_gpu(self, port)?,
-            NodeKind::WgslShader(node) => node.compile_gpu(self, port)?,
-            NodeKind::Switch(node) => node.compile_gpu(self, port)?,
-            NodeKind::Clip(node) => node.compile_gpu(self, port)?,
-            NodeKind::MediaOutput(node) => node.compile_gpu(self, port)?,
+            NodeKind::MediaIn(node) => node.compile_gpu(self)?,
+            NodeKind::Background(node) => node.compile_gpu(self)?,
+            NodeKind::Text(node) => node.compile_gpu(self)?,
+            NodeKind::Path(node) => node.compile_gpu(self)?,
+            NodeKind::Shape(node) => node.compile_gpu(self)?,
+            NodeKind::Boolean(node) => node.compile_gpu(self)?,
+            NodeKind::Merge(node) => node.compile_gpu(self)?,
+            NodeKind::RasterMultiMerge(node) => node.compile_gpu(self)?,
+            NodeKind::AlphaPremultiply(node) => node.compile_gpu(self)?,
+            NodeKind::Blur(node) => node.compile_gpu(self)?,
+            NodeKind::ChannelShuffle(node) => node.compile_gpu(self)?,
+            NodeKind::ColorGrade(node) => node.compile_gpu(self)?,
+            NodeKind::Curves(node) => node.compile_gpu(self)?,
+            NodeKind::Exposure(node) => node.compile_gpu(self)?,
+            NodeKind::HueSaturation(node) => node.compile_gpu(self)?,
+            NodeKind::Levels(node) => node.compile_gpu(self)?,
+            NodeKind::Memo(node) => node.compile_gpu(self)?,
+            NodeKind::Opacity(node) => node.compile_gpu(self)?,
+            NodeKind::TimeRemap(node) => node.compile_gpu(self)?,
+            NodeKind::Transform(node) => node.compile_gpu(self)?,
+            NodeKind::Crop(node) => node.compile_gpu(self)?,
+            NodeKind::Resize(node) => node.compile_gpu(self)?,
+            NodeKind::Shadow(node) => node.compile_gpu(self)?,
+            NodeKind::WgslShader(node) => node.compile_gpu(self)?,
+            NodeKind::Switch(node) => node.compile_gpu(self)?,
+            NodeKind::Clip(node) => node.compile_gpu(self)?,
+            NodeKind::MediaOutput(node) => node.compile_gpu(self)?,
         })
     }
 
@@ -446,7 +464,7 @@ impl<'a> CompileContext<'a> {
         let scope = std::mem::replace(&mut self.scope, routed.scope);
         let outer_frames = std::mem::replace(&mut self.bound_frames, bound_frames);
         self.time_remaps.extend(routed.instance);
-        let result = self.compile_bounded_port(&routed.port);
+        let result = self.compile_bounded_port(routed.node);
         if routed.instance.is_some() {
             self.time_remaps.pop();
         }
@@ -470,7 +488,7 @@ impl<'a> CompileContext<'a> {
     /// this composition's, or a transparent raster while it is hidden.
     pub(crate) fn compile_clip(&mut self, clip: &Clip) -> crate::Result<CompiledOutput> {
         let routed = clip.route(&self.scope, self.frame, self.media)?;
-        let Some(routed) = routed.filter(|routed| !routed.port.is_empty()) else {
+        let Some(routed) = routed else {
             return Ok(self.compile_transparent(clip.id));
         };
         let settings = routed.scope.render_settings;
@@ -478,7 +496,7 @@ impl<'a> CompileContext<'a> {
         let bound_frames = self.clip_bound_frames(clip);
         let raster = self
             .compile_routed(routed, bound_frames)?
-            .into_raster(clip.id, "output")?;
+            .into_raster(clip.id)?;
         Ok(self.place_on_canvas(clip.id, raster, content))
     }
 
@@ -674,7 +692,7 @@ impl<'a> CompileContext<'a> {
         lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1))
     }
 
-    /// Compiles a compute pass from `source_ref` into a new texture of the domain `domain`
+    /// Compiles a compute pass from the `source` input into a new texture of the domain `domain`
     /// picks. Returns the source as read, which is at full frame unless `domain` reads it
     /// through its domain.
     #[allow(
@@ -684,20 +702,13 @@ impl<'a> CompileContext<'a> {
     pub(crate) fn compile_unary_filter(
         &mut self,
         node_id: NodeId,
-        source_ref: &PortRef,
-        port: &PortRef,
+        source: Option<NodeId>,
         label: &str,
         shader: &str,
         params_size: u64,
         domain: FilterDomain,
     ) -> crate::Result<(RasterHandle, lumen_gpu::TextureId, lumen_gpu::BufferId)> {
-        if port.port != "output" {
-            return Err(self.missing_output(node_id, &port.port));
-        }
-
-        let source = self
-            .compile_bounded_port(source_ref)?
-            .into_raster(source_ref.id, &source_ref.port)?;
+        let source = self.compile_bounded_input(node_id, "source", source)?;
         let straight = source.metadata.alpha_mode == crate::gpu::AlphaMode::Unpremultiplied;
         let source = match domain {
             FilterDomain::FullFrame => self.full_frame(source),
@@ -868,52 +879,8 @@ impl<'a> CompileContext<'a> {
         ))
     }
 
-    #[allow(dead_code)]
-    fn compile_unary_compute(
-        &mut self,
-        node_id: NodeId,
-        port: &PortRef,
-        source_port: &PortRef,
-        label: &str,
-        shader: &str,
-        param_size: u64,
-    ) -> crate::Result<(RasterHandle, lumen_gpu::TextureId, lumen_gpu::BufferId)> {
-        if port.port != "output" {
-            return Err(self.missing_output(node_id, &port.port));
-        }
-
-        let source = self
-            .compile_port(source_port)?
-            .into_raster(source_port.id, &source_port.port)?;
-        let size = source.domain.storage_size;
-        let texture = self.builder.texture(
-            Some(format!("{label}:{}:output", node_id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
-        );
-        let params = self.builder.buffer(
-            Some(format!("{label}:{}:params", node_id.0)),
-            lumen_gpu::BufferDesc::uniform(param_size),
-        );
-        let program = self.spatial_program(label, shader);
-        self.builder.compute_pass(lumen_gpu::ComputePassDesc {
-            label: Some(format!("{label}:{}:apply", node_id.0)),
-            program,
-            bindings: spatial_bindings(source.texture, params, texture),
-            dispatch: dispatch_for(size),
-        });
-        Ok((source, texture, params))
-    }
-
     pub(crate) fn expr_context(&self) -> ExpressionContext<'_> {
         self.scope.expr_context(self.frame, self.media)
-    }
-
-    pub(crate) fn missing_output(&self, node_id: NodeId, port: &str) -> crate::error::LumenError {
-        crate::error::PropertyError::MissingProperty {
-            node_id,
-            property_path: format!("output port `{port}`"),
-        }
-        .into()
     }
 }
 

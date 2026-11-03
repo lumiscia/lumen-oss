@@ -25,8 +25,8 @@ use crate::{
     error::RenderError,
     expr::{ExpressionContext, ExpressionValue},
     node::{
-        Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef,
-        ShaderUniformValue, ShaderUniforms,
+        Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, ShaderUniformValue,
+        ShaderUniforms,
     },
 };
 
@@ -100,7 +100,7 @@ pub struct WgslShader {
     pub params: WgslShaderParamsDelegate,
     /// Bound as `input0..inputN` in connection order.
     #[input(name = "source", variadic)]
-    pub sources: Vec<PortRef>,
+    pub sources: Vec<NodeId>,
 }
 
 #[repr(C)]
@@ -115,11 +115,7 @@ impl GpuCompileNode for WgslShader {
     fn compile_gpu(
         &self,
         ctx: &mut crate::gpu::CompileContext<'_>,
-        port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
-        if port.port != "output" {
-            return Err(ctx.missing_output(self.id, &port.port));
-        }
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &ctx.expr_context(),
@@ -127,10 +123,9 @@ impl GpuCompileNode for WgslShader {
         let inputs = self
             .sources
             .iter()
-            .filter(|source| !source.is_empty())
-            .map(|source| {
+            .map(|&source| {
                 ctx.compile_port(source)
-                    .and_then(|output| output.into_raster(source.id, &source.port))
+                    .and_then(|output| output.into_raster(source))
             })
             .collect::<crate::Result<Vec<_>>>()?;
         let Some(first) = inputs.first().copied() else {
