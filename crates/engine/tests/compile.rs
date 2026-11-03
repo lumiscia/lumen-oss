@@ -5,23 +5,17 @@ use lumen_engine::{
     composition::{Composition, CompositionBuilder, RenderSettings, TimelineSettings},
     error::{GraphValidationError, LumenError},
     expr::Expression,
-    gpu::{AlphaMode, BoundFrame, CompileContext, CompiledComposition, FrameBindContext},
+    gpu::{BoundFrame, CompileContext, CompiledComposition, FrameBindContext},
     graph::{Connection, Graph},
     media::{
         CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
         VideoMetadata, collect_frame_requirements,
     },
     node::{
-        Deferred, NodeId, NodeKind,
+        Deferred, Node, NodeId, NodeKind,
         compositing::{merge::Merge, raster_multimerge::RasterMultiMerge},
         media_output::MediaOutput,
-        processing::{
-            alpha_premultiply::{AlphaPremultiply, AlphaPremultiplyParamsDelegate},
-            blur::Blur,
-            exposure::Exposure,
-            opacity::Opacity,
-            time_remap::TimeRemap,
-        },
+        processing::{blur::Blur, exposure::Exposure, opacity::Opacity, time_remap::TimeRemap},
         source::background::Background,
         source::media_in::{MediaIn, MediaInParamsDelegate},
         source::text::{Text, TextParamsDelegate},
@@ -95,15 +89,8 @@ fn compile(composition: &Composition, frame: Option<u32>) -> CompiledComposition
     try_compile(composition, frame).unwrap()
 }
 
-fn has_output(compiled: &CompiledComposition, node: u64) -> bool {
-    compiled.node_outputs.contains_key(&NodeId::new(node))
-}
-
 fn raster(compiled: &CompiledComposition, node: u64) -> lumen_engine::gpu::RasterHandle {
-    compiled.node_outputs[&NodeId::new(node)]
-        .clone()
-        .into_raster(NodeId::new(node))
-        .unwrap()
+    compiled.node_output(NodeId::new(node), &[]).unwrap()
 }
 
 /// Uniform buffers bound by the passes compiled for `node`, whose labels carry its id.
@@ -733,11 +720,13 @@ fn routing_selects_one_branch() {
     };
     let frame_switch = layers(json!("=if(frame < 6, 0, 1)"));
     // `aliases` must share the texture of `selected`, and `unselected` must not be compiled.
+    // Both branches are reached through the time remaps in `path`.
     struct Row {
         name: &'static str,
         nodes: Value,
         frame: Option<u32>,
         aliases: &'static [u64],
+        path: &'static [u64],
         selected: u64,
         unselected: Option<u64>,
     }
@@ -747,6 +736,7 @@ fn routing_selects_one_branch() {
             nodes: layers(json!(0)),
             frame: None,
             aliases: &[3],
+            path: &[],
             selected: 1,
             unselected: Some(2),
         },
@@ -755,6 +745,7 @@ fn routing_selects_one_branch() {
             nodes: frame_switch.clone(),
             frame: Some(0),
             aliases: &[3],
+            path: &[],
             selected: 1,
             unselected: Some(2),
         },
@@ -763,20 +754,21 @@ fn routing_selects_one_branch() {
             nodes: frame_switch.clone(),
             frame: Some(10),
             aliases: &[3],
+            path: &[],
             selected: 2,
             unselected: Some(1),
         },
         Row {
-            name: "time remap and memo",
+            name: "time remap",
             nodes: json!([
                 solid(1, [64, 128, 255, 255]),
                 { "id": 2, "type": "time_remap", "params": {
                     "frame": 8.0, "loop_enabled": true, "loop_start": 4, "loop_end": 12
                 }, "in": { "source": 1 } },
-                { "id": 3, "type": "memo", "in": { "source": 2 } },
             ]),
             frame: None,
-            aliases: &[2, 3],
+            aliases: &[2],
+            path: &[2],
             selected: 1,
             unselected: None,
         },
@@ -794,6 +786,7 @@ fn routing_selects_one_branch() {
             ]),
             frame: Some(10),
             aliases: &[4],
+            path: &[4],
             selected: 1,
             unselected: Some(2),
         },
@@ -802,7 +795,10 @@ fn routing_selects_one_branch() {
         let composition = scene((8, 4), row.nodes);
         let compiled = try_compile(&composition, row.frame)
             .unwrap_or_else(|error| panic!("{}: {error}", row.name));
-        let selected = raster(&compiled, row.selected);
+        let path: Vec<NodeId> = row.path.iter().copied().map(NodeId::new).collect();
+        let selected = compiled
+            .node_output(NodeId::new(row.selected), &path)
+            .unwrap_or_else(|| panic!("{}: the selected branch has no output", row.name));
         for alias in row.aliases {
             assert_eq!(
                 raster(&compiled, *alias).texture,
@@ -812,7 +808,13 @@ fn routing_selects_one_branch() {
             );
         }
         if let Some(unselected) = row.unselected {
-            assert!(!has_output(&compiled, unselected), "{}", row.name);
+            assert!(
+                compiled
+                    .node_output(NodeId::new(unselected), &path)
+                    .is_none(),
+                "{}",
+                row.name
+            );
         }
         // Only the selected solid is drawn, so the other branch has no pass.
         assert_eq!(compiled.plan.passes().len(), 1, "{}", row.name);
@@ -860,72 +862,34 @@ fn remap_binds_each_branch() {
 }
 
 #[test]
-fn opacity_binds_alpha_flag() {
-    let source = solid(1, [64, 128, 255, 128]);
-    let unpremultiplied = json!({ "id": 2, "type": "alpha_premultiply",
-        "params": { "mode": "unpremultiply" }, "in": { "source": 1 } });
-    // The uniform holds the opacity, then 1 if the node scales premultiplied RGB with alpha.
-    for (name, nodes, input, alpha_mode, frames) in [
-        (
-            "premultiplied, animated",
-            json!([
-                source.clone(),
-                { "id": 2, "type": "opacity", "params": { "opacity": "=frame / 10" },
-                  "in": { "source": 1 } },
-            ]),
-            1,
-            AlphaMode::Premultiplied,
-            vec![(0, [0.0, 1.0]), (5, [0.5, 1.0])],
-        ),
-        (
-            "unpremultiplied",
-            json!([
-                source.clone(),
-                unpremultiplied,
-                { "id": 3, "type": "opacity", "params": { "opacity": 0.25 },
-                  "in": { "source": 2 } },
-            ]),
-            2,
-            AlphaMode::Unpremultiplied,
-            vec![(0, [0.25, 0.0])],
-        ),
-    ] {
-        let composition = scene((8, 4), nodes);
-        let compiled = compile(&composition, None);
-        let opacity = input + 1;
-        let buffer = uniform_buffers_of(&compiled.plan, opacity)[0];
-        let (output, source) = (raster(&compiled, opacity), raster(&compiled, input));
-        assert_eq!(output.domain, source.domain, "{name}");
-        assert_eq!(output.metadata, source.metadata, "{name}");
-        assert_eq!(output.metadata.alpha_mode, alpha_mode, "{name}");
-        for (frame, expected) in frames {
-            let bound = bind(&composition, &compiled, frame);
-            assert_eq!(
-                uploaded_f32s(&bound, buffer, 2),
-                expected,
-                "{name}, frame {frame}"
-            );
-        }
+fn opacity_binds_its_animated_value() {
+    let composition = scene(
+        (8, 4),
+        json!([
+            solid(1, [64, 128, 255, 128]),
+            { "id": 2, "type": "opacity", "params": { "opacity": "=frame / 10" },
+              "in": { "source": 1 } },
+        ]),
+    );
+    let compiled = compile(&composition, None);
+    assert_eq!(raster(&compiled, 2).domain, raster(&compiled, 1).domain);
+    let buffer = uniform_buffers_of(&compiled.plan, 2)[0];
+    for (frame, opacity) in [(0, 0.0), (5, 0.5)] {
+        let bound = bind(&composition, &compiled, frame);
+        assert_eq!(uploaded_f32s(&bound, buffer, 1), [opacity], "frame {frame}");
     }
-}
-
-enum Stage {
-    Compile,
-    Bind,
 }
 
 struct BindError {
     name: String,
     composition: Composition,
-    stage: Stage,
     message: String,
 }
 
-fn row(name: &str, nodes: Value, stage: Stage, message: impl Into<String>) -> BindError {
+fn row(name: &str, nodes: Value, message: impl Into<String>) -> BindError {
     BindError {
         name: name.to_string(),
         composition: scene((8, 4), nodes),
-        stage,
         message: message.into(),
     }
 }
@@ -965,64 +929,32 @@ fn bind_errors() {
         rows.push(row(
             &format!("crop {path} beyond the GPU range"),
             crop_resize(invalid, valid),
-            Stage::Bind,
             property(2, path),
         ));
         rows.push(row(
             &format!("resize {path} beyond the GPU range"),
             crop_resize(valid, invalid),
-            Stage::Bind,
             property(3, path),
         ));
     }
     rows.push(row(
         "crop origin below i32::MIN",
         crop_resize([i64::from(i32::MIN) - 1, 0, 4, 4], valid),
-        Stage::Bind,
         property(2, "x"),
     ));
-    rows.push(BindError {
-        name: "alpha_premultiply mode is not an expression".to_string(),
-        composition: atlas_composition(|graph| {
-            let (source, convert) = (NodeId::new(1), NodeId::new(2));
-            graph.nodes.insert(
-                source,
-                NodeKind::Background(Background {
-                    id: source,
-                    ..Background::default()
-                }),
-            );
-            graph.nodes.insert(
-                convert,
-                NodeKind::AlphaPremultiply(AlphaPremultiply {
-                    id: convert,
-                    params: AlphaPremultiplyParamsDelegate {
-                        mode: Deferred::Expr(Expression::parse("\"unpremultiply\"").unwrap()),
-                    },
-                    source: Some(NodeId::new(1)),
-                }),
-            );
-            convert
-        }),
-        stage: Stage::Compile,
-        message: property(2, "mode"),
-    });
     rows.push(row(
         "word outside glyph params",
         json!([text("Lumen", json!({ "position": "=vec2(word * 10, 0)" }))]),
-        Stage::Bind,
         glyph("word"),
     ));
     rows.push(row(
         "line outside glyph params",
         json!([text("Lumen", json!({ "opacity": "=line" }))]),
-        Stage::Bind,
         glyph("line"),
     ));
     rows.push(row(
         "glyph on a node that is not text",
         json!([{ "id": 1, "type": "shape", "params": { "opacity": "=glyph / glyph_count" } }]),
-        Stage::Bind,
         glyph("glyph"),
     ));
     // Another node's property is evaluated outside the glyph, so it fails as it would alone.
@@ -1036,19 +968,80 @@ fn bind_errors() {
     rows.push(row(
         "foreign property read in glyph scope",
         foreign("=vec2(node(2, \"font_size\"), 0)"),
-        Stage::Bind,
         "`glyph` is only available",
     ));
     rows.push(row(
         "text_width of a foreign node in glyph scope",
         foreign("=vec2(text_width(node(2)), 0)"),
-        Stage::Bind,
         "`glyph` is only available",
+    ));
+    // An expression can only name a value the enum has.
+    let source = json!({ "source": 1 });
+    for (kind, inputs, param, value, enum_name) in [
+        (
+            "boolean",
+            json!({ "a": 1, "b": 2 }),
+            "operation",
+            "=4",
+            "BooleanOperation",
+        ),
+        (
+            "raster_multimerge",
+            json!({ "layers": [1, 2] }),
+            "blend_mode",
+            "=6",
+            "BlendMode",
+        ),
+        (
+            "merge",
+            json!({ "base": 1, "overlay": 2 }),
+            "blend_mode",
+            "=6",
+            "BlendMode",
+        ),
+        (
+            "color_grade",
+            source.clone(),
+            "interpolation",
+            "=2",
+            "RasterSampling",
+        ),
+        (
+            "resize",
+            source.clone(),
+            "sampling",
+            "=-1",
+            "RasterSampling",
+        ),
+        ("transform", source, "sampling", "=2", "RasterSampling"),
+    ] {
+        rows.push(row(
+            &format!("{kind} {param} outside its enum"),
+            json!([
+                solid(1, [255, 0, 0, 255]),
+                solid(2, [0, 0, 255, 255]),
+                { "id": 3, "type": kind, "in": inputs, "params": { param: value } },
+            ]),
+            format!("is not a value of {enum_name}"),
+        ));
+    }
+    rows.push(row(
+        "shadow color that is a gradient",
+        json!([
+            solid(1, [255, 0, 0, 255]),
+            { "id": 2, "type": "shadow", "in": { "source": 1 }, "params": { "color": {
+                "type": "linear_gradient",
+                "stops": [
+                    { "offset": 0.0, "color": [255, 0, 0, 255] },
+                    { "offset": 1.0, "color": [0, 0, 255, 255] }
+                ]
+            } } },
+        ]),
+        "property `color` on node 2 has invalid type: expected a solid color, got a gradient",
     ));
     rows.push(row(
         "malformed path data",
         json!([{ "id": 1, "type": "path", "params": { "data": "M 0 0 L 10 10 C nope" } }]),
-        Stage::Bind,
         "Path node 1 evaluation failed: `data` is malformed",
     ));
     let mut data = String::from("M 10 10");
@@ -1062,27 +1055,41 @@ fn bind_errors() {
     rows.push(row(
         "path above the point limit",
         json!([{ "id": 1, "type": "path", "params": { "data": data + " Z" } }]),
-        Stage::Bind,
         "more than 16384 points",
     ));
 
     for row in rows {
         let composition = row.composition;
-        let error = match row.stage {
-            Stage::Compile => CompileContext::new(&composition)
-                .compile()
-                .map(|_| ())
-                .expect_err(&row.name),
-            Stage::Bind => {
-                let compiled = compile(&composition, None);
-                FrameBindContext::new(&composition, 0)
-                    .bind(&compiled)
-                    .map(|_| ())
-                    .expect_err(&row.name)
-            }
-        }
-        .to_string();
+        let compiled = compile(&composition, None);
+        let error = FrameBindContext::new(&composition, 0)
+            .bind(&compiled)
+            .map(|_| ())
+            .expect_err(&row.name)
+            .to_string();
         assert!(error.contains(&row.message), "{}: {error}", row.name);
+    }
+}
+
+#[test]
+fn color_grade_interpolation_is_a_sampling_name() {
+    let load = |value: Value| {
+        lumen_engine::json::parse_value(&json!({
+            "timeline": { "fps": 24, "duration_frames": 12 },
+            "render_settings": { "width": 8, "height": 4 },
+            "nodes": [
+                solid(1, [255, 0, 0, 255]),
+                { "id": 2, "type": "color_grade", "params": { "interpolation": value } },
+                { "id": 3, "type": "media_output" },
+            ],
+            "connections": [
+                { "from_node": 1, "to_node": 2, "to_port": "source" },
+                { "from_node": 2, "to_node": 3, "to_port": "source" },
+            ],
+        }))
+    };
+    load(json!("nearest")).unwrap();
+    for value in [json!(0), json!("cubic")] {
+        assert!(load(value.clone()).is_err(), "{value}");
     }
 }
 

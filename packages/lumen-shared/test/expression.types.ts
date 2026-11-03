@@ -60,9 +60,9 @@ new Composition().addNode({
 });
 
 new Composition().addNode({
-  type: "alpha_premultiply",
+  type: "shape",
   // @ts-expect-error constant string params don't take expressions
-  params: { mode: lowercase("PREMULTIPLY") },
+  params: { geometry_kind: lowercase("ELLIPSE") },
 });
 
 new Composition().addNode({

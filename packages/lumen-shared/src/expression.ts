@@ -2,6 +2,7 @@ import {
   easingNames,
   expressionBuiltins,
   expressionGlobals,
+  expressionReservedNames,
   type Color,
   type EasingName,
   type ExpressionGlobalName,
@@ -139,26 +140,12 @@ function lower(value: AnyArg): string {
   return `${builtin}(${value.map(lower).join(", ")})`;
 }
 
-/** The shortest decimal that round-trips, without the exponents the expression lexer rejects. */
+/** The shortest decimal or exponent form that round-trips. */
 function formatNumber(value: number): string {
   if (!Number.isFinite(value)) {
     throw new RangeError(`Expressions cannot contain \`${value}\`.`);
   }
-  if (value === 0) {
-    return "0";
-  }
-  const text = String(Math.abs(value));
-  const sign = value < 0 ? "-" : "";
-  const [mantissa = text, exponent] = text.split("e");
-  if (exponent === undefined) {
-    return sign + text;
-  }
-  const digits = mantissa.replace(".", "");
-  const point = 1 + Number(exponent);
-  if (point <= 0) {
-    return `${sign}0.${"0".repeat(-point)}${digits}`;
-  }
-  return sign + digits.padEnd(point, "0");
+  return String(value);
 }
 
 const escapes: Readonly<Record<string, string>> = {
@@ -332,7 +319,6 @@ export const {
 } = builtins;
 // `from` and `to` share a type, which the table can only describe as `any`.
 export const lerp = builtins.lerp as Interpolate;
-export const linear = builtins.linear as Interpolate;
 export const tween = builtins.tween as Tween;
 
 /**
@@ -408,14 +394,7 @@ type CheckedSignature<A extends readonly unknown[]> = false extends {
   : FunctionSignature;
 
 const identifier = /^[A-Za-z_]\w*$/;
-const reservedNames: ReadonlySet<string> = new Set([
-  "if",
-  "node",
-  "true",
-  "false",
-  ...expressionBuiltins.map(({ name }) => name),
-  ...expressionGlobals.map(({ name }) => name),
-]);
+const reservedNames: ReadonlySet<string> = new Set(expressionReservedNames);
 
 /**
  * Defines a composition function such as `rise(start)`. The implementation runs once, with each

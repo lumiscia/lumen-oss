@@ -4,8 +4,7 @@ use crate::node::{
 };
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -44,7 +43,7 @@ pub struct MergeParams {
     /// Swaps the masked and unmasked areas.
     #[meta()]
     pub invert: bool,
-    /// Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`.
+    /// Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`. Radii above about 588 look the same.
     #[meta(min = 0, step = 0.5)]
     pub feather: f64,
 }
@@ -88,8 +87,6 @@ struct CompiledMerge {
     node_id: NodeId,
     params: MergeParamsDelegate,
     has_mask: bool,
-    /// Bit 0: base, bit 1: overlay, bit 2: mask.
-    straight_inputs: u32,
     /// Feathered mask passes, present when the node has a `mask` input and a feather that
     /// is not a literal zero.
     feather: Option<CompiledFeather>,
@@ -101,7 +98,6 @@ struct CompiledMerge {
 #[derive(Debug, Clone)]
 struct CompiledFeather {
     passes: gaussian::GaussianPasses,
-    straight_mask: bool,
 }
 
 impl GpuCompiledNode for CompiledMerge {
@@ -122,18 +118,16 @@ impl GpuCompiledNode for CompiledMerge {
                 Some(_) if evaluated.feather > 0.0 => MASK_FEATHERED,
                 _ => MASK_RAW,
             },
-            straight_inputs: self.straight_inputs,
             mask_mode: evaluated.mask_mode as u32,
             invert: u32::from(evaluated.invert),
             origins: self.origins,
-            _pad: [0; 2],
+            _pad0: 0,
         };
         if let Some(feather) = &self.feather {
             feather.passes.write(
                 bound,
                 &gaussian::GaussianSettings {
                     radius: evaluated.feather.max(0.0),
-                    straight_source: feather.straight_mask,
                     transparent_edge: true,
                     offset: [0.0, 0.0],
                 },
@@ -145,10 +139,7 @@ impl GpuCompiledNode for CompiledMerge {
 }
 
 impl GpuCompileNode for Merge {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let base = ctx.compile_bounded_input(self.id, "base", self.base)?;
         let overlay = ctx.compile_bounded_input(self.id, "overlay", self.overlay)?;
         // A literal feather of zero or less never blurs, so its passes are left out. The
@@ -157,7 +148,7 @@ impl GpuCompileNode for Merge {
             !matches!(&self.params.feather, Deferred::Value(radius) if !(*radius > 0.0));
         let mask = match self.mask {
             Some(mask) => {
-                let mask = ctx.compile_bounded_port(mask)?.into_raster(mask)?;
+                let mask = ctx.compile_bounded_port(mask)?;
                 Some(if feathered {
                     ctx.full_frame(mask)
                 } else {
@@ -174,8 +165,6 @@ impl GpuCompileNode for Merge {
             size,
             base.domain.data_rect.union(overlay.domain.data_rect),
         );
-        let straight =
-            |raster: &RasterHandle| raster.metadata.alpha_mode == AlphaMode::Unpremultiplied;
         // The blur spans the mask and the base, so a mask that extends past the base still
         // feathers the base's edge and a smaller one still feathers into the base.
         let feather = mask.filter(|_| feathered).map(|mask| {
@@ -186,7 +175,6 @@ impl GpuCompileNode for Merge {
             );
             CompiledFeather {
                 passes: gaussian::compile_passes(ctx, self.id, "merge-feather", mask, union),
-                straight_mask: straight(&mask),
             }
         });
         let texture = ctx.builder_mut().texture(
@@ -263,9 +251,6 @@ impl GpuCompileNode for Merge {
             node_id: self.id,
             params: self.params.clone(),
             has_mask: self.mask.is_some(),
-            straight_inputs: u32::from(straight(&base))
-                | (u32::from(straight(&overlay)) << 1)
-                | (u32::from(mask.as_ref().is_some_and(straight)) << 2),
             feather,
             buffer: params,
             origins: [
@@ -277,14 +262,10 @@ impl GpuCompileNode for Merge {
             .map(|domain| [domain.data_rect.x, domain.data_rect.y]),
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain,
-            metadata: RasterMetadata {
-                alpha_mode: AlphaMode::Premultiplied,
-                ..base.metadata
-            },
             bounds: None,
-        }))
+        })
     }
 }

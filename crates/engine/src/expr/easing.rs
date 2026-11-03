@@ -1,84 +1,14 @@
 //! Easing curves, cubic Béziers and springs. All are pure functions of their inputs.
 
-use super::spec::BuiltinFn;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Easing {
-    Linear,
-    InQuad,
-    OutQuad,
-    InOutQuad,
-    InCubic,
-    OutCubic,
-    InOutCubic,
-    InExpo,
-    OutExpo,
-    InOutExpo,
-    InBack,
-    OutBack,
-    InOutBack,
-}
+use super::spec::Easing;
 
 const BACK_C1: f64 = 1.70158;
 const BACK_C2: f64 = BACK_C1 * 1.525;
 const BACK_C3: f64 = BACK_C1 + 1.0;
 
 impl Easing {
-    pub const ALL: [Self; 13] = [
-        Self::Linear,
-        Self::InQuad,
-        Self::OutQuad,
-        Self::InOutQuad,
-        Self::InCubic,
-        Self::OutCubic,
-        Self::InOutCubic,
-        Self::InExpo,
-        Self::OutExpo,
-        Self::InOutExpo,
-        Self::InBack,
-        Self::OutBack,
-        Self::InOutBack,
-    ];
-
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Linear => "linear",
-            Self::InQuad => "in_quad",
-            Self::OutQuad => "out_quad",
-            Self::InOutQuad => "in_out_quad",
-            Self::InCubic => "in_cubic",
-            Self::OutCubic => "out_cubic",
-            Self::InOutCubic => "in_out_cubic",
-            Self::InExpo => "in_expo",
-            Self::OutExpo => "out_expo",
-            Self::InOutExpo => "in_out_expo",
-            Self::InBack => "in_back",
-            Self::OutBack => "out_back",
-            Self::InOutBack => "in_out_back",
-        }
-    }
-
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|easing| easing.name() == name)
-    }
-
-    /// The easing a builtin such as `out_expo(t)` applies. `linear(a, b, t)` is not an easing.
-    pub fn for_builtin(builtin: BuiltinFn) -> Option<Self> {
-        Some(match builtin {
-            BuiltinFn::InQuad => Self::InQuad,
-            BuiltinFn::OutQuad => Self::OutQuad,
-            BuiltinFn::InOutQuad => Self::InOutQuad,
-            BuiltinFn::InCubic => Self::InCubic,
-            BuiltinFn::OutCubic => Self::OutCubic,
-            BuiltinFn::InOutCubic => Self::InOutCubic,
-            BuiltinFn::InExpo => Self::InExpo,
-            BuiltinFn::OutExpo => Self::OutExpo,
-            BuiltinFn::InOutExpo => Self::InOutExpo,
-            BuiltinFn::InBack => Self::InBack,
-            BuiltinFn::OutBack => Self::OutBack,
-            BuiltinFn::InOutBack => Self::InOutBack,
-            _ => return None,
-        })
     }
 
     /// Every easing maps 0 to 0 and 1 to 1 exactly, so tweens land on their endpoints.
@@ -190,7 +120,6 @@ pub fn spring(t: f64, stiffness: f64, damping: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::spec::builtin_for_name;
 
     #[test]
     fn every_easing_starts_at_zero_and_ends_at_one() {
@@ -218,15 +147,6 @@ mod tests {
         }
         assert!(Easing::InBack.apply(0.3) < 0.0);
         assert!(Easing::OutBack.apply(0.7) > 1.0);
-    }
-
-    #[test]
-    fn named_easings_have_matching_builtins() {
-        for easing in Easing::ALL.into_iter().skip(1) {
-            let spec = builtin_for_name(easing.name()).unwrap_or_else(|| panic!("{easing:?}"));
-            assert_eq!(Easing::for_builtin(spec.builtin), Some(easing));
-        }
-        assert_eq!(Easing::for_builtin(BuiltinFn::Linear), None);
     }
 
     #[test]

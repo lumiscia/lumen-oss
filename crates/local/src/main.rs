@@ -22,7 +22,7 @@ use lumen_engine::{
     composition::Composition,
     error::MediaError,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
-    gpu::{AlphaMode, GpuCompositionRenderer},
+    gpu::GpuCompositionRenderer,
     image::ImageFileResolver,
     media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
 };
@@ -101,8 +101,8 @@ struct RenderTiming {
     encode_finish_ms: u128,
 }
 
-/// Passes per frame skipped because their output was kept from an earlier frame (static nodes and
-/// holding memos), out of the passes per frame in the plans rendered.
+/// Passes per frame skipped because their output was kept from an earlier frame, out of the
+/// passes per frame in the plans rendered.
 fn cached_pass_summary(renderer: &GpuCompositionRenderer, frames: u32) -> String {
     let frames = f64::from(frames.max(1));
     format!(
@@ -852,9 +852,7 @@ fn render_single_png(
     let size = rendered.domain.storage_size;
     let mut pixels = read_texture_rgba8(renderer.gpu_renderer(), rendered.texture, size)
         .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
-    if rendered.metadata.alpha_mode == AlphaMode::Premultiplied {
-        unpremultiply_rgba8(&mut pixels);
-    }
+    unpremultiply_rgba8(&mut pixels);
 
     write_png(output, size.width, size.height, pixels.as_slice())?;
 

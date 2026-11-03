@@ -113,8 +113,7 @@ pub struct Workload<'a> {
     pub composition: &'a Composition,
     pub media: &'a BenchmarkMediaStore,
     pub frames: u32,
-    /// Disables the automatic reuse of static node output. Memos whose key is unchanged still
-    /// hold.
+    /// Disables the automatic reuse of static node output.
     pub full_render: bool,
 }
 

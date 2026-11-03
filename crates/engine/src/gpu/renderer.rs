@@ -9,7 +9,7 @@ use crate::{
     gpu::{
         BoundFrame, CompileContext, CompiledComposition, FrameBindContext, MediaTextureKey,
         RasterHandle, TimeRemapPath,
-        cache::{BindCache, CacheState, LayoutMemo, MemoSnapshots, skipped_count},
+        cache::{BindCache, CacheState, skipped_count},
     },
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{
@@ -195,13 +195,6 @@ pub struct GpuCompositionRenderer {
     plan_compile_count: u64,
     submitted_pass_count: u64,
     cached_pass_count: u64,
-    /// Memo snapshots, which outlive the plan that took them while another plan holds a copy.
-    memo_snapshots: MemoSnapshots,
-    /// Plans the latest bound frame copies memo snapshots from, which stay cached until it is
-    /// submitted or another frame is bound.
-    pinned_plans: Vec<u64>,
-    /// Prepared plans so far, which identifies each among the cached plans.
-    prepared_plan_count: u64,
     bind_sequence: u64,
     text_atlas: Arc<Mutex<lumen_text::GlyphAtlas>>,
     text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
@@ -242,9 +235,6 @@ impl GpuCompositionRenderer {
             plan_compile_count: 0,
             submitted_pass_count: 0,
             cached_pass_count: 0,
-            memo_snapshots: MemoSnapshots::default(),
-            pinned_plans: Vec::new(),
-            prepared_plan_count: 0,
             bind_sequence: 0,
             text_atlas: Arc::new(Mutex::new(lumen_text::GlyphAtlas::new(
                 super::types::TEXT_ATLAS_SIZE,
@@ -274,13 +264,13 @@ impl GpuCompositionRenderer {
         let compiled = CompileContext::with_options(composition, 0.0, None, output_format, true)
             .render_static(!self.reuse_static_output)
             .full_frame_sources(self.full_frame_sources)
-            .compile()?;
+            .compile_with_atlas(Arc::clone(&self.text_atlas))?;
         self.prepare_compiled(key, compiled)
     }
 
     /// Sets whether nodes without expressions or media keep their output from earlier frames
     /// instead of rendering it again, which is on by default. Turning it off disables that
-    /// automatic reuse, as when measuring render cost; memos whose key is unchanged still hold.
+    /// automatic reuse, as when measuring render cost.
     /// Drops the compiled plans when it changes.
     pub fn set_static_output_reuse(&mut self, enabled: bool) {
         if self.reuse_static_output != enabled {
@@ -332,8 +322,7 @@ impl GpuCompositionRenderer {
     }
 
     /// Number of passes submitted frames skipped because the output they would write was kept
-    /// from an earlier frame: that of nodes without frame-dependent params and of what a holding
-    /// `memo` reads.
+    /// from an earlier frame: that of nodes without frame-dependent params.
     pub fn cached_pass_count(&self) -> u64 {
         self.cached_pass_count
     }
@@ -403,7 +392,6 @@ impl GpuCompositionRenderer {
             }
         }
         self.compiled_plans.clear();
-        self.memo_snapshots.clear();
         self.plan_cache_bytes = 0;
         self.rejected_plan_bytes.clear();
         self.active_key = None;
@@ -432,7 +420,6 @@ impl GpuCompositionRenderer {
         self.output_format = output_format;
         self.compiled_plans.clear();
         self.media_texture_cache.evict();
-        self.memo_snapshots.clear();
         self.plan_cache_bytes = 0;
         self.pruned_fingerprint = None;
         self.rejected_plan_bytes.clear();
@@ -443,7 +430,7 @@ impl GpuCompositionRenderer {
     fn prepare_compiled(
         &mut self,
         key: CompiledPlanKey,
-        mut compiled: CompiledComposition,
+        compiled: CompiledComposition,
     ) -> crate::Result<()> {
         tracing::debug!(
             target: "lumen_render",
@@ -462,15 +449,13 @@ impl GpuCompositionRenderer {
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        compiled.text_atlas = Arc::clone(&self.text_atlas);
         if let Some(id) = compiled.text_atlas_texture {
-            self.ensure_text_atlas_texture()?;
+            let device = &self.renderer.device;
+            let texture = self
+                .text_atlas_texture
+                .get_or_insert_with(|| Arc::new(super::types::create_text_atlas_texture(device)));
             renderer
-                .replace_texture_arc(
-                    id,
-                    Arc::clone(self.text_atlas_texture.as_ref().expect("atlas texture")),
-                    super::types::text_atlas_desc(),
-                )
+                .replace_texture_arc(id, Arc::clone(texture), super::types::text_atlas_desc())
                 .map_err(|error| RenderError::Gpu {
                     details: error.to_string(),
                 })?
@@ -479,13 +464,12 @@ impl GpuCompositionRenderer {
         let estimated_bytes = estimated_plan_bytes(&compiled);
         self.plan_cache_bytes += estimated_bytes;
         self.plan_use_clock += 1;
-        self.prepared_plan_count += 1;
         if let Some(replaced) = self.compiled_plans.insert(
             key.clone(),
             PreparedComposition {
                 renderer,
                 compiled,
-                cache: CacheState::new(self.prepared_plan_count),
+                cache: CacheState::default(),
                 current_media_textures: HashMap::new(),
                 #[cfg(feature = "ffmpeg")]
                 media_imports: GpuMediaImports::default(),
@@ -542,10 +526,7 @@ impl GpuCompositionRenderer {
             let Some(key) = self
                 .compiled_plans
                 .iter()
-                .filter(|(key, prepared)| {
-                    !pinned.contains(&Some(*key))
-                        && !self.pinned_plans.contains(&prepared.cache.plan())
-                })
+                .filter(|(key, _)| !pinned.contains(&Some(*key)))
                 .min_by_key(|(_, prepared)| prepared.last_used)
                 .map(|(key, _)| key.clone())
             else {
@@ -712,29 +693,13 @@ impl GpuCompositionRenderer {
         let mut bound = loop {
             let generation = text_font_generation(Some(media));
             self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
-            self.memo_snapshots
-                .retain_composition(composition.fingerprint());
             let prepared = self.active_prepared()?;
             let layout = &prepared.compiled.cache;
             let fonts = text_font_generation(Some(media));
             let epoch = layout.epoch(&prepared.renderer, fonts);
-            let held =
-                self.memo_snapshots
-                    .held(layout, prepared.cache.plan(), epoch, |plan, at, memo| {
-                        self.memo_source(prepared, plan, memo)
-                            .is_some_and(|(from, ..)| {
-                                from.compiled.cache.epoch(&from.renderer, fonts) == at
-                            })
-                    });
             let bound = FrameBindContext::with_media_at(composition, frame, media).bind_with_cache(
                 &prepared.compiled,
-                Some(BindCache::new(
-                    layout,
-                    &prepared.cache,
-                    epoch,
-                    composition.fingerprint(),
-                    held,
-                )),
+                Some(BindCache::new(layout, &prepared.cache, epoch)),
             );
             // A failure under fonts that changed may come from what the plan sized for the
             // old ones, so it is bound again too.
@@ -752,11 +717,6 @@ impl GpuCompositionRenderer {
             rebinds += 1;
         };
         bound.renderer_binding = self.active_key.clone().map(|key| (self.bind_sequence, key));
-        self.pinned_plans = bound
-            .cache
-            .iter()
-            .flat_map(|cache| cache.adopted().iter().map(|(_, plan)| *plan))
-            .collect();
         Ok(bound)
     }
 
@@ -790,9 +750,6 @@ impl GpuCompositionRenderer {
         }
         let prepared = self.active_prepared_mut()?;
         prepared.cache.upload(&prepared.compiled.cache, None);
-        if bound.text_atlas.is_some() {
-            self.ensure_text_atlas_texture()?;
-        }
         self.upload_media_textures(bound)?;
         let update = bound.frame_update();
         let prepared = self.active_prepared_mut()?;
@@ -806,94 +763,6 @@ impl GpuCompositionRenderer {
         prepared
             .cache
             .upload(&prepared.compiled.cache, bound.cache.as_ref());
-        self.copy_memo_snapshots(bound)
-    }
-
-    /// Plan `plan` and the texture and bounds buffer holding its snapshot of `to`'s
-    /// memo `memo`, if `to` can copy them.
-    fn memo_source<'a>(
-        &'a self,
-        to: &PreparedComposition,
-        plan: u64,
-        memo: &LayoutMemo,
-    ) -> Option<(
-        &'a PreparedComposition,
-        &'a lumen_gpu::wgpu::Texture,
-        &'a lumen_gpu::wgpu::Buffer,
-    )> {
-        let from = self
-            .compiled_plans
-            .values()
-            .find(|prepared| prepared.cache.plan() == plan)?;
-        let source = from.compiled.cache.memo_by_id(&memo.id)?;
-        let desc = from.renderer.texture_desc(source.texture)?;
-        if Some(desc) != to.renderer.texture_desc(memo.texture) {
-            return None;
-        }
-        Some((
-            from,
-            from.renderer.texture(source.texture)?,
-            from.renderer.buffer(source.bounds)?,
-        ))
-    }
-
-    /// Copies the memo snapshots `bound` shows from the plans holding them into the active plan.
-    fn copy_memo_snapshots(&self, bound: &BoundFrame) -> crate::Result<()> {
-        let Some(cache) = bound
-            .cache
-            .as_ref()
-            .filter(|cache| !cache.adopted().is_empty())
-        else {
-            return Ok(());
-        };
-        let to = self.active_prepared()?;
-        let mut encoder =
-            to.renderer
-                .device
-                .create_command_encoder(&lumen_gpu::wgpu::CommandEncoderDescriptor {
-                    label: Some("lumen memo snapshot copy"),
-                });
-        for (instance, plan) in cache.adopted() {
-            let memo = to.compiled.cache.memo(*instance).expect("keyed memo");
-            let missing = || RenderError::Gpu {
-                details: format!(
-                    "memo {} snapshot is no longer held by the plan it was bound to copy from",
-                    memo.id.0
-                ),
-            };
-            let (_, texture, bounds) = self.memo_source(to, *plan, memo).ok_or_else(missing)?;
-            let destination = to.renderer.texture(memo.texture).ok_or_else(missing)?;
-            encoder.copy_texture_to_texture(
-                texture.as_image_copy(),
-                destination.as_image_copy(),
-                texture.size(),
-            );
-            let destination = to.renderer.buffer(memo.bounds).ok_or_else(missing)?;
-            encoder.copy_buffer_to_buffer(bounds, 0, destination, 0, bounds.size());
-        }
-        to.renderer.queue.submit([encoder.finish()]);
-        Ok(())
-    }
-
-    fn ensure_text_atlas_texture(&mut self) -> crate::Result<()> {
-        if self.text_atlas_texture.is_some() {
-            return Ok(());
-        }
-        let desc = super::types::text_atlas_desc();
-        let texture = Arc::new(super::types::create_text_atlas_texture(
-            &self.renderer.device,
-        ));
-        for prepared in self.compiled_plans.values_mut() {
-            if let Some(id) = prepared.compiled.text_atlas_texture {
-                prepared
-                    .renderer
-                    .replace_texture_arc(id, Arc::clone(&texture), desc)
-                    .map_err(|error| RenderError::Gpu {
-                        details: error.to_string(),
-                    })?;
-            }
-        }
-        self.text_atlas_texture = Some(texture);
         Ok(())
     }
 
@@ -1132,15 +1001,9 @@ impl GpuCompositionRenderer {
         };
         let passes = prepared.compiled.plan.passes().len() as u64;
         let skipped = skipped_count(prepared.cache.skip()) as u64;
-        prepared
-            .cache
-            .submitted(&prepared.compiled.cache, &mut self.memo_snapshots);
+        prepared.cache.submitted(&prepared.compiled.cache);
         self.submitted_pass_count += passes;
         self.cached_pass_count += skipped;
-        if !std::mem::take(&mut self.pinned_plans).is_empty() {
-            let active = self.active_key.clone();
-            self.evict_over_budget(&[active.as_ref()]);
-        }
     }
 
     pub fn gpu_renderer(&self) -> &lumen_gpu::Renderer {
@@ -1254,7 +1117,7 @@ impl GpuCompositionRenderer {
         )
         .render_static(!self.reuse_static_output)
         .full_frame_sources(self.full_frame_sources)
-        .compile()
+        .compile_with_atlas(Arc::clone(&self.text_atlas))
         {
             Ok(compiled) => compiled,
             Err(error) => {
@@ -1381,13 +1244,13 @@ impl<'a> PlanKeyCollector<'a> {
             }
             NodeKind::Text(text) => {
                 let spans = match &text.params.content {
-                    TextContentDelegate::Spans(spans) => &spans.items[..],
+                    TextContentDelegate::Spans(spans) => &spans[..],
                     TextContentDelegate::Text(_) => &[],
                 };
                 let families = std::iter::once(&text.params.font_family)
                     .chain(spans.iter().filter_map(|span| span.font_family.as_ref()));
                 // An animated family is keyed by the family it names at this frame. One that fails
-                // to evaluate is left for binding to report, since a memo may never bind it.
+                // to evaluate is left for binding to report.
                 let mut ctx = None;
                 for family in families {
                     match family {

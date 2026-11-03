@@ -94,7 +94,7 @@
       "params": {
         "composition": "title_card",
         "start": 0,
-        "props": { "title": "Shapes", "subtitle": "Rectangles, ellipses and polygons", "index": 1 }
+        "props": { "title": "Shapes", "subtitle": "Rectangles and ellipses", "index": 1 }
       }
     },
     {

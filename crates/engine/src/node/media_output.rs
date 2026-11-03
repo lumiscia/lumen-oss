@@ -1,6 +1,6 @@
 use crate::node::NodeId;
 
-use crate::gpu::{CompiledOutput, GpuCompileNode, RasterHandle};
+use crate::gpu::{GpuCompileNode, RasterHandle};
 
 const SHADER: &str = include_str!("media_output.wgsl");
 
@@ -14,10 +14,7 @@ pub struct MediaOutput {
 }
 
 impl GpuCompileNode for MediaOutput {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let source = ctx.compile_input(self.id, "source", self.source)?;
         let size = lumen_gpu::Size::new(
             ctx.composition().render_settings().width.max(1),
@@ -34,13 +31,12 @@ impl GpuCompileNode for MediaOutput {
                     )
                 });
         // External output textures stand in for the output, so a pass has to write it: uploaded
-        // media is copied, and a memo's copy stays its own.
+        // media is copied.
         if output_format == lumen_gpu::wgpu::TextureFormat::Rgba8Unorm
             && source.domain == lumen_gpu::TextureDomain::full_frame(size)
             && source_is_written
-            && !ctx.is_memo_texture(source.texture)
         {
-            return Ok(CompiledOutput::Raster(source));
+            return Ok(source);
         }
 
         let output = ctx.builder_mut().texture(
@@ -83,11 +79,10 @@ impl GpuCompileNode for MediaOutput {
             viewport: None,
         });
 
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture: output,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            metadata: source.metadata,
             bounds: None,
-        }))
+        })
     }
 }

@@ -1,8 +1,19 @@
-use super::{
-    ids::NodeId,
-    property::{PropertyExpression, PropertyValue},
-    schema::PropertyDef,
-};
+use std::borrow::Cow;
+
+use anyhow::anyhow;
+use serde_json::{Map, Value};
+
+use crate::expr::{Expression, ExpressionValue};
+
+use super::{ids::NodeId, schema::PropertyDef};
+
+/// What `node(id, 'param')` finds in a param.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropertyRead<'a> {
+    Expr(&'a Expression),
+    /// A literal's value, or `None` for a kind expressions have no value for, such as a paint.
+    Value(Option<ExpressionValue>),
+}
 
 pub struct DelegateEvalContext<'a> {
     pub node_id: NodeId,
@@ -20,30 +31,30 @@ impl DelegateEvalContext<'_> {
     }
 }
 
+/// The form a param takes in a node: evaluated each frame, parsed from JSON and read back as JSON
+/// or by `node(id, 'param')`.
 pub trait DelegateEvaluable: Clone {
     type Evaluated;
+
+    /// Whether an `=expression` may stand for the whole value.
+    const ACCEPTS_EXPRESSIONS: bool;
+
+    /// Whether JSON `null` is a value of its own, as for `Override` fields.
+    const NULLABLE: bool = false;
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated>;
 
     /// Whether any part of this value is an expression.
     fn has_expressions(&self) -> bool;
-}
 
-pub trait DelegateValue: DelegateEvaluable {
-    /// Whether `from_property_expression` and evaluation accept `PropertyExpression::Expr`.
-    const ACCEPTS_EXPRESSIONS: bool;
+    /// Parses the value as written in JSON. Errors name `path`.
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String>;
 
-    fn to_property_value(&self) -> PropertyValue;
-    fn to_property_expression(&self) -> PropertyExpression {
-        PropertyExpression::Value(self.to_property_value())
-    }
-    fn from_property_expression(
-        value: PropertyExpression,
-        node_id: NodeId,
-        property_path: &str,
-    ) -> crate::Result<Self>
-    where
-        Self: Sized;
+    /// The JSON that parses to this value, or `None` for an unset value.
+    fn to_json_value(&self) -> Option<Value>;
+
+    /// What `node(id, 'param')` reads, or `None` for an unset value.
+    fn read(&self) -> Option<PropertyRead<'_>>;
 }
 
 pub trait Delegated: Clone + Default + Sized {
@@ -58,52 +69,96 @@ pub trait NodeParams: DelegateEvaluable + Default {
 
     fn property_defs() -> Vec<PropertyDef>;
     fn is_property(id: &str) -> bool;
-    fn default_properties(&self) -> Vec<(&'static str, PropertyValue)>;
-    fn get_property(&self, id: &str) -> Option<PropertyExpression>;
-    fn from_json(
-        node_id: NodeId,
-        params: Option<&serde_json::Map<String, serde_json::Value>>,
-    ) -> anyhow::Result<Self>
-    where
-        Self: Sized;
-}
+    /// The JSON of each param that is set. Applied to the defaults, this is what the schema
+    /// documents.
+    fn json_properties(&self) -> Vec<(&'static str, Value)>;
+    fn get_property(&self, id: &str) -> Option<PropertyRead<'_>>;
+    /// Parses the fields present in `fields`, with errors naming them under `path`.
+    fn from_json_fields(fields: &Map<String, Value>, path: &str) -> Result<Self, String>;
 
-#[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]
-pub struct DelegateVec<T: Delegated> {
-    pub items: Vec<T::Delegate>,
-}
-
-impl<'de, T> serde::Deserialize<'de> for DelegateVec<T>
-where
-    T: Delegated,
-    T::Delegate: serde::Deserialize<'de>,
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        <Vec<T::Delegate> as serde::Deserialize>::deserialize(deserializer)
-            .map(|items| Self { items })
+    fn from_json(node_id: NodeId, params: Option<&Map<String, Value>>) -> anyhow::Result<Self> {
+        params.map_or_else(
+            || Ok(Self::default()),
+            |params| {
+                Self::from_json_fields(params, "")
+                    .map_err(|error| anyhow!("node {node_id}: {error}"))
+            },
+        )
     }
 }
 
-impl<T> DelegateEvaluable for DelegateVec<T>
-where
-    T: Delegated,
-    T::Delegate: DelegateEvaluable<Evaluated = T>,
-{
-    type Evaluated = Vec<T>;
+/// `path.field`, or just `field` for a node's own params.
+pub fn field_path<'a>(path: &str, field: &'a str) -> Cow<'a, str> {
+    if path.is_empty() {
+        Cow::Borrowed(field)
+    } else {
+        Cow::Owned(format!("{path}.{field}"))
+    }
+}
+
+/// `value` as an object with every `required` field and no field outside `known`.
+pub fn nested_fields<'a>(
+    value: &'a Value,
+    path: &str,
+    known: &[&str],
+    required: &[&str],
+) -> Result<&'a Map<String, Value>, String> {
+    crate::json::reject_expression(value, path)?;
+    let fields = value
+        .as_object()
+        .ok_or_else(|| format!("`{path}` expected an object, got {value}"))?;
+    if let Some(field) = required.iter().find(|field| !fields.contains_key(**field)) {
+        return Err(format!("`{path}`: missing field `{field}`"));
+    }
+    if let Some(key) = fields.keys().find(|key| !known.contains(&key.as_str())) {
+        let known = known
+            .iter()
+            .map(|field| format!("`{field}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "`{path}`: unknown field `{key}`, expected one of {known}"
+        ));
+    }
+    Ok(fields)
+}
+
+impl<D: DelegateEvaluable> DelegateEvaluable for Vec<D> {
+    type Evaluated = Vec<D::Evaluated>;
+
+    const ACCEPTS_EXPRESSIONS: bool = false;
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
-        self.items
-            .iter()
+        self.iter()
             .enumerate()
             .map(|(index, value)| value.eval(ctx).map_err(|error| error.in_index(index)))
             .collect()
     }
 
     fn has_expressions(&self) -> bool {
-        self.items.iter().any(DelegateEvaluable::has_expressions)
+        self.iter().any(DelegateEvaluable::has_expressions)
+    }
+
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        value
+            .as_array()
+            .ok_or_else(|| format!("`{path}` expected an array, got {value}"))?
+            .iter()
+            .enumerate()
+            .map(|(index, item)| D::from_json_value(item, &format!("{path}[{index}]")))
+            .collect()
+    }
+
+    fn to_json_value(&self) -> Option<Value> {
+        Some(Value::Array(
+            self.iter()
+                .filter_map(DelegateEvaluable::to_json_value)
+                .collect(),
+        ))
+    }
+
+    fn read(&self) -> Option<PropertyRead<'_>> {
+        None
     }
 }
 
@@ -111,12 +166,10 @@ impl<T> Delegated for Vec<T>
 where
     T: Delegated,
 {
-    type Delegate = DelegateVec<T>;
+    type Delegate = Vec<T::Delegate>;
 
     fn into_delegate(self) -> Self::Delegate {
-        DelegateVec {
-            items: self.into_iter().map(Delegated::into_delegate).collect(),
-        }
+        self.into_iter().map(Delegated::into_delegate).collect()
     }
 }
 
@@ -156,6 +209,9 @@ impl<T: Delegated> Delegated for Override<T> {
 impl<D: DelegateEvaluable> DelegateEvaluable for Override<D> {
     type Evaluated = Override<D::Evaluated>;
 
+    const ACCEPTS_EXPRESSIONS: bool = D::ACCEPTS_EXPRESSIONS;
+    const NULLABLE: bool = true;
+
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
         Ok(match self {
             Self::Inherit => Override::Inherit,
@@ -166,6 +222,28 @@ impl<D: DelegateEvaluable> DelegateEvaluable for Override<D> {
 
     fn has_expressions(&self) -> bool {
         matches!(self, Self::Set(value) if value.has_expressions())
+    }
+
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        if value.is_null() {
+            return Ok(Self::Clear);
+        }
+        D::from_json_value(value, path).map(Self::Set)
+    }
+
+    fn to_json_value(&self) -> Option<Value> {
+        match self {
+            Self::Inherit => None,
+            Self::Clear => Some(Value::Null),
+            Self::Set(value) => value.to_json_value(),
+        }
+    }
+
+    fn read(&self) -> Option<PropertyRead<'_>> {
+        match self {
+            Self::Set(value) => value.read(),
+            Self::Inherit | Self::Clear => None,
+        }
     }
 }
 
@@ -180,6 +258,8 @@ impl<T: Delegated> Delegated for Option<T> {
 impl<D: DelegateEvaluable> DelegateEvaluable for Option<D> {
     type Evaluated = Option<D::Evaluated>;
 
+    const ACCEPTS_EXPRESSIONS: bool = D::ACCEPTS_EXPRESSIONS;
+
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
         self.as_ref().map(|value| value.eval(ctx)).transpose()
     }
@@ -188,55 +268,23 @@ impl<D: DelegateEvaluable> DelegateEvaluable for Option<D> {
         self.as_ref()
             .is_some_and(DelegateEvaluable::has_expressions)
     }
-}
 
-/// A delegate field that can be unset: `Option` when absent, `Override` also when `null`.
-pub trait OptionalDelegate: Sized {
-    type Inner: DelegateValue;
-
-    /// Whether JSON `null` sets [`Override::Clear`].
-    const NULLABLE: bool;
-
-    fn from_override(value: Override<Self::Inner>) -> Self;
-    fn as_override(&self) -> Override<&Self::Inner>;
-}
-
-impl<D: DelegateValue> OptionalDelegate for Option<D> {
-    type Inner = D;
-
-    const NULLABLE: bool = false;
-
-    fn from_override(value: Override<D>) -> Self {
-        value.resolve(None)
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        D::from_json_value(value, path).map(Some)
     }
 
-    fn as_override(&self) -> Override<&D> {
-        self.as_ref().map_or(Override::Inherit, Override::Set)
-    }
-}
-
-impl<D: DelegateValue> OptionalDelegate for Override<D> {
-    type Inner = D;
-
-    const NULLABLE: bool = true;
-
-    fn from_override(value: Override<D>) -> Self {
-        value
+    fn to_json_value(&self) -> Option<Value> {
+        self.as_ref().and_then(DelegateEvaluable::to_json_value)
     }
 
-    fn as_override(&self) -> Override<&D> {
-        match self {
-            Self::Inherit => Override::Inherit,
-            Self::Clear => Override::Clear,
-            Self::Set(value) => Override::Set(value),
-        }
+    fn read(&self) -> Option<PropertyRead<'_>> {
+        self.as_ref().and_then(DelegateEvaluable::read)
     }
 }
 
 #[cfg(test)]
 mod tests {
     #[derive(Debug, Clone, Default, PartialEq, lumen_macros::Delegate)]
-    #[delegate(properties)]
     pub struct Span {
         #[meta(required)]
         pub text: String,
@@ -246,11 +294,10 @@ mod tests {
 
     #[test]
     fn a_required_field_is_rejected_when_missing() {
+        use crate::node::DelegateEvaluable;
+
         let error =
-            serde_json::from_value::<SpanDelegate>(serde_json::json!({ "size": 12 })).unwrap_err();
-        assert!(
-            error.to_string().contains("missing field `text`"),
-            "{error}"
-        );
+            SpanDelegate::from_json_value(&serde_json::json!({ "size": 12 }), "span").unwrap_err();
+        assert_eq!(error, "`span`: missing field `text`");
     }
 }

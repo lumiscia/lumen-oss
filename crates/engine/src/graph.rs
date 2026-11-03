@@ -41,7 +41,7 @@ impl Graph {
             .nodes
             .get_mut(&to_node)
             .ok_or(GraphValidationError::MissingTargetNode { node_id: to_node })?;
-        Ok(wire_input_port(target, &to_port, from_node)?)
+        Ok(target.set_input(&to_port, from_node)?)
     }
 
     pub fn validate(&self) -> Result<(), Vec<LumenError>> {
@@ -184,43 +184,5 @@ fn cycle_path(unordered: &HashSet<NodeId>, sources: &HashMap<NodeId, Vec<NodeId>
             return path;
         }
         walked.push(node);
-    }
-}
-
-fn wire_input_port(
-    node: &mut NodeKind,
-    to_port: &str,
-    source: NodeId,
-) -> Result<(), GraphValidationError> {
-    use crate::node::JsonNode;
-
-    match node {
-        NodeKind::MediaIn(node) => node.set_input_json(to_port, source),
-        NodeKind::Background(node) => node.set_input_json(to_port, source),
-        NodeKind::Text(node) => node.set_input_json(to_port, source),
-        NodeKind::Path(node) => node.set_input_json(to_port, source),
-        NodeKind::Shape(node) => node.set_input_json(to_port, source),
-        NodeKind::Boolean(node) => node.set_input_json(to_port, source),
-        NodeKind::Merge(node) => node.set_input_json(to_port, source),
-        NodeKind::RasterMultiMerge(node) => node.set_input_json(to_port, source),
-        NodeKind::AlphaPremultiply(node) => node.set_input_json(to_port, source),
-        NodeKind::Blur(node) => node.set_input_json(to_port, source),
-        NodeKind::ChannelShuffle(node) => node.set_input_json(to_port, source),
-        NodeKind::ColorGrade(node) => node.set_input_json(to_port, source),
-        NodeKind::Curves(node) => node.set_input_json(to_port, source),
-        NodeKind::Exposure(node) => node.set_input_json(to_port, source),
-        NodeKind::HueSaturation(node) => node.set_input_json(to_port, source),
-        NodeKind::Levels(node) => node.set_input_json(to_port, source),
-        NodeKind::Memo(node) => node.set_input_json(to_port, source),
-        NodeKind::Opacity(node) => node.set_input_json(to_port, source),
-        NodeKind::TimeRemap(node) => node.set_input_json(to_port, source),
-        NodeKind::Transform(node) => node.set_input_json(to_port, source),
-        NodeKind::Crop(node) => node.set_input_json(to_port, source),
-        NodeKind::Resize(node) => node.set_input_json(to_port, source),
-        NodeKind::Shadow(node) => node.set_input_json(to_port, source),
-        NodeKind::WgslShader(node) => node.set_input_json(to_port, source),
-        NodeKind::Switch(node) => node.set_input_json(to_port, source),
-        NodeKind::Clip(node) => node.set_input_json(to_port, source),
-        NodeKind::MediaOutput(node) => node.set_input_json(to_port, source),
     }
 }

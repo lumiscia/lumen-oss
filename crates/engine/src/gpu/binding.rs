@@ -5,7 +5,7 @@ use crate::{
     error::RenderError,
     expr::ExpressionContext,
     media::MediaStore,
-    node::{NodeId, NodeKind},
+    node::NodeId,
     scope::{FrameTime, Routed, Scope},
 };
 
@@ -130,7 +130,6 @@ impl<'a> FrameBindContext<'a> {
             .as_ref()
             .and_then(|cache| cache.layout.instance(node_id, time_remaps));
         let mut kept = false;
-        let mut holds = false;
         if let Some(cache) = cache.as_mut()
             && let Some(instance) = instance
         {
@@ -141,24 +140,8 @@ impl<'a> FrameBindContext<'a> {
             if kept && !cache.layout.reaches_text(instance) {
                 return Ok(false);
             }
-            if let NodeKind::Memo(memo) = node
-                && cache.layout.is_keyed_memo(instance)
-            {
-                // Keys compare by bits, so a key that is NaN on consecutive frames still holds.
-                let key = memo
-                    .params
-                    .key
-                    .eval(memo.id, "key", &self.expr_context())?
-                    .to_bits();
-                // Without skipped passes the source is bound and dispatched as usual.
-                holds = cache.hold_memo(instance, key) && cache.layout.enabled();
-            }
         }
-        let inputs = if holds {
-            Vec::new()
-        } else {
-            crate::scope::route(&self.scope, node, self.frame, self.media)?
-        };
+        let inputs = crate::scope::route(&self.scope, node, self.frame, self.media)?;
         let mut inputs_render = false;
         for Routed {
             node: input,

@@ -15,7 +15,7 @@ struct TransformParams {
     rotate_radians: f32,
     sampling: u32,
     tap_count: u32,
-    straight_source: u32,
+    _pad2: u32,
     // Canvas pixel of the output's first texel, and source pixel of the source's.
     output_origin: vec2<i32>,
     source_origin: vec2<i32>,
@@ -28,30 +28,29 @@ struct TransformParams {
 @group(0) @binding(1) var<uniform> params: TransformParams;
 @group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
 
-// A pixel of the source, premultiplied first when `straight`, so that filtering weights
-// colour by coverage.
-fn read_pixel(pixel: vec2<i32>, straight: bool) -> vec4<f32> {
+// A pixel of the source, so that filtering weights colour by coverage.
+fn read_pixel(pixel: vec2<i32>) -> vec4<f32> {
     let size = textureDimensions(input_tex);
     let coord = pixel - params.source_origin;
     if (coord.x < 0 || coord.y < 0 || coord.x >= i32(size.x) || coord.y >= i32(size.y)) {
         return vec4<f32>(0.0);
     }
-    return to_premultiplied_alpha(textureLoad(input_tex, coord, 0), straight);
+    return textureLoad(input_tex, coord, 0);
 }
 
 // Sample coordinates are continuous, with pixel centres at integer + 0.5.
-fn sample_nearest(coord: vec2<f32>, straight: bool) -> vec4<f32> {
-    return read_pixel(vec2<i32>(floor(coord)), straight);
+fn sample_nearest(coord: vec2<f32>) -> vec4<f32> {
+    return read_pixel(vec2<i32>(floor(coord)));
 }
 
-fn sample_linear(coord: vec2<f32>, straight: bool) -> vec4<f32> {
+fn sample_linear(coord: vec2<f32>) -> vec4<f32> {
     let base = floor(coord - vec2<f32>(0.5));
     let frac = coord - vec2<f32>(0.5) - base;
     let p0 = vec2<i32>(base);
-    let c00 = read_pixel(p0, straight);
-    let c10 = read_pixel(p0 + vec2<i32>(1, 0), straight);
-    let c01 = read_pixel(p0 + vec2<i32>(0, 1), straight);
-    let c11 = read_pixel(p0 + vec2<i32>(1, 1), straight);
+    let c00 = read_pixel(p0);
+    let c10 = read_pixel(p0 + vec2<i32>(1, 0));
+    let c01 = read_pixel(p0 + vec2<i32>(0, 1));
+    let c11 = read_pixel(p0 + vec2<i32>(1, 1));
     return mix(mix(c00, c10, frac.x), mix(c01, c11, frac.x), frac.y);
 }
 
@@ -74,12 +73,12 @@ fn source_coord(
     return (unrotated / scale) + pivot;
 }
 
-// Samples the source as stored, or premultiplied when `straight`.
-fn sample_source(coord: vec2<f32>, straight: bool) -> vec4<f32> {
+// Samples the source.
+fn sample_source(coord: vec2<f32>) -> vec4<f32> {
     if (params.sampling == 0u) {
-        return sample_nearest(coord, straight);
+        return sample_nearest(coord);
     }
-    return sample_linear(coord, straight);
+    return sample_linear(coord);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -94,23 +93,15 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (params.tap_count == 0u) {
         color = sample_source(
             source_coord(pixel, params.scale, params.translate, params.pivot, params.rotate_radians),
-            false,
         );
     } else {
-        // Straight alpha is premultiplied per texel before filtering and averaging, so
-        // transparent texels and taps add no colour.
-        let straight = params.straight_source != 0u;
         for (var index = 0u; index < params.tap_count; index = index + 1u) {
             let tap = params.taps[index];
             color += sample_source(
                 source_coord(pixel, tap.scale, tap.translate, tap.pivot, tap.rotate_radians),
-                straight,
             );
         }
         color /= f32(params.tap_count);
-        if (straight) {
-            color = unpremultiply(color);
-        }
     }
     textureStore(output_tex, vec2<i32>(id.xy), color);
 }

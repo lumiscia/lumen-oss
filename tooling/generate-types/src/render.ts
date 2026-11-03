@@ -125,11 +125,17 @@ const renderExpressionTables = ({ expressions }: MetaManifest): string => `${ren
 export type ExpressionBuiltinName = (typeof expressionBuiltins)[number]["name"];
 
 ${renderConst("easingNames", expressions.easings)}
-/** Easing names accepted by \`tween\`. \`'linear'\` here is unrelated to the \`linear(a, b, t)\` builtin. */
+/** Easing names accepted by \`tween\`. */
 export type EasingName = (typeof easingNames)[number];
 
 ${renderConst("expressionGlobals", expressions.globals)}
-export type ExpressionGlobalName = (typeof expressionGlobals)[number]["name"];`;
+export type ExpressionGlobalName = (typeof expressionGlobals)[number]["name"];
+
+/** Calls the expression parser handles itself, such as \`if\` and \`node\`, listed for documentation. */
+${renderConst("expressionForms", expressions.forms)}
+
+/** Names that composition functions and their parameters may not take. */
+${renderConst("expressionReservedNames", expressions.reserved)}`;
 
 export function renderMetaTypes(manifest: MetaManifest): string {
   const nodeKinds = uniqueSorted(manifest.nodeKinds);

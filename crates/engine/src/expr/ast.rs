@@ -2,7 +2,7 @@ use std::{fmt, sync::Arc};
 
 use crate::node::NodeId;
 
-pub use super::spec::BuiltinFn;
+pub use super::spec::{BuiltinFn, GlobalVar};
 
 #[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
 pub enum ExpressionValue {
@@ -45,18 +45,17 @@ impl ExpressionValue {
         match self {
             Self::Number(n) => Some(*n),
             Self::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
-            Self::String(s) => s.parse().ok(),
-            Self::Vec2(_) | Self::Color(_) => None,
+            Self::String(_) | Self::Vec2(_) | Self::Color(_) => None,
         }
     }
 
     pub fn as_bool(&self) -> bool {
         match self {
             Self::Boolean(b) => *b,
-            Self::Number(n) => n.abs() > f64::EPSILON,
+            Self::Number(n) => is_truthy(*n),
             Self::String(s) => !s.is_empty(),
-            Self::Vec2((x, y)) => x.abs() > f64::EPSILON || y.abs() > f64::EPSILON,
-            Self::Color(color) => color.iter().any(|component| component.abs() > f64::EPSILON),
+            Self::Vec2((x, y)) => is_truthy(*x) || is_truthy(*y),
+            Self::Color(color) => color.iter().copied().any(is_truthy),
         }
     }
 
@@ -91,6 +90,11 @@ impl ExpressionValue {
     }
 }
 
+/// Whether a number counts as true: anything but zero and NaN.
+fn is_truthy(number: f64) -> bool {
+    number.abs() > 0.0
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     Add,
@@ -114,24 +118,6 @@ pub enum UnaryOp {
     Not,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum GlobalVar {
-    Frame,
-    Time,
-    Fps,
-    Width,
-    Height,
-    Glyph,
-    Word,
-    Line,
-    Span,
-    GlyphCount,
-    WordCount,
-    LineCount,
-    SpanCount,
-    Custom(String),
-}
-
 #[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
 pub enum ExprNode {
     Literal(ExpressionValue),
@@ -142,6 +128,9 @@ pub enum ExprNode {
     Node(NodeId),
     PropertyValue(NodeId, String),
     Conditional(Box<ExprNode>, Box<ExprNode>, Box<ExprNode>),
+    /// A parameter of the composition function being parsed, by position. Expanding a call
+    /// replaces it, so only function bodies hold it.
+    Param(usize),
 }
 
 #[derive(Clone)]
@@ -155,23 +144,65 @@ pub struct Expression {
 }
 
 impl ExprNode {
-    fn depth(&self) -> usize {
-        1 + match self {
-            Self::Unary(_, value) => value.depth(),
-            Self::Binary(lhs, _, rhs) => lhs.depth().max(rhs.depth()),
-            Self::Builtin(_, args) => args.iter().map(Self::depth).max().unwrap_or(0),
-            Self::Conditional(condition, when_true, when_false) => condition
-                .depth()
-                .max(when_true.depth())
-                .max(when_false.depth()),
-            Self::Literal(_) | Self::Global(_) | Self::Node(_) | Self::PropertyValue(..) => 0,
-        }
+    pub(super) fn children(&self) -> impl Iterator<Item = &ExprNode> {
+        let (boxed, args): ([Option<&ExprNode>; 3], &[ExprNode]) = match self {
+            Self::Unary(_, value) => ([Some(value), None, None], &[]),
+            Self::Binary(lhs, _, rhs) => ([Some(lhs), Some(rhs), None], &[]),
+            Self::Conditional(condition, when_true, when_false) => {
+                ([Some(condition), Some(when_true), Some(when_false)], &[])
+            }
+            Self::Builtin(_, args) => ([None; 3], args),
+            Self::Literal(_)
+            | Self::Global(_)
+            | Self::Node(_)
+            | Self::PropertyValue(..)
+            | Self::Param(_) => ([None; 3], &[]),
+        };
+        boxed.into_iter().flatten().chain(args)
+    }
+
+    /// This node with `rebuild` applied to each child, in order.
+    pub(super) fn map_children<E>(
+        &self,
+        mut rebuild: impl FnMut(&ExprNode) -> Result<ExprNode, E>,
+    ) -> Result<ExprNode, E> {
+        Ok(match self {
+            Self::Unary(op, value) => Self::Unary(*op, Box::new(rebuild(value)?)),
+            Self::Binary(lhs, op, rhs) => {
+                let lhs = Box::new(rebuild(lhs)?);
+                Self::Binary(lhs, *op, Box::new(rebuild(rhs)?))
+            }
+            Self::Conditional(condition, when_true, when_false) => {
+                let condition = Box::new(rebuild(condition)?);
+                let when_true = Box::new(rebuild(when_true)?);
+                Self::Conditional(condition, when_true, Box::new(rebuild(when_false)?))
+            }
+            Self::Builtin(builtin, args) => Self::Builtin(
+                *builtin,
+                args.iter().map(rebuild).collect::<Result<_, _>>()?,
+            ),
+            Self::Literal(_)
+            | Self::Global(_)
+            | Self::Node(_)
+            | Self::PropertyValue(..)
+            | Self::Param(_) => self.clone(),
+        })
+    }
+
+    /// Levels of this tree, which is how deep evaluating it recurses.
+    pub(super) fn depth(&self) -> usize {
+        1 + self.children().map(Self::depth).max().unwrap_or(0)
+    }
+
+    /// Nodes in this tree.
+    pub(super) fn count(&self) -> usize {
+        1 + self.children().map(Self::count).sum::<usize>()
     }
 }
 
 impl Expression {
     /// Builds an expression from an AST, deriving its evaluation plan.
-    pub fn new(ast: ExprNode, source: String) -> Self {
+    pub(crate) fn new(ast: ExprNode, source: String) -> Self {
         Self {
             plan: Arc::new(super::eval::EvalPlan::new(&ast)),
             depth: ast.depth(),
@@ -224,7 +255,8 @@ mod tests {
         assert_eq!(value.as_string(), "[12.5, -3]");
         assert!(value.as_bool());
         assert!(!ExpressionValue::Vec2((0.0, 0.0)).as_bool());
-        assert!(!ExpressionValue::Vec2((f64::EPSILON, 0.0)).as_bool());
+        assert!(ExpressionValue::Vec2((f64::EPSILON, 0.0)).as_bool());
+        assert!(!ExpressionValue::Vec2((f64::NAN, -0.0)).as_bool());
     }
 
     #[test]

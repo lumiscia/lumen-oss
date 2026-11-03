@@ -4,7 +4,7 @@
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
 export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
-export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "clip" | "color_grade" | "crop" | "curves" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
 
@@ -226,27 +226,6 @@ export const expressionBuiltins = [
   {
     "args": [
       {
-        "kind": "any",
-        "name": "from"
-      },
-      {
-        "kind": "any",
-        "name": "to"
-      },
-      {
-        "kind": "number",
-        "name": "t"
-      }
-    ],
-    "doc": "Same as `lerp`. Not to be confused with the `'linear'` easing name.",
-    "maxArgs": 3,
-    "minArgs": 3,
-    "name": "linear",
-    "returns": "any"
-  },
-  {
-    "args": [
-      {
         "kind": "number",
         "name": "from"
       },
@@ -454,6 +433,69 @@ export const expressionBuiltins = [
     "args": [
       {
         "kind": "number",
+        "name": "x1"
+      },
+      {
+        "kind": "number",
+        "name": "y1"
+      },
+      {
+        "kind": "number",
+        "name": "x2"
+      },
+      {
+        "kind": "number",
+        "name": "y2"
+      },
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.",
+    "maxArgs": 5,
+    "minArgs": 5,
+    "name": "cubic_bezier",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "string",
+        "name": "name"
+      }
+    ],
+    "doc": "The value of a composition template's prop, e.g. `prop('title')`. Only inside a template.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "prop",
+    "returns": "any"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      },
+      {
+        "kind": "number",
+        "name": "stiffness"
+      },
+      {
+        "kind": "number",
+        "name": "damping"
+      }
+    ],
+    "doc": "Spring from 0 to 1, `t` seconds after release, e.g. `spring((frame - 12) / fps)`. Stiffness defaults to 170 and damping to 26.",
+    "maxArgs": 3,
+    "minArgs": 1,
+    "name": "spring",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
         "name": "t"
       }
     ],
@@ -605,69 +647,6 @@ export const expressionBuiltins = [
     "minArgs": 1,
     "name": "in_out_back",
     "returns": "number"
-  },
-  {
-    "args": [
-      {
-        "kind": "number",
-        "name": "x1"
-      },
-      {
-        "kind": "number",
-        "name": "y1"
-      },
-      {
-        "kind": "number",
-        "name": "x2"
-      },
-      {
-        "kind": "number",
-        "name": "y2"
-      },
-      {
-        "kind": "number",
-        "name": "t"
-      }
-    ],
-    "doc": "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.",
-    "maxArgs": 5,
-    "minArgs": 5,
-    "name": "cubic_bezier",
-    "returns": "number"
-  },
-  {
-    "args": [
-      {
-        "kind": "string",
-        "name": "name"
-      }
-    ],
-    "doc": "The value of a composition template's prop, e.g. `prop('title')`. Only inside a template.",
-    "maxArgs": 1,
-    "minArgs": 1,
-    "name": "prop",
-    "returns": "any"
-  },
-  {
-    "args": [
-      {
-        "kind": "number",
-        "name": "t"
-      },
-      {
-        "kind": "number",
-        "name": "stiffness"
-      },
-      {
-        "kind": "number",
-        "name": "damping"
-      }
-    ],
-    "doc": "Spring from 0 to 1, `t` seconds after release, e.g. `spring((frame - 12) / fps)`. Stiffness defaults to 170 and damping to 26.",
-    "maxArgs": 3,
-    "minArgs": 1,
-    "name": "spring",
-    "returns": "number"
   }
 ] as const;
 export type ExpressionBuiltinName = (typeof expressionBuiltins)[number]["name"];
@@ -687,7 +666,7 @@ export const easingNames = [
   "out_back",
   "in_out_back"
 ] as const;
-/** Easing names accepted by `tween`. `'linear'` here is unrelated to the `linear(a, b, t)` builtin. */
+/** Easing names accepted by `tween`. */
 export type EasingName = (typeof easingNames)[number];
 
 export const expressionGlobals = [
@@ -745,6 +724,80 @@ export const expressionGlobals = [
   }
 ] as const;
 export type ExpressionGlobalName = (typeof expressionGlobals)[number]["name"];
+
+/** Calls the expression parser handles itself, such as `if` and `node`, listed for documentation. */
+export const expressionForms = [
+  {
+    "doc": "`then` when `condition` is truthy, otherwise `else`. Only the chosen branch is evaluated.",
+    "name": "if",
+    "signature": "if(condition, then, else)"
+  },
+  {
+    "doc": "The value of another node's param. `node(id)` alone names a text node for `text_width` and `text_height`.",
+    "name": "node",
+    "signature": "node(id, 'property')"
+  }
+] as const;
+
+/** Names that composition functions and their parameters may not take. */
+export const expressionReservedNames = [
+  "true",
+  "false",
+  "if",
+  "node",
+  "min",
+  "max",
+  "abs",
+  "floor",
+  "ceil",
+  "round",
+  "sin",
+  "cos",
+  "clamp",
+  "lerp",
+  "pow",
+  "mod",
+  "fract",
+  "smoothstep",
+  "step",
+  "text_height",
+  "text_width",
+  "uppercase",
+  "lowercase",
+  "vec2",
+  "rgb",
+  "rgba",
+  "progress",
+  "tween",
+  "cubic_bezier",
+  "prop",
+  "spring",
+  "in_quad",
+  "out_quad",
+  "in_out_quad",
+  "in_cubic",
+  "out_cubic",
+  "in_out_cubic",
+  "in_expo",
+  "out_expo",
+  "in_out_expo",
+  "in_back",
+  "out_back",
+  "in_out_back",
+  "frame",
+  "time",
+  "fps",
+  "width",
+  "height",
+  "glyph",
+  "word",
+  "line",
+  "span",
+  "glyph_count",
+  "word_count",
+  "line_count",
+  "span_count"
+] as const;
 
 export interface MetaManifest {
   readonly schemaVersion: 1;
@@ -832,11 +885,8 @@ export type Color =
 export type HexColor = `#${string}`;
 
 export type BooleanOperation = "union" | "intersect" | "subtract" | "xor";
-export type ChannelShuffleAlpha = "red" | "green" | "blue" | "alpha" | "zero" | "one";
-export type ChannelShuffleBlue = "red" | "green" | "blue" | "alpha" | "zero" | "one";
-export type ChannelShuffleGreen = "red" | "green" | "blue" | "alpha" | "zero" | "one";
-export type ChannelShuffleRed = "red" | "green" | "blue" | "alpha" | "zero" | "one";
 export type ClipEnd = "hide" | "hold" | "loop";
+export type ColorGradeInterpolation = "nearest" | "linear";
 export type MediaInKind = "image" | "video";
 export type MediaInLoopMode = "clamp" | "repeat" | "ping_pong";
 export type MergeBlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten";
@@ -844,7 +894,7 @@ export type MergeMaskMode = "alpha" | "luma";
 export type RasterMultimergeBlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten";
 export type ResizeMode = "stretch" | "fit" | "fill";
 export type ResizeSampling = "nearest" | "linear";
-export type ShapeGeometryKind = "rectangle" | "ellipse" | "polygon";
+export type ShapeGeometryKind = "rectangle" | "ellipse";
 export type TextAlignmentHorizontal = "left" | "center" | "right" | "justify";
 export type TextAlignmentVertical = "top" | "middle" | "bottom";
 export type TextFit = "none" | "shrink";
@@ -953,7 +1003,10 @@ export type TextSpan = {
    * kept. Within a word, the first span's features apply to all of it.
    */
   readonly font_features?: FontFeatures;
-  /** Font size in pixels. */
+  /**
+   * Font size in pixels. Where spans of one family, weight and style meet, a ligature or
+   * other cluster across the boundary takes the size of the span it starts in.
+   */
   readonly font_size?: ExpressionValue<number>;
   /** Font style. */
   readonly font_style?: ExpressionValue<TextFontStyle>;
@@ -1004,18 +1057,12 @@ export interface CompositionNodeBase<TKind extends NodeKind> {
   readonly type: TKind;
 }
 
-export interface AlphaPremultiplyNode extends CompositionNodeBase<"alpha_premultiply"> {
-  readonly params?: {
-    readonly "mode"?: string;
-  };
-}
-
 export interface BackgroundNode extends CompositionNodeBase<"background"> {
   readonly params?: {
-    readonly "height"?: ExpressionValue<number>;
+    readonly "height"?: number;
     readonly "paint"?: ExpressionValue<Paint>;
     readonly "paint_supersample"?: ExpressionValue<boolean>;
-    readonly "width"?: ExpressionValue<number>;
+    readonly "width"?: number;
   };
 }
 
@@ -1029,15 +1076,6 @@ export interface BooleanNode extends CompositionNodeBase<"boolean"> {
   readonly params?: {
     readonly "operation"?: ExpressionValue<BooleanOperation>;
     readonly "threshold"?: ExpressionValue<number>;
-  };
-}
-
-export interface ChannelShuffleNode extends CompositionNodeBase<"channel_shuffle"> {
-  readonly params?: {
-    readonly "alpha"?: ChannelShuffleAlpha;
-    readonly "blue"?: ChannelShuffleBlue;
-    readonly "green"?: ChannelShuffleGreen;
-    readonly "red"?: ChannelShuffleRed;
   };
 }
 
@@ -1055,7 +1093,7 @@ export interface ClipNode extends CompositionNodeBase<"clip"> {
 
 export interface ColorGradeNode extends CompositionNodeBase<"color_grade"> {
   readonly params?: {
-    readonly "interpolation"?: ExpressionValue<number>;
+    readonly "interpolation"?: ExpressionValue<ColorGradeInterpolation>;
     readonly "lut_source"?: ExpressionValue<string>;
     readonly "strength"?: ExpressionValue<number>;
   };
@@ -1067,13 +1105,6 @@ export interface CropNode extends CompositionNodeBase<"crop"> {
     readonly "width"?: ExpressionValue<number>;
     readonly "x"?: ExpressionValue<number>;
     readonly "y"?: ExpressionValue<number>;
-  };
-}
-
-export interface CurvesNode extends CompositionNodeBase<"curves"> {
-  readonly params?: {
-    readonly "curve_source"?: ExpressionValue<string>;
-    readonly "strength"?: ExpressionValue<number>;
   };
 }
 
@@ -1118,15 +1149,9 @@ export interface MediaOutputNode extends CompositionNodeBase<"media_output"> {
   readonly params?: Readonly<Record<string, never>>;
 }
 
-export interface MemoNode extends CompositionNodeBase<"memo"> {
-  readonly params?: {
-    readonly "key"?: ExpressionValue<number>;
-  };
-}
-
 export interface MergeNode extends CompositionNodeBase<"merge"> {
   readonly params?: {
-    readonly "blend_mode"?: MergeBlendMode;
+    readonly "blend_mode"?: ExpressionValue<MergeBlendMode>;
     readonly "feather"?: ExpressionValue<number>;
     readonly "invert"?: ExpressionValue<boolean>;
     readonly "mask_mode"?: MergeMaskMode;
@@ -1171,7 +1196,7 @@ export interface ResizeNode extends CompositionNodeBase<"resize"> {
   readonly params?: {
     readonly "height"?: ExpressionValue<number>;
     readonly "mode"?: ResizeMode;
-    readonly "sampling"?: ResizeSampling;
+    readonly "sampling"?: ExpressionValue<ResizeSampling>;
     readonly "width"?: ExpressionValue<number>;
     readonly "x"?: ExpressionValue<number>;
     readonly "y"?: ExpressionValue<number>;
@@ -1199,7 +1224,6 @@ export interface ShapeNode extends CompositionNodeBase<"shape"> {
     readonly "height"?: ExpressionValue<number>;
     readonly "motion_blur"?: ExpressionValue<number>;
     readonly "opacity"?: ExpressionValue<number>;
-    readonly "polygon_points"?: ExpressionValue<string>;
     readonly "position"?: ExpressionValue<Vec2>;
     readonly "rotation"?: ExpressionValue<number>;
     readonly "scale"?: ExpressionValue<Vec2>;
@@ -1273,7 +1297,7 @@ export interface TransformNode extends CompositionNodeBase<"transform"> {
     readonly "pivot_x"?: ExpressionValue<number>;
     readonly "pivot_y"?: ExpressionValue<number>;
     readonly "rotate"?: ExpressionValue<number>;
-    readonly "sampling"?: TransformSampling;
+    readonly "sampling"?: ExpressionValue<TransformSampling>;
     readonly "scale_x"?: ExpressionValue<number>;
     readonly "scale_y"?: ExpressionValue<number>;
     readonly "translate_x"?: ExpressionValue<number>;
@@ -1289,21 +1313,17 @@ export interface WgslShaderNode extends CompositionNodeBase<"wgsl_shader"> {
 }
 
 export interface CompositionNodeByKind {
-  readonly "alpha_premultiply": AlphaPremultiplyNode;
   readonly "background": BackgroundNode;
   readonly "blur": BlurNode;
   readonly "boolean": BooleanNode;
-  readonly "channel_shuffle": ChannelShuffleNode;
   readonly "clip": ClipNode;
   readonly "color_grade": ColorGradeNode;
   readonly "crop": CropNode;
-  readonly "curves": CurvesNode;
   readonly "exposure": ExposureNode;
   readonly "hue_saturation": HueSaturationNode;
   readonly "levels": LevelsNode;
   readonly "media_in": MediaInNode;
   readonly "media_output": MediaOutputNode;
-  readonly "memo": MemoNode;
   readonly "merge": MergeNode;
   readonly "opacity": OpacityNode;
   readonly "path": PathNode;
@@ -1319,9 +1339,6 @@ export interface CompositionNodeByKind {
 }
 
 export interface CompositionNodeInputByKind {
-  readonly "alpha_premultiply": Omit<AlphaPremultiplyNode, "id"> & {
-    readonly id?: number;
-  };
   readonly "background": Omit<BackgroundNode, "id"> & {
     readonly id?: number;
   };
@@ -1331,9 +1348,6 @@ export interface CompositionNodeInputByKind {
   readonly "boolean": Omit<BooleanNode, "id"> & {
     readonly id?: number;
   };
-  readonly "channel_shuffle": Omit<ChannelShuffleNode, "id"> & {
-    readonly id?: number;
-  };
   readonly "clip": Omit<ClipNode, "id"> & {
     readonly id?: number;
   };
@@ -1341,9 +1355,6 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "crop": Omit<CropNode, "id"> & {
-    readonly id?: number;
-  };
-  readonly "curves": Omit<CurvesNode, "id"> & {
     readonly id?: number;
   };
   readonly "exposure": Omit<ExposureNode, "id"> & {
@@ -1359,9 +1370,6 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "media_output": Omit<MediaOutputNode, "id"> & {
-    readonly id?: number;
-  };
-  readonly "memo": Omit<MemoNode, "id"> & {
     readonly id?: number;
   };
   readonly "merge": Omit<MergeNode, "id"> & {
@@ -1403,21 +1411,17 @@ export interface CompositionNodeInputByKind {
 }
 
 export interface NodeInputPortNameByKind {
-  readonly "alpha_premultiply": "source";
   readonly "background": never;
   readonly "blur": "source";
   readonly "boolean": "a" | "b";
-  readonly "channel_shuffle": "source";
   readonly "clip": "source";
   readonly "color_grade": "source";
   readonly "crop": "source";
-  readonly "curves": "source";
   readonly "exposure": "source";
   readonly "hue_saturation": "source";
   readonly "levels": "source";
   readonly "media_in": never;
   readonly "media_output": "source";
-  readonly "memo": "source";
   readonly "merge": "base" | "mask" | "overlay";
   readonly "opacity": "source";
   readonly "path": never;

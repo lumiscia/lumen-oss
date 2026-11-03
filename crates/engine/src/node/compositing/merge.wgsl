@@ -3,17 +3,15 @@ struct MergeParams {
     blend_mode: u32,
     // 0: no mask, 1: the feathered mask, 2: the mask as is.
     mask_source: u32,
-    // Bit 0: base, bit 1: overlay, bit 2: mask (applied when it is read as is).
-    straight_inputs: u32,
     mask_mode: u32,
     invert: u32,
+    _pad: u32,
     // Canvas pixels of the first texels of the output, base, overlay and raw mask. The
     // feathered mask starts at the canvas origin.
     origin: vec2<i32>,
     base_origin: vec2<i32>,
     overlay_origin: vec2<i32>,
     mask_origin: vec2<i32>,
-    _pad: vec2<u32>,
 }
 
 @group(0) @binding(0) var base_tex: texture_2d<f32>;
@@ -55,13 +53,13 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let pixel = vec2<i32>(id.xy) + params.origin;
-    let base = to_premultiplied_alpha(sample_or_transparent(base_tex, pixel, params.base_origin), (params.straight_inputs & 1u) != 0u);
-    let overlay = to_premultiplied_alpha(sample_or_transparent(overlay_tex, pixel, params.overlay_origin), (params.straight_inputs & 2u) != 0u);
+    let base = sample_or_transparent(base_tex, pixel, params.base_origin);
+    let overlay = sample_or_transparent(overlay_tex, pixel, params.overlay_origin);
     var mask = 1.0;
     if (params.mask_source != 0u) {
         var texel = sample_or_transparent(mask_tex, pixel, vec2<i32>(0));
         if (params.mask_source == 2u) {
-            texel = to_premultiplied_alpha(sample_or_transparent(raw_mask_tex, pixel, params.mask_origin), (params.straight_inputs & 4u) != 0u);
+            texel = sample_or_transparent(raw_mask_tex, pixel, params.mask_origin);
         }
         mask = clamp(matte_of(texel), 0.0, 1.0);
         if (params.invert != 0u) {

@@ -1,8 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = include_str!("opacity.wgsl");
@@ -36,7 +35,6 @@ pub struct Opacity {
 struct CompiledOpacity {
     node_id: NodeId,
     params: OpacityParamsDelegate,
-    alpha_mode: AlphaMode,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -50,17 +48,8 @@ impl GpuCompiledNode for CompiledOpacity {
             node_id: self.node_id,
             expr: &ctx.expr_context(),
         })?;
-        let premultiplied = match self.alpha_mode {
-            AlphaMode::Premultiplied => 1.0,
-            AlphaMode::Unpremultiplied => 0.0,
-        };
         let params = compiler::OpacityParams {
-            values: [
-                evaluated.opacity.clamp(0.0, 1.0) as f32,
-                premultiplied,
-                0.0,
-                0.0,
-            ],
+            opacity: evaluated.opacity.clamp(0.0, 1.0) as f32,
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
@@ -68,10 +57,7 @@ impl GpuCompiledNode for CompiledOpacity {
 }
 
 impl GpuCompileNode for Opacity {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let (source, texture, params) = ctx.compile_unary_filter(
             self.id,
             self.source,
@@ -83,14 +69,12 @@ impl GpuCompileNode for Opacity {
         ctx.register_compiled_node(CompiledOpacity {
             node_id: self.id,
             params: self.params.clone(),
-            alpha_mode: source.metadata.alpha_mode,
             buffer: params,
         });
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain: source.domain,
-            metadata: source.metadata,
             bounds: source.bounds,
-        }))
+        })
     }
 }

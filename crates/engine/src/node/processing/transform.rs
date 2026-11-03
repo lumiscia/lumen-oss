@@ -1,27 +1,18 @@
 use crate::error::RenderError;
 use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
+    processing::RasterSampling,
+};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
     include_str!("transform.wgsl")
 );
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum")]
-pub enum TransformSampling {
-    Nearest = 0,
-    #[default]
-    Linear = 1,
-}
 
 /// Transforms a raster into the composition canvas bounds.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -55,8 +46,8 @@ pub struct TransformParams {
     #[meta(name = "Motion blur", min = 0, max = 360, step = 1)]
     pub motion_blur: f64,
     /// Sampling filter used when transforming.
-    #[meta(kind = "enum", enum_type = TransformSampling)]
-    pub sampling: TransformSampling,
+    #[meta(kind = "enum", enum_type = RasterSampling)]
+    pub sampling: RasterSampling,
 }
 
 impl Default for TransformParams {
@@ -71,7 +62,7 @@ impl Default for TransformParams {
             pivot_y: 0.0,
             custom_pivot: false,
             motion_blur: 0.0,
-            sampling: TransformSampling::Linear,
+            sampling: RasterSampling::Linear,
         }
     }
 }
@@ -111,10 +102,7 @@ impl Transform {
 }
 
 impl GpuCompileNode for Transform {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         self.reject_ignored_pivot()?;
         let source = ctx.compile_bounded_input(self.id, "source", self.source)?;
         let motion = TransformMotion {
@@ -137,24 +125,21 @@ impl GpuCompileNode for Transform {
         )?;
         ctx.register_compiled_node(CompiledTransform {
             motion,
-            straight_source: source.metadata.alpha_mode == AlphaMode::Unpremultiplied,
             output_origin: [domain.data_rect.x, domain.data_rect.y],
             source_origin: [source.domain.data_rect.x, source.domain.data_rect.y],
             buffer: params,
         });
-        Ok(CompiledOutput::Raster(RasterHandle {
+        Ok(RasterHandle {
             texture,
             domain,
-            metadata: source.metadata,
             bounds: None,
-        }))
+        })
     }
 }
 
 #[derive(Debug, Clone)]
 struct CompiledTransform {
     motion: TransformMotion,
-    straight_source: bool,
     /// Canvas pixel of the output's first texel.
     output_origin: [i32; 2],
     /// Source pixel of the source's first texel.
@@ -184,7 +169,6 @@ impl GpuCompiledNode for CompiledTransform {
             pivot,
             rotate_radians: (evaluated.rotate as f32).to_radians(),
             sampling: evaluated.sampling as u32,
-            straight_source: u32::from(self.straight_source),
             output_origin: self.output_origin,
             source_origin: self.source_origin,
             ..bytemuck::Zeroable::zeroed()

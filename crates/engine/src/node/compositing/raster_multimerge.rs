@@ -1,8 +1,9 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, compositing::BlendMode,
+};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
-    RasterHandle, RasterMetadata, compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -14,19 +15,19 @@ pub(crate) const SHADER: &str = concat!(
 /// Composites a variadic stack of raster layers in order.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct RasterMultiMergeParams {
-    /// Opacity applied to each layer as it is composited.
+    /// Opacity of each layer above the first, which is the base and is used as is.
     #[meta(min = 0, max = 1, step = 0.05)]
     pub opacity: f64,
     /// Blend mode used for each layer in the stack.
-    #[meta(kind = "enum", enum_type = crate::node::compositing::BlendMode)]
-    pub blend_mode: i64,
+    #[meta(kind = "enum", enum_type = BlendMode)]
+    pub blend_mode: BlendMode,
 }
 
 impl Default for RasterMultiMergeParams {
     fn default() -> Self {
         Self {
             opacity: 1.0,
-            blend_mode: 0,
+            blend_mode: BlendMode::Normal,
         }
     }
 }
@@ -54,13 +55,10 @@ struct RasterMultiCompiledMerge {
     layers: Vec<CompiledLayer>,
 }
 
-/// Per-pass uniform buffer, carrying the alpha representation and placement of that pass's
-/// inputs.
+/// Per-pass uniform buffer, carrying the placement of that pass's inputs.
 #[derive(Debug, Clone)]
 struct CompiledLayer {
     buffer: lumen_gpu::BufferId,
-    base_straight: bool,
-    overlay_straight: bool,
     /// Output texel of the pass's first invocation, then canvas pixels of the first texels
     /// of the output, base and overlay.
     origins: [[i32; 2]; 4],
@@ -78,12 +76,8 @@ impl GpuCompiledNode for RasterMultiCompiledMerge {
         })?;
         for layer in &self.layers {
             let params = compiler::RasterMultiMergeParams {
-                values: [
-                    evaluated.opacity as f32,
-                    evaluated.blend_mode as f32,
-                    f32::from(u8::from(layer.base_straight)),
-                    f32::from(u8::from(layer.overlay_straight)),
-                ],
+                opacity: evaluated.opacity as f32,
+                blend_mode: evaluated.blend_mode as u32,
                 origins: layer.origins,
             };
             bound.write_buffer(layer.buffer, 0, bytemuck::bytes_of(&params));
@@ -93,17 +87,11 @@ impl GpuCompiledNode for RasterMultiCompiledMerge {
 }
 
 impl GpuCompileNode for RasterMultiMerge {
-    fn compile_gpu(
-        &self,
-        ctx: &mut crate::gpu::CompileContext<'_>,
-    ) -> crate::Result<CompiledOutput> {
+    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let layers = self
             .layers
             .iter()
-            .map(|&layer| {
-                ctx.compile_bounded_port(layer)
-                    .and_then(|output| output.into_raster(layer))
-            })
+            .map(|&layer| ctx.compile_bounded_port(layer))
             .collect::<crate::Result<Vec<_>>>()?;
         let Some((&first, overlays)) = layers.split_first() else {
             return Ok(ctx.compile_transparent(self.id));
@@ -187,8 +175,6 @@ impl GpuCompileNode for RasterMultiMerge {
             ];
             compiled_layers.push(CompiledLayer {
                 buffer: params,
-                base_straight: current.metadata.alpha_mode == AlphaMode::Unpremultiplied,
-                overlay_straight: overlay.metadata.alpha_mode == AlphaMode::Unpremultiplied,
                 origins: [
                     start,
                     origin(&domain),
@@ -210,10 +196,6 @@ impl GpuCompileNode for RasterMultiMerge {
             current = RasterHandle {
                 texture,
                 domain,
-                metadata: RasterMetadata {
-                    alpha_mode: AlphaMode::Premultiplied,
-                    ..current.metadata
-                },
                 bounds: None,
             };
         }
@@ -223,6 +205,6 @@ impl GpuCompileNode for RasterMultiMerge {
             layers: compiled_layers,
         });
 
-        Ok(CompiledOutput::Raster(current))
+        Ok(current)
     }
 }
