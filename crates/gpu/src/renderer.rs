@@ -378,11 +378,11 @@ impl Renderer {
             .slice(..)
             .get_mapped_range()
             .context("GPU readback map range failed")?;
-        Ok(mapped
-            .chunks(padded_row)
-            .flat_map(|padded| &padded[..row])
-            .copied()
-            .collect())
+        let mut pixels = Vec::with_capacity(row * size.height as usize);
+        for padded in mapped.chunks(padded_row) {
+            pixels.extend_from_slice(&padded[..row]);
+        }
+        Ok(pixels)
     }
 
     pub fn texture_arc(&self, id: TextureId) -> Option<Arc<wgpu::Texture>> {
