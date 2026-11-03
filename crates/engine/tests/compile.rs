@@ -937,6 +937,17 @@ fn bind_errors() {
             property(3, path),
         ));
     }
+    for source in ["0,0,0; nan,1,1", "0,0,0; inf,1,1", "0,0,0; 1e99,1,1"] {
+        rows.push(row(
+            &format!("color_grade LUT `{source}`"),
+            json!([
+                solid(1, [255, 0, 0, 255]),
+                { "id": 2, "type": "color_grade", "in": { "source": 1 },
+                  "params": { "lut_source": source } },
+            ]),
+            "ColorGrade node 2 evaluation failed: LUT components must be finite",
+        ));
+    }
     rows.push(row(
         "crop origin below i32::MIN",
         crop_resize([i64::from(i32::MIN) - 1, 0, 4, 4], valid),
