@@ -1,6 +1,9 @@
 //! Images and video frames from a media store: their size, replacement, caching and release.
 
+use std::sync::Arc;
+
 use lumen_engine::gpu::GpuCompositionRenderer;
+use lumen_engine::media::{CpuMediaFrame, MediaFrame};
 use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
@@ -63,14 +66,14 @@ fn an_image_replaced_by_one_of_another_size_renders_at_the_new_size() {
         &mut renderer,
         &composition,
         0.0,
-        &plate("plate#1", CANVAS, RED),
+        &plate("plate", CANVAS, RED),
     );
     assert_eq!(large.pixel(CORNER.0, CORNER.1), RED);
     let small = render(
         &mut renderer,
         &composition,
         1.0,
-        &plate("plate#2", (2, 2), BLUE),
+        &plate("plate", (2, 2), BLUE),
     );
     assert_eq!(small.pixel(1, 1), BLUE);
     assert_eq!(small.pixel(CORNER.0, CORNER.1), CLEAR);
@@ -127,6 +130,31 @@ fn images_past_the_budget_are_freed_once_no_plan_binds_them() {
     assert_eq!(renderer.cached_media_texture_count(), 1);
     renderer.set_static_output_reuse(false);
     assert_eq!(renderer.cached_media_texture_count(), 0);
+}
+
+#[test]
+fn images_replaced_before_a_failed_upload_are_still_freed() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    renderer.set_media_texture_cache_budget(0);
+    let composition = media_in(json!({ "source": "plate" })).into();
+    render(&mut renderer, &composition, 0.0, &plate("red", CANVAS, RED));
+    let media = plate("blue", CANVAS, BLUE);
+    let mut bound = renderer.bind_frame_at(&composition, 1.0, &media).unwrap();
+    // The valid image uploads, then this upload to a texture that doesn't exist fails.
+    bound.use_media_texture(
+        lumen_gpu::TextureId(u32::MAX),
+        None,
+        MediaFrame::CpuRgba(Arc::new(CpuMediaFrame {
+            rgba: Arc::new(solid((1, 1), RED)),
+            width: 1,
+            height: 1,
+            row_bytes: 4,
+        })),
+        lumen_gpu::Size::new(1, 1),
+    );
+    assert!(renderer.submit_bound_frame(&bound).is_err());
+    assert_eq!(renderer.cached_media_texture_count(), 1);
 }
 
 #[test]

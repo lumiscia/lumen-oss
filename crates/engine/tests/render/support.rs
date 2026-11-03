@@ -546,6 +546,7 @@ pub struct Case {
     expect: Expect,
     tolerance: u8,
     bounded: Option<bool>,
+    own_programs: bool,
 }
 
 impl Case {
@@ -559,6 +560,7 @@ impl Case {
             expect,
             tolerance: 1,
             bounded: None,
+            own_programs: false,
         }
     }
 
@@ -584,16 +586,24 @@ impl Case {
         self
     }
 
+    /// Makes the reference compile its own programs, so a program built wrongly for this scene's
+    /// plan can't make both renders wrong. Rows are slower for it, so few use it.
+    pub fn own_programs(mut self) -> Self {
+        self.own_programs = true;
+        self
+    }
+
     fn run(&self, gpu: &Gpu) {
         assert!(!self.frames.is_empty(), "a case needs at least one frame");
         // Compiled programs are shared between renderers only while one still uses them, so this
-        // renderer lives on through the reference render, which then compiles none. They share
-        // nothing else: the reference starts with empty plan caches.
+        // renderer normally lives on through the reference render, which then compiles none. They
+        // share nothing else: the reference starts with empty plan caches.
         let mut renderer = gpu.renderer();
         let frames = self.render_frames(&mut renderer, self.bounded);
         self.expect.assert(self, gpu, &frames);
+        let kept = (!self.own_programs).then_some(renderer);
         let reference = self.render_frames(&mut gpu.reference(), self.bounded.map(|_| false));
-        drop(renderer);
+        drop(kept);
         for (frame, reference) in frames.iter().zip(&reference) {
             if let Err(error) = within_rounding(&frame.rgba, &reference.rgba) {
                 panic!("frame {} differs from the reference: {error}", frame.at);
