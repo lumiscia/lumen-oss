@@ -4,12 +4,6 @@ use crate::{error::RenderError, node::NodeId};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct AlphaPremultiplyParams {
-    pub(crate) values: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ColorGradeParams {
     pub(crate) strength: f32,
     pub(crate) interpolation: u32,
@@ -218,20 +212,6 @@ pub(crate) fn dispatch_for(size: lumen_gpu::Size) -> lumen_gpu::Dispatch {
         x: size.width.div_ceil(8),
         y: size.height.div_ceil(8),
         z: 1,
-    }
-}
-
-pub(crate) fn alpha_operation(node_id: NodeId, mode: &str) -> crate::Result<f32> {
-    match mode.trim().to_ascii_lowercase().as_str() {
-        "premultiply" | "premul" | "multiply" => Ok(0.0),
-        "unpremultiply" | "unpremul" | "straight" | "unmultiply" => Ok(1.0),
-        _ => Err(crate::error::PropertyError::InvalidType {
-            node_id,
-            property_path: "mode".to_string(),
-            expected: "`premultiply` or `unpremultiply`",
-            actual: "String",
-        }
-        .into()),
     }
 }
 

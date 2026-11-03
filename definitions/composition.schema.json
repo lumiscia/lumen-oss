@@ -1153,55 +1153,6 @@
         "oneOf": [
           {
             "additionalProperties": false,
-            "description": "Converts raster alpha between premultiplied and unpremultiplied representations.",
-            "properties": {
-              "id": {
-                "type": "integer"
-              },
-              "params": {
-                "additionalProperties": false,
-                "properties": {
-                  "mode": {
-                    "default": "premultiply",
-                    "description": "Alpha conversion mode.",
-                    "not": {
-                      "pattern": "^=([^=]|$)"
-                    },
-                    "title": "Mode",
-                    "type": "string",
-                    "x-lumen-constraints": {
-                      "format": "alpha_premultiply_mode"
-                    },
-                    "x-lumen-kind": "string"
-                  }
-                },
-                "type": "object"
-              },
-              "type": {
-                "const": "alpha_premultiply"
-              }
-            },
-            "required": ["id", "type"],
-            "title": "Alpha Premultiply",
-            "type": "object",
-            "x-lumen-category": "processing",
-            "x-lumen-inputs": [
-              {
-                "kind": "raster_frame",
-                "name": "source",
-                "optional": false,
-                "variadic": false
-              }
-            ],
-            "x-lumen-outputs": [
-              {
-                "kind": "raster_frame",
-                "name": "output"
-              }
-            ]
-          },
-          {
-            "additionalProperties": false,
             "description": "Generates a background raster texture.",
             "properties": {
               "id": {

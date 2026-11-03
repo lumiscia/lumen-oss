@@ -425,36 +425,18 @@ fn glyphs_beyond_box(m: Moment) -> Scene {
     canvas(256, json!([text(m, "II", 40, params)]))
 }
 
-/// Half transparent red through `unpremultiply`, a transform, and `premultiply`, or through the
-/// transform alone.
-fn translucent(m: Moment, sampling: &str, x0: f64, speed: f64, straight: bool) -> Scene {
-    let convert = |id: u32, source: u32, mode: &str| {
-        json!({ "id": id, "type": "alpha_premultiply", "in": { "source": source },
-            "params": { "mode": mode } })
-    };
+/// Half transparent red through a transform.
+fn translucent(m: Moment, sampling: &str, x0: f64, speed: f64) -> Scene {
     let background = json!({ "id": 1, "type": "background", "params": {
         "paint": [255, 0, 0, 128], "width": 8, "height": 4
     } });
     let x = m.param(&format!("{x0} + frame * {speed}"), |t| {
         json!(x0 + t * speed)
     });
-    let transform = |source: u32| {
-        json!({ "id": 3, "type": "transform", "in": { "source": source }, "params": {
-            "translate_x": x, "sampling": sampling, "motion_blur": m.angle(),
-        } })
-    };
-    let nodes = if straight {
-        let unpremultiply = convert(2, 1, "unpremultiply");
-        json!([
-            background,
-            unpremultiply,
-            transform(2),
-            convert(4, 3, "premultiply")
-        ])
-    } else {
-        json!([background, transform(1)])
-    };
-    canvas(64, nodes)
+    let transform = json!({ "id": 2, "type": "transform", "in": { "source": 1 }, "params": {
+        "translate_x": x, "sampling": sampling, "motion_blur": m.angle(),
+    } });
+    canvas(64, json!([background, transform]))
 }
 
 fn raster_marks(m: Moment) -> Scene {
@@ -507,16 +489,12 @@ fn zero_text(m: Moment) -> Scene {
     scale_through_zero(m, 3)
 }
 
-fn straight_nearest(m: Moment) -> Scene {
-    translucent(m, "nearest", 0.0, 20.0, true)
+fn translucent_nearest(m: Moment) -> Scene {
+    translucent(m, "nearest", 0.0, 20.0)
 }
 
-fn straight_linear(m: Moment) -> Scene {
-    translucent(m, "linear", 0.5, 2.999, true)
-}
-
-fn premultiplied_linear(m: Moment) -> Scene {
-    translucent(m, "linear", 0.5, 2.999, false)
+fn translucent_linear(m: Moment) -> Scene {
+    translucent(m, "linear", 0.5, 2.999)
 }
 
 fn still_shape(m: Moment) -> Scene {
@@ -567,10 +545,15 @@ fn motion_matches_taps() {
         row("glyphs beyond box", glyphs_beyond_box, 1.0, 180.0, 30, 4).ink(&[[0, 200, 256, 256]]),
         row("raster smears cross", raster_smears, 2.0, 360.0, 32, 6),
         row("msdf smears cross", msdf_smears, 2.0, 360.0, 32, 6),
-        row("straight nearest", straight_nearest, 1.0, 360.0, 20, 2),
-        // One tap filtered alone weights straight colour by coverage differently from the blur,
-        // so the straight chain is compared with the chain that has no conversions.
-        row("straight linear", straight_linear, 0.0, 360.0, 0, 2).like(premultiplied_linear),
+        row(
+            "translucent nearest",
+            translucent_nearest,
+            1.0,
+            360.0,
+            20,
+            2,
+        ),
+        row("translucent linear", translucent_linear, 0.0, 360.0, 3, 2),
     ]);
 }
 

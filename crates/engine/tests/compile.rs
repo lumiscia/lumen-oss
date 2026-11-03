@@ -15,13 +15,7 @@ use lumen_engine::{
         Deferred, Node, NodeId, NodeKind,
         compositing::{merge::Merge, raster_multimerge::RasterMultiMerge},
         media_output::MediaOutput,
-        processing::{
-            alpha_premultiply::{AlphaPremultiply, AlphaPremultiplyParamsDelegate},
-            blur::Blur,
-            exposure::Exposure,
-            opacity::Opacity,
-            time_remap::TimeRemap,
-        },
+        processing::{blur::Blur, exposure::Exposure, opacity::Opacity, time_remap::TimeRemap},
         source::background::Background,
         source::media_in::{MediaIn, MediaInParamsDelegate},
         source::text::{Text, TextParamsDelegate},
@@ -870,34 +864,18 @@ fn remap_binds_each_branch() {
 #[test]
 fn opacity_binds_alpha_flag() {
     let source = solid(1, [64, 128, 255, 128]);
-    let unpremultiplied = json!({ "id": 2, "type": "alpha_premultiply",
-        "params": { "mode": "unpremultiply" }, "in": { "source": 1 } });
     // The uniform holds the opacity, then 1 if the node scales premultiplied RGB with alpha.
-    for (name, nodes, input, alpha_mode, frames) in [
-        (
-            "premultiplied, animated",
-            json!([
-                source.clone(),
-                { "id": 2, "type": "opacity", "params": { "opacity": "=frame / 10" },
-                  "in": { "source": 1 } },
-            ]),
-            1,
-            AlphaMode::Premultiplied,
-            vec![(0, [0.0, 1.0]), (5, [0.5, 1.0])],
-        ),
-        (
-            "unpremultiplied",
-            json!([
-                source.clone(),
-                unpremultiplied,
-                { "id": 3, "type": "opacity", "params": { "opacity": 0.25 },
-                  "in": { "source": 2 } },
-            ]),
-            2,
-            AlphaMode::Unpremultiplied,
-            vec![(0, [0.25, 0.0])],
-        ),
-    ] {
+    for (name, nodes, input, alpha_mode, frames) in [(
+        "premultiplied, animated",
+        json!([
+            source.clone(),
+            { "id": 2, "type": "opacity", "params": { "opacity": "=frame / 10" },
+              "in": { "source": 1 } },
+        ]),
+        1,
+        AlphaMode::Premultiplied,
+        vec![(0, [0.0, 1.0]), (5, [0.5, 1.0])],
+    )] {
         let composition = scene((8, 4), nodes);
         let compiled = compile(&composition, None);
         let opacity = input + 1;
@@ -989,32 +967,6 @@ fn bind_errors() {
         Stage::Bind,
         property(2, "x"),
     ));
-    rows.push(BindError {
-        name: "alpha_premultiply mode is not an expression".to_string(),
-        composition: atlas_composition(|graph| {
-            let (source, convert) = (NodeId::new(1), NodeId::new(2));
-            graph.nodes.insert(
-                source,
-                NodeKind::Background(Background {
-                    id: source,
-                    ..Background::default()
-                }),
-            );
-            graph.nodes.insert(
-                convert,
-                NodeKind::AlphaPremultiply(AlphaPremultiply {
-                    id: convert,
-                    params: AlphaPremultiplyParamsDelegate {
-                        mode: Deferred::Expr(Expression::parse("\"unpremultiply\"").unwrap()),
-                    },
-                    source: Some(NodeId::new(1)),
-                }),
-            );
-            convert
-        }),
-        stage: Stage::Compile,
-        message: property(2, "mode"),
-    });
     rows.push(row(
         "word outside glyph params",
         json!([text("Lumen", json!({ "position": "=vec2(word * 10, 0)" }))]),

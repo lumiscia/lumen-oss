@@ -1057,12 +1057,6 @@ export interface CompositionNodeBase<TKind extends NodeKind> {
   readonly type: TKind;
 }
 
-export interface AlphaPremultiplyNode extends CompositionNodeBase<"alpha_premultiply"> {
-  readonly params?: {
-    readonly "mode"?: string;
-  };
-}
-
 export interface BackgroundNode extends CompositionNodeBase<"background"> {
   readonly params?: {
     readonly "height"?: number;
@@ -1319,7 +1313,6 @@ export interface WgslShaderNode extends CompositionNodeBase<"wgsl_shader"> {
 }
 
 export interface CompositionNodeByKind {
-  readonly "alpha_premultiply": AlphaPremultiplyNode;
   readonly "background": BackgroundNode;
   readonly "blur": BlurNode;
   readonly "boolean": BooleanNode;
@@ -1346,9 +1339,6 @@ export interface CompositionNodeByKind {
 }
 
 export interface CompositionNodeInputByKind {
-  readonly "alpha_premultiply": Omit<AlphaPremultiplyNode, "id"> & {
-    readonly id?: number;
-  };
   readonly "background": Omit<BackgroundNode, "id"> & {
     readonly id?: number;
   };
@@ -1421,7 +1411,6 @@ export interface CompositionNodeInputByKind {
 }
 
 export interface NodeInputPortNameByKind {
-  readonly "alpha_premultiply": "source";
   readonly "background": never;
   readonly "blur": "source";
   readonly "boolean": "a" | "b";
