@@ -81,6 +81,12 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             })
         } else {
             quote!(#name => {
+                if !self.#field.is_empty() {
+                    return Err(::lumen_engine::error::GraphValidationError::InputAlreadyConnected {
+                        node_id: self.id,
+                        port: #name.to_string(),
+                    });
+                }
                 self.#field = source;
                 Ok(())
             })
@@ -154,10 +160,13 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                 &mut self,
                 port: &str,
                 source: ::lumen_engine::node::PortRef,
-            ) -> ::anyhow::Result<()> {
+            ) -> ::core::result::Result<(), ::lumen_engine::error::GraphValidationError> {
                 match port {
                     #(#json_input_matches,)*
-                    _ => ::anyhow::bail!("unknown input port `{port}` on node {}", self.id),
+                    _ => Err(::lumen_engine::error::GraphValidationError::MissingTargetPort {
+                        node_id: self.id,
+                        port: port.to_string(),
+                    }),
                 }
             }
         }

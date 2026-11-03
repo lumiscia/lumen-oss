@@ -89,6 +89,8 @@ pub enum GraphValidationError {
     MissingTargetPort { node_id: NodeId, port: String },
     #[error("connection source port `{port}` is missing on node {node_id}")]
     MissingSourcePort { node_id: NodeId, port: String },
+    #[error("input `{port}` of node {node_id} is already connected")]
+    InputAlreadyConnected { node_id: NodeId, port: String },
     #[error("node {node_id} is missing required input `{port}`")]
     MissingRequiredInput { node_id: NodeId, port: String },
     #[error(

@@ -405,7 +405,7 @@ impl CompositionBuilder {
 }
 
 /// Identifies the exact content of a composition and its templates: their canvases, timelines,
-/// props, connections and every node's params, literal values and expression sources.
+/// props, and every node's inputs, params, literal values and expression sources.
 fn fingerprint(composition: &CompositionBuilder) -> u64 {
     crate::fingerprint::fingerprint(composition)
 }
@@ -523,12 +523,12 @@ mod fingerprint_tests {
     }
 
     #[test]
-    fn connections_are_hashed_even_without_changing_wired_inputs() {
-        let composition = parse(&scene());
-        let expected = composition.fingerprint();
-        let mut builder = composition.into_builder();
-        builder.graph.connections[0].from_node = crate::node::NodeId::new(2);
-        assert_ne!(expected, builder.build().unwrap().fingerprint());
+    fn rewiring_an_input_changes_the_fingerprint() {
+        let value = scene();
+        let expected = parse(&value).fingerprint();
+        let mut rewired = value.clone();
+        rewired["connections"][0]["from_node"] = json!(2);
+        assert_ne!(expected, parse(&rewired).fingerprint());
     }
 
     #[test]
