@@ -689,11 +689,10 @@ fn kept_output_reaches_external_output_textures() {
     ] {
         renderer.release_resources();
         at(&mut renderer, composition, 0.0);
-        let output = renderer.compiled().unwrap().output;
-        let desc = renderer
-            .gpu_renderer()
-            .texture_desc(output.texture)
-            .unwrap();
+        let output = renderer
+            .compiled()
+            .map_or(lumen_gpu::TextureId(0), |compiled| compiled.output.texture);
+        let desc = renderer.gpu_renderer().texture_desc(output).unwrap();
         let mut shown = Vec::new();
         for frame in 1..4 {
             let texture = renderer

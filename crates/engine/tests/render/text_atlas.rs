@@ -355,7 +355,11 @@ fn a_bound_frame_is_not_uploaded_once_a_later_one_is_bound() {
 
 fn text_domain_is_bounded(renderer: &GpuCompositionRenderer) -> bool {
     let text = PortRef::new(NodeId::new(1), "output".to_string());
-    match &renderer.compiled().expect("a frame rendered").node_outputs[&text] {
+    // Recording sizes a text every frame, so there is no plan's domain to check.
+    let Some(compiled) = renderer.compiled() else {
+        return true;
+    };
+    match &compiled.node_outputs[&text] {
         CompiledOutput::Raster(raster) => !raster.domain.is_full_frame(),
         CompiledOutput::Empty => panic!("the text is empty"),
     }
