@@ -63,7 +63,7 @@ impl GpuCompiledNode for CompiledBackground {
             node_id: self.node_id,
             expr: &ctx.expr_context(),
         })?;
-        let mut paint = params.paint.to_gpu([0, 0, 0, 255]);
+        let mut paint = params.paint.to_gpu();
         paint.paint_supersample = u32::from(params.paint_supersample);
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&paint));
         Ok(())

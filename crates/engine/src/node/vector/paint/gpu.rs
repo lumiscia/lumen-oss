@@ -1,9 +1,6 @@
 use bytemuck::Zeroable;
 
-use super::types::{
-    GradientInterpolation, GradientPaint, GradientSpread, GradientUnits, MAX_GRADIENT_STOPS,
-    PaintKind,
-};
+use super::types::{GradientPaint, MAX_GRADIENT_STOPS};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -36,39 +33,19 @@ impl GpuPaint {
     }
 }
 
-pub(crate) fn gradient_to_gpu(gradient: &GradientPaint, fallback: [u8; 4]) -> GpuPaint {
-    let mut paint = GpuPaint::solid(fallback);
-    paint.kind = match gradient.kind {
-        PaintKind::LinearGradient => 1,
-        PaintKind::RadialGradient => 2,
-        PaintKind::ConicGradient => 3,
-    };
-    paint.units = match gradient.units {
-        GradientUnits::ObjectBoundingBox => 0,
-        GradientUnits::UserSpace => 1,
-    };
-    paint.spread = match gradient.spread {
-        GradientSpread::Pad => 0,
-        GradientSpread::Repeat => 1,
-        GradientSpread::Reflect => 2,
-    };
-    paint.interpolation = match gradient.interpolation {
-        GradientInterpolation::Srgb => 0,
-        GradientInterpolation::LinearSrgb => 1,
-    };
+/// Gradient kind, units, spread and interpolation reach the shader as their variant numbers, with
+/// kind offset by one because 0 is a solid colour. A gradient without stops is transparent.
+pub(crate) fn gradient_to_gpu(gradient: &GradientPaint) -> GpuPaint {
+    let mut paint = GpuPaint::solid([0; 4]);
+    paint.kind = gradient.kind as u32 + 1;
+    paint.units = gradient.units as u32;
+    paint.spread = gradient.spread as u32;
+    paint.interpolation = gradient.interpolation as u32;
     paint.start = gradient.start;
     paint.end = gradient.end;
     paint.center = gradient.center;
     paint.radius = gradient.radius;
     paint.angle = gradient.angle;
-    if gradient.stops.len() > MAX_GRADIENT_STOPS {
-        tracing::warn!(
-            target: "lumen_render",
-            stop_count = gradient.stops.len(),
-            max_stop_count = MAX_GRADIENT_STOPS,
-            "truncating gradient stops for gpu paint"
-        );
-    }
     for (index, stop) in gradient.stops.iter().take(MAX_GRADIENT_STOPS).enumerate() {
         paint.offsets[index][0] = stop.offset.clamp(0.0, 1.0);
         paint.colors[index] = rgba8_to_f32(stop.color);
@@ -85,6 +62,3 @@ fn rgba8_to_f32(color: [u8; 4]) -> [f32; 4] {
         f32::from(color[3]) / 255.0,
     ]
 }
-
-#[cfg(test)]
-pub(crate) use gradient_to_gpu as test_gradient_to_gpu;

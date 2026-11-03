@@ -926,7 +926,7 @@ export type GradientPaint = {
   readonly spread?: GradientSpread;
   /** Start point of a linear gradient. */
   readonly start?: Vec2;
-  /** Colors along the gradient. Required, with at least one stop. */
+  /** Colors along the gradient. Required, with one to eight stops. */
   readonly stops: readonly GradientStop[];
   /** Gradient shape. Required. */
   readonly type: PaintKind;

@@ -242,8 +242,8 @@ fn path_frame<'a>(
     let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
 
     let uniforms = PathUniforms {
-        fill_paint: evaluated.fill_paint.to_gpu([255, 255, 255, 255]),
-        stroke_paint: evaluated.stroke_paint.to_gpu([0, 0, 0, 255]),
+        fill_paint: evaluated.fill_paint.to_gpu(),
+        stroke_paint: evaluated.stroke_paint.to_gpu(),
         position: [x as f32, y as f32],
         stroke_width: evaluated.stroke_width.max(0.0) as f32,
         flags: style_flags(

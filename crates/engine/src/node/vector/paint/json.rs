@@ -1,16 +1,23 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::types::{GradientPaint, GradientStop, Paint};
+use super::types::{GradientPaint, GradientStop, MAX_GRADIENT_STOPS, Paint};
 
 pub fn from_json_value(value: &Value) -> Result<Paint, String> {
-    if let Some(color) = crate::json::parse_color(value) {
-        return Ok(Paint::solid(color));
+    if !value.is_object() {
+        return crate::json::try_parse_color(value)
+            .map(Paint::solid)
+            .map_err(|error| format!("expected paint: {error}"));
     }
-    serde_path_to_error::deserialize::<_, GradientPaintJsonOwned>(value)
-        .map(GradientPaint::from)
-        .map(Paint::Gradient)
-        .map_err(|error| format!("expected paint: {error}"))
+    if value.get("type").is_none() {
+        return Err("expected paint: missing field `type`".to_string());
+    }
+    let gradient: GradientPaint = serde_path_to_error::deserialize(value)
+        .map_err(|error| format!("expected paint: {error}"))?;
+    if gradient.stops.is_empty() {
+        return Err("expected paint: `stops` must contain at least one stop".to_string());
+    }
+    Ok(Paint::Gradient(gradient))
 }
 
 pub fn to_json_value(paint: &Paint) -> Value {
@@ -21,99 +28,13 @@ pub fn to_json_value(paint: &Paint) -> Value {
                 .map(|value| Value::from(*value))
                 .collect(),
         ),
-        Paint::Gradient(gradient) => serde_json::to_value(GradientPaintJsonRef::from(gradient))
-            .expect("gradient paint serializes to JSON"),
-    }
-}
-
-#[derive(serde::Serialize)]
-struct GradientPaintJsonRef<'a> {
-    #[serde(rename = "type")]
-    kind: super::types::PaintKind,
-    units: super::types::GradientUnits,
-    spread: super::types::GradientSpread,
-    interpolation: super::types::GradientInterpolation,
-    start: [f32; 2],
-    end: [f32; 2],
-    center: [f32; 2],
-    radius: [f32; 2],
-    angle: f32,
-    stops: &'a [GradientStop],
-}
-
-#[derive(serde::Deserialize)]
-struct GradientPaintJsonOwned {
-    #[serde(rename = "type")]
-    kind: super::types::PaintKind,
-    #[serde(default)]
-    units: super::types::GradientUnits,
-    #[serde(default)]
-    spread: super::types::GradientSpread,
-    #[serde(default)]
-    interpolation: super::types::GradientInterpolation,
-    #[serde(default)]
-    start: [f32; 2],
-    #[serde(default = "default_end")]
-    end: [f32; 2],
-    #[serde(default = "default_center")]
-    center: [f32; 2],
-    #[serde(default = "default_radius", deserialize_with = "deserialize_radius")]
-    radius: [f32; 2],
-    #[serde(default)]
-    angle: f32,
-    #[serde(deserialize_with = "deserialize_stops")]
-    stops: Vec<GradientStop>,
-}
-
-impl<'a> From<&'a GradientPaint> for GradientPaintJsonRef<'a> {
-    fn from(gradient: &'a GradientPaint) -> Self {
-        Self {
-            kind: gradient.kind,
-            units: gradient.units,
-            spread: gradient.spread,
-            interpolation: gradient.interpolation,
-            start: gradient.start,
-            end: gradient.end,
-            center: gradient.center,
-            radius: gradient.radius,
-            angle: gradient.angle,
-            stops: &gradient.stops,
+        Paint::Gradient(gradient) => {
+            serde_json::to_value(gradient).expect("gradient paint serializes to JSON")
         }
     }
 }
 
-impl From<GradientPaintJsonOwned> for GradientPaint {
-    fn from(value: GradientPaintJsonOwned) -> Self {
-        let mut stops = value.stops;
-        stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
-        Self {
-            kind: value.kind,
-            units: value.units,
-            spread: value.spread,
-            interpolation: value.interpolation,
-            start: value.start,
-            end: value.end,
-            center: value.center,
-            radius: value.radius,
-            angle: value.angle,
-            stops,
-        }
-    }
-}
-
-fn default_end() -> [f32; 2] {
-    [1.0, 0.0]
-}
-
-fn default_center() -> [f32; 2] {
-    [0.5, 0.5]
-}
-
-fn default_radius() -> [f32; 2] {
-    [0.5, 0.5]
-}
-
-fn deserialize_radius<'de, D>(deserializer: D) -> Result<[f32; 2], D::Error>
+pub(super) fn deserialize_radius<'de, D>(deserializer: D) -> Result<[f32; 2], D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -131,24 +52,29 @@ where
     }
 }
 
-fn deserialize_stops<'de, D>(deserializer: D) -> Result<Vec<GradientStop>, D::Error>
+pub(super) fn deserialize_stops<'de, D>(deserializer: D) -> Result<Vec<GradientStop>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     use serde::de::Error;
 
     let stops = Vec::<Value>::deserialize(deserializer)?;
-    if stops.is_empty() {
-        return Err(D::Error::custom("`stops` must contain at least one stop"));
+    if stops.len() > MAX_GRADIENT_STOPS {
+        return Err(D::Error::custom(format!(
+            "{} stops, but a gradient takes at most {MAX_GRADIENT_STOPS}",
+            stops.len()
+        )));
     }
-    stops
+    let mut stops = stops
         .iter()
         .enumerate()
         .map(|(index, value)| {
             parse_stop(value)
                 .map_err(|message| D::Error::custom(format!("stop {index}: {message}")))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+    Ok(stops)
 }
 
 /// Parses `[offset, color]` or `{ "offset": number, "color": color }`.
@@ -222,5 +148,37 @@ mod tests {
         let error =
             from_json_value(&serde_json::json!({ "type": "linear", "stops": [] })).unwrap_err();
         assert!(error.contains("at least one stop"), "{error}");
+    }
+
+    #[test]
+    fn rejects_more_stops_than_the_shader_holds() {
+        let stops = |count: usize| {
+            (0..count)
+                .map(|index| serde_json::json!([index as f32 / 10.0, [0, 0, 0]]))
+                .collect::<Vec<_>>()
+        };
+        from_json_value(&serde_json::json!({ "type": "linear", "stops": stops(8) })).unwrap();
+        let error = from_json_value(&serde_json::json!({ "type": "linear", "stops": stops(9) }))
+            .unwrap_err();
+        assert!(
+            error.contains("9 stops") && error.contains("at most 8"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_gradient_fields_and_missing_type_or_stops() {
+        let stops = serde_json::json!([[0.0, [0, 0, 0]]]);
+        for (paint, expected) in [
+            (
+                serde_json::json!({ "type": "linear", "stops": stops, "colour": 1 }),
+                "colour",
+            ),
+            (serde_json::json!({ "stops": stops }), "type"),
+            (serde_json::json!({ "type": "linear" }), "at least one stop"),
+        ] {
+            let error = from_json_value(&paint).unwrap_err();
+            assert!(error.contains(expected), "{paint}: {error}");
+        }
     }
 }

@@ -1,6 +1,7 @@
 #![allow(clippy::enum_variant_names)]
 
-pub(crate) const MAX_GRADIENT_STOPS: usize = 8;
+/// The most stops a gradient holds, which the paint shader's fixed arrays also size.
+pub const MAX_GRADIENT_STOPS: usize = 8;
 
 #[derive(
     Debug,
@@ -106,9 +107,11 @@ pub struct GradientStop {
 
 /// A linear, radial or conic gradient. Gradient fields take literals only.
 #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct GradientPaint {
     /// Gradient shape. Required.
     #[meta(id = "type", name = "Type", required)]
+    #[serde(rename = "type")]
     pub kind: PaintKind,
     /// Whether points and radii are fractions of the shape's bounding box or pixels.
     #[meta()]
@@ -130,16 +133,18 @@ pub struct GradientPaint {
     pub center: [f32; 2],
     /// Horizontal and vertical radius of a radial gradient. A number sets both.
     #[meta(constant)]
+    #[serde(deserialize_with = "super::json::deserialize_radius")]
     pub radius: [f32; 2],
     /// Start angle of a conic gradient in degrees.
     #[meta(step = 1, constant)]
     pub angle: f32,
-    /// Colors along the gradient. Required, with at least one stop.
+    /// Colors along the gradient. Required, with one to eight stops.
     #[meta(required)]
+    #[serde(deserialize_with = "super::json::deserialize_stops")]
     pub stops: Vec<GradientStop>,
 }
 
-#[derive(Debug, Clone, PartialEq, lumen_macros::Delegate, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
 #[delegate(kind = "paint", expressions)]
 pub enum Paint {
     SolidColor(u8, u8, u8, u8),

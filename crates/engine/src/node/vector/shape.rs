@@ -222,8 +222,8 @@ fn shape_uniforms(
     let motion = DrawableMotion::new(shutter, min, max);
     let [min_x, min_y, max_x, max_y] = motion.canvas_bounds(transform, min, max);
     ShapeUniforms {
-        fill_paint: params.fill_paint.to_gpu([255, 255, 255, 255]),
-        stroke_paint: params.stroke_paint.to_gpu([0, 0, 0, 255]),
+        fill_paint: params.fill_paint.to_gpu(),
+        stroke_paint: params.stroke_paint.to_gpu(),
         position,
         size,
         border_radius: params.border_radius.max(0.0) as f32,

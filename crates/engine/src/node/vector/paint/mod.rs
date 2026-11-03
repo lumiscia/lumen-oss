@@ -6,7 +6,7 @@ pub(crate) use gpu::GpuPaint;
 
 pub use types::{
     GradientInterpolation, GradientPaint, GradientPaintDelegate, GradientSpread, GradientStop,
-    GradientStopDelegate, GradientUnits, Paint, PaintDelegate, PaintKind,
+    GradientStopDelegate, GradientUnits, MAX_GRADIENT_STOPS, Paint, PaintDelegate, PaintKind,
 };
 
 impl Paint {
@@ -18,10 +18,10 @@ impl Paint {
         json::from_json_value(value)
     }
 
-    pub(crate) fn to_gpu(&self, fallback: [u8; 4]) -> gpu::GpuPaint {
+    pub(crate) fn to_gpu(&self) -> gpu::GpuPaint {
         match self {
             Self::SolidColor(r, g, b, a) => gpu::GpuPaint::solid([*r, *g, *b, *a]),
-            Self::Gradient(gradient) => gpu::gradient_to_gpu(gradient, fallback),
+            Self::Gradient(gradient) => gpu::gradient_to_gpu(gradient),
         }
     }
 
@@ -34,8 +34,7 @@ impl Paint {
 mod tests {
     use super::*;
     use bytemuck::Zeroable;
-    use gpu::{GpuPaint, test_gradient_to_gpu as gradient_to_gpu};
-    use types::MAX_GRADIENT_STOPS;
+    use gpu::{GpuPaint, gradient_to_gpu};
 
     #[test]
     fn gpu_paint_size_matches_wgsl_uniform_stride() {
@@ -66,7 +65,7 @@ mod tests {
                 },
             ],
         };
-        let gpu = gradient_to_gpu(&gradient, [0, 0, 0, 255]);
+        let gpu = gradient_to_gpu(&gradient);
         assert_eq!(gpu.kind, 1);
         assert_eq!(gpu.units, 1);
         assert_eq!(gpu.spread, 1);
@@ -96,7 +95,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let gpu = gradient_to_gpu(&out_of_range, [0, 0, 0, 255]);
+        let gpu = gradient_to_gpu(&out_of_range);
         assert!((gpu.offsets[0][0] - 0.0).abs() < 0.001);
         assert!((gpu.offsets[1][0] - 1.0).abs() < 0.001);
     }
@@ -237,7 +236,7 @@ mod tests {
             stops: many_stops,
             ..Default::default()
         };
-        let gpu = gradient_to_gpu(&gradient, [0, 0, 0, 255]);
+        let gpu = gradient_to_gpu(&gradient);
         assert_eq!(gpu.stop_count, MAX_GRADIENT_STOPS as u32);
         assert!((gpu.colors[0][0] - 0.0).abs() < 0.01);
         let last_idx = MAX_GRADIENT_STOPS - 1;
@@ -247,7 +246,7 @@ mod tests {
     #[test]
     fn paint_to_gpu_solid_uses_color_from_enum() {
         let paint = Paint::solid([50, 100, 150, 200]);
-        let gpu = paint.to_gpu([0, 0, 0, 255]);
+        let gpu = paint.to_gpu();
         assert_eq!(gpu.kind, 0);
         assert_eq!(gpu.stop_count, 1);
         assert!((gpu.colors[0][0] - (50.0 / 255.0)).abs() < 0.01);
@@ -263,16 +262,9 @@ mod tests {
     }
 
     #[test]
-    fn paint_to_gpu_gradient_uses_fallback_when_no_stops() {
-        let paint = Paint::Gradient(GradientPaint {
-            stops: Vec::new(),
-            ..Default::default()
-        });
-        let gpu = paint.to_gpu([10, 20, 30, 40]);
+    fn paint_to_gpu_gradient_without_stops_is_transparent() {
+        let gpu = Paint::Gradient(GradientPaint::default()).to_gpu();
         assert_eq!(gpu.stop_count, 1);
-        assert!((gpu.colors[0][0] - (10.0 / 255.0)).abs() < 0.01);
-        assert!((gpu.colors[0][1] - (20.0 / 255.0)).abs() < 0.01);
-        assert!((gpu.colors[0][2] - (30.0 / 255.0)).abs() < 0.01);
-        assert!((gpu.colors[0][3] - (40.0 / 255.0)).abs() < 0.01);
+        assert_eq!(gpu.colors[0], [0.0; 4]);
     }
 }
