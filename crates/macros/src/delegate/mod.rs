@@ -46,7 +46,7 @@ struct PropertyAttr {
 struct DelegateAttr {
     name: Ident,
     kind: Option<Ident>,
-    /// Adds an `Expr` variant evaluated through the enum's `DeferredValue` impl.
+    /// Adds an `Expr` variant evaluated through the enum's `ParamValue` impl.
     expressions: bool,
     /// Parses a struct's nested JSON field by field, accepting `=expression` strings, and
     /// adds `to_json`. Every field needs a property mapping.

@@ -12,7 +12,7 @@ use crate::node::vector::{
     paint::Paint,
 };
 use crate::node::{
-    Deferred, DeferredValue, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override,
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override, ParamValue,
 };
 
 use super::text_compile::{GpuTextPaint, TextStyleUniforms};
@@ -995,7 +995,7 @@ struct PerGlyph<'a, T> {
     last: Option<([u32; 4], T)>,
 }
 
-impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
+impl<'a, T: ParamValue + Copy> PerGlyph<'a, T> {
     fn new(param: &'a Deferred<T>, name: &'static str) -> Self {
         let mut reads = [false; 4];
         if let Deferred::Expr(expression) = param {
