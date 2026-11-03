@@ -281,8 +281,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 .clamp(1, MAX_TEXT_GLYPHS)
         });
         let domain = self.ctx.source_domain(bounds);
-        let texture = self.ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(text.id.0),
+        let texture = self.ctx.builder_mut().texture(
             Some(format!("text:{}:output", text.id.0)),
             lumen_gpu::TextureDesc::render_target(
                 domain.storage_size,
@@ -306,8 +305,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             size
         };
         let layer = blurred.then(|| {
-            self.ctx.builder_mut().texture_for(
-                lumen_gpu::NodeKey(text.id.0),
+            self.ctx.builder_mut().texture(
                 Some(format!("text:{}:layer", text.id.0)),
                 lumen_gpu::TextureDesc::render_target(
                     layer_size,
@@ -317,22 +315,19 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         });
         let atlas_texture = self.ctx.text_atlas_texture();
         let globals_buffer =
-            self.ctx.builder_mut().buffer_for(
-                lumen_gpu::NodeKey(text.id.0),
+            self.ctx.builder_mut().buffer(
                 Some(format!("text:{}:globals", text.id.0)),
                 lumen_gpu::BufferDesc::uniform(
                     std::mem::size_of::<lumen_text::GpuTextGlobals>() as u64
                 ),
             );
-        let instances_buffer = self.ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(text.id.0),
+        let instances_buffer = self.ctx.builder_mut().buffer(
             Some(format!("text:{}:instances", text.id.0)),
             lumen_gpu::BufferDesc::storage(
                 (capacity * std::mem::size_of::<lumen_text::GpuGlyphInstance>()) as u64,
             ),
         );
-        let style_buffer = self.ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(text.id.0),
+        let style_buffer = self.ctx.builder_mut().buffer(
             Some(format!("text:{}:style", text.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<TextStyleUniforms>() as u64),
         );
@@ -355,8 +350,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             }
             .into());
         }
-        let paints_buffer = self.ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(text.id.0),
+        let paints_buffer = self.ctx.builder_mut().buffer(
             Some(format!("text:{}:paints", text.id.0)),
             lumen_gpu::BufferDesc::storage((paints * std::mem::size_of::<GpuTextPaint>()) as u64),
         );
@@ -413,7 +407,6 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                     blend: Some(blend),
                     write_mask: lumen_gpu::wgpu::ColorWrites::ALL,
                 })],
-                vertex_buffers: Vec::new(),
                 primitive: lumen_gpu::wgpu::PrimitiveState::default(),
             })
         };
@@ -428,7 +421,6 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         let text_pass = |label: &str, program, target, load, bindings, draw, viewport| {
             lumen_gpu::RenderPassDesc {
                 label: Some(format!("text:{}:{label}", text.id.0)),
-                owner: Some(lumen_gpu::NodeKey(text.id.0)),
                 program,
                 targets: vec![lumen_gpu::RenderTargetRef {
                     texture: target,
@@ -436,10 +428,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                     store: lumen_gpu::wgpu::StoreOp::Store,
                 }],
                 bindings,
-                vertex_buffers: Vec::new(),
-                index_buffer: None,
-                draw: lumen_gpu::DrawCommand::Draw(draw),
-                scissor: None,
+                draw,
                 viewport,
             }
         };
@@ -447,16 +436,13 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             vertices: 0..3,
             instances: 0..1,
         };
-        let program = self.ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(text.id.0),
-            text_program(
-                "text",
-                "vs_main",
-                "fs_main",
-                lumen_gpu::wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-                false,
-            ),
-        );
+        let program = self.ctx.builder_mut().program(text_program(
+            "text",
+            "vs_main",
+            "fs_main",
+            lumen_gpu::wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            false,
+        ));
         self.ctx.builder_mut().render_pass(text_pass(
             "render",
             program,
@@ -470,16 +456,13 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             viewport,
         ));
         if let Some(layer) = layer {
-            let program = self.ctx.builder_mut().program_for(
-                lumen_gpu::NodeKey(text.id.0),
-                text_program(
-                    "text smear",
-                    "vs_fullscreen",
-                    "fs_smear",
-                    lumen_gpu::wgpu::BlendState::REPLACE,
-                    true,
-                ),
-            );
+            let program = self.ctx.builder_mut().program(text_program(
+                "text smear",
+                "vs_fullscreen",
+                "fs_smear",
+                lumen_gpu::wgpu::BlendState::REPLACE,
+                true,
+            ));
             let mut bindings = bindings.clone();
             bindings.push(lumen_gpu::Binding::sampled_texture(0, 5, layer));
             self.ctx.builder_mut().render_pass(text_pass(
@@ -500,19 +483,16 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 dst_factor: lumen_gpu::wgpu::BlendFactor::SrcAlpha,
                 operation: lumen_gpu::wgpu::BlendOperation::Add,
             };
-            let program = self.ctx.builder_mut().program_for(
-                lumen_gpu::NodeKey(text.id.0),
-                text_program(
-                    "text opacity",
-                    "vs_fullscreen",
-                    "fs_opacity",
-                    lumen_gpu::wgpu::BlendState {
-                        color: multiply,
-                        alpha: multiply,
-                    },
-                    false,
-                ),
-            );
+            let program = self.ctx.builder_mut().program(text_program(
+                "text opacity",
+                "vs_fullscreen",
+                "fs_opacity",
+                lumen_gpu::wgpu::BlendState {
+                    color: multiply,
+                    alpha: multiply,
+                },
+                false,
+            ));
             self.ctx.builder_mut().render_pass(text_pass(
                 "opacity",
                 program,
@@ -823,23 +803,19 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         }
 
         let size = domain.storage_size;
-        let key = lumen_gpu::NodeKey(node_id.0);
-        let texture = self.ctx.builder_mut().texture_for(
-            key,
+        let texture = self.ctx.builder_mut().texture(
             Some(format!("{label}:{}:output", node_id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
                 .with_domain(domain),
         );
-        let params = self.ctx.builder_mut().buffer_for(
-            key,
+        let params = self.ctx.builder_mut().buffer(
             Some(format!("{label}:{}:params", node_id.0)),
             lumen_gpu::BufferDesc::uniform(uniforms_size as u64),
         );
         let storage: Vec<_> = storage
             .iter()
             .map(|(name, size)| {
-                self.ctx.builder_mut().buffer_for(
-                    key,
+                self.ctx.builder_mut().buffer(
                     Some(format!("{label}:{}:{name}", node_id.0)),
                     lumen_gpu::BufferDesc::storage(*size),
                 )
@@ -866,31 +842,25 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             texture,
         ));
 
-        let program = self.ctx.builder_mut().program_for(
-            key,
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
-                label: Some(label.to_string()),
-                shader: shader.to_string(),
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
-            }),
-        );
+        let program = self
+            .ctx
+            .builder_mut()
+            .program(lumen_gpu::ProgramDesc::Compute(
+                lumen_gpu::ComputeProgramDesc {
+                    label: Some(label.to_string()),
+                    shader: shader.to_string(),
+                    entry: "cs_main".to_string(),
+                    bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
+                },
+            ));
         self.ctx
             .builder_mut()
             .compute_pass(lumen_gpu::ComputePassDesc {
                 label: Some(format!("{label}:{}:rasterize", node_id.0)),
-                owner: Some(key),
                 program,
                 bindings,
-                dispatch: compiler::dispatch_for(size).into(),
+                dispatch: compiler::dispatch_for(size),
             });
-        self.ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: key,
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
 
         Ok(VectorSource {
             output: CompiledOutput::Raster(RasterHandle {

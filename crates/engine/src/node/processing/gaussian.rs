@@ -154,12 +154,9 @@ impl Padding {
     }
 }
 
-/// Where a compiled Gaussian reads its per-frame settings from, and what the
-/// source may do.
+/// What the source of a compiled Gaussian may do.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct GaussianOptions {
-    /// Param slot of the node that holds the Gaussian's settings buffer.
-    pub(crate) param_slot: u32,
     /// The settings may carry a nonzero [`GaussianSettings::offset`].
     pub(crate) shifted: bool,
 }
@@ -275,7 +272,6 @@ pub(crate) fn compile_passes_with(
 ) -> GaussianPasses {
     use lumen_gpu::wgpu::{ShaderStages, StorageTextureAccess, TextureFormat};
 
-    let owner = lumen_gpu::NodeKey(node_id.0);
     let region = output.data_rect;
     let size = output.storage_size;
     let source_display = source.domain.display_size();
@@ -286,8 +282,7 @@ pub(crate) fn compile_passes_with(
                    name: &str,
                    size: lumen_gpu::Size,
                    format: TextureFormat| {
-        builder.texture_for(
-            owner,
+        builder.texture(
             Some(format!("{label}:{}:{name}", node_id.0)),
             lumen_gpu::TextureDesc::storage(size, format),
         )
@@ -312,13 +307,11 @@ pub(crate) fn compile_passes_with(
         float(builder, "sixteenth-a", sixteenth_size),
         float(builder, "sixteenth-b", sixteenth_size),
     ];
-    let output = builder.texture_for(
-        owner,
+    let output = builder.texture(
         Some(format!("{label}:{}:output", node_id.0)),
         lumen_gpu::TextureDesc::storage(size, TextureFormat::Rgba8Unorm).with_domain(output),
     );
-    let params = builder.buffer_for(
-        owner,
+    let params = builder.buffer(
         Some(format!("{label}:{}:params", node_id.0)),
         lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::BlurParams>() as u64),
     );
@@ -356,15 +349,14 @@ pub(crate) fn compile_passes_with(
                 StorageTextureAccess::WriteOnly,
             ),
         ]);
-        let program = builder.program_for(
-            owner,
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+        let program = builder.program(lumen_gpu::ProgramDesc::Compute(
+            lumen_gpu::ComputeProgramDesc {
                 label: Some(format!("{label}-gaussian-{entry}")),
                 shader: shader.clone(),
                 entry: entry.to_string(),
                 bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
-            }),
-        );
+            },
+        ));
         let mut bindings: Vec<_> = inputs
             .iter()
             .zip(0u32..)
@@ -377,10 +369,9 @@ pub(crate) fn compile_passes_with(
         ]);
         builder.compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("{label}:{}:{entry}", node_id.0)),
-            owner: Some(owner),
             program,
             bindings,
-            dispatch: compiler::dispatch_for(target_size).into(),
+            dispatch: compiler::dispatch_for(target_size),
         });
     };
 
@@ -401,13 +392,6 @@ pub(crate) fn compile_passes_with(
         size,
     );
 
-    builder.param(
-        lumen_gpu::ParamKey {
-            owner,
-            slot: options.param_slot,
-        },
-        lumen_gpu::ParamTarget::Buffer(params),
-    );
     GaussianPasses {
         output,
         params,

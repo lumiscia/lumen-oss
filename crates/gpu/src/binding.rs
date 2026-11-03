@@ -4,15 +4,12 @@ use crate::{BufferId, SamplerId, TextureId};
 pub enum TextureAccess {
     Sampled,
     Storage,
-    RenderTarget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferAccess {
     Uniform,
     Storage,
-    Vertex,
-    Index,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

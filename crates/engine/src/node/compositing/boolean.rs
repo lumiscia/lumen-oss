@@ -123,19 +123,16 @@ impl GpuCompileNode for Boolean {
             .compile_port(&self.b)?
             .into_raster(self.b.id, &self.b.port)?;
         let size = a.domain.storage_size;
-        let texture = ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let texture = ctx.builder_mut().texture(
             Some(format!("boolean:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
-        let params = ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let params = ctx.builder_mut().buffer(
             Some(format!("boolean:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::BooleanParams>() as u64),
         );
-        let program = ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(self.id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
+            lumen_gpu::ComputeProgramDesc {
                 label: Some("boolean".to_string()),
                 shader: SHADER.to_string(),
                 entry: "cs_main".to_string(),
@@ -159,11 +156,10 @@ impl GpuCompileNode for Boolean {
                         lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
                     ),
                 ]),
-            }),
-        );
+            },
+        ));
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("boolean:{}:apply", self.id.0)),
-            owner: Some(lumen_gpu::NodeKey(self.id.0)),
             program,
             bindings: vec![
                 lumen_gpu::Binding::sampled_texture(0, 0, a.texture),
@@ -171,15 +167,8 @@ impl GpuCompileNode for Boolean {
                 lumen_gpu::Binding::uniform(0, 2, params),
                 lumen_gpu::Binding::storage_texture(0, 3, texture),
             ],
-            dispatch: compiler::dispatch_for(size).into(),
+            dispatch: compiler::dispatch_for(size),
         });
-        ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
         ctx.register_compiled_node(CompiledBoolean {
             node_id: self.id,
             params: self.params.clone(),

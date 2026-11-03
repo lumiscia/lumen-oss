@@ -97,21 +97,18 @@ impl GpuCompileNode for Background {
         let width = ctx.static_dimension_value(i64::from(params.width), "width");
         let height = ctx.static_dimension_value(i64::from(params.height), "height");
         let size = lumen_gpu::Size::new(width, height);
-        let texture = ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let texture = ctx.builder_mut().texture(
             Some(format!("background:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
-        let buffer = ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let buffer = ctx.builder_mut().buffer(
             Some(format!("background:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(
                 std::mem::size_of::<crate::node::vector::paint::GpuPaint>() as u64,
             ),
         );
-        let program = ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(self.id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
+            lumen_gpu::ComputeProgramDesc {
                 label: Some("background".to_string()),
                 shader: SHADER.to_string(),
                 entry: "cs_main".to_string(),
@@ -127,25 +124,17 @@ impl GpuCompileNode for Background {
                         lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
                     ),
                 ]),
-            }),
-        );
+            },
+        ));
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("background:{}:fill", self.id.0)),
-            owner: Some(lumen_gpu::NodeKey(self.id.0)),
             program,
             bindings: vec![
                 lumen_gpu::Binding::uniform(0, 0, buffer),
                 lumen_gpu::Binding::storage_texture(0, 1, texture),
             ],
-            dispatch: compiler::dispatch_for(size).into(),
+            dispatch: compiler::dispatch_for(size),
         });
-        ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(buffer),
-        );
         ctx.register_compiled_node(CompiledBackground {
             node_id: self.id,
             params: self.params.clone(),

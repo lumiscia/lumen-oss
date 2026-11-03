@@ -1,4 +1,4 @@
-use crate::{NodeKey, ProgramId};
+use crate::ProgramId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BindingLayoutEntry {
@@ -93,7 +93,6 @@ pub struct RenderProgramDesc {
     pub fragment_entry: String,
     pub bind_groups: Vec<BindGroupLayoutSpec>,
     pub targets: Vec<Option<wgpu::ColorTargetState>>,
-    pub vertex_buffers: Vec<wgpu::VertexBufferLayout<'static>>,
     pub primitive: wgpu::PrimitiveState,
 }
 
@@ -114,6 +113,5 @@ pub enum ProgramDesc {
 #[derive(Debug, Clone)]
 pub struct Program {
     pub id: ProgramId,
-    pub owner: Option<NodeKey>,
     pub desc: ProgramDesc,
 }

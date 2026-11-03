@@ -60,15 +60,13 @@ impl GpuCompileNode for MediaOutput {
             return Ok(CompiledOutput::Raster(source));
         }
 
-        let output = ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let output = ctx.builder_mut().texture(
             Some("media-output:final".to_string()),
             media_output_texture_desc(size, output_format),
         );
         if output_format == lumen_gpu::wgpu::TextureFormat::Rgba8Unorm {
-            let program = ctx.builder_mut().program_for(
-                lumen_gpu::NodeKey(self.id.0),
-                lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+            let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
+                lumen_gpu::ComputeProgramDesc {
                     label: Some("media-output".to_string()),
                     shader: SHADER.to_string(),
                     entry: "cs_main".to_string(),
@@ -84,17 +82,16 @@ impl GpuCompileNode for MediaOutput {
                             lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
                         ),
                     ]),
-                }),
-            );
+                },
+            ));
             ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
                 label: Some("media-output:copy".to_string()),
-                owner: Some(lumen_gpu::NodeKey(self.id.0)),
                 program,
                 bindings: vec![
                     lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
                     lumen_gpu::Binding::storage_texture(0, 1, output),
                 ],
-                dispatch: compiler::dispatch_for(size).into(),
+                dispatch: compiler::dispatch_for(size),
             });
         } else {
             let sampler = ctx.builder_mut().sampler(
@@ -109,9 +106,8 @@ impl GpuCompileNode for MediaOutput {
                     ..Default::default()
                 },
             );
-            let program = ctx.builder_mut().program_for(
-                lumen_gpu::NodeKey(self.id.0),
-                lumen_gpu::ProgramDesc::Render(lumen_gpu::RenderProgramDesc {
+            let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Render(
+                lumen_gpu::RenderProgramDesc {
                     label: Some("media-output".to_string()),
                     shader: RENDER_SHADER.to_string(),
                     vertex_entry: "vs_main".to_string(),
@@ -131,13 +127,11 @@ impl GpuCompileNode for MediaOutput {
                         blend: Some(lumen_gpu::wgpu::BlendState::REPLACE),
                         write_mask: lumen_gpu::wgpu::ColorWrites::ALL,
                     })],
-                    vertex_buffers: Vec::new(),
                     primitive: lumen_gpu::wgpu::PrimitiveState::default(),
-                }),
-            );
+                },
+            ));
             ctx.builder_mut().render_pass(lumen_gpu::RenderPassDesc {
                 label: Some("media-output:render".to_string()),
-                owner: Some(lumen_gpu::NodeKey(self.id.0)),
                 program,
                 targets: vec![lumen_gpu::RenderTargetRef {
                     texture: output,
@@ -148,13 +142,10 @@ impl GpuCompileNode for MediaOutput {
                     lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
                     lumen_gpu::Binding::sampler(0, 1, sampler),
                 ],
-                vertex_buffers: Vec::new(),
-                index_buffer: None,
-                draw: lumen_gpu::DrawCommand::Draw(lumen_gpu::Draw {
+                draw: lumen_gpu::Draw {
                     vertices: 0..3,
                     instances: 0..1,
-                }),
-                scissor: None,
+                },
                 viewport: None,
             });
         }

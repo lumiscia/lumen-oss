@@ -64,37 +64,24 @@ fn resource_descriptors_include_expected_gpu_usages() {
             .usage
             .contains(wgpu::BufferUsages::STORAGE)
     );
-    assert!(
-        BufferDesc::vertex(64)
-            .usage
-            .contains(wgpu::BufferUsages::VERTEX)
-    );
-    assert!(
-        BufferDesc::index(64)
-            .usage
-            .contains(wgpu::BufferUsages::INDEX)
-    );
 }
 
 #[test]
-fn builder_assigns_stable_ids_and_node_ownership() {
-    let node = NodeKey(9001);
+fn builder_assigns_stable_ids() {
     let mut builder = RenderPlan::builder();
     let tex_a = builder.texture(
         Some("input".to_string()),
         TextureDesc::sampled(Size::new(4, 4), wgpu::TextureFormat::Rgba8Unorm),
     );
-    let tex_b = builder.texture_for(
-        node,
+    let tex_b = builder.texture(
         Some("node-output".to_string()),
         TextureDesc::render_target(Size::new(4, 4), wgpu::TextureFormat::Rgba8Unorm),
     );
     let buf_a = builder.buffer(None, BufferDesc::uniform(16));
-    let buf_b = builder.buffer_for(node, Some("params".to_string()), BufferDesc::storage(32));
-    let program = builder.program_for(node, render_program_desc());
+    let buf_b = builder.buffer(Some("params".to_string()), BufferDesc::storage(32));
+    let program = builder.program(render_program_desc());
     let pass = builder.render_pass(RenderPassDesc {
         label: Some("paint".to_string()),
-        owner: Some(node),
         program,
         targets: vec![RenderTargetRef {
             texture: tex_b,
@@ -102,18 +89,10 @@ fn builder_assigns_stable_ids_and_node_ownership() {
             store: wgpu::StoreOp::Store,
         }],
         bindings: Vec::new(),
-        vertex_buffers: Vec::new(),
-        index_buffer: None,
-        draw: DrawCommand::Draw(Draw {
+        draw: Draw {
             vertices: 0..3,
             instances: 0..1,
-        }),
-        scissor: Some(ScissorRect {
-            x: 1,
-            y: 2,
-            width: 3,
-            height: 4,
-        }),
+        },
         viewport: None,
     });
     let plan = builder.build();
@@ -124,10 +103,6 @@ fn builder_assigns_stable_ids_and_node_ownership() {
     assert_eq!(buf_b, BufferId(1));
     assert_eq!(program, ProgramId(0));
     assert_eq!(pass, PassId(0));
-    assert_eq!(plan.textures()[0].owner, None);
-    assert_eq!(plan.textures()[1].owner, Some(node));
-    assert_eq!(plan.buffers()[1].owner, Some(node));
-    assert_eq!(plan.programs()[0].owner, Some(node));
     assert_eq!(plan.passes()[0].id, pass);
 }
 
@@ -153,14 +128,12 @@ fn plan_records_pass_order_across_render_compute_and_copy() {
 
     builder.compute_pass(ComputePassDesc {
         label: Some("first".to_string()),
-        owner: None,
         program: compute,
         bindings: Vec::new(),
-        dispatch: Dispatch { x: 1, y: 1, z: 1 }.into(),
+        dispatch: Dispatch { x: 1, y: 1, z: 1 },
     });
     builder.render_pass(RenderPassDesc {
         label: Some("second".to_string()),
-        owner: None,
         program: render,
         targets: vec![RenderTargetRef {
             texture: b,
@@ -168,13 +141,10 @@ fn plan_records_pass_order_across_render_compute_and_copy() {
             store: wgpu::StoreOp::Store,
         }],
         bindings: Vec::new(),
-        vertex_buffers: Vec::new(),
-        index_buffer: None,
-        draw: DrawCommand::Draw(Draw {
+        draw: Draw {
             vertices: 0..3,
             instances: 0..1,
-        }),
-        scissor: None,
+        },
         viewport: None,
     });
     builder.copy_texture(CopyTextureDesc {
@@ -189,39 +159,6 @@ fn plan_records_pass_order_across_render_compute_and_copy() {
     assert!(matches!(plan.passes()[0].desc, PassDesc::Compute(_)));
     assert!(matches!(plan.passes()[1].desc, PassDesc::Render(_)));
     assert!(matches!(plan.passes()[2].desc, PassDesc::CopyTexture(_)));
-}
-
-#[test]
-fn params_link_expression_slots_to_dynamic_resources() {
-    let node = NodeKey(7);
-    let mut builder = RenderPlan::builder();
-    let uniforms = builder.buffer_for(node, Some("uniforms".to_string()), BufferDesc::uniform(64));
-    let image = builder.texture_for(
-        node,
-        Some("animated-image".to_string()),
-        TextureDesc::sampled(Size::new(2, 2), wgpu::TextureFormat::Rgba8Unorm),
-    );
-    builder
-        .param(
-            ParamKey {
-                owner: node,
-                slot: 0,
-            },
-            ParamTarget::Buffer(uniforms),
-        )
-        .param(
-            ParamKey {
-                owner: node,
-                slot: 1,
-            },
-            ParamTarget::Texture(image),
-        );
-    let plan = builder.build();
-
-    assert_eq!(plan.params().len(), 2);
-    assert_eq!(plan.params()[0].key.owner, node);
-    assert_eq!(plan.params()[0].target, ParamTarget::Buffer(uniforms));
-    assert_eq!(plan.params()[1].target, ParamTarget::Texture(image));
 }
 
 #[test]
@@ -314,7 +251,6 @@ fn render_program_desc() -> ProgramDesc {
             blend: Some(wgpu::BlendState::REPLACE),
             write_mask: wgpu::ColorWrites::ALL,
         })],
-        vertex_buffers: Vec::new(),
         primitive: wgpu::PrimitiveState::default(),
     })
 }
