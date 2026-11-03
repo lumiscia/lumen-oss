@@ -18,15 +18,40 @@ pub enum MediaFrame {
 }
 
 #[cfg(feature = "ffmpeg")]
-#[derive(Debug)]
+pub(crate) type CpuRetry = Box<dyn Fn(&str) -> Result<MediaFrame, MediaError> + Send + Sync>;
+
+#[cfg(feature = "ffmpeg")]
 pub struct GpuVideoMediaFrame {
     pub frame: lumen_ffmpeg::GpuVideoFrame,
+    pub(crate) cpu_retry: CpuRetry,
+}
+
+#[cfg(feature = "ffmpeg")]
+impl std::fmt::Debug for GpuVideoMediaFrame {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GpuVideoMediaFrame")
+            .field("frame", &self.frame)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "ffmpeg")]
 impl GpuVideoMediaFrame {
     pub fn dimensions(&self) -> (u32, u32) {
         self.frame.dimensions()
+    }
+
+    /// Moves this frame's source to the CPU for good and decodes the frame there, for when the
+    /// renderer couldn't use the GPU frame because of `reason`.
+    pub fn decode_on_cpu(&self, reason: &str) -> Result<Arc<CpuMediaFrame>, MediaError> {
+        match (self.cpu_retry)(reason)? {
+            MediaFrame::CpuRgba(frame) => Ok(frame),
+            MediaFrame::GpuVideo(_) => Err(MediaError::Decode {
+                media_source: String::new(),
+                details: "a source moved to the CPU returned a GPU frame".to_string(),
+            }),
+        }
     }
 }
 

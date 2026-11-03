@@ -57,8 +57,8 @@ pub fn render_project_mp4(
         message: err.to_string(),
         retryable: false,
     })?;
-    let media_store = LocalMediaStore::new(media_root);
-    let mut renderer = create_gpu_renderer().map_err(|err| RenderError {
+    let mut media_store = LocalMediaStore::new(media_root);
+    let mut renderer = create_gpu_renderer(&mut media_store).map_err(|err| RenderError {
         code: "render_failed",
         message: format!("failed to create GPU renderer: {err:#}"),
         retryable: true,
@@ -102,6 +102,7 @@ pub fn render_project_mp4(
     );
     if encoder.cuda_fast_path {
         return render_project_mp4_cuda(
+            renderer,
             composition,
             &media_store,
             width,
@@ -359,9 +360,25 @@ fn align_to(value: u32, alignment: u32) -> u32 {
     value.div_ceil(alignment) * alignment
 }
 
-pub(super) fn create_gpu_renderer() -> anyhow::Result<GpuCompositionRenderer> {
+/// Creates a renderer that hardware decode can share a device with, when decode is asked for and
+/// the hardware has it.
+fn create_gpu_renderer(
+    media_store: &mut LocalMediaStore,
+) -> anyhow::Result<GpuCompositionRenderer> {
     let handle = tokio::runtime::Handle::try_current()
         .context("GPU renderer creation requires a Tokio runtime")?;
+    #[cfg(all(target_os = "linux", feature = "vulkan"))]
+    if media_store.video_options.prefer_hardware_decode {
+        match handle.block_on(GpuCompositionRenderer::new_vulkan_decode()) {
+            Ok((renderer, device)) => {
+                media_store.video_options.vulkan_device = Some(device);
+                return Ok(renderer);
+            }
+            Err(error) => tracing::info!(%error, "renderer has no Vulkan decode device"),
+        }
+    }
+    #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
+    let _ = media_store;
     handle
         .block_on(GpuCompositionRenderer::new())
         .context("failed to initialize wgpu renderer")

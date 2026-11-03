@@ -11,16 +11,31 @@ use lumen_ffmpeg::{
 
 use crate::{
     error::MediaError,
-    media::{GpuVideoMediaFrame, MediaFrame, VideoFrameResolver, VideoMetadata},
+    media::{
+        GpuVideoMediaFrame, MediaFrame, VideoFrameResolver, VideoMetadata, resolver::CpuRetry,
+    },
 };
 
 use super::image::{FrameImage, FrameLruCache};
 
 const SEEK_REOPEN_THRESHOLD: u32 = 120;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FfmpegResolverOptions {
     pub prefer_hardware_decode: bool,
+    /// The renderer's device, for hardware decode straight to its textures. Without it, Linux builds
+    /// with `cuda` use CUDA and others decode on the CPU.
+    #[cfg(all(target_os = "linux", feature = "vulkan"))]
+    pub vulkan_device: Option<lumen_ffmpeg::VulkanDevice>,
+}
+
+impl FfmpegResolverOptions {
+    pub fn with_hardware_decode(prefer_hardware_decode: bool) -> Self {
+        Self {
+            prefer_hardware_decode,
+            ..Self::default()
+        }
+    }
 }
 
 struct VideoDecodeWorker {
@@ -50,6 +65,24 @@ impl VideoDecodeWorker {
         self.cache.has_room_for(self.decoder.frame_bytes())
     }
 
+    /// Moves the source to the CPU, warning unless it is already there, and decodes `frame` on it.
+    fn resolve_on_cpu(&mut self, frame: u32, reason: &str) -> Result<MediaFrame, MediaError> {
+        if matches!(
+            self.decoder.gpu_decode_status,
+            GpuDecodeStatus::Active { .. }
+        ) {
+            tracing::warn!(
+                source = self.decoder.source,
+                reason,
+                "hardware decode failed, decoding this source on the CPU"
+            );
+            self.decoder.options.prefer_hardware_decode = false;
+            self.decoder.reopen()?;
+            self.cache.retain(&[]);
+        }
+        self.resolve_frame(frame)
+    }
+
     fn prefetch_frame(&mut self, frame: u32) {
         if !self.cache.contains(frame)
             && let Ok(decoded) = self.decoder.decode_frame(frame)
@@ -65,7 +98,9 @@ impl VideoDecodeWorker {
 
 struct LibavStreamDecoder {
     source: String,
-    prefer_hardware_decode: bool,
+    options: FfmpegResolverOptions,
+    /// Reaches the decode worker that owns this decoder from the GPU frames it returns.
+    worker: Option<mpsc::Sender<WorkerRequest>>,
     stream_index: usize,
     width: u32,
     height: u32,
@@ -140,14 +175,15 @@ impl GpuDecodeStatus {
 impl LibavStreamDecoder {
     fn open(
         source: impl Into<String>,
-        mut prefer_hardware_decode: bool,
+        mut options: FfmpegResolverOptions,
     ) -> Result<Self, MediaError> {
         let source = source.into();
-        let components = Self::open_components(&source, &mut prefer_hardware_decode)?;
+        let components = Self::open_components(&source, &mut options)?;
 
         Ok(Self {
             source,
-            prefer_hardware_decode,
+            options,
+            worker: None,
             stream_index: components.stream_index,
             width: components.width,
             height: components.height,
@@ -167,7 +203,7 @@ impl LibavStreamDecoder {
     /// the source stays on the CPU and warns once.
     fn open_components(
         source: &str,
-        prefer_hardware_decode: &mut bool,
+        options: &mut FfmpegResolverOptions,
     ) -> Result<DecoderComponents, MediaError> {
         let mut input = open_input(source)?;
         let stream = input
@@ -204,11 +240,10 @@ impl LibavStreamDecoder {
             media_source: source.to_string(),
             details: "unable to determine stream frame count".to_string(),
         })?;
-        let (decoder, gpu_decode_status) =
-            open_video_decoder(source, &input, &stream, *prefer_hardware_decode)?;
+        let (decoder, gpu_decode_status) = open_video_decoder(source, &input, &stream, options)?;
         if let Some(reason) = gpu_decode_status.unavailable_reason() {
             tracing::warn!(reason, "hardware decode unavailable, decoding on the CPU");
-            *prefer_hardware_decode = false;
+            options.prefer_hardware_decode = false;
         }
 
         Ok(DecoderComponents {
@@ -250,7 +285,7 @@ impl LibavStreamDecoder {
                         error = %primary_error,
                         "hardware decode failed, decoding this source on the CPU"
                     );
-                    self.prefer_hardware_decode = false;
+                    self.options.prefer_hardware_decode = false;
                 }
                 self.reopen()?;
                 self.seek_to_frame(frame)?;
@@ -322,6 +357,7 @@ impl LibavStreamDecoder {
                         }
                         return Ok(Some(MediaFrame::GpuVideo(Arc::new(GpuVideoMediaFrame {
                             frame: decoded,
+                            cpu_retry: self.cpu_retry(target_frame),
                         }))));
                     }
                     Ok(None) => return Ok(None),
@@ -356,6 +392,27 @@ impl LibavStreamDecoder {
                 }
             }
         }
+    }
+
+    fn cpu_retry(&self, frame: u32) -> CpuRetry {
+        let source = self.source.clone();
+        let worker = self.worker.clone();
+        Box::new(move |reason| {
+            let unavailable = || MediaError::Decode {
+                media_source: source.clone(),
+                details: "video decode worker is unavailable".to_string(),
+            };
+            let worker = worker.as_ref().ok_or_else(unavailable)?;
+            let (response_tx, response_rx) = mpsc::channel();
+            worker
+                .send(WorkerRequest::ResolveOnCpu {
+                    frame,
+                    reason: reason.to_string(),
+                    response_tx,
+                })
+                .map_err(|_| unavailable())?;
+            response_rx.recv().map_err(|_| unavailable())?
+        })
     }
 
     fn map_frame_index(&self, decoded: &CpuVideoFrame) -> u32 {
@@ -440,7 +497,7 @@ impl LibavStreamDecoder {
     }
 
     fn reopen(&mut self) -> Result<(), MediaError> {
-        let components = Self::open_components(&self.source, &mut self.prefer_hardware_decode)?;
+        let components = Self::open_components(&self.source, &mut self.options)?;
         self.input = components.input;
         self.stream_index = components.stream_index;
         self.width = components.width;
@@ -465,6 +522,11 @@ enum WorkerRequest {
         frame: u32,
         response_tx: mpsc::Sender<Result<MediaFrame, MediaError>>,
     },
+    ResolveOnCpu {
+        frame: u32,
+        reason: String,
+        response_tx: mpsc::Sender<Result<MediaFrame, MediaError>>,
+    },
     Retain {
         frames: Vec<u32>,
     },
@@ -474,11 +536,14 @@ enum WorkerRequest {
 fn run_decode_worker(
     source: String,
     options: FfmpegResolverOptions,
+    request_tx: mpsc::Sender<WorkerRequest>,
     request_rx: mpsc::Receiver<WorkerRequest>,
 ) {
-    let mut worker = match LibavStreamDecoder::open(source.clone(), options.prefer_hardware_decode)
-    {
-        Ok(decoder) => Ok(VideoDecodeWorker::new(decoder)),
+    let mut worker = match LibavStreamDecoder::open(source.clone(), options) {
+        Ok(mut decoder) => {
+            decoder.worker = Some(request_tx);
+            Ok(VideoDecodeWorker::new(decoder))
+        }
         Err(error) => Err(error),
     };
     let mut pending = BTreeSet::new();
@@ -539,6 +604,19 @@ fn handle_worker_request(
             let _ = response_tx.send(result);
             false
         }
+        WorkerRequest::ResolveOnCpu {
+            frame,
+            reason,
+            response_tx,
+        } => {
+            pending.remove(&frame);
+            let result = match worker {
+                Ok(worker) => worker.resolve_on_cpu(frame, &reason),
+                Err(error) => Err(error.clone()),
+            };
+            let _ = response_tx.send(result);
+            false
+        }
         WorkerRequest::Retain { frames } => {
             pending.retain(|frame| frames.binary_search(frame).is_ok());
             if let Ok(worker) = worker {
@@ -569,7 +647,7 @@ impl FfmpegVideoResolver {
         options: FfmpegResolverOptions,
     ) -> Result<Self, MediaError> {
         let source = source.into();
-        let decoder = LibavStreamDecoder::open(source.clone(), options.prefer_hardware_decode)?;
+        let decoder = LibavStreamDecoder::open(source.clone(), options)?;
         let metadata = VideoMetadata {
             width: decoder.width,
             height: decoder.height,
@@ -577,15 +655,14 @@ impl FfmpegVideoResolver {
             fps: decoder.fps as f32,
         };
         let decode_status = decoder.gpu_decode_status.clone();
-        let options = FfmpegResolverOptions {
-            prefer_hardware_decode: decoder.prefer_hardware_decode,
-        };
+        let options = decoder.options.clone();
         drop(decoder);
 
         let (request_tx, request_rx) = mpsc::channel::<WorkerRequest>();
         let worker_source = source.clone();
+        let worker_tx = request_tx.clone();
         let worker_handle =
-            thread::spawn(move || run_decode_worker(worker_source, options, request_rx));
+            thread::spawn(move || run_decode_worker(worker_source, options, worker_tx, request_rx));
 
         Ok(Self {
             id: source,
@@ -737,38 +814,62 @@ fn open_video_decoder(
     source: &str,
     input: &InputContext,
     stream: &VideoStreamInfo,
-    prefer_hardware_decode: bool,
+    options: &FfmpegResolverOptions,
 ) -> Result<(VideoDecoder, GpuDecodeStatus), MediaError> {
     let stream_index = stream.stream_index;
-    // GPU frames stay in coded orientation and carry no alpha, so rotated sources need the CPU
-    // path's rotation and sources with alpha its RGBA conversion.
-    if prefer_hardware_decode && stream.rotation == 0 && !stream.has_alpha {
-        let backend = preferred_gpu_backend();
-        match VideoDecoder::open(
-            input,
-            VideoDecoderConfig {
-                stream_index,
-                mode: DecodeMode::Gpu(backend),
-            },
-        ) {
-            Ok(decoder) => return Ok((decoder, GpuDecodeStatus::Active { backend })),
-            Err(error) => {
-                let decoder = open_cpu_video_decoder(source, input, stream_index)?;
-                return Ok((
-                    decoder,
-                    GpuDecodeStatus::Unavailable {
-                        backend,
-                        reason: format!("{source}: {error}"),
-                    },
-                ));
-            }
-        }
+    if !options.prefer_hardware_decode {
+        return Ok((
+            open_cpu_video_decoder(source, input, stream_index)?,
+            GpuDecodeStatus::NotRequested,
+        ));
     }
 
-    Ok((
-        open_cpu_video_decoder(source, input, stream_index)?,
-        GpuDecodeStatus::NotRequested,
-    ))
+    let backend = preferred_gpu_backend(options);
+    let opened = if stream.rotation != 0 {
+        // GPU frames stay in coded orientation.
+        Err("rotated sources need the CPU path's rotation".to_string())
+    } else if stream.has_alpha {
+        // GPU frames carry no alpha.
+        Err("sources with alpha need the CPU path's RGBA conversion".to_string())
+    } else {
+        open_hardware_decoder(input, stream_index, backend, options)
+    };
+    match opened {
+        Ok(decoder) => Ok((decoder, GpuDecodeStatus::Active { backend })),
+        Err(reason) => Ok((
+            open_cpu_video_decoder(source, input, stream_index)?,
+            GpuDecodeStatus::Unavailable {
+                backend,
+                reason: format!("{source}: {reason}"),
+            },
+        )),
+    }
+}
+
+fn open_hardware_decoder(
+    input: &InputContext,
+    stream_index: usize,
+    backend: GpuBackend,
+    options: &FfmpegResolverOptions,
+) -> Result<VideoDecoder, String> {
+    #[cfg(all(target_os = "linux", feature = "vulkan"))]
+    if backend == GpuBackend::Vulkan {
+        let device = options.vulkan_device.as_ref().ok_or(
+            "the renderer's Vulkan device has no video decode queue, or the renderer isn't on Vulkan",
+        )?;
+        return VideoDecoder::open_on_vulkan_device(input, stream_index, device)
+            .map_err(|error| error.to_string());
+    }
+    #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
+    let _ = options;
+    VideoDecoder::open(
+        input,
+        VideoDecoderConfig {
+            stream_index,
+            mode: DecodeMode::Gpu(backend),
+        },
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn open_cpu_video_decoder(
@@ -789,22 +890,20 @@ fn open_cpu_video_decoder(
     })
 }
 
-fn preferred_gpu_backend() -> GpuBackend {
+fn preferred_gpu_backend(options: &FfmpegResolverOptions) -> GpuBackend {
+    #[cfg(all(target_os = "linux", feature = "vulkan"))]
+    if options.vulkan_device.is_some() {
+        return GpuBackend::Vulkan;
+    }
+    #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
+    let _ = options;
     if cfg!(target_os = "macos") {
         GpuBackend::Metal
+    } else if cfg!(all(target_os = "linux", feature = "cuda")) {
+        GpuBackend::Cuda
     } else {
-        preferred_non_macos_gpu_backend()
+        GpuBackend::Vulkan
     }
-}
-
-#[cfg(all(target_os = "linux", feature = "cuda"))]
-fn preferred_non_macos_gpu_backend() -> GpuBackend {
-    GpuBackend::Cuda
-}
-
-#[cfg(not(all(target_os = "linux", feature = "cuda")))]
-fn preferred_non_macos_gpu_backend() -> GpuBackend {
-    GpuBackend::Vulkan
 }
 
 #[cfg(test)]
@@ -869,9 +968,7 @@ mod tests {
     fn open_cpu(path: &std::path::Path) -> Result<FfmpegVideoResolver, MediaError> {
         FfmpegVideoResolver::open_with_options(
             path.to_string_lossy().to_string(),
-            FfmpegResolverOptions {
-                prefer_hardware_decode: false,
-            },
+            FfmpegResolverOptions::default(),
         )
     }
 
@@ -1009,8 +1106,9 @@ mod tests {
         // A CPU decoder marked active as hardware refuses `receive_gpu_frame` on the first frame,
         // the state a hardware decoder that opens and then can't decode is in, on any machine.
         let mut decoder =
-            LibavStreamDecoder::open(path.to_string_lossy().to_string(), false).expect("open clip");
-        decoder.prefer_hardware_decode = true;
+            LibavStreamDecoder::open(path.to_string_lossy().to_string(), Default::default())
+                .expect("open clip");
+        decoder.options.prefer_hardware_decode = true;
         decoder.gpu_decode_status = GpuDecodeStatus::Active {
             backend: GpuBackend::Vulkan,
         };
@@ -1018,7 +1116,7 @@ mod tests {
         for frame in [5, 6, 2] {
             let decoded = decoder.decode_frame(frame).expect("decode on the CPU");
             assert_eq!(frame_index(&decoded), frame);
-            assert!(!decoder.prefer_hardware_decode);
+            assert!(!decoder.options.prefer_hardware_decode);
             assert!(!matches!(
                 decoder.gpu_decode_status,
                 GpuDecodeStatus::Active { .. }
@@ -1033,7 +1131,38 @@ mod tests {
     }
 
     #[test]
-    fn sources_with_alpha_skip_hardware_decode_and_keep_their_alpha() {
+    fn a_frame_the_renderer_rejects_moves_the_source_to_the_cpu_and_drops_cached_gpu_frames() {
+        let Some(path) = encode_counting_clip("import_failure.mp4", &[]) else {
+            return;
+        };
+        let mut decoder =
+            LibavStreamDecoder::open(path.to_string_lossy().to_string(), Default::default())
+                .expect("open clip");
+        let cached = decoder.decode_frame(8).expect("frame to retire");
+        decoder.gpu_decode_status = GpuDecodeStatus::Active {
+            backend: GpuBackend::Vulkan,
+        };
+        decoder.options.prefer_hardware_decode = true;
+        let mut worker = VideoDecodeWorker::new(decoder);
+        worker.cache.insert(8, cached, false);
+
+        let retried = worker.resolve_on_cpu(9, "import failed").expect("retry");
+        assert_eq!(frame_index(&retried), 9);
+        assert!(!worker.decoder.options.prefer_hardware_decode);
+        assert!(matches!(
+            worker.decoder.gpu_decode_status,
+            GpuDecodeStatus::NotRequested
+        ));
+        assert!(!worker.cache.contains(8));
+
+        let again = worker.resolve_on_cpu(3, "still failing").expect("retry");
+        assert_eq!(frame_index(&again), 3);
+        assert!(worker.cache.contains(9) && worker.cache.contains(3));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn sources_with_alpha_warn_skip_hardware_decode_and_keep_their_alpha() {
         let path =
             std::env::temp_dir().join(format!("lumen_engine_{}_alpha.mov", std::process::id()));
         let Ok(output) = Command::new("ffmpeg")
@@ -1058,12 +1187,11 @@ mod tests {
 
         let resolver = FfmpegVideoResolver::open_with_options(
             path.to_string_lossy().to_string(),
-            FfmpegResolverOptions {
-                prefer_hardware_decode: true,
-            },
+            FfmpegResolverOptions::with_hardware_decode(true),
         )
         .expect("open clip");
-        assert_eq!(resolver.decode_mode_label(), "cpu_not_requested");
+        let reason = resolver.decode_unavailable_reason().expect("a warning");
+        assert!(reason.contains("alpha"), "{reason}");
         let MediaFrame::CpuRgba(decoded) = resolver.frame(0).expect("decode frame") else {
             panic!("expected a CPU frame");
         };

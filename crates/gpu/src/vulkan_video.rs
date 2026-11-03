@@ -16,7 +16,7 @@ struct VideoEncodeAv1Features {
     video_encode_av1: vk::Bool32,
 }
 
-/// Raw handles of a wgpu device that can also encode with Vulkan Video.
+/// Raw handles of a wgpu device that can also encode or decode with Vulkan Video.
 pub struct VulkanVideoDevice {
     pub get_instance_proc_addr: vk::PFN_vkGetInstanceProcAddr,
     pub instance: vk::Instance,
@@ -27,10 +27,28 @@ pub struct VulkanVideoDevice {
     pub queue_families: Vec<(u32, u32, vk::QueueFlags)>,
 }
 
+/// The Vulkan Video work a device must support. It also gets the other kind where the hardware has
+/// it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VideoRequirement {
+    Encode,
+    Decode,
+}
+
 impl Renderer {
-    /// Creates a Vulkan renderer whose device also has Vulkan Video encode queues, extensions and
+    /// Creates a Vulkan renderer whose device has Vulkan Video encode queues, extensions and
     /// features, so an encoder can share it.
     pub async fn new_vulkan_video() -> Result<(Self, VulkanVideoDevice)> {
+        Self::open_vulkan_video(VideoRequirement::Encode).await
+    }
+
+    /// Creates a Vulkan renderer whose device has Vulkan Video decode queues and extensions, so a
+    /// decoder can share it.
+    pub async fn new_vulkan_decode() -> Result<(Self, VulkanVideoDevice)> {
+        Self::open_vulkan_video(VideoRequirement::Decode).await
+    }
+
+    async fn open_vulkan_video(requirement: VideoRequirement) -> Result<(Self, VulkanVideoDevice)> {
         let mut instance_desc = crate::renderer::instance_descriptor();
         instance_desc.backends = wgpu::Backends::VULKAN;
         let instance = wgpu::Instance::new(instance_desc);
@@ -51,7 +69,7 @@ impl Renderer {
         let (open_device, queue_families) = {
             let hal_adapter = unsafe { adapter.as_hal::<wgpu_hal::api::Vulkan>() }
                 .context("wgpu adapter is not using the Vulkan backend")?;
-            open_video_device(&hal_adapter)?
+            open_video_device(&hal_adapter, requirement)?
         };
         let (device, queue) = unsafe {
             adapter.create_device_from_hal(open_device, &wgpu::DeviceDescriptor::default())
@@ -150,6 +168,7 @@ type VideoQueueFamilies = Vec<(u32, u32, vk::QueueFlags)>;
 
 fn open_video_device(
     adapter: &wgpu_hal::vulkan::Adapter,
+    requirement: VideoRequirement,
 ) -> Result<(
     wgpu_hal::OpenDevice<wgpu_hal::api::Vulkan>,
     VideoQueueFamilies,
@@ -162,7 +181,7 @@ fn open_video_device(
     if shared_instance.instance_api_version() < vk::API_VERSION_1_3
         || api_version < vk::API_VERSION_1_3
     {
-        bail!("Vulkan Video encode needs Vulkan 1.3");
+        bail!("Vulkan Video needs Vulkan 1.3");
     }
 
     let supported = unsafe { instance.enumerate_device_extension_properties(physical_device) }
@@ -174,8 +193,11 @@ fn open_video_device(
     };
     let required = [
         ash::khr::video_queue::NAME,
-        ash::khr::video_encode_queue::NAME,
         ash::khr::video_maintenance1::NAME,
+        match requirement {
+            VideoRequirement::Encode => ash::khr::video_encode_queue::NAME,
+            VideoRequirement::Decode => ash::khr::video_decode_queue::NAME,
+        },
     ];
     if let Some(missing) = required.iter().find(|name| !supports(name)) {
         bail!(
@@ -183,18 +205,57 @@ fn open_video_device(
             missing.to_string_lossy()
         );
     }
-    let extensions: Vec<&'static CStr> = required
-        .into_iter()
-        .chain(
-            [
-                ash::khr::video_encode_h264::NAME,
-                ash::khr::video_encode_h265::NAME,
-                AV1_ENCODE_EXTENSION,
-            ]
-            .into_iter()
-            .filter(|name| supports(name)),
-        )
-        .collect();
+
+    let families = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+    // wgpu-hal renders on queue 0 of family 0, so FFmpeg's compute, transfer and video work goes to
+    // other families.
+    let find_family = |wanted: vk::QueueFlags| {
+        families
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(index, family)| {
+                family
+                    .queue_flags
+                    .contains(wanted)
+                    .then_some((index as u32, family.queue_count))
+            })
+    };
+    let encode = find_family(vk::QueueFlags::VIDEO_ENCODE_KHR)
+        .filter(|_| supports(ash::khr::video_encode_queue::NAME));
+    let decode = find_family(vk::QueueFlags::VIDEO_DECODE_KHR)
+        .filter(|_| supports(ash::khr::video_decode_queue::NAME));
+    match requirement {
+        VideoRequirement::Encode if encode.is_none() => {
+            bail!("Vulkan device has no video encode queue (RADV needs RADV_PERFTEST=video_encode)")
+        }
+        VideoRequirement::Decode if decode.is_none() => {
+            bail!("Vulkan device has no video decode queue")
+        }
+        _ => {}
+    }
+
+    let mut wanted: Vec<&'static CStr> = vec![
+        ash::khr::video_queue::NAME,
+        ash::khr::video_maintenance1::NAME,
+    ];
+    if encode.is_some() {
+        wanted.extend([
+            ash::khr::video_encode_queue::NAME,
+            ash::khr::video_encode_h264::NAME,
+            ash::khr::video_encode_h265::NAME,
+            AV1_ENCODE_EXTENSION,
+        ]);
+    }
+    if decode.is_some() {
+        wanted.extend([
+            ash::khr::video_decode_queue::NAME,
+            ash::khr::video_decode_h264::NAME,
+            ash::khr::video_decode_h265::NAME,
+            ash::khr::video_decode_av1::NAME,
+        ]);
+    }
+    let extensions: Vec<&'static CStr> = wanted.into_iter().filter(|name| supports(name)).collect();
     let av1 = extensions.contains(&AV1_ENCODE_EXTENSION);
 
     let mut synchronization2 = vk::PhysicalDeviceSynchronization2Features::default();
@@ -223,41 +284,32 @@ fn open_video_device(
     video_maintenance1.p_next = std::ptr::null_mut();
     av1_encode.p_next = std::ptr::null_mut();
 
-    let families = unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
-    // wgpu-hal renders on queue 0 of family 0, so FFmpeg's compute, transfer and encode work goes
-    // to other families.
-    let find_family = |wanted: vk::QueueFlags| {
-        families
-            .iter()
-            .enumerate()
-            .skip(1)
-            .find_map(|(index, family)| {
-                family
-                    .queue_flags
-                    .contains(wanted)
-                    .then_some((index as u32, family.queue_count))
-            })
-    };
-    let encode = find_family(vk::QueueFlags::VIDEO_ENCODE_KHR).context(
-        "Vulkan device has no video encode queue (RADV needs RADV_PERFTEST=video_encode)",
-    )?;
     // FFmpeg prepares and transfers frames on a compute queue.
     let compute = find_family(vk::QueueFlags::COMPUTE)
         .context("Vulkan device has no compute queue family separate from the render family")?;
     // Listing the render family lets FFmpeg's frames be used on wgpu's queue. FFmpeg's hwcontext
-    // and Vulkan Video encoders pick submit queues by compute, transfer or encode capabilities, so
-    // they never submit to it.
+    // and Vulkan Video codecs pick submit queues by compute, transfer or video capabilities, so
+    // they never submit to it. One decode queue, because FFmpeg's session reset on a seek isn't
+    // ordered against decodes on another queue, which corrupts HEVC frames after seeks on hardware
+    // with several.
     let mut queue_families = vec![(0, 1, vk::QueueFlags::GRAPHICS)];
     for (index, count, flags) in [
-        (
+        Some((
             compute.0,
             compute.1,
             vk::QueueFlags::COMPUTE | vk::QueueFlags::TRANSFER,
-        ),
-        (encode.0, encode.1, vk::QueueFlags::VIDEO_ENCODE_KHR),
-    ] {
+        )),
+        encode.map(|(index, count)| (index, count, vk::QueueFlags::VIDEO_ENCODE_KHR)),
+        decode.map(|(index, _)| (index, 1, vk::QueueFlags::VIDEO_DECODE_KHR)),
+    ]
+    .into_iter()
+    .flatten()
+    {
         match queue_families.iter_mut().find(|family| family.0 == index) {
-            Some(family) => family.2 |= flags,
+            Some(family) => {
+                family.1 = family.1.min(count);
+                family.2 |= flags;
+            }
             None => queue_families.push((index, count, flags)),
         }
     }
@@ -314,7 +366,7 @@ fn open_video_device(
             Some(callback),
         )
     }
-    .context("create Vulkan device with video encode queues")?;
+    .context("create Vulkan device with video queues")?;
     Ok((open_device, queue_families))
 }
 

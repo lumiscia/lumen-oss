@@ -919,42 +919,55 @@ impl GpuCompositionRenderer {
                 "resolve media texture upload"
             );
             #[cfg(feature = "ffmpeg")]
-            if let MediaFrame::GpuVideo(frame) = &upload.frame {
-                let texture = gpu_media_importer
-                    .import(
+            let cpu_retry;
+            let frame = match &upload.frame {
+                MediaFrame::CpuRgba(frame) => frame,
+                #[cfg(feature = "ffmpeg")]
+                MediaFrame::GpuVideo(frame) => {
+                    match gpu_media_importer.import(
                         &prepared.renderer,
                         &mut prepared.media_imports,
                         upload,
                         frame,
-                    )
-                    .map_err(|details| RenderError::Gpu {
-                        details: format!("failed to import GPU media frame: {details}"),
-                    })?;
-                let size = texture.size();
-                let desc = lumen_gpu::TextureDesc::sampled(
-                    lumen_gpu::Size::new(size.width, size.height),
-                    match frame.frame.backend() {
-                        #[cfg(all(target_os = "macos", feature = "metal"))]
-                        lumen_ffmpeg::GpuBackend::Metal => {
-                            lumen_gpu::wgpu::TextureFormat::Bgra8Unorm
+                    ) {
+                        Ok(texture) => {
+                            let bound = prepared.renderer.texture_arc(upload.texture);
+                            if bound.is_none_or(|bound| !Arc::ptr_eq(&bound, &texture)) {
+                                let size = texture.size();
+                                let desc = lumen_gpu::TextureDesc::sampled(
+                                    lumen_gpu::Size::new(size.width, size.height),
+                                    match frame.frame.backend() {
+                                        #[cfg(all(target_os = "macos", feature = "metal"))]
+                                        lumen_ffmpeg::GpuBackend::Metal => {
+                                            lumen_gpu::wgpu::TextureFormat::Bgra8Unorm
+                                        }
+                                        _ => lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                                    },
+                                );
+                                prepared
+                                    .renderer
+                                    .replace_texture_arc(upload.texture, texture, desc)
+                                    .map_err(|error| RenderError::Gpu {
+                                        details: error.to_string(),
+                                    })?;
+                            }
+                            prepared.current_media_textures.remove(&upload.texture);
+                            continue;
                         }
-                        _ => lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                    },
-                );
-                prepared
-                    .renderer
-                    .replace_texture_arc(upload.texture, texture, desc)
-                    .map_err(|error| RenderError::Gpu {
-                        details: error.to_string(),
-                    })?;
-                prepared.current_media_textures.remove(&upload.texture);
-                continue;
-            }
-
-            let frame = match &upload.frame {
-                MediaFrame::CpuRgba(frame) => frame,
-                #[cfg(feature = "ffmpeg")]
-                MediaFrame::GpuVideo(_) => unreachable!("GPU video frames are imported above"),
+                        Err(reason) => {
+                            cpu_retry =
+                                frame
+                                    .decode_on_cpu(&reason)
+                                    .map_err(|error| RenderError::Gpu {
+                                        details: format!(
+                                            "failed to import GPU media frame: {reason}; \
+                                         decoding it on the CPU also failed: {error}"
+                                        ),
+                                    })?;
+                            &cpu_retry
+                        }
+                    }
+                }
             };
 
             let Some(key) = &upload.key else {
@@ -963,11 +976,16 @@ impl GpuCompositionRenderer {
                     texture = ?upload.texture,
                     "upload uncached video frame"
                 );
-                if prepared
+                let cached_was_bound = prepared
                     .current_media_textures
                     .remove(&upload.texture)
-                    .is_some()
-                {
+                    .is_some();
+                // A source that moved to the CPU may leave a differently sized imported texture.
+                let wrong_size = prepared
+                    .renderer
+                    .texture(upload.texture)
+                    .is_some_and(|bound| bound.size() != upload.size.as_extent());
+                if cached_was_bound || wrong_size {
                     // The bound texture is a cached image's, which must not be written.
                     prepared
                         .renderer

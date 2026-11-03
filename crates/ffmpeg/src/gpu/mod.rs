@@ -20,7 +20,10 @@ pub use metal::{
     Objc2MetalDevice, Objc2MetalTexture,
 };
 #[cfg(feature = "vulkan")]
-pub use vulkan::{VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame};
+pub use vulkan::{
+    VulkanDecodedFrame, VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame,
+    YuvToRgb,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuBackend {
@@ -97,7 +100,7 @@ pub enum GpuVideoFrame {
     #[cfg(feature = "metal")]
     Metal(MetalDecodedFrame),
     #[cfg(feature = "vulkan")]
-    Vulkan(VulkanVideoFrame),
+    Vulkan(VulkanDecodedFrame),
     #[doc(hidden)]
     __NonExhaustive,
 }

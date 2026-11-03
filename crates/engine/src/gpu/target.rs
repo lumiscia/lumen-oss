@@ -23,13 +23,24 @@ pub struct VulkanVideoTarget {
 
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 impl GpuCompositionRenderer {
-    /// Creates a renderer on a Vulkan device that FFmpeg's Vulkan Video encoders can share.
+    /// Creates a renderer on a Vulkan device that FFmpeg's Vulkan Video encoders can share, and its
+    /// decoders too where the hardware has them.
     pub async fn new_vulkan_video() -> crate::Result<(Self, VulkanDevice)> {
-        let (renderer, video) = lumen_gpu::Renderer::new_vulkan_video()
-            .await
-            .map_err(|error| RenderError::Gpu {
-                details: format!("{error:#}"),
-            })?;
+        Self::from_vulkan_video(lumen_gpu::Renderer::new_vulkan_video().await)
+    }
+
+    /// Creates a renderer on a Vulkan device that FFmpeg's Vulkan Video decoders can share, and its
+    /// encoders too where the hardware has them.
+    pub async fn new_vulkan_decode() -> crate::Result<(Self, VulkanDevice)> {
+        Self::from_vulkan_video(lumen_gpu::Renderer::new_vulkan_decode().await)
+    }
+
+    fn from_vulkan_video(
+        created: anyhow::Result<(lumen_gpu::Renderer, lumen_gpu::VulkanVideoDevice)>,
+    ) -> crate::Result<(Self, VulkanDevice)> {
+        let (renderer, video) = created.map_err(|error| RenderError::Gpu {
+            details: format!("{error:#}"),
+        })?;
         let desc = VulkanDeviceDesc {
             get_instance_proc_addr: video.get_instance_proc_addr,
             instance: video.instance,
@@ -54,7 +65,7 @@ impl GpuCompositionRenderer {
     }
 }
 
-/// Submits FFmpeg's frame copies through wgpu, which serialises them with the renderer's own
+/// Submits frame copies between FFmpeg and the renderer through wgpu, which serialises them with the renderer's own
 /// submissions.
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 struct WgpuRenderQueue {
