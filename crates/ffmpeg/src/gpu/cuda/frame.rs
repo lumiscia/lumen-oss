@@ -37,8 +37,8 @@ impl CudaVideoFrame {
     /// # Safety
     ///
     /// `device_ptr` must point to a CUDA allocation matching `width`, `height`, and `pitch`. The
-    /// allocation must remain valid and must not be mutated incompatibly until every clone of this
-    /// frame has been dropped and every encoder it was submitted to has been flushed or dropped.
+    /// allocation must remain valid and unmodified until the call that submits the frame to an
+    /// encoder returns.
     pub unsafe fn from_device_ptr(
         device_ptr: u64,
         width: u32,
@@ -92,5 +92,52 @@ impl CudaVideoFrame {
 
     pub fn backend(&self) -> GpuBackend {
         GpuBackend::Cuda
+    }
+
+    /// Queues a copy of this frame's pixels into `destination`, a CUDA allocation of the same
+    /// dimensions, in the context that owns the frame.
+    pub(crate) fn copy_to_device(
+        &self,
+        destination: u64,
+        destination_pitch: usize,
+    ) -> Result<(), String> {
+        use cudarc::driver::sys;
+        use sys::CUmemorytype_enum::CU_MEMORYTYPE_DEVICE;
+
+        let mut context: sys::CUcontext = std::ptr::null_mut();
+        unsafe {
+            sys::cuPointerGetAttribute(
+                (&mut context as *mut sys::CUcontext).cast(),
+                sys::CUpointer_attribute::CU_POINTER_ATTRIBUTE_CONTEXT,
+                self.device_ptr,
+            )
+            .result()
+            .map_err(|error| error.to_string())?;
+            sys::cuCtxPushCurrent_v2(context)
+                .result()
+                .map_err(|error| error.to_string())?;
+        }
+        let copy = sys::CUDA_MEMCPY2D {
+            srcXInBytes: 0,
+            srcY: 0,
+            srcMemoryType: CU_MEMORYTYPE_DEVICE,
+            srcHost: std::ptr::null(),
+            srcDevice: self.device_ptr,
+            srcArray: std::ptr::null_mut(),
+            srcPitch: self.pitch as usize,
+            dstXInBytes: 0,
+            dstY: 0,
+            dstMemoryType: CU_MEMORYTYPE_DEVICE,
+            dstHost: std::ptr::null_mut(),
+            dstDevice: destination,
+            dstArray: std::ptr::null_mut(),
+            dstPitch: destination_pitch,
+            WidthInBytes: self.width as usize * 4,
+            Height: self.height as usize,
+        };
+        let copied = unsafe { sys::cuMemcpy2D_v2(&copy) }.result();
+        let mut popped: sys::CUcontext = std::ptr::null_mut();
+        let popped_result = unsafe { sys::cuCtxPopCurrent_v2(&mut popped) }.result();
+        copied.and(popped_result).map_err(|error| error.to_string())
     }
 }

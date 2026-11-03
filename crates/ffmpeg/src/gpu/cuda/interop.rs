@@ -119,6 +119,10 @@ pub fn copy_image_to_rgba_frame(
     };
     unsafe { sys::cuMemcpy2D_v2(&copy) }
         .result()
+        .map_err(driver_error)?;
+    // The copy is queued, and the caller re-renders into the source image once this returns.
+    unsafe { sys::cuStreamSynchronize(ptr::null_mut()) }
+        .result()
         .map_err(driver_error)
 }
 

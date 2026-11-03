@@ -6,7 +6,7 @@ use objc2_core_foundation::CFRetained;
 #[cfg(feature = "metal")]
 use objc2_core_video::CVPixelBuffer;
 
-#[cfg(feature = "vulkan")]
+#[cfg(any(feature = "cuda", feature = "vulkan"))]
 use crate::ffi;
 #[cfg(any(feature = "metal", feature = "cuda", feature = "vulkan"))]
 use crate::ffi::{AvFrame, sys};
@@ -15,8 +15,6 @@ use crate::gpu::GpuBackend;
 use crate::gpu::GpuVideoInput;
 use crate::video::EncodeMode;
 use crate::{FfmpegError, Result};
-#[cfg(feature = "cuda")]
-use sys::AVPixelFormat::AV_PIX_FMT_CUDA;
 #[cfg(feature = "metal")]
 use sys::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX;
 
@@ -92,41 +90,25 @@ impl VideoEncoder {
             }
         }
 
+        // NVENC reads a submitted frame asynchronously, so it gets its own pool frame; the pool
+        // takes the frame back once the encoder drops it.
         let mut av_frame = AvFrame::new()?;
         unsafe {
-            (*av_frame.as_mut_ptr()).format = AV_PIX_FMT_CUDA as i32;
-            (*av_frame.as_mut_ptr()).width = width as i32;
-            (*av_frame.as_mut_ptr()).height = height as i32;
+            ffi::check(
+                sys::av_hwframe_get_buffer(hw_frames.ptr, av_frame.as_mut_ptr(), 0),
+                "av_hwframe_get_buffer",
+            )
+            .map_err(|error| error.with_backend(GpuBackend::Cuda))?;
+            frame
+                .copy_to_device(
+                    (*av_frame.as_ptr()).data[0] as u64,
+                    (*av_frame.as_ptr()).linesize[0] as usize,
+                )
+                .map_err(|details| {
+                    FfmpegError::new("VideoEncoder::send_cuda_frame", details)
+                        .with_backend(GpuBackend::Cuda)
+                })?;
             (*av_frame.as_mut_ptr()).pts = frame.pts().unwrap_or(self.next_pts);
-            (*av_frame.as_mut_ptr()).hw_frames_ctx = sys::av_buffer_ref(hw_frames.ptr);
-            if (*av_frame.as_mut_ptr()).hw_frames_ctx.is_null() {
-                return Err(FfmpegError::new(
-                    "av_buffer_ref",
-                    "failed to reference CUDA hardware frames context for frame",
-                )
-                .with_backend(GpuBackend::Cuda));
-            }
-
-            let data_ptr = frame.device_ptr() as usize as *mut u8;
-            let retained_frame = Box::new(frame.clone());
-            let retained_frame_ptr = Box::into_raw(retained_frame);
-            (*av_frame.as_mut_ptr()).data[0] = data_ptr;
-            (*av_frame.as_mut_ptr()).linesize[0] = frame.pitch() as i32;
-            (*av_frame.as_mut_ptr()).buf[0] = sys::av_buffer_create(
-                data_ptr,
-                1,
-                Some(release_external_cuda_frame),
-                retained_frame_ptr.cast(),
-                0,
-            );
-            if (*av_frame.as_mut_ptr()).buf[0].is_null() {
-                drop(Box::from_raw(retained_frame_ptr));
-                return Err(FfmpegError::new(
-                    "av_buffer_create",
-                    "failed to create external CUDA frame lifetime reference",
-                )
-                .with_backend(GpuBackend::Cuda));
-            }
         }
         self.next_pts = self.next_pts.saturating_add(1);
         self.send_frame(output, av_frame.as_ptr())
@@ -244,13 +226,6 @@ impl VideoEncoder {
         }
         self.next_pts = self.next_pts.saturating_add(1);
         self.send_frame(output, av_frame.as_ptr())
-    }
-}
-
-#[cfg(feature = "cuda")]
-unsafe extern "C" fn release_external_cuda_frame(opaque: *mut libc::c_void, _data: *mut u8) {
-    if !opaque.is_null() {
-        drop(unsafe { Box::from_raw(opaque.cast::<crate::gpu::CudaVideoFrame>()) });
     }
 }
 
