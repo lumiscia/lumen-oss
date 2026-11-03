@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -149,9 +149,9 @@ impl GpuCompiledNode for CompiledCurves {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let evaluated = self.params.eval(&NodeParamEvalContext {
+        let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         let gpu_params = compiler::CurvesParams {
             values: [
@@ -165,8 +165,7 @@ impl GpuCompiledNode for CompiledCurves {
                 0.0,
             ],
         };
-        let curve =
-            compiler::CurvesTable::parse(self.node_id, ctx.frame(), &evaluated.curve_source)?;
+        let curve = compiler::CurvesTable::parse(self.node_id, &evaluated.curve_source)?;
         bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&gpu_params));
         bound.write_buffer(self.curve_buffer, 0, bytemuck::bytes_of(&curve));
         Ok(())

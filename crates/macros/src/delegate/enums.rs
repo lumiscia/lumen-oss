@@ -195,7 +195,7 @@ pub(crate) fn expand_enum_delegate(
         delegate_variants
             .push(quote!(#skip_deserializing Expr(::lumen_engine::node::Deferred<#ident>)));
         eval_matches.push(quote!(
-            Self::Expr(deferred) => deferred.eval(ctx.node_id, ctx.property_path, ctx.expr)
+            Self::Expr(deferred) => ::lumen_engine::node::DelegateEvaluable::eval(deferred, ctx)
         ));
     }
     let from_matches = variants
@@ -221,28 +221,17 @@ pub(crate) fn expand_enum_delegate(
 
                 fn eval_deferred(
                     deferred: &::lumen_engine::node::Deferred<Self>,
-                    node_id: ::lumen_engine::node::NodeId,
-                    property_path: &str,
                     ctx: &::lumen_engine::expr::ExpressionContext<'_>,
                 ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
                     match deferred {
                         ::lumen_engine::node::Deferred::Value(value) => Ok(*value),
                         ::lumen_engine::node::Deferred::Expr(expr) => {
-                            let value = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
-                                ::lumen_engine::node::PropertyValue::invalid_type(
-                                    node_id,
-                                    property_path,
-                                    "Enum",
-                                    "expression",
-                                )
-                            })? as i64;
+                            let value = ::lumen_engine::node::eval_number(expr, ctx)? as i64;
                             Self::from_i64(value).ok_or_else(|| {
-                                ::lumen_engine::node::PropertyValue::invalid_type(
-                                    node_id,
-                                    property_path,
-                                    "Enum",
-                                    "out-of-range value",
-                                )
+                                ::lumen_engine::error::LumenError::evaluate(::std::format!(
+                                    "{value} is not a value of {}",
+                                    ::core::stringify!(#ident)
+                                ))
                             })
                         }
                     }
@@ -386,7 +375,6 @@ pub(crate) fn expand_enum_delegate(
                 let expr = ::lumen_engine::expr::ExpressionContext::default();
                 let ctx = ::lumen_engine::node::DelegateEvalContext {
                     node_id: ::lumen_engine::node::NodeId::new(0),
-                    property_path: "",
                     expr: &expr,
                 };
                 self.try_into_evaluated(&ctx)

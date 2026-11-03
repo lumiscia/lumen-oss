@@ -25,8 +25,8 @@ use crate::{
     error::RenderError,
     expr::{ExpressionContext, ExpressionValue},
     node::{
-        Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef, ShaderUniformValue,
-        ShaderUniforms,
+        Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef,
+        ShaderUniformValue, ShaderUniforms,
     },
 };
 
@@ -130,14 +130,10 @@ impl GpuCompileNode for WgslShader {
         if port.port != "output" {
             return Err(ctx.missing_output(self.id, &port.port));
         }
-        let (frame, params) = {
-            let expr = ctx.expr_context(self.id, "params");
-            let params = self.params.eval(&NodeParamEvalContext {
-                node_id: self.id,
-                expr: &expr,
-            })?;
-            (expr.frame as u32, params)
-        };
+        let params = self.params.eval(&DelegateEvalContext {
+            node_id: self.id,
+            expr: &ctx.expr_context(),
+        })?;
         let inputs = self
             .sources
             .iter()
@@ -148,12 +144,11 @@ impl GpuCompileNode for WgslShader {
             })
             .collect::<crate::Result<Vec<_>>>()?;
         let Some(first) = inputs.first().copied() else {
-            return Err(shader_error(self.id, frame, "needs at least one input"));
+            return Err(shader_error(self.id, "needs at least one input"));
         };
         if inputs.len() > MAX_INPUTS {
             return Err(shader_error(
                 self.id,
-                frame,
                 format!(
                     "has {} inputs; WebGPU allows at most {MAX_INPUTS}",
                     inputs.len()
@@ -167,12 +162,8 @@ impl GpuCompileNode for WgslShader {
             params.shader
         };
         let interface = ShaderInterface::parse(&user_source)
-            .map_err(|details| shader_error(self.id, frame, format!("shader: {details}")))?;
-        interface.uniform_bytes(
-            self.id,
-            &params.uniforms,
-            &ctx.expr_context(self.id, "uniforms"),
-        )?;
+            .map_err(|details| shader_error(self.id, format!("shader: {details}")))?;
+        interface.uniform_bytes(self.id, &params.uniforms, &ctx.expr_context())?;
         let shader = interface.assemble(&user_source, inputs.len());
 
         let size = first.domain.storage_size;
@@ -335,11 +326,11 @@ impl GpuCompiledNode for CompiledWgslShader {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&NodeParamEvalContext {
+        let params = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &ctx.expr_context(),
         })?;
-        let expr = ctx.expr_context(self.node_id, "uniforms");
+        let expr = ctx.expr_context();
         let uniforms = self
             .interface
             .uniform_bytes(self.node_id, &params.uniforms, &expr)?;
@@ -354,13 +345,8 @@ impl GpuCompiledNode for CompiledWgslShader {
     }
 }
 
-fn shader_error(
-    node_id: NodeId,
-    frame: u32,
-    details: impl Into<String>,
-) -> crate::error::LumenError {
+fn shader_error(node_id: NodeId, details: impl Into<String>) -> crate::error::LumenError {
     RenderError::NodeEvaluation {
-        frame,
         node_id,
         node_kind: "WgslShader",
         details: details.into(),
@@ -544,11 +530,7 @@ impl ShaderInterface {
                     ),
                     None => "the shader declares no `var<uniform>`".to_string(),
                 };
-                return Err(shader_error(
-                    node_id,
-                    ctx.frame as u32,
-                    format!("uniforms.{name}: {details}"),
-                ));
+                return Err(shader_error(node_id, format!("uniforms.{name}: {details}")));
             };
             for (lane, value) in uniform_components(node_id, field, value, ctx)?
                 .into_iter()
@@ -574,19 +556,10 @@ fn uniform_components(
     value: &ShaderUniformValue,
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<Vec<f64>> {
-    let invalid = |details: String| {
-        shader_error(
-            node_id,
-            ctx.frame as u32,
-            format!("uniforms.{}: {details}", field.name),
-        )
-    };
-    let ctx = ExpressionContext {
-        path: ctx
-            .path
-            .as_ref()
-            .map(|path| format!("{path}.{}", field.name)),
-        ..*ctx
+    let invalid =
+        |details: String| shader_error(node_id, format!("uniforms.{}: {details}", field.name));
+    let located = |error: crate::error::LumenError| {
+        error.located(node_id, &format!("uniforms.{}", field.name))
     };
     let number = |value: ExpressionValue| {
         value.as_f64().ok_or_else(|| {
@@ -608,7 +581,7 @@ fn uniform_components(
 
     let values = match value {
         ShaderUniformValue::Number(value) => vec![*value],
-        ShaderUniformValue::Expr(expr) => match expr.evaluate(&ctx)? {
+        ShaderUniformValue::Expr(expr) => match expr.evaluate(ctx).map_err(located)? {
             ExpressionValue::Vec2((x, y)) => vec![x, y],
             ExpressionValue::Color(rgba) => {
                 color_field()?;
@@ -623,7 +596,7 @@ fn uniform_components(
             .iter()
             .map(|component| match component {
                 Deferred::Value(value) => Ok(*value),
-                Deferred::Expr(expr) => number(expr.evaluate(&ctx)?),
+                Deferred::Expr(expr) => number(expr.evaluate(ctx).map_err(located)?),
             })
             .collect::<crate::Result<_>>()?,
         ShaderUniformValue::Color { rgb, alpha } => {
@@ -842,7 +815,6 @@ mod tests {
             fps: 30.0,
             width: 1,
             height: 1,
-            path: None,
             graph: None,
             media: None,
             glyph: None,

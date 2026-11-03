@@ -346,10 +346,7 @@ pub(crate) fn visit(node: &ExprNode, f: &mut impl FnMut(&ExprNode)) {
 }
 
 fn parse_error(details: String) -> ExpressionError {
-    ExpressionError::Parse {
-        path: None,
-        details,
-    }
+    ExpressionError::Parse { details }
 }
 
 fn function_error(name: &str, body: &str, details: String) -> ExpressionError {
@@ -362,6 +359,7 @@ fn error_details(error: ExpressionError) -> String {
             details
         }
         ExpressionError::UndefinedVariable { name, .. } => format!("undefined variable `{name}`"),
+        ExpressionError::Located { failure, .. } => error_details(*failure),
     }
 }
 

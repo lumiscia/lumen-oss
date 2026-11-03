@@ -10,7 +10,7 @@ use crate::gpu::{
     compiler,
 };
 use crate::node::motion::Shutter;
-use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 const SHAPE_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -160,7 +160,6 @@ impl GpuCompileNode for Shape {
 /// Compiles a rectangle or ellipse.
 fn compile_box_shape(ctx: &mut CompileContext<'_>, shape: &Shape) -> CompiledOutput {
     let bounds = ctx.source_bounds(
-        shape.id,
         compiler::SourceMotion::of(shape_is_animated(&shape.params), &shape.params),
         |expr| {
             shape_frame(&shape.params, shape.id, expr).map(|uniforms| Some(uniforms.screen_bounds))
@@ -225,11 +224,7 @@ impl GpuCompiledNode for CompiledShape {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let mut params = shape_frame(
-            &self.params,
-            self.node_id,
-            &ctx.expr_context(self.node_id, "params"),
-        )?;
+        let mut params = shape_frame(&self.params, self.node_id, &ctx.expr_context())?;
         params.origin = self.origin;
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
@@ -242,7 +237,7 @@ fn shape_frame(
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<ShapeUniforms> {
-    let evaluated = params.eval(&NodeParamEvalContext { node_id, expr })?;
+    let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
     let shutter = shape_shutter(params, &evaluated, node_id, expr)?;
     Ok(shape_uniforms(&evaluated, shutter.as_ref()))
 }
@@ -278,7 +273,7 @@ impl GpuCompiledNode for CompiledPolygonShape {
         let frame = polygon_frame(
             &self.params,
             self.node_id,
-            &ctx.expr_context(self.node_id, "params"),
+            &ctx.expr_context(),
             self.buffers.point_capacity,
             self.buffers.band_capacity,
         )?;
@@ -295,12 +290,11 @@ fn polygon_frame(
     point_capacity: usize,
     band_capacity: usize,
 ) -> crate::Result<PathFrame<'static>> {
-    let evaluated = params.eval(&NodeParamEvalContext { node_id, expr })?;
+    let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
     // Invalid or incomplete point lists draw nothing, so editing the field never fails the frame.
     let vertices = parse_polygon_points(&evaluated.polygon_points).unwrap_or_default();
     if vertices.len() > point_capacity {
         return Err(RenderError::NodeEvaluation {
-            frame: expr.frame as u32,
             node_id,
             node_kind: "Shape",
             details: format!("polygon has more than {point_capacity} points"),

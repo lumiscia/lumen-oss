@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 
@@ -36,7 +36,7 @@ pub fn selected_layer_for_frame(
     node: &Switch,
     ctx: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<Option<usize>> {
-    let params = node.params.eval(&crate::node::NodeParamEvalContext {
+    let params = node.params.eval(&DelegateEvalContext {
         node_id: node.id,
         expr: ctx,
     })?;
@@ -53,8 +53,7 @@ impl GpuCompileNode for Switch {
             return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let selected_layer =
-            selected_layer_for_frame(self, &ctx.expr_context(self.id, "selected_layer"))?;
+        let selected_layer = selected_layer_for_frame(self, &ctx.expr_context())?;
         ctx.register_compiled_node(CompiledSwitch {
             node_id: self.id,
             selected_layer,

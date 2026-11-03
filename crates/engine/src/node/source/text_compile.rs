@@ -7,9 +7,7 @@ use crate::node::vector::{
     drawable::{DRAWABLE_SHADER, DrawableTransform, GpuDrawableMotion, GpuDrawableTransform},
     paint::{GpuPaint, PaintDelegate},
 };
-use crate::node::{
-    Deferred, DelegateEvalContext, NodeParamEvalContext, NodeParams, Override, PortRef,
-};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, Override, PortRef};
 
 use super::text::{
     CompiledText, DecorationParams, GlyphParams, NodeDecorations, Text, TextAlignmentVertical,
@@ -151,7 +149,6 @@ pub(super) fn compile_text(
     let paints = paint_count + decoration_paints.unwrap_or(0);
     if paints > lumen_text::GLYPH_MAX_PAINTS as usize {
         return Err(RenderError::NodeEvaluation {
-            frame: 0,
             node_id: text.id,
             node_kind: "Text",
             details: format!(
@@ -316,7 +313,7 @@ pub(super) fn compile_text(
     }
     let mut params = text.params.clone();
     let glyph = GlyphParams::take(&mut params);
-    let expr = ctx.expr_context(text.id, "params");
+    let expr = ctx.expr_context();
     let decorations = DecorationParams::take(&mut params);
     let decorations = if decorations.has_expressions() {
         NodeDecorations::Animated(decorations)
@@ -327,27 +324,25 @@ pub(super) fn compile_text(
         None
     } else {
         let features = std::mem::take(&mut params.font_features);
-        Some(crate::node::DelegateEvaluable::eval(
-            &features,
-            &DelegateEvalContext {
+        Some(
+            DelegateEvalContext {
                 node_id: text.id,
-                property_path: "font_features",
                 expr: &expr,
-            },
-        )?)
+            }
+            .eval_field("font_features", &features)?,
+        )
     };
     let content = if crate::node::DelegateEvaluable::has_expressions(&params.content) {
         None
     } else {
         let content = std::mem::take(&mut params.content);
-        Some(crate::node::DelegateEvaluable::eval(
-            &content,
-            &DelegateEvalContext {
+        Some(
+            DelegateEvalContext {
                 node_id: text.id,
-                property_path: "content",
                 expr: &expr,
-            },
-        )?)
+            }
+            .eval_field("content", &content)?,
+        )
     };
     ctx.register_compiled_node(CompiledText {
         node_id: text.id,
@@ -447,7 +442,7 @@ fn text_bounds(
         || params.rotation.is_expr()
         || params.anchor.is_expr();
     let motion = compiler::SourceMotion::of(animated, params);
-    ctx.source_bounds(text.id, motion, |expr| {
+    ctx.source_bounds(motion, |expr| {
         let position = params.position.eval(text.id, "position", expr)?;
         let top = match alignment {
             TextAlignmentVertical::Top => position.1 as f32,
@@ -513,9 +508,9 @@ fn constant_text(ctx: &CompileContext<'_>, text: &Text) -> Option<ConstantText> 
         color: drawn.color,
         ..params.clone()
     };
-    let expr = ctx.expr_context(text.id, "params");
+    let expr = ctx.expr_context();
     let mut evaluated = layout_params
-        .eval(&NodeParamEvalContext {
+        .eval(&DelegateEvalContext {
             node_id: text.id,
             expr: &expr,
         })

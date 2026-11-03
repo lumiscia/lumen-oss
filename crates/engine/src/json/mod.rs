@@ -820,7 +820,6 @@ mod tests {
                 fps: 24.0,
                 width: 800,
                 height: 600,
-                path: Some("1.position".to_string()),
                 graph: Some(composition.graph()),
                 media: None,
                 glyph: None,
@@ -1370,7 +1369,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            error.contains("prop `index`: expected a number, got string"),
+            error.contains("node 1 `props.index`: expected a number, got string"),
             "{error}"
         );
     }

@@ -388,7 +388,6 @@ impl TextContentDelegate {
             .iter()
             .enumerate()
             .map(|(index, span)| {
-                let path = format!("{}[{index}]", ctx.property_path);
                 TextSpanDelegate {
                     text: span.text.clone(),
                     font_family: span.font_family.clone(),
@@ -405,7 +404,8 @@ impl TextContentDelegate {
                     highlight: Override::Inherit,
                     stroke: Override::Inherit,
                 }
-                .eval(&ctx.child(&path))
+                .eval(ctx)
+                .map_err(|error| error.in_index(index))
             })
             .collect::<crate::Result<_>>()
             .map(TextContent::Spans)
@@ -535,11 +535,7 @@ impl_struct_kind_value!(TextStrokeDelegate, TextStroke);
 #[cfg(all(test, feature = "json"))]
 mod tests {
     use super::*;
-    use crate::{
-        error::{ExpressionError, LumenError, PropertyError},
-        expr::ExpressionContext,
-        node::NodeParams,
-    };
+    use crate::{expr::ExpressionContext, node::NodeParams};
 
     fn parse(value: serde_json::Value) -> Result<TextContentDelegate, String> {
         TextContentDelegate::from_json_value(&value)
@@ -548,14 +544,13 @@ mod tests {
     fn eval(content: &TextContentDelegate) -> crate::Result<TextContent> {
         let expr = ExpressionContext {
             frame: 12.0,
-            path: Some("3.params".into()),
             ..ExpressionContext::default()
         };
-        content.eval(&DelegateEvalContext {
+        DelegateEvalContext {
             node_id: NodeId::new(3),
-            property_path: "content",
             expr: &expr,
-        })
+        }
+        .eval_field("content", content)
     }
 
     #[test]
@@ -717,35 +712,32 @@ mod tests {
             }
         ]))
         .unwrap();
-        let LumenError::Expression(ExpressionError::Evaluate { path, .. }) =
-            eval(&content).unwrap_err()
-        else {
-            panic!("expected expression evaluation error");
-        };
-        assert_eq!(path.as_deref(), Some("3.params.content[1].font_size"));
+        assert_eq!(
+            eval(&content).unwrap_err().to_string(),
+            "node 3 `content[1].font_size`: vec2 expects numeric arguments"
+        );
 
         let content = parse(serde_json::json!([
             { "text": "a", "underline": { "extent": "=vec2(1, vec2(2, 3))" } }
         ]))
         .unwrap();
-        let LumenError::Expression(ExpressionError::Evaluate { path, .. }) =
-            eval(&content).unwrap_err()
-        else {
-            panic!("expected expression evaluation error");
-        };
         assert_eq!(
-            path.as_deref(),
-            Some("3.params.content[0].underline.extent")
+            eval(&content).unwrap_err().to_string(),
+            "node 3 `content[0].underline.extent`: vec2 expects numeric arguments"
         );
 
         let content =
             parse(serde_json::json!([{ "text": "a", "font_size": "=\"large\"" }])).unwrap();
-        let LumenError::Property(PropertyError::InvalidType { property_path, .. }) =
-            eval(&content).unwrap_err()
-        else {
-            panic!("expected invalid type error");
-        };
-        assert_eq!(property_path, "content[0].font_size");
+        assert_eq!(
+            eval(&content).unwrap_err().to_string(),
+            "node 3 `content[0].font_size`: expected a number, got string `large`"
+        );
+
+        let content = parse(serde_json::json!([{ "text": "a", "font_size": "=foo + 1" }])).unwrap();
+        assert_eq!(
+            eval(&content).unwrap_err().to_string(),
+            "node 3 `content[0].font_size`: undefined variable `foo`"
+        );
     }
 
     #[test]
@@ -779,7 +771,6 @@ mod tests {
             .unwrap()
             .eval(&DelegateEvalContext {
                 node_id: NodeId::new(3),
-                property_path: "font_features",
                 expr: &ExpressionContext::default(),
             })
             .unwrap();
@@ -821,12 +812,11 @@ mod tests {
             let content =
                 parse(serde_json::json!([{ "text": "a", "font_features": { "tnum": value } }]))
                     .unwrap();
-            let LumenError::Property(PropertyError::InvalidType { property_path, .. }) =
-                eval(&content).unwrap_err()
-            else {
-                panic!("expected invalid type error");
-            };
-            assert_eq!(property_path, "content[0].font_features.tnum", "{value}");
+            let error = eval(&content).unwrap_err().to_string();
+            assert!(
+                error.starts_with("node 3 `content[0].font_features.tnum`: "),
+                "{value}: {error}"
+            );
         }
     }
 
@@ -846,9 +836,9 @@ mod tests {
                 frame: 12.0,
                 ..ExpressionContext::default()
             };
-            NodeParams::eval(
+            DelegateEvaluable::eval(
                 &probe,
-                &crate::node::NodeParamEvalContext {
+                &crate::node::DelegateEvalContext {
                     node_id: NodeId::new(3),
                     expr: &expr,
                 },
