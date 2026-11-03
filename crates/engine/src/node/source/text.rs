@@ -1116,30 +1116,50 @@ impl TextShapeKey {
     }
 }
 
+/// What [`Stable`] needs of a value.
+pub(crate) trait StableValue {
+    type Evaluated;
+
+    fn evaluate(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated>;
+    fn is_animated(&self) -> bool;
+}
+
+impl<D: DelegateEvaluable> StableValue for D {
+    type Evaluated = D::Evaluated;
+
+    fn evaluate(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<D::Evaluated> {
+        self.eval(ctx)
+    }
+
+    fn is_animated(&self) -> bool {
+        self.has_expressions()
+    }
+}
+
 /// A value evaluated at compile when it has no expressions, or else on each bind.
 #[derive(Debug)]
-pub(crate) enum Stable<D: DelegateEvaluable> {
+pub(crate) enum Stable<D: StableValue> {
     Constant(D::Evaluated),
     Animated(D),
 }
 
 impl<D> Stable<D>
 where
-    D: DelegateEvaluable,
+    D: StableValue,
     D::Evaluated: Clone,
 {
     pub(crate) fn new(delegate: D, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self> {
-        Ok(if delegate.has_expressions() {
+        Ok(if delegate.is_animated() {
             Self::Animated(delegate)
         } else {
-            Self::Constant(delegate.eval(ctx)?)
+            Self::Constant(delegate.evaluate(ctx)?)
         })
     }
 
     fn get(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Cow<'_, D::Evaluated>> {
         Ok(match self {
             Self::Constant(value) => Cow::Borrowed(value),
-            Self::Animated(delegate) => Cow::Owned(delegate.eval(ctx)?),
+            Self::Animated(delegate) => Cow::Owned(delegate.evaluate(ctx)?),
         })
     }
 }
@@ -1351,10 +1371,10 @@ impl DecorationParams {
     }
 }
 
-impl DelegateEvaluable for DecorationParams {
+impl StableValue for DecorationParams {
     type Evaluated = TextDecorations;
 
-    fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<TextDecorations> {
+    fn evaluate(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<TextDecorations> {
         Ok(TextDecorations {
             underline: ctx.eval_field("underline", &self.underline)?,
             strikethrough: ctx.eval_field("strikethrough", &self.strikethrough)?,
@@ -1363,7 +1383,7 @@ impl DelegateEvaluable for DecorationParams {
         })
     }
 
-    fn has_expressions(&self) -> bool {
+    fn is_animated(&self) -> bool {
         self.underline.has_expressions()
             || self.strikethrough.has_expressions()
             || self.highlight.has_expressions()
