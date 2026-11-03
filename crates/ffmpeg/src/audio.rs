@@ -326,7 +326,8 @@ const FORWARD_SCAN_SAMPLES: i64 = 2 * 48_000;
 /// This is the back-off the `ffmpeg` command applies to `-ss` on inputs with B-frame video.
 const SEEK_PREROLL_SAMPLES: i64 = 3 * 48_000 / 23;
 
-/// How far a frame's timestamp may be from the samples before it without being a gap.
+/// How far a frame's timestamp may be from the samples before it, at the least, without being a
+/// gap. Vorbis frames are stamped off by up to a quarter of their block.
 const JITTER_MS: i64 = 15;
 
 const CHANNELS: usize = 2;
@@ -340,27 +341,24 @@ const OUTPUT_TIME_BASE: sys::AVRational = sys::AVRational {
 ///
 /// Positions count output samples from the container's first timestamp. Audio that starts after
 /// the container does, or resumes after a gap in the timestamps, reads as silence until it begins.
-/// Ranges that follow each other continue the decoder where it stopped; any other range seeks.
-/// Whichever way a range is reached, its samples are the ones a decode from the start gives:
-/// resampling always starts on a whole output sample, so its phase doesn't depend on the seek.
+/// Ranges that follow each other continue the decoder where it stopped and give the samples a
+/// decode from the start gives. Any other range seeks, and lands on the timestamp of the first
+/// frame it finds, so it can differ from a continuous read by the precision of the container's
+/// timestamps (a millisecond in Matroska). Resampling always starts on a whole output sample, so
+/// its phase doesn't depend on the seek.
 pub struct AudioRangeReader {
     input: InputContext,
     decoder: AudioDecoder,
     resampler: Option<AudioResampler>,
     /// The container's first timestamp, in output samples.
     origin: i64,
-    /// The sample rate the container declares. Its timestamps count samples of that rate, so
-    /// frames decoded at another rate carry none that can be trusted.
-    declared_rate: i64,
-    /// One tick of the stream's time base, in output samples. Timestamps closer than this to the
-    /// sample clock are rounding, not gaps.
-    tick: i64,
+    /// How far a timestamp may be from the sample clock, in output samples, before it is a gap or
+    /// an overlap and not rounding.
+    tolerance: i64,
     /// Where the resampler's next output sample goes, unknown until a run's first frame.
     clock: Option<i64>,
     /// Where the next frame starts in source samples if the timestamps hold.
     next_source: i64,
-    /// The longest frame of the current run, in source samples.
-    longest: i64,
     /// Where the current read starts, for frames that carry no timestamp.
     hint: i64,
     /// The end of the last range read. Earlier samples are gone.
@@ -402,9 +400,7 @@ impl AudioRangeReader {
         let stream_index = input.best_audio_stream()?.stream_index;
         let decoder = AudioDecoder::open(&input, stream_index)?;
         let time_base = decoder.time_base();
-        let declared_rate =
-            i64::from(unsafe { (*input.stream_parameters(stream_index)?).sample_rate });
-        let tick = rescale(
+        let tolerance = rescale(
             1,
             sys::AVRational {
                 num: time_base.numerator,
@@ -412,7 +408,7 @@ impl AudioRangeReader {
             },
             OUTPUT_TIME_BASE,
         )
-        .max(1);
+        .max(OUTPUT_RATE * JITTER_MS / 1000);
         let origin = unsafe {
             let start = (*input.ptr).start_time;
             if start == sys::AV_NOPTS_VALUE {
@@ -441,11 +437,9 @@ impl AudioRangeReader {
             decoder,
             resampler: None,
             origin,
-            declared_rate,
-            tick,
+            tolerance,
             clock: None,
             next_source: 0,
-            longest: 0,
             hint: 0,
             cursor: 0,
             blocks: VecDeque::new(),
@@ -454,6 +448,11 @@ impl AudioRangeReader {
             decoded_any: false,
             failure: None,
         })
+    }
+
+    /// The start of the range that continues this reader without a seek.
+    pub fn position(&self) -> u64 {
+        self.cursor as u64
     }
 
     /// `frames` samples from `start_sample`, or fewer when the stream ends first. A range wholly
@@ -533,7 +532,6 @@ impl AudioRangeReader {
         self.decoder.flush();
         self.resampler = None;
         self.clock = None;
-        self.longest = 0;
         self.blocks.clear();
         self.input_ended = false;
         self.finished = false;
@@ -594,80 +592,68 @@ impl AudioRangeReader {
         self.blocks.push_back(block);
     }
 
-    /// Puts a decoded frame where its timestamp says, against the source samples already fed to
-    /// the resampler. A frame within one tick of the next expected sample continues the stream, so
-    /// timestamps rounded to the time base don't add up. A later one leaves a gap of silence. An
-    /// earlier one overlaps, and its overlapping samples are dropped; one wholly behind continues
-    /// the stream as well, since it can't be told from timestamps that restarted. A frame in a new
-    /// format ends the resampler and starts another, joined to the output if the timestamps agree.
+    /// Puts a decoded frame where its timestamp says, against the clock: the source samples already
+    /// fed to the resampler, or the end of the output when the frame is in a new format. Within the
+    /// tolerance of the clock the frame continues it, so timestamps rounded to the time base don't
+    /// add up. Later leaves silence. Earlier drops the samples that overlap, all of them if the
+    /// frame is wholly behind. A frame without a timestamp continues the clock.
     fn place_frame(&mut self, mut frame: DecodedAudioFrame) -> Result<()> {
         let rate = frame.sample_rate();
-        let source_start = frame
-            .pts()
-            .filter(|_| rate == self.declared_rate)
-            .map(|pts| self.source_position(pts, rate));
-        let to_output = |source: i64| unsafe {
-            sys::av_rescale_rnd(source, OUTPUT_RATE, rate, AVRounding::AV_ROUND_NEAR_INF)
+        let to_source = |output: i64| unsafe {
+            sys::av_rescale_rnd(output, rate, OUTPUT_RATE, AVRounding::AV_ROUND_NEAR_INF)
         };
-        let tolerance = self.tick.max((OUTPUT_RATE + rate - 1) / rate) + 1;
-        // Frames of codecs with several block sizes carry timestamps off by up to a quarter of
-        // their longest block, so a smaller jump than that and than JITTER_MS is not a gap.
-        self.longest = self.longest.max(frame.samples() as i64);
-        let source_tolerance = (tolerance * rate / OUTPUT_RATE)
-            .max(rate * JITTER_MS / 1000)
-            .max(self.longest / 2)
-            + 1;
+        let tolerance = to_source(self.tolerance);
 
-        let mut gap = false;
-        let mut resume = false;
-        if self
+        let mut continues = self
             .resampler
             .as_ref()
-            .is_some_and(|resampler| resampler.accepts(&frame))
-        {
-            let delta = source_start.map_or(0, |start| start - self.next_source);
-            if delta > source_tolerance {
-                gap = true;
-            } else {
-                if delta < -source_tolerance && -delta < frame.samples() as i64 {
-                    frame.trim_start((-delta) as usize);
-                }
-                resume = true;
-            }
-        }
-        if !resume {
+            .is_some_and(|resampler| resampler.accepts(&frame));
+        if !continues {
             self.end_segment()?;
         }
-
-        let position = if resume {
-            self.clock.unwrap_or_default()
+        let mut expected = if continues {
+            Some(self.next_source)
         } else {
-            let source = source_start.unwrap_or_else(|| unsafe {
+            self.clock.map(to_source)
+        };
+        let start = frame.pts().map(|pts| self.source_position(pts, rate));
+        let delta = start
+            .zip(expected)
+            .map_or(0, |(start, expected)| start - expected);
+        if delta > tolerance {
+            self.end_segment()?;
+            continues = false;
+            expected = None;
+        } else if delta < -tolerance {
+            if -delta >= frame.samples() as i64 {
+                return Ok(());
+            }
+            frame.trim_start((-delta) as usize);
+        }
+
+        let position = if continues {
+            self.clock.unwrap_or_default()
+        } else if let (Some(clock), Some(expected)) = (self.clock, expected) {
+            self.resampler = Some(AudioResampler::new(
+                &frame,
+                AudioResamplerConfig::default(),
+            )?);
+            self.next_source = expected;
+            clock
+        } else {
+            // The resampler's output falls on whole output samples only from a source sample that
+            // is one too, so a run starts at the last such sample and silence fills in.
+            let source = start.unwrap_or_else(|| unsafe {
                 sys::av_rescale_rnd(self.hint, rate, OUTPUT_RATE, AV_ROUND_UP)
             });
-            self.next_source = source;
-            let joins = self.clock.filter(|clock| {
-                !gap && (source_start.is_none() || to_output(source) <= clock + tolerance)
-            });
-            let (position, padding) = match joins {
-                Some(clock) => (clock, 0),
-                None => {
-                    // The resampler's output falls on whole output samples only from a source
-                    // sample that is one too, so a run starts at the last such sample and silence
-                    // fills in.
-                    let divisor = gcd(rate, OUTPUT_RATE);
-                    let period = rate / divisor;
-                    let padding = source.rem_euclid(period);
-                    (
-                        (source - padding) / period * (OUTPUT_RATE / divisor),
-                        padding,
-                    )
-                }
-            };
+            let divisor = gcd(rate, OUTPUT_RATE);
+            let period = rate / divisor;
+            let padding = source.rem_euclid(period);
             let mut resampler = AudioResampler::new(&frame, AudioResamplerConfig::default())?;
             resampler.inject_silence(padding as usize)?;
             self.resampler = Some(resampler);
-            position
+            self.next_source = source;
+            (source - padding) / period * (OUTPUT_RATE / divisor)
         };
         self.next_source += frame.samples() as i64;
 

@@ -233,3 +233,124 @@ fn a_gap_in_the_timestamps_reads_as_silence() {
     assert_eq!(peak(&range, 50_000, 94_000), 0.0, "in the gap");
     assert!(peak(&range, 100_000, 140_000) > 0.05, "after the gap");
 }
+
+const CHIRP: &str = "aevalsrc=0.4*sin(2*PI*(300+200*t)*t):d=6:s=48000";
+
+#[test]
+fn frames_wholly_behind_the_clock_are_dropped() {
+    let path = temp_path("restart", "mkv");
+    if !generate(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            CHIRP,
+            "-af",
+            "asetpts=PTS-if(gte(T\\,2)\\,1/TB\\,0)",
+            "-c:a",
+            "pcm_s16le",
+        ],
+        &path,
+    ) {
+        return;
+    }
+    let path_string = path.to_string_lossy().to_string();
+    let continuous = AudioRangeReader::open(path_string.clone())
+        .expect("open")
+        .read(0, 6 * SAMPLE_RATE)
+        .expect("read all");
+    let seeked = AudioRangeReader::open(path_string)
+        .expect("open")
+        .read(4 * SAMPLE_RATE as u64, SAMPLE_RATE)
+        .expect("read seeked");
+    let _ = fs::remove_file(path);
+
+    // The second after the timestamps step back repeats audio that was already placed.
+    assert!(
+        continuous.samples.abs_diff(5 * SAMPLE_RATE) < 48,
+        "{} samples",
+        continuous.samples
+    );
+    // A seek lands within a millisecond of the continuous read.
+    let difference = |lag: usize| {
+        (0..seeked.samples * 2)
+            .map(|i| {
+                (seeked.interleaved_f32[i]
+                    - continuous.interleaved_f32[4 * SAMPLE_RATE * 2 - 96 + lag + i])
+                    .abs()
+            })
+            .fold(0.0_f32, f32::max)
+    };
+    assert!(
+        (0..=192).any(|lag| difference(lag) < 1e-3),
+        "seeked read is not the continuous audio"
+    );
+}
+
+#[test]
+fn a_gap_before_a_rate_change_is_kept_in_mpegts() {
+    let (first, second, joined) = (
+        temp_path("first", "ts"),
+        temp_path("second", "ts"),
+        temp_path("joined", "ts"),
+    );
+    let source = |rate: u32| format!("aevalsrc=0.4*sin(2*PI*(300+200*t)*t):d=3:s={rate}");
+    if !generate(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            &source(48_000),
+            "-c:a",
+            "aac",
+            "-muxdelay",
+            "0",
+            "-f",
+            "mpegts",
+        ],
+        &first,
+    ) || !generate(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            &source(32_000),
+            "-c:a",
+            "aac",
+            "-muxdelay",
+            "0",
+            "-output_ts_offset",
+            "5",
+            "-f",
+            "mpegts",
+        ],
+        &second,
+    ) {
+        return;
+    }
+    let mut bytes = fs::read(&first).expect("read first");
+    bytes.extend(fs::read(&second).expect("read second"));
+    fs::write(&joined, bytes).expect("write joined");
+
+    let mut reader = AudioRangeReader::open(joined.to_string_lossy().to_string()).expect("open");
+    let range = reader.read(0, 9 * SAMPLE_RATE).expect("read range");
+    for path in [first, second, joined] {
+        let _ = fs::remove_file(path);
+    }
+
+    assert!(
+        range.samples.abs_diff(8 * SAMPLE_RATE) < 4_096,
+        "{} samples",
+        range.samples
+    );
+    assert!(peak(&range, 10_000, 130_000) > 0.05, "before the gap");
+    assert_eq!(
+        peak(&range, 3 * SAMPLE_RATE + 9_600, 5 * SAMPLE_RATE - 4_800),
+        0.0,
+        "in the gap"
+    );
+    assert!(
+        peak(&range, 5 * SAMPLE_RATE + 9_600, 7 * SAMPLE_RATE) > 0.05,
+        "after the gap"
+    );
+}
