@@ -1,6 +1,6 @@
 import initPreview, * as previewBindings from "./lumen_wasm.js";
 
-export { initSync, LumenMediaStore, LumenPreviewController, LumenRenderer } from "./lumen_wasm.js";
+export { initSync, LumenPreviewController } from "./lumen_wasm.js";
 
 export class LumenBindings {
   target = "browser";

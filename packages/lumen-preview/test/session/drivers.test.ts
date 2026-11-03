@@ -224,9 +224,6 @@ function fakeController(browser: Browser) {
     frameRequirements() {
       return '{"images":[],"videos":[]}';
     }
-    frameRequirementsWindow() {
-      return '{"images":[],"videos":[]}';
-    }
     hasFont() {
       return false;
     }
