@@ -2,7 +2,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use crate::{error::MediaError, media::MediaStore};
 
@@ -70,9 +70,19 @@ impl AudioTimeline {
     }
 }
 
-/// Negative zero is what a tiny negative volume in a document narrows to, so it counts as negative.
 fn is_valid_gain(gain: f32) -> bool {
-    gain.is_finite() && gain.is_sign_positive()
+    gain.is_finite() && gain >= 0.0
+}
+
+/// Reads a volume, rejecting a negative one before narrowing could round it to zero.
+pub(crate) fn deserialize_gain<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<f32, D::Error> {
+    let gain = f64::deserialize(deserializer)?;
+    if gain < 0.0 {
+        return Err(D::Error::custom(format!("must be at least 0, got {gain}")));
+    }
+    Ok(gain as f32)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,7 +93,7 @@ pub struct AudioTrack {
     pub muted: bool,
     #[serde(default)]
     pub solo: bool,
-    #[serde(default = "default_volume")]
+    #[serde(default = "default_volume", deserialize_with = "deserialize_gain")]
     pub volume: f32,
 }
 

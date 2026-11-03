@@ -10,14 +10,17 @@
 
 mod property;
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt, marker::PhantomData, ops::Deref};
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Deserializer, de::Error as _};
+use serde::{
+    Deserialize, Deserializer,
+    de::{Error as _, MapAccess, Visitor, value::MapAccessDeserializer},
+};
 use serde_json::{Number, Value};
 
 use crate::{
-    audio::{AudioClip, AudioTimeline, AudioTrack, default_volume},
+    audio::{AudioClip, AudioTimeline, AudioTrack, default_volume, deserialize_gain},
     composition::{
         Composition, CompositionBuilder, CompositionTemplate, PropDef, PropKind, RenderSettings,
         TimelineSettings,
@@ -36,25 +39,56 @@ pub use property::{parse_color, try_parse_color, unknown_param_error};
 const DEFAULT_FPS: f32 = 30.0;
 const SCHEMA_VERSION: &str = "0.1.0";
 
+/// A struct read only from a JSON object. A derived `Deserialize` alone also reads a positional
+/// array, which the schema rejects.
+struct Object<T>(T);
+
+impl<T> Deref for Object<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ObjectVisitor<T>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for ObjectVisitor<T> {
+            type Value = Object<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Object<T>, A::Error> {
+                T::deserialize(MapAccessDeserializer::new(map)).map(Object)
+            }
+        }
+
+        deserializer.deserialize_map(ObjectVisitor(PhantomData))
+    }
+}
+
 /// The document root. Keys it doesn't name are ignored.
 #[derive(Deserialize)]
-#[serde(expecting = "a composition object")]
 struct DocumentJson {
-    timeline: TimelineJson,
-    render_settings: RenderSettingsJson,
+    timeline: Object<TimelineJson>,
+    render_settings: Object<RenderSettingsJson>,
     #[serde(default)]
     functions: BTreeMap<String, String>,
     #[serde(default)]
-    compositions: BTreeMap<String, TemplateJson>,
+    compositions: BTreeMap<String, Object<TemplateJson>>,
     #[serde(default, deserialize_with = "present")]
-    audio: Option<AudioJson>,
+    audio: Option<Object<AudioJson>>,
     /// Nothing reads `$schema` or `metadata`, but they must hold what the schema says they hold.
     #[serde(rename = "$schema", default, deserialize_with = "present")]
     _schema: Option<String>,
     #[serde(rename = "metadata", default, deserialize_with = "present")]
-    _metadata: Option<MetadataJson>,
-    nodes: Vec<NodeJson>,
-    connections: Vec<ConnectionJson>,
+    _metadata: Option<Object<MetadataJson>>,
+    nodes: Vec<Object<NodeJson>>,
+    connections: Vec<Object<ConnectionJson>>,
 }
 
 /// Keys other than `name` are ignored.
@@ -110,13 +144,13 @@ impl RenderSettingsJson {
 #[serde(deny_unknown_fields)]
 struct TemplateJson {
     #[serde(default, deserialize_with = "present")]
-    render_settings: Option<RenderSettingsJson>,
+    render_settings: Option<Object<RenderSettingsJson>>,
     #[serde(default, deserialize_with = "present")]
-    timeline: Option<TimelineJson>,
+    timeline: Option<Object<TimelineJson>>,
     #[serde(default)]
-    props: BTreeMap<String, PropDefJson>,
-    nodes: Vec<NodeJson>,
-    connections: Vec<ConnectionJson>,
+    props: BTreeMap<String, Object<PropDefJson>>,
+    nodes: Vec<Object<NodeJson>>,
+    connections: Vec<Object<ConnectionJson>>,
 }
 
 #[derive(Deserialize)]
@@ -152,8 +186,8 @@ struct ConnectionJson {
 /// Keys other than the clips' retired timing keys are ignored, here and on tracks and clips.
 #[derive(Deserialize)]
 struct AudioJson {
-    tracks: Vec<AudioTrack>,
-    clips: Vec<AudioClipJson>,
+    tracks: Vec<Object<AudioTrack>>,
+    clips: Vec<Object<AudioClipJson>>,
 }
 
 #[derive(Deserialize)]
@@ -165,7 +199,7 @@ struct AudioClipJson {
     duration_ms: u64,
     #[serde(default)]
     source_start_ms: u64,
-    #[serde(default = "default_volume")]
+    #[serde(default = "default_volume", deserialize_with = "deserialize_gain")]
     volume: f32,
     #[serde(default, deserialize_with = "retired_clip_time")]
     start_frame: (),
@@ -247,7 +281,7 @@ pub fn parse(json: &str) -> Result<Composition> {
 /// Parse a [`serde_json::Value`] into a [`Composition`].
 pub fn parse_value(root: &Value) -> Result<Composition> {
     check_schema_version(root)?;
-    let document: DocumentJson = serde_path_to_error::deserialize(root)?;
+    let Object(document): Object<DocumentJson> = serde_path_to_error::deserialize(root)?;
     let timeline = document.timeline.settings(DEFAULT_FPS);
     let render_settings = document.render_settings.settings();
 
@@ -264,9 +298,13 @@ pub fn parse_value(root: &Value) -> Result<Composition> {
         .collect::<Result<_>>()?;
     drop(function_scope);
 
-    let audio = document.audio.map(|audio| AudioTimeline {
-        tracks: audio.tracks,
-        clips: audio.clips.into_iter().map(AudioClip::from).collect(),
+    let audio = document.audio.map(|Object(audio)| AudioTimeline {
+        tracks: audio.tracks.into_iter().map(|track| track.0).collect(),
+        clips: audio
+            .clips
+            .into_iter()
+            .map(|clip| AudioClip::from(clip.0))
+            .collect(),
     });
     CompositionBuilder {
         graph,
@@ -307,7 +345,10 @@ fn json_type(value: &Value) -> &'static str {
 }
 
 /// Builds the nodes and connections of the root or of a template.
-fn build_graph(nodes: &[NodeJson], connections: &[ConnectionJson]) -> Result<Graph> {
+fn build_graph(
+    nodes: &[Object<NodeJson>],
+    connections: &[Object<ConnectionJson>],
+) -> Result<Graph> {
     let mut graph = Graph::new();
 
     // First pass: create all nodes
@@ -361,7 +402,7 @@ fn build_template(
     let render_settings = template
         .render_settings
         .as_ref()
-        .map_or_else(|| root_settings.clone(), RenderSettingsJson::settings);
+        .map_or_else(|| root_settings.clone(), |settings| settings.settings());
     let props = template
         .props
         .iter()
@@ -630,6 +671,90 @@ mod tests {
     }
 
     #[test]
+    fn positional_arrays_are_rejected_where_objects_belong() {
+        let valid = serde_json::json!({
+            "metadata": { "name": "card" },
+            "timeline": { "fps": 30, "duration_frames": 90 },
+            "render_settings": { "width": 16, "height": 16 },
+            "audio": {
+                "tracks": [{ "id": "track-1" }],
+                "clips": [{
+                    "id": "clip-1",
+                    "source_id": "voice",
+                    "track_id": "track-1",
+                    "start_ms": 0,
+                    "duration_ms": 100
+                }]
+            },
+            "compositions": {
+                "card": {
+                    "props": { "index": { "type": "number" } },
+                    "nodes": [{ "id": 1, "type": "background" }, { "id": 2, "type": "media_output" }],
+                    "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+                }
+            },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "width": 16, "height": 16 } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+        });
+        parse_value(&valid).unwrap();
+
+        for (pointer, positional, path) in [
+            ("/timeline", serde_json::json!([30, 10]), "timeline"),
+            (
+                "/render_settings",
+                serde_json::json!([16, 16]),
+                "render_settings",
+            ),
+            ("/nodes/0", serde_json::json!([1, "background"]), "nodes[0]"),
+            (
+                "/connections/0",
+                serde_json::json!([1, null, 2, "source"]),
+                "connections[0]",
+            ),
+            ("/metadata", serde_json::json!(["card"]), "metadata"),
+            ("/audio", serde_json::json!([[], []]), "audio"),
+            (
+                "/audio/tracks/0",
+                serde_json::json!(["track-1"]),
+                "audio.tracks[0]",
+            ),
+            (
+                "/audio/clips/0",
+                serde_json::json!(["clip-1"]),
+                "audio.clips[0]",
+            ),
+            (
+                "/compositions/card",
+                serde_json::json!([]),
+                "compositions.card",
+            ),
+            (
+                "/compositions/card/nodes/0",
+                serde_json::json!([1, "background"]),
+                "compositions.card.nodes[0]",
+            ),
+            (
+                "/compositions/card/props/index",
+                serde_json::json!(["number"]),
+                "compositions.card.props.index",
+            ),
+        ] {
+            let mut document = valid.clone();
+            *document.pointer_mut(pointer).unwrap() = positional;
+            let error = format!("{:#}", parse_value(&document).expect_err(path));
+            assert!(
+                error.contains(path) && error.contains("an object"),
+                "{error}"
+            );
+        }
+        let error = format!("{:#}", parse_value(&serde_json::json!([])).err().unwrap());
+        assert!(error.contains("an object"), "{error}");
+    }
+
+    #[test]
     fn audio_volume_must_be_a_finite_non_negative_number() {
         let parse_audio = |track_volume: Value, clip_volume: Value| {
             parse_value(&serde_json::json!({
@@ -656,7 +781,7 @@ mod tests {
             }))
         };
 
-        let comp = parse_audio(serde_json::json!(0), serde_json::json!(2.5)).unwrap();
+        let comp = parse_audio(serde_json::json!(-0.0), serde_json::json!(2.5)).unwrap();
         let audio = comp.audio().unwrap();
         assert_eq!(audio.tracks[0].volume, 0.0);
         assert_eq!(audio.clips[0].volume, 2.5);
@@ -664,13 +789,13 @@ mod tests {
         for (invalid, track, clip) in [
             (
                 serde_json::json!(-0.5),
-                "track `track-1` volume",
-                "clip `clip-1` volume",
+                "audio.tracks[0].volume: must be at least 0",
+                "audio.clips[0].volume: must be at least 0",
             ),
             (
                 serde_json::json!(-1e-50),
-                "track `track-1` volume",
-                "clip `clip-1` volume",
+                "audio.tracks[0].volume: must be at least 0",
+                "audio.clips[0].volume: must be at least 0",
             ),
             (
                 serde_json::json!(1e300),
