@@ -357,6 +357,28 @@ pub fn render(
     }
 }
 
+/// Like `render`, and also returns the texture the frame was read from.
+pub fn render_held(
+    renderer: &mut GpuCompositionRenderer,
+    scene: &Composition,
+    at: f64,
+    media: &impl MediaStore,
+) -> (Frame, Arc<wgpu::Texture>) {
+    let raster = renderer
+        .render_frame_at(scene, at, media)
+        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
+    let size = raster.domain.storage_size;
+    let gpu = renderer.gpu_renderer();
+    let texture = gpu.texture_arc(raster.texture).unwrap();
+    let frame = Frame {
+        at,
+        width: size.width,
+        height: size.height,
+        rgba: read_rgba8(gpu, &texture, size),
+    };
+    (frame, texture)
+}
+
 pub fn read_rgba8(
     gpu: &lumen_gpu::Renderer,
     texture: &wgpu::Texture,
