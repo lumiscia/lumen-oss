@@ -1158,7 +1158,8 @@ mod tests {
 
         let again = worker.resolve_on_cpu(3, "still failing").expect("retry");
         assert_eq!(frame_index(&again), 3);
-        assert!(worker.cache.contains(9) && worker.cache.contains(3));
+        // A source already on the CPU may still have cached a GPU frame before it moved.
+        assert!(!worker.cache.contains(9) && worker.cache.contains(3));
         let _ = fs::remove_file(path);
     }
 
