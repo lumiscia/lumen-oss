@@ -1,6 +1,5 @@
 pub mod alpha_premultiply;
 pub mod blur;
-pub mod channel_shuffle;
 pub mod color_grade;
 pub mod crop;
 pub mod exposure;

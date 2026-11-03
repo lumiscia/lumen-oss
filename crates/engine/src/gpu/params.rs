@@ -10,13 +10,6 @@ pub(crate) struct AlphaPremultiplyParams {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct ChannelShuffleParams {
-    pub(crate) selector_indices: [f32; 4],
-    pub(crate) selector_values: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ColorGradeParams {
     pub(crate) strength: f32,
     pub(crate) interpolation: u32,
@@ -134,12 +127,6 @@ pub(crate) struct RasterMultiMergeParams {
     pub(crate) origins: [[i32; 2]; 4],
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ChannelSelector {
-    pub(crate) index: f32,
-    pub(crate) value: f32,
-}
-
 const LUT_TABLE_SIZE: usize = 256;
 
 #[repr(C)]
@@ -245,58 +232,6 @@ pub(crate) fn alpha_operation(node_id: NodeId, mode: &str) -> crate::Result<f32>
             actual: "String",
         }
         .into()),
-    }
-}
-
-pub(crate) fn channel_selector(
-    node_id: NodeId,
-    property_path: &str,
-    spec: &str,
-) -> crate::Result<ChannelSelector> {
-    let normalized = spec.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "r" | "red" => Ok(ChannelSelector {
-            index: 0.0,
-            value: 0.0,
-        }),
-        "g" | "green" => Ok(ChannelSelector {
-            index: 1.0,
-            value: 0.0,
-        }),
-        "b" | "blue" => Ok(ChannelSelector {
-            index: 2.0,
-            value: 0.0,
-        }),
-        "a" | "alpha" => Ok(ChannelSelector {
-            index: 3.0,
-            value: 0.0,
-        }),
-        "zero" => Ok(ChannelSelector {
-            index: 4.0,
-            value: 0.0,
-        }),
-        "one" => Ok(ChannelSelector {
-            index: 4.0,
-            value: 1.0,
-        }),
-        _ => {
-            let value = normalized.parse::<f32>().map_err(|_| {
-                crate::error::PropertyError::InvalidType {
-                    node_id,
-                    property_path: property_path.to_string(),
-                    expected: "channel name or numeric constant",
-                    actual: "String",
-                }
-            })?;
-            Ok(ChannelSelector {
-                index: 4.0,
-                value: if value <= 1.0 {
-                    value.clamp(0.0, 1.0)
-                } else {
-                    (value / 255.0).clamp(0.0, 1.0)
-                },
-            })
-        }
     }
 }
 

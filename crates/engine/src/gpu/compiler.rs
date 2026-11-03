@@ -38,8 +38,6 @@ pub(crate) struct ComputeSource<const STORAGE: usize> {
 /// The domain a unary filter writes, and so how it reads its source.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FilterDomain {
-    /// Reads the source at full frame, texel for texel.
-    FullFrame,
     /// Maps each texel on its own and keeps transparent texels transparent, so it reads
     /// and writes the source's domain.
     Source,
@@ -658,7 +656,6 @@ impl<'a> CompileContext<'a> {
         let source = self.compile_bounded_input(node_id, "source", source)?;
         let straight = source.alpha_mode == AlphaMode::Unpremultiplied;
         let source = match domain {
-            FilterDomain::FullFrame => self.full_frame(source),
             FilterDomain::PremultipliedSource if straight => self.full_frame(source),
             _ => source,
         };
