@@ -120,7 +120,10 @@ impl From<Scene> for Composition {
 
 #[derive(Debug, Default, Clone)]
 pub struct TestMedia {
-    images: HashMap<String, Arc<CpuMediaFrame>>,
+    /// Resolver ID and pixels by source.
+    images: HashMap<String, (String, Arc<CpuMediaFrame>)>,
+    /// Pixels of every frame by source.
+    still_videos: HashMap<String, Arc<CpuMediaFrame>>,
     numbered_video: Option<String>,
     /// Font data and resolver ID by family.
     fonts: HashMap<String, (String, Arc<Vec<u8>>)>,
@@ -131,15 +134,30 @@ pub struct TestMedia {
 }
 
 impl TestMedia {
-    pub fn image(mut self, source: &str, width: u32, height: u32, rgba: Vec<u8>) -> Self {
-        assert_eq!(rgba.len(), width as usize * height as usize * 4);
-        let frame = CpuMediaFrame {
-            rgba: Arc::new(rgba),
-            width,
-            height,
-            row_bytes: width as usize * 4,
-        };
-        self.images.insert(source.to_string(), Arc::new(frame));
+    pub fn image(self, source: &str, width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        self.image_with_id(source, source, width, height, rgba)
+    }
+
+    /// Like `image`, under the resolver ID `id`. The engine tells two images of one source apart by
+    /// their IDs, so give an ID per distinct pixels.
+    pub fn image_with_id(
+        mut self,
+        source: &str,
+        id: &str,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Self {
+        let frame = still_frame(width, height, rgba);
+        self.images
+            .insert(source.to_string(), (id.to_string(), frame));
+        self
+    }
+
+    /// A 30 fps video of 256 frames, which all show `rgba`.
+    pub fn still_video(mut self, source: &str, width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        let frame = still_frame(width, height, rgba);
+        self.still_videos.insert(source.to_string(), frame);
         self
     }
 
@@ -171,6 +189,16 @@ impl TestMedia {
     pub fn font_requests(&self) -> usize {
         self.font_requests.load(Ordering::Relaxed)
     }
+}
+
+fn still_frame(width: u32, height: u32, rgba: Vec<u8>) -> Arc<CpuMediaFrame> {
+    assert_eq!(rgba.len(), width as usize * height as usize * 4);
+    Arc::new(CpuMediaFrame {
+        rgba: Arc::new(rgba),
+        width,
+        height,
+        row_bytes: width as usize * 4,
+    })
 }
 
 /// Roboto Regular renamed to `family`, which has six letters as "Roboto" does, with glyphs
@@ -217,20 +245,30 @@ impl FontResolver for TestFont {
     }
 
     fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
-        Ok(vec![self.data.to_vec()])
+        Ok(if self.data.is_empty() {
+            Vec::new()
+        } else {
+            vec![self.data.to_vec()]
+        })
     }
 }
 
 impl MediaStore for TestMedia {
     fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
-        let frame = Arc::clone(self.images.get(source)?);
+        let (id, frame) = self.images.get(source)?;
         Some(Box::new(TestImage {
-            id: source.to_string(),
-            frame,
+            id: id.clone(),
+            frame: Arc::clone(frame),
         }))
     }
 
     fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        if let Some(frame) = self.still_videos.get(stream_id) {
+            return Some(Box::new(StillVideo {
+                id: stream_id.to_string(),
+                frame: Arc::clone(frame),
+            }));
+        }
         (self.numbered_video.as_deref() == Some(stream_id)).then(|| {
             Box::new(NumberedVideo {
                 id: stream_id.to_string(),
@@ -274,6 +312,30 @@ impl ImageResolver for TestImage {
     }
 
     fn frame(&self) -> Result<MediaFrame, MediaError> {
+        Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
+    }
+}
+
+struct StillVideo {
+    id: String,
+    frame: Arc<CpuMediaFrame>,
+}
+
+impl VideoFrameResolver for StillVideo {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn metadata(&self) -> VideoMetadata {
+        VideoMetadata {
+            width: self.frame.width,
+            height: self.frame.height,
+            frame_count: 256,
+            fps: 30.0,
+        }
+    }
+
+    fn frame(&self, _frame: u32) -> Result<MediaFrame, MediaError> {
         Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
     }
 }
@@ -524,9 +586,14 @@ impl Case {
 
     fn run(&self, gpu: &Gpu) {
         assert!(!self.frames.is_empty(), "a case needs at least one frame");
-        let frames = self.render_frames(&mut gpu.renderer(), self.bounded);
+        // Compiled programs are shared between renderers only while one still uses them, so this
+        // renderer lives on through the reference render, which then compiles none. They share
+        // nothing else: the reference starts with empty plan caches.
+        let mut renderer = gpu.renderer();
+        let frames = self.render_frames(&mut renderer, self.bounded);
         self.expect.assert(self, gpu, &frames);
         let reference = self.render_frames(&mut gpu.reference(), self.bounded.map(|_| false));
+        drop(renderer);
         for (frame, reference) in frames.iter().zip(&reference) {
             if let Err(error) = within_rounding(&frame.rgba, &reference.rgba) {
                 panic!("frame {} differs from the reference: {error}", frame.at);

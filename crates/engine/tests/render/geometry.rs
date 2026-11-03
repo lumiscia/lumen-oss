@@ -1114,6 +1114,17 @@ fn crop_and_resize_rows() -> Vec<Case> {
             Expect::AlphaRows(vec!["........", "..###...", "..###...", "........"]),
         ),
         Case::new(
+            "crop accepts sizes beyond i32",
+            scene(
+                (8, 4),
+                json!([
+                    background(8, 4),
+                    crop(region(0, 0, json!(1u64 << 31), u32::MAX))
+                ]),
+            ),
+            Expect::AlphaRows(vec!["########"; 4]),
+        ),
+        Case::new(
             "crop follows an animated width",
             scene(
                 (8, 4),
