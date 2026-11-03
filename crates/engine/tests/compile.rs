@@ -861,6 +861,25 @@ fn remap_binds_each_branch() {
     }
 }
 
+#[test]
+fn opacity_binds_its_animated_value() {
+    let composition = scene(
+        (8, 4),
+        json!([
+            solid(1, [64, 128, 255, 128]),
+            { "id": 2, "type": "opacity", "params": { "opacity": "=frame / 10" },
+              "in": { "source": 1 } },
+        ]),
+    );
+    let compiled = compile(&composition, None);
+    assert_eq!(raster(&compiled, 2).domain, raster(&compiled, 1).domain);
+    let buffer = uniform_buffers_of(&compiled.plan, 2)[0];
+    for (frame, opacity) in [(0, 0.0), (5, 0.5)] {
+        let bound = bind(&composition, &compiled, frame);
+        assert_eq!(uploaded_f32s(&bound, buffer, 1), [opacity], "frame {frame}");
+    }
+}
+
 struct BindError {
     name: String,
     composition: Composition,
