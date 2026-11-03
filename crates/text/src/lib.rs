@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cosmic_text::{FontSystem, SwashCache, Wrap, fontdb};
+use cosmic_text::{FontSystem, SwashCache, fontdb};
 
 mod atlas;
 mod decorate;
@@ -88,10 +88,8 @@ pub struct TextSystem {
     font_generation: u64,
     /// Latest first.
     registrations: Vec<Registration>,
-    /// Recent fits as the request, the factor it chose and how text wraps at it, newest last.
-    fits: Vec<(TextLayoutRequest, f32, Wrap)>,
-    /// Recent measurements, newest last.
-    measurements: Vec<(TextLayoutRequest, TextMeasurement)>,
+    /// Recently shaped requests, newest last.
+    shapes: Vec<(TextLayoutRequest, Arc<ShapedText>)>,
 }
 
 impl TextSystem {
@@ -103,8 +101,7 @@ impl TextSystem {
             swash_cache: SwashCache::new(),
             font_generation: next_font_generation(),
             registrations: Vec::new(),
-            fits: Vec::new(),
-            measurements: Vec::new(),
+            shapes: Vec::new(),
         }
     }
 
@@ -200,8 +197,7 @@ impl TextSystem {
     fn rebuild_fonts(&mut self) {
         self.font_system = new_font_system(font_database(&self.registrations));
         self.font_generation = next_font_generation();
-        self.fits.clear();
-        self.measurements.clear();
+        self.shapes.clear();
     }
 
     /// Changes whenever the fonts do and differs between text systems. What is keyed by font IDs
@@ -541,7 +537,7 @@ pub(crate) mod tests {
         system.load_font_data(include_bytes!("../assets/inter/InterVariable-Latin.ttf").to_vec());
 
         assert_ne!(system.font_generation(), generation);
-        assert!(system.measurements.is_empty());
+        assert!(system.shapes.is_empty());
         let loaded = system.measure(&request);
         assert_ne!(loaded.width, fallback.width);
         assert_eq!(loaded, system.shape(&request).measurement);
