@@ -16,13 +16,10 @@
 
 use crate::{
     composition::CompositionTemplate,
-    error::{ExpressionError, LumenError},
+    error::LumenError,
     expr::ExpressionContext,
     gpu::{CompiledOutput, GpuCompileNode},
-    node::{
-        ClipPropValue, ClipProps, Deferred, DelegateEvalContext, DelegateEvaluable, NodeId,
-        NodeParams, PortRef,
-    },
+    node::{ClipPropValue, ClipProps, Deferred, DelegateEvalContext, NodeId, NodeParams, PortRef},
     scope::{FrameTime, PropValues, Routed, Scope},
 };
 
@@ -195,7 +192,7 @@ impl Clip {
             .map(Some)
             .ok_or_else(|| {
                 self.error(
-                    None,
+                    "composition",
                     format!("composition `{name}` is not defined in `compositions`"),
                 )
             })
@@ -212,7 +209,7 @@ impl Clip {
             if number.is_finite() {
                 Ok(number)
             } else {
-                Err(self.error(ctx.path.clone(), format!("`{name}` must be finite")))
+                Err(self.error(name, "must be finite".to_string()))
             }
         };
         let start = number(&self.params.start, "start")?;
@@ -221,10 +218,7 @@ impl Clip {
         let offset = number(&self.params.offset, "offset")?;
         let speed = number(&self.params.speed, "speed")?;
         if speed <= 0.0 {
-            return Err(self.error(
-                ctx.path.clone(),
-                format!("`speed` must be greater than 0, got {speed}"),
-            ));
+            return Err(self.error("speed", format!("must be greater than 0, got {speed}")));
         }
         let template = self.template(scope)?;
         let content_fps = template.map_or(scope.timeline.fps, |template| template.timeline.fps);
@@ -235,11 +229,11 @@ impl Clip {
             speed,
             content_fps: f64::from(content_fps),
             fps: f64::from(scope.timeline.fps),
-            end: self.params.end.eval(&DelegateEvalContext {
+            end: DelegateEvalContext {
                 node_id: self.id,
-                property_path: "end",
                 expr: ctx,
-            })?,
+            }
+            .eval_field("end", &self.params.end)?,
         };
         let duration = if !plays_to_end {
             duration
@@ -262,7 +256,7 @@ impl Clip {
         frame: FrameTime,
         media: Option<&dyn crate::media::MediaStore>,
     ) -> crate::Result<Option<Routed<'a>>> {
-        let ctx = scope.expr_context(frame, format!("{}.params", self.id), media);
+        let ctx = scope.expr_context(frame, media);
         let Some(local) = self.window(scope, &ctx)?.local_time(frame) else {
             return Ok(None);
         };
@@ -302,23 +296,22 @@ impl Clip {
                 let value = match values.get(name) {
                     None => Ok(def.default.clone()),
                     Some(ClipPropValue::Literal(value)) => def.kind.literal(value),
-                    Some(ClipPropValue::Expr(expr)) => def.kind.check(expr.evaluate(ctx)?),
+                    Some(ClipPropValue::Expr(expr)) => {
+                        let value = expr
+                            .evaluate(ctx)
+                            .map_err(|error| error.located(self.id, &format!("props.{name}")))?;
+                        def.kind.check(value)
+                    }
                 };
-                value.map(|value| (name.clone(), value)).map_err(|details| {
-                    self.error(
-                        Some(format!("{}.props.{name}", self.id)),
-                        format!("prop `{name}`: {details}"),
-                    )
-                })
+                value
+                    .map(|value| (name.clone(), value))
+                    .map_err(|details| self.error(&format!("props.{name}"), details))
             })
             .collect()
     }
 
-    fn error(&self, path: Option<String>, details: String) -> LumenError {
-        LumenError::Expression(ExpressionError::Evaluate {
-            path: path.or_else(|| Some(format!("{}.params", self.id))),
-            details,
-        })
+    fn error(&self, field: &str, details: String) -> LumenError {
+        LumenError::evaluate(details).located(self.id, field)
     }
 }
 

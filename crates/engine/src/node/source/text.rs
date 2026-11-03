@@ -17,8 +17,8 @@ use crate::node::vector::{
     renderer::{GpuTextPaint, TextStyleUniforms},
 };
 use crate::node::{
-    Deferred, DeferredValue, DelegateEvalContext, NodeId, NodeParamEvalContext, NodeParams,
-    Override, PortRef,
+    Deferred, DeferredValue, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override,
+    PortRef,
 };
 
 use super::text_content::{
@@ -390,12 +390,11 @@ impl GpuCompiledNode for CompiledText {
 impl CompiledText {
     /// Fails when the text draws `drawn` glyph, stroke and decoration instances, more than it
     /// has room for.
-    fn check_capacity(&self, ctx: &FrameBindContext<'_>, drawn: usize) -> crate::Result<()> {
+    fn check_capacity(&self, drawn: usize) -> crate::Result<()> {
         if drawn <= self.capacity {
             return Ok(());
         }
         Err(RenderError::NodeEvaluation {
-            frame: ctx.frame(),
             node_id: self.node_id,
             node_kind: "Text",
             details: format!(
@@ -417,8 +416,8 @@ impl CompiledText {
         kept: bool,
     ) -> crate::Result<bool> {
         let trace_started = crate::log_level_enabled(tracing::Level::TRACE).then(trace_now_ms);
-        let mut expr = ctx.expr_context(self.node_id, "params");
-        let mut evaluated = self.params.eval(&NodeParamEvalContext {
+        let mut expr = ctx.expr_context();
+        let mut evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
             expr: &expr,
         })?;
@@ -557,7 +556,7 @@ impl CompiledText {
                 &mut state.decorations,
             );
             decoration_paints.extend(own.into_iter().map(|(paint, span)| (paint, span, 0.0)));
-            self.check_capacity(ctx, state.decorations.len())?;
+            self.check_capacity(state.decorations.len())?;
             if self.stroked {
                 span_strokes(
                     decorations.stroke.as_ref(),
@@ -617,7 +616,6 @@ impl CompiledText {
 
         // Glyphs the atlas dropped are still drawn text, so they count toward the limit.
         self.check_capacity(
-            ctx,
             state.decorations.len()
                 + prepared.instances.len()
                 + prepared.strokes.len()
@@ -1115,17 +1113,12 @@ impl TextLimits {
         node_id: NodeId,
         expr: &ExpressionContext<'_>,
     ) -> crate::Result<Self> {
-        use crate::node::DelegateEvaluable;
-        let ctx = |property_path| DelegateEvalContext {
-            node_id,
-            property_path,
-            expr,
-        };
+        let ctx = DelegateEvalContext { node_id, expr };
         Ok(Self {
-            max_lines: DelegateEvaluable::eval(&params.max_lines, &ctx("max_lines"))?,
-            max_height: DelegateEvaluable::eval(&params.max_height, &ctx("max_height"))?,
-            overflow: params.overflow.eval(&ctx("overflow"))?,
-            fit: params.fit.eval(&ctx("fit"))?,
+            max_lines: ctx.eval_field("max_lines", &params.max_lines)?,
+            max_height: ctx.eval_field("max_height", &params.max_height)?,
+            overflow: ctx.eval_field("overflow", &params.overflow)?,
+            fit: ctx.eval_field("fit", &params.fit)?,
             min_font_size: params.min_font_size.eval(node_id, "min_font_size", expr)?,
         })
     }
@@ -1310,17 +1303,12 @@ impl DecorationParams {
         node_id: NodeId,
         expr: &ExpressionContext<'_>,
     ) -> crate::Result<TextDecorations> {
-        use crate::node::DelegateEvaluable;
-        let ctx = |property_path| DelegateEvalContext {
-            node_id,
-            property_path,
-            expr,
-        };
+        let ctx = DelegateEvalContext { node_id, expr };
         Ok(TextDecorations {
-            underline: DelegateEvaluable::eval(&self.underline, &ctx("underline"))?,
-            strikethrough: DelegateEvaluable::eval(&self.strikethrough, &ctx("strikethrough"))?,
-            highlight: DelegateEvaluable::eval(&self.highlight, &ctx("highlight"))?,
-            stroke: DelegateEvaluable::eval(&self.stroke, &ctx("stroke"))?,
+            underline: ctx.eval_field("underline", &self.underline)?,
+            strikethrough: ctx.eval_field("strikethrough", &self.strikethrough)?,
+            highlight: ctx.eval_field("highlight", &self.highlight)?,
+            stroke: ctx.eval_field("stroke", &self.stroke)?,
         })
     }
 }

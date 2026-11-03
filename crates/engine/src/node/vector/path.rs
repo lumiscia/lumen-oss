@@ -6,7 +6,7 @@ use super::renderer::{MAX_PATH_POINTS, PathBuffers, PathPoint, PathUniforms, sty
 use crate::error::RenderError;
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 use crate::node::motion::Shutter;
-use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 /// Produces a rasterized vector path source.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -131,7 +131,7 @@ impl GpuCompiledNode for CompiledPath {
         let frame = path_frame(
             &self.params,
             self.node_id,
-            &ctx.expr_context(self.node_id, "params"),
+            &ctx.expr_context(),
             self.buffers.point_capacity,
             self.buffers.band_capacity,
         )?;
@@ -148,7 +148,7 @@ pub(super) fn path_frame(
     point_capacity: usize,
     band_capacity: usize,
 ) -> crate::Result<PathFrame> {
-    let evaluated = params.eval(&NodeParamEvalContext { node_id, expr })?;
+    let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
     let transform = DrawableTransform {
         position: evaluated.position,
         scale: evaluated.scale,
@@ -170,7 +170,6 @@ pub(super) fn path_frame(
         point_capacity,
     )
     .map_err(|details| RenderError::NodeEvaluation {
-        frame: expr.frame as u32,
         node_id,
         node_kind: "Path",
         details: format!("`data` {details}"),

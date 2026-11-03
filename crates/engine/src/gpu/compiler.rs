@@ -393,10 +393,10 @@ impl<'a> CompileContext<'a> {
     }
 
     fn compile_node(&mut self, port: &PortRef) -> crate::Result<CompiledOutput> {
-        let node = self.scope.node(port.id).ok_or(RenderError::MissingNode {
-            frame: 0,
-            node_id: port.id,
-        })?;
+        let node = self
+            .scope
+            .node(port.id)
+            .ok_or(RenderError::MissingNode { node_id: port.id })?;
         Ok(match node {
             NodeKind::MediaIn(node) => node.compile_gpu(self, port)?,
             NodeKind::Background(node) => node.compile_gpu(self, port)?,
@@ -619,14 +619,13 @@ impl<'a> CompileContext<'a> {
     /// frames are the clip's own, with the props it has at each.
     pub(crate) fn source_bounds(
         &self,
-        node_id: NodeId,
         motion: SourceMotion,
         mut bounds_at: impl FnMut(&ExpressionContext<'_>) -> crate::Result<Option<[f32; 4]>>,
     ) -> Option<lumen_gpu::RectI> {
         if self.full_frame_sources {
             return None;
         }
-        let mut expr = self.expr_context(node_id, "params");
+        let mut expr = self.expr_context();
         match motion {
             SourceMotion::Fixed => {
                 return bounds_at(&expr)
@@ -846,13 +845,8 @@ impl<'a> CompileContext<'a> {
         Ok((source, texture, params))
     }
 
-    pub(crate) fn expr_context(
-        &self,
-        node_id: NodeId,
-        property_path: &str,
-    ) -> ExpressionContext<'_> {
-        self.scope
-            .expr_context(self.frame, format!("{node_id}.{property_path}"), self.media)
+    pub(crate) fn expr_context(&self) -> ExpressionContext<'_> {
+        self.scope.expr_context(self.frame, self.media)
     }
 
     pub(crate) fn missing_output(&self, node_id: NodeId, port: &str) -> crate::error::LumenError {

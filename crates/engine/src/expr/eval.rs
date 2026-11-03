@@ -15,7 +15,7 @@ use crate::{
 
 impl Expression {
     pub fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
-        let _evaluation = EvaluationGuard::enter(self.depth, ctx)?;
+        let _evaluation = EvaluationGuard::enter(self.depth)?;
         self.plan.evaluate(ctx)
     }
 }
@@ -41,7 +41,7 @@ struct EvaluationGuard {
 }
 
 impl EvaluationGuard {
-    fn enter(depth: usize, ctx: &ExpressionContext<'_>) -> crate::Result<Self> {
+    fn enter(depth: usize) -> crate::Result<Self> {
         let levels = u32::try_from(depth)
             .unwrap_or(u32::MAX)
             .saturating_add(EVALUATION_OVERHEAD);
@@ -58,10 +58,7 @@ impl EvaluationGuard {
             None
         };
         if let Some(details) = exhausted {
-            return Err(LumenError::Expression(ExpressionError::Evaluate {
-                path: ctx.path.clone(),
-                details,
-            }));
+            return Err(LumenError::evaluate(details));
         }
         EVALUATIONS.set((open + levels, started + 1));
         Ok(Self { levels })
@@ -214,10 +211,10 @@ impl EvalPlan {
         let value = match &step.op {
             Op::Literal(Literal(value)) => value.clone(),
             Op::Global(global) => global_value(global, ctx)?,
-            Op::Unary(op, value) => unary(*op, self.evaluate_step(*value, ctx, memo)?, ctx)?,
+            Op::Unary(op, value) => unary(*op, self.evaluate_step(*value, ctx, memo)?)?,
             Op::Binary(lhs, op, rhs) => {
                 let lhs = self.evaluate_step(*lhs, ctx, memo)?;
-                binary(lhs, *op, || self.evaluate_step(*rhs, ctx, memo), ctx)?
+                binary(lhs, *op, || self.evaluate_step(*rhs, ctx, memo))?
             }
             Op::Builtin(builtin, args) => {
                 let args = args
@@ -293,13 +290,10 @@ pub(crate) fn evaluate_expr(
 ) -> crate::Result<ExpressionValue> {
     match expr {
         ExprNode::Literal(value) => Ok(value.clone()),
-        ExprNode::Unary(op, value) => unary(*op, evaluate_expr(value, ctx)?, ctx),
-        ExprNode::Binary(left, op, right) => binary(
-            evaluate_expr(left, ctx)?,
-            *op,
-            || evaluate_expr(right, ctx),
-            ctx,
-        ),
+        ExprNode::Unary(op, value) => unary(*op, evaluate_expr(value, ctx)?),
+        ExprNode::Binary(left, op, right) => {
+            binary(evaluate_expr(left, ctx)?, *op, || evaluate_expr(right, ctx))
+        }
         ExprNode::Builtin(builtin, args) => {
             if measures_text(*builtin) {
                 return evaluate_text_measure_builtin(*builtin, args, ctx);
@@ -311,49 +305,38 @@ pub(crate) fn evaluate_expr(
             evaluate_builtin(*builtin, &evaluated_args, ctx)
         }
         ExprNode::Global(global) => global_value(global, ctx),
-        ExprNode::Node(node_id) => Err(LumenError::Expression(ExpressionError::Evaluate {
-            path: ctx.path.clone(),
-            details: format!(
-                "node reference `{}` can only be used in builtins that accept node references",
-                node_id.0
-            ),
-        })),
+        ExprNode::Node(node_id) => Err(LumenError::evaluate(format!(
+            "node reference `{}` can only be used in builtins that accept node references",
+            node_id.0
+        ))),
         ExprNode::PropertyValue(node_id, property) => {
             let graph = ctx.graph.ok_or_else(|| {
-                LumenError::Expression(ExpressionError::Evaluate {
-                    path: ctx.path.clone(),
-                    details: format!(
-                        "no graph available to resolve node property reference `{}`",
-                        property
-                    ),
-                })
+                LumenError::evaluate(format!(
+                    "no graph available to resolve node property reference `{property}`"
+                ))
             })?;
             let node = graph.nodes.get(node_id).ok_or_else(|| {
-                LumenError::Expression(ExpressionError::Evaluate {
-                    path: ctx.path.clone(),
-                    details: format!(
-                        "node `{}` not found for property reference `{}`",
-                        node_id.0, property
-                    ),
-                })
+                LumenError::evaluate(format!(
+                    "node `{}` not found for property reference `{property}`",
+                    node_id.0
+                ))
             })?;
             let prop = node.get_property(property).ok_or_else(|| {
-                LumenError::Expression(ExpressionError::Evaluate {
-                    path: ctx.path.clone(),
-                    details: format!("property `{property}` not found on node `{}`", node_id.0),
-                })
+                LumenError::evaluate(format!(
+                    "property `{property}` not found on node `{}`",
+                    node_id.0
+                ))
             })?;
             match &prop {
-                PropertyExpression::Expr(inner_expr) => inner_expr.evaluate(&ctx.without_glyph()),
+                PropertyExpression::Expr(inner_expr) => inner_expr
+                    .evaluate(&ctx.without_glyph())
+                    .map_err(|error| error.located(*node_id, property)),
                 PropertyExpression::Value(value) => property_value_to_expression_value(value)
                     .ok_or_else(|| {
-                        LumenError::Expression(ExpressionError::Evaluate {
-                            path: ctx.path.clone(),
-                            details: format!(
-                                "property `{property}` on node {} can't be read in an expression",
-                                node_id.0
-                            ),
-                        })
+                        LumenError::evaluate(format!(
+                            "property `{property}` on node {} can't be read in an expression",
+                            node_id.0
+                        ))
                     }),
             }
         }
@@ -368,15 +351,11 @@ pub(crate) fn evaluate_expr(
     }
 }
 
-fn unary(
-    op: UnaryOp,
-    value: ExpressionValue,
-    ctx: &ExpressionContext<'_>,
-) -> crate::Result<ExpressionValue> {
+fn unary(op: UnaryOp, value: ExpressionValue) -> crate::Result<ExpressionValue> {
     match op {
         UnaryOp::Neg => match value {
             ExpressionValue::Vec2((x, y)) => Ok(ExpressionValue::Vec2((-x, -y))),
-            other => Ok(ExpressionValue::Number(-to_number(&other, ctx)?)),
+            other => Ok(ExpressionValue::Number(-to_number(&other)?)),
         },
         UnaryOp::Not => Ok(ExpressionValue::Boolean(!value.as_bool())),
     }
@@ -387,7 +366,6 @@ fn binary(
     lhs: ExpressionValue,
     op: BinaryOp,
     rhs: impl FnOnce() -> crate::Result<ExpressionValue>,
-    ctx: &ExpressionContext<'_>,
 ) -> crate::Result<ExpressionValue> {
     match op {
         BinaryOp::And => {
@@ -405,11 +383,11 @@ fn binary(
         BinaryOp::Eq => Ok(ExpressionValue::Boolean(lhs == rhs()?)),
         BinaryOp::Neq => Ok(ExpressionValue::Boolean(lhs != rhs()?)),
         BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-            arithmetic(op, &lhs, &rhs()?, ctx)
+            arithmetic(op, &lhs, &rhs()?)
         }
         BinaryOp::Gt | BinaryOp::Lt | BinaryOp::Gte | BinaryOp::Lte => {
             let rhs = rhs()?;
-            let (lhs, rhs) = (to_number(&lhs, ctx)?, to_number(&rhs, ctx)?);
+            let (lhs, rhs) = (to_number(&lhs)?, to_number(&rhs)?);
             Ok(ExpressionValue::Boolean(match op {
                 BinaryOp::Gt => lhs > rhs,
                 BinaryOp::Lt => lhs < rhs,
@@ -437,7 +415,6 @@ fn global_value(global: &GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Resul
         | GlobalVar::SpanCount => glyph_global(global, ctx),
         GlobalVar::Custom(name) => {
             Err(LumenError::Expression(ExpressionError::UndefinedVariable {
-                path: ctx.path.clone(),
                 name: name.clone(),
             }))
         }
@@ -458,13 +435,10 @@ fn glyph_global(global: &GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Resul
     value
         .map(|value| ExpressionValue::Number(f64::from(value)))
         .ok_or_else(|| {
-            LumenError::Expression(ExpressionError::Evaluate {
-                path: ctx.path.clone(),
-                details: format!(
-                    "`{name}` is only available in a text node's glyph_offset, glyph_scale, \
+            LumenError::evaluate(format!(
+                "`{name}` is only available in a text node's glyph_offset, glyph_scale, \
                  glyph_rotation and glyph_opacity params"
-                ),
-            })
+            ))
         })
 }
 
@@ -474,37 +448,30 @@ fn arithmetic(
     op: BinaryOp,
     lhs: &ExpressionValue,
     rhs: &ExpressionValue,
-    ctx: &ExpressionContext<'_>,
 ) -> crate::Result<ExpressionValue> {
-    let error = |details: String| {
-        LumenError::Expression(ExpressionError::Evaluate {
-            path: ctx.path.clone(),
-            details,
-        })
-    };
     let apply = |a: f64, b: f64| match op {
         BinaryOp::Add => Ok(a + b),
         BinaryOp::Sub => Ok(a - b),
         BinaryOp::Mul => Ok(a * b),
-        BinaryOp::Div if b.abs() <= f64::EPSILON => Err(error("division by zero".to_string())),
+        BinaryOp::Div if b.abs() <= f64::EPSILON => Err(LumenError::evaluate("division by zero")),
         BinaryOp::Div => Ok(a / b),
-        BinaryOp::Mod if b.abs() <= f64::EPSILON => Err(error("modulo by zero".to_string())),
+        BinaryOp::Mod if b.abs() <= f64::EPSILON => Err(LumenError::evaluate("modulo by zero")),
         _ => Ok(a % b),
     };
     let scales = matches!(op, BinaryOp::Mul | BinaryOp::Div);
     let (a, b) = match (lhs, rhs) {
         (ExpressionValue::Vec2(a), ExpressionValue::Vec2(b)) if op != BinaryOp::Mod => (*a, *b),
         (ExpressionValue::Vec2(a), other) if scales => {
-            let scalar = to_number(other, ctx)?;
+            let scalar = to_number(other)?;
             (*a, (scalar, scalar))
         }
         (other, ExpressionValue::Vec2(b)) if scales => {
-            let scalar = to_number(other, ctx)?;
+            let scalar = to_number(other)?;
             ((scalar, scalar), *b)
         }
         (ExpressionValue::Vec2(_) | ExpressionValue::Color(_), _)
         | (_, ExpressionValue::Vec2(_) | ExpressionValue::Color(_)) => {
-            return Err(error(format!(
+            return Err(LumenError::evaluate(format!(
                 "cannot apply `{}` to {} and {}",
                 operator_symbol(op),
                 lhs.type_name(),
@@ -512,7 +479,7 @@ fn arithmetic(
             )));
         }
         _ => {
-            let value = apply(to_number(lhs, ctx)?, to_number(rhs, ctx)?)?;
+            let value = apply(to_number(lhs)?, to_number(rhs)?)?;
             return Ok(ExpressionValue::Number(value));
         }
     };
@@ -537,23 +504,14 @@ fn operator_symbol(op: BinaryOp) -> &'static str {
     }
 }
 
-fn to_number(value: &ExpressionValue, ctx: &ExpressionContext<'_>) -> crate::Result<f64> {
-    match value {
-        ExpressionValue::Number(number) => Ok(*number),
-        ExpressionValue::Boolean(boolean) => Ok(if *boolean { 1.0 } else { 0.0 }),
-        ExpressionValue::String(text) => text.parse::<f64>().map_err(|_| {
-            LumenError::Expression(ExpressionError::Parse {
-                path: ctx.path.clone(),
-                details: format!("cannot convert `{text}` into f64"),
-            })
-        }),
-        ExpressionValue::Vec2(_) | ExpressionValue::Color(_) => {
-            Err(LumenError::Expression(ExpressionError::Evaluate {
-                path: ctx.path.clone(),
-                details: format!("cannot convert {} into f64", value.type_name()),
-            }))
-        }
-    }
+fn to_number(value: &ExpressionValue) -> crate::Result<f64> {
+    value.as_f64().ok_or_else(|| {
+        LumenError::evaluate(format!(
+            "cannot convert {} `{}` into a number",
+            value.type_name(),
+            value.as_string()
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -571,7 +529,6 @@ mod tests {
             fps: 24.0,
             width: 1920,
             height: 1080,
-            path: Some("node.opacity".to_string()),
             graph: None,
             media: None,
             glyph: None,
@@ -812,11 +769,7 @@ mod tests {
                 .evaluate(&test_context())
                 .expect_err("nonnumeric component must fail");
 
-            let LumenError::Expression(ExpressionError::Evaluate { path, details }) = error else {
-                panic!("expected expression evaluation error");
-            };
-            assert_eq!(path.as_deref(), Some("node.opacity"));
-            assert_eq!(details, "vec2 expects numeric arguments");
+            assert_eq!(error.to_string(), "vec2 expects numeric arguments");
         }
     }
 
@@ -892,18 +845,16 @@ mod tests {
                 "cannot apply `%` to vec2 and vec2",
             ),
             ("vec2(1, 2) / 0", "division by zero"),
-            ("vec2(1, 2) > 1", "cannot convert vec2 into f64"),
+            (
+                "vec2(1, 2) > 1",
+                "cannot convert vec2 `[1, 2]` into a number",
+            ),
             (
                 "lerp(vec2(1, 2), 3, 0.5)",
                 "`lerp` expects `from` and `to` of the same type",
             ),
         ] {
-            let LumenError::Expression(ExpressionError::Evaluate { path, details }) =
-                evaluate(source, 0).unwrap_err()
-            else {
-                panic!("expected expression evaluation error");
-            };
-            assert_eq!(path.as_deref(), Some("node.opacity"));
+            let details = evaluate(source, 0).unwrap_err().to_string();
             assert!(details.starts_with(expected), "{source}: {details}");
         }
     }
@@ -970,7 +921,7 @@ mod tests {
         for (source, expected) in [
             ("#ff0000 + #00ff00", "cannot apply `+` to color and color"),
             ("#ff0000 * 2", "cannot apply `*` to color and number"),
-            ("-#ff0000", "cannot convert color into f64"),
+            ("-#ff0000", "cannot convert color `#ff0000ff` into a number"),
             (
                 "rgb(frame * 10, 0, 0)",
                 "colour components must be between 0 and 255",

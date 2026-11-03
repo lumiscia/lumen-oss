@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::{
     gpu::{CompiledOutput, RasterHandle, RasterMetadata, compiler},
-    node::{Deferred, NodeId, NodeParams, Override, PortRef},
+    node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, Override, PortRef},
 };
 
 use crate::node::source::{
@@ -100,7 +100,6 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         port: &PortRef,
     ) -> crate::Result<CompiledOutput> {
         let bounds = self.ctx.source_bounds(
-            shape.id,
             compiler::SourceMotion::of(
                 super::shape::shape_is_animated(&shape.params),
                 &shape.params,
@@ -212,7 +211,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
     ) -> crate::Result<(CompiledOutput, PathBuffers)> {
         let point_capacity = point_capacity.max(1);
         let band_capacity = super::path_bands::band_capacity(point_capacity);
-        let bounds = self.ctx.source_bounds(node_id, motion, |expr| {
+        let bounds = self.ctx.source_bounds(motion, |expr| {
             frame_at(expr, point_capacity, band_capacity)
                 .map(|frame| Some(frame.uniforms.screen_bounds))
         });
@@ -339,7 +338,6 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         let paints = paint_count + decoration_paints.unwrap_or(0);
         if paints > lumen_text::GLYPH_MAX_PAINTS as usize {
             return Err(crate::error::RenderError::NodeEvaluation {
-                frame: 0,
                 node_id: text.id,
                 node_kind: "Text",
                 details: format!(
@@ -505,39 +503,36 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         }
         let mut params = text.params.clone();
         let glyph = GlyphParams::take(&mut params);
-        let expr = self.ctx.expr_context(text.id, "params");
+        let expr = self.ctx.expr_context();
         let decorations = DecorationParams::take(&mut params);
         let decorations = if decorations.has_expressions() {
             NodeDecorations::Animated(decorations)
         } else {
             NodeDecorations::Constant(decorations.eval(text.id, &expr)?)
         };
-        let font_features =
-            if crate::node::DelegateEvaluable::has_expressions(&params.font_features) {
-                None
-            } else {
-                let features = std::mem::take(&mut params.font_features);
-                Some(crate::node::DelegateEvaluable::eval(
-                    &features,
-                    &crate::node::DelegateEvalContext {
-                        node_id: text.id,
-                        property_path: "font_features",
-                        expr: &expr,
-                    },
-                )?)
-            };
-        let content = if crate::node::DelegateEvaluable::has_expressions(&params.content) {
+        let font_features = if DelegateEvaluable::has_expressions(&params.font_features) {
+            None
+        } else {
+            let features = std::mem::take(&mut params.font_features);
+            Some(
+                DelegateEvalContext {
+                    node_id: text.id,
+                    expr: &expr,
+                }
+                .eval_field("font_features", &features)?,
+            )
+        };
+        let content = if DelegateEvaluable::has_expressions(&params.content) {
             None
         } else {
             let content = std::mem::take(&mut params.content);
-            Some(crate::node::DelegateEvaluable::eval(
-                &content,
-                &crate::node::DelegateEvalContext {
+            Some(
+                DelegateEvalContext {
                     node_id: text.id,
-                    property_path: "content",
                     expr: &expr,
-                },
-            )?)
+                }
+                .eval_field("content", &content)?,
+            )
         };
         self.ctx.register_compiled_node(CompiledText {
             node_id: text.id,
@@ -639,7 +634,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             || params.rotation.is_expr()
             || params.anchor.is_expr();
         let motion = compiler::SourceMotion::of(animated, params);
-        self.ctx.source_bounds(text.id, motion, |expr| {
+        self.ctx.source_bounds(motion, |expr| {
             let position = params.position.eval(text.id, "position", expr)?;
             let top = match alignment {
                 crate::node::source::text::TextAlignmentVertical::Top => position.1 as f32,
@@ -669,26 +664,26 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
     /// not resolved has none, since the font drawn later may shape it differently.
     fn constant_text(&self, text: &Text) -> Option<ConstantText> {
         let params = &text.params;
-        if crate::node::DelegateEvaluable::has_expressions(&params.content)
-            || crate::node::DelegateEvaluable::has_expressions(&params.underline)
-            || crate::node::DelegateEvaluable::has_expressions(&params.strikethrough)
-            || crate::node::DelegateEvaluable::has_expressions(&params.highlight)
-            || crate::node::DelegateEvaluable::has_expressions(&params.stroke)
+        if DelegateEvaluable::has_expressions(&params.content)
+            || DelegateEvaluable::has_expressions(&params.underline)
+            || DelegateEvaluable::has_expressions(&params.strikethrough)
+            || DelegateEvaluable::has_expressions(&params.highlight)
+            || DelegateEvaluable::has_expressions(&params.stroke)
             || params.font_family.is_expr()
             || params.font_size.is_expr()
             || params.font_weight.is_expr()
-            || crate::node::DelegateEvaluable::has_expressions(&params.font_style)
-            || crate::node::DelegateEvaluable::has_expressions(&params.font_features)
+            || DelegateEvaluable::has_expressions(&params.font_style)
+            || DelegateEvaluable::has_expressions(&params.font_features)
             || params.max_width.is_expr()
             || params.letter_spacing.is_expr()
             || params.line_height.is_expr()
-            || crate::node::DelegateEvaluable::has_expressions(&params.max_lines)
-            || crate::node::DelegateEvaluable::has_expressions(&params.max_height)
-            || crate::node::DelegateEvaluable::has_expressions(&params.overflow)
-            || crate::node::DelegateEvaluable::has_expressions(&params.fit)
+            || DelegateEvaluable::has_expressions(&params.max_lines)
+            || DelegateEvaluable::has_expressions(&params.max_height)
+            || DelegateEvaluable::has_expressions(&params.overflow)
+            || DelegateEvaluable::has_expressions(&params.fit)
             || params.min_font_size.is_expr()
             || params.paragraph_spacing.is_expr()
-            || crate::node::DelegateEvaluable::has_expressions(&params.text_transform)
+            || DelegateEvaluable::has_expressions(&params.text_transform)
         {
             return None;
         }
@@ -709,9 +704,9 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             color: drawn.color,
             ..params.clone()
         };
-        let expr = self.ctx.expr_context(text.id, "params");
+        let expr = self.ctx.expr_context();
         let mut evaluated = layout_params
-            .eval(&crate::node::NodeParamEvalContext {
+            .eval(&DelegateEvalContext {
                 node_id: text.id,
                 expr: &expr,
             })

@@ -7,7 +7,7 @@ use super::renderer::{
 use crate::error::RenderError;
 use crate::gpu::{BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode};
 use crate::node::motion::Shutter;
-use crate::node::{Deferred, NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
@@ -156,11 +156,7 @@ impl GpuCompiledNode for CompiledShape {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let mut params = shape_frame(
-            &self.params,
-            self.node_id,
-            &ctx.expr_context(self.node_id, "params"),
-        )?;
+        let mut params = shape_frame(&self.params, self.node_id, &ctx.expr_context())?;
         params.origin = self.origin;
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
@@ -173,7 +169,7 @@ pub(super) fn shape_frame(
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<ShapeUniforms> {
-    let evaluated = params.eval(&NodeParamEvalContext { node_id, expr })?;
+    let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
     let shutter = shape_shutter(params, &evaluated, node_id, expr)?;
     Ok(shape_uniforms(&evaluated, shutter.as_ref()))
 }
@@ -209,7 +205,7 @@ impl GpuCompiledNode for CompiledPolygonShape {
         let frame = polygon_frame(
             &self.params,
             self.node_id,
-            &ctx.expr_context(self.node_id, "params"),
+            &ctx.expr_context(),
             self.buffers.point_capacity,
             self.buffers.band_capacity,
         )?;
@@ -226,12 +222,11 @@ pub(super) fn polygon_frame(
     point_capacity: usize,
     band_capacity: usize,
 ) -> crate::Result<PathFrame> {
-    let evaluated = params.eval(&NodeParamEvalContext { node_id, expr })?;
+    let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
     // Invalid or incomplete point lists draw nothing, so editing the field never fails the frame.
     let vertices = parse_polygon_points(&evaluated.polygon_points).unwrap_or_default();
     if vertices.len() > point_capacity {
         return Err(RenderError::NodeEvaluation {
-            frame: expr.frame as u32,
             node_id,
             node_kind: "Shape",
             details: format!("polygon has more than {point_capacity} points"),

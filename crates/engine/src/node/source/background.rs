@@ -1,4 +1,6 @@
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, vector::paint::Paint};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
+};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
@@ -69,9 +71,9 @@ impl GpuCompiledNode for CompiledBackground {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&NodeParamEvalContext {
+        let params = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         let mut paint = params.paint.to_gpu([0, 0, 0, 255]);
         paint.paint_supersample = u32::from(params.paint_supersample);
@@ -90,9 +92,9 @@ impl GpuCompileNode for Background {
             return Err(ctx.missing_output(self.id, &port.port));
         }
 
-        let params = self.params.eval(&NodeParamEvalContext {
+        let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
-            expr: &ctx.expr_context(self.id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         let width = ctx.static_dimension_value(i64::from(params.width), "width");
         let height = ctx.static_dimension_value(i64::from(params.height), "height");

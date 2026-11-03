@@ -1,4 +1,7 @@
-use crate::expr::Expression;
+use crate::{
+    error::LumenError,
+    expr::{Expression, ExpressionValue},
+};
 
 use super::{
     clip_props::ClipProps,
@@ -24,16 +27,17 @@ impl<T> Deferred<T> {
         matches!(self, Self::Expr(_))
     }
 
+    /// This value at `ctx`. An expression's failure is located at `field` of node `node_id`.
     pub fn eval(
         &self,
         node_id: NodeId,
-        property_path: &str,
+        field: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<T>
     where
         T: DeferredValue,
     {
-        T::eval_deferred(self, node_id, property_path, ctx)
+        T::eval_deferred(self, ctx).map_err(|error| error.located(node_id, field))
     }
 
     pub fn to_property_value(&self) -> PropertyValue
@@ -145,8 +149,6 @@ pub trait DeferredValue: Clone {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        node_id: NodeId,
-        property_path: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self>
     where
@@ -166,7 +168,7 @@ where
     type Evaluated = T;
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
-        Deferred::eval(self, ctx.node_id, ctx.property_path, ctx.expr)
+        Deferred::eval(self, ctx.node_id, "", ctx.expr)
     }
 
     fn has_expressions(&self) -> bool {
@@ -229,6 +231,31 @@ impl_delegated_deferred!(
     ClipProps
 );
 
+/// The failure of an expression whose value `value` has the wrong type for its param.
+fn wrong_type(expected: &str, value: &ExpressionValue) -> LumenError {
+    LumenError::evaluate(format!(
+        "expected {expected}, got {} `{}`",
+        value.type_name(),
+        value.as_string()
+    ))
+}
+
+pub fn eval_number(
+    expr: &Expression,
+    ctx: &crate::expr::ExpressionContext<'_>,
+) -> crate::Result<f64> {
+    let value = expr.evaluate(ctx)?;
+    value.as_f64().ok_or_else(|| wrong_type("a number", &value))
+}
+
+fn eval_vec2(
+    expr: &Expression,
+    ctx: &crate::expr::ExpressionContext<'_>,
+) -> crate::Result<(f64, f64)> {
+    let value = expr.evaluate(ctx)?;
+    value.as_vec2().ok_or_else(|| wrong_type("a vec2", &value))
+}
+
 macro_rules! impl_deferred_float_expr {
     ($ty:ty, $conv:expr) => {
         impl DeferredValue for $ty {
@@ -236,22 +263,11 @@ macro_rules! impl_deferred_float_expr {
 
             fn eval_deferred(
                 deferred: &Deferred<Self>,
-                node_id: NodeId,
-                property_path: &str,
                 ctx: &crate::expr::ExpressionContext<'_>,
             ) -> crate::Result<Self> {
                 match deferred {
                     Deferred::Value(value) => Ok(*value),
-                    Deferred::Expr(expr) => {
-                        expr.evaluate(ctx)?.as_f64().map($conv).ok_or_else(|| {
-                            PropertyValue::invalid_type(
-                                node_id,
-                                property_path,
-                                "Float",
-                                "expression",
-                            )
-                        })
-                    }
+                    Deferred::Expr(expr) => eval_number(expr, ctx).map($conv),
                 }
             }
 
@@ -277,19 +293,11 @@ impl DeferredValue for f32 {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        node_id: NodeId,
-        property_path: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => expr
-                .evaluate(ctx)?
-                .as_f64()
-                .map(|value| value as f32)
-                .ok_or_else(|| {
-                    PropertyValue::invalid_type(node_id, property_path, "Float", "expression")
-                }),
+            Deferred::Expr(expr) => eval_number(expr, ctx).map(|value| value as f32),
         }
     }
 
@@ -311,18 +319,11 @@ impl DeferredValue for i64 {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        node_id: NodeId,
-        property_path: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => {
-                let value = expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
-                    PropertyValue::invalid_type(node_id, property_path, "Int", "expression")
-                })?;
-                Ok(value as i64)
-            }
+            Deferred::Expr(expr) => eval_number(expr, ctx).map(|value| value as i64),
         }
     }
 
@@ -344,18 +345,14 @@ impl DeferredValue for u32 {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        node_id: NodeId,
-        property_path: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         let value = match deferred {
             Deferred::Value(value) => i64::from(*value),
-            Deferred::Expr(expr) => expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
-                PropertyValue::invalid_type(node_id, property_path, "UInt", "expression")
-            })? as i64,
+            Deferred::Expr(expr) => eval_number(expr, ctx)? as i64,
         };
         u32::try_from(value).map_err(|_| {
-            PropertyValue::invalid_type(node_id, property_path, "UInt", "out-of-range value")
+            LumenError::evaluate(format!("{value} is out of range for an unsigned integer"))
         })
     }
 
@@ -379,19 +376,14 @@ impl DeferredValue for u8 {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        node_id: NodeId,
-        property_path: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         let value = match deferred {
             Deferred::Value(value) => i64::from(*value),
-            Deferred::Expr(expr) => expr.evaluate(ctx)?.as_f64().ok_or_else(|| {
-                PropertyValue::invalid_type(node_id, property_path, "Int", "expression")
-            })? as i64,
+            Deferred::Expr(expr) => eval_number(expr, ctx)? as i64,
         };
-        u8::try_from(value).map_err(|_| {
-            PropertyValue::invalid_type(node_id, property_path, "U8", "out-of-range value")
-        })
+        u8::try_from(value)
+            .map_err(|_| LumenError::evaluate(format!("{value} is out of range for 0 to 255")))
     }
 
     fn to_property_value(value: &Self) -> PropertyValue {
@@ -414,8 +406,6 @@ impl DeferredValue for bool {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        _node_id: NodeId,
-        _property_path: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
@@ -442,8 +432,6 @@ impl DeferredValue for String {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        _node_id: NodeId,
-        _property_path: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
@@ -467,14 +455,12 @@ impl DeferredValue for String {
 
 fn eval_color(
     expr: &Expression,
-    node_id: NodeId,
-    property_path: &str,
-    expected: &'static str,
     ctx: &crate::expr::ExpressionContext<'_>,
 ) -> crate::Result<[u8; 4]> {
-    expr.evaluate(ctx)?
+    let value = expr.evaluate(ctx)?;
+    value
         .as_color_u8()
-        .ok_or_else(|| PropertyValue::invalid_type(node_id, property_path, expected, "expression"))
+        .ok_or_else(|| wrong_type("a color", &value))
 }
 
 impl DeferredValue for [u8; 4] {
@@ -482,13 +468,11 @@ impl DeferredValue for [u8; 4] {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        node_id: NodeId,
-        property_path: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => eval_color(expr, node_id, property_path, "Color", ctx),
+            Deferred::Expr(expr) => eval_color(expr, ctx),
         }
     }
 
@@ -513,14 +497,11 @@ impl DeferredValue for vector::paint::Paint {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        node_id: NodeId,
-        property_path: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(value.clone()),
-            Deferred::Expr(expr) => eval_color(expr, node_id, property_path, "Paint", ctx)
-                .map(vector::paint::Paint::solid),
+            Deferred::Expr(expr) => eval_color(expr, ctx).map(vector::paint::Paint::solid),
         }
     }
 
@@ -556,17 +537,12 @@ impl DeferredValue for ShaderUniforms {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        node_id: NodeId,
-        property_path: &str,
         _ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(value.clone()),
-            Deferred::Expr(_) => Err(PropertyValue::invalid_type(
-                node_id,
-                property_path,
-                "ShaderUniforms",
-                "expression",
+            Deferred::Expr(_) => Err(LumenError::evaluate(
+                "ShaderUniforms can't be an expression",
             )),
         }
     }
@@ -599,18 +575,11 @@ impl DeferredValue for ClipProps {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        node_id: NodeId,
-        property_path: &str,
         _ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(value.clone()),
-            Deferred::Expr(_) => Err(PropertyValue::invalid_type(
-                node_id,
-                property_path,
-                "ClipProps",
-                "expression",
-            )),
+            Deferred::Expr(_) => Err(LumenError::evaluate("ClipProps can't be an expression")),
         }
     }
 
@@ -635,15 +604,11 @@ impl DeferredValue for (f64, f64) {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        node_id: NodeId,
-        property_path: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => expr.evaluate(ctx)?.as_vec2().ok_or_else(|| {
-                PropertyValue::invalid_type(node_id, property_path, "Vec2", "expression")
-            }),
+            Deferred::Expr(expr) => eval_vec2(expr, ctx),
         }
     }
 
@@ -668,19 +633,11 @@ impl DeferredValue for [f32; 2] {
 
     fn eval_deferred(
         deferred: &Deferred<Self>,
-        node_id: NodeId,
-        property_path: &str,
         ctx: &crate::expr::ExpressionContext<'_>,
     ) -> crate::Result<Self> {
         match deferred {
             Deferred::Value(value) => Ok(*value),
-            Deferred::Expr(expr) => expr
-                .evaluate(ctx)?
-                .as_vec2()
-                .map(|(x, y)| [x as f32, y as f32])
-                .ok_or_else(|| {
-                    PropertyValue::invalid_type(node_id, property_path, "Vec2", "expression")
-                }),
+            Deferred::Expr(expr) => eval_vec2(expr, ctx).map(|(x, y)| [x as f32, y as f32]),
         }
     }
 
@@ -821,7 +778,6 @@ impl DeferredJsonValue for [f32; 2] {
 #[cfg(test)]
 mod tests {
     use crate::{
-        error::{LumenError, PropertyError},
         expr::{Expression, ExpressionContext},
         node::{Deferred, NodeId, vector::paint::Paint},
     };
@@ -832,7 +788,6 @@ mod tests {
             fps: 24.0,
             width: 1920,
             height: 1080,
-            path: Some("4.position".to_string()),
             graph: None,
             media: None,
             glyph: None,
@@ -859,50 +814,32 @@ mod tests {
     }
 
     #[test]
-    fn vec2_targets_reject_scalar_results_with_property_context() {
-        for (error, expected_path) in [
-            (
-                Deferred::<(f64, f64)>::Expr(Expression::parse("42").unwrap())
-                    .eval(NodeId::new(4), "position", &context())
-                    .unwrap_err(),
-                "position",
-            ),
-            (
-                Deferred::<[f32; 2]>::Expr(Expression::parse("42").unwrap())
-                    .eval(NodeId::new(4), "anchor", &context())
-                    .unwrap_err(),
-                "anchor",
-            ),
+    fn vec2_targets_reject_scalar_results_naming_the_param() {
+        for error in [
+            Deferred::<(f64, f64)>::Expr(Expression::parse("42").unwrap())
+                .eval(NodeId::new(4), "position", &context())
+                .unwrap_err(),
+            Deferred::<[f32; 2]>::Expr(Expression::parse("42").unwrap())
+                .eval(NodeId::new(4), "position", &context())
+                .unwrap_err(),
         ] {
-            let LumenError::Property(PropertyError::InvalidType {
-                node_id,
-                property_path,
-                expected,
-                actual,
-            }) = error
-            else {
-                panic!("expected property type error");
-            };
-            assert_eq!(node_id, NodeId::new(4));
-            assert_eq!(property_path, expected_path);
-            assert_eq!(expected, "Vec2");
-            assert_eq!(actual, "expression");
+            assert_eq!(
+                error.to_string(),
+                "node 4 `position`: expected a vec2, got number `42`"
+            );
         }
     }
 
     #[test]
-    fn vec2_expression_errors_preserve_expression_path() {
+    fn vec2_expression_errors_name_the_param() {
         let error = Deferred::<(f64, f64)>::Expr(Expression::parse("vec2(1, vec2(2, 3))").unwrap())
             .eval(NodeId::new(4), "position", &context())
             .unwrap_err();
 
-        let LumenError::Expression(crate::error::ExpressionError::Evaluate { path, details }) =
-            error
-        else {
-            panic!("expected expression evaluation error");
-        };
-        assert_eq!(path.as_deref(), Some("4.position"));
-        assert_eq!(details, "vec2 expects numeric arguments");
+        assert_eq!(
+            error.to_string(),
+            "node 4 `position`: vec2 expects numeric arguments"
+        );
     }
 
     #[test]
@@ -925,7 +862,9 @@ mod tests {
             .eval(NodeId::new(3), "fill_paint", &context())
             .unwrap_err();
         assert!(
-            error.to_string().contains("expected Paint, got expression"),
+            error
+                .to_string()
+                .contains("expected a color, got number `12`"),
             "{error}"
         );
     }
@@ -950,7 +889,6 @@ mod tests {
         ));
         let ctx = DelegateEvalContext {
             node_id: NodeId::new(3),
-            property_path: "fill_paint",
             expr: &context(),
         };
         assert_eq!(
