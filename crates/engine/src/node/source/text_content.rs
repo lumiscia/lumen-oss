@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use crate::node::{
     Deferred, DelegateEvalContext, DelegateEvaluable, DelegateValue, DelegateVec, Delegated,
-    NodeId, Override, PropertyExpression, PropertyValue, vector::paint::Paint,
+    NodeId, Override, PropertyExpression, PropertyRead, PropertyValue, vector::paint::Paint,
 };
 
 use super::text::{TextFontStyle, TextTransform};
@@ -257,7 +257,7 @@ impl FontFeaturesDelegate {
             .map(|(tag, value)| {
                 (
                     String::from_utf8_lossy(tag).into_owned(),
-                    crate::json::property_to_json(&value.to_property_expression(), None),
+                    DelegateValue::to_json_value(value),
                 )
             })
             .collect::<serde_json::Map<_, _>>()
@@ -352,7 +352,7 @@ impl TextContentDelegate {
 
     pub fn to_json_value(&self) -> serde_json::Value {
         match self {
-            Self::Text(text) => crate::json::property_to_json(&text.to_property_expression(), None),
+            Self::Text(text) => DelegateValue::to_json_value(text),
             Self::Spans(spans) => spans
                 .items
                 .iter()
@@ -457,14 +457,17 @@ impl DelegateEvaluable for TextContentDelegate {
 impl DelegateValue for TextContentDelegate {
     const ACCEPTS_EXPRESSIONS: bool = true;
 
-    fn to_property_value(&self) -> PropertyValue {
-        PropertyValue::TextContent(Box::new(self.clone()))
+    fn to_json_value(&self) -> serde_json::Value {
+        TextContentDelegate::to_json_value(self)
     }
 
-    fn to_property_expression(&self) -> PropertyExpression {
+    fn read(&self) -> PropertyRead<'_> {
         match self {
-            Self::Text(Deferred::Expr(expr)) => PropertyExpression::Expr(expr.clone()),
-            _ => PropertyExpression::Value(self.to_property_value()),
+            Self::Text(text) => text.read(),
+            Self::Spans(_) => PropertyRead::Value(
+                self.literal_text()
+                    .map(crate::expr::ExpressionValue::String),
+            ),
         }
     }
 
@@ -490,12 +493,16 @@ impl DelegateValue for TextContentDelegate {
 }
 
 macro_rules! impl_struct_kind_value {
-    ($delegate:ty, $variant:ident) => {
+    ($delegate:ty, $variant:ident, $to_json:expr) => {
         impl DelegateValue for $delegate {
             const ACCEPTS_EXPRESSIONS: bool = false;
 
-            fn to_property_value(&self) -> PropertyValue {
-                PropertyValue::$variant(Box::new(self.clone()))
+            fn to_json_value(&self) -> serde_json::Value {
+                $to_json(self)
+            }
+
+            fn read(&self) -> PropertyRead<'_> {
+                PropertyRead::Value(None)
             }
 
             fn from_property_expression(
@@ -523,10 +530,24 @@ macro_rules! impl_struct_kind_value {
     };
 }
 
-impl_struct_kind_value!(TextLineDelegate, TextLine);
-impl_struct_kind_value!(TextHighlightDelegate, TextHighlight);
-impl_struct_kind_value!(FontFeaturesDelegate, FontFeatures);
-impl_struct_kind_value!(TextStrokeDelegate, TextStroke);
+impl_struct_kind_value!(TextLineDelegate, TextLine, |line: &TextLineDelegate| {
+    serde_json::Value::Object(line.to_json())
+});
+impl_struct_kind_value!(
+    TextHighlightDelegate,
+    TextHighlight,
+    |highlight: &TextHighlightDelegate| serde_json::Value::Object(highlight.to_json())
+);
+impl_struct_kind_value!(
+    FontFeaturesDelegate,
+    FontFeatures,
+    FontFeaturesDelegate::to_json_value
+);
+impl_struct_kind_value!(
+    TextStrokeDelegate,
+    TextStroke,
+    |stroke: &TextStrokeDelegate| { serde_json::Value::Object(stroke.to_json()) }
+);
 
 #[cfg(test)]
 mod tests {

@@ -27,7 +27,7 @@ pub use deferred::DeferredJsonValue;
 pub use deferred::{ParamValue, truncated_int};
 pub use delegate::{
     DelegateEvalContext, DelegateEvaluable, DelegateValue, DelegateVec, Delegated, NodeParams,
-    OptionalDelegate, Override,
+    OptionalDelegate, Override, PropertyRead,
 };
 pub use ids::NodeId;
 pub use kind::NodeKind;
@@ -51,5 +51,5 @@ pub trait Node: Send + Sync {
 }
 
 pub trait PropertyEval {
-    fn get_property(&self, id: &str) -> Option<PropertyExpression>;
+    fn get_property(&self, id: &str) -> Option<PropertyRead<'_>>;
 }

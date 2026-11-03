@@ -10,7 +10,7 @@ use crate::{
     },
     media::MediaStore,
     node::{
-        ClipPropValue, NodeId, NodeKind, NodeParams, PropertyExpression, compositing::clip::Clip,
+        ClipPropValue, NodeId, NodeKind, NodeParams, PropertyRead, compositing::clip::Clip,
         required_input,
     },
     scope::{FrameTime, PropValues, Routed, Scope},
@@ -80,7 +80,7 @@ fn reads_outside_node<P: NodeParams>(params: &P) -> bool {
     P::property_defs().iter().any(|def| {
         matches!(
             params.get_property(def.id),
-            Some(PropertyExpression::Expr(expr)) if expr_reads_outside_node(&expr)
+            Some(PropertyRead::Expr(expr)) if expr_reads_outside_node(expr)
         )
     })
 }

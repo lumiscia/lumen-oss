@@ -1,8 +1,14 @@
-use super::{
-    ids::NodeId,
-    property::{PropertyExpression, PropertyValue},
-    schema::PropertyDef,
-};
+use crate::expr::{Expression, ExpressionValue};
+
+use super::{ids::NodeId, property::PropertyExpression, schema::PropertyDef};
+
+/// What `node(id, 'param')` finds in a param.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropertyRead<'a> {
+    Expr(&'a Expression),
+    /// A literal's value, or `None` for a kind expressions have no value for, such as a paint.
+    Value(Option<ExpressionValue>),
+}
 
 pub struct DelegateEvalContext<'a> {
     pub node_id: NodeId,
@@ -33,10 +39,9 @@ pub trait DelegateValue: DelegateEvaluable {
     /// Whether `from_property_expression` and evaluation accept `PropertyExpression::Expr`.
     const ACCEPTS_EXPRESSIONS: bool;
 
-    fn to_property_value(&self) -> PropertyValue;
-    fn to_property_expression(&self) -> PropertyExpression {
-        PropertyExpression::Value(self.to_property_value())
-    }
+    /// The JSON that parses to this value.
+    fn to_json_value(&self) -> serde_json::Value;
+    fn read(&self) -> PropertyRead<'_>;
     fn from_property_expression(
         value: PropertyExpression,
         node_id: NodeId,
@@ -58,8 +63,10 @@ pub trait NodeParams: DelegateEvaluable + Default {
 
     fn property_defs() -> Vec<PropertyDef>;
     fn is_property(id: &str) -> bool;
-    fn default_properties(&self) -> Vec<(&'static str, PropertyValue)>;
-    fn get_property(&self, id: &str) -> Option<PropertyExpression>;
+    /// The JSON of each param that is set. Applied to the defaults, this is what the schema
+    /// documents.
+    fn default_properties(&self) -> Vec<(&'static str, serde_json::Value)>;
+    fn get_property(&self, id: &str) -> Option<PropertyRead<'_>>;
     fn from_json(
         node_id: NodeId,
         params: Option<&serde_json::Map<String, serde_json::Value>>,
