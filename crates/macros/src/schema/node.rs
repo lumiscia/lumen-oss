@@ -51,7 +51,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let metas_property_matches = metas.iter().map(|(field, _)| {
         quote! {
             if let Some(value) = self.#field.get_property(id) {
-                return Ok(Some(value));
+                return Some(value);
             }
         }
     });
@@ -142,7 +142,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                     for key in params.keys() {
                         match key.as_str() {
                             _ if false #(|| #json_metas_known)* => (),
-                            _ => return ::core::result::Result::Err(::lumen_engine::json::unknown_param_error(#kind, key, id)),
+                            _ => return ::core::result::Result::Err(::lumen_engine::json::unknown_param_error(key, id)),
                         };
                     }
                 }
@@ -183,12 +183,9 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             fn get_property(
                 &self,
                 id: &str,
-            ) -> ::core::result::Result<
-                ::core::option::Option<::lumen_engine::node::PropertyExpression>,
-                ::lumen_engine::error::LumenError,
-            > {
+            ) -> ::core::option::Option<::lumen_engine::node::PropertyExpression> {
                 #(#metas_property_matches)*
-                Ok(None)
+                None
             }
         }
     })

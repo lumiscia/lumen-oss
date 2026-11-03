@@ -881,7 +881,6 @@ mod tests {
                 fps: 24.0,
                 width: 800,
                 height: 600,
-                duration_frames: 48,
                 path: Some("1.position".to_string()),
                 graph: Some(composition.graph()),
                 media: None,
@@ -1017,15 +1016,6 @@ mod tests {
         let err = param_error("shape", r#"{ "height": 1e30 }"#);
         assert!(
             err.contains("`height` must be an integer within the i64 range"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn removed_bindings_param_points_to_uniforms() {
-        let err = param_error("wgsl_shader", r#"{ "bindings": {} }"#);
-        assert!(
-            err.contains("unknown param `bindings` on node 1; `wgsl_shader` takes a `uniforms` object instead"),
             "{err}"
         );
     }

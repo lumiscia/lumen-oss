@@ -135,10 +135,6 @@ impl NodeKind {
         }
     }
 
-    pub fn as_property_eval(&self) -> &dyn PropertyEval {
-        self
-    }
-
     #[cfg(feature = "metadata")]
     pub fn schemas() -> Vec<super::NodeSchemaDef> {
         vec![
@@ -220,7 +216,7 @@ impl Node for NodeKind {
 }
 
 impl PropertyEval for NodeKind {
-    fn get_property(&self, id: &str) -> crate::Result<Option<PropertyExpression>> {
+    fn get_property(&self, id: &str) -> Option<PropertyExpression> {
         match self {
             Self::MediaIn(node) => node.get_property(id),
             Self::Background(node) => node.get_property(id),

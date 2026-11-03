@@ -1,21 +1,17 @@
 //! Expression AST, parser, and runtime evaluator for property-driven values.
 
-pub mod ast;
-pub mod builtins;
-pub mod easing;
-pub mod eval;
-pub mod functions;
-pub mod parser;
-pub mod spec;
+mod ast;
+mod builtins;
+mod easing;
+mod eval;
+pub(crate) mod functions;
+mod parser;
+mod spec;
 
 use crate::{error::ExpressionError, graph::Graph};
 
-pub use ast::{
-    BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionId, ExpressionReference, ExpressionValue,
-    GlobalVar, PropertyPath, UnaryOp, VirtualPropertyId,
-};
+pub use ast::{BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp};
 pub use easing::Easing;
-pub use eval::property_value_to_expression_value;
 pub use functions::FunctionScope;
 pub use spec::{BUILTINS, BuiltinArg, BuiltinSpec, GLOBALS, GlobalSpec, ValueKind};
 
@@ -25,14 +21,13 @@ impl Expression {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ExpressionContext<'a> {
     /// Composition frame being evaluated; fractional values sample between frames.
     pub frame: f64,
     pub fps: f32,
     pub width: u32,
     pub height: u32,
-    pub duration_frames: u32,
     pub path: Option<String>,
     pub graph: Option<&'a Graph>,
     pub media: Option<&'a dyn crate::media::MediaStore>,
@@ -48,23 +43,6 @@ pub struct ExpressionContext<'a> {
 pub struct GlyphScope {
     pub item: lumen_text::TextItem,
     pub counts: lumen_text::TextItem,
-}
-
-impl Default for ExpressionContext<'_> {
-    fn default() -> Self {
-        Self {
-            frame: 0.0,
-            fps: 0.0,
-            width: 0,
-            height: 0,
-            duration_frames: 0,
-            path: None,
-            graph: None,
-            media: None,
-            glyph: None,
-            props: None,
-        }
-    }
 }
 
 impl ExpressionContext<'_> {

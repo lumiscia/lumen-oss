@@ -30,7 +30,7 @@ pub use delegate::{
     DelegateEvalContext, DelegateEvaluable, DelegateValue, DelegateVec, Delegated,
     NodeParamEvalContext, NodeParams, OptionalDelegate, Override,
 };
-pub use ids::{NodeId, TrackId};
+pub use ids::NodeId;
 pub use kind::NodeKind;
 pub use param_type::NodeParamType;
 pub use ports::{InputPortDef, OutputPortDef, PortKind, PortRef, SINGLE_RASTER_OUTPUT};
@@ -54,5 +54,5 @@ pub trait Node: Send + Sync {
 }
 
 pub trait PropertyEval {
-    fn get_property(&self, id: &str) -> crate::Result<Option<PropertyExpression>>;
+    fn get_property(&self, id: &str) -> Option<PropertyExpression>;
 }
