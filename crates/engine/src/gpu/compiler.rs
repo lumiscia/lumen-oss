@@ -840,19 +840,6 @@ impl<'a> CompileContext<'a> {
         })
     }
 
-    pub(crate) fn static_dimension_value(&self, value: i64, property_path: &str) -> u32 {
-        let value = if value <= 0 {
-            match property_path {
-                "width" => i64::from(self.scope.render_settings.width),
-                "height" => i64::from(self.scope.render_settings.height),
-                _ => value,
-            }
-        } else {
-            value
-        };
-        value.clamp(1, i64::from(u32::MAX)) as u32
-    }
-
     pub(crate) fn spatial_program(&mut self, label: &str, shader: &str) -> lumen_gpu::ProgramId {
         self.builder.program(lumen_gpu::ProgramDesc::Compute(
             lumen_gpu::ComputeProgramDesc {

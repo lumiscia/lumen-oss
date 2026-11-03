@@ -10,6 +10,7 @@ use super::{
     clip_props::ClipProps,
     delegate::{DelegateEvalContext, DelegateEvaluable, Delegated, PropertyRead},
     ids::NodeId,
+    schema::EnumDef,
     shader_uniforms::ShaderUniforms,
     vector,
 };
@@ -190,6 +191,27 @@ pub fn truncated_int(value: ExpressionValue) -> crate::Result<i64> {
             "{value} can't be used as an integer"
         )))
     }
+}
+
+/// The value of the option of `def` that an expression names, as JSON names it, or else its number
+/// as [`truncated_int`] takes it.
+pub fn enum_value(value: ExpressionValue, def: &EnumDef) -> crate::Result<i64> {
+    if let ExpressionValue::String(name) = &value
+        && let Some(option) = def
+            .options
+            .iter()
+            .find(|option| option.name == name || option.aliases.contains(&name.as_str()))
+    {
+        return Ok(option.value);
+    }
+    if value.as_f64().is_none() {
+        let names: Vec<_> = def.options.iter().map(|option| option.name).collect();
+        return Err(wrong_type(
+            &format!("one of `{}` or a number", names.join("`, `")),
+            &value,
+        ));
+    }
+    truncated_int(value)
 }
 
 fn vec2(value: ExpressionValue) -> crate::Result<(f64, f64)> {

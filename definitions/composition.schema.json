@@ -828,7 +828,7 @@
               "$ref": "#/$defs/expression"
             }
           ],
-          "description": "Font size in pixels.",
+          "description": "Font size in pixels. Where spans of one family, weight and style meet, a ligature or\nother cluster across the boundary takes the size of the span it starts in.",
           "title": "Font Size",
           "x-lumen-constraints": {
             "min": 1.0,
@@ -1211,18 +1211,11 @@
                 "additionalProperties": false,
                 "properties": {
                   "height": {
-                    "anyOf": [
-                      {
-                        "minimum": 0.0,
-                        "type": "integer"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
                     "default": 0,
                     "description": "Output height in pixels. Use 0 to match the composition height.",
+                    "minimum": 0.0,
                     "title": "Height",
+                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
@@ -1258,18 +1251,11 @@
                     "x-lumen-kind": "bool"
                   },
                   "width": {
-                    "anyOf": [
-                      {
-                        "minimum": 0.0,
-                        "type": "integer"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
                     "default": 0,
                     "description": "Output width in pixels. Use 0 to match the composition width.",
+                    "minimum": 0.0,
                     "title": "Width",
+                    "type": "integer",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0

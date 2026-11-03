@@ -22,7 +22,7 @@ pub mod vector;
 
 pub use clip_props::{ClipPropValue, ClipProps};
 pub use deferred::Deferred;
-pub use deferred::{ParamValue, truncated_int};
+pub use deferred::{ParamValue, enum_value, truncated_int};
 pub use delegate::{
     DelegateEvalContext, DelegateEvaluable, Delegated, NodeParams, Override, PropertyRead,
     field_path, nested_fields,
