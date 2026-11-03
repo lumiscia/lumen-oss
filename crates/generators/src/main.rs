@@ -1,14 +1,10 @@
-use std::env;
+use std::{env, path::Path};
 
-use anyhow::Result;
-use lumen_generators::{Command, generate, parse_args_from, print_usage};
+use anyhow::{Result, anyhow};
 
 fn main() -> Result<()> {
-    match parse_args_from(env::args())? {
-        Command::Generate(args) => generate(&args),
-        Command::Help => {
-            print_usage();
-            Ok(())
-        }
-    }
+    let out_dir = env::args()
+        .nth(1)
+        .ok_or_else(|| anyhow!("usage: lumen-generators <out-dir>"))?;
+    lumen_generators::generate(Path::new(&out_dir))
 }
