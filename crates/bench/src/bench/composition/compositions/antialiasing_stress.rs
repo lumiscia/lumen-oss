@@ -115,7 +115,7 @@ impl CompositionFixture for AntialiasingStress {
             diagonal_a,
             path(
                 diagonal_a,
-                "0,0 1510.25,486.75 1507.75,494.25 -2.5,7.5",
+                "M0,0 L1510.25,486.75 1507.75,494.25 -2.5,7.5 Z",
                 (204.35, 250.65),
                 Paint::solid([255, 255, 255, 230]),
                 false,
@@ -125,7 +125,7 @@ impl CompositionFixture for AntialiasingStress {
             diagonal_b,
             path(
                 diagonal_b,
-                "0,0 1220.5,-340.25 1222.25,-333.75 1.75,6.5",
+                "M0,0 L1220.5,-340.25 1222.25,-333.75 1.75,6.5 Z",
                 (352.4, 830.35),
                 Paint::Gradient(GradientPaint {
                     kind: PaintKind::LinearGradient,
@@ -150,7 +150,7 @@ impl CompositionFixture for AntialiasingStress {
             diagonal_c,
             path(
                 diagonal_c,
-                "0,0 1002.75,118.35 1001.85,125.85 -0.9,7.5",
+                "M0,0 L1002.75,118.35 1001.85,125.85 -0.9,7.5 Z",
                 (465.55, 526.25),
                 Paint::solid([248, 113, 113, 230]),
                 true,
