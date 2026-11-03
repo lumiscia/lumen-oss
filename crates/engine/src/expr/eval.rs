@@ -10,7 +10,7 @@ use crate::{
         ast::{BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::{evaluate_builtin, evaluate_text_measure_builtin},
     },
-    node::{PropertyExpression, PropertyValue},
+    node::{PropertyEval, PropertyExpression, PropertyValue},
 };
 
 impl Expression {
@@ -76,8 +76,8 @@ impl Drop for EvaluationGuard {
     }
 }
 
-pub fn property_value_to_expression_value(value: &PropertyValue) -> crate::Result<ExpressionValue> {
-    let converted = match value {
+fn property_value_to_expression_value(value: &PropertyValue) -> Option<ExpressionValue> {
+    match value {
         PropertyValue::Float(number) => Some(ExpressionValue::Number(*number)),
         PropertyValue::Int(number) => Some(ExpressionValue::Number(*number as f64)),
         PropertyValue::Bool(boolean) => Some(ExpressionValue::Boolean(*boolean)),
@@ -86,16 +86,7 @@ pub fn property_value_to_expression_value(value: &PropertyValue) -> crate::Resul
         PropertyValue::Color(value) => Some(ExpressionValue::color_from_u8(*value)),
         PropertyValue::TextContent(content) => content.literal_text().map(ExpressionValue::String),
         _ => None,
-    };
-    converted.ok_or_else(|| {
-        LumenError::Expression(ExpressionError::Evaluate {
-            path: None,
-            details: format!(
-                "cannot convert node property `{}` into an expression value",
-                node_property_type_name(value)
-            ),
-        })
-    })
+    }
 }
 
 /// An expression's AST with each distinct subtree as one step, so a subtree it repeats, as
@@ -278,11 +269,7 @@ impl PlanBuilder {
                 let when_true = self.add(when_true);
                 Op::Conditional(condition, when_true, self.add(when_false))
             }
-            ExprNode::Builtin(..)
-            | ExprNode::SymbolicPath(_)
-            | ExprNode::Node(_)
-            | ExprNode::PropertyValue(..)
-            | ExprNode::VirtualProperty(_) => {
+            ExprNode::Builtin(..) | ExprNode::Node(_) | ExprNode::PropertyValue(..) => {
                 self.trees.push(node.clone());
                 Op::Tree(self.trees.len() - 1)
             }
@@ -324,15 +311,6 @@ pub(crate) fn evaluate_expr(
             evaluate_builtin(*builtin, &evaluated_args, ctx)
         }
         ExprNode::Global(global) => global_value(global, ctx),
-        ExprNode::SymbolicPath(segments) => {
-            Err(LumenError::Expression(ExpressionError::Evaluate {
-                path: ctx.path.clone(),
-                details: format!(
-                    "unresolved symbolic property reference `{}`",
-                    segments.join(".")
-                ),
-            }))
-        }
         ExprNode::Node(node_id) => Err(LumenError::Expression(ExpressionError::Evaluate {
             path: ctx.path.clone(),
             details: format!(
@@ -340,13 +318,13 @@ pub(crate) fn evaluate_expr(
                 node_id.0
             ),
         })),
-        ExprNode::PropertyValue(node_id, target_path) => {
+        ExprNode::PropertyValue(node_id, property) => {
             let graph = ctx.graph.ok_or_else(|| {
                 LumenError::Expression(ExpressionError::Evaluate {
                     path: ctx.path.clone(),
                     details: format!(
                         "no graph available to resolve node property reference `{}`",
-                        target_path.0
+                        property
                     ),
                 })
             })?;
@@ -355,31 +333,30 @@ pub(crate) fn evaluate_expr(
                     path: ctx.path.clone(),
                     details: format!(
                         "node `{}` not found for property reference `{}`",
-                        node_id.0, target_path.0
+                        node_id.0, property
                     ),
                 })
             })?;
-            let prop = node
-                .as_property_eval()
-                .get_property(&target_path.0)?
-                .ok_or_else(|| {
-                    LumenError::Expression(ExpressionError::Evaluate {
-                        path: ctx.path.clone(),
-                        details: format!(
-                            "property `{}` not found on node `{}`",
-                            target_path.0, node_id.0
-                        ),
-                    })
-                })?;
+            let prop = node.get_property(property).ok_or_else(|| {
+                LumenError::Expression(ExpressionError::Evaluate {
+                    path: ctx.path.clone(),
+                    details: format!("property `{property}` not found on node `{}`", node_id.0),
+                })
+            })?;
             match &prop {
                 PropertyExpression::Expr(inner_expr) => inner_expr.evaluate(&ctx.without_glyph()),
-                PropertyExpression::Value(value) => property_value_to_expression_value(value),
+                PropertyExpression::Value(value) => property_value_to_expression_value(value)
+                    .ok_or_else(|| {
+                        LumenError::Expression(ExpressionError::Evaluate {
+                            path: ctx.path.clone(),
+                            details: format!(
+                                "property `{property}` on node {} can't be read in an expression",
+                                node_id.0
+                            ),
+                        })
+                    }),
             }
         }
-        ExprNode::VirtualProperty(id) => Err(LumenError::Expression(ExpressionError::Evaluate {
-            path: ctx.path.clone(),
-            details: format!("unresolved virtual property reference `{}`", id.0),
-        })),
         ExprNode::Conditional(condition, when_true, when_false) => {
             let condition = evaluate_expr(condition, ctx)?;
             if condition.as_bool() {
@@ -579,28 +556,6 @@ fn to_number(value: &ExpressionValue, ctx: &ExpressionContext<'_>) -> crate::Res
     }
 }
 
-fn node_property_type_name(value: &PropertyValue) -> &'static str {
-    match value {
-        PropertyValue::Float(_) => "float",
-        PropertyValue::Int(_) => "int",
-        PropertyValue::Bool(_) => "bool",
-        PropertyValue::String(_) => "string",
-        PropertyValue::Color(_) => "color",
-        PropertyValue::Paint(_) => "paint",
-        PropertyValue::Vec2(_) => "vec2",
-        PropertyValue::ShaderUniforms(_) => "shader uniforms",
-        PropertyValue::ClipProps(_) => "clip props",
-        PropertyValue::TextContent(_) => "text content",
-        PropertyValue::TextLine(_) => "text line",
-        PropertyValue::TextHighlight(_) => "text highlight",
-        PropertyValue::FontFeatures(_) => "font features",
-        PropertyValue::TextStroke(_) => "text stroke",
-        PropertyValue::FloatVec(_) => "float[]",
-        PropertyValue::IntVec(_) => "int[]",
-        PropertyValue::StringVec(_) => "string[]",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,7 +571,6 @@ mod tests {
             fps: 24.0,
             width: 1920,
             height: 1080,
-            duration_frames: 240,
             path: Some("node.opacity".to_string()),
             graph: None,
             media: None,
@@ -713,30 +667,34 @@ mod tests {
     #[test]
     fn converts_supported_node_properties() {
         assert_eq!(
-            property_value_to_expression_value(&PropertyValue::Int(7)).unwrap(),
-            ExpressionValue::Number(7.0)
+            property_value_to_expression_value(&PropertyValue::Int(7)),
+            Some(ExpressionValue::Number(7.0))
         );
         assert_eq!(
-            property_value_to_expression_value(&PropertyValue::Bool(true)).unwrap(),
-            ExpressionValue::Boolean(true)
+            property_value_to_expression_value(&PropertyValue::Bool(true)),
+            Some(ExpressionValue::Boolean(true))
         );
         assert_eq!(
-            property_value_to_expression_value(&PropertyValue::Vec2((10.0, 20.0))).unwrap(),
-            ExpressionValue::Vec2((10.0, 20.0))
+            property_value_to_expression_value(&PropertyValue::Vec2((10.0, 20.0))),
+            Some(ExpressionValue::Vec2((10.0, 20.0)))
         );
         assert_eq!(
-            property_value_to_expression_value(&PropertyValue::Color([255, 0, 0, 255])).unwrap(),
-            ExpressionValue::Color([1.0, 0.0, 0.0, 1.0])
+            property_value_to_expression_value(&PropertyValue::Color([255, 0, 0, 255])),
+            Some(ExpressionValue::Color([1.0, 0.0, 0.0, 1.0]))
         );
     }
 
     #[test]
     fn rejects_non_scalar_node_properties() {
-        let error = property_value_to_expression_value(&PropertyValue::FloatVec(vec![1.0]))
+        let graph = chained_text_nodes(1, "", "");
+        let error = evaluate_in(&graph, "node(1, 'color')")
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("cannot convert node property `float[]`"));
+        assert!(
+            error.contains("property `color` on node 1 can't be read in an expression"),
+            "{error}"
+        );
     }
 
     #[test]

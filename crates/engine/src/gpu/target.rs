@@ -351,10 +351,6 @@ impl CudaNvencTarget {
         self.exportable.allocation_size()
     }
 
-    pub fn row_pitch(&self) -> u64 {
-        self.exportable.row_pitch()
-    }
-
     pub fn memory_fd_raw(&self) -> i32 {
         self.exportable.memory_fd_raw()
     }
@@ -444,6 +440,7 @@ impl MetalVideoToolboxTargetPool {
                     usage: external_output_usage(),
                     view_formats: &[],
                 },
+                None,
             )
         };
         Ok(MetalVideoToolboxTarget {

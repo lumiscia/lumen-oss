@@ -4,27 +4,6 @@ use crate::node::NodeId;
 
 pub use super::spec::BuiltinFn;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExpressionId(pub u64);
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PropertyPath(pub String);
-
-impl PropertyPath {
-    pub fn new(path: impl Into<String>) -> Self {
-        Self(path.into())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct VirtualPropertyId(pub u64);
-
-impl VirtualPropertyId {
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
 pub enum ExpressionValue {
     Number(f64),
@@ -148,35 +127,14 @@ pub enum ExprNode {
     Unary(UnaryOp, Box<ExprNode>),
     Builtin(BuiltinFn, Vec<ExprNode>),
     Global(GlobalVar),
-    SymbolicPath(Vec<String>),
     Node(NodeId),
-    PropertyValue(NodeId, PropertyPath),
-    VirtualProperty(VirtualPropertyId),
+    PropertyValue(NodeId, String),
     Conditional(Box<ExprNode>, Box<ExprNode>, Box<ExprNode>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ExpressionReference {
-    Node {
-        node_id: NodeId,
-    },
-    PropertyValue {
-        node_id: NodeId,
-        property_path: PropertyPath,
-    },
-    VirtualProperty {
-        id: VirtualPropertyId,
-    },
-    SymbolicPath {
-        segments: Vec<String>,
-    },
 }
 
 #[derive(Clone)]
 pub struct Expression {
-    pub id: ExpressionId,
     pub(super) ast: ExprNode,
-    pub references: Vec<ExpressionReference>,
     pub source: String,
     /// Levels of `ast`, which is how deep evaluating it recurses.
     pub(super) depth: usize,
@@ -194,22 +152,15 @@ impl ExprNode {
                 .depth()
                 .max(when_true.depth())
                 .max(when_false.depth()),
-            Self::Literal(_)
-            | Self::Global(_)
-            | Self::SymbolicPath(_)
-            | Self::Node(_)
-            | Self::PropertyValue(..)
-            | Self::VirtualProperty(_) => 0,
+            Self::Literal(_) | Self::Global(_) | Self::Node(_) | Self::PropertyValue(..) => 0,
         }
     }
 }
 
 impl Expression {
-    /// Builds an expression from an AST, deriving its references and evaluation plan.
+    /// Builds an expression from an AST, deriving its evaluation plan.
     pub fn new(ast: ExprNode, source: String) -> Self {
         Self {
-            id: ExpressionId(0),
-            references: super::parser::references(&ast),
             plan: Arc::new(super::eval::EvalPlan::new(&ast)),
             depth: ast.depth(),
             ast,
@@ -225,18 +176,14 @@ impl Expression {
 // The plan follows from `ast`, so it is left out of comparisons and debug output.
 impl PartialEq for Expression {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-            && self.ast == other.ast
-            && self.references == other.references
-            && self.source == other.source
+        self.ast == other.ast && self.source == other.source
     }
 }
 
 impl crate::fingerprint::StructuralHash for Expression {
     fn structural_hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // The AST holds composition functions expanded at parse time, which the source names
-        // only by call. Its evaluation plan is derived from it, and expression ids are local to
-        // parsing.
+        // only by call. Its evaluation plan is derived from it.
         self.source.structural_hash(state);
         self.ast.structural_hash(state);
     }
@@ -245,9 +192,7 @@ impl crate::fingerprint::StructuralHash for Expression {
 impl fmt::Debug for Expression {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Expression")
-            .field("id", &self.id)
             .field("ast", &self.ast)
-            .field("references", &self.references)
             .field("source", &self.source)
             .finish()
     }

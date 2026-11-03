@@ -293,7 +293,7 @@ pub fn evaluate_text_measure_builtin(
     let max_width = number(2, "optional third arg must be numeric max width")?.unwrap_or(0.0);
     let font_family = evaluate(3)?
         .map(|value| value.as_string())
-        .unwrap_or_else(|| "sans-serif".to_string());
+        .unwrap_or_else(|| lumen_text::DEFAULT_FONT_FAMILY.to_string());
     let style = TextLayoutStyle {
         font_family,
         font_size,
@@ -401,7 +401,7 @@ fn measure_text_value(
     ctx: &ExpressionContext<'_>,
     request: lumen_text::TextLayoutRequest,
 ) -> crate::Result<lumen_text::TextMeasurement> {
-    let mut text_system = crate::node::source::text::text_system()?;
+    let mut text_system = crate::node::source::text::text_system(ctx.media)?;
     for span in &request.spans {
         crate::node::source::text::load_font_family(
             &mut text_system,

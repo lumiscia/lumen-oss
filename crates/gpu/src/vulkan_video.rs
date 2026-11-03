@@ -3,7 +3,7 @@ use std::ffi::{CStr, c_void};
 use anyhow::{Context, Result, bail};
 use ash::vk;
 
-use crate::{GpuAdapterInfo, Renderer};
+use crate::Renderer;
 
 // VK_KHR_video_encode_av1 is newer than ash's Vulkan headers.
 const AV1_ENCODE_EXTENSION: &CStr = c"VK_KHR_video_encode_av1";
@@ -44,7 +44,7 @@ impl Renderer {
             })
             .await
             .context("no Vulkan wgpu adapter")?;
-        let adapter_info = GpuAdapterInfo::from(adapter.get_info());
+        let adapter_info = adapter.get_info();
 
         let (open_device, queue_families) = {
             let hal_adapter = unsafe { adapter.as_hal::<wgpu_hal::api::Vulkan>() }
@@ -70,7 +70,7 @@ impl Renderer {
             }
         };
         Ok((
-            Self::from_device_with_adapter_info(device, queue, adapter_info),
+            Self::from_device_with_adapter_info(device, queue, Some(adapter_info)),
             video,
         ))
     }

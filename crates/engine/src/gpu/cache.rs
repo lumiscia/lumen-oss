@@ -359,13 +359,14 @@ impl CacheLayout {
     }
 
     /// Hashes what kept output depends on beyond the plan key and compiled params, as
-    /// `renderer` and the shared text system hold it now.
-    pub(crate) fn epoch(&self, renderer: &lumen_gpu::Renderer) -> u64 {
+    /// `renderer` holds it now and at text font generation `font_generation`.
+    pub(crate) fn epoch(
+        &self,
+        renderer: &lumen_gpu::Renderer,
+        font_generation: Option<u64>,
+    ) -> u64 {
         let mut hasher = std::hash::DefaultHasher::new();
-        let generation = crate::node::source::text::text_system()
-            .ok()
-            .map(|text_system| text_system.font_generation());
-        std::hash::Hash::hash(&generation, &mut hasher);
+        std::hash::Hash::hash(&font_generation, &mut hasher);
         for texture in &self.guarded_textures {
             hasher.write_u64(renderer.texture_generation(*texture).unwrap_or(u64::MAX));
         }
@@ -680,14 +681,6 @@ fn pass_accesses(pass: &lumen_gpu::Pass) -> PassAccess {
     match &pass.desc {
         lumen_gpu::PassDesc::Render(desc) => {
             bindings(&desc.bindings);
-            access
-                .reads
-                .extend(desc.vertex_buffers.iter().map(|id| Resource::Buffer(*id)));
-            access.reads.extend(
-                desc.index_buffer
-                    .iter()
-                    .map(|(id, _)| Resource::Buffer(*id)),
-            );
             for target in &desc.targets {
                 access.writes.push(Resource::Texture(target.texture));
                 if target.load == lumen_gpu::LoadOp::Load {
@@ -697,9 +690,6 @@ fn pass_accesses(pass: &lumen_gpu::Pass) -> PassAccess {
         }
         lumen_gpu::PassDesc::Compute(desc) => {
             bindings(&desc.bindings);
-            if let lumen_gpu::ComputeDispatch::Indirect { buffer, .. } = desc.dispatch {
-                access.reads.push(Resource::Buffer(buffer));
-            }
         }
         lumen_gpu::PassDesc::CopyTexture(desc) => {
             access.reads.push(Resource::Texture(desc.source));

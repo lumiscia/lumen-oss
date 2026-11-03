@@ -11,7 +11,7 @@ use crate::{
     install_panic_hook,
     media::WasmMediaStore,
     renderer::{SurfaceCompositionRenderer, collect_requirement_window},
-    types::FrameRequirementsPayload,
+    types::{AudioTimelinePayload, FrameRequirementsPayload},
     utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
 };
 
@@ -283,6 +283,23 @@ impl LumenPreviewController {
             "preview loaded composition"
         );
         Ok(())
+    }
+
+    /// The audio timeline the engine parsed from the loaded composition, as JSON.
+    #[wasm_bindgen(js_name = "audioTimeline")]
+    pub fn audio_timeline(&self) -> Result<Option<String>, JsValue> {
+        let state = self.state()?;
+        let Some(timeline) = state.composition.as_ref().and_then(Composition::audio) else {
+            return Ok(None);
+        };
+        let payload = AudioTimelinePayload {
+            timeline,
+            duration_frames: state.duration_frames,
+            fps: state.fps,
+        };
+        serde_json::to_string(&payload)
+            .map(Some)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     #[wasm_bindgen(js_name = "setLookaheadCount")]
@@ -771,6 +788,66 @@ mod tests {
                 .set_video_frame(stream_id.to_string(), frame, image)
                 .expect("set frame");
         }
+    }
+
+    #[test]
+    fn audio_timeline_is_what_the_engine_parsed() {
+        let controller = controller(8);
+        assert_eq!(controller.audio_timeline().expect("no composition"), None);
+        controller
+            .load_composition(COMPOSITION_JSON)
+            .expect("load composition");
+        assert_eq!(controller.audio_timeline().expect("no audio"), None);
+
+        let mut composition: serde_json::Value =
+            serde_json::from_str(COMPOSITION_JSON).expect("composition json");
+        composition["audio"] = serde_json::json!({
+            "tracks": [{ "id": "music", "volume": 0.5 }],
+            "clips": [{
+                "id": "intro",
+                "source_id": "song",
+                "track_id": "music",
+                "start_frame": 1,
+                "duration_ms": 1500,
+                "source_start_seconds": 0.25
+            }]
+        });
+        controller
+            .load_composition(&composition.to_string())
+            .expect("load composition with audio");
+
+        let timeline: serde_json::Value = serde_json::from_str(
+            &controller
+                .audio_timeline()
+                .expect("audio timeline")
+                .expect("composition has audio"),
+        )
+        .expect("timeline json");
+        assert_eq!(
+            timeline,
+            serde_json::json!({
+                "tracks": [{
+                    "id": "music",
+                    "name": "Track",
+                    "muted": false,
+                    "solo": false,
+                    "volume": 0.5,
+                }],
+                "clips": [{
+                    "id": "intro",
+                    "sourceId": "song",
+                    "trackId": "music",
+                    "name": "Audio clip",
+                    // One frame at 30 fps, rounded to whole milliseconds as export does.
+                    "startMs": 33,
+                    "durationMs": 1500,
+                    "sourceStartMs": 250,
+                    "volume": 1.0,
+                }],
+                "durationFrames": 200,
+                "fps": 30.0,
+            })
+        );
     }
 
     #[test]

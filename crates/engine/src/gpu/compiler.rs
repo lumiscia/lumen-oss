@@ -83,17 +83,19 @@ fn reads_outside_node<P: NodeParams>(params: &P) -> bool {
 }
 
 fn expr_reads_outside_node(expr: &crate::expr::Expression) -> bool {
-    let mut measures_text = false;
+    let mut reads_outside = false;
     crate::expr::functions::visit(expr.ast(), &mut |node| {
-        measures_text |= matches!(
+        reads_outside |= matches!(
             node,
-            crate::expr::ExprNode::Builtin(
-                crate::expr::BuiltinFn::TextWidth | crate::expr::BuiltinFn::TextHeight,
-                _
-            )
+            crate::expr::ExprNode::Node(_)
+                | crate::expr::ExprNode::PropertyValue(..)
+                | crate::expr::ExprNode::Builtin(
+                    crate::expr::BuiltinFn::TextWidth | crate::expr::BuiltinFn::TextHeight,
+                    _
+                )
         );
     });
-    measures_text || !expr.references.is_empty()
+    reads_outside
 }
 
 /// Whether a clip's timing or prop expressions read state outside the node, which edits can
@@ -529,32 +531,22 @@ impl<'a> CompileContext<'a> {
         }
         let domain = lumen_gpu::TextureDomain::bounded(canvas, visible);
         let size = domain.storage_size;
-        let texture = self.builder.texture_for(
-            lumen_gpu::NodeKey(node_id.0),
+        let texture = self.builder.texture(
             Some(format!("clip:{}:crop", node_id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
                 .with_domain(domain),
         );
-        let params = self.builder.buffer_for(
-            lumen_gpu::NodeKey(node_id.0),
+        let params = self.builder.buffer(
             Some(format!("clip:{}:crop-params", node_id.0)),
             lumen_gpu::BufferDesc::uniform(16),
         );
-        let program = self.spatial_program(node_id, "clip-crop", CLIP_CROP_SHADER);
+        let program = self.spatial_program("clip-crop", CLIP_CROP_SHADER);
         self.builder.compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("clip:{}:crop", node_id.0)),
-            owner: Some(lumen_gpu::NodeKey(node_id.0)),
             program,
             bindings: spatial_bindings(raster.texture, params, texture),
-            dispatch: dispatch_for(size).into(),
+            dispatch: dispatch_for(size),
         });
-        self.builder.param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(node_id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
         self.register_compiled_node(ClipCropBinding {
             node_id,
             offset: [domain.data_rect.x - data.x, domain.data_rect.y - data.y],
@@ -711,20 +703,17 @@ impl<'a> CompileContext<'a> {
             _ => source.domain,
         };
         let size = domain.storage_size;
-        let texture = self.builder.texture_for(
-            lumen_gpu::NodeKey(node_id.0),
+        let texture = self.builder.texture(
             Some(format!("{label}:{}:output", node_id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
                 .with_domain(domain),
         );
-        let params = self.builder.buffer_for(
-            lumen_gpu::NodeKey(node_id.0),
+        let params = self.builder.buffer(
             Some(format!("{label}:{}:params", node_id.0)),
             lumen_gpu::BufferDesc::uniform(params_size),
         );
-        let program = self.builder.program_for(
-            lumen_gpu::NodeKey(node_id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+        let program = self.builder.program(lumen_gpu::ProgramDesc::Compute(
+            lumen_gpu::ComputeProgramDesc {
                 label: Some(label.to_string()),
                 shader: shader.to_string(),
                 entry: "cs_main".to_string(),
@@ -744,26 +733,18 @@ impl<'a> CompileContext<'a> {
                         lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
                     ),
                 ]),
-            }),
-        );
+            },
+        ));
         self.builder.compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("{label}:{}:apply", node_id.0)),
-            owner: Some(lumen_gpu::NodeKey(node_id.0)),
             program,
             bindings: vec![
                 lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
                 lumen_gpu::Binding::uniform(0, 1, params),
                 lumen_gpu::Binding::storage_texture(0, 2, texture),
             ],
-            dispatch: dispatch_for(size).into(),
+            dispatch: dispatch_for(size),
         });
-        self.builder.param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(node_id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
         Ok((source, texture, params))
     }
 
@@ -774,8 +755,7 @@ impl<'a> CompileContext<'a> {
             self.canvas_size(),
             lumen_gpu::RectI::new(0, 0, 0, 0),
         );
-        let texture = self.builder.texture_for(
-            lumen_gpu::NodeKey(node_id.0),
+        let texture = self.builder.texture(
             Some(format!("transparent:{}:output", node_id.0)),
             lumen_gpu::TextureDesc::storage(
                 domain.storage_size,
@@ -804,15 +784,9 @@ impl<'a> CompileContext<'a> {
         value.clamp(1, i64::from(u32::MAX)) as u32
     }
 
-    pub(crate) fn spatial_program(
-        &mut self,
-        node_id: NodeId,
-        label: &str,
-        shader: &str,
-    ) -> lumen_gpu::ProgramId {
-        self.builder.program_for(
-            lumen_gpu::NodeKey(node_id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+    pub(crate) fn spatial_program(&mut self, label: &str, shader: &str) -> lumen_gpu::ProgramId {
+        self.builder.program(lumen_gpu::ProgramDesc::Compute(
+            lumen_gpu::ComputeProgramDesc {
                 label: Some(label.to_string()),
                 shader: shader.to_string(),
                 entry: "cs_main".to_string(),
@@ -832,8 +806,8 @@ impl<'a> CompileContext<'a> {
                         lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
                     ),
                 ]),
-            }),
-        )
+            },
+        ))
     }
 
     #[allow(dead_code)]
@@ -854,31 +828,21 @@ impl<'a> CompileContext<'a> {
             .compile_port(source_port)?
             .into_raster(source_port.id, &source_port.port)?;
         let size = source.domain.storage_size;
-        let texture = self.builder.texture_for(
-            lumen_gpu::NodeKey(node_id.0),
+        let texture = self.builder.texture(
             Some(format!("{label}:{}:output", node_id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
-        let params = self.builder.buffer_for(
-            lumen_gpu::NodeKey(node_id.0),
+        let params = self.builder.buffer(
             Some(format!("{label}:{}:params", node_id.0)),
             lumen_gpu::BufferDesc::uniform(param_size),
         );
-        let program = self.spatial_program(node_id, label, shader);
+        let program = self.spatial_program(label, shader);
         self.builder.compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("{label}:{}:apply", node_id.0)),
-            owner: Some(lumen_gpu::NodeKey(node_id.0)),
             program,
             bindings: spatial_bindings(source.texture, params, texture),
-            dispatch: dispatch_for(size).into(),
+            dispatch: dispatch_for(size),
         });
-        self.builder.param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(node_id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
         Ok((source, texture, params))
     }
 

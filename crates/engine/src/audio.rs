@@ -1,6 +1,8 @@
 //! Audio timeline, source, and mixing primitives.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
+
+use serde::Serialize;
 
 use crate::{error::MediaError, media::MediaStore};
 
@@ -8,13 +10,72 @@ pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
 pub const AUDIO_CHANNELS: usize = 2;
 const CLIP_EDGE_FADE_SAMPLES: u64 = 384;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioTimeline {
     pub tracks: Vec<AudioTrack>,
     pub clips: Vec<AudioClip>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl AudioTimeline {
+    /// What stops the timeline from playing as written: repeated ids, clips on tracks it doesn't
+    /// declare, gains that aren't finite and at least 0, and clips without a duration.
+    pub(crate) fn problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        let mut tracks = HashSet::new();
+        for track in &self.tracks {
+            if !tracks.insert(track.id.as_str()) {
+                problems.push(format!("duplicate track id `{}`", track.id));
+            }
+            if !is_valid_gain(track.volume) {
+                problems.push(format!(
+                    "track `{}` volume must be a finite number of at least 0",
+                    track.id
+                ));
+            }
+        }
+        let declared = match self.tracks.as_slice() {
+            [] => "none".to_string(),
+            tracks => tracks
+                .iter()
+                .map(|track| format!("`{}`", track.id))
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        let mut clips = HashSet::new();
+        for clip in &self.clips {
+            if !clips.insert(clip.id.as_str()) {
+                problems.push(format!("duplicate clip id `{}`", clip.id));
+            }
+            if !tracks.contains(clip.track_id.as_str()) {
+                problems.push(format!(
+                    "clip `{}` names unknown track `{}`; declared tracks: {declared}",
+                    clip.id, clip.track_id
+                ));
+            }
+            if !is_valid_gain(clip.volume) {
+                problems.push(format!(
+                    "clip `{}` volume must be a finite number of at least 0",
+                    clip.id
+                ));
+            }
+            if clip.duration_ms == 0 {
+                problems.push(format!(
+                    "clip `{}` duration must be greater than zero",
+                    clip.id
+                ));
+            }
+        }
+        problems
+    }
+}
+
+fn is_valid_gain(gain: f32) -> bool {
+    gain.is_finite() && gain >= 0.0
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioTrack {
     pub id: String,
     pub name: String,
@@ -23,7 +84,8 @@ pub struct AudioTrack {
     pub volume: f32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AudioClip {
     pub id: String,
     pub source_id: String,
@@ -135,17 +197,17 @@ impl<'a, P: MediaStore> AudioMixer<'a, P> {
         }
 
         let has_solo = self.timeline.tracks.iter().any(|track| track.solo);
-        let tracks = self
-            .timeline
-            .tracks
-            .iter()
-            .map(|track| (track.id.as_str(), track))
-            .collect::<HashMap<_, _>>();
 
         for clip in &self.timeline.clips {
-            let Some(track) = tracks.get(clip.track_id.as_str()) else {
-                continue;
-            };
+            let track = self
+                .timeline
+                .tracks
+                .iter()
+                .find(|track| track.id == clip.track_id)
+                .ok_or_else(|| MediaError::UnknownAudioTrack {
+                    clip: clip.id.clone(),
+                    track: clip.track_id.clone(),
+                })?;
             if track.muted || (has_solo && !track.solo) || track.volume <= 0.0 || clip.volume <= 0.0
             {
                 continue;
@@ -238,6 +300,8 @@ fn clip_envelope(clip_sample: u64, clip_duration: u64) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[derive(Debug)]
@@ -407,6 +471,31 @@ mod tests {
     }
 
     #[test]
+    fn a_clip_on_an_undeclared_track_is_an_error_rather_than_silence() {
+        let provider = TestProvider {
+            sources: HashMap::new(),
+        };
+        let timeline = AudioTimeline {
+            tracks: vec![track("main")],
+            clips: vec![AudioClip {
+                id: "clip".to_string(),
+                source_id: "tone".to_string(),
+                track_id: "typo".to_string(),
+                name: "tone".to_string(),
+                start_ms: 0,
+                duration_ms: 1_000,
+                source_start_ms: 0,
+                volume: 1.0,
+            }],
+        };
+
+        let error = AudioMixer::new(&timeline, &provider)
+            .mix_range(0, 4)
+            .unwrap_err();
+        assert!(matches!(error, MediaError::UnknownAudioTrack { .. }));
+    }
+
+    #[test]
     fn overlaps_clips_and_clamps_output() {
         let provider = TestProvider {
             sources: HashMap::from([(
@@ -448,5 +537,279 @@ mod tests {
             .unwrap();
         assert_eq!(mixed.channels()[0], vec![1.0; 4]);
         assert_eq!(mixed.channels()[1], vec![1.0; 4]);
+    }
+
+    /// One repeating stereo pattern per source, so a wrong source offset changes the samples.
+    #[derive(Serialize)]
+    struct FixtureSource {
+        pattern: Vec<[f32; 2]>,
+        frames: usize,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FixtureTimeline {
+        #[serde(flatten)]
+        timeline: AudioTimeline,
+        duration_frames: u32,
+        fps: u32,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct MixFixture {
+        name: &'static str,
+        timeline: FixtureTimeline,
+        sources: HashMap<String, FixtureSource>,
+        start_sample: u64,
+        frames: usize,
+        expected: Vec<f32>,
+    }
+
+    fn fixture_clip(id: &str, track_id: &str, start_ms: u64, duration_ms: u64) -> AudioClip {
+        AudioClip {
+            id: id.to_string(),
+            source_id: "tone".to_string(),
+            track_id: track_id.to_string(),
+            name: id.to_string(),
+            start_ms,
+            duration_ms,
+            source_start_ms: 0,
+            volume: 1.0,
+        }
+    }
+
+    fn mix_fixture(
+        name: &'static str,
+        tracks: Vec<AudioTrack>,
+        clips: Vec<AudioClip>,
+        sources: Vec<(&str, Vec<[f32; 2]>, usize)>,
+        start_sample: u64,
+        frames: usize,
+    ) -> MixFixture {
+        let timeline = AudioTimeline { tracks, clips };
+        let provider = TestProvider {
+            sources: sources
+                .iter()
+                .map(|(id, pattern, frames)| {
+                    let channel = |index: usize| {
+                        (0..*frames)
+                            .map(|frame| pattern[frame % pattern.len()][index])
+                            .collect::<Vec<_>>()
+                    };
+                    let buffer =
+                        AudioBuffer::from_channels(AUDIO_SAMPLE_RATE, vec![channel(0), channel(1)]);
+                    (id.to_string(), Arc::new(buffer))
+                })
+                .collect(),
+        };
+        let expected = AudioMixer::new(&timeline, &provider)
+            .mix_range(start_sample, frames)
+            .unwrap()
+            .interleaved_f32();
+        MixFixture {
+            name,
+            timeline: FixtureTimeline {
+                timeline,
+                duration_frames: 60,
+                fps: 1,
+            },
+            sources: sources
+                .into_iter()
+                .map(|(id, pattern, frames)| (id.to_string(), FixtureSource { pattern, frames }))
+                .collect(),
+            start_sample,
+            frames,
+            expected,
+        }
+    }
+
+    fn mix_fixtures() -> Vec<MixFixture> {
+        let pattern = vec![
+            [0.5, -0.25],
+            [0.25, 0.75],
+            [-0.5, 0.125],
+            [0.75, -0.75],
+            [-0.125, 0.5],
+            [0.375, -0.375],
+            [-0.75, 0.25],
+        ];
+        let tone = || vec![("tone", pattern.clone(), 96_000)];
+        let main = || vec![track("main")];
+        let long_clip = || fixture_clip("clip", "main", 100, 1_000);
+
+        let mut offset = long_clip();
+        offset.source_start_ms = 2;
+        let mut quiet_track = track("main");
+        quiet_track.volume = 0.5;
+        let mut quiet_clip = long_clip();
+        quiet_clip.volume = 0.25;
+        let mut solo = track("solo");
+        solo.solo = true;
+        let mut muted = track("muted");
+        muted.muted = true;
+        let mut silent_track = track("main");
+        silent_track.volume = 0.0;
+        let overlap = |id: &str, source: &str| AudioClip {
+            source_id: source.to_string(),
+            ..fixture_clip(id, "main", 0, 1_000)
+        };
+        let overlap_sources = || {
+            vec![
+                ("up", vec![[0.8, -0.8]], 96_000),
+                ("down", vec![[-0.8, 0.8]], 96_000),
+            ]
+        };
+
+        vec![
+            mix_fixture(
+                "start position and source offset",
+                main(),
+                vec![offset],
+                tone(),
+                6_000,
+                16,
+            ),
+            mix_fixture(
+                "track and clip gain multiply",
+                vec![quiet_track],
+                vec![quiet_clip],
+                tone(),
+                6_000,
+                16,
+            ),
+            mix_fixture(
+                "fades in over 384 samples from the clip start",
+                main(),
+                vec![long_clip()],
+                tone(),
+                4_796,
+                16,
+            ),
+            mix_fixture(
+                "fade-in reaches full gain",
+                main(),
+                vec![long_clip()],
+                tone(),
+                5_176,
+                16,
+            ),
+            mix_fixture(
+                "fades out over the last 384 samples",
+                main(),
+                vec![long_clip()],
+                tone(),
+                52_416,
+                16,
+            ),
+            mix_fixture(
+                "reaches silence at the clip end",
+                main(),
+                vec![long_clip()],
+                tone(),
+                52_792,
+                16,
+            ),
+            mix_fixture(
+                "a short clip fades over half its length",
+                main(),
+                vec![fixture_clip("clip", "main", 0, 10)],
+                tone(),
+                232,
+                16,
+            ),
+            mix_fixture(
+                "a very short clip fades over half its length",
+                main(),
+                vec![fixture_clip("clip", "main", 0, 1)],
+                tone(),
+                16,
+                40,
+            ),
+            mix_fixture(
+                "a solo track silences the others",
+                vec![solo, track("other")],
+                vec![
+                    fixture_clip("kept", "solo", 0, 1_000),
+                    fixture_clip("dropped", "other", 0, 1_000),
+                ],
+                tone(),
+                1_000,
+                16,
+            ),
+            mix_fixture(
+                "a muted track is silent",
+                vec![muted, track("audible")],
+                vec![
+                    fixture_clip("dropped", "muted", 0, 1_000),
+                    fixture_clip("kept", "audible", 0, 1_000),
+                ],
+                tone(),
+                1_000,
+                16,
+            ),
+            mix_fixture(
+                "a silent track adds nothing",
+                vec![silent_track],
+                vec![long_clip()],
+                tone(),
+                6_000,
+                16,
+            ),
+            mix_fixture(
+                "overlaps sum before clamping once",
+                main(),
+                vec![overlap("a", "up"), overlap("b", "up"), overlap("c", "down")],
+                overlap_sources(),
+                1_000,
+                4,
+            ),
+            mix_fixture(
+                "the mix clamps in both directions",
+                main(),
+                vec![overlap("a", "up"), overlap("b", "up")],
+                overlap_sources(),
+                1_000,
+                4,
+            ),
+            mix_fixture(
+                "a source shorter than its clip ends in silence",
+                main(),
+                vec![fixture_clip("clip", "main", 0, 1_000)],
+                vec![("tone", pattern.clone(), 1_000)],
+                992,
+                16,
+            ),
+            mix_fixture(
+                "a window can span the gap between two clips",
+                main(),
+                vec![
+                    fixture_clip("first", "main", 0, 10),
+                    fixture_clip("second", "main", 11, 10),
+                ],
+                tone(),
+                470,
+                80,
+            ),
+        ]
+    }
+
+    /// `packages/lumen-preview/src/audio-worker.test.ts` mixes the same file in the browser mixer,
+    /// so a change on either side fails until both agree.
+    #[test]
+    fn browser_mixer_fixtures_match_this_mixer() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/audio_mix.json");
+        let generated = serde_json::to_string_pretty(&mix_fixtures()).unwrap();
+        if std::env::var_os("LUMEN_BLESS_AUDIO_FIXTURES").is_some() {
+            std::fs::write(path, format!("{generated}\n")).unwrap();
+        }
+        // Parsed so the committed file's formatting doesn't matter.
+        let parse = |text: &str| serde_json::from_str::<serde_json::Value>(text).unwrap();
+        let committed = parse(&std::fs::read_to_string(path).unwrap());
+        let generated = parse(&generated);
+        assert_eq!(
+            generated, committed,
+            "the mixer changed: rerun with LUMEN_BLESS_AUDIO_FIXTURES=1, then update the browser mixer to match"
+        );
     }
 }

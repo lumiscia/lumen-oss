@@ -43,17 +43,15 @@ const STAGE_READ_SHADER: &str = r#"
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var<storage, read> data: array<u32, 4>;
 @group(0) @binding(2) var<storage, read_write> result: array<u32, 4>;
-@group(0) @binding(3) var<storage, read_write> args: array<u32, 3>;
 
 @compute @workgroup_size(1, 1, 1)
 fn cs_main() {
     result[0] = u32(round(textureLoad(tex, vec2<i32>(0, 0), 0).g * 255.0));
     result[1] = data[0] * 2u;
-    args = array<u32, 3>(3u, 1u, 1u);
 }
 "#;
 
-const STAGE_INDIRECT_SHADER: &str = r#"
+const STAGE_DISPATCH_SHADER: &str = r#"
 @group(0) @binding(0) var<storage, read_write> out: array<u32, 4>;
 
 @compute @workgroup_size(1, 1, 1)
@@ -122,10 +120,9 @@ fn compute_pass_writes_storage_texture() {
     }));
     builder.compute_pass(ComputePassDesc {
         label: Some("fill".to_string()),
-        owner: None,
         program,
         bindings: vec![Binding::storage_texture(0, 0, output)],
-        dispatch: Dispatch { x: 1, y: 1, z: 1 }.into(),
+        dispatch: Dispatch { x: 1, y: 1, z: 1 },
     });
     let plan = builder.build();
 
@@ -158,10 +155,9 @@ fn replaced_texture_is_bound_on_next_submit() {
     }));
     builder.compute_pass(ComputePassDesc {
         label: Some("fill".to_string()),
-        owner: None,
         program,
         bindings: vec![Binding::storage_texture(0, 0, output)],
-        dispatch: Dispatch { x: 1, y: 1, z: 1 }.into(),
+        dispatch: Dispatch { x: 1, y: 1, z: 1 },
     });
     let plan = builder.build();
     renderer.prepare_plan(&plan).unwrap();
@@ -177,9 +173,7 @@ fn replaced_texture_is_bound_on_next_submit() {
         usage: desc.usage,
         view_formats: &[],
     });
-    renderer
-        .replace_texture_discard_old(output, replacement, desc)
-        .unwrap();
+    renderer.replace_texture(output, replacement, desc).unwrap();
     renderer.execute(&plan, &FrameUpdate::new()).unwrap();
 
     let bytes = read_texture_rgba8(&renderer, output, size);
@@ -214,13 +208,12 @@ fn uniform_upload_updates_compute_shader_output_without_replanning() {
     }));
     builder.compute_pass(ComputePassDesc {
         label: Some("write color".to_string()),
-        owner: Some(NodeKey(1)),
         program,
         bindings: vec![
             Binding::uniform(0, 0, uniforms),
             Binding::storage_texture(0, 1, output),
         ],
-        dispatch: Dispatch { x: 1, y: 1, z: 1 }.into(),
+        dispatch: Dispatch { x: 1, y: 1, z: 1 },
     });
     let plan = builder.build();
     renderer.prepare_plan(&plan).unwrap();
@@ -285,13 +278,12 @@ fn skipped_passes_leave_their_targets_as_last_written() {
     }));
     builder.compute_pass(ComputePassDesc {
         label: Some("write color".to_string()),
-        owner: Some(NodeKey(1)),
         program,
         bindings: vec![
             Binding::uniform(0, 0, uniforms),
             Binding::storage_texture(0, 1, output),
         ],
-        dispatch: Dispatch { x: 1, y: 1, z: 1 }.into(),
+        dispatch: Dispatch { x: 1, y: 1, z: 1 },
     });
     let plan = builder.build();
     renderer.prepare_plan(&plan).unwrap();
@@ -340,12 +332,6 @@ fn consecutive_compute_passes_share_one_pass_across_skipped_passes() {
     };
     let data = buffer(&mut builder, "data", 16, storage);
     let result = buffer(&mut builder, "result", 16, storage);
-    let args = buffer(
-        &mut builder,
-        "args",
-        12,
-        storage | wgpu::BufferUsages::INDIRECT,
-    );
     let out = buffer(&mut builder, "out", 16, storage);
     let program = |builder: &mut RenderPlanBuilder, shader: &str, entries| {
         builder.program(ProgramDesc::Compute(ComputeProgramDesc {
@@ -375,22 +361,20 @@ fn consecutive_compute_passes_share_one_pass_across_skipped_passes() {
             BindingLayoutEntry::texture(0, compute),
             BindingLayoutEntry::storage(1, compute, true),
             BindingLayoutEntry::storage(2, compute, false),
-            BindingLayoutEntry::storage(3, compute, false),
         ],
     );
-    let indirect = program(
+    let dispatch_program = program(
         &mut builder,
-        STAGE_INDIRECT_SHADER,
+        STAGE_DISPATCH_SHADER,
         vec![BindingLayoutEntry::storage(0, compute, false)],
     );
     let dispatch = |label: &str, program, bindings, dispatch| ComputePassDesc {
         label: Some(label.to_string()),
-        owner: None,
         program,
         bindings,
         dispatch,
     };
-    let one = ComputeDispatch::from(Dispatch { x: 1, y: 1, z: 1 });
+    let one = Dispatch { x: 1, y: 1, z: 1 };
     builder.compute_pass(dispatch(
         "write",
         write,
@@ -407,7 +391,6 @@ fn consecutive_compute_passes_share_one_pass_across_skipped_passes() {
             Binding::sampled_texture(0, 0, texture),
             Binding::storage_buffer(0, 1, data),
             Binding::storage_buffer(0, 2, result),
-            Binding::storage_buffer(0, 3, args),
         ],
         one,
     ));
@@ -419,13 +402,10 @@ fn consecutive_compute_passes_share_one_pass_across_skipped_passes() {
         size,
     });
     builder.compute_pass(dispatch(
-        "indirect",
-        indirect,
+        "dispatch",
+        dispatch_program,
         vec![Binding::storage_buffer(0, 0, out)],
-        ComputeDispatch::Indirect {
-            buffer: args,
-            offset: 0,
-        },
+        Dispatch { x: 3, y: 1, z: 1 },
     ));
     let plan = builder.build();
     renderer.prepare_plan(&plan).unwrap();
@@ -433,7 +413,6 @@ fn consecutive_compute_passes_share_one_pass_across_skipped_passes() {
     let check = |renderer: &Renderer, copied_texel: [u8; 4]| {
         assert_eq!(read_buffer_u32(renderer, data, 4), [7, 0, 0, 0]);
         assert_eq!(read_buffer_u32(renderer, result, 4), [255, 14, 0, 0]);
-        assert_eq!(read_buffer_u32(renderer, args, 3), [3, 1, 1]);
         assert_eq!(read_buffer_u32(renderer, out, 4), [100, 101, 102, 0]);
         assert_eq!(
             read_texture_rgba8(renderer, copied, size)[0..4],
@@ -449,7 +428,6 @@ fn consecutive_compute_passes_share_one_pass_across_skipped_passes() {
     for id in [data, result, out] {
         clear.write_buffer(id, 0, &zeros);
     }
-    clear.write_buffer(args, 0, &zeros[..12]);
     clear.write_texture_rgba8(copied, &zeros[..4], 4, 1);
     renderer.apply_frame_update(&plan, &clear).unwrap();
     renderer
@@ -532,12 +510,10 @@ fn render_pass_draws_fullscreen_triangle_to_target() {
             blend: Some(wgpu::BlendState::REPLACE),
             write_mask: wgpu::ColorWrites::ALL,
         })],
-        vertex_buffers: Vec::new(),
         primitive: wgpu::PrimitiveState::default(),
     }));
     builder.render_pass(RenderPassDesc {
         label: Some("draw".to_string()),
-        owner: None,
         program,
         targets: vec![RenderTargetRef {
             texture: output,
@@ -545,13 +521,10 @@ fn render_pass_draws_fullscreen_triangle_to_target() {
             store: wgpu::StoreOp::Store,
         }],
         bindings: Vec::new(),
-        vertex_buffers: Vec::new(),
-        index_buffer: None,
-        draw: DrawCommand::Draw(Draw {
+        draw: Draw {
             vertices: 0..3,
             instances: 0..1,
-        }),
-        scissor: None,
+        },
         viewport: None,
     });
     let plan = builder.build();
@@ -583,12 +556,10 @@ fn submit_plan_with_external_texture_restores_slot_and_retains_target() {
             blend: Some(wgpu::BlendState::REPLACE),
             write_mask: wgpu::ColorWrites::ALL,
         })],
-        vertex_buffers: Vec::new(),
         primitive: wgpu::PrimitiveState::default(),
     }));
     builder.render_pass(RenderPassDesc {
         label: Some("draw external".to_string()),
-        owner: None,
         program,
         targets: vec![RenderTargetRef {
             texture: output,
@@ -596,13 +567,10 @@ fn submit_plan_with_external_texture_restores_slot_and_retains_target() {
             store: wgpu::StoreOp::Store,
         }],
         bindings: Vec::new(),
-        vertex_buffers: Vec::new(),
-        index_buffer: None,
-        draw: DrawCommand::Draw(Draw {
+        draw: Draw {
             vertices: 0..3,
             instances: 0..1,
-        }),
-        scissor: None,
+        },
         viewport: None,
     });
     let plan = builder.build();
@@ -620,10 +588,11 @@ fn submit_plan_with_external_texture_restores_slot_and_retains_target() {
         view_formats: &[],
     }));
     let submitted = renderer
-        .submit_plan_with_external_texture(
+        .submit_plan_with_external_texture_skipping(
             &plan,
             output,
             ExternalTexture::new(Arc::clone(&external), desc.domain),
+            &[],
         )
         .unwrap();
 

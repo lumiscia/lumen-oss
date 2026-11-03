@@ -1,81 +1,69 @@
+use std::time::{Duration, Instant};
+
 use anyhow::anyhow;
 
 use crate::bench::{
-    Bench, fixtures,
-    report::{SummaryReport, format_duration, phase_first, phase_mean},
-    timing::PhaseTimer,
+    fixtures,
+    report::{SummaryReport, format_duration},
 };
 
-pub struct JsonParseBench;
+pub fn run() -> anyhow::Result<()> {
+    let args = parse_args()?;
+    let fixtures = selected_fixtures(&args.fixture)?;
+    let mut summary = SummaryReport::new(
+        "JSON parse benchmark summary",
+        [
+            "fixture",
+            "nodes",
+            "resolution",
+            "cold",
+            "warm (mean)",
+            "iterations",
+        ],
+    );
 
-impl Bench for JsonParseBench {
-    fn name() -> &'static str {
-        "json_parse"
-    }
+    for fixture in fixtures {
+        let parse = || {
+            lumen_engine::json::parse(fixture.source)
+                .map_err(|error| anyhow!("failed to parse {}: {error}", fixture.name))
+        };
 
-    fn run() -> anyhow::Result<()> {
-        let args = parse_args()?;
-        let fixtures = selected_fixtures(&args.fixture)?;
-        let mut summary = SummaryReport::new(
-            "JSON parse benchmark summary",
-            [
-                "fixture",
-                "nodes",
-                "resolution",
-                "cold",
-                "warm (mean)",
-                "iterations",
-            ],
-        );
+        let started = Instant::now();
+        let composition = parse()?;
+        let cold = started.elapsed();
 
-        for fixture in fixtures {
-            let mut setup = PhaseTimer::default();
-            let composition = setup.time("json_parse_cold", || {
-                lumen_engine::json::parse(fixture.source)
-                    .map_err(|error| anyhow!("failed to parse {}: {error}", fixture.name))
-            })?;
-
-            let mut loop_timer = PhaseTimer::default();
-            for _ in 0..args.iterations {
-                loop_timer.time("json_parse", || {
-                    lumen_engine::json::parse(fixture.source)
-                        .map_err(|error| anyhow!("failed to parse {}: {error}", fixture.name))
-                })?;
-            }
-
-            setup.print(&format!("json_parse_bench fixture={}", fixture.name));
-            loop_timer.print(&format!(
-                "json_parse_bench fixture={} iterations={}",
-                fixture.name, args.iterations
-            ));
-            println!(
-                "json_parse_bench fixture={} nodes={} duration_frames={} width={} height={}",
-                fixture.name,
-                composition.graph().nodes.len(),
-                composition.timeline().duration_frames,
-                composition.render_settings().width,
-                composition.render_settings().height,
-            );
-
-            let cold = phase_first(&setup, "json_parse_cold").unwrap_or_default();
-            let warm = phase_mean(&loop_timer, "json_parse").unwrap_or_default();
-            summary.push_row(vec![
-                fixture.name.to_string(),
-                composition.graph().nodes.len().to_string(),
-                format!(
-                    "{}×{}",
-                    composition.render_settings().width,
-                    composition.render_settings().height
-                ),
-                format_duration(cold),
-                format_duration(warm),
-                args.iterations.to_string(),
-            ]);
+        let mut warm_total = Duration::ZERO;
+        for _ in 0..args.iterations {
+            let started = Instant::now();
+            parse()?;
+            warm_total += started.elapsed();
         }
+        let warm = warm_total.div_f64(args.iterations as f64);
 
-        summary.print();
-        Ok(())
+        let nodes = composition.graph().nodes.len();
+        let (width, height) = (
+            composition.render_settings().width,
+            composition.render_settings().height,
+        );
+        println!(
+            "json_parse_bench fixture={} nodes={nodes} width={width} height={height} iterations={} cold_us={:.2} warm_mean_us={:.2}",
+            fixture.name,
+            args.iterations,
+            cold.as_secs_f64() * 1_000_000.0,
+            warm.as_secs_f64() * 1_000_000.0,
+        );
+        summary.push_row(vec![
+            fixture.name.to_string(),
+            nodes.to_string(),
+            format!("{width}×{height}"),
+            format_duration(cold),
+            format_duration(warm),
+            args.iterations.to_string(),
+        ]);
     }
+
+    summary.print();
+    Ok(())
 }
 
 struct Args {
@@ -99,7 +87,9 @@ fn parse_args() -> anyhow::Result<Args> {
                     .next()
                     .ok_or_else(|| anyhow!("--iterations requires a value"))?
                     .parse::<usize>()
-                    .map_err(|_| anyhow!("--iterations must be a positive integer"))?;
+                    .ok()
+                    .filter(|&count| count > 0)
+                    .ok_or_else(|| anyhow!("--iterations must be a positive integer"))?;
             }
             "--list" => {
                 let names: Vec<_> = fixtures::JSON_FIXTURES

@@ -111,6 +111,33 @@ impl std::ops::DerefMut for TestRenderer {
     }
 }
 
+/// Uniform buffers bound by the passes compiled for `node`, whose labels carry its id.
+fn uniform_buffers_of(plan: &lumen_gpu::RenderPlan, node: NodeId) -> Vec<lumen_gpu::BufferId> {
+    let marker = format!(":{}:", node.0);
+    plan.passes()
+        .iter()
+        .filter_map(|pass| match &pass.desc {
+            lumen_gpu::PassDesc::Compute(desc)
+                if desc
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.contains(&marker)) =>
+            {
+                Some(desc)
+            }
+            _ => None,
+        })
+        .flat_map(|desc| &desc.bindings)
+        .filter_map(|binding| match binding.resource {
+            lumen_gpu::BindingResource::Buffer {
+                id,
+                access: lumen_gpu::BufferAccess::Uniform,
+            } => Some(id),
+            _ => None,
+        })
+        .collect()
+}
+
 fn build_errors(graph: Graph) -> Vec<LumenError> {
     CompositionBuilder::new(
         graph,
@@ -478,12 +505,12 @@ fn compiles_media_input_as_frame_texture_boundary() {
 
     let compiled = CompileContext::new(&composition).compile().unwrap();
 
-    assert_eq!(compiled.plan.textures().len(), 1);
+    // The upload is sampled, so one pass copies it into an output that can be written.
+    assert_eq!(compiled.plan.textures().len(), 2);
     assert_eq!(compiled.plan.buffers().len(), 0);
-    assert_eq!(compiled.plan.programs().len(), 0);
-    assert_eq!(compiled.plan.passes().len(), 0);
+    assert_eq!(compiled.plan.programs().len(), 1);
+    assert_eq!(compiled.plan.passes().len(), 1);
     assert_eq!(compiled.compiled_nodes.len(), 1);
-    assert_eq!(compiled.plan.params().len(), 1);
     assert_eq!(
         compiled.output.domain.storage_size,
         lumen_gpu::Size::new(16, 9)
@@ -1045,19 +1072,7 @@ fn time_remap_binds_source_expressions_with_remapped_frame_context() {
         CompileContext::with_frame(&composition, 2, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
             .compile()
             .unwrap();
-    let exposure_buffer = compiled
-        .plan
-        .params()
-        .iter()
-        .find_map(|param| match param.target {
-            lumen_gpu::ParamTarget::Buffer(buffer)
-                if param.key.owner == lumen_gpu::NodeKey(exposure.0) =>
-            {
-                Some(buffer)
-            }
-            _ => None,
-        })
-        .unwrap();
+    let exposure_buffer = uniform_buffers_of(&compiled.plan, exposure)[0];
     let bound = FrameBindContext::new(&composition, 2)
         .bind(&compiled)
         .unwrap();
@@ -1134,19 +1149,7 @@ fn time_remap_binds_shared_source_once_per_frame_branch() {
         CompileContext::with_frame(&composition, 2, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
             .compile()
             .unwrap();
-    let exposure_buffers = compiled
-        .plan
-        .params()
-        .iter()
-        .filter_map(|param| match param.target {
-            lumen_gpu::ParamTarget::Buffer(buffer)
-                if param.key.owner == lumen_gpu::NodeKey(exposure.0) =>
-            {
-                Some(buffer)
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let exposure_buffers = uniform_buffers_of(&compiled.plan, exposure);
     assert_eq!(exposure_buffers.len(), 2);
 
     // Bind at a different frame than the compile frame, as cached plans are reused across frames.
@@ -1204,19 +1207,7 @@ fn opacity_compiles_and_binds_animated_multiplier() {
 
     let composition = test_composition(graph);
     let compiled = CompileContext::new(&composition).compile().unwrap();
-    let opacity_buffer = compiled
-        .plan
-        .params()
-        .iter()
-        .find_map(|param| match param.target {
-            lumen_gpu::ParamTarget::Buffer(buffer)
-                if param.key.owner == lumen_gpu::NodeKey(opacity.0) =>
-            {
-                Some(buffer)
-            }
-            _ => None,
-        })
-        .unwrap();
+    let opacity_buffer = uniform_buffers_of(&compiled.plan, opacity)[0];
     let opacity_raster = compiled
         .node_outputs
         .get(&PortRef::new(opacity, "output".to_string()))
@@ -1297,19 +1288,7 @@ fn opacity_preserves_unpremultiplied_rgb_representation() {
 
     let composition = test_composition(graph);
     let compiled = CompileContext::new(&composition).compile().unwrap();
-    let opacity_buffer = compiled
-        .plan
-        .params()
-        .iter()
-        .find_map(|param| match param.target {
-            lumen_gpu::ParamTarget::Buffer(buffer)
-                if param.key.owner == lumen_gpu::NodeKey(opacity.0) =>
-            {
-                Some(buffer)
-            }
-            _ => None,
-        })
-        .unwrap();
+    let opacity_buffer = uniform_buffers_of(&compiled.plan, opacity)[0];
     let opacity_raster = compiled
         .node_outputs
         .get(&PortRef::new(opacity, "output".to_string()))
@@ -1622,7 +1601,6 @@ fn compiles_color_math_nodes_to_gpu_passes_with_compiled_nodes() {
     assert_eq!(compiled.plan.buffers().len(), 7);
     assert_eq!(compiled.plan.programs().len(), 6);
     assert_eq!(compiled.plan.passes().len(), 6);
-    assert_eq!(compiled.plan.params().len(), 7);
     assert_eq!(compiled.compiled_nodes.len(), 6);
     assert!(compiled.compiled_nodes.contains_key(&alpha));
     assert!(compiled.compiled_nodes.contains_key(&shuffle));
@@ -2044,6 +2022,341 @@ fn text_msdf_coverage_matches_raster_for_plain_italic_and_variable_weight() {
             );
         }
     }
+}
+
+/// A job's fonts: one file under one family name, in a text session of its own.
+#[derive(Debug)]
+struct JobFont {
+    family: &'static str,
+    id: String,
+    data: Vec<u8>,
+    session: lumen_engine::media::TextSession,
+}
+
+impl JobFont {
+    fn new(family: &'static str, id: &str, data: Vec<u8>) -> Self {
+        Self {
+            family,
+            id: id.to_string(),
+            data,
+            session: Default::default(),
+        }
+    }
+}
+
+struct JobFontResolver {
+    id: String,
+    data: Vec<u8>,
+}
+
+impl lumen_engine::media::FontResolver for JobFontResolver {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![self.data.clone()])
+    }
+}
+
+impl MediaStore for JobFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family == self.family).then(|| self.id.clone())
+    }
+
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        (family == self.family).then(|| {
+            Box::new(JobFontResolver {
+                id: self.id.clone(),
+                data: self.data.clone(),
+            }) as _
+        })
+    }
+
+    fn text_session(&self) -> Option<&lumen_engine::media::TextSession> {
+        Some(&self.session)
+    }
+}
+
+/// `font` with the family name `family`, which fits in its names' space.
+fn font_named(font: &[u8], family: &str) -> Vec<u8> {
+    let mut font = font.to_vec();
+    let read = |font: &[u8], at: usize| u16::from_be_bytes([font[at], font[at + 1]]) as usize;
+    let tables = read(&font, 4);
+    let name = font[12..12 + tables * 16]
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .find(|table| &table[..4] == b"name")
+        .unwrap();
+    let table = u32::from_be_bytes(name[8..12].try_into().unwrap()) as usize;
+    let strings = table + read(&font, table + 4);
+    let encoded: Vec<u8> = family.encode_utf16().flat_map(u16::to_be_bytes).collect();
+    for record in 0..read(&font, table + 2) {
+        let at = table + 6 + record * 12;
+        if read(&font, at) == 3 && matches!(read(&font, at + 6), 1 | 16) {
+            let start = strings + read(&font, at + 10);
+            font[start..start + encoded.len()].copy_from_slice(&encoded);
+            font[at + 8..at + 10].copy_from_slice(&(encoded.len() as u16).to_be_bytes());
+        }
+    }
+    font
+}
+
+#[test]
+fn a_family_only_one_job_has_does_not_reach_another_jobs_measurements() {
+    let measure = |job: &JobFont| {
+        Expression::parse("text_width(\"WWW\", 32, 0, \"OnlyIn\")")
+            .unwrap()
+            .evaluate(&lumen_engine::expr::ExpressionContext {
+                media: Some(job),
+                ..Default::default()
+            })
+            .unwrap()
+            .as_f64()
+            .unwrap()
+    };
+    let with_font = JobFont::new(
+        "OnlyIn",
+        "job-font-only-in-one",
+        ScaledFontStore::new("OnlyIn", 2).data,
+    );
+    let without = JobFont::new("Absent", "job-font-absent", Vec::new());
+
+    let fallback = measure(&without);
+    let own = measure(&with_font);
+    assert!(
+        own > fallback * 1.5,
+        "{own} should differ from fallback {fallback}"
+    );
+    assert_eq!(measure(&without), fallback);
+    assert_eq!(measure(&with_font), own);
+}
+
+#[test]
+fn jobs_draw_one_family_name_with_their_own_font_files() {
+    const ROBOTO: &[u8] = lumen_text::ROBOTO_REGULAR_BYTES;
+    const INTER: &[u8] = include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf");
+
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // What is drawn and where both depend on the font: measuring must read the job's too.
+    let composition = |family: &str| {
+        text_test_composition(TextParamsDelegate {
+            content: TextContentDelegate::Text(Deferred::value("Rag Wave 28".to_string())),
+            font_family: Deferred::value(family.to_string()),
+            font_size: Deferred::value(64.0),
+            position: Deferred::Expr(
+                Expression::parse(&format!(
+                    "vec2(text_width(\"WWWWWW\", 32, 0, \"{family}\"), 40)"
+                ))
+                .unwrap(),
+            ),
+            ..Default::default()
+        })
+    };
+    let jobs = || {
+        [
+            JobFont::new("Face", "job-font-roboto", font_named(ROBOTO, "Face")),
+            JobFont::new("Face", "job-font-inter", font_named(INTER, "Face")),
+        ]
+    };
+    let shared_family = composition("Face");
+
+    // The true faces under their own names, which is how each file must draw under the shared one.
+    let roboto = render_rgba8(&mut renderer, &composition("Roboto"), 0, &EmptyMediaStore);
+    let inter = render_rgba8(
+        &mut gpu_composition_renderer().unwrap(),
+        &composition("Inter"),
+        0,
+        &JobFont::new("Inter", "job-font-true-inter", INTER.to_vec()),
+    );
+    assert!(roboto.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+    assert_ne!(roboto, inter);
+    let expected = [&roboto, &inter];
+
+    // In turns on one renderer, whose plans and atlas outlive each store's frame.
+    let turns = jobs();
+    for job in [0, 1, 0, 1, 1, 0] {
+        let pixels = render_rgba8(&mut renderer, &shared_family, 0, &turns[job]);
+        assert!(pixels == *expected[job], "job {job} drew another's font");
+    }
+
+    // Files alike in all but size number their glyphs alike, so their atlas keys match.
+    let sized = |scale: u16| {
+        JobFont::new(
+            "Sizing",
+            &format!("job-font-sized-{scale}"),
+            ScaledFontStore::new("Sizing", scale).data,
+        )
+    };
+    let [large, larger] = [sized(1), sized(2)];
+    let glyphs = text_test_composition(TextParamsDelegate {
+        content: TextContentDelegate::Text(Deferred::value("W".to_string())),
+        font_family: Deferred::value("Sizing".to_string()),
+        font_size: Deferred::value(64.0),
+        position: Deferred::value((16.0, 40.0)),
+        ..Default::default()
+    });
+    let alone = [&sized(1), &sized(2)]
+        .map(|job| render_rgba8(&mut gpu_composition_renderer().unwrap(), &glyphs, 0, job));
+    assert_ne!(alone[0], alone[1]);
+    for (job, expected) in [
+        (&large, &alone[0]),
+        (&larger, &alone[1]),
+        (&large, &alone[0]),
+    ] {
+        let pixels = render_rgba8(&mut renderer, &glyphs, 0, job);
+        assert!(pixels == *expected, "{} drew another's glyphs", job.id);
+    }
+
+    // At once in one process, each on its own renderer as `lumen-server` runs jobs.
+    let together = jobs();
+    std::thread::scope(|scope| {
+        for (job, expected) in together.iter().zip(expected) {
+            let shared_family = &shared_family;
+            scope.spawn(move || {
+                let mut renderer =
+                    pollster::block_on(lumen_engine::gpu::GpuCompositionRenderer::new()).unwrap();
+                for _ in 0..8 {
+                    let pixels = render_rgba8(&mut renderer, shared_family, 0, job);
+                    assert!(pixels == *expected, "{} drew another's font", job.id);
+                }
+            });
+        }
+    });
+}
+
+/// A job whose fonts change as it runs.
+#[derive(Debug, Default)]
+struct ChangingFonts {
+    fonts: std::sync::Mutex<std::collections::HashMap<String, (String, Vec<u8>)>>,
+    session: lumen_engine::media::TextSession,
+}
+
+impl ChangingFonts {
+    fn set(&self, family: &str, id: &str, data: Vec<u8>) {
+        let font = (id.to_string(), data);
+        self.fonts.lock().unwrap().insert(family.to_string(), font);
+    }
+}
+
+impl MediaStore for ChangingFonts {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        Some(self.fonts.lock().unwrap().get(family)?.0.clone())
+    }
+
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        let (id, data) = self.fonts.lock().unwrap().get(family)?.clone();
+        Some(Box::new(JobFontResolver { id, data }))
+    }
+
+    fn text_session(&self) -> Option<&lumen_engine::media::TextSession> {
+        Some(&self.session)
+    }
+}
+
+#[test]
+fn replacing_a_font_mid_job_leaves_no_stale_glyph_on_screen() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let glyph = text_test_composition(TextParamsDelegate {
+        content: TextContentDelegate::Text(Deferred::value("W".to_string())),
+        font_family: Deferred::value("Sizing".to_string()),
+        font_size: Deferred::value(64.0),
+        position: Deferred::value((16.0, 40.0)),
+        ..Default::default()
+    });
+    let data = |scale: u16| ScaledFontStore::new("Sizing", scale).data;
+    let alone = [1, 2].map(|scale| {
+        let job = JobFont::new("Sizing", &format!("alone-{scale}"), data(scale));
+        render_rgba8(&mut gpu_composition_renderer().unwrap(), &glyph, 0, &job)
+    });
+    assert_ne!(alone[0], alone[1]);
+
+    // Rebuilt fonts number their faces alike and these their glyphs alike, so only the rebuild
+    // tells one font's atlas keys from the other's.
+    let job = ChangingFonts::default();
+    for (turn, scale) in [1, 2, 1].into_iter().enumerate() {
+        job.set("Sizing", &format!("turn-{turn}"), data(scale));
+        let pixels = render_rgba8(&mut renderer, &glyph, 0, &job);
+        assert!(pixels == alone[usize::from(scale) - 1], "turn {turn}");
+    }
+
+    // Only the merge asks for this font, once the text has placed its glyphs. It goes by the name
+    // the text draws in, and being the latest load it takes over the text.
+    let both = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 10, "duration_frames": 10 },
+        "render_settings": { "width": 256, "height": 128 },
+        "nodes": [
+            {
+                "id": 1,
+                "type": "text",
+                "params": {
+                    "content": "W",
+                    "font_family": "Sizing",
+                    "font_size": 64,
+                    "position": [16, 40]
+                }
+            },
+            {
+                "id": 2,
+                "type": "text",
+                "params": {
+                    "content": "W",
+                    "font_family": "Sizing",
+                    "font_size": 64,
+                    "position": [128, 40]
+                }
+            },
+            {
+                "id": 3,
+                "type": "merge",
+                "params": { "opacity": "=min(text_width(\"W\", 32, 0, \"Second\"), 1)" }
+            },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 3, "to_port": "base" },
+            { "from_node": 2, "to_node": 3, "to_port": "overlay" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let job = ChangingFonts::default();
+    job.set("Sizing", "both-sizing", data(1));
+    job.set("Second", "both-second", data(2));
+    let mut renderer = gpu_composition_renderer().unwrap();
+    let first = render_rgba8(&mut renderer, &both, 0, &job);
+    let settled = render_rgba8(&mut renderer, &both, 0, &job);
+    assert!(first == settled);
+    assert!(first.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
 }
 
 fn text_test_composition(params: TextParamsDelegate) -> Composition {
@@ -2817,11 +3130,11 @@ fn small_shape_compiles_to_a_texture_and_dispatch_around_its_bounds() {
     assert_eq!(texture.desc.domain.storage_size, data.size());
     assert_eq!(
         dispatch,
-        lumen_gpu::ComputeDispatch::Direct(lumen_gpu::Dispatch {
+        lumen_gpu::Dispatch {
             x: data.width.div_ceil(8),
             y: data.height.div_ceil(8),
             z: 1,
-        })
+        }
     );
     assert_eq!(
         compiled.output.domain.storage_size,
@@ -3147,9 +3460,11 @@ fn bounded_text_is_remeasured_after_another_renderer_loads_a_font() {
     render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
 
     // A wider bold Roboto, loaded into the text system that every renderer shares.
-    let wide = ScaledFontStore::new("Roboto", 2).with_weight(700);
+    let wide = ScaledFontStore::new("Roboto", 2)
+        .with_weight(700)
+        .resolved_as("Remote");
     let mut loader = gpu_composition_renderer().unwrap();
-    render_rgba8(&mut loader, &composition, 0, &wide);
+    render_rgba8(&mut loader, &wide.composition(0.0, true), 0, &wide);
 
     let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
     let mut reference = gpu_composition_renderer().unwrap();
@@ -6673,6 +6988,357 @@ fn text_glyphs_larger_than_the_atlas_still_draw() {
         .filter(|pixel| pixel[3] == 255)
         .count();
     assert!(inked > 256 * 256 / 2, "only {inked} pixels inked");
+}
+
+#[test]
+fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // The animated size gives the text the full limit, and the constant one a limit of its own.
+    for font_size in [Deferred::value(8.0), expression("8 + frame * 0")] {
+        let composition = |content: String| {
+            let mut composition = text_test_composition(TextParamsDelegate {
+                content: TextContentDelegate::Text(Deferred::value(content)),
+                font_size: font_size.clone(),
+                ..Default::default()
+            })
+            .into_builder();
+            composition.render_settings.width = 64;
+            composition.render_settings.height = 64;
+            composition.build().unwrap()
+        };
+        // Whitespace is not drawn, so it does not count toward the limit.
+        let spaced = composition(format!("ab{}", " ".repeat(3000)));
+        let pixels = render_rgba8(&mut renderer, &spaced, 0, &EmptyMediaStore);
+        assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+
+        let long = composition("a".repeat(2049));
+        let error = renderer
+            .render_frame(&long, 0, &EmptyMediaStore)
+            .expect_err("2049 glyphs exceed the limit")
+            .to_string();
+        assert!(
+            error.contains("Text node 1") && error.contains("2049") && error.contains("2048"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn text_decorations_split_by_span_paint_fit_the_size_counted_at_compile() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 64, "height": 32 },
+        "nodes": [
+            { "id": 1, "type": "text", "params": {
+                "content": [
+                    { "text": "a", "color": "#ff0000" },
+                    { "text": "b", "color": "#0000ff" }
+                ],
+                "font_size": 24,
+                "position": [4, 2],
+                "underline": {}
+            } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &EmptyMediaStore);
+    let has = |color: [u8; 3]| {
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] == 255 && pixel[..3] == color)
+    };
+    assert!(has([255, 0, 0]) && has([0, 0, 255]));
+}
+
+/// Inter with its family renamed to `name`, which must have the five letters of "Inter".
+fn renamed_inter(name: &str) -> Vec<u8> {
+    assert_eq!(name.len(), 5);
+    let mut font = include_bytes!("../../text/assets/inter/InterVariable-Latin.ttf").to_vec();
+    let utf16 = |text: &str| {
+        text.encode_utf16()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>()
+    };
+    for (from, to) in [
+        ("Inter".as_bytes().to_vec(), name.as_bytes().to_vec()),
+        (utf16("Inter"), utf16(name)),
+    ] {
+        let mut at = 0;
+        while let Some(found) = font[at..].windows(from.len()).position(|w| w == from) {
+            font[at + found..at + found + to.len()].copy_from_slice(&to);
+            at += found + to.len();
+        }
+    }
+    font
+}
+
+/// Resolves "Loader" to a font named "Qzxvj" and "Qzxvj" to no font data.
+#[derive(Debug, Clone)]
+struct LateFont;
+
+impl lumen_engine::media::FontResolver for LateFont {
+    fn id(&self) -> &str {
+        "late-font"
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![renamed_inter("Qzxvj")])
+    }
+}
+
+#[derive(Debug, Clone)]
+struct NoFont;
+
+impl lumen_engine::media::FontResolver for NoFont {
+    fn id(&self) -> &str {
+        "no-font"
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(Vec::new())
+    }
+}
+
+impl MediaStore for LateFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        match family {
+            "Loader" => Some("late-font".to_string()),
+            "Qzxvj" => Some("no-font".to_string()),
+            _ => None,
+        }
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        match family {
+            "Loader" => Some(Box::new(LateFont)),
+            "Qzxvj" => Some(Box::new(NoFont)),
+            _ => None,
+        }
+    }
+}
+
+#[test]
+fn a_font_loaded_while_binding_resizes_constant_text_instead_of_failing() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // The first text measures a node whose font loads as the frame binds. That font, unlike the
+    // bundled one, has no "ffi" ligature, so the second text, sized for one glyph, needs three.
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 128, "height": 64 },
+        "nodes": [
+            { "id": 99, "type": "text", "params": { "content": "x", "font_family": "Loader" } },
+            { "id": 1, "type": "text", "params": {
+                "content": "a",
+                "glyph_offset": "=vec2(0 * text_width(node(99)), 0)"
+            } },
+            { "id": 2, "type": "text", "params": {
+                "content": "ffi", "font_family": "Qzxvj", "font_size": 40, "position": [4, 10]
+            } },
+            { "id": 3, "type": "raster_multimerge" },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &LateFont);
+    assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+}
+
+/// Resolves "LoadN" to a font named "LateN" and "LateN" to no font data, for each digit N.
+#[derive(Debug, Clone)]
+struct LateFonts;
+
+#[derive(Debug, Clone)]
+struct LateFontsResolver(String);
+
+impl lumen_engine::media::FontResolver for LateFontsResolver {
+    fn id(&self) -> &str {
+        &self.0
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(match self.0.strip_prefix("Load") {
+            Some(digit) => vec![renamed_inter(&format!("Late{digit}"))],
+            None => Vec::new(),
+        })
+    }
+}
+
+impl MediaStore for LateFonts {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family.starts_with("Load") || family.starts_with("Late")).then(|| family.to_string())
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        self.font_resolver_id(family)
+            .map(|id| Box::new(LateFontsResolver(id)) as Box<dyn lumen_engine::media::FontResolver>)
+    }
+}
+
+#[test]
+fn many_fonts_loaded_while_binding_settle_in_one_render() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // Each pair is a text measuring a node whose font loads as the frame binds, then a text that
+    // font outgrows, so every font stops a bind.
+    let mut nodes = vec![
+        json!({ "id": 100, "type": "raster_multimerge" }),
+        json!({ "id": 101, "type": "media_output" }),
+    ];
+    let mut connections = vec![json!({ "from_node": 100, "to_node": 101, "to_port": "source" })];
+    for font in 0..5 {
+        let (measured, measuring, outgrown) = (200 + font, 2 * font + 1, 2 * font + 2);
+        nodes.extend([
+            json!({ "id": measured, "type": "text", "params": {
+                "content": "x", "font_family": format!("Load{font}")
+            } }),
+            json!({ "id": measuring, "type": "text", "params": {
+                "content": "a",
+                "glyph_offset": format!("=vec2(0 * text_width(node({measured})), 0)")
+            } }),
+            json!({ "id": outgrown, "type": "text", "params": {
+                "content": "ffi", "font_family": format!("Late{font}"), "font_size": 40
+            } }),
+        ]);
+        for from_node in [measuring, outgrown] {
+            connections.push(json!({
+                "from_node": from_node, "from_port": "output", "to_node": 100, "to_port": "layers"
+            }));
+        }
+    }
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 128, "height": 64 },
+        "nodes": nodes,
+        "connections": connections
+    }))
+    .unwrap();
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &LateFonts);
+    assert!(pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
+}
+
+/// Gives "Churn" a resolver with a new id each time it is asked, so its font never settles.
+#[derive(Debug, Default)]
+struct ChurningFont(std::sync::atomic::AtomicU32);
+
+#[derive(Debug, Clone)]
+struct ChurningFontResolver(String);
+
+impl lumen_engine::media::FontResolver for ChurningFontResolver {
+    fn id(&self) -> &str {
+        &self.0
+    }
+    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+        Ok(vec![renamed_inter("Churn")])
+    }
+}
+
+impl MediaStore for ChurningFont {
+    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
+        None
+    }
+    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+    fn font_resolver_id(&self, family: &str) -> Option<String> {
+        (family == "Churn").then(|| {
+            let id = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            format!("churn-{id}")
+        })
+    }
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Option<Box<dyn lumen_engine::media::FontResolver>> {
+        self.font_resolver_id(family).map(|id| {
+            Box::new(ChurningFontResolver(id)) as Box<dyn lumen_engine::media::FontResolver>
+        })
+    }
+}
+
+#[test]
+fn a_font_that_never_settles_fails_the_render() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 1 },
+        "render_settings": { "width": 64, "height": 64 },
+        "nodes": [
+            { "id": 1, "type": "text", "params": { "content": "x", "font_family": "Churn" } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+    }))
+    .unwrap();
+    let error = renderer
+        .render_frame(&composition, 0, &ChurningFont::default())
+        .expect_err("the font loads again on every bind")
+        .to_string();
+    assert!(error.contains("fonts kept loading"), "{error}");
+}
+
+#[test]
+fn text_dropped_by_a_full_atlas_still_counts_toward_the_instance_limit() {
+    let _guard = TEXT_TEST_LOCK.lock().unwrap();
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    // Glyphs this large overflow the atlas, which drops some of them.
+    let mut composition = text_test_composition(TextParamsDelegate {
+        content: TextContentDelegate::Text(Deferred::value(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat(80),
+        )),
+        font_size: expression("1500 + frame * 0"),
+        render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
+        ..Default::default()
+    })
+    .into_builder();
+    composition.render_settings.width = 64;
+    composition.render_settings.height = 64;
+    let composition = composition.build().unwrap();
+    let error = renderer
+        .render_frame(&composition, 0, &EmptyMediaStore)
+        .expect_err("2080 glyphs exceed the limit")
+        .to_string();
+    assert!(
+        error.contains("Text node 1") && error.contains("2080") && error.contains("2048"),
+        "{error}"
+    );
 }
 
 #[cfg(feature = "msdf")]
@@ -10808,8 +11474,7 @@ fn replacing_a_kept_texture_renders_it_again() {
             usage: desc.usage,
             view_formats: &[],
         });
-    gpu.replace_texture_discard_old(kept.texture, blank, desc)
-        .unwrap();
+    gpu.replace_texture(kept.texture, blank, desc).unwrap();
     let pixels = render_rgba8(&mut renderer, &composition, 2, &EmptyMediaStore);
     assert!(pixels == uncached_rgba8(&mut reference, &composition, 2, &EmptyMediaStore));
 }
@@ -11386,11 +12051,10 @@ fn memo_snapshot_dropped_with_its_key_change_is_not_shown_again() {
         NodeKind::Text(Text {
             id: NodeId::new(5),
             params: TextParamsDelegate {
-                content: TextContentDelegate::Text(expression(&format!(
-                    "if(floor(frame) % 2 == 1, '{}', 'W')",
-                    "W".repeat(3000)
-                ))),
-                font_size: Deferred::value(12.0),
+                content: TextContentDelegate::Text(expression(
+                    "if(floor(frame) % 2 == 1, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'W')",
+                )),
+                font_size: Deferred::value(1500.0),
                 scale: Deferred::value((0.001, 0.001)),
                 position: Deferred::value((30.0, 10.0)),
                 render_mode: lumen_engine::node::source::text::TextRenderMode::Raster.into(),
@@ -12142,7 +12806,7 @@ fn decoration_extent_runs_on_across_a_line_break() {
     };
     let full = render_text_params(&mut renderer, text(json!([0, 1])), size);
     let partial = render_text_params(&mut renderer, text(json!([0, 0.75])), size);
-    // 6.75 of the 9 bytes: the first line and 1.75 of the second line's 4.
+    // 0.75 of the two lines' width: all of the first line and half of the second.
     let rows = inked_rows(&full, size);
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(inked_rows(&partial, size), rows);
@@ -12159,7 +12823,7 @@ fn decoration_extent_runs_on_across_a_line_break() {
     assert_eq!(first, second);
     assert_eq!(first_partial, first);
     assert!(
-        (second_partial / second - 1.75 / 4.0).abs() < 0.05,
+        (second_partial / second - 0.5).abs() < 0.05,
         "{second_partial} of {second}"
     );
     let animated = render_text_frames(
@@ -12832,5 +13496,343 @@ fn faded_strokes_and_clusters_keep_their_supersampled_paint() {
             .map(|(&opaque, &faded)| (opaque as f32 * 0.5 - faded as f32).abs())
             .fold(0.0, f32::max);
         assert!(most <= 2.0, "{content:?} {stroke}: off by {most}");
+    }
+}
+
+fn solid_image(id: &str, width: u32, height: u32, color: [u8; 4]) -> TestMediaStore {
+    TestMediaStore {
+        id: id.to_string(),
+        frame: Arc::new(CpuMediaFrame {
+            rgba: Arc::new(color.repeat(width as usize * height as usize)),
+            width,
+            height,
+            row_bytes: width as usize * 4,
+        }),
+    }
+}
+
+/// Images by source, which their owner replaces while they are rendered.
+#[derive(Debug, Default)]
+struct ReplaceableImages(std::sync::Mutex<std::collections::HashMap<String, TestMediaStore>>);
+
+impl ReplaceableImages {
+    fn set(&self, source: &str, image: TestMediaStore) {
+        self.0.lock().unwrap().insert(source.to_string(), image);
+    }
+}
+
+impl MediaStore for ReplaceableImages {
+    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+        let images = self.0.lock().unwrap();
+        let image = images.get(source)?.clone();
+        Some(Box::new(image))
+    }
+
+    fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        None
+    }
+}
+
+fn image_composition(source: Deferred<String>) -> Composition {
+    cache_composition(vec![
+        NodeKind::MediaIn(MediaIn {
+            id: NodeId::new(1),
+            params: MediaInParamsDelegate {
+                source,
+                ..Default::default()
+            },
+        }),
+        output_node(NodeId::new(2), 1),
+    ])
+}
+
+/// The RGBA of the pixel at `(x, y)` of a `CACHE_CANVAS`-sized render.
+fn canvas_pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+    let start = (y * CACHE_CANVAS.0 + x) as usize * 4;
+    pixels[start..start + 4].try_into().unwrap()
+}
+
+#[test]
+fn canvas_sized_media_passthrough_writes_external_targets() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let color = [40, 120, 200, 255];
+    let media = solid_image("plate", CACHE_CANVAS.0, CACHE_CANVAS.1, color);
+    for kind in [0, 1] {
+        let composition = cache_composition(vec![
+            NodeKind::MediaIn(MediaIn {
+                id: NodeId::new(1),
+                params: MediaInParamsDelegate {
+                    kind: Deferred::value(kind),
+                    source: Deferred::value("plate".to_string()),
+                    ..Default::default()
+                },
+            }),
+            output_node(NodeId::new(2), 1),
+        ]);
+        render_rgba8(&mut renderer, &composition, 0, &media);
+        let output = renderer.compiled().unwrap().output;
+        let gpu = renderer.gpu_renderer();
+        let desc = gpu.texture_desc(output.texture).unwrap();
+        let texture = gpu
+            .device
+            .create_texture(&lumen_gpu::wgpu::TextureDescriptor {
+                label: Some("external output"),
+                size: desc.domain.storage_size.as_extent(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: lumen_gpu::wgpu::TextureDimension::D2,
+                format: desc.format,
+                usage: desc.usage | lumen_gpu::wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+        let submitted = renderer
+            .render_frame_into_external(
+                &composition,
+                0,
+                &media,
+                lumen_gpu::ExternalTexture::from_texture(texture, desc.domain),
+            )
+            .unwrap();
+        submitted.wait(&renderer.gpu_renderer().device).unwrap();
+        let pixels = read_texture_rgba8(
+            renderer.gpu_renderer(),
+            submitted.texture(),
+            desc.domain.storage_size,
+        );
+        assert!(
+            pixels == color.repeat((CACHE_CANVAS.0 * CACHE_CANVAS.1) as usize),
+            "media kind {kind} left its external target at {:?}",
+            canvas_pixel(&pixels, 0, 0)
+        );
+    }
+}
+
+#[test]
+fn media_of_another_size_renders_at_its_own_size() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    let (width, height) = CACHE_CANVAS;
+    let inside = (1, 1);
+    let outside = (width - 1, height - 1);
+
+    // A source expression that picks an image of another size.
+    let media = ReplaceableImages::default();
+    media.set("large", solid_image("large", width, height, red));
+    media.set("small", solid_image("small", 2, 2, blue));
+    let chosen = image_composition(expression("if(frame < 1, 'large', 'small')"));
+    let pixels = render_rgba8(&mut renderer, &chosen, 0, &media);
+    assert_eq!(canvas_pixel(&pixels, outside.0, outside.1), red);
+    let pixels = render_rgba8(&mut renderer, &chosen, 1, &media);
+    assert_eq!(canvas_pixel(&pixels, inside.0, inside.1), blue);
+    assert_eq!(canvas_pixel(&pixels, outside.0, outside.1), [0; 4]);
+
+    // The same source replaced by an image of another size.
+    renderer.release_resources();
+    media.set("plate", solid_image("plate", width, height, red));
+    let replaced = image_composition(Deferred::value("plate".to_string()));
+    let pixels = render_rgba8(&mut renderer, &replaced, 0, &media);
+    assert_eq!(canvas_pixel(&pixels, outside.0, outside.1), red);
+    media.set("plate", solid_image("plate", 2, 2, blue));
+    let pixels = render_rgba8(&mut renderer, &replaced, 1, &media);
+    assert_eq!(canvas_pixel(&pixels, inside.0, inside.1), blue);
+    assert_eq!(canvas_pixel(&pixels, outside.0, outside.1), [0; 4]);
+}
+
+#[test]
+fn replacing_an_image_with_one_of_the_same_size_shows_its_pixels() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = CACHE_CANVAS;
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    let media = ReplaceableImages::default();
+    media.set("plate", solid_image("plate#1", width, height, red));
+    let composition = image_composition(Deferred::value("plate".to_string()));
+    let pixels = render_rgba8(&mut renderer, &composition, 0, &media);
+    assert_eq!(canvas_pixel(&pixels, 1, 1), red);
+
+    media.set("plate", solid_image("plate#2", width, height, blue));
+    let pixels = render_rgba8(&mut renderer, &composition, 1, &media);
+    assert_eq!(canvas_pixel(&pixels, 1, 1), blue);
+
+    media.set("plate", solid_image("plate#3", width, height, red));
+    let pixels = render_rgba8(&mut renderer, &composition, 2, &media);
+    assert_eq!(canvas_pixel(&pixels, 1, 1), red);
+}
+
+#[test]
+fn unbound_images_within_the_budget_stay_cached() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = CACHE_CANVAS;
+    let colors = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]];
+    let images = colors.map(|color| solid_image(&format!("{color:?}"), width, height, color));
+    // The two images no plan binds fit exactly; the bound one doesn't count.
+    renderer.set_media_texture_cache_budget(2 * u64::from(width * height * 4));
+    let media = ReplaceableImages::default();
+    let composition = image_composition(Deferred::value("plate".to_string()));
+    for frame in 0..9 {
+        media.set("plate", images[frame % 3].clone());
+        let pixels = render_rgba8(&mut renderer, &composition, frame as u32, &media);
+        assert_eq!(canvas_pixel(&pixels, 1, 1), colors[frame % 3]);
+    }
+    assert_eq!(renderer.media_texture_upload_count(), 3);
+    assert_eq!(renderer.cached_media_texture_count(), 3);
+}
+
+#[test]
+fn images_past_the_budget_are_freed_once_no_plan_binds_them() {
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = CACHE_CANVAS;
+    renderer.set_media_texture_cache_budget(0);
+    let media = ReplaceableImages::default();
+    let composition = image_composition(Deferred::value("plate".to_string()));
+    for (frame, color) in [[255, 0, 0, 255], [0, 0, 255, 255]].into_iter().enumerate() {
+        media.set(
+            "plate",
+            solid_image(&format!("{color:?}"), width, height, color),
+        );
+        render_rgba8(&mut renderer, &composition, frame as u32, &media);
+    }
+    // Only the image the plan shows is kept.
+    assert_eq!(renderer.cached_media_texture_count(), 1);
+    renderer.set_static_output_reuse(false);
+    assert_eq!(renderer.cached_media_texture_count(), 0);
+}
+
+#[test]
+fn images_replaced_before_a_failed_upload_are_still_freed() {
+    #[derive(Debug)]
+    struct UnsupportedVideo;
+    impl VideoFrameResolver for UnsupportedVideo {
+        fn id(&self) -> &str {
+            "unsupported"
+        }
+        fn metadata(&self) -> VideoMetadata {
+            VideoMetadata {
+                width: 1,
+                height: 1,
+                frame_count: 1,
+                fps: 24.0,
+            }
+        }
+        fn frame(&self, _: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+            Ok(MediaFrame::ExternalTexture(
+                lumen_engine::media::ExternalTextureFrame {
+                    width: 1,
+                    height: 1,
+                    format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                    handle: lumen_engine::media::ExternalTextureHandle::Platform(String::new()),
+                },
+            ))
+        }
+    }
+    #[derive(Debug, Default)]
+    struct ImagesAndUnsupportedVideo(ReplaceableImages);
+    impl MediaStore for ImagesAndUnsupportedVideo {
+        fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+            self.0.get_image_resolver(source)
+        }
+        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            Some(Box::new(UnsupportedVideo))
+        }
+    }
+
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    renderer.set_media_texture_cache_budget(0);
+    let (width, height) = CACHE_CANVAS;
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": { "fps": 24, "duration_frames": 10 },
+        "render_settings": { "width": width, "height": height },
+        "nodes": [
+            { "id": 1, "type": "media_in", "params": { "source": "plate" } },
+            { "id": 2, "type": "media_in", "params": { "source": "clip", "kind": "video" } },
+            { "id": 3, "type": "raster_multimerge" },
+            { "id": 4, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 2, "from_port": "output", "to_node": 3, "to_port": "layers" },
+            { "from_node": 3, "to_node": 4, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let media = ImagesAndUnsupportedVideo::default();
+    for frame in 0..5u8 {
+        media.0.set(
+            "plate",
+            solid_image(&format!("plate-{frame}"), width, height, [frame, 0, 0, 255]),
+        );
+        renderer
+            .render_frame(&composition, u32::from(frame), &media)
+            .expect_err("the video's frame can't be uploaded");
+    }
+    // Only the image the plan still binds is kept.
+    assert_eq!(renderer.cached_media_texture_count(), 1);
+}
+
+#[test]
+fn video_frames_do_not_overwrite_cached_images() {
+    #[derive(Debug)]
+    struct ImagesAndVideo {
+        images: ReplaceableImages,
+        video: TestMediaStore,
+    }
+    impl MediaStore for ImagesAndVideo {
+        fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+            self.images.get_image_resolver(source)
+        }
+
+        fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+            Some(Box::new(self.video.clone()))
+        }
+    }
+
+    let Some(mut renderer) = gpu_composition_renderer() else {
+        return;
+    };
+    let (width, height) = CACHE_CANVAS;
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    let green = [0, 255, 0, 255];
+    let yellow = [255, 255, 0, 255];
+    let media = ImagesAndVideo {
+        images: ReplaceableImages::default(),
+        video: solid_image("clip", width, height, blue),
+    };
+    media.images.set("a", solid_image("a", width, height, red));
+    media
+        .images
+        .set("b", solid_image("b", width, height, green));
+    media
+        .images
+        .set("c", solid_image("c", width, height, yellow));
+    let composition = cache_composition(vec![
+        NodeKind::MediaIn(MediaIn {
+            id: NodeId::new(1),
+            params: MediaInParamsDelegate {
+                kind: expression("if(frame == 1, 1, 0)"),
+                source: expression(
+                    "if(frame == 1, 'clip', if(frame == 2, 'b', if(frame == 3, 'c', 'a')))",
+                ),
+                ..Default::default()
+            },
+        }),
+        output_node(NodeId::new(2), 1),
+    ]);
+    for (frame, expected) in [red, blue, green, yellow, red].into_iter().enumerate() {
+        let pixels = render_rgba8(&mut renderer, &composition, frame as u32, &media);
+        assert_eq!(canvas_pixel(&pixels, 1, 1), expected, "frame {frame}");
     }
 }

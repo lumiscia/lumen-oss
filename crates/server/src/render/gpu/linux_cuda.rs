@@ -72,7 +72,6 @@ pub(super) fn render_project_mp4_cuda(
             width,
             height,
             allocation_size = target.allocation_size(),
-            row_pitch = target.row_pitch(),
             memory_fd = target.memory_fd_raw(),
             memory_type_index = target.memory_type_index(),
             cuda_ordinal = target_pool.cuda_ordinal(),

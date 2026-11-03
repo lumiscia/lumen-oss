@@ -71,31 +71,21 @@ impl GpuCompileNode for Crop {
             .compile_port(&self.source)?
             .into_raster(self.source.id, &self.source.port)?;
         let size = source.domain.storage_size;
-        let texture = ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let texture = ctx.builder_mut().texture(
             Some(format!("crop:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
         );
-        let params = ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let params = ctx.builder_mut().buffer(
             Some(format!("crop:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::CropParams>() as u64),
         );
-        let program = ctx.spatial_program(self.id, "crop", SHADER);
+        let program = ctx.spatial_program("crop", SHADER);
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("crop:{}:apply", self.id.0)),
-            owner: Some(lumen_gpu::NodeKey(self.id.0)),
             program,
             bindings: compiler::spatial_bindings(source.texture, params, texture),
-            dispatch: compiler::dispatch_for(size).into(),
+            dispatch: compiler::dispatch_for(size),
         });
-        ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 0,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
         ctx.register_compiled_node(CompiledCrop {
             node_id: self.id,
             params: self.params.clone(),
