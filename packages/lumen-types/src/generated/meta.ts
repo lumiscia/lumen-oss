@@ -4,7 +4,7 @@
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
 export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
-export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
 

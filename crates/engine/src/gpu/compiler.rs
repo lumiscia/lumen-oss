@@ -8,8 +8,8 @@ use crate::{
     error::RenderError,
     expr::ExpressionContext,
     gpu::{
-        AlphaMode, BoundFrame, CompiledComposition, FrameBindContext, GpuCompiledNode,
-        RasterHandle, TimeRemapPath, types::CompiledPortKey,
+        BoundFrame, CompiledComposition, FrameBindContext, GpuCompiledNode, RasterHandle,
+        TimeRemapPath, types::CompiledPortKey,
     },
     media::MediaStore,
     node::{
@@ -41,9 +41,6 @@ pub(crate) enum FilterDomain {
     /// Maps each texel on its own and keeps transparent texels transparent, so it reads
     /// and writes the source's domain.
     Source,
-    /// `Source` for premultiplied sources. Transparent texels of straight sources may
-    /// still carry colour, so those are read at full frame.
-    PremultipliedSource,
     /// Reads the source through its domain and writes this one.
     Bounded(lumen_gpu::TextureDomain),
 }
@@ -510,10 +507,7 @@ impl<'a> CompileContext<'a> {
             offset: [domain.data_rect.x - data.x, domain.data_rect.y - data.y],
             buffer: crop.params,
         });
-        RasterHandle {
-            alpha_mode: raster.alpha_mode,
-            ..crop.output
-        }
+        crop.output
     }
 
     /// `raster` stored at its full display size, copied there when it is bounded. The copy's
@@ -556,7 +550,6 @@ impl<'a> CompileContext<'a> {
         let full = RasterHandle {
             texture,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            alpha_mode: raster.alpha_mode,
             bounds: None,
         };
         self.full_frames
@@ -621,8 +614,7 @@ impl<'a> CompileContext<'a> {
     }
 
     /// Compiles a compute pass from the `source` input into a new texture of the domain `domain`
-    /// picks. Returns the source as read, which is at full frame unless `domain` reads it
-    /// through its domain.
+    /// picks. Returns the source as read.
     #[allow(
         clippy::too_many_arguments,
         reason = "every filter node passes the same flat set of compile inputs"
@@ -637,11 +629,6 @@ impl<'a> CompileContext<'a> {
         domain: FilterDomain,
     ) -> crate::Result<(RasterHandle, lumen_gpu::TextureId, lumen_gpu::BufferId)> {
         let source = self.compile_bounded_input(node_id, "source", source)?;
-        let straight = source.alpha_mode == AlphaMode::Unpremultiplied;
-        let source = match domain {
-            FilterDomain::PremultipliedSource if straight => self.full_frame(source),
-            _ => source,
-        };
         let domain = match domain {
             FilterDomain::Bounded(domain) => domain,
             _ => source.domain,
@@ -736,7 +723,6 @@ impl<'a> CompileContext<'a> {
             output: RasterHandle {
                 texture,
                 domain,
-                alpha_mode: AlphaMode::Premultiplied,
                 bounds: None,
             },
             params,
@@ -762,7 +748,6 @@ impl<'a> CompileContext<'a> {
         RasterHandle {
             texture,
             domain,
-            alpha_mode: AlphaMode::Premultiplied,
             bounds: None,
         }
     }

@@ -7,8 +7,6 @@ use crate::{error::RenderError, node::NodeId};
 pub(crate) struct ColorGradeParams {
     pub(crate) strength: f32,
     pub(crate) interpolation: u32,
-    pub(crate) premultiplied: u32,
-    pub(crate) _pad: u32,
 }
 
 #[repr(C)]
@@ -44,7 +42,6 @@ pub(crate) struct ExposureParams {
     pub(crate) exposure: f32,
     pub(crate) contrast: f32,
     pub(crate) offset: f32,
-    pub(crate) premultiplied: u32,
 }
 
 #[repr(C)]
@@ -53,7 +50,6 @@ pub(crate) struct HueSaturationParams {
     pub(crate) hue_offset: f32,
     pub(crate) saturation: f32,
     pub(crate) lightness: f32,
-    pub(crate) premultiplied: u32,
 }
 
 #[repr(C)]
@@ -64,14 +60,12 @@ pub(crate) struct LevelsParams {
     pub(crate) gamma: f32,
     pub(crate) output_black: f32,
     pub(crate) output_white: f32,
-    pub(crate) premultiplied: u32,
-    pub(crate) _pad: [f32; 2],
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct BlurParams {
-    /// Gaussian sigma, straight-alpha flag, transparent-edge flag.
+    /// Gaussian sigma, transparent-edge flag.
     pub(crate) values: [f32; 4],
     /// Whole-pixel offset applied to the source in `xy`.
     pub(crate) offset: [f32; 4],
@@ -84,8 +78,8 @@ pub(crate) struct BlurParams {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ShadowParams {
+    /// The shadow colour, with its opacity as alpha.
     pub(crate) color: [f32; 4],
-    pub(crate) values: [f32; 4],
     /// Canvas pixel of the output's first texel in `xy`, and of the blurred shadow's in `zw`.
     pub(crate) origins: [i32; 4],
     /// Canvas pixel of the source's first texel in `xy`.
@@ -98,24 +92,24 @@ pub(crate) struct MergeParams {
     pub(crate) opacity: f32,
     pub(crate) blend_mode: u32,
     pub(crate) mask_source: u32,
-    pub(crate) straight_inputs: u32,
     pub(crate) mask_mode: u32,
     pub(crate) invert: u32,
+    pub(crate) _pad0: u32,
     /// Canvas pixels of the first texels of the output, base, overlay and raw mask.
     pub(crate) origins: [[i32; 2]; 4],
-    pub(crate) _pad: [u32; 2],
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct BooleanParams {
-    pub(crate) values: [f32; 4],
+    pub(crate) values: [f32; 2],
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct RasterMultiMergeParams {
-    pub(crate) values: [f32; 4],
+    pub(crate) opacity: f32,
+    pub(crate) blend_mode: u32,
     /// Output texel of the pass's first invocation, then canvas pixels of the first texels
     /// of the output, base and overlay.
     pub(crate) origins: [[i32; 2]; 4],
@@ -133,8 +127,7 @@ pub(crate) struct TransformParams {
     pub(crate) sampling: u32,
     /// Taps to average over the shutter, or 0 to sample with the fields above alone.
     pub(crate) tap_count: u32,
-    /// Whether the source stores straight alpha, which taps average premultiplied.
-    pub(crate) straight_source: u32,
+    pub(crate) _pad0: u32,
     /// Canvas pixel of the output's first texel.
     pub(crate) output_origin: [i32; 2],
     /// Source pixel of the source's first texel.
@@ -156,7 +149,7 @@ pub(crate) struct TransformTap {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct OpacityParams {
-    pub(crate) values: [f32; 4],
+    pub(crate) opacity: f32,
 }
 
 #[repr(C)]

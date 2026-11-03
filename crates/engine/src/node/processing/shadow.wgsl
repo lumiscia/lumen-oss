@@ -1,8 +1,6 @@
-// `color.a` is 1.0 when the source raster is straight alpha. The shadow color
-// alpha is already folded into `values.w`, the only value used here.
+// The shadow color alpha is already folded into `color.a`.
 struct ShadowParams {
     color: vec4<f32>,
-    values: vec4<f32>,
     origins: vec4<i32>,
     source_origin: vec4<i32>,
 }
@@ -31,8 +29,8 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let pixel = vec2<i32>(id.xy) + params.origins.xy;
     let blurred = sample_or_transparent(blurred_tex, pixel, params.origins.zw);
-    let source = to_premultiplied_alpha(sample_or_transparent(source_tex, pixel, params.source_origin.xy), params.color.a >= 0.5);
-    let shadow_alpha = blurred.a * clamp(params.values.w, 0.0, 1.0);
+    let source = sample_or_transparent(source_tex, pixel, params.source_origin.xy);
+    let shadow_alpha = blurred.a * clamp(params.color.a, 0.0, 1.0);
     let shadow = vec4<f32>(params.color.rgb * shadow_alpha, shadow_alpha);
     let out_alpha = source.a + shadow.a * (1.0 - source.a);
     let out_rgb = source.rgb + shadow.rgb * (1.0 - source.a);

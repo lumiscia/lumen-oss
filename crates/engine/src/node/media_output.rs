@@ -82,7 +82,6 @@ impl GpuCompileNode for MediaOutput {
         Ok(RasterHandle {
             texture: output,
             domain: lumen_gpu::TextureDomain::full_frame(size),
-            alpha_mode: source.alpha_mode,
             bounds: None,
         })
     }

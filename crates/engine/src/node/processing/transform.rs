@@ -6,8 +6,7 @@ use crate::node::{
 };
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -126,7 +125,6 @@ impl GpuCompileNode for Transform {
         )?;
         ctx.register_compiled_node(CompiledTransform {
             motion,
-            straight_source: source.alpha_mode == AlphaMode::Unpremultiplied,
             output_origin: [domain.data_rect.x, domain.data_rect.y],
             source_origin: [source.domain.data_rect.x, source.domain.data_rect.y],
             buffer: params,
@@ -134,7 +132,6 @@ impl GpuCompileNode for Transform {
         Ok(RasterHandle {
             texture,
             domain,
-            alpha_mode: source.alpha_mode,
             bounds: None,
         })
     }
@@ -143,7 +140,6 @@ impl GpuCompileNode for Transform {
 #[derive(Debug, Clone)]
 struct CompiledTransform {
     motion: TransformMotion,
-    straight_source: bool,
     /// Canvas pixel of the output's first texel.
     output_origin: [i32; 2],
     /// Source pixel of the source's first texel.
@@ -173,7 +169,6 @@ impl GpuCompiledNode for CompiledTransform {
             pivot,
             rotate_radians: (evaluated.rotate as f32).to_radians(),
             sampling: evaluated.sampling as u32,
-            straight_source: u32::from(self.straight_source),
             output_origin: self.output_origin,
             source_origin: self.source_origin,
             ..bytemuck::Zeroable::zeroed()

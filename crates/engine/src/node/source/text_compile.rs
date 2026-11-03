@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::error::RenderError;
-use crate::gpu::{AlphaMode, CompileContext, RasterHandle, compiler};
+use crate::gpu::{CompileContext, RasterHandle, compiler};
 use crate::node::motion::shutter_offset;
 use crate::node::vector::{
     drawable::{DRAWABLE_SHADER, DrawableTransform, GpuDrawableMotion, GpuDrawableTransform},
@@ -342,7 +342,6 @@ pub(super) fn compile_text(
     Ok(RasterHandle {
         texture,
         domain,
-        alpha_mode: AlphaMode::Premultiplied,
         bounds: None,
     })
 }

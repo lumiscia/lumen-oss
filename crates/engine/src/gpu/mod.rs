@@ -34,6 +34,5 @@ pub use target::{CudaNvencTarget, CudaNvencTargetPool};
 #[cfg(all(target_os = "macos", feature = "ffmpeg", feature = "metal"))]
 pub use target::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 pub use types::{
-    AlphaMode, BoundFrame, CompiledComposition, GpuCompiledNode, MediaTextureKey, RasterHandle,
-    TimeRemapPath,
+    BoundFrame, CompiledComposition, GpuCompiledNode, MediaTextureKey, RasterHandle, TimeRemapPath,
 };

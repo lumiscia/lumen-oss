@@ -4,8 +4,7 @@ use crate::node::{
 };
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 use super::gaussian;
@@ -143,7 +142,6 @@ impl GpuCompileNode for Shadow {
             params: self.params.clone(),
             blurred,
             buffer: params,
-            straight_source: source.alpha_mode == AlphaMode::Unpremultiplied,
             origins: [
                 domain.data_rect.x,
                 domain.data_rect.y,
@@ -155,7 +153,6 @@ impl GpuCompileNode for Shadow {
         Ok(RasterHandle {
             texture: output,
             domain,
-            alpha_mode: AlphaMode::Premultiplied,
             bounds: None,
         })
     }
@@ -167,7 +164,6 @@ struct CompiledShadow {
     params: ShadowParamsDelegate,
     blurred: gaussian::GaussianPasses,
     buffer: lumen_gpu::BufferId,
-    straight_source: bool,
     /// Canvas pixel of the first texel of the output and of the blurred shadow.
     origins: [i32; 4],
     /// Canvas pixel of the source's first texel.
@@ -194,26 +190,18 @@ impl GpuCompiledNode for CompiledShadow {
             .into());
         };
         let color = [r, g, b, a].map(|channel| f32::from(channel) / 255.0);
-        // The color alpha is folded into the opacity so `color.w` can carry the
-        // source's straight-alpha flag.
+        // The color alpha is folded into the opacity.
         self.blurred.write(
             bound,
             &gaussian::GaussianSettings {
                 radius: evaluated.radius,
-                straight_source: self.straight_source,
                 transparent_edge: true,
                 offset: [evaluated.offset_x, evaluated.offset_y],
             },
         );
         let opacity = evaluated.opacity.clamp(0.0, 1.0) as f32 * color[3];
         let gpu_params = compiler::ShadowParams {
-            color: [
-                color[0],
-                color[1],
-                color[2],
-                if self.straight_source { 1.0 } else { 0.0 },
-            ],
-            values: [0.0, 0.0, 0.0, opacity],
+            color: [color[0], color[1], color[2], opacity],
             origins: self.origins,
             source_origin: [self.source_origin[0], self.source_origin[1], 0, 0],
         };

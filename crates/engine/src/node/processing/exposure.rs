@@ -1,8 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -48,7 +47,6 @@ pub struct Exposure {
 struct CompiledExposure {
     node_id: NodeId,
     params: ExposureParamsDelegate,
-    alpha_mode: AlphaMode,
     buffer: lumen_gpu::BufferId,
 }
 
@@ -66,7 +64,6 @@ impl GpuCompiledNode for CompiledExposure {
             exposure: params.exposure as f32,
             contrast: params.contrast as f32,
             offset: params.offset as f32,
-            premultiplied: u32::from(self.alpha_mode == AlphaMode::Premultiplied),
         };
         bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
         Ok(())
@@ -81,18 +78,16 @@ impl GpuCompileNode for Exposure {
             "exposure",
             SHADER,
             std::mem::size_of::<compiler::ExposureParams>() as u64,
-            compiler::FilterDomain::PremultipliedSource,
+            compiler::FilterDomain::Source,
         )?;
         ctx.register_compiled_node(CompiledExposure {
             node_id: self.id,
             params: self.params.clone(),
-            alpha_mode: source.alpha_mode,
             buffer: params,
         });
         Ok(RasterHandle {
             texture,
             domain: source.domain,
-            alpha_mode: source.alpha_mode,
             bounds: source.bounds,
         })
     }

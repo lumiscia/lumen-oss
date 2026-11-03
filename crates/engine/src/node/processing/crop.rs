@@ -68,7 +68,6 @@ impl GpuCompileNode for Crop {
         });
 
         Ok(RasterHandle {
-            alpha_mode: source.alpha_mode,
             // The params buffer holds the region clamped to the source, which is the output's
             // logical bounds.
             bounds: Some(crop.params),

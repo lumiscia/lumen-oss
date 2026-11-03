@@ -3,8 +3,7 @@ use crate::node::{
 };
 
 use crate::gpu::{
-    AlphaMode, BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
+    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
 
 pub(crate) const SHADER: &str = concat!(
@@ -116,7 +115,6 @@ impl GpuCompileNode for ColorGrade {
         ctx.register_compiled_node(CompiledColorGrade {
             node_id: self.id,
             params: self.params.clone(),
-            alpha_mode: source.alpha_mode,
             params_buffer: params,
             lut_buffer: lut,
         });
@@ -124,7 +122,6 @@ impl GpuCompileNode for ColorGrade {
         Ok(RasterHandle {
             texture,
             domain: source.domain,
-            alpha_mode: source.alpha_mode,
             bounds: source.bounds,
         })
     }
@@ -134,7 +131,6 @@ impl GpuCompileNode for ColorGrade {
 struct CompiledColorGrade {
     node_id: NodeId,
     params: ColorGradeParamsDelegate,
-    alpha_mode: AlphaMode,
     params_buffer: lumen_gpu::BufferId,
     lut_buffer: lumen_gpu::BufferId,
 }
@@ -152,8 +148,6 @@ impl GpuCompiledNode for CompiledColorGrade {
         let gpu_params = compiler::ColorGradeParams {
             strength: evaluated.strength as f32,
             interpolation: evaluated.interpolation as u32,
-            premultiplied: u32::from(self.alpha_mode == AlphaMode::Premultiplied),
-            _pad: 0,
         };
         let lut = compiler::ColorGradeLut::parse(self.node_id, &evaluated.lut_source)?;
         bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&gpu_params));

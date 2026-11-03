@@ -5,7 +5,7 @@ use lumen_engine::{
     composition::{Composition, CompositionBuilder, RenderSettings, TimelineSettings},
     error::{GraphValidationError, LumenError},
     expr::Expression,
-    gpu::{AlphaMode, BoundFrame, CompileContext, CompiledComposition, FrameBindContext},
+    gpu::{BoundFrame, CompileContext, CompiledComposition, FrameBindContext},
     graph::{Connection, Graph},
     media::{
         CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
@@ -861,57 +861,16 @@ fn remap_binds_each_branch() {
     }
 }
 
-#[test]
-fn opacity_binds_alpha_flag() {
-    let source = solid(1, [64, 128, 255, 128]);
-    // The uniform holds the opacity, then 1 if the node scales premultiplied RGB with alpha.
-    for (name, nodes, input, alpha_mode, frames) in [(
-        "premultiplied, animated",
-        json!([
-            source.clone(),
-            { "id": 2, "type": "opacity", "params": { "opacity": "=frame / 10" },
-              "in": { "source": 1 } },
-        ]),
-        1,
-        AlphaMode::Premultiplied,
-        vec![(0, [0.0, 1.0]), (5, [0.5, 1.0])],
-    )] {
-        let composition = scene((8, 4), nodes);
-        let compiled = compile(&composition, None);
-        let opacity = input + 1;
-        let buffer = uniform_buffers_of(&compiled.plan, opacity)[0];
-        let (output, source) = (raster(&compiled, opacity), raster(&compiled, input));
-        assert_eq!(output.domain, source.domain, "{name}");
-        assert_eq!(output.alpha_mode, source.alpha_mode, "{name}");
-        assert_eq!(output.alpha_mode, alpha_mode, "{name}");
-        for (frame, expected) in frames {
-            let bound = bind(&composition, &compiled, frame);
-            assert_eq!(
-                uploaded_f32s(&bound, buffer, 2),
-                expected,
-                "{name}, frame {frame}"
-            );
-        }
-    }
-}
-
-enum Stage {
-    Compile,
-    Bind,
-}
-
 struct BindError {
     name: String,
     composition: Composition,
-    stage: Stage,
     message: String,
 }
 
-fn row(name: &str, nodes: Value, stage: Stage, message: impl Into<String>) -> BindError {
+fn row(name: &str, nodes: Value, message: impl Into<String>) -> BindError {
     BindError {
         name: name.to_string(),
         composition: scene((8, 4), nodes),
-        stage,
         message: message.into(),
     }
 }
@@ -951,38 +910,32 @@ fn bind_errors() {
         rows.push(row(
             &format!("crop {path} beyond the GPU range"),
             crop_resize(invalid, valid),
-            Stage::Bind,
             property(2, path),
         ));
         rows.push(row(
             &format!("resize {path} beyond the GPU range"),
             crop_resize(valid, invalid),
-            Stage::Bind,
             property(3, path),
         ));
     }
     rows.push(row(
         "crop origin below i32::MIN",
         crop_resize([i64::from(i32::MIN) - 1, 0, 4, 4], valid),
-        Stage::Bind,
         property(2, "x"),
     ));
     rows.push(row(
         "word outside glyph params",
         json!([text("Lumen", json!({ "position": "=vec2(word * 10, 0)" }))]),
-        Stage::Bind,
         glyph("word"),
     ));
     rows.push(row(
         "line outside glyph params",
         json!([text("Lumen", json!({ "opacity": "=line" }))]),
-        Stage::Bind,
         glyph("line"),
     ));
     rows.push(row(
         "glyph on a node that is not text",
         json!([{ "id": 1, "type": "shape", "params": { "opacity": "=glyph / glyph_count" } }]),
-        Stage::Bind,
         glyph("glyph"),
     ));
     // Another node's property is evaluated outside the glyph, so it fails as it would alone.
@@ -996,13 +949,11 @@ fn bind_errors() {
     rows.push(row(
         "foreign property read in glyph scope",
         foreign("=vec2(node(2, \"font_size\"), 0)"),
-        Stage::Bind,
         "`glyph` is only available",
     ));
     rows.push(row(
         "text_width of a foreign node in glyph scope",
         foreign("=vec2(text_width(node(2)), 0)"),
-        Stage::Bind,
         "`glyph` is only available",
     ));
     // An expression can only name a value the enum has.
@@ -1052,7 +1003,6 @@ fn bind_errors() {
                 solid(2, [0, 0, 255, 255]),
                 { "id": 3, "type": kind, "in": inputs, "params": { param: value } },
             ]),
-            Stage::Bind,
             format!("is not a value of {enum_name}"),
         ));
     }
@@ -1068,13 +1018,11 @@ fn bind_errors() {
                 ]
             } } },
         ]),
-        Stage::Bind,
         "property `color` on node 2 has invalid type: expected a solid color, got a gradient",
     ));
     rows.push(row(
         "malformed path data",
         json!([{ "id": 1, "type": "path", "params": { "data": "M 0 0 L 10 10 C nope" } }]),
-        Stage::Bind,
         "Path node 1 evaluation failed: `data` is malformed",
     ));
     let mut data = String::from("M 10 10");
@@ -1088,26 +1036,17 @@ fn bind_errors() {
     rows.push(row(
         "path above the point limit",
         json!([{ "id": 1, "type": "path", "params": { "data": data + " Z" } }]),
-        Stage::Bind,
         "more than 16384 points",
     ));
 
     for row in rows {
         let composition = row.composition;
-        let error = match row.stage {
-            Stage::Compile => CompileContext::new(&composition)
-                .compile()
-                .map(|_| ())
-                .expect_err(&row.name),
-            Stage::Bind => {
-                let compiled = compile(&composition, None);
-                FrameBindContext::new(&composition, 0)
-                    .bind(&compiled)
-                    .map(|_| ())
-                    .expect_err(&row.name)
-            }
-        }
-        .to_string();
+        let compiled = compile(&composition, None);
+        let error = FrameBindContext::new(&composition, 0)
+            .bind(&compiled)
+            .map(|_| ())
+            .expect_err(&row.name)
+            .to_string();
         assert!(error.contains(&row.message), "{}: {error}", row.name);
     }
 }
