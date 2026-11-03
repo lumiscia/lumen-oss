@@ -387,7 +387,29 @@ pub(crate) struct CompiledText {
     pub(crate) size: lumen_gpu::Size,
     /// The size of what the glyphs are drawn to: the layer of blurred text, else the output.
     pub(crate) layer_size: lumen_gpu::Size,
+    /// Whether binding measures where the text draws, for a recorded frame to size its output.
+    pub(crate) measure_ink: bool,
     pub(crate) state: Arc<Mutex<TextState>>,
+}
+
+/// What a bound text draws, for a recorded frame.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DrawnText {
+    pub(crate) opacity: f64,
+    pub(crate) canvas_bounds: Option<[f32; 4]>,
+}
+
+impl crate::gpu::frame_graph::RecordNode for Text {
+    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        super::text_compile::text_programs(programs)
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        super::text_compile::record_text(self, cx)
+    }
 }
 
 impl GpuCompiledNode for CompiledText {
@@ -425,10 +447,15 @@ impl CompiledText {
         .into())
     }
 
+    /// What the last bind drew.
+    pub(crate) fn drawn(&self) -> DrawnText {
+        self.state.lock().expect("text state").drawn
+    }
+
     /// Binds the text, stopping once its glyphs are placed when `kept` and the output kept from
     /// an earlier frame still matches: no glyph was dropped or placed again. Returns whether it
     /// bound fully.
-    fn bind_text(
+    pub(crate) fn bind_text(
         &self,
         ctx: &FrameBindContext<'_>,
         bound: &mut BoundFrame,
@@ -478,6 +505,11 @@ impl CompiledText {
                 },
                 baseline_shifts: span_styles.iter().map(|span| span.baseline_shift).collect(),
                 font_generation,
+            };
+            state.ink = if self.measure_ink {
+                text_system.ink_bounds(&shaped)
+            } else {
+                None
             };
             state.shaped = Some((key, shaped));
             if let Some(started) = layout_started {
@@ -699,6 +731,43 @@ impl CompiledText {
             &state.decorations,
             &state.strokes,
         );
+        if self.measure_ink {
+            let stroke_reach = state
+                .strokes
+                .iter()
+                .flatten()
+                .map(|stroke| lumen_text::stroke_reach(stroke.half_width))
+                .fold(0.0, f32::max);
+            let decorations = &state.decorations;
+            state.drawn.canvas_bounds = state.ink.map(|ink| {
+                let (min, max) = decorations.iter().fold(
+                    (
+                        [
+                            origin[0] + ink[0] - stroke_reach,
+                            origin[1] + ink[1] - stroke_reach,
+                        ],
+                        [
+                            origin[0] + ink[2] + stroke_reach,
+                            origin[1] + ink[3] + stroke_reach,
+                        ],
+                    ),
+                    |(min, max), rect| {
+                        let [x0, y0, x1, y1] = rect.rect_bounds();
+                        (
+                            [min[0].min(x0), min[1].min(y0)],
+                            [max[0].max(x1), max[1].max(y1)],
+                        )
+                    },
+                );
+                let transform = DrawableTransform {
+                    opacity: 1.0,
+                    ..drawable
+                };
+                let [x0, y0, x1, y1] = transform.to_gpu().canvas_bounds(min, max);
+                [x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0]
+            });
+        }
+        state.drawn.opacity = drawable.opacity;
         let motion = DrawableMotion::new(shutter.as_ref(), min, max);
         let canvas = [self.size.width as f32, self.size.height as f32];
         let layer = [self.layer_size.width as f32, self.layer_size.height as f32];
@@ -1018,6 +1087,9 @@ impl<'a, T: ParamValue + Copy> PerGlyph<'a, T> {
 #[derive(Debug, Default)]
 pub(crate) struct TextState {
     shaped: Option<(TextShapeKey, Arc<lumen_text::ShapedText>)>,
+    /// The ink of `shaped`, relative to where it is placed, when the node measures it.
+    ink: Option<[f32; 4]>,
+    drawn: DrawnText,
     paints: Vec<GpuTextPaint>,
     /// Rect instances of the decorations: those under the glyphs, then those over them.
     decorations: Vec<lumen_text::GpuGlyphInstance>,
@@ -1033,6 +1105,15 @@ pub(crate) struct TextState {
     /// Where each glyph's stroke is, if any: whether over the glyphs, and its place in that list.
     /// Empty when no glyph has a stroke.
     stroke_at: Vec<Option<(bool, usize)>>,
+}
+
+impl Default for DrawnText {
+    fn default() -> Self {
+        Self {
+            opacity: 1.0,
+            canvas_bounds: None,
+        }
+    }
 }
 
 #[derive(Debug)]

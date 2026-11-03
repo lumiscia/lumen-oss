@@ -168,3 +168,71 @@ impl GpuCompiledNode for CompiledResize {
         Ok(())
     }
 }
+
+const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(
+        2,
+        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+    ),
+    lumen_gpu::LayoutEntry::compute(3, lumen_gpu::LayoutKind::Uniform),
+];
+
+impl crate::gpu::frame_graph::RecordNode for Resize {
+    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        programs.compute("resize", SHADER, "cs_main", RECORD_LAYOUT)
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.required_full(self.id, "source", self.source)?;
+        let evaluated = self.params.eval(&DelegateEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(),
+        })?;
+        let params = compiler::ResizeParams {
+            origin: [
+                compiler::pixel_origin(self.id, "x", evaluated.x)?,
+                compiler::pixel_origin(self.id, "y", evaluated.y)?,
+            ],
+            size: [
+                compiler::pixel_extent(self.id, "width", evaluated.width, 1)?,
+                compiler::pixel_extent(self.id, "height", evaluated.height, 1)?,
+            ],
+            mode: evaluated.mode as u32,
+            sampling: evaluated.sampling as u32,
+            _pad: [0; 2],
+        };
+        // Sources that don't publish bounds fill their whole storage texture.
+        let bounds = source.bounds.unwrap_or(compiler::CropParams {
+            origin: [0, 0],
+            size: [
+                source.domain.storage_size.width,
+                source.domain.storage_size.height,
+            ],
+        });
+        let size = cx.canvas_size();
+        let tex = cx.storage_target(size);
+        let program = cx.program("resize", SHADER, "cs_main", RECORD_LAYOUT)?;
+        let uniform = cx.rec.uniform(&params);
+        let bounds = cx.rec.uniform(&bounds);
+        cx.dispatch(
+            program,
+            &[
+                (0, lumen_gpu::Res::Tex(source.tex)),
+                (1, uniform),
+                (2, lumen_gpu::Res::Tex(tex)),
+                (3, bounds),
+            ],
+            compiler::dispatch_for(size),
+        );
+        Ok(crate::gpu::frame_graph::Raster {
+            tex,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            bounds: None,
+        })
+    }
+}

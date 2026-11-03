@@ -12,8 +12,18 @@ pub(super) struct GpuMediaImports {
     vulkan: HashMap<lumen_gpu::TextureId, VulkanMediaTexture>,
 }
 
+impl GpuMediaImports {
+    /// Frees the textures frames were imported into under `id`.
+    pub(super) fn remove(&mut self, id: lumen_gpu::TextureId) {
+        #[cfg(all(target_os = "linux", feature = "vulkan"))]
+        self.vulkan.remove(&id);
+        #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
+        let _ = id;
+    }
+}
+
 #[derive(Default)]
-pub(super) struct GpuMediaFrameImporter {
+pub(crate) struct GpuMediaFrameImporter {
     #[cfg(all(target_os = "macos", feature = "metal"))]
     metal: Option<MetalMediaImporter>,
     #[cfg(all(target_os = "linux", feature = "vulkan"))]

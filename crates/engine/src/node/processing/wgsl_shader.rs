@@ -705,6 +705,136 @@ fn strip_comments(source: &str) -> String {
     out
 }
 
+/// The parts a recorded frame caches a shader from `source` as, with `inputs` inputs.
+fn record_parts(
+    node_id: NodeId,
+    source: &str,
+    inputs: usize,
+) -> crate::Result<crate::gpu::frame_graph::ShaderParts> {
+    use lumen_gpu::{LayoutEntry, LayoutKind};
+
+    let interface = ShaderInterface::parse(source)
+        .map_err(|details| shader_error(node_id, format!("shader: {details}")))?;
+    let assembled = interface.assemble(source, inputs);
+    let mut layout = vec![
+        LayoutEntry::compute(1, LayoutKind::Uniform),
+        LayoutEntry::compute(
+            OUTPUT_BINDING,
+            LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+        ),
+        LayoutEntry::compute(3, LayoutKind::Uniform),
+        LayoutEntry::compute(4, LayoutKind::Sampler),
+    ];
+    layout.extend(
+        (0..inputs).map(|index| LayoutEntry::compute(input_binding(index), LayoutKind::Texture)),
+    );
+    Ok((std::sync::Arc::new(interface) as _, assembled, layout))
+}
+
+impl crate::gpu::frame_graph::RecordNode for WgslShader {
+    /// A source that an expression picks builds when a frame first picks it.
+    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        let inputs = self.sources.len();
+        let Deferred::Value(source) = &self.params.shader else {
+            return Ok(());
+        };
+        if inputs == 0 || inputs > MAX_INPUTS {
+            return Ok(());
+        }
+        let source = if source.trim().is_empty() {
+            DEFAULT_SHADER
+        } else {
+            source.as_str()
+        };
+        programs.dynamic("wgsl-shader", source, inputs, || {
+            record_parts(self.id, source, inputs)
+        })
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        use lumen_gpu::Res;
+
+        let params = self.params.eval(&DelegateEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(),
+        })?;
+        let inputs = self
+            .sources
+            .iter()
+            .map(|&source| cx.input_full(source))
+            .collect::<crate::Result<Vec<_>>>()?;
+        let Some(first) = inputs.first().copied() else {
+            return Err(shader_error(self.id, "needs at least one input"));
+        };
+        if inputs.len() > MAX_INPUTS {
+            return Err(shader_error(
+                self.id,
+                format!(
+                    "has {} inputs; WebGPU allows at most {MAX_INPUTS}",
+                    inputs.len()
+                ),
+            ));
+        }
+        let user_source = if params.shader.trim().is_empty() {
+            DEFAULT_SHADER
+        } else {
+            params.shader.as_str()
+        };
+        let input_count = inputs.len();
+        let shader = cx.cached_shader(user_source, input_count, || {
+            record_parts(self.id, user_source, input_count)
+        })?;
+        let interface = shader
+            .interface
+            .downcast_ref::<ShaderInterface>()
+            .expect("shader interface");
+        let size = first.domain.storage_size;
+        let (uniforms, globals) = {
+            let expr = cx.expr();
+            (
+                interface
+                    .uniform_bytes(self.id, &params.uniforms, &expr)?
+                    .to_vec(),
+                LumenGlobals {
+                    resolution: [size.width as f32, size.height as f32],
+                    time: expr.time_seconds() as f32,
+                    frame: expr.frame as u32,
+                },
+            )
+        };
+        let tex = cx.storage_target(size);
+        let program = cx.dynamic_program("wgsl-shader", &shader)?;
+        let uniform = cx.rec.uniform_bytes(&uniforms);
+        let globals = cx.rec.uniform(&globals);
+        let sampler = cx.sampler(4, || lumen_gpu::wgpu::SamplerDescriptor {
+            address_mode_u: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+            address_mode_v: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+            address_mode_w: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+            mag_filter: lumen_gpu::wgpu::FilterMode::Linear,
+            min_filter: lumen_gpu::wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let mut bindings = vec![
+            (1, uniform),
+            (OUTPUT_BINDING, Res::Tex(tex)),
+            (3, globals),
+            (4, Res::Sampler(sampler)),
+        ];
+        for (index, input) in inputs.iter().enumerate() {
+            bindings.push((input_binding(index), Res::Tex(input.tex)));
+        }
+        cx.dispatch(program, &bindings, compiler::dispatch_for(size));
+        Ok(crate::gpu::frame_graph::Raster {
+            tex,
+            domain: first.domain,
+            bounds: None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

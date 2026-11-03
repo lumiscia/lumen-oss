@@ -118,6 +118,10 @@ pub(super) fn create_text_atlas_texture(
 #[derive(Debug, Clone, Default)]
 pub struct BoundFrame {
     pub(crate) renderer_binding: Option<(u64, super::renderer::CompiledPlanKey)>,
+    /// Glyph instances of a recorded frame, already copied to its bump buffer.
+    recorded_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
+    /// The bind sequence of a frame recorded rather than bound to a plan.
+    pub(crate) recorded: Option<u64>,
     /// Which nodes were bound, when bound against a renderer's kept output.
     pub(crate) cache: Option<super::cache::BoundCache>,
     buffer_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
@@ -162,6 +166,55 @@ pub struct MediaTextureUpload {
 impl BoundFrame {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Takes the buffer writes so far, for a recorded frame's bump buffers.
+    pub(crate) fn take_buffer_uploads(&mut self) -> Vec<(lumen_gpu::BufferId, u64, Vec<u8>)> {
+        std::mem::take(&mut self.buffer_uploads)
+    }
+
+    pub(crate) fn keep_recorded_uploads(
+        &mut self,
+        uploads: impl IntoIterator<Item = (lumen_gpu::BufferId, u64, Vec<u8>)>,
+    ) {
+        self.recorded_uploads.extend(uploads);
+    }
+
+    /// Writes the atlas regions text placed this frame into `atlas`.
+    pub(crate) fn write_atlas_regions(
+        &self,
+        queue: &lumen_gpu::wgpu::Queue,
+        atlas: &lumen_gpu::wgpu::Texture,
+    ) {
+        for TextureUpload {
+            data,
+            origin,
+            size,
+            bytes_per_row,
+            rows_per_image,
+            ..
+        } in &self.texture_uploads
+        {
+            queue.write_texture(
+                lumen_gpu::wgpu::TexelCopyTextureInfo {
+                    texture: atlas,
+                    mip_level: 0,
+                    origin: lumen_gpu::wgpu::Origin3d {
+                        x: origin[0],
+                        y: origin[1],
+                        z: origin[2],
+                    },
+                    aspect: lumen_gpu::wgpu::TextureAspect::All,
+                },
+                data,
+                lumen_gpu::wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(*bytes_per_row),
+                    rows_per_image: Some(*rows_per_image),
+                },
+                size.as_extent(),
+            );
+        }
     }
 
     pub fn write_buffer(&mut self, id: lumen_gpu::BufferId, offset: u64, data: impl Into<Vec<u8>>) {
@@ -229,7 +282,7 @@ impl BoundFrame {
 
     pub fn frame_update(&self) -> lumen_gpu::FrameUpdate<'_> {
         let mut update = lumen_gpu::FrameUpdate::new();
-        for (id, offset, data) in &self.buffer_uploads {
+        for (id, offset, data) in self.buffer_uploads.iter().chain(&self.recorded_uploads) {
             update.write_buffer(*id, *offset, data);
         }
         for upload in &self.texture_uploads {

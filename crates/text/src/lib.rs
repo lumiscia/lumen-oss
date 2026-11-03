@@ -1,10 +1,11 @@
 //! Text layout and GPU-facing text data for Lumen: shaping, measurement, atlas bookkeeping and
 //! WGSL-facing buffer formats.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cosmic_text::{FontSystem, SwashCache, fontdb};
+use cosmic_text::{CacheKey, FontSystem, SwashCache, fontdb};
 
 mod atlas;
 mod decorate;
@@ -81,6 +82,8 @@ fn font_database(registrations: &[Registration]) -> fontdb::Database {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoFontFaces;
 
+pub(crate) const MAX_GLYPH_EXTENTS: usize = 1 << 14;
+
 #[derive(Debug)]
 pub struct TextSystem {
     font_system: FontSystem,
@@ -90,6 +93,8 @@ pub struct TextSystem {
     registrations: Vec<Registration>,
     /// Recently shaped requests, newest last.
     shapes: Vec<(TextLayoutRequest, Arc<ShapedText>)>,
+    /// The extent of each glyph measured under these fonts.
+    glyph_extents: HashMap<CacheKey, Option<[f32; 4]>>,
 }
 
 impl TextSystem {
@@ -102,6 +107,7 @@ impl TextSystem {
             font_generation: next_font_generation(),
             registrations: Vec::new(),
             shapes: Vec::new(),
+            glyph_extents: HashMap::new(),
         }
     }
 
@@ -198,6 +204,7 @@ impl TextSystem {
         self.font_system = new_font_system(font_database(&self.registrations));
         self.font_generation = next_font_generation();
         self.shapes.clear();
+        self.glyph_extents.clear();
     }
 
     /// Changes whenever the fonts do and differs between text systems. What is keyed by font IDs

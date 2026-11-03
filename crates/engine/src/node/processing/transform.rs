@@ -254,6 +254,10 @@ impl TransformMotion {
         let keys = self
             .taps(&evaluated, expr)?
             .unwrap_or_else(|| vec![self.key(&evaluated)]);
+        Ok(self.bounds_of_keys(data, &keys))
+    }
+
+    fn bounds_of_keys(&self, data: lumen_gpu::RectI, keys: &[TransformKey]) -> Option<[f32; 4]> {
         let (x0, y0) = (f64::from(data.x) - 0.5, f64::from(data.y) - 0.5);
         let (x1, y1) = (
             x0 + f64::from(data.width) + 1.0,
@@ -267,7 +271,7 @@ impl TransformMotion {
             let tap = key.sampled().to_gpu();
             let radians = f64::from(tap.rotate_radians);
             if radians.is_nan() || radians.abs() > MAX_BOUNDED_RADIANS {
-                return Ok(None);
+                return None;
             }
             let (sin, cos) = radians.sin_cos();
             let [scale, translate, pivot] =
@@ -284,7 +288,7 @@ impl TransformMotion {
                     x * sin + y * cos + pivot[1] + translate[1],
                 ];
                 if !point.iter().all(|value| value.is_finite()) {
-                    return Ok(None);
+                    return None;
                 }
                 magnitude = [corner[0], corner[1], x, y, point[0], point[1]]
                     .iter()
@@ -301,14 +305,12 @@ impl TransformMotion {
             }
         }
         if magnitude > MAX_BOUNDED_MAGNITUDE {
-            return Ok(None);
+            return None;
         }
         // Single-precision rounding in the shader grows with the largest value it handles.
         pad += ROUNDING_ERROR_FACTOR * f64::from(f32::EPSILON) * magnitude;
         let [min_x, min_y, max_x, max_y] = bounds;
-        Ok(Some(
-            [min_x - pad, min_y - pad, max_x + pad, max_y + pad].map(|value| value as f32),
-        ))
+        Some([min_x - pad, min_y - pad, max_x + pad, max_y + pad].map(|value| value as f32))
     }
 
     /// The transform at either end of the shutter and at the frame, or `None` when motion
@@ -428,6 +430,69 @@ fn resolve_pivot(custom_pivot: bool, pivot: [f32; 2], source_size: lumen_gpu::Si
             source_size.width as f32 * 0.5,
             source_size.height as f32 * 0.5,
         ]
+    }
+}
+
+impl crate::gpu::frame_graph::RecordNode for Transform {
+    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        programs.spatial("transform", SHADER)
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        self.reject_ignored_pivot()?;
+        let source = cx.required(self.id, "source", self.source)?;
+        let motion = TransformMotion {
+            node_id: self.id,
+            params: self.params.clone(),
+            source_size: source.domain.display_size(),
+        };
+        let (evaluated, taps) = {
+            let expr = cx.expr();
+            let evaluated = self.params.eval(&DelegateEvalContext {
+                node_id: self.id,
+                expr: &expr,
+            })?;
+            let taps = motion.taps(&evaluated, &expr)?;
+            (evaluated, taps)
+        };
+        let bounds = motion.bounds_of_keys(
+            source.domain.data_rect,
+            taps.as_deref().unwrap_or(&[motion.key(&evaluated)]),
+        );
+        let bounds = cx.bounds_of(bounds);
+        let domain = cx.source_domain(bounds);
+        let pivot = resolve_pivot(
+            evaluated.custom_pivot,
+            [evaluated.pivot_x as f32, evaluated.pivot_y as f32],
+            motion.source_size,
+        );
+        let mut params = compiler::TransformParams {
+            scale: [evaluated.scale_x as f32, evaluated.scale_y as f32],
+            translate: [evaluated.translate_x as f32, evaluated.translate_y as f32],
+            pivot,
+            rotate_radians: (evaluated.rotate as f32).to_radians(),
+            sampling: evaluated.sampling as u32,
+            output_origin: [domain.data_rect.x, domain.data_rect.y],
+            source_origin: source.origin(),
+            ..bytemuck::Zeroable::zeroed()
+        };
+        if let Some(taps) = &taps {
+            params.tap_count = taps.len() as u32;
+            for (gpu, tap) in params.taps.iter_mut().zip(taps) {
+                *gpu = tap.to_gpu();
+            }
+        }
+        let size = domain.storage_size;
+        let tex = cx.storage_target(size);
+        cx.spatial_pass("transform", SHADER, source.tex, &params, tex, size)?;
+        Ok(crate::gpu::frame_graph::Raster {
+            tex,
+            domain,
+            bounds: None,
+        })
     }
 }
 

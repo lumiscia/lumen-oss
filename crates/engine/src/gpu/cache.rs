@@ -238,7 +238,7 @@ impl CacheRecorder {
 }
 
 /// Whether the node renders the same output on every frame as long as its inputs do.
-fn is_static_candidate(node: &NodeKind) -> bool {
+pub(super) fn is_static_candidate(node: &NodeKind) -> bool {
     match node {
         // Media changes with the frame and the media store, shaders see the built-in time, and
         // the output is written into external textures that replace its own.

@@ -138,3 +138,52 @@ impl GpuCompiledNode for CompiledColorGrade {
         Ok(())
     }
 }
+
+const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(
+        3,
+        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+    ),
+];
+
+impl crate::gpu::frame_graph::RecordNode for ColorGrade {
+    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        programs.compute("color-grade", SHADER, "cs_main", RECORD_LAYOUT)
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.required_full(self.id, "source", self.source)?;
+        let evaluated = self.params.eval(&DelegateEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(),
+        })?;
+        let gpu_params = compiler::ColorGradeParams {
+            strength: evaluated.strength as f32,
+            interpolation: evaluated.interpolation as u32,
+        };
+        let lut = compiler::ColorGradeLut::parse(self.id, &evaluated.lut_source)?;
+
+        let size = source.domain.storage_size;
+        let tex = cx.storage_target(size);
+        let program = cx.program("color-grade", SHADER, "cs_main", RECORD_LAYOUT)?;
+        let uniform = cx.rec.uniform(&gpu_params);
+        let storage = cx.rec.storage_parts(&[bytemuck::bytes_of(&lut)]);
+        cx.dispatch(
+            program,
+            &[
+                (0, lumen_gpu::Res::Tex(source.tex)),
+                (1, uniform),
+                (2, storage),
+                (3, lumen_gpu::Res::Tex(tex)),
+            ],
+            compiler::dispatch_for(size),
+        );
+        Ok(crate::gpu::frame_graph::Raster { tex, ..source })
+    }
+}

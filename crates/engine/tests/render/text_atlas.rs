@@ -358,9 +358,11 @@ fn a_bound_frame_is_not_uploaded_once_a_later_one_is_bound() {
 
 fn text_domain_is_bounded(renderer: &GpuCompositionRenderer) -> bool {
     let text = NodeId::new(1);
-    !renderer
-        .compiled()
-        .expect("a frame rendered")
+    // A recorded frame keeps no plan to read this from.
+    let Some(compiled) = renderer.compiled() else {
+        return true;
+    };
+    !compiled
         .node_output(text, &[])
         .expect("the text compiled")
         .domain

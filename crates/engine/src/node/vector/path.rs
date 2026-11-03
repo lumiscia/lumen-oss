@@ -223,8 +223,8 @@ fn path_is_animated(params: &PathParamsDelegate) -> bool {
 /// A frame's uniforms, points and bands for the path shader.
 pub(super) struct PathFrame<'a> {
     pub(super) uniforms: PathUniforms,
-    points: Cow<'a, [PathPoint]>,
-    bands: Vec<u32>,
+    pub(super) points: Cow<'a, [PathPoint]>,
+    pub(super) bands: Vec<u32>,
 }
 
 impl<'a> PathFrame<'a> {
@@ -602,6 +602,65 @@ fn normalize_contour_offsets(points: &mut [PathPoint]) {
         }
         start = end + 1;
     }
+}
+
+impl crate::gpu::frame_graph::RecordNode for Path {
+    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        programs.compute("path", PATH_SHADER, "cs_main", RECORD_PATH_LAYOUT)
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let frame = path_frame(
+            &self.params,
+            self.id,
+            &cx.expr(),
+            None,
+            super::path_bands::band_capacity(MAX_PATH_POINTS),
+        )?;
+        record_path_source(cx, frame)
+    }
+}
+
+const RECORD_PATH_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
+];
+
+/// Records a vector path, sized to what it draws this frame.
+fn record_path_source(
+    cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    frame: PathFrame<'_>,
+) -> crate::Result<crate::gpu::frame_graph::Raster> {
+    let mut uniforms = frame.uniforms;
+    let bounds = cx.bounds_of(Some(uniforms.screen_bounds));
+    let domain = cx.source_domain(bounds);
+    uniforms.origin = domain_origin(domain);
+    let size = domain.storage_size;
+    let tex = cx.storage_target(size);
+    let program = cx.program("path", PATH_SHADER, "cs_main", RECORD_PATH_LAYOUT)?;
+    let uniform = cx.rec.uniform(&uniforms);
+    let points = cx.rec.storage_parts(&[bytemuck::cast_slice(&frame.points)]);
+    let bands = cx.rec.storage_parts(&[bytemuck::cast_slice(&frame.bands)]);
+    cx.dispatch(
+        program,
+        &[
+            (0, uniform),
+            (1, points),
+            (2, bands),
+            (3, lumen_gpu::Res::Tex(tex)),
+        ],
+        compiler::dispatch_for(size),
+    );
+    Ok(crate::gpu::frame_graph::Raster {
+        tex,
+        domain,
+        bounds: None,
+    })
 }
 
 #[cfg(test)]

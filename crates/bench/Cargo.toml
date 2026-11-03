@@ -16,6 +16,8 @@ metal = ["lumen-engine/metal", "lumen-ffmpeg/metal", "lumen-gpu/metal"]
 
 [dependencies]
 anyhow = "1.0.101"
+fontdb = "0.23.0"
+serde_json = "1"
 pollster = "1.0.1"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 lumen-engine = { workspace = true, features = ["ffmpeg", "image"] }
@@ -26,6 +28,10 @@ lumen-text = { workspace = true }
 [[bin]]
 name = "lumen-bench-composition"
 path = "src/bin/composition.rs"
+
+[[bin]]
+name = "lumen-bench-fg"
+path = "src/bin/frame_graph.rs"
 
 [[bin]]
 name = "lumen-bench-decode"

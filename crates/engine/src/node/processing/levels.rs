@@ -1,3 +1,4 @@
+use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
 use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
@@ -67,5 +68,30 @@ impl GpuCompileNode for Levels {
                 output_white: params.output_white as f32,
             },
         )
+    }
+}
+
+impl crate::gpu::frame_graph::RecordNode for Levels {
+    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        programs.spatial("levels", SHADER)
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.required(self.id, "source", self.source)?;
+        let params = self.params.eval(&DelegateEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(),
+        })?;
+        let gpu_params = compiler::LevelsParams {
+            black_point: params.black_point as f32,
+            white_point: params.white_point as f32,
+            gamma: params.gamma as f32,
+            output_black: params.output_black as f32,
+            output_white: params.output_white as f32,
+        };
+        cx.filter("levels", SHADER, source, &gpu_params)
     }
 }

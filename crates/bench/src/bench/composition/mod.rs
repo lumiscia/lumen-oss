@@ -1,4 +1,5 @@
 mod compositions;
+pub mod frame_graph;
 mod modes;
 mod profile;
 

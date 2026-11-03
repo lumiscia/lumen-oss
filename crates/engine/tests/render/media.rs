@@ -213,9 +213,8 @@ fn render_external(
     composition: &lumen_engine::composition::Composition,
     media: &TestMedia,
 ) -> Vec<u8> {
-    let output = renderer.compiled().unwrap().output;
+    let desc = renderer.output_desc().unwrap();
     let gpu = renderer.gpu_renderer();
-    let desc = gpu.texture_desc(output.texture).unwrap();
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("external output"),
         size: desc.domain.storage_size.as_extent(),

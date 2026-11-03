@@ -208,6 +208,49 @@ fn shape_flags(params: &ShapeParams) -> u32 {
     )
 }
 
+impl crate::gpu::frame_graph::RecordNode for Shape {
+    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        programs.compute("shape", SHAPE_SHADER, "cs_main", RECORD_SHAPE_LAYOUT)
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let mut uniforms = shape_frame(&self.params, self.id, &cx.expr())?;
+        record_shape_source(cx, &mut uniforms)
+    }
+}
+
+const RECORD_SHAPE_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(1, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
+];
+
+/// Records a rectangle or ellipse, sized to what its uniforms draw this frame.
+fn record_shape_source(
+    cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    uniforms: &mut ShapeUniforms,
+) -> crate::Result<crate::gpu::frame_graph::Raster> {
+    let bounds = cx.bounds_of(Some(uniforms.screen_bounds));
+    let domain = cx.source_domain(bounds);
+    uniforms.origin = domain_origin(domain);
+    let size = domain.storage_size;
+    let tex = cx.storage_target(size);
+    let program = cx.program("shape", SHAPE_SHADER, "cs_main", RECORD_SHAPE_LAYOUT)?;
+    let uniform = cx.rec.uniform(&*uniforms);
+    cx.dispatch(
+        program,
+        &[(0, uniform), (1, lumen_gpu::Res::Tex(tex))],
+        compiler::dispatch_for(size),
+    );
+    Ok(crate::gpu::frame_graph::Raster {
+        tex,
+        domain,
+        bounds: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

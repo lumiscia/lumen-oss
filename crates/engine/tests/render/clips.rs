@@ -286,6 +286,15 @@ fn a_hidden_clip_compiles_and_binds_nothing_upstream() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
     let media = TestMedia::default();
+    if renderer.frame_graph_enabled() {
+        let mut passes = |frame| {
+            renderer.bind_frame(&composition, frame, &media).unwrap();
+            renderer.recorded_pass_count()
+        };
+        let (hidden, shown) = (passes(2), passes(6));
+        assert!(hidden < shown, "{hidden} vs {shown}");
+        return;
+    }
     let mut stats = |frame| {
         let bound = renderer.bind_frame(&composition, frame, &media).unwrap();
         let compiled = renderer.compiled().unwrap();
@@ -365,6 +374,20 @@ fn a_clip_bounds_an_animated_source_over_its_own_frames() {
     // that one.
     let gpu = gpu();
     let mut renderer = gpu.renderer();
+    if renderer.frame_graph_enabled() {
+        // A recorded frame bounds the square to this frame alone, rounded out to a size class
+        // narrower than this canvas.
+        let mut wide = mover_scene();
+        wide.0["render_settings"]["width"] = json!(64);
+        wide.0["compositions"]["mover"]["render_settings"] = json!({ "width": 64, "height": 4 });
+        render(&mut renderer, &wide.into(), 10.0, &TestMedia::default());
+        let sizes = renderer.recorded_texture_sizes();
+        assert!(
+            sizes.iter().any(|size| size.width <= 16),
+            "no texture is bounded to the square at this frame: {sizes:?}"
+        );
+        return;
+    }
     render(
         &mut renderer,
         &mover_scene().into(),

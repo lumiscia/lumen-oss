@@ -74,6 +74,7 @@ where
     let render_span = tracing::info_span!("render_job", job_id);
     let rendered_bytes = tokio::task::spawn_blocking(move || {
         let _render_span = render_span.enter();
+        let mut frame_started = std::time::Instant::now();
         let mut progress_callback = |event: RenderProgress| {
             if verbose_debug {
                 tracing::debug!(
@@ -84,6 +85,13 @@ where
                     "render progress"
                 );
             }
+            tracing::debug!(
+                target: "lumen_frame_time",
+                frame = event.frame,
+                us = frame_started.elapsed().as_micros() as u64,
+                "frame"
+            );
+            frame_started = std::time::Instant::now();
             on_progress(event);
         };
 
