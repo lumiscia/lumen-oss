@@ -56,19 +56,30 @@ impl BuiltinSpec {
     }
 }
 
-/// Declares `BuiltinFn` and `BUILTINS` together so neither can drift from the other.
+/// Declares `BuiltinFn`, `BUILTINS` and `Easing` together so none can drift from the others. Each
+/// easing is a builtin of the same name, and `'linear'` is an easing name with no builtin.
 macro_rules! builtins {
-    ($(
-        $variant:ident $name:literal ($min:literal, $max:expr)
-        [$($arg:ident: $kind:ident),*] -> $returns:ident, $doc:literal;
-    )*) => {
+    (
+        functions {$(
+            $variant:ident $name:literal ($min:literal, $max:expr)
+            [$($arg:ident: $kind:ident),*] -> $returns:ident, $doc:literal;
+        )*}
+        easings {$($easing:ident $easing_name:literal, $easing_doc:literal;)*}
+    ) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum BuiltinFn {
-            $($variant),*
+            $($variant,)*
+            $($easing,)*
         }
 
-        pub const BUILTINS: &[BuiltinSpec] = &[$(
-            BuiltinSpec {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Easing {
+            Linear,
+            $($easing,)*
+        }
+
+        pub const BUILTINS: &[BuiltinSpec] = &[
+            $(BuiltinSpec {
                 name: $name,
                 builtin: BuiltinFn::$variant,
                 min_args: $min,
@@ -76,12 +87,48 @@ macro_rules! builtins {
                 args: &[$(BuiltinArg { name: stringify!($arg), kind: ValueKind::$kind }),*],
                 returns: ValueKind::$returns,
                 doc: $doc,
+            },)*
+            $(BuiltinSpec {
+                name: $easing_name,
+                builtin: BuiltinFn::$easing,
+                min_args: 1,
+                max_args: Some(1),
+                args: &[BuiltinArg { name: "t", kind: ValueKind::Number }],
+                returns: ValueKind::Number,
+                doc: $easing_doc,
+            },)*
+        ];
+
+        impl Easing {
+            pub const ALL: [Self; 1 + [$($easing_name),*].len()] =
+                [Self::Linear, $(Self::$easing),*];
+
+            pub const fn name(self) -> &'static str {
+                match self {
+                    Self::Linear => "linear",
+                    $(Self::$easing => $easing_name,)*
+                }
             }
-        ),*];
+
+            /// The easing a builtin such as `out_expo(t)` applies.
+            pub fn for_builtin(builtin: BuiltinFn) -> Option<Self> {
+                match builtin {
+                    $(BuiltinFn::$easing => Some(Self::$easing),)*
+                    _ => None,
+                }
+            }
+        }
+
+        /// A pattern matching every easing builtin.
+        macro_rules! easing_builtins {
+            () => { $(BuiltinFn::$easing)|* };
+        }
+        pub(super) use easing_builtins;
     };
 }
 
 builtins! {
+    functions {
     Min "min" (2, None) [values: Number] -> Number, "Smallest of two or more numbers.";
     Max "max" (2, None) [values: Number] -> Number, "Largest of two or more numbers.";
     Abs "abs" (1, Some(1)) [value: Number] -> Number, "Absolute value.";
@@ -100,8 +147,6 @@ builtins! {
     Fract "fract" (1, Some(1)) [value: Number] -> Number, "Fractional part of a number.";
     Smoothstep "smoothstep" (3, Some(3)) [edge0: Number, edge1: Number, x: Number] -> Number,
         "Hermite smoothing of `x` between two edges.";
-    Linear "linear" (3, Some(3)) [from: Any, to: Any, t: Number] -> Any,
-        "Same as `lerp`. Not to be confused with the `'linear'` easing name.";
     Step "step" (3, Some(3)) [from: Number, to: Number, t: Number] -> Number,
         "`to` once `t >= 1`, otherwise `from`.";
     TextHeight "text_height" (1, Some(4))
@@ -122,19 +167,6 @@ builtins! {
     Tween "tween" (4, Some(5))
         [from: Any, to: Any, start: Number, duration: Number, ease: Easing] -> Any,
         "Eases from `from` to `to` over `duration` frames from frame `start`. `ease` defaults to `'linear'`.";
-    InQuad "in_quad" (1, Some(1)) [t: Number] -> Number, "Quadratic ease-in.";
-    OutQuad "out_quad" (1, Some(1)) [t: Number] -> Number, "Quadratic ease-out.";
-    InOutQuad "in_out_quad" (1, Some(1)) [t: Number] -> Number, "Quadratic ease-in-out.";
-    InCubic "in_cubic" (1, Some(1)) [t: Number] -> Number, "Cubic ease-in.";
-    OutCubic "out_cubic" (1, Some(1)) [t: Number] -> Number, "Cubic ease-out.";
-    InOutCubic "in_out_cubic" (1, Some(1)) [t: Number] -> Number, "Cubic ease-in-out.";
-    InExpo "in_expo" (1, Some(1)) [t: Number] -> Number, "Exponential ease-in.";
-    OutExpo "out_expo" (1, Some(1)) [t: Number] -> Number, "Exponential ease-out.";
-    InOutExpo "in_out_expo" (1, Some(1)) [t: Number] -> Number, "Exponential ease-in-out.";
-    InBack "in_back" (1, Some(1)) [t: Number] -> Number, "Ease-in that pulls back first.";
-    OutBack "out_back" (1, Some(1)) [t: Number] -> Number, "Ease-out that overshoots.";
-    InOutBack "in_out_back" (1, Some(1)) [t: Number] -> Number,
-        "Ease-in-out that pulls back and overshoots.";
     CubicBezier "cubic_bezier" (5, Some(5))
         [x1: Number, y1: Number, x2: Number, y2: Number, t: Number] -> Number,
         "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.";
@@ -142,6 +174,21 @@ builtins! {
         "The value of a composition template's prop, e.g. `prop('title')`. Only inside a template.";
     Spring "spring" (1, Some(3)) [t: Number, stiffness: Number, damping: Number] -> Number,
         "Spring from 0 to 1, `t` seconds after release, e.g. `spring((frame - 12) / fps)`. Stiffness defaults to 170 and damping to 26.";
+    }
+    easings {
+    InQuad "in_quad", "Quadratic ease-in.";
+    OutQuad "out_quad", "Quadratic ease-out.";
+    InOutQuad "in_out_quad", "Quadratic ease-in-out.";
+    InCubic "in_cubic", "Cubic ease-in.";
+    OutCubic "out_cubic", "Cubic ease-out.";
+    InOutCubic "in_out_cubic", "Cubic ease-in-out.";
+    InExpo "in_expo", "Exponential ease-in.";
+    OutExpo "out_expo", "Exponential ease-out.";
+    InOutExpo "in_out_expo", "Exponential ease-in-out.";
+    InBack "in_back", "Ease-in that pulls back first.";
+    OutBack "out_back", "Ease-out that overshoots.";
+    InOutBack "in_out_back", "Ease-in-out that pulls back and overshoots.";
+    }
 }
 
 pub fn builtin_for_name(name: &str) -> Option<&'static BuiltinSpec> {
@@ -167,65 +214,82 @@ pub struct GlobalSpec {
     pub doc: &'static str,
 }
 
-pub const GLOBALS: &[GlobalSpec] = &[
-    GlobalSpec {
-        name: "frame",
-        doc: "Current frame number.",
+/// Declares `GlobalVar` and `GLOBALS` together so neither can drift from the other.
+macro_rules! globals {
+    ($($variant:ident $name:literal, $doc:literal;)*) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum GlobalVar {
+            $($variant),*
+        }
+
+        pub const GLOBALS: &[GlobalSpec] = &[$(GlobalSpec { name: $name, doc: $doc }),*];
+
+        impl GlobalVar {
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $($name => Some(Self::$variant),)*
+                    _ => None,
+                }
+            }
+
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name),*
+                }
+            }
+        }
+    };
+}
+
+globals! {
+    Frame "frame", "Current frame number.";
+    Time "time", "Current time in seconds.";
+    Fps "fps", "Frames per second.";
+    Width "width", "Render width in pixels.";
+    Height "height", "Render height in pixels.";
+    Glyph "glyph", "Index of the glyph being drawn, counting spaces. Only in a text node's `glyph_*` params.";
+    Word "word", "Index of the word being drawn. Only in a text node's `glyph_*` params.";
+    Line "line", "Index of the line being drawn. Only in a text node's `glyph_*` params.";
+    Span "span", "Index of the span being drawn, or 0 in plain text. Only in a text node's `glyph_*` params.";
+    GlyphCount "glyph_count", "Number of glyphs in the text. Only in a text node's `glyph_*` params.";
+    WordCount "word_count", "Number of words in the text. Only in a text node's `glyph_*` params.";
+    LineCount "line_count", "Number of lines in the text. Only in a text node's `glyph_*` params.";
+    SpanCount "span_count", "Number of spans in the text, or 1 in plain text. Only in a text node's `glyph_*` params.";
+}
+
+/// A call the parser handles itself instead of through `BUILTINS`, listed for documentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormSpec {
+    pub name: &'static str,
+    pub signature: &'static str,
+    pub doc: &'static str,
+}
+
+pub const FORMS: &[FormSpec] = &[
+    FormSpec {
+        name: "if",
+        signature: "if(condition, then, else)",
+        doc: "`then` when `condition` is truthy, otherwise `else`. Only the chosen branch is evaluated.",
     },
-    GlobalSpec {
-        name: "time",
-        doc: "Current time in seconds.",
-    },
-    GlobalSpec {
-        name: "fps",
-        doc: "Frames per second.",
-    },
-    GlobalSpec {
-        name: "width",
-        doc: "Render width in pixels.",
-    },
-    GlobalSpec {
-        name: "height",
-        doc: "Render height in pixels.",
-    },
-    GlobalSpec {
-        name: "glyph",
-        doc: "Index of the glyph being drawn, counting spaces. Only in a text node's `glyph_*` params.",
-    },
-    GlobalSpec {
-        name: "word",
-        doc: "Index of the word being drawn. Only in a text node's `glyph_*` params.",
-    },
-    GlobalSpec {
-        name: "line",
-        doc: "Index of the line being drawn. Only in a text node's `glyph_*` params.",
-    },
-    GlobalSpec {
-        name: "span",
-        doc: "Index of the span being drawn, or 0 in plain text. Only in a text node's `glyph_*` params.",
-    },
-    GlobalSpec {
-        name: "glyph_count",
-        doc: "Number of glyphs in the text. Only in a text node's `glyph_*` params.",
-    },
-    GlobalSpec {
-        name: "word_count",
-        doc: "Number of words in the text. Only in a text node's `glyph_*` params.",
-    },
-    GlobalSpec {
-        name: "line_count",
-        doc: "Number of lines in the text. Only in a text node's `glyph_*` params.",
-    },
-    GlobalSpec {
-        name: "span_count",
-        doc: "Number of spans in the text, or 1 in plain text. Only in a text node's `glyph_*` params.",
+    FormSpec {
+        name: "node",
+        signature: "node(id, 'property')",
+        doc: "The value of another node's param. `node(id)` alone names a text node for `text_width` and `text_height`.",
     },
 ];
 
+/// The names composition functions and their parameters may not take.
+pub fn reserved_names() -> impl Iterator<Item = &'static str> {
+    ["true", "false"]
+        .into_iter()
+        .chain(FORMS.iter().map(|form| form.name))
+        .chain(BUILTINS.iter().map(|spec| spec.name))
+        .chain(GLOBALS.iter().map(|global| global.name))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BUILTINS, GLOBALS, builtin_for_name};
-    use crate::expr::{ExprNode, Expression, GlobalVar};
+    use super::{BUILTINS, builtin_for_name};
 
     #[test]
     fn every_builtin_appears_exactly_once() {
@@ -238,18 +302,6 @@ mod tests {
                 Some(max) => assert!(max == spec.args.len() && spec.min_args <= max),
                 None => assert!(!spec.args.is_empty()),
             }
-        }
-    }
-
-    #[test]
-    fn globals_parse_to_builtin_variables() {
-        for global in GLOBALS {
-            let ast = Expression::parse(global.name).unwrap().ast;
-            assert!(
-                matches!(ast, ExprNode::Global(ref var) if !matches!(var, GlobalVar::Custom(_))),
-                "{}",
-                global.name
-            );
         }
     }
 }

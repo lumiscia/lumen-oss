@@ -8,9 +8,9 @@ use std::{
 use crate::{
     error::ExpressionError,
     expr::{
-        ExprNode, GlobalVar,
-        parser::{called_names, parse_expression, parse_signature},
-        spec::{GLOBALS, builtin_for_name},
+        ExprNode,
+        parser::{called_names, parse_function_body, parse_signature},
+        spec::reserved_names,
     },
 };
 
@@ -20,78 +20,8 @@ const MAX_EXPANDED_NODES: usize = 10_000;
 pub(crate) const MAX_EXPANDED_DEPTH: usize = 64;
 
 struct Function {
-    params: Vec<String>,
+    arity: usize,
     body: ExprNode,
-    shape: Shape,
-}
-
-/// The size of a tree, with each use of a parameter left as a hole to be filled by an argument.
-struct Shape {
-    nodes: usize,
-    depth: usize,
-    param_uses: Vec<usize>,
-    param_depth: Vec<usize>,
-}
-
-impl Shape {
-    fn of(node: &ExprNode, params: &[String]) -> Self {
-        let mut shape = Self {
-            nodes: 0,
-            depth: 0,
-            param_uses: vec![0; params.len()],
-            param_depth: vec![0; params.len()],
-        };
-        shape.measure(node, params, 1);
-        shape
-    }
-
-    fn measure(&mut self, node: &ExprNode, params: &[String], depth: usize) {
-        if let ExprNode::Global(GlobalVar::Custom(name)) = node
-            && let Some(index) = params.iter().position(|param| param == name)
-        {
-            self.param_uses[index] += 1;
-            self.param_depth[index] = self.param_depth[index].max(depth);
-            return;
-        }
-        self.nodes = self.nodes.saturating_add(1);
-        self.depth = self.depth.max(depth);
-        match node {
-            ExprNode::Binary(lhs, _, rhs) => {
-                self.measure(lhs, params, depth + 1);
-                self.measure(rhs, params, depth + 1);
-            }
-            ExprNode::Unary(_, value) => self.measure(value, params, depth + 1),
-            ExprNode::Builtin(_, args) => {
-                for arg in args {
-                    self.measure(arg, params, depth + 1);
-                }
-            }
-            ExprNode::Conditional(condition, when_true, when_false) => {
-                self.measure(condition, params, depth + 1);
-                self.measure(when_true, params, depth + 1);
-                self.measure(when_false, params, depth + 1);
-            }
-            ExprNode::Literal(_)
-            | ExprNode::Global(_)
-            | ExprNode::Node(_)
-            | ExprNode::PropertyValue(..) => {}
-        }
-    }
-
-    /// The `(nodes, depth)` of the tree once each parameter is replaced by a tree of the given
-    /// `(nodes, depth)`, computed without building it.
-    fn expanded(&self, args: &[(usize, usize)]) -> (usize, usize) {
-        let mut nodes = self.nodes;
-        let mut depth = self.depth;
-        for (index, &(arg_nodes, arg_depth)) in args.iter().enumerate() {
-            let uses = self.param_uses[index];
-            if uses > 0 {
-                nodes = nodes.saturating_add(uses.saturating_mul(arg_nodes));
-                depth = depth.max(self.param_depth[index] - 1 + arg_depth);
-            }
-        }
-        (nodes, depth)
-    }
 }
 
 /// The nodes a single top-level expression parse may build, counting call expansions.
@@ -119,7 +49,7 @@ impl Budget {
 
     /// Accounts for a node that was just built from already-counted children.
     pub(crate) fn push(&mut self, node: ExprNode) -> Result<ExprNode, ExpressionError> {
-        self.spend(1, Shape::of(&node, &[]).depth)?;
+        self.spend(1, node.depth())?;
         Ok(node)
     }
 }
@@ -154,24 +84,11 @@ impl FunctionScope {
 
         for name in dependency_order(&signatures)? {
             let (params, body) = &signatures[&name];
-            let expression = parse_expression(body)
+            let body = parse_function_body(body, params)
                 .map_err(|error| function_error(&name, body, error_details(error)))?;
-            let mut unknown = None;
-            visit(&expression.ast, &mut |node| {
-                if let ExprNode::Global(GlobalVar::Custom(variable)) = node
-                    && !params.contains(variable)
-                {
-                    unknown.get_or_insert_with(|| variable.clone());
-                }
-            });
-            if let Some(variable) = unknown {
-                let details = format!("unknown variable `{variable}`");
-                return Err(function_error(&name, body, details));
-            }
             let function = Function {
-                params: params.clone(),
-                shape: Shape::of(&expression.ast, params),
-                body: expression.ast,
+                arity: params.len(),
+                body,
             };
             FUNCTIONS.with_borrow_mut(|functions| functions.insert(name, function));
         }
@@ -195,24 +112,21 @@ pub(crate) fn expand(
         let Some(function) = functions.get(name) else {
             return Ok(None);
         };
-        if args.len() != function.params.len() {
+        if args.len() != function.arity {
             return Err(parse_error(format!(
                 "`{name}` expects {} arguments, got {}",
-                function.params.len(),
+                function.arity,
                 args.len()
             )));
         }
-        let arg_sizes: Vec<_> = args
-            .iter()
-            .map(|arg| {
-                let shape = Shape::of(arg, &[]);
-                (shape.nodes, shape.depth)
-            })
-            .collect();
-        let (nodes, depth) = function.shape.expanded(&arg_sizes);
-        let arg_nodes: usize = arg_sizes.iter().map(|&(nodes, _)| nodes).sum();
-        budget.spend(nodes.saturating_sub(arg_nodes), depth)?;
-        Ok(Some(substitute(&function.body, &function.params, args)))
+        // The expansion holds the only copies of the arguments, which were spent on when they
+        // were parsed. A call that discards them still doesn't give any budget back.
+        let spent = budget.nodes;
+        let arg_nodes: usize = args.iter().map(ExprNode::count).sum();
+        budget.nodes = spent.saturating_sub(arg_nodes);
+        let expanded = substitute(&function.body, args, 1, budget)?;
+        budget.nodes = budget.nodes.max(spent);
+        Ok(Some(expanded))
     })
 }
 
@@ -221,11 +135,7 @@ fn check_names(
     params: &[String],
     signatures: &BTreeMap<String, (Vec<String>, &str)>,
 ) -> Result<(), String> {
-    let reserved = |identifier: &str| {
-        matches!(identifier, "if" | "node" | "true" | "false")
-            || builtin_for_name(identifier).is_some()
-            || GLOBALS.iter().any(|global| global.name == identifier)
-    };
+    let reserved = |identifier: &str| reserved_names().any(|name| name == identifier);
     if reserved(name) {
         return Err(format!("`{name}` is a reserved name"));
     }
@@ -298,50 +208,27 @@ fn dependency_order(
     Ok(order)
 }
 
-fn substitute(node: &ExprNode, params: &[String], args: &[ExprNode]) -> ExprNode {
-    let recurse = |node: &ExprNode| Box::new(substitute(node, params, args));
-    match node {
-        ExprNode::Global(GlobalVar::Custom(name)) => params
-            .iter()
-            .position(|param| param == name)
-            .map_or_else(|| node.clone(), |index| args[index].clone()),
-        ExprNode::Binary(lhs, op, rhs) => ExprNode::Binary(recurse(lhs), *op, recurse(rhs)),
-        ExprNode::Unary(op, value) => ExprNode::Unary(*op, recurse(value)),
-        ExprNode::Builtin(builtin, builtin_args) => ExprNode::Builtin(
-            *builtin,
-            builtin_args
-                .iter()
-                .map(|arg| substitute(arg, params, args))
-                .collect(),
-        ),
-        ExprNode::Conditional(condition, when_true, when_false) => {
-            ExprNode::Conditional(recurse(condition), recurse(when_true), recurse(when_false))
-        }
-        ExprNode::Literal(_)
-        | ExprNode::Global(_)
-        | ExprNode::Node(_)
-        | ExprNode::PropertyValue(..) => node.clone(),
+/// A copy of `node` with each parameter replaced by its argument, placed at `level` of the tree
+/// being built. An argument's own parameters belong to the function it was written in.
+fn substitute(
+    node: &ExprNode,
+    args: &[ExprNode],
+    level: usize,
+    budget: &mut Budget,
+) -> Result<ExprNode, ExpressionError> {
+    if let ExprNode::Param(index) = node
+        && let Some(arg) = args.get(*index)
+    {
+        return substitute(arg, &[], level, budget);
     }
+    budget.spend(1, level)?;
+    node.map_children(|child| substitute(child, args, level + 1, budget))
 }
 
 pub(crate) fn visit(node: &ExprNode, f: &mut impl FnMut(&ExprNode)) {
     f(node);
-    match node {
-        ExprNode::Binary(lhs, _, rhs) => {
-            visit(lhs, f);
-            visit(rhs, f);
-        }
-        ExprNode::Unary(_, value) => visit(value, f),
-        ExprNode::Builtin(_, args) => args.iter().for_each(|arg| visit(arg, f)),
-        ExprNode::Conditional(condition, when_true, when_false) => {
-            visit(condition, f);
-            visit(when_true, f);
-            visit(when_false, f);
-        }
-        ExprNode::Literal(_)
-        | ExprNode::Global(_)
-        | ExprNode::Node(_)
-        | ExprNode::PropertyValue(..) => {}
+    for child in node.children() {
+        visit(child, f);
     }
 }
 
@@ -358,7 +245,6 @@ fn error_details(error: ExpressionError) -> String {
         ExpressionError::Parse { details, .. } | ExpressionError::Evaluate { details, .. } => {
             details
         }
-        ExpressionError::UndefinedVariable { name, .. } => format!("undefined variable `{name}`"),
         ExpressionError::Located { failure, .. } => error_details(*failure),
     }
 }

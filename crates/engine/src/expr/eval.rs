@@ -4,9 +4,9 @@ use std::{
 };
 
 use crate::{
-    error::{ExpressionError, LumenError},
+    error::LumenError,
     expr::{
-        ExpressionContext,
+        ExpressionContext, GlyphScope,
         ast::{BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::{evaluate_builtin, evaluate_text_measure_builtin},
     },
@@ -197,7 +197,7 @@ impl EvalPlan {
         }
         let value = match &step.op {
             Op::Literal(Literal(value)) => value.clone(),
-            Op::Global(global) => global_value(global, ctx)?,
+            Op::Global(global) => global_value(*global, ctx)?,
             Op::Unary(op, value) => unary(*op, self.evaluate_step(*value, ctx, memo)?)?,
             Op::Binary(lhs, op, rhs) => {
                 let lhs = self.evaluate_step(*lhs, ctx, memo)?;
@@ -239,7 +239,7 @@ impl PlanBuilder {
     fn add(&mut self, node: &ExprNode) -> usize {
         let op = match node {
             ExprNode::Literal(value) => Op::Literal(Literal(value.clone())),
-            ExprNode::Global(global) => Op::Global(global.clone()),
+            ExprNode::Global(global) => Op::Global(*global),
             ExprNode::Unary(op, value) => Op::Unary(*op, self.add(value)),
             ExprNode::Binary(lhs, op, rhs) => {
                 let lhs = self.add(lhs);
@@ -257,6 +257,7 @@ impl PlanBuilder {
                 self.trees.push(node.clone());
                 Op::Tree(self.trees.len() - 1)
             }
+            ExprNode::Param(_) => unreachable!("function bodies are not evaluated"),
         };
         if let Some(&step) = self.interned.get(&op) {
             return step;
@@ -291,7 +292,8 @@ pub(crate) fn evaluate_expr(
             }
             evaluate_builtin(*builtin, &evaluated_args, ctx)
         }
-        ExprNode::Global(global) => global_value(global, ctx),
+        ExprNode::Global(global) => global_value(*global, ctx),
+        ExprNode::Param(_) => unreachable!("function bodies are not evaluated"),
         ExprNode::Node(node_id) => Err(LumenError::evaluate(format!(
             "node reference `{}` can only be used in builtins that accept node references",
             node_id.0
@@ -384,48 +386,31 @@ fn binary(
     }
 }
 
-fn global_value(global: &GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
-    match global {
-        GlobalVar::Frame => Ok(ExpressionValue::Number(ctx.frame)),
-        GlobalVar::Time => Ok(ExpressionValue::Number(ctx.time_seconds())),
-        GlobalVar::Fps => Ok(ExpressionValue::Number(f64::from(ctx.fps))),
-        GlobalVar::Width => Ok(ExpressionValue::Number(f64::from(ctx.width))),
-        GlobalVar::Height => Ok(ExpressionValue::Number(f64::from(ctx.height))),
-        GlobalVar::Glyph
-        | GlobalVar::Word
-        | GlobalVar::Line
-        | GlobalVar::Span
-        | GlobalVar::GlyphCount
-        | GlobalVar::WordCount
-        | GlobalVar::LineCount
-        | GlobalVar::SpanCount => glyph_global(global, ctx),
-        GlobalVar::Custom(name) => {
-            Err(LumenError::Expression(ExpressionError::UndefinedVariable {
-                name: name.clone(),
-            }))
-        }
-    }
-}
-
-fn glyph_global(global: &GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
-    let (name, value) = match (global, ctx.glyph) {
-        (GlobalVar::Glyph, scope) => ("glyph", scope.map(|scope| scope.item.glyph)),
-        (GlobalVar::Word, scope) => ("word", scope.map(|scope| scope.item.word)),
-        (GlobalVar::Line, scope) => ("line", scope.map(|scope| scope.item.line)),
-        (GlobalVar::Span, scope) => ("span", scope.map(|scope| scope.item.span)),
-        (GlobalVar::GlyphCount, scope) => ("glyph_count", scope.map(|scope| scope.counts.glyph)),
-        (GlobalVar::WordCount, scope) => ("word_count", scope.map(|scope| scope.counts.word)),
-        (GlobalVar::SpanCount, scope) => ("span_count", scope.map(|scope| scope.counts.span)),
-        (_, scope) => ("line_count", scope.map(|scope| scope.counts.line)),
-    };
-    value
-        .map(|value| ExpressionValue::Number(f64::from(value)))
-        .ok_or_else(|| {
+fn global_value(global: GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
+    let in_glyph = |read: fn(&GlyphScope) -> u32| {
+        ctx.glyph.as_ref().map(read).map(f64::from).ok_or_else(|| {
             LumenError::evaluate(format!(
-                "`{name}` is only available in a text node's glyph_offset, glyph_scale, \
-                 glyph_rotation and glyph_opacity params"
+                "`{}` is only available in a text node's glyph_offset, glyph_scale, \
+                 glyph_rotation and glyph_opacity params",
+                global.name()
             ))
         })
+    };
+    Ok(ExpressionValue::Number(match global {
+        GlobalVar::Frame => ctx.frame,
+        GlobalVar::Time => ctx.time_seconds(),
+        GlobalVar::Fps => f64::from(ctx.fps),
+        GlobalVar::Width => f64::from(ctx.width),
+        GlobalVar::Height => f64::from(ctx.height),
+        GlobalVar::Glyph => in_glyph(|scope| scope.item.glyph)?,
+        GlobalVar::Word => in_glyph(|scope| scope.item.word)?,
+        GlobalVar::Line => in_glyph(|scope| scope.item.line)?,
+        GlobalVar::Span => in_glyph(|scope| scope.item.span)?,
+        GlobalVar::GlyphCount => in_glyph(|scope| scope.counts.glyph)?,
+        GlobalVar::WordCount => in_glyph(|scope| scope.counts.word)?,
+        GlobalVar::LineCount => in_glyph(|scope| scope.counts.line)?,
+        GlobalVar::SpanCount => in_glyph(|scope| scope.counts.span)?,
+    }))
 }
 
 /// Numbers combine as usual. Two vec2 values combine componentwise, and a vec2 can be
@@ -504,6 +489,7 @@ fn to_number(value: &ExpressionValue) -> crate::Result<f64> {
 mod tests {
     use super::*;
     use crate::{
+        error::ExpressionError,
         expr::ast::ExprNode,
         graph::Graph,
         node::{DelegateEvaluable, NodeId, NodeKind, ParamValue, source::text::Text},
@@ -626,7 +612,7 @@ mod tests {
     #[test]
     fn evaluates_builtins_and_components() {
         for (source, expected) in [
-            ("linear(10, 20, 0.25)", ExpressionValue::Number(12.5)),
+            ("lerp(10, 20, 0.25)", ExpressionValue::Number(12.5)),
             ("step(10, 20, 0.5)", ExpressionValue::Number(10.0)),
             ("step(10, 20, 1)", ExpressionValue::Number(20.0)),
             (
