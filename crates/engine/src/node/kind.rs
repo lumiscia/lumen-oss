@@ -1,8 +1,8 @@
 #[cfg(feature = "metadata")]
 use super::schema::NodeSchema;
 use super::{
-    DelegateEvaluable, Node, PropertyEval, PropertyExpression, compositing, ids::NodeId,
-    media_output, processing, source, vector,
+    DelegateEvaluable, Node, PropertyEval, PropertyRead, compositing, ids::NodeId, media_output,
+    processing, source, vector,
 };
 
 #[derive(Debug, lumen_macros::StructuralHash)]
@@ -212,7 +212,7 @@ impl Node for NodeKind {
 }
 
 impl PropertyEval for NodeKind {
-    fn get_property(&self, id: &str) -> Option<PropertyExpression> {
+    fn get_property(&self, id: &str) -> Option<PropertyRead<'_>> {
         match self {
             Self::MediaIn(node) => node.get_property(id),
             Self::Background(node) => node.get_property(id),

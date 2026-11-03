@@ -1,4 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, compositing::BlendMode,
+};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -14,19 +16,19 @@ pub(crate) const SHADER: &str = concat!(
 /// Composites a variadic stack of raster layers in order.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct RasterMultiMergeParams {
-    /// Opacity applied to each layer as it is composited.
+    /// Opacity of each layer above the first, which is the base and is used as is.
     #[meta(min = 0, max = 1, step = 0.05)]
     pub opacity: f64,
     /// Blend mode used for each layer in the stack.
-    #[meta(kind = "enum", enum_type = crate::node::compositing::BlendMode)]
-    pub blend_mode: i64,
+    #[meta(kind = "enum", enum_type = BlendMode)]
+    pub blend_mode: BlendMode,
 }
 
 impl Default for RasterMultiMergeParams {
     fn default() -> Self {
         Self {
             opacity: 1.0,
-            blend_mode: 0,
+            blend_mode: BlendMode::Normal,
         }
     }
 }
@@ -80,7 +82,7 @@ impl GpuCompiledNode for RasterMultiCompiledMerge {
             let params = compiler::RasterMultiMergeParams {
                 values: [
                     evaluated.opacity as f32,
-                    evaluated.blend_mode as f32,
+                    evaluated.blend_mode as u32 as f32,
                     f32::from(u8::from(layer.base_straight)),
                     f32::from(u8::from(layer.overlay_straight)),
                 ],

@@ -137,7 +137,7 @@ pub(super) fn compile_text(
         lumen_gpu::BufferDesc::uniform(std::mem::size_of::<TextStyleUniforms>() as u64),
     );
     let paint_count = match &params.content {
-        TextContentDelegate::Spans(spans) => spans.items.len().max(1),
+        TextContentDelegate::Spans(spans) => spans.len().max(1),
         TextContentDelegate::Text(_) => 1,
     };
     let decoration_paints = decoration_paints(params);
@@ -396,7 +396,7 @@ fn text_bounds(
     if GlyphParams::any(params)
         || !solid(&params.color)
         || matches!(&params.content, TextContentDelegate::Spans(spans)
-            if !spans.items.iter().all(solid_span))
+            if !spans.iter().all(solid_span))
         || !params
             .stroke
             .as_ref()

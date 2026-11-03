@@ -4,9 +4,11 @@
 
 use std::collections::BTreeMap;
 
+use serde_json::Value;
+
 use crate::node::{
-    Deferred, DelegateEvalContext, DelegateEvaluable, DelegateValue, DelegateVec, Delegated,
-    NodeId, Override, PropertyExpression, PropertyValue, vector::paint::Paint,
+    Deferred, DelegateEvalContext, DelegateEvaluable, Delegated, Override, PropertyRead,
+    vector::paint::Paint,
 };
 
 use super::text::{TextFontStyle, TextTransform, text_enum};
@@ -27,7 +29,6 @@ impl Default for TextContent {
 
 /// A run of text. Absent overrides take the node's value.
 #[derive(Debug, Clone, Default, PartialEq, lumen_macros::Delegate)]
-#[delegate(properties)]
 pub struct TextSpan {
     /// Text of the span. Required.
     #[meta(multiline, required)]
@@ -114,7 +115,6 @@ text_enum! {
 /// An underline or strikethrough. Its fields take literals or expressions, but the whole line
 /// cannot be an expression.
 #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
-#[delegate(properties)]
 pub struct TextLine {
     /// Line style.
     #[meta()]
@@ -150,7 +150,6 @@ impl Default for TextLine {
 /// A box drawn behind text. Its fields take literals or expressions, but the whole highlight
 /// cannot be an expression.
 #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
-#[delegate(properties)]
 pub struct TextHighlight {
     /// Box color.
     #[meta(role = "color")]
@@ -200,6 +199,8 @@ impl Delegated for FontFeatures {
 impl DelegateEvaluable for FontFeaturesDelegate {
     type Evaluated = FontFeatures;
 
+    const ACCEPTS_EXPRESSIONS: bool = false;
+
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
         self.0
             .iter()
@@ -214,14 +215,13 @@ impl DelegateEvaluable for FontFeaturesDelegate {
     fn has_expressions(&self) -> bool {
         self.0.values().any(Deferred::is_expr)
     }
-}
 
-impl FontFeaturesDelegate {
     /// Parses a JSON object of tags to non-negative integers or `=expression`s.
-    pub fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        crate::json::reject_expression(value, path)?;
         let object = value
             .as_object()
-            .ok_or_else(|| format!("expected an object of feature values, got {value}"))?;
+            .ok_or_else(|| format!("`{path}` expected an object of feature values, got {value}"))?;
         object
             .iter()
             .map(|(tag, value)| {
@@ -230,46 +230,33 @@ impl FontFeaturesDelegate {
                     .filter(|tag| tag.iter().all(|byte| (b' '..=b'~').contains(byte)))
                     .ok_or_else(|| {
                         format!(
-                            "`{tag}` is not a feature tag, which is 4 printable ASCII characters"
+                            "`{path}`: `{tag}` is not a feature tag, which is 4 printable ASCII characters"
                         )
                     })?;
-                let value = match serde_json::from_value::<Deferred<i64>>(value.clone())
-                    .map_err(|error| format!("`{tag}`: {error}"))?
-                {
-                    Deferred::Value(number) => {
-                        u32::try_from(number).map(Deferred::Value).map_err(|_| {
-                            format!("`{tag}` must be a non-negative integer, got {number}")
-                        })?
-                    }
-                    Deferred::Expr(expr) => Deferred::Expr(expr),
-                };
-                Ok((parsed, value))
+                Deferred::from_json_value(value, &format!("{path}.{tag}"))
+                    .map(|value| (parsed, value))
             })
             .collect::<Result<_, String>>()
             .map(Self)
     }
 
-    pub fn to_json_value(&self) -> serde_json::Value {
-        self.0
-            .iter()
-            .map(|(tag, value)| {
-                (
-                    String::from_utf8_lossy(tag).into_owned(),
-                    crate::json::property_to_json(&value.to_property_expression(), None),
-                )
-            })
-            .collect::<serde_json::Map<_, _>>()
-            .into()
+    fn to_json_value(&self) -> Option<Value> {
+        Some(
+            self.0
+                .iter()
+                .filter_map(|(tag, value)| {
+                    Some((
+                        String::from_utf8_lossy(tag).into_owned(),
+                        value.to_json_value()?,
+                    ))
+                })
+                .collect::<serde_json::Map<_, _>>()
+                .into(),
+        )
     }
-}
 
-impl<'de> serde::Deserialize<'de> for FontFeaturesDelegate {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
-        Self::from_json_value(&value).map_err(serde::de::Error::custom)
+    fn read(&self) -> Option<PropertyRead<'_>> {
+        Some(PropertyRead::Value(None))
     }
 }
 
@@ -292,7 +279,6 @@ pub enum TextStrokeAlign {
 /// `glyph_opacity` fades a glyph's stroke and fill as one, so the fill hides the stroke under it.
 /// Neighbouring glyphs fade separately, so where one's stroke overlaps another both show.
 #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
-#[delegate(properties)]
 pub struct TextStroke {
     /// Outline color.
     #[meta(role = "color")]
@@ -329,44 +315,12 @@ impl TextStroke {
 #[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub enum TextContentDelegate {
     Text(Deferred<String>),
-    Spans(DelegateVec<TextSpan>),
+    Spans(Vec<TextSpanDelegate>),
 }
 
 impl Default for TextContentDelegate {
     fn default() -> Self {
         TextContent::default().into_delegate()
-    }
-}
-
-impl TextContentDelegate {
-    /// Parses `value` as written in JSON, where a string starting with `=` is an expression.
-    pub fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
-        if value.is_array() {
-            crate::json::nested_from_json(value).map(Self::Spans)
-        } else {
-            crate::json::nested_from_json(value).map(Self::Text)
-        }
-    }
-
-    pub fn to_json_value(&self) -> serde_json::Value {
-        match self {
-            Self::Text(text) => crate::json::property_to_json(&text.to_property_expression(), None),
-            Self::Spans(spans) => spans
-                .items
-                .iter()
-                .map(|span| serde_json::Value::Object(span.to_json()))
-                .collect(),
-        }
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for TextContentDelegate {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
-        Self::from_json_value(&value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -378,7 +332,6 @@ impl TextContentDelegate {
             return self.eval(ctx);
         };
         spans
-            .items
             .iter()
             .enumerate()
             .map(|(index, span)| {
@@ -411,7 +364,6 @@ impl TextContentDelegate {
             Self::Text(Deferred::Value(text)) => Some(text.clone()),
             Self::Text(Deferred::Expr(_)) => None,
             Self::Spans(spans) => spans
-                .items
                 .iter()
                 .map(|span| match &span.text {
                     Deferred::Value(text) => Some(text.as_str()),
@@ -433,8 +385,11 @@ impl Delegated for TextContent {
     }
 }
 
+/// A whole-content expression evaluates to the text.
 impl DelegateEvaluable for TextContentDelegate {
     type Evaluated = TextContent;
+
+    const ACCEPTS_EXPRESSIONS: bool = true;
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
         Ok(match self {
@@ -449,90 +404,43 @@ impl DelegateEvaluable for TextContentDelegate {
             Self::Spans(spans) => spans.has_expressions(),
         }
     }
-}
 
-/// A whole-content expression evaluates to the text.
-impl DelegateValue for TextContentDelegate {
-    const ACCEPTS_EXPRESSIONS: bool = true;
-
-    fn to_property_value(&self) -> PropertyValue {
-        PropertyValue::TextContent(Box::new(self.clone()))
-    }
-
-    fn to_property_expression(&self) -> PropertyExpression {
-        match self {
-            Self::Text(Deferred::Expr(expr)) => PropertyExpression::Expr(expr.clone()),
-            _ => PropertyExpression::Value(self.to_property_value()),
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        if value.is_array() {
+            DelegateEvaluable::from_json_value(value, path).map(Self::Spans)
+        } else {
+            DelegateEvaluable::from_json_value(value, path).map(Self::Text)
         }
     }
 
-    fn from_property_expression(
-        value: PropertyExpression,
-        node_id: NodeId,
-        property_path: &str,
-    ) -> crate::Result<Self> {
-        match value {
-            PropertyExpression::Value(PropertyValue::TextContent(content)) => Ok(*content),
-            PropertyExpression::Value(PropertyValue::String(text)) => {
-                Ok(Self::Text(Deferred::Value(text)))
-            }
-            PropertyExpression::Expr(expr) => Ok(Self::Text(Deferred::Expr(expr))),
-            PropertyExpression::Value(_) => Err(PropertyValue::invalid_type(
-                node_id,
-                property_path,
-                "TextContent",
-                "incompatible value",
+    fn to_json_value(&self) -> Option<Value> {
+        match self {
+            Self::Text(text) => text.to_json_value(),
+            Self::Spans(spans) => spans.to_json_value(),
+        }
+    }
+
+    fn read(&self) -> Option<PropertyRead<'_>> {
+        match self {
+            Self::Text(text) => text.read(),
+            Self::Spans(_) => Some(PropertyRead::Value(
+                self.literal_text()
+                    .map(crate::expr::ExpressionValue::String),
             )),
         }
     }
 }
 
-macro_rules! impl_struct_kind_value {
-    ($delegate:ty, $variant:ident) => {
-        impl DelegateValue for $delegate {
-            const ACCEPTS_EXPRESSIONS: bool = false;
-
-            fn to_property_value(&self) -> PropertyValue {
-                PropertyValue::$variant(Box::new(self.clone()))
-            }
-
-            fn from_property_expression(
-                value: PropertyExpression,
-                node_id: NodeId,
-                property_path: &str,
-            ) -> crate::Result<Self> {
-                match value {
-                    PropertyExpression::Value(PropertyValue::$variant(value)) => Ok(*value),
-                    PropertyExpression::Value(_) => Err(PropertyValue::invalid_type(
-                        node_id,
-                        property_path,
-                        stringify!($variant),
-                        "incompatible value",
-                    )),
-                    PropertyExpression::Expr(_) => Err(PropertyValue::invalid_type(
-                        node_id,
-                        property_path,
-                        stringify!($variant),
-                        "expression",
-                    )),
-                }
-            }
-        }
-    };
-}
-
-impl_struct_kind_value!(TextLineDelegate, TextLine);
-impl_struct_kind_value!(TextHighlightDelegate, TextHighlight);
-impl_struct_kind_value!(FontFeaturesDelegate, FontFeatures);
-impl_struct_kind_value!(TextStrokeDelegate, TextStroke);
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{expr::ExpressionContext, node::NodeParams};
+    use crate::{
+        expr::ExpressionContext,
+        node::{NodeId, NodeParams},
+    };
 
     fn parse(value: serde_json::Value) -> Result<TextContentDelegate, String> {
-        TextContentDelegate::from_json_value(&value)
+        TextContentDelegate::from_json_value(&value, "content")
     }
 
     fn eval(content: &TextContentDelegate) -> crate::Result<TextContent> {
@@ -618,7 +526,7 @@ mod tests {
         ]);
         let content = parse(json).unwrap();
         assert_eq!(
-            content.to_json_value(),
+            content.to_json_value().unwrap(),
             serde_json::json!([
                 {
                     "text": "==a",
@@ -633,11 +541,8 @@ mod tests {
             ])
         );
         assert_eq!(
-            TextLineDelegate::default().to_json(),
+            TextLineDelegate::default().to_json_value().unwrap(),
             serde_json::json!({ "style": "solid", "extent": [0.0, 1.0] })
-                .as_object()
-                .unwrap()
-                .clone()
         );
     }
 
@@ -646,27 +551,27 @@ mod tests {
         for (json, expected) in [
             (
                 serde_json::json!([{ "text": "a", "font_size": "big" }]),
-                "[0]: `font_size` expected float",
+                "`content[0].font_size` expected float",
             ),
             (
                 serde_json::json!([{ "text": "a" }, { "text": "b", "font_wieght": 700 }]),
-                "[1]: unknown field `font_wieght`",
+                "`content[1]`: unknown field `font_wieght`",
             ),
             (
                 serde_json::json!([{ "text": "a", "font_size": null }]),
-                "[0]: `font_size` expected float",
+                "`content[0].font_size` expected float",
             ),
             (
                 serde_json::json!([{ "text": "a" }, { "font_size": 12 }]),
-                "[1]: missing field `text`",
+                "`content[1]`: missing field `text`",
             ),
             (
                 serde_json::json!([{ "text": "a", "font_style": "bold" }]),
-                "[0]: `font_style`",
+                "`content[0].font_style`",
             ),
             (
                 serde_json::json!([{ "text": "a", "underline": "=1" }]),
-                "[0]: `underline` expected TextLine, got expression",
+                "`content[0].underline` does not support expressions",
             ),
         ] {
             let error = parse(json.clone()).unwrap_err();
@@ -736,7 +641,8 @@ mod tests {
 
     #[test]
     fn font_features_check_tags_and_values_and_merge_over_the_node() {
-        let features = |json: serde_json::Value| FontFeaturesDelegate::from_json_value(&json);
+        let features =
+            |json: serde_json::Value| FontFeaturesDelegate::from_json_value(&json, "font_features");
         for (json, expected) in [
             (
                 serde_json::json!({ "tnu": 1 }),
@@ -752,7 +658,7 @@ mod tests {
             ),
             (
                 serde_json::json!({ "tnum": -1 }),
-                "`tnum` must be a non-negative integer",
+                "`font_features.tnum` must be an integer from 0 to 4294967295",
             ),
             (serde_json::json!({ "tnum": 1.5 }), "whole number"),
             (serde_json::json!([1]), "expected an object"),
@@ -817,7 +723,6 @@ mod tests {
     #[test]
     fn strings_through_the_property_parser_are_classified_once() {
         #[derive(Debug, Clone, Default, lumen_macros::Delegate)]
-        #[delegate(properties)]
         pub struct Probe {
             #[meta()]
             pub content: TextContent,
@@ -825,7 +730,9 @@ mod tests {
 
         let content = |value: serde_json::Value| {
             let params = serde_json::json!({ "content": value });
-            let probe = ProbeDelegate::from_json(NodeId::new(3), params.as_object()).unwrap();
+            let probe =
+                <ProbeDelegate as NodeParams>::from_json(NodeId::new(3), params.as_object())
+                    .unwrap();
             let expr = ExpressionContext {
                 frame: 12.0,
                 ..ExpressionContext::default()

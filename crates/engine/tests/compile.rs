@@ -554,7 +554,6 @@ fn media_prediction_follows_direct_ports() {
         NodeKind::MediaIn(MediaIn {
             id: media,
             params: MediaInParamsDelegate {
-                kind: Deferred::value(0),
                 source: Deferred::value("plate".to_string()),
                 ..Default::default()
             },
@@ -629,6 +628,97 @@ fn media_prediction_visits_shared_inputs_once() {
     collect_frame_requirements(&scene((8, 4), json!(nodes)), &store, 0).unwrap();
 
     assert_eq!(store.0.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn media_prediction_follows_a_videos_range_and_loop_mode() {
+    #[derive(Debug)]
+    struct TenFrameStore;
+    impl MediaStore for TenFrameStore {
+        fn get_video_resolver(
+            &self,
+            _: &str,
+        ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
+            Ok(Box::new(TenFrameVideo))
+        }
+    }
+    struct TenFrameVideo;
+    impl VideoFrameResolver for TenFrameVideo {
+        fn id(&self) -> &str {
+            "clip"
+        }
+        fn metadata(&self) -> VideoMetadata {
+            VideoMetadata {
+                width: 8,
+                height: 4,
+                frame_count: 10,
+                fps: 24.0,
+            }
+        }
+        fn frame(&self, _: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+            unreachable!("prediction reads no frames")
+        }
+    }
+
+    let predicted = |params: Value, frame: u32| {
+        let mut params = params.as_object().unwrap().clone();
+        params.insert("kind".into(), json!("video"));
+        params.insert("source".into(), json!("clip"));
+        let composition = scene(
+            (8, 4),
+            json!([{ "id": 1, "type": "media_in", "params": params }]),
+        );
+        collect_frame_requirements(&composition, &TenFrameStore, frame).map(|requirements| {
+            requirements
+                .videos
+                .into_iter()
+                .flat_map(|video| video.frames)
+                .collect::<Vec<_>>()
+        })
+    };
+
+    // The end is the first frame past the range, and a start alone plays to the source's end.
+    for (params, frame, expected) in [
+        (
+            json!({ "range_start": 4, "range_end": 7, "loop_mode": "repeat" }),
+            3,
+            4,
+        ),
+        (json!({ "range_start": 4, "range_end": 7 }), 9, 6),
+        (json!({ "range_start": 4 }), 9, 9),
+        (json!({ "range_end": 3, "loop_mode": "ping_pong" }), 3, 1),
+        (json!({ "loop_mode": "=1" }), 12, 2),
+    ] {
+        assert_eq!(
+            predicted(params.clone(), frame).unwrap(),
+            [expected],
+            "{params} at {frame}"
+        );
+    }
+
+    let error = predicted(json!({ "range_start": 6, "range_end": 6 }), 0).unwrap_err();
+    assert!(
+        error.to_string().contains("out of range for clip"),
+        "{error}"
+    );
+    let error = predicted(json!({ "loop_mode": "=7" }), 0).unwrap_err();
+    assert!(
+        error.to_string().contains("7 is not a value of LoopMode"),
+        "{error}"
+    );
+}
+
+#[test]
+fn compiling_media_reports_why_the_source_failed() {
+    let composition = scene(
+        (16, 9),
+        json!([{ "id": 1, "type": "media_in", "params": { "kind": "image", "source": "gone" } }]),
+    );
+    let error =
+        CompileContext::with_media(&composition, &TestMediaStore::image("plate", 8, 4), RGBA8)
+            .compile()
+            .unwrap_err();
+    assert!(error.to_string().contains("not the test image"), "{error}");
 }
 
 #[test]
@@ -955,6 +1045,72 @@ fn bind_errors() {
         Stage::Bind,
         "`glyph` is only available",
     ));
+    // An expression can only name a value the enum has.
+    let source = json!({ "source": 1 });
+    for (kind, inputs, param, value, enum_name) in [
+        (
+            "boolean",
+            json!({ "a": 1, "b": 2 }),
+            "operation",
+            "=4",
+            "BooleanOperation",
+        ),
+        (
+            "raster_multimerge",
+            json!({ "layers": [1, 2] }),
+            "blend_mode",
+            "=6",
+            "BlendMode",
+        ),
+        (
+            "merge",
+            json!({ "base": 1, "overlay": 2 }),
+            "blend_mode",
+            "=6",
+            "BlendMode",
+        ),
+        (
+            "color_grade",
+            source.clone(),
+            "interpolation",
+            "=2",
+            "RasterSampling",
+        ),
+        (
+            "resize",
+            source.clone(),
+            "sampling",
+            "=-1",
+            "RasterSampling",
+        ),
+        ("transform", source, "sampling", "=2", "RasterSampling"),
+    ] {
+        rows.push(row(
+            &format!("{kind} {param} outside its enum"),
+            json!([
+                solid(1, [255, 0, 0, 255]),
+                solid(2, [0, 0, 255, 255]),
+                { "id": 3, "type": kind, "in": inputs, "params": { param: value } },
+            ]),
+            Stage::Bind,
+            format!("is not a value of {enum_name}"),
+        ));
+    }
+    rows.push(row(
+        "shadow color that is a gradient",
+        json!([
+            solid(1, [255, 0, 0, 255]),
+            { "id": 2, "type": "shadow", "in": { "source": 1 }, "params": { "color": {
+                "type": "linear_gradient",
+                "stops": [
+                    { "offset": 0.0, "color": [255, 0, 0, 255] },
+                    { "offset": 1.0, "color": [0, 0, 255, 255] }
+                ]
+            } } },
+        ]),
+        Stage::Bind,
+        "property `color` on node 2 has invalid type: expected a solid color, got a gradient",
+    ));
     rows.push(row(
         "malformed path data",
         json!([{ "id": 1, "type": "path", "params": { "data": "M 0 0 L 10 10 C nope" } }]),
@@ -993,6 +1149,29 @@ fn bind_errors() {
         }
         .to_string();
         assert!(error.contains(&row.message), "{}: {error}", row.name);
+    }
+}
+
+#[test]
+fn color_grade_interpolation_is_a_sampling_name() {
+    let load = |value: Value| {
+        lumen_engine::json::parse_value(&json!({
+            "timeline": { "fps": 24, "duration_frames": 12 },
+            "render_settings": { "width": 8, "height": 4 },
+            "nodes": [
+                solid(1, [255, 0, 0, 255]),
+                { "id": 2, "type": "color_grade", "params": { "interpolation": value } },
+                { "id": 3, "type": "media_output" },
+            ],
+            "connections": [
+                { "from_node": 1, "to_node": 2, "to_port": "source" },
+                { "from_node": 2, "to_node": 3, "to_port": "source" },
+            ],
+        }))
+    };
+    load(json!("nearest")).unwrap();
+    for value in [json!(0), json!("cubic")] {
+        assert!(load(value.clone()).is_err(), "{value}");
     }
 }
 

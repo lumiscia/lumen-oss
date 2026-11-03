@@ -1,7 +1,7 @@
 use lumen_engine::{
-    expr::{Expression, ExpressionContext},
+    expr::{Expression, ExpressionContext, ExpressionValue},
     node::{
-        Deferred, DelegateEvalContext, NodeId, PropertyEval, PropertyExpression, PropertyValue,
+        Deferred, DelegateEvalContext, NodeId, PropertyEval, PropertyRead,
         vector::paint::{
             GradientInterpolation, GradientPaint, GradientSpread, GradientStop, GradientUnits,
             Paint, PaintDelegate, PaintKind,
@@ -13,10 +13,10 @@ use lumen_engine::{
 fn property_eval_reads_marked_properties() {
     let node = lumen_engine::node::processing::exposure::Exposure::default();
 
-    assert!(matches!(
+    assert_eq!(
         node.get_property("contrast"),
-        Some(PropertyExpression::Value(PropertyValue::Float(1.0)))
-    ));
+        Some(PropertyRead::Value(Some(ExpressionValue::Number(1.0))))
+    );
     assert!(node.get_property("source").is_none());
 }
 

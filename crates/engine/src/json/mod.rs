@@ -5,7 +5,7 @@
 //!
 //! # Modules
 //!
-//! - [`property`] — JSON value → [`PropertyValue`](crate::node::PropertyValue) conversion
+//! - [`property`] — the JSON forms params share: a leading `=`, whole numbers and colors
 //! - [`node`] — per-node-type construction, property application, and port wiring
 
 mod migrations;
@@ -29,8 +29,8 @@ use crate::{
 };
 
 pub(crate) use property::{
-    StringParam, classify_string, integer_mismatch, integral_i64, nested_from_json,
-    parse_nested_field, parse_nested_optional_field, parse_property, property_to_json,
+    StringParam, classify_string, expression_unsupported, integer_mismatch, integral_i64,
+    reject_expression,
 };
 pub use property::{parse_color, try_parse_color, unknown_param_error};
 
@@ -1177,7 +1177,7 @@ mod tests {
             ),
             (
                 serde_json::json!({ "composition": "card", "props": "=1" }),
-                "`props` on node 1 does not support expressions",
+                "node 1: `props` does not support expressions",
             ),
         ] {
             let error = clip_error(clip.clone(), paint);
@@ -1224,6 +1224,10 @@ mod tests {
             (
                 serde_json::json!({ "a": { "type": "color", "default": "red" } }),
                 "prop `a` default: expected a color, got \"red\"",
+            ),
+            (
+                serde_json::json!({ "a": { "type": "color", "default": "#+f+f+f" } }),
+                "prop `a` default: expected a color, got \"#+f+f+f\"",
             ),
             (
                 serde_json::json!({ "a": { "type": "vec2", "default": [1] } }),

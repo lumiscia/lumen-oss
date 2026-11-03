@@ -12,7 +12,7 @@ use crate::node::vector::{
     paint::Paint,
 };
 use crate::node::{
-    Deferred, DeferredValue, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override,
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override, ParamValue,
 };
 
 use super::text_compile::{GpuTextPaint, TextStyleUniforms};
@@ -1003,7 +1003,7 @@ struct PerGlyph<'a, T> {
     last: Option<([u32; 4], T)>,
 }
 
-impl<'a, T: DeferredValue + Copy> PerGlyph<'a, T> {
+impl<'a, T: ParamValue + Copy> PerGlyph<'a, T> {
     fn new(param: &'a Deferred<T>, name: &'static str) -> Self {
         let mut reads = [false; 4];
         if let Deferred::Expr(expression) = param {
@@ -1447,7 +1447,7 @@ pub(crate) fn decoration_paints(params: &TextParamsDelegate) -> Option<usize> {
     let mut painted =
         usize::from(params.highlight.is_some()) + usize::from(params.stroke.is_some());
     if let TextContentDelegate::Spans(spans) = &params.content {
-        for span in &spans.items {
+        for span in spans {
             for line in [&span.underline, &span.strikethrough] {
                 if let Override::Set(line) = line {
                     lines.push(line);
@@ -1465,7 +1465,7 @@ pub(crate) fn decoration_paints(params: &TextParamsDelegate) -> Option<usize> {
 pub(crate) fn stroked(params: &TextParamsDelegate) -> bool {
     params.stroke.is_some()
         || matches!(&params.content, TextContentDelegate::Spans(spans)
-            if spans.items.iter().any(|span| matches!(span.stroke, Override::Set(_))))
+            if spans.iter().any(|span| matches!(span.stroke, Override::Set(_))))
 }
 
 /// A span's stroke: how far it reaches to each side of the glyph edge, whether it is drawn
