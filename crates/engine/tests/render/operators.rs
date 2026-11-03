@@ -352,6 +352,22 @@ fn mattes_select_by_alpha_or_luma() {
             .tolerance(2),
         );
     }
+    // Sent through the blur's float texture, this gray's luma rounds to 160 instead of 161.
+    let gray = |feather: Value| {
+        matte(
+            WIDTH,
+            straight_rim([178, 178, 178, 230]),
+            json!({ "mask_mode": "luma", "feather": feather }),
+        )
+    };
+    cases.push(
+        Case::new(
+            "a zero feather expression does not resample a gray mask",
+            gray(json!("=0")),
+            Expect::Matches(gray(json!(0)).into()),
+        )
+        .tolerance(0),
+    );
     check(cases);
 }
 
@@ -424,6 +440,18 @@ fn feather_blurs_the_mask_before_inverting() {
                     frames[0].pixel(WIDTH - 1, MIDDLE)[0] < 230,
                     "{:?}",
                     matte_row(&frames[0])
+                );
+            })),
+        ),
+        // Reduced-resolution filtering must cover the mask's whole extent on both axes.
+        Case::new(
+            "a wide feather of a square mask falls off evenly on both axes",
+            feathered(solid_mask(WHITE, 64, 64), json!(64)),
+            Expect::Custom(Box::new(|frames| {
+                let (right, bottom) = (frames[0].pixel(23, 12)[0], frames[0].pixel(12, 23)[0]);
+                assert!(
+                    right > 0 && right.abs_diff(bottom) <= 2,
+                    "{right}, {bottom}"
                 );
             })),
         ),
