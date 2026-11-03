@@ -11,7 +11,7 @@ use crate::node::{
     vector::paint::Paint,
 };
 
-use super::text::{TextFontStyle, TextTransform};
+use super::text::{TextFontStyle, TextTransform, text_enum};
 
 /// Text to render: a string, or spans that each override the node's text style. In JSON a
 /// string is the shorthand for unstyled text, and an `=expression` evaluates to one.
@@ -100,18 +100,16 @@ impl FontFeatures {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum", expressions)]
-pub enum TextLineStyle {
-    #[default]
-    Solid = 0,
-    Double = 1,
-    Dotted = 2,
-    Dashed = 3,
-    Wavy = 4,
+text_enum! {
+    #[delegate(kind = "enum", expressions)]
+    TextLineStyle => lumen_text::TextLineStyle {
+        #[default]
+        Solid = 0,
+        Double = 1,
+        Dotted = 2,
+        Dashed = 3,
+        Wavy = 4,
+    }
 }
 
 /// An underline or strikethrough. Its fields take literals or expressions, but the whole line
