@@ -194,9 +194,9 @@ fn render_schema() -> Result<String> {
                 "type": "object",
                 "required": ["from_node", "to_node", "to_port"],
                 "properties": {
-                    "from_node": { "type": "integer" },
+                    "from_node": { "type": "integer", "minimum": 0 },
                     "from_port": { "type": "string" },
-                    "to_node": { "type": "integer" },
+                    "to_node": { "type": "integer", "minimum": 0 },
                     "to_port": { "type": "string" }
                 },
                 "additionalProperties": false
@@ -231,6 +231,10 @@ fn render_schema() -> Result<String> {
                     "source_start_seconds": { "type": "number", "minimum": 0 },
                     "volume": { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 }
                 },
+                "allOf": [
+                    { "anyOf": [{ "required": ["start_ms"] }, { "required": ["start_frame"] }] },
+                    { "anyOf": [{ "required": ["duration_ms"] }, { "required": ["duration_frames"] }] }
+                ],
                 "additionalProperties": true
             }
         }
@@ -528,7 +532,7 @@ fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {
         "type": "object",
         "required": ["id", "type"],
         "properties": {
-            "id": { "type": "integer" },
+            "id": { "type": "integer", "minimum": 0 },
             "type": { "const": schema.kind },
             "params": {
                 "type": "object",
@@ -555,8 +559,8 @@ fn property_schema_json(property: &PropertyDef, default: Option<Value>) -> Value
 
 fn value_schema_json(property: &PropertyDef) -> Value {
     match property.expected {
-        PropertyKind::Float => numeric_property_schema_json("number", property),
-        PropertyKind::Int => numeric_property_schema_json("integer", property),
+        PropertyKind::Float => json!({ "type": "number" }),
+        PropertyKind::Int => json!({ "type": "integer" }),
         PropertyKind::Bool => json!({ "type": "boolean" }),
         // A single leading `=` parses as an expression; `==` escapes a literal `=`.
         PropertyKind::String if !property.accepts_expressions => {
@@ -670,18 +674,6 @@ fn constraints_json(property: &PropertyDef) -> Option<Value> {
         hints.insert("role".to_string(), json!(role));
     }
     (!hints.is_empty()).then_some(Value::Object(hints))
-}
-
-fn numeric_property_schema_json(kind: &str, property: &PropertyDef) -> Value {
-    let mut schema = Map::new();
-    schema.insert("type".to_string(), json!(kind));
-    if let Some(min) = property.constraints.min {
-        schema.insert("minimum".to_string(), json!(min));
-    }
-    if let Some(max) = property.constraints.max {
-        schema.insert("maximum".to_string(), json!(max));
-    }
-    Value::Object(schema)
 }
 
 fn category_name(category: NodeCategory) -> &'static str {

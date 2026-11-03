@@ -129,6 +129,9 @@ pub(crate) fn property_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
         "text_highlight" | "TextHighlight" => {
             quote!(::lumen_engine::node::PropertyKind::TextHighlight)
         }
+        "font_features" | "FontFeatures" => {
+            quote!(::lumen_engine::node::PropertyKind::FontFeatures)
+        }
         "text_stroke" | "TextStroke" => quote!(::lumen_engine::node::PropertyKind::TextStroke),
         _ => {
             let span = kind.span();

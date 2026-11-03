@@ -686,13 +686,21 @@ mod tests {
 
     #[test]
     fn malformed_params_and_unknown_keys_name_what_is_wrong() {
-        for params in [serde_json::json!(5), serde_json::json!([]), Value::Null] {
+        for (params, got) in [
+            (serde_json::json!(5), "a number"),
+            (serde_json::json!("x"), "a string"),
+            (serde_json::json!(true), "a boolean"),
+            (serde_json::json!([]), "an array"),
+            (Value::Null, "null"),
+        ] {
             let error = graph_error(
                 serde_json::json!([{ "id": 7, "type": "background", "params": params }]),
                 serde_json::json!([]),
             );
             assert!(
-                error.contains("node 7 (`background`): `params` must be an object"),
+                error.contains(&format!(
+                    "node 7 (`background`): `params` must be an object, got {got}"
+                )),
                 "{error}"
             );
         }
