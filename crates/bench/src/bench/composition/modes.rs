@@ -10,9 +10,7 @@ use std::collections::VecDeque;
 use anyhow::Context;
 use anyhow::anyhow;
 use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, gpu::RasterHandle};
-use lumen_ffmpeg::{
-    CpuVideoFrame, MuxedEncoder, PixelFormat, Rational, VideoCodec, VideoEncoderConfig,
-};
+use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, Rational, VideoEncoderConfig};
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 use lumen_engine::gpu::CudaNvencTargetPool;
@@ -26,7 +24,7 @@ use lumen_engine::gpu::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 ))]
 use lumen_ffmpeg::{EncodeMode, GpuBackend};
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
-use lumen_ffmpeg::{GpuVideoInput, VulkanDevice, gpu_texture_encode_support};
+use lumen_ffmpeg::{GpuVideoInput, VulkanDevice};
 
 use crate::bench::media::BenchmarkMediaStore;
 
@@ -293,7 +291,7 @@ async fn cpu_encode(
     let height = workload.composition.render_settings().height;
     let mut encoder = MuxedEncoder::create(
         output.to_string_lossy().to_string(),
-        video_config(workload.composition, VideoCodec::H264)?,
+        video_config(workload.composition, "libx264")?,
     )?;
     let setup = setup_started.elapsed();
     if phases.is_some() {
@@ -329,7 +327,7 @@ async fn metal_videotoolbox(
         renderer_with_format(workload, lumen_gpu::wgpu::TextureFormat::Bgra8Unorm).await?;
     let output_size = composition_size(workload.composition);
     let mut target_pool = MetalVideoToolboxTargetPool::bgra8(renderer.gpu_renderer(), output_size)?;
-    let mut config = video_config(workload.composition, VideoCodec::H264)?;
+    let mut config = video_config(workload.composition, "h264_videotoolbox")?;
     config.mode = lumen_ffmpeg::EncodeMode::GpuTexture(lumen_ffmpeg::GpuBackend::Metal);
     let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
     let mut pending = VecDeque::<PendingMetalEncodeFrame>::new();
@@ -467,13 +465,8 @@ fn open_vulkan_encoder(
     output: &Path,
 ) -> anyhow::Result<(MuxedEncoder, &'static str)> {
     let mut failures = Vec::new();
-    for codec in [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1] {
-        let support = gpu_texture_encode_support(codec, GpuBackend::Vulkan);
-        let Some(name) = support.encoder_name.filter(|_| support.available) else {
-            failures.push(format!("{codec:?}: {}", support.reason.unwrap_or_default()));
-            continue;
-        };
-        let mut config = video_config(composition, codec)?;
+    for name in ["h264_vulkan", "hevc_vulkan", "av1_vulkan"] {
+        let mut config = video_config(composition, name)?;
         config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
         config.vulkan_device = Some(device.clone());
         match MuxedEncoder::create(output.to_string_lossy().to_string(), config) {
@@ -507,7 +500,7 @@ async fn vk_cuda_nvenc(
     let output_size = composition_size(workload.composition);
     let target_pool = CudaNvencTargetPool::rgba8(renderer.gpu_renderer(), output_size)?;
     let target = target_pool.acquire(renderer.gpu_renderer())?;
-    let mut config = video_config(workload.composition, VideoCodec::H264)?;
+    let mut config = video_config(workload.composition, "h264_nvenc")?;
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
     config.cuda_ordinal = Some(target_pool.cuda_ordinal());
     let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
@@ -566,18 +559,13 @@ async fn renderer_with_format(
     Ok(renderer)
 }
 
-fn video_config(
-    composition: &Composition,
-    codec: VideoCodec,
-) -> anyhow::Result<VideoEncoderConfig> {
-    let mut config = VideoEncoderConfig::cpu_rgba(
+fn video_config(composition: &Composition, encoder: &str) -> anyhow::Result<VideoEncoderConfig> {
+    Ok(VideoEncoderConfig::cpu_rgba(
         composition.render_settings().width,
         composition.render_settings().height,
         Rational::from_fps(f64::from(composition.timeline().fps))?,
-        codec,
-    );
-    config.bit_rate = 14_000_000;
-    Ok(config)
+        encoder,
+    ))
 }
 
 #[cfg(any(

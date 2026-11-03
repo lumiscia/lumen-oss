@@ -1,24 +1,23 @@
-use std::{ffi::CStr, ptr};
+use std::ptr;
 
-use crate::ffi::{self, AvFrame, AvPacket, CodecContextGuard, SWS_BILINEAR, sys};
+use crate::ffi::{self, AvFrame, CodecContextGuard, SWS_BILINEAR, sys};
 use crate::format::Rational;
 use crate::gpu::GpuBackend;
-use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat, VideoCodec};
+use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat};
 use crate::{FfmpegError, Result};
 use sys::{
     AVColorPrimaries::AVCOL_PRI_BT709,
     AVColorRange::AVCOL_RANGE_MPEG,
     AVColorSpace::{AVCOL_SPC_BT470BG, AVCOL_SPC_BT709},
     AVColorTransferCharacteristic::AVCOL_TRC_BT709,
-    AVMediaType::AVMEDIA_TYPE_VIDEO,
     AVPixelFormat::{AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P},
 };
 
-use super::codec::find_encoder;
-use super::common::refresh_stream_time_base;
-use super::hw::{AvBufferRef, create_encoder_hw_contexts};
+use super::codec::{EncoderFamily, video_encoder_by_name};
+use super::common::{refresh_stream_time_base, send_frame_and_write_packets};
+use super::hw::{AvBufferRef, EncoderHwContexts, create_encoder_hw_contexts};
 use super::output::OutputContext;
-use super::quality::{QualityOptions, RateControl, quality_options};
+use super::quality::{EncoderQuality, QualityOptions, quality_options};
 
 // swscale range flags: 1 is full (JPEG) range, 0 is limited (MPEG) range.
 const SWS_RANGE_FULL: i32 = 1;
@@ -30,14 +29,10 @@ pub struct VideoEncoderConfig {
     pub height: u32,
     /// Exact frames per second; use `Rational::from_fps` to convert a floating-point rate.
     pub fps: Rational,
-    pub codec: VideoCodec,
-    pub encoder_name: Option<String>,
+    /// FFmpeg encoder name, such as `libx264` or `h264_vulkan`.
+    pub encoder: String,
     pub mode: EncodeMode,
-    pub bit_rate: i64,
-    /// Overrides `bit_rate` when set.
-    pub rate_control: Option<RateControl>,
-    /// Encoder preset: `ultrafast`..`placebo` for libx264, `p1`..`p7` for NVENC.
-    pub preset: Option<String>,
+    pub quality: EncoderQuality,
     /// CUDA device the frames sent in `EncodeMode::GpuTexture(GpuBackend::Cuda)` live on; `None`
     /// uses the default device.
     pub cuda_ordinal: Option<i32>,
@@ -47,27 +42,22 @@ pub struct VideoEncoderConfig {
 }
 
 impl VideoEncoderConfig {
-    pub fn cpu_rgba(width: u32, height: u32, fps: impl Into<Rational>, codec: VideoCodec) -> Self {
+    pub fn cpu_rgba(
+        width: u32,
+        height: u32,
+        fps: impl Into<Rational>,
+        encoder: impl Into<String>,
+    ) -> Self {
         Self {
             width,
             height,
             fps: fps.into(),
-            codec,
-            encoder_name: None,
+            encoder: encoder.into(),
             mode: EncodeMode::CpuUpload,
-            bit_rate: 8_000_000,
-            rate_control: None,
-            preset: None,
+            quality: EncoderQuality::default(),
             cuda_ordinal: None,
             #[cfg(feature = "vulkan")]
             vulkan_device: None,
-        }
-    }
-
-    pub fn h264_videotoolbox(width: u32, height: u32, fps: impl Into<Rational>) -> Self {
-        Self {
-            encoder_name: Some("h264_videotoolbox".to_string()),
-            ..Self::cpu_rgba(width, height, fps, VideoCodec::H264)
         }
     }
 }
@@ -82,22 +72,41 @@ pub struct ContainerCrop {
     pub height: u32,
 }
 
+/// How frames reach the encoder.
+pub(in crate::encode) enum Transport {
+    /// RGBA converted into `frame`, then uploaded to `hw_frames` when the encoder takes those.
+    Cpu {
+        scaler: Scaler,
+        frame: AvFrame,
+        hw_frames: Option<AvBufferRef>,
+    },
+    #[cfg(feature = "cuda")]
+    Cuda { frames: AvBufferRef },
+    #[cfg(feature = "vulkan")]
+    Vulkan {
+        frames: AvBufferRef,
+        device: crate::gpu::VulkanDevice,
+    },
+    #[cfg(feature = "metal")]
+    Metal,
+}
+
+pub(in crate::encode) struct Scaler(*mut sys::SwsContext);
+
+impl Drop for Scaler {
+    fn drop(&mut self) {
+        unsafe { sys::sws_freeContext(self.0) };
+    }
+}
+
 pub(crate) struct VideoEncoder {
     pub(in crate::encode) width: u32,
     pub(in crate::encode) height: u32,
     container_crop: Option<ContainerCrop>,
     stream_index: usize,
     stream_time_base: sys::AVRational,
-    pub(in crate::encode) context: *mut sys::AVCodecContext,
-    frame: AvFrame,
-    scaler: *mut sys::SwsContext,
-    #[allow(dead_code)]
-    pub(in crate::encode) hw_device: Option<AvBufferRef>,
-    pub(in crate::encode) hw_frames: Option<AvBufferRef>,
-    pub(in crate::encode) next_pts: i64,
-    pub(in crate::encode) mode: EncodeMode,
-    #[cfg(feature = "vulkan")]
-    pub(in crate::encode) vulkan_device: Option<crate::gpu::VulkanDevice>,
+    context: *mut sys::AVCodecContext,
+    pub(in crate::encode) transport: Transport,
 }
 
 unsafe impl Send for VideoEncoder {}
@@ -155,24 +164,26 @@ impl VideoEncoder {
                 return Err(super::hw::missing_vulkan_device());
             }
         }
-        let codec = find_encoder(&config)?;
-        if codec.is_null() {
+        if let EncodeMode::GpuTexture(backend) = config.mode
+            && !EncoderFamily::of(&config.encoder).takes_textures_from(backend)
+        {
             return Err(FfmpegError::new(
-                "avcodec_find_encoder",
-                "requested encoder is unavailable",
+                "VideoEncoder::create",
+                format!(
+                    "encoder `{}` can't take {backend:?} textures",
+                    config.encoder
+                ),
             )
-            .with_codec(config.codec));
+            .with_backend(backend));
         }
-        let encoder_name = unsafe { CStr::from_ptr((*codec).name) }.to_string_lossy();
+        let codec = video_encoder_by_name(&config.encoder)?;
+        let encoder_name = config.encoder.as_str();
         let quality = quality_options(
-            &encoder_name,
-            config
-                .rate_control
-                .unwrap_or_else(|| RateControl::Bitrate(config.bit_rate.max(0) as u64)),
-            config.preset.as_deref(),
+            encoder_name,
+            config.quality.rate_control,
+            config.quality.preset.as_deref(),
             config.mode,
-        )
-        .map_err(|error| error.with_codec(config.codec))?;
+        )?;
         let stream = unsafe { sys::avformat_new_stream(output.ptr, ptr::null()) };
         if stream.is_null() {
             return Err(FfmpegError::new(
@@ -189,23 +200,16 @@ impl VideoEncoder {
             ));
         }
 
-        apply_private_options(context, &quality, &encoder_name)?;
+        apply_private_options(context, &quality, encoder_name)?;
 
         let time_base = sys::AVRational {
             num: framerate.den,
             den: framerate.num,
         };
         let hw_contexts = create_encoder_hw_contexts(&config, codec)?;
-        // CPU frames are converted to this format, then uploaded when the encoder takes hardware frames.
-        let cpu_format = match &hw_contexts {
-            Some(contexts) if config.mode == EncodeMode::CpuUpload => contexts.sw_format,
-            _ => AV_PIX_FMT_YUV420P,
-        };
 
         let mut container_crop = None;
         unsafe {
-            (*context).codec_id = config.codec.to_av_codec_id();
-            (*context).codec_type = AVMEDIA_TYPE_VIDEO;
             (*context).width = width;
             (*context).height = height;
             (*context).time_base = time_base;
@@ -225,21 +229,16 @@ impl VideoEncoder {
             };
             (*context).color_range = AVCOL_RANGE_MPEG;
             (*context).bit_rate = quality.bit_rate;
-            if let Some(global_quality) = quality.global_quality {
-                (*context).global_quality = global_quality;
-            }
             (*context).gop_size = gop_size;
             if let Some(contexts) = &hw_contexts {
                 (*context).sw_pix_fmt = contexts.sw_format;
-                if let Some(frames) = &contexts.frames {
-                    (*context).hw_frames_ctx = sys::av_buffer_ref(frames.ptr);
-                    if (*context).hw_frames_ctx.is_null() {
-                        return Err(FfmpegError::new(
-                            "av_buffer_ref",
-                            "failed to reference encoder hardware frames context",
-                        )
-                        .with_backend(contexts.backend));
-                    }
+                (*context).hw_frames_ctx = sys::av_buffer_ref(contexts.frames.ptr);
+                if (*context).hw_frames_ctx.is_null() {
+                    return Err(FfmpegError::new(
+                        "av_buffer_ref",
+                        "failed to reference encoder hardware frames context",
+                    )
+                    .with_backend(contexts.backend));
                 }
             }
             if ((*(*output.ptr).oformat).flags & sys::AVFMT_GLOBALHEADER) != 0 {
@@ -272,69 +271,7 @@ impl VideoEncoder {
             (*stream).time_base = time_base;
         }
 
-        let mut frame = AvFrame::new()?;
-        let scaler = if config.mode == EncodeMode::CpuUpload {
-            unsafe {
-                (*frame.as_mut_ptr()).format = cpu_format as i32;
-                (*frame.as_mut_ptr()).width = width;
-                (*frame.as_mut_ptr()).height = height;
-                ffi::check(
-                    sys::av_frame_get_buffer(frame.as_mut_ptr(), 32),
-                    "av_frame_get_buffer",
-                )?;
-            }
-
-            let scaler = unsafe {
-                sys::sws_getContext(
-                    width,
-                    height,
-                    PixelFormat::Rgba8.to_av_pixel_format(),
-                    width,
-                    height,
-                    cpu_format,
-                    SWS_BILINEAR,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null(),
-                )
-            };
-            if scaler.is_null() {
-                return Err(FfmpegError::new(
-                    "sws_getContext",
-                    "failed to create encoder color conversion context",
-                ));
-            }
-            // Full-range RGB in, BT.709 limited-range YUV out, matching the stream's colour tags.
-            let coefficients = unsafe { sys::sws_getCoefficients(sys::SWS_CS_ITU709) };
-            let configured = unsafe {
-                sys::sws_setColorspaceDetails(
-                    scaler,
-                    coefficients,
-                    SWS_RANGE_FULL,
-                    coefficients,
-                    SWS_RANGE_LIMITED,
-                    0,
-                    1 << 16,
-                    1 << 16,
-                )
-            };
-            if configured < 0 {
-                unsafe { sys::sws_freeContext(scaler) };
-                return Err(FfmpegError::new(
-                    "sws_setColorspaceDetails",
-                    "failed to configure BT.709 color conversion",
-                ));
-            }
-            scaler
-        } else {
-            ptr::null_mut()
-        };
-
-        #[cfg(feature = "vulkan")]
-        let vulkan_device = config
-            .vulkan_device
-            .clone()
-            .filter(|_| config.mode == EncodeMode::GpuTexture(GpuBackend::Vulkan));
+        let transport = create_transport(&config, hw_contexts)?;
 
         Ok(Self {
             width: config.width,
@@ -343,16 +280,7 @@ impl VideoEncoder {
             stream_index: unsafe { (*stream).index as usize },
             stream_time_base: time_base,
             context: context_guard.release(),
-            frame,
-            scaler,
-            hw_device: hw_contexts
-                .as_ref()
-                .and_then(|contexts| contexts.device.clone_ref()),
-            hw_frames: hw_contexts.and_then(|contexts| contexts.frames),
-            next_pts: 0,
-            mode: config.mode,
-            #[cfg(feature = "vulkan")]
-            vulkan_device,
+            transport,
         })
     }
 
@@ -375,101 +303,190 @@ impl VideoEncoder {
     pub(in crate::encode) fn send_cpu_frame(
         &mut self,
         output: &mut OutputContext,
-        frame: &CpuVideoFrame,
+        input: &CpuVideoFrame,
     ) -> Result<()> {
-        if let EncodeMode::GpuTexture(backend) = self.mode {
+        #[allow(irrefutable_let_patterns)]
+        let Transport::Cpu {
+            scaler,
+            frame,
+            hw_frames,
+        } = &mut self.transport
+        else {
             return Err(FfmpegError::new(
                 "VideoEncoder::send_cpu_frame",
                 "hardware texture encoders consume GPU inputs; create a CPU upload encoder to send CPU bytes",
-            )
-            .with_backend(backend));
-        }
-        let layout = validate_cpu_frame(frame, self.width, self.height)?;
+            ));
+        };
+        let layout = validate_cpu_frame(input, self.width, self.height)?;
         unsafe {
             ffi::check(
-                sys::av_frame_make_writable(self.frame.as_mut_ptr()),
+                sys::av_frame_make_writable(frame.as_mut_ptr()),
                 "av_frame_make_writable",
             )?;
         }
-        let src_data = [frame.data.as_ptr(), ptr::null(), ptr::null(), ptr::null()];
+        let src_data = [input.data.as_ptr(), ptr::null(), ptr::null(), ptr::null()];
         let src_stride = [layout.stride, 0, 0, 0];
         unsafe {
             ffi::check(
                 sys::sws_scale(
-                    self.scaler,
+                    scaler.0,
                     src_data.as_ptr(),
                     src_stride.as_ptr(),
                     0,
                     layout.height,
-                    (*self.frame.as_mut_ptr()).data.as_mut_ptr(),
-                    (*self.frame.as_mut_ptr()).linesize.as_mut_ptr(),
+                    (*frame.as_mut_ptr()).data.as_mut_ptr(),
+                    (*frame.as_mut_ptr()).linesize.as_mut_ptr(),
                 ),
                 "sws_scale",
             )?;
-            (*self.frame.as_mut_ptr()).pts = frame.pts.unwrap_or(self.next_pts);
         }
-        self.next_pts = self.next_pts.saturating_add(1);
-        let Some(hw_frames) = self.hw_frames.as_ref() else {
-            return self.send_frame(output, self.frame.as_ptr());
-        };
-        let mut hw_frame = AvFrame::new()?;
-        unsafe {
-            ffi::check(
-                sys::av_hwframe_get_buffer(hw_frames.ptr, hw_frame.as_mut_ptr(), 0),
-                "av_hwframe_get_buffer",
-            )?;
-            ffi::check(
-                sys::av_hwframe_transfer_data(hw_frame.as_mut_ptr(), self.frame.as_ptr(), 0),
-                "av_hwframe_transfer_data",
-            )?;
-            (*hw_frame.as_mut_ptr()).pts = (*self.frame.as_ptr()).pts;
-        }
-        self.send_frame(output, hw_frame.as_ptr())
+        let mut uploaded = hw_frames
+            .as_ref()
+            .map(|hw_frames| upload_frame(hw_frames, frame))
+            .transpose()?;
+        let prepared = uploaded.as_mut().unwrap_or(frame).as_mut_ptr();
+        self.send_prepared(output, prepared, input.pts)
+    }
+
+    pub(in crate::encode) fn send_prepared(
+        &mut self,
+        output: &mut OutputContext,
+        frame: *mut sys::AVFrame,
+        pts: Option<i64>,
+    ) -> Result<()> {
+        let pts = pts.ok_or_else(|| {
+            FfmpegError::new(
+                "VideoEncoder::send_prepared",
+                "every video frame needs a pts, counted in frames of the encoder's fps",
+            )
+        })?;
+        unsafe { (*frame).pts = pts };
+        self.send_frame(output, frame)
     }
 
     pub(in crate::encode) fn flush(&mut self, output: &mut OutputContext) -> Result<()> {
         self.send_frame(output, ptr::null())
     }
 
-    pub(in crate::encode) fn send_frame(
-        &mut self,
-        output: &mut OutputContext,
-        frame: *const sys::AVFrame,
-    ) -> Result<()> {
-        unsafe {
-            ffi::check(
-                sys::avcodec_send_frame(self.context, frame),
-                "avcodec_send_frame",
-            )?;
-        }
-        loop {
-            let mut packet = AvPacket::new()?;
-            let result = unsafe { sys::avcodec_receive_packet(self.context, packet.as_mut_ptr()) };
-            if result == sys::AVERROR(libc::EAGAIN) || result == sys::AVERROR_EOF {
-                break;
-            }
-            if result < 0 {
-                return Err(ffi::error_from_code("avcodec_receive_packet", result));
-            }
-            unsafe {
-                (*packet.as_mut_ptr()).stream_index = self.stream_index as i32;
-                if (*packet.as_mut_ptr()).duration == 0 {
-                    (*packet.as_mut_ptr()).duration = 1;
-                }
-                sys::av_packet_rescale_ts(
-                    packet.as_mut_ptr(),
-                    (*self.context).time_base,
-                    self.stream_time_base,
-                );
-                ffi::check(
-                    sys::av_interleaved_write_frame(output.ptr, packet.as_mut_ptr()),
-                    "av_interleaved_write_frame",
-                )
-                .map_err(|error| error.with_path(output.path().to_string()))?;
-            }
-        }
-        Ok(())
+    fn send_frame(&mut self, output: &mut OutputContext, frame: *const sys::AVFrame) -> Result<()> {
+        send_frame_and_write_packets(
+            self.context,
+            frame,
+            output,
+            self.stream_index,
+            self.stream_time_base,
+            1,
+        )
     }
+}
+
+fn create_transport(
+    config: &VideoEncoderConfig,
+    hw_contexts: Option<EncoderHwContexts>,
+) -> Result<Transport> {
+    match (config.mode, hw_contexts) {
+        (EncodeMode::CpuUpload, hw_contexts) => {
+            // CPU frames are converted to this format, then uploaded when the encoder takes hardware frames.
+            let format = hw_contexts
+                .as_ref()
+                .map_or(AV_PIX_FMT_YUV420P, |contexts| contexts.sw_format);
+            let (width, height) = (config.width as i32, config.height as i32);
+            let mut frame = AvFrame::new()?;
+            unsafe {
+                (*frame.as_mut_ptr()).format = format as i32;
+                (*frame.as_mut_ptr()).width = width;
+                (*frame.as_mut_ptr()).height = height;
+                ffi::check(
+                    sys::av_frame_get_buffer(frame.as_mut_ptr(), 32),
+                    "av_frame_get_buffer",
+                )?;
+            }
+            Ok(Transport::Cpu {
+                scaler: rgba_scaler(width, height, format)?,
+                frame,
+                hw_frames: hw_contexts.map(|contexts| contexts.frames),
+            })
+        }
+        #[cfg(feature = "cuda")]
+        (EncodeMode::GpuTexture(GpuBackend::Cuda), Some(contexts)) => Ok(Transport::Cuda {
+            frames: contexts.frames,
+        }),
+        #[cfg(feature = "vulkan")]
+        (EncodeMode::GpuTexture(GpuBackend::Vulkan), Some(contexts)) => Ok(Transport::Vulkan {
+            frames: contexts.frames,
+            device: config
+                .vulkan_device
+                .clone()
+                .ok_or_else(super::hw::missing_vulkan_device)?,
+        }),
+        #[cfg(feature = "metal")]
+        (EncodeMode::GpuTexture(GpuBackend::Metal), None) => Ok(Transport::Metal),
+        (EncodeMode::GpuTexture(backend), _) => Err(FfmpegError::new(
+            "VideoEncoder::create",
+            format!("{backend:?} texture encode has no frames context"),
+        )
+        .with_backend(backend)),
+    }
+}
+
+/// Full-range RGB in, BT.709 limited-range YUV out, matching the stream's colour tags.
+fn rgba_scaler(width: i32, height: i32, format: sys::AVPixelFormat) -> Result<Scaler> {
+    let scaler = unsafe {
+        sys::sws_getContext(
+            width,
+            height,
+            PixelFormat::Rgba8.to_av_pixel_format(),
+            width,
+            height,
+            format,
+            SWS_BILINEAR,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null(),
+        )
+    };
+    if scaler.is_null() {
+        return Err(FfmpegError::new(
+            "sws_getContext",
+            "failed to create encoder color conversion context",
+        ));
+    }
+    let scaler = Scaler(scaler);
+    let coefficients = unsafe { sys::sws_getCoefficients(sys::SWS_CS_ITU709) };
+    let configured = unsafe {
+        sys::sws_setColorspaceDetails(
+            scaler.0,
+            coefficients,
+            SWS_RANGE_FULL,
+            coefficients,
+            SWS_RANGE_LIMITED,
+            0,
+            1 << 16,
+            1 << 16,
+        )
+    };
+    if configured < 0 {
+        return Err(FfmpegError::new(
+            "sws_setColorspaceDetails",
+            "failed to configure BT.709 color conversion",
+        ));
+    }
+    Ok(scaler)
+}
+
+fn upload_frame(hw_frames: &AvBufferRef, frame: &AvFrame) -> Result<AvFrame> {
+    let mut uploaded = AvFrame::new()?;
+    unsafe {
+        ffi::check(
+            sys::av_hwframe_get_buffer(hw_frames.ptr, uploaded.as_mut_ptr(), 0),
+            "av_hwframe_get_buffer",
+        )?;
+        ffi::check(
+            sys::av_hwframe_transfer_data(uploaded.as_mut_ptr(), frame.as_ptr(), 0),
+            "av_hwframe_transfer_data",
+        )?;
+    }
+    Ok(uploaded)
 }
 
 /// `av1_vulkan` pads frames to the hardware's coded alignment and AV1 has no crop window, so the
@@ -627,12 +644,7 @@ fn validate_cpu_frame(
 
 impl Drop for VideoEncoder {
     fn drop(&mut self) {
-        unsafe {
-            if !self.scaler.is_null() {
-                sys::sws_freeContext(self.scaler);
-            }
-            sys::avcodec_free_context(&mut self.context);
-        }
+        unsafe { sys::avcodec_free_context(&mut self.context) };
     }
 }
 

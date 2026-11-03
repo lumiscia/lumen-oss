@@ -1,13 +1,13 @@
 use std::ptr;
 
 use crate::audio::AudioFrame;
-use crate::ffi::{self, AvFrame, AvPacket, CodecContextGuard, sys};
+use crate::ffi::{self, AvFrame, CodecContextGuard, sys};
 use crate::{FfmpegError, Result};
 use sys::AVMediaType::AVMEDIA_TYPE_AUDIO;
 use sys::AVSampleFormat::{AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_FLTP};
 
 use super::codec::{find_audio_encoder, select_audio_sample_format};
-use super::common::refresh_stream_time_base;
+use super::common::{refresh_stream_time_base, send_frame_and_write_packets};
 use super::output::OutputContext;
 
 #[derive(Debug, Clone)]
@@ -197,36 +197,14 @@ impl AudioEncoder {
     }
 
     fn send_frame(&mut self, output: &mut OutputContext, frame: *const sys::AVFrame) -> Result<()> {
-        unsafe {
-            ffi::check(
-                sys::avcodec_send_frame(self.context, frame),
-                "avcodec_send_frame",
-            )?;
-        }
-        loop {
-            let mut packet = AvPacket::new()?;
-            let result = unsafe { sys::avcodec_receive_packet(self.context, packet.as_mut_ptr()) };
-            if result == sys::AVERROR(libc::EAGAIN) || result == sys::AVERROR_EOF {
-                break;
-            }
-            if result < 0 {
-                return Err(ffi::error_from_code("avcodec_receive_packet", result));
-            }
-            unsafe {
-                (*packet.as_mut_ptr()).stream_index = self.stream_index as i32;
-                sys::av_packet_rescale_ts(
-                    packet.as_mut_ptr(),
-                    (*self.context).time_base,
-                    self.stream_time_base,
-                );
-                ffi::check(
-                    sys::av_interleaved_write_frame(output.ptr, packet.as_mut_ptr()),
-                    "av_interleaved_write_frame",
-                )
-                .map_err(|error| error.with_path(output.path().to_string()))?;
-            }
-        }
-        Ok(())
+        send_frame_and_write_packets(
+            self.context,
+            frame,
+            output,
+            self.stream_index,
+            self.stream_time_base,
+            0,
+        )
     }
 }
 

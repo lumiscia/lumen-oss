@@ -1,5 +1,5 @@
 use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer};
-use lumen_ffmpeg::VideoCodec;
+use lumen_ffmpeg::EncoderQuality;
 
 use crate::render::{RenderError, RenderProgress, media::LocalMediaStore};
 
@@ -13,7 +13,7 @@ pub(super) fn render_project_mp4_cuda(
     _fps: f32,
     _total_frames: u32,
     _encoder_name: &str,
-    _codec: VideoCodec,
+    _quality: &EncoderQuality,
     _verbose_debug: bool,
     _on_progress: &mut dyn FnMut(RenderProgress),
 ) -> Result<Vec<u8>, RenderError> {

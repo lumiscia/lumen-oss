@@ -21,7 +21,7 @@ use lumen_engine::{
     ffmpeg::FfmpegVideoResolver,
     media::{MediaFrame, VideoFrameResolver},
 };
-use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
+use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoEncoderConfig};
 use reqwest::{
     StatusCode,
     blocking::{Client, Response},
@@ -835,7 +835,7 @@ fn staged_playlists_cannot_reach_files_outside_the_job_with_gpu() {
 }
 
 fn write_video(path: &Path) -> bool {
-    let config = VideoEncoderConfig::cpu_rgba(32, 24, 24, VideoCodec::H264);
+    let config = VideoEncoderConfig::cpu_rgba(32, 24, 24, "libx264");
     let Ok(mut encoder) = MuxedEncoder::create(path.to_string_lossy().to_string(), config) else {
         return false;
     };

@@ -2,7 +2,7 @@ use std::{fs, sync::mpsc};
 
 use anyhow::Context;
 use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, media::MediaStore};
-use lumen_ffmpeg::{VideoCodec, VideoEncoderChoice};
+use lumen_ffmpeg::{EncoderFamily, VideoEncoderChoice};
 
 use super::{
     ProjectBundle, RenderError, RenderOptions, RenderProgress,
@@ -35,6 +35,22 @@ pub fn render_project_mp4(
     let height = composition.render_settings().height;
     let fps = composition.timeline().fps;
     let total_frames = composition.timeline().duration_frames;
+
+    let (choice, encoder) = VideoEncoderChoice::resolve(options.video_encoder.as_deref())
+        .look_up(|warning| tracing::warn!("{warning}"))
+        .map_err(|err| RenderError {
+            code: "invalid_render_profile",
+            message: err.to_string(),
+            retryable: false,
+        })?;
+    let cuda_fast_path = encoder.family == EncoderFamily::Nvenc;
+    tracing::info!(
+        encoder = choice.name,
+        codec = ?encoder.codec,
+        cuda_fast_path = cfg!(all(target_os = "linux", feature = "cuda", feature = "vulkan"))
+            && cuda_fast_path,
+        "selected video encoder"
+    );
 
     let media_root = media_root(options.media_root.as_deref()).map_err(|err| RenderError {
         code: "media_root_error",
@@ -71,20 +87,7 @@ pub fn render_project_mp4(
             retryable: false,
         })?;
 
-    let choice = VideoEncoderChoice::resolve(options.video_encoder.as_deref());
-    let encoder = video_encoder_selection(&choice.name).map_err(|err| RenderError {
-        code: "invalid_render_profile",
-        message: err.to_string(),
-        retryable: false,
-    })?;
-    tracing::info!(
-        encoder = encoder.name,
-        codec = ?encoder.codec,
-        cuda_fast_path = cfg!(all(target_os = "linux", feature = "cuda", feature = "vulkan"))
-            && encoder.cuda_fast_path,
-            "selected video encoder"
-    );
-    if encoder.cuda_fast_path {
+    if cuda_fast_path {
         return render_project_mp4_cuda(
             renderer,
             composition,
@@ -93,8 +96,8 @@ pub fn render_project_mp4(
             height,
             fps,
             total_frames,
-            &encoder.name,
-            encoder.codec,
+            &choice.name,
+            &options.quality,
             options.verbose_debug,
             on_progress,
         );
@@ -116,7 +119,7 @@ pub fn render_project_mp4(
                     height,
                     fps,
                     name,
-                    encoder.codec,
+                    &options.quality,
                     include_audio,
                 )
             },
@@ -286,31 +289,6 @@ fn create_gpu_renderer(
         .context("failed to initialize wgpu renderer")
 }
 
-#[derive(Debug)]
-struct VideoEncoderSelection {
-    name: String,
-    codec: VideoCodec,
-    cuda_fast_path: bool,
-}
-
-fn video_encoder_selection(name: &str) -> anyhow::Result<VideoEncoderSelection> {
-    let codec = match name {
-        "h264" | "libx264" | "h264_videotoolbox" | "h264_vulkan" | "h264_nvenc" => VideoCodec::H264,
-        "hevc" | "h265" | "libx265" | "hevc_videotoolbox" | "hevc_vulkan" | "hevc_nvenc" => {
-            VideoCodec::Hevc
-        }
-        "av1" | "libaom-av1" | "av1_nvenc" | "av1_vulkan" => VideoCodec::Av1,
-        _ => anyhow::bail!(
-            "unsupported video encoder `{name}`; expected a known H.264, HEVC, or AV1 encoder"
-        ),
-    };
-    Ok(VideoEncoderSelection {
-        name: name.to_string(),
-        codec,
-        cuda_fast_path: matches!(name, "h264_nvenc" | "hevc_nvenc" | "av1_nvenc"),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,7 +307,8 @@ mod tests {
         }))
         .unwrap();
         let options = RenderOptions {
-            video_encoder: Some("h264_videotoolbox".to_string()),
+            // Registered in every FFmpeg build, and refuses the frames lumen gives a video encoder.
+            video_encoder: Some("bmp".to_string()),
             ..RenderOptions::default()
         };
 
@@ -341,35 +320,30 @@ mod tests {
         assert!(!error.retryable, "{error}");
     }
 
+    /// Fails on a missing Tokio runtime if the lookup ever moves after renderer creation.
     #[test]
-    fn nvenc_encoders_select_cuda_capable_codecs() {
-        let h264 = video_encoder_selection("h264_nvenc").unwrap();
-        assert_eq!(h264.name, "h264_nvenc");
-        assert_eq!(h264.codec, VideoCodec::H264);
+    fn unknown_encoder_is_rejected_before_any_gpu_setup() {
+        let bundle = super::super::convert_project_payload(&serde_json::json!({
+            "timeline": { "fps": 24, "duration_frames": 1 },
+            "render_settings": { "width": 16, "height": 16 },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255], "width": 16, "height": 16 } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+        }))
+        .unwrap();
+        let options = RenderOptions {
+            video_encoder: Some("definitely_not_an_encoder".to_string()),
+            ..RenderOptions::default()
+        };
 
-        let hevc = video_encoder_selection("hevc_nvenc").unwrap();
-        assert_eq!(hevc.name, "hevc_nvenc");
-        assert_eq!(hevc.codec, VideoCodec::Hevc);
+        let error = render_project_mp4(&bundle, &options, &mut |_| {}).unwrap_err();
 
-        let av1 = video_encoder_selection("av1_nvenc").unwrap();
-        assert_eq!(av1.name, "av1_nvenc");
-        assert_eq!(av1.codec, VideoCodec::Av1);
-    }
-
-    #[test]
-    fn vulkan_av1_encoder_is_selectable() {
-        let av1 = video_encoder_selection("av1_vulkan").unwrap();
-        assert_eq!(av1.codec, VideoCodec::Av1);
-        assert!(!av1.cuda_fast_path);
-    }
-
-    #[test]
-    fn unknown_encoder_is_rejected_before_rendering() {
-        let error = video_encoder_selection("definitely_not_an_encoder").unwrap_err();
+        assert_eq!(error.code, "invalid_render_profile", "{error}");
         assert!(
-            error
-                .to_string()
-                .contains("expected a known H.264, HEVC, or AV1 encoder")
+            error.message.contains("definitely_not_an_encoder"),
+            "{error}"
         );
     }
 }

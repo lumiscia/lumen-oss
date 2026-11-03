@@ -10,8 +10,8 @@ use lumen_engine::{
     composition::Composition,
 };
 use lumen_ffmpeg::{
-    AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, Rational, VideoCodec,
-    VideoEncoderConfig,
+    AudioEncoderConfig, AudioFrame, CpuVideoFrame, EncoderQuality, MuxedEncoder, PixelFormat,
+    Rational, VideoEncoderConfig,
 };
 
 use super::media::LocalMediaStore;
@@ -41,13 +41,16 @@ impl LumenFfmpegEncoder {
         height: u32,
         fps: f32,
         encoder: &str,
-        codec: VideoCodec,
+        quality: &EncoderQuality,
         include_audio: bool,
     ) -> anyhow::Result<Self> {
-        let mut config =
-            VideoEncoderConfig::cpu_rgba(width, height, Rational::from_fps(f64::from(fps))?, codec);
-        config.encoder_name = Some(encoder.to_string());
-        config.bit_rate = 14_000_000;
+        let mut config = VideoEncoderConfig::cpu_rgba(
+            width,
+            height,
+            Rational::from_fps(f64::from(fps))?,
+            encoder,
+        );
+        config.quality = quality.clone();
         let audio = include_audio
             .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
 

@@ -57,7 +57,7 @@ where
     let options = RenderOptions {
         media_root: Some(staged_path.clone()),
         verbose_debug,
-        video_encoder: None,
+        ..RenderOptions::default()
     };
 
     let output_width = bundle.project.width;

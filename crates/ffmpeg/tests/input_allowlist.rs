@@ -8,7 +8,7 @@ use std::{
 };
 
 use lumen_ffmpeg::{
-    ALLOWED_INPUT_FORMATS, CpuVideoFrame, InputContext, MuxedEncoder, PixelFormat, VideoCodec,
+    ALLOWED_INPUT_FORMATS, CpuVideoFrame, InputContext, MuxedEncoder, PixelFormat,
     VideoEncoderConfig,
 };
 
@@ -89,7 +89,7 @@ impl Drop for TempDir {
 }
 
 fn write_segment(path: &Path) -> bool {
-    let config = VideoEncoderConfig::cpu_rgba(32, 24, 24, VideoCodec::H264);
+    let config = VideoEncoderConfig::cpu_rgba(32, 24, 24, "libx264");
     let Ok(mut encoder) = MuxedEncoder::create(path.to_string_lossy().to_string(), config) else {
         return false;
     };

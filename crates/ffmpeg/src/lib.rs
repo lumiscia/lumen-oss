@@ -14,8 +14,8 @@ pub mod video;
 pub use ash;
 pub use audio::{AudioDecoder, AudioFrame, AudioRangeReader, AudioResampler, AudioResamplerConfig};
 pub use encode::{
-    AudioEncoderConfig, ContainerCrop, GpuTextureEncodeSupport, MuxedEncoder, RateControl,
-    VideoEncoderChoice, VideoEncoderConfig, gpu_texture_encode_support,
+    AudioEncoderConfig, ContainerCrop, EncoderFamily, EncoderInfo, EncoderQuality, MuxedEncoder,
+    RateControl, VideoEncoderChoice, VideoEncoderConfig, encoder_info,
 };
 pub use format::{
     ALLOWED_INPUT_FORMATS, ALLOWED_INPUT_PROTOCOLS, AudioStreamInfo, InputContext, MediaInfo,
