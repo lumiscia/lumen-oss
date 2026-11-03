@@ -44,6 +44,7 @@ use tracing_subscriber::EnvFilter;
 #[command(
     name = "lumen-local",
     version,
+    args_override_self = true,
     group(ArgGroup::new("rate_control").args(["bitrate", "crf", "qp"])),
     after_help = "\
 Media sources in the composition resolve inside --media-root, which defaults to the current \
