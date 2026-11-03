@@ -36,7 +36,7 @@ pub struct MergeParams {
     #[meta(min = 0, max = 1, step = 0.05)]
     pub opacity: f64,
     /// Blend mode used when combining the overlay with the base raster.
-    #[meta()]
+    #[meta(constant)]
     pub blend_mode: BlendMode,
     /// Channel of the `mask` input that controls overlay visibility.
     #[meta()]

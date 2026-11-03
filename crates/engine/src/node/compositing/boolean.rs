@@ -10,32 +10,25 @@ pub(crate) const SHADER: &str = concat!(
     include_str!("boolean.wgsl")
 );
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
 #[repr(i64)]
+#[delegate(kind = "enum", expressions)]
 pub enum BooleanOperation {
+    #[default]
     Union = 0,
     Intersect = 1,
     Subtract = 2,
     Xor = 3,
 }
 
-impl BooleanOperation {
-    pub fn from_int(value: i64) -> Self {
-        match value {
-            1 => Self::Intersect,
-            2 => Self::Subtract,
-            3 => Self::Xor,
-            _ => Self::Union,
-        }
-    }
-}
-
 /// Combines two raster alpha masks with boolean operations.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct BooleanParams {
     /// Boolean operation used to combine the two input masks.
-    #[meta(kind = "enum", enum_type = BooleanOperation)]
-    pub operation: i64,
+    #[meta()]
+    pub operation: BooleanOperation,
     /// Alpha above this cutoff counts as opaque; 0 applies no cutoff and keeps antialiased edges.
     #[meta(min = 0, max = 1, step = 0.01)]
     pub threshold: f64,
@@ -44,7 +37,7 @@ pub struct BooleanParams {
 impl Default for BooleanParams {
     fn default() -> Self {
         Self {
-            operation: BooleanOperation::Union as i64,
+            operation: BooleanOperation::Union,
             threshold: 0.0,
         }
     }
@@ -84,7 +77,7 @@ impl GpuCompiledNode for CompiledBoolean {
         })?;
         let gpu_params = compiler::BooleanParams {
             values: [
-                BooleanOperation::from_int(params.operation) as u32 as f32,
+                params.operation as u32 as f32,
                 params.threshold as f32,
                 self.straight_inputs[0],
                 self.straight_inputs[1],

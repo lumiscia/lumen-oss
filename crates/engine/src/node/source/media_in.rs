@@ -9,25 +9,23 @@ use crate::gpu::{
     RasterHandle, RasterMetadata,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[delegate(kind = "enum", expressions)]
 pub enum LoopMode {
+    #[default]
     Clamp,
     Repeat,
     PingPong,
 }
 
-impl LoopMode {
-    pub fn from_int(value: i64) -> Self {
-        match value {
-            1 => Self::Repeat,
-            2 => Self::PingPong,
-            _ => Self::Clamp,
-        }
-    }
-}
-
-#[derive(lumen_macros::NodeEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[delegate(kind = "enum", expressions)]
 pub enum MediaInSourceKind {
+    #[default]
     Image = 0,
     Video = 1,
 }
@@ -49,8 +47,8 @@ pub enum MediaInKind {
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct MediaInParams {
     /// Type of external media source.
-    #[meta(kind = "enum", name = "Media type", enum_type = MediaInSourceKind)]
-    pub kind: i64,
+    #[meta(name = "Media type")]
+    pub kind: MediaInSourceKind,
     /// External media source identifier.
     #[meta(role = "source_id")]
     pub source: String,
@@ -64,19 +62,19 @@ pub struct MediaInParams {
     #[meta(step = 0.1)]
     pub speed: f64,
     /// Behavior when playback leaves the source range.
-    #[meta(kind = "enum", enum_type = LoopMode)]
-    pub loop_mode: i64,
+    #[meta()]
+    pub loop_mode: LoopMode,
 }
 
 impl Default for MediaInParams {
     fn default() -> Self {
         Self {
-            kind: 0,
+            kind: MediaInSourceKind::Image,
             source: String::new(),
             range_start: 0,
             range_end: 0,
             speed: 1.0,
-            loop_mode: 0,
+            loop_mode: LoopMode::Clamp,
         }
     }
 }
@@ -98,23 +96,17 @@ pub fn resolve_for_context(
         node_id: media_in.id,
         expr: ctx,
     })?;
-    let kind = params.kind;
-    let source = params.source;
-    let range_start = params.range_start;
-    let range_end = params.range_end;
-    let speed = params.speed as f32;
-    let loop_mode = LoopMode::from_int(params.loop_mode);
-
-    if kind == 1 {
-        Ok(MediaInKind::Video {
-            stream_id: source,
-            range: resolve_range(range_start, range_end),
-            speed,
-            loop_mode,
-        })
-    } else {
-        Ok(MediaInKind::Image { image_id: source })
-    }
+    Ok(match params.kind {
+        MediaInSourceKind::Video => MediaInKind::Video {
+            stream_id: params.source,
+            range: resolve_range(params.range_start, params.range_end),
+            speed: params.speed as f32,
+            loop_mode: params.loop_mode,
+        },
+        MediaInSourceKind::Image => MediaInKind::Image {
+            image_id: params.source,
+        },
+    })
 }
 
 pub fn resolve_range(start: i64, end: i64) -> Option<Range<u32>> {
@@ -316,7 +308,7 @@ impl GpuCompiledNode for CompiledMediaInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{LoopMode, map_to_source_frame};
+    use super::{LoopMode, MediaIn, NodeId, map_to_source_frame, resolve_for_context};
 
     struct Row {
         name: &'static str,
@@ -350,6 +342,21 @@ mod tests {
             frames: (0..).map(f64::from).zip(sources).collect(),
             ..forward(name, 30.0, Vec::new())
         }
+    }
+
+    #[test]
+    fn an_expression_outside_the_enum_names_the_param() {
+        use crate::node::JsonNode;
+
+        let params = serde_json::json!({ "kind": "=frame + 2" });
+        let node = MediaIn::from_json(NodeId::new(1), params.as_object()).unwrap();
+        let error = resolve_for_context(&node, &crate::expr::ExpressionContext::default())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "node 1 `kind`: 2 is not a value of MediaInSourceKind"
+        );
     }
 
     #[test]

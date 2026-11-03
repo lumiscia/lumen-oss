@@ -554,7 +554,6 @@ fn media_prediction_follows_direct_ports() {
         NodeKind::MediaIn(MediaIn {
             id: media,
             params: MediaInParamsDelegate {
-                kind: Deferred::value(0),
                 source: Deferred::value("plate".to_string()),
                 ..Default::default()
             },
