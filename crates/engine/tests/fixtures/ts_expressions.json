@@ -52,7 +52,7 @@
       },
       { "type": "media_output", "id": 3 }
     ],
-    "render_settings": { "background_color": [0, 0, 0, 0], "height": 1080, "width": 1920 },
+    "render_settings": { "height": 1080, "width": 1920 },
     "timeline": { "duration_frames": 120, "fps": 30 }
   },
   "frame": 45,

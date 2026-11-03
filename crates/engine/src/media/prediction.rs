@@ -64,7 +64,7 @@ pub fn collect_frame_requirements<M: MediaStore>(
 ) -> Result<FrameRequirements, LumenError> {
     tracing::trace!(target: "lumen_media", frame, "collect frame requirements");
     let scope = Scope::root(composition);
-    let output = scope.media_output()?;
+    let output = scope.output;
     let mut walk = Walk::default();
     let context = RequirementContext {
         scope,

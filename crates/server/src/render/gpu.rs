@@ -36,22 +36,6 @@ pub fn render_project_mp4(
     let fps = composition.timeline().fps;
     let total_frames = composition.timeline().duration_frames;
 
-    if fps <= 0.0 {
-        return Err(RenderError {
-            code: "invalid_project_payload",
-            message: format!("invalid timeline fps: {fps}"),
-            retryable: false,
-        });
-    }
-
-    if total_frames == 0 {
-        return Err(RenderError {
-            code: "invalid_project_payload",
-            message: "composition duration_frames must be greater than zero".to_string(),
-            retryable: false,
-        });
-    }
-
     let media_root = media_root(options.media_root.as_deref()).map_err(|err| RenderError {
         code: "media_root_error",
         message: err.to_string(),

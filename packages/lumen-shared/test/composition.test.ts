@@ -173,20 +173,6 @@ describe("Composition audio helpers", () => {
 
     expect(next.start_ms).toBe(1_000);
   });
-
-  test("rejects frame-based audio clip timing on AudioTrack", () => {
-    const track = new AudioTrack({ id: "music" });
-
-    expect(() =>
-      track.addClip({
-        duration_frames: 24,
-        id: "frame-based",
-        source_id: "audio:music",
-        start_frame: 0,
-        track_id: "music",
-      }),
-    ).toThrow("frame-based timing");
-  });
 });
 
 describe("Composition timeline defaults", () => {
@@ -195,6 +181,12 @@ describe("Composition timeline defaults", () => {
 
     expect(composition.toJSON().timeline.fps).toBe(30);
     expect(composition.setDurationSeconds(2).toJSON().timeline.duration_frames).toBe(60);
+  });
+
+  test("converts durationSeconds rather than emitting a key the engine rejects", () => {
+    const composition = new Composition({ timeline: { durationSeconds: 2.5, fps: 24 } });
+
+    expect(composition.toJSON().timeline).toEqual({ duration_frames: 60, fps: 24 });
   });
 });
 

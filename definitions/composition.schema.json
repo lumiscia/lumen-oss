@@ -2,33 +2,21 @@
   "$defs": {
     "audioClip": {
       "additionalProperties": true,
-      "allOf": [
-        {
-          "anyOf": [
-            {
-              "required": ["start_ms"]
-            },
-            {
-              "required": ["start_frame"]
-            }
-          ]
-        },
-        {
-          "anyOf": [
-            {
-              "required": ["duration_ms"]
-            },
-            {
-              "required": ["duration_frames"]
-            }
-          ]
-        }
-      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": ["start_frame"]
+          },
+          {
+            "required": ["duration_frames"]
+          },
+          {
+            "required": ["source_start_seconds"]
+          }
+        ],
+        "description": "Retired timing keys, which the engine rejects."
+      },
       "properties": {
-        "duration_frames": {
-          "minimum": 1,
-          "type": "integer"
-        },
         "duration_ms": {
           "minimum": 1,
           "type": "integer"
@@ -46,14 +34,6 @@
           "minimum": 0,
           "type": "integer"
         },
-        "source_start_seconds": {
-          "minimum": 0,
-          "type": "number"
-        },
-        "start_frame": {
-          "minimum": 0,
-          "type": "integer"
-        },
         "start_ms": {
           "minimum": 0,
           "type": "integer"
@@ -67,7 +47,7 @@
           "type": "number"
         }
       },
-      "required": ["id", "source_id", "track_id"],
+      "required": ["id", "source_id", "track_id", "start_ms", "duration_ms"],
       "type": "object",
       "x-lumen-type": "AudioClip"
     },
@@ -502,11 +482,8 @@
       "x-lumen-type": "PaintKind"
     },
     "renderSettings": {
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
-        "background_color": {
-          "$ref": "#/$defs/color"
-        },
         "height": {
           "maximum": 4294967295,
           "minimum": 1,
@@ -1104,7 +1081,7 @@
       "x-lumen-type": "TextTransform"
     },
     "timeline": {
-      "additionalProperties": true,
+      "additionalProperties": false,
       "description": "Length and frame rate. `fps` defaults to 30 at the root, and a template's timeline takes the root's `fps`.",
       "properties": {
         "duration_frames": {
@@ -1187,8 +1164,8 @@
       "x-lumen-keyType": "`${string}(${string})`"
     },
     "lumenSchemaVersion": {
-      "description": "Version of the composition format. Absent means the current version.",
-      "type": "string"
+      "const": "0.1.0",
+      "description": "Version of the composition format. Absent means the current version."
     },
     "metadata": {
       "additionalProperties": true,
@@ -4591,10 +4568,6 @@
     },
     "render_settings": {
       "$ref": "#/$defs/renderSettings"
-    },
-    "schemaVersion": {
-      "description": "Older name of `lumenSchemaVersion`, read when that is absent.",
-      "type": "string"
     },
     "timeline": {
       "$ref": "#/$defs/timeline"

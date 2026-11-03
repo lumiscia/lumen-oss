@@ -35,19 +35,17 @@ pub(crate) fn timeline(fps: f32, duration_frames: u32) -> TimelineSettings {
     }
 }
 
-pub(crate) fn render_720p(background_color: [u8; 4]) -> RenderSettings {
+pub(crate) fn render_720p() -> RenderSettings {
     RenderSettings {
         width: 1280,
         height: 720,
-        background_color,
     }
 }
 
-pub(crate) fn render_1080p(background_color: [u8; 4]) -> RenderSettings {
+pub(crate) fn render_1080p() -> RenderSettings {
     RenderSettings {
         width: 1920,
         height: 1080,
-        background_color,
     }
 }
 

@@ -52,11 +52,7 @@ fn render_schema() -> Result<String> {
             },
             "lumenSchemaVersion": {
                 "description": "Version of the composition format. Absent means the current version.",
-                "type": "string"
-            },
-            "schemaVersion": {
-                "description": "Older name of `lumenSchemaVersion`, read when that is absent.",
-                "type": "string"
+                "const": "0.1.0"
             },
             "metadata": {
                 "type": "object",
@@ -119,7 +115,7 @@ fn render_schema() -> Result<String> {
                         "maximum": 4294967295u32
                     }
                 },
-                "additionalProperties": true
+                "additionalProperties": false
             },
             "renderSettings": {
                 "x-lumen-type": "RenderSettings",
@@ -127,10 +123,9 @@ fn render_schema() -> Result<String> {
                 "required": ["width", "height"],
                 "properties": {
                     "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                    "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
-                    "background_color": { "$ref": "#/$defs/color" }
+                    "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 }
                 },
-                "additionalProperties": true
+                "additionalProperties": false
             },
             "compositionTemplate": {
                 "x-lumen-type": "CompositionTemplate",
@@ -217,7 +212,7 @@ fn render_schema() -> Result<String> {
             "audioClip": {
                 "x-lumen-type": "AudioClip",
                 "type": "object",
-                "required": ["id", "source_id", "track_id"],
+                "required": ["id", "source_id", "track_id", "start_ms", "duration_ms"],
                 "properties": {
                     "id": { "type": "string" },
                     "source_id": { "type": "string" },
@@ -226,15 +221,16 @@ fn render_schema() -> Result<String> {
                     "start_ms": { "type": "integer", "minimum": 0 },
                     "duration_ms": { "type": "integer", "minimum": 1 },
                     "source_start_ms": { "type": "integer", "minimum": 0 },
-                    "start_frame": { "type": "integer", "minimum": 0 },
-                    "duration_frames": { "type": "integer", "minimum": 1 },
-                    "source_start_seconds": { "type": "number", "minimum": 0 },
                     "volume": { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 }
                 },
-                "allOf": [
-                    { "anyOf": [{ "required": ["start_ms"] }, { "required": ["start_frame"] }] },
-                    { "anyOf": [{ "required": ["duration_ms"] }, { "required": ["duration_frames"] }] }
-                ],
+                "not": {
+                    "description": "Retired timing keys, which the engine rejects.",
+                    "anyOf": [
+                        { "required": ["start_frame"] },
+                        { "required": ["duration_frames"] },
+                        { "required": ["source_start_seconds"] }
+                    ]
+                },
                 "additionalProperties": true
             }
         }

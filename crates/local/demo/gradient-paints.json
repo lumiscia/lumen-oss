@@ -5,8 +5,7 @@
   },
   "render_settings": {
     "width": 1280,
-    "height": 720,
-    "background_color": [10, 12, 18, 255]
+    "height": 720
   },
   "metadata": {
     "title": "Gradient Paints",

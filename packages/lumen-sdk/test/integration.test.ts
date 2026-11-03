@@ -114,7 +114,6 @@ function tinyComposition(): Composition {
     renderSettings: {
       width: size,
       height: size,
-      background_color: [0, 0, 0, 255],
     },
     timeline: {
       fps: 24,

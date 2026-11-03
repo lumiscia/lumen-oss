@@ -8,7 +8,6 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     composition::{Composition, CompositionTemplate, RenderSettings, TimelineSettings},
-    error::GraphValidationError,
     expr::{ExpressionContext, ExpressionValue},
     graph::Graph,
     media::MediaStore,
@@ -77,6 +76,8 @@ pub struct Scope<'a> {
     pub graph: &'a Graph,
     pub timeline: &'a TimelineSettings,
     pub render_settings: &'a RenderSettings,
+    /// The graph's `media_output` node.
+    pub output: NodeId,
     /// `None` at the root.
     pub props: Option<Arc<PropValues>>,
 }
@@ -88,6 +89,7 @@ impl<'a> Scope<'a> {
             graph: composition.graph(),
             timeline: composition.timeline(),
             render_settings: composition.render_settings(),
+            output: composition.output(),
             props: None,
         }
     }
@@ -95,6 +97,7 @@ impl<'a> Scope<'a> {
     pub fn template(
         root: &'a Composition,
         template: &'a CompositionTemplate,
+        output: NodeId,
         props: PropValues,
     ) -> Self {
         Self {
@@ -102,26 +105,13 @@ impl<'a> Scope<'a> {
             graph: &template.graph,
             timeline: &template.timeline,
             render_settings: &template.render_settings,
+            output,
             props: Some(Arc::new(props)),
         }
     }
 
     pub fn node(&self, id: NodeId) -> Option<&'a NodeKind> {
         self.graph.nodes.get(&id)
-    }
-
-    /// The scope's only `media_output` node.
-    pub fn media_output(&self) -> crate::Result<NodeId> {
-        let mut outputs = self.graph.nodes.iter().filter_map(|(node_id, node)| {
-            matches!(node, NodeKind::MediaOutput(_)).then_some(*node_id)
-        });
-        let Some(output) = outputs.next() else {
-            return Err(GraphValidationError::MissingMediaOutput.into());
-        };
-        if outputs.next().is_some() {
-            return Err(GraphValidationError::MultipleMediaOutputs { count: 2 }.into());
-        }
-        Ok(output)
     }
 
     /// The context expressions of this scope are evaluated in at `frame`.

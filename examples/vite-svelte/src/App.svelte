@@ -19,7 +19,6 @@
         renderSettings: {
             width: 1280,
             height: 720,
-            background_color: [18, 20, 26, 255],
         },
         timeline: {
             fps: 30,

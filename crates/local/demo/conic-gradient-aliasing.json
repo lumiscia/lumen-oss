@@ -5,8 +5,7 @@
   },
   "render_settings": {
     "width": 1920,
-    "height": 1080,
-    "background_color": [8, 10, 14, 255]
+    "height": 1080
   },
   "metadata": {
     "title": "Conic Gradient Aliasing",

@@ -16,10 +16,8 @@ pub struct MediaOutput {
 impl GpuCompileNode for MediaOutput {
     fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
         let source = ctx.compile_input(self.id, "source", self.source)?;
-        let size = lumen_gpu::Size::new(
-            ctx.composition().render_settings().width.max(1),
-            ctx.composition().render_settings().height.max(1),
-        );
+        let settings = ctx.composition().render_settings();
+        let size = lumen_gpu::Size::new(settings.width, settings.height);
         let output_format = ctx.output_format();
         let source_is_written =
             ctx.builder_mut()

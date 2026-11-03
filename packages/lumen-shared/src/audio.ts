@@ -66,11 +66,10 @@ function audioClipFromOptions(
     startSeconds: _startSeconds,
     ...rest
   } = input;
-  const durationMs = audioTimeMs(input.durationMs, input.durationSeconds);
   const sourceStartMs = audioTimeMs(input.sourceStartMs, input.sourceStartSeconds);
   return {
     ...rest,
-    ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
+    duration_ms: audioTimeMs(input.durationMs, input.durationSeconds) ?? 0,
     id: input.id ?? `${trackId}-clip-${index + 1}`,
     source_id: input.sourceId,
     ...(sourceStartMs === undefined ? {} : { source_start_ms: sourceStartMs }),
@@ -80,36 +79,17 @@ function audioClipFromOptions(
 }
 
 function audioClipFromInput(input: AudioClipInput, trackId: string): AudioClipInput {
-  const sourceStartMs =
-    input.source_start_ms ??
-    (typeof input.source_start_seconds === "number"
-      ? Math.round(input.source_start_seconds * 1_000)
-      : undefined);
-  const { source_start_seconds: _sourceStartSeconds, ...rest } = input;
-  const clip: AudioClipInput = {
-    ...rest,
-    ...(sourceStartMs === undefined ? {} : { source_start_ms: sourceStartMs }),
-    start_ms: input.start_ms ?? 0,
-    track_id: input.track_id,
-  };
-
-  if (clip.track_id !== trackId) {
+  if (input.track_id !== trackId) {
     throw new Error(
-      `Audio clip \`${clip.id}\` belongs to track \`${clip.track_id}\`, not \`${trackId}\`.`,
+      `Audio clip \`${input.id}\` belongs to track \`${input.track_id}\`, not \`${trackId}\`.`,
     );
   }
 
-  return clip;
+  return { ...input };
 }
 
 function assertAudioClipTiming(clip: AudioClipInput): void {
-  if (clip.start_frame !== undefined || clip.duration_frames !== undefined) {
-    throw new Error(
-      `Audio clip \`${clip.id}\` uses frame-based timing. AudioTrack clips must use milliseconds or seconds.`,
-    );
-  }
-
-  if (clip.duration_ms === undefined || clip.duration_ms <= 0) {
+  if (clip.duration_ms <= 0) {
     throw new Error(`Audio clip \`${clip.id}\` must have a duration greater than zero.`);
   }
 }
@@ -132,11 +112,9 @@ function assertNoAudioClipOverlap(
 }
 
 function audioClipRange(clip: AudioClipInput): { start: number; end: number } {
-  const start = clip.start_ms ?? 0;
-  const duration = clip.duration_ms ?? 0;
   return {
-    start,
-    end: start + duration,
+    start: clip.start_ms,
+    end: clip.start_ms + clip.duration_ms,
   };
 }
 

@@ -73,7 +73,7 @@ impl CompositionFixture for SimplePipeline {
             })
             .expect("connect exposure -> output");
 
-        CompositionBuilder::new(graph, timeline(30.0, 120), render_720p([9, 17, 31, 255]))
+        CompositionBuilder::new(graph, timeline(30.0, 120), render_720p())
             .build()
             .expect("valid benchmark composition")
     }

@@ -802,15 +802,12 @@ export const expressionReservedNames = [
 ] as const;
 
 export type AudioClip = {
-  readonly duration_frames?: number;
-  readonly duration_ms?: number;
+  readonly duration_ms: number;
   readonly id: string;
   readonly name?: string;
   readonly source_id: string;
   readonly source_start_ms?: number;
-  readonly source_start_seconds?: number;
-  readonly start_frame?: number;
-  readonly start_ms?: number;
+  readonly start_ms: number;
   readonly track_id: string;
   readonly volume?: number;
   readonly [key: string]: unknown;
@@ -907,10 +904,8 @@ export type PaintKind = "linear_gradient" | "radial_gradient" | "conic_gradient"
 export type RasterMultimergeBlendMode = BlendMode;
 export type RasterSampling = "nearest" | "linear";
 export type RenderSettings = {
-  readonly background_color?: Color;
   readonly height: number;
   readonly width: number;
-  readonly [key: string]: unknown;
 };
 export type ResizeMode = "stretch" | "fit" | "fill";
 export type ResizeSampling = RasterSampling;
@@ -1033,7 +1028,6 @@ export type TextTransform = "none" | "uppercase" | "lowercase" | "capitalize";
 export type Timeline = {
   readonly duration_frames: number;
   readonly fps?: number;
-  readonly [key: string]: unknown;
 };
 export type TransformSampling = RasterSampling;
 

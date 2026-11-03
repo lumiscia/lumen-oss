@@ -297,7 +297,7 @@ impl CompositionFixture for AntialiasingStress {
             })
             .expect("connect multimerge -> output");
 
-        CompositionBuilder::new(graph, timeline(30.0, 120), render_1080p([7, 9, 13, 255]))
+        CompositionBuilder::new(graph, timeline(30.0, 120), render_1080p())
             .build()
             .expect("valid benchmark composition")
     }

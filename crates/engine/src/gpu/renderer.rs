@@ -1166,7 +1166,7 @@ impl GpuCompositionRenderer {
         media: Option<&dyn MediaStore>,
     ) -> crate::Result<CompiledPlanKey> {
         let root = Scope::root(composition);
-        let output = root.media_output()?;
+        let output = root.output;
         let mut collector = PlanKeyCollector {
             media,
             time_remaps: TimeRemapPath::new(),

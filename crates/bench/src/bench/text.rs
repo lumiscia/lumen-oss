@@ -265,7 +265,6 @@ fn run_case(
         RenderSettings {
             width: 1400,
             height: 900,
-            background_color: [0; 4],
         },
     )
     .build()

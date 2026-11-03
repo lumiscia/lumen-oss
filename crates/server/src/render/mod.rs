@@ -53,13 +53,7 @@ pub struct ProjectBundle {
 }
 
 pub fn convert_project_payload(payload: &serde_json::Value) -> Result<ProjectBundle, RenderError> {
-    let project = serde_json::to_string(payload).map_err(|err| RenderError {
-        code: "invalid_project_payload",
-        message: err.to_string(),
-        retryable: false,
-    })?;
-
-    let composition = lumen_engine::json::parse(&project).map_err(|err| RenderError {
+    let composition = lumen_engine::json::parse_value(payload).map_err(|err| RenderError {
         code: "invalid_project_payload",
         message: format!("{err:#}"),
         retryable: false,
@@ -115,8 +109,7 @@ mod tests {
             },
             "render_settings": {
                 "width": 64,
-                "height": 64,
-                "background_color": [0, 0, 0, 255]
+                "height": 64
             },
             "nodes": [
                 {

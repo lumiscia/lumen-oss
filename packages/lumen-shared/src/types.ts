@@ -28,8 +28,7 @@ export interface CompositionOptions {
   readonly metadata?: LumenComposition["metadata"];
   readonly renderSettings?: RenderSettingsInput;
   readonly timeline?: TimelineInput;
-  readonly lumenSchemaVersion?: string;
-  readonly schemaVersion?: string;
+  readonly lumenSchemaVersion?: LumenComposition["lumenSchemaVersion"];
 }
 
 export type NodeInput<TKind extends NodeKind = NodeKind> = NodeInputByKind[TKind];
@@ -127,15 +126,7 @@ export interface AudioTrackInput {
 
 export type AudioClipOptions = Omit<
   AudioClipInput,
-  | "duration_frames"
-  | "duration_ms"
-  | "id"
-  | "source_id"
-  | "source_start_ms"
-  | "source_start_seconds"
-  | "start_frame"
-  | "start_ms"
-  | "track_id"
+  "duration_ms" | "id" | "source_id" | "source_start_ms" | "start_ms" | "track_id"
 > & {
   readonly durationMs?: number;
   readonly durationSeconds?: number;
@@ -148,15 +139,12 @@ export type AudioClipOptions = Omit<
 };
 
 export interface AudioClipInput {
-  readonly duration_frames?: number;
-  readonly duration_ms?: number;
+  readonly duration_ms: number;
   readonly id: string;
   readonly name?: string;
   readonly source_id: string;
   readonly source_start_ms?: number;
-  readonly source_start_seconds?: number;
-  readonly start_frame?: number;
-  readonly start_ms?: number;
+  readonly start_ms: number;
   readonly track_id: string;
   readonly volume?: number;
   readonly [key: string]: unknown;

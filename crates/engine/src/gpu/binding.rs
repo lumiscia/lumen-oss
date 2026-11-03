@@ -76,7 +76,7 @@ impl<'a> FrameBindContext<'a> {
                 .begin_frame();
             bound.text_atlas = Some(std::sync::Arc::clone(&compiled.text_atlas));
         }
-        let output = self.scope.media_output()?;
+        let output = self.scope.output;
         let mut visited = HashMap::with_capacity_and_hasher(
             compiled.compiled_nodes.len() * 2,
             Default::default(),

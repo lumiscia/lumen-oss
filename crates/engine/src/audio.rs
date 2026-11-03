@@ -2,7 +2,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use crate::{error::MediaError, media::MediaStore};
 
@@ -74,14 +74,31 @@ fn is_valid_gain(gain: f32) -> bool {
     gain.is_finite() && gain >= 0.0
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// Reads a volume, rejecting a negative one before narrowing could round it to zero.
+pub(crate) fn deserialize_gain<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<f32, D::Error> {
+    let gain = f64::deserialize(deserializer)?;
+    if gain < 0.0 {
+        return Err(D::Error::custom(format!("must be at least 0, got {gain}")));
+    }
+    Ok(gain as f32)
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all(serialize = "camelCase"))]
 pub struct AudioTrack {
     pub id: String,
-    pub name: String,
+    #[serde(default)]
     pub muted: bool,
+    #[serde(default)]
     pub solo: bool,
+    #[serde(default = "default_volume", deserialize_with = "deserialize_gain")]
     pub volume: f32,
+}
+
+pub(crate) fn default_volume() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -90,7 +107,6 @@ pub struct AudioClip {
     pub id: String,
     pub source_id: String,
     pub track_id: String,
-    pub name: String,
     pub start_ms: u64,
     pub duration_ms: u64,
     pub source_start_ms: u64,
@@ -222,9 +238,6 @@ pub fn ms_to_sample(ms: u64) -> u64 {
 }
 
 pub fn duration_samples(duration_frames: u32, fps: f32) -> u64 {
-    if fps <= 0.0 {
-        return 0;
-    }
     ((duration_frames as f64 / fps as f64) * f64::from(AUDIO_SAMPLE_RATE)).round() as u64
 }
 
@@ -297,7 +310,6 @@ mod tests {
     fn track(id: &str) -> AudioTrack {
         AudioTrack {
             id: id.to_string(),
-            name: id.to_string(),
             muted: false,
             solo: false,
             volume: 1.0,
@@ -322,7 +334,6 @@ mod tests {
                 id: "clip".to_string(),
                 source_id: "tone".to_string(),
                 track_id: "main".to_string(),
-                name: "tone".to_string(),
                 start_ms: 0,
                 duration_ms: 1_000,
                 source_start_ms: 0,
@@ -361,7 +372,6 @@ mod tests {
                     id: "a".to_string(),
                     source_id: "tone".to_string(),
                     track_id: "solo".to_string(),
-                    name: "a".to_string(),
                     start_ms: 0,
                     duration_ms: 1_000,
                     source_start_ms: 0,
@@ -371,7 +381,6 @@ mod tests {
                     id: "b".to_string(),
                     source_id: "tone".to_string(),
                     track_id: "muted".to_string(),
-                    name: "b".to_string(),
                     start_ms: 0,
                     duration_ms: 1_000,
                     source_start_ms: 0,
@@ -398,7 +407,6 @@ mod tests {
                 id: "clip".to_string(),
                 source_id: "tone".to_string(),
                 track_id: "typo".to_string(),
-                name: "tone".to_string(),
                 start_ms: 0,
                 duration_ms: 1_000,
                 source_start_ms: 0,
@@ -431,7 +439,6 @@ mod tests {
                     id: "a".to_string(),
                     source_id: "tone".to_string(),
                     track_id: "main".to_string(),
-                    name: "a".to_string(),
                     start_ms: 0,
                     duration_ms: 1_000,
                     source_start_ms: 0,
@@ -441,7 +448,6 @@ mod tests {
                     id: "b".to_string(),
                     source_id: "tone".to_string(),
                     track_id: "main".to_string(),
-                    name: "b".to_string(),
                     start_ms: 0,
                     duration_ms: 1_000,
                     source_start_ms: 0,
@@ -489,7 +495,6 @@ mod tests {
             id: id.to_string(),
             source_id: "tone".to_string(),
             track_id: track_id.to_string(),
-            name: id.to_string(),
             start_ms,
             duration_ms,
             source_start_ms: 0,
