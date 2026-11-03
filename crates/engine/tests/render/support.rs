@@ -294,7 +294,7 @@ pub fn render(
     }
 }
 
-fn read_rgba8(
+pub fn read_rgba8(
     gpu: &lumen_gpu::Renderer,
     texture: &wgpu::Texture,
     size: lumen_gpu::Size,
