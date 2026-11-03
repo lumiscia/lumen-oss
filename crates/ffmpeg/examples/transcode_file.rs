@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if max_frames.is_none_or(|limit| frames < limit) {
         decoder.send_eof()?;
         while let Some(mut frame) = decoder.receive_cpu_frame()? {
-            frame.pts = None;
+            frame.pts = Some(frames as i64);
             encoder.write_video_frame(&frame)?;
             frames = frames.saturating_add(1);
             if max_frames.is_some_and(|limit| frames >= limit) {
