@@ -43,10 +43,21 @@ pub(crate) fn encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
     if codec.is_null() {
         Err(FfmpegError::new(
             "avcodec_find_encoder_by_name",
-            format!("requested encoder `{name}` is unavailable"),
+            missing_encoder_message(name, unsafe { sys::avcodec_version() } >> 16),
         ))
     } else {
         Ok(codec)
+    }
+}
+
+/// libavcodec 62 is FFmpeg 8.0, the first release with `av1_vulkan`.
+fn missing_encoder_message(name: &str, avcodec_major: u32) -> String {
+    if name == "av1_vulkan" && avcodec_major < 62 {
+        format!(
+            "`av1_vulkan` needs FFmpeg 8.0 or newer, but this FFmpeg has libavcodec {avcodec_major}"
+        )
+    } else {
+        format!("requested encoder `{name}` is unavailable")
     }
 }
 
@@ -116,5 +127,18 @@ pub(crate) fn select_audio_sample_format(
                 "AAC encoder does not support f32 input",
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::missing_encoder_message;
+
+    #[test]
+    fn av1_vulkan_below_ffmpeg_8_says_so() {
+        assert!(missing_encoder_message("av1_vulkan", 61).contains("FFmpeg 8.0"));
+        // FFmpeg 8.0 or newer without the encoder is a build problem, not a version one.
+        assert!(!missing_encoder_message("av1_vulkan", 62).contains("FFmpeg 8.0"));
+        assert!(!missing_encoder_message("h264_vulkan", 61).contains("FFmpeg 8.0"));
     }
 }

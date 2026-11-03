@@ -17,6 +17,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use lumen_engine::{
+    ffmpeg::FfmpegVideoResolver,
+    media::{MediaFrame, VideoFrameResolver},
+};
 use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
 use reqwest::{
     StatusCode,
@@ -38,6 +42,7 @@ struct Server {
     base: String,
     child: Child,
     http: Client,
+    log: Arc<Mutex<String>>,
 }
 
 impl Server {
@@ -67,15 +72,21 @@ impl Server {
             }
         };
         // The server blocks on a full pipe, and printing keeps its log with a failing test's output.
+        let log = Arc::new(Mutex::new(String::new()));
+        let written = Arc::clone(&log);
         thread::spawn(move || {
             for line in stderr.lines().map_while(Result::ok) {
                 eprintln!("{line}");
+                let mut written = written.lock().unwrap();
+                written.push_str(&line);
+                written.push('\n');
             }
         });
         Self {
             base: format!("http://{address}"),
             child,
             http: Client::new(),
+            log,
         }
     }
 
@@ -281,10 +292,7 @@ fn media_composition(kind: &str, source: &str) -> Value {
 
 fn error_code(response: Response) -> String {
     let body: Value = response.json().expect("error body");
-    body["error"]["code"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string()
+    body["code"].as_str().unwrap_or_default().to_string()
 }
 
 #[test]
@@ -340,6 +348,119 @@ fn refuses_a_non_loopback_bind_without_a_token() {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("without a token"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn errors_answer_with_the_code_and_message_the_sdk_reads() {
+    let server = Server::start(&[]);
+    let body = |response: Response| response.json::<Value>().expect("error body");
+    let bytes = |payload: Vec<u8>| {
+        server
+            .http
+            .post(format!("{}/renders", server.base))
+            .bearer_auth(TOKEN)
+            .header("content-type", "application/json")
+            .body(payload)
+            .send()
+            .expect("request")
+    };
+
+    assert_eq!(
+        body(
+            server
+                .http
+                .get(format!("{}/renders/nope", server.base))
+                .bearer_auth(TOKEN)
+                .send()
+                .expect("request")
+        ),
+        json!({ "code": "render_not_found", "error": "render was not found" })
+    );
+
+    let malformed = bytes(b"{".to_vec());
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(malformed), "invalid_request_body");
+
+    let too_large = bytes(vec![b' '; 2 * 1024 * 1024 + 1]);
+    assert_eq!(too_large.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        body(too_large),
+        json!({
+            "code": "request_too_large",
+            "error": "request body exceeds the 2097152 byte limit",
+        })
+    );
+}
+
+#[test]
+fn a_failed_render_keeps_its_code_on_every_read() {
+    let server = Server::start(&[]);
+    let id = server.submit(&json!({
+        "composition": solid_composition(),
+        "media": { "hero": "http://127.0.0.1:1/image.png" },
+    }));
+    let progress = server.wait_for_state(&id, &["failed"]);
+    assert_eq!(progress["errorCode"], "media_download_forbidden_host");
+    assert_eq!(progress["retryable"], false);
+
+    let read = |path: String| {
+        server
+            .http
+            .get(format!("{}{path}", server.base))
+            .bearer_auth(TOKEN)
+            .send()
+            .expect("request")
+            .json::<Value>()
+            .expect("render body")
+    };
+    let render = read(format!("/renders/{id}"));
+    let expected = json!({
+        "code": "media_download_forbidden_host",
+        "message": progress["error"],
+        "retryable": false,
+    });
+    assert_eq!(render["render"]["error"], expected);
+    assert_eq!(
+        read(format!("/renders/{id}/progress"))["render"]["error"],
+        expected
+    );
+}
+
+#[test]
+fn errors_axum_answers_itself_carry_the_same_body() {
+    let server = Server::start(&[]);
+    for (path, status, code) in [
+        ("/missing", StatusCode::NOT_FOUND, "route_not_found"),
+        (
+            "/renders",
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+        ),
+        (
+            "/renders/%FF/artifact",
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+        (
+            "/renders/nope/socket",
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+    ] {
+        let response = server.get(path);
+        assert_eq!(response.status(), status, "{path}");
+        if status == StatusCode::METHOD_NOT_ALLOWED {
+            assert_eq!(response.headers()["allow"], "POST", "{path}");
+        }
+        let body: Value = response.json().expect("error body");
+        assert_eq!(body["code"], code, "{path}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty()),
+            "{path}: {body}"
+        );
     }
 }
 
@@ -565,6 +686,67 @@ fn renders_read_only_manifest_media_with_gpu() {
     let artifact = server.get(&format!("/renders/{id}/artifact"));
     assert_eq!(artifact.status(), StatusCode::OK);
     assert!(!artifact.bytes().expect("artifact bytes").is_empty());
+}
+
+/// This size is below what hardware H.264 encoders accept, and software Vulkan has none, so the
+/// default encoder falls back wherever this runs.
+#[test]
+fn the_default_encoder_falls_back_to_a_correct_video_with_gpu() {
+    let server = Server::start_with(&[], |command| {
+        command.env_remove("LUMEN_VIDEO_ENCODER");
+    });
+    let Some((id, progress)) =
+        render_outcome(&server, &json!({ "composition": solid_composition() }))
+    else {
+        return;
+    };
+    assert_eq!(progress["state"], "succeeded", "{progress}");
+    let artifact = server.get(&format!("/renders/{id}/artifact"));
+    assert_eq!(artifact.status(), StatusCode::OK);
+
+    // The render can finish before the thread reading the server's stderr has caught up.
+    let started = Instant::now();
+    let log = loop {
+        let log = server.log.lock().unwrap().clone();
+        if log.contains("opened video encoder") || started.elapsed() > Duration::from_secs(10) {
+            break log;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let lines = |text: &str| {
+        log.lines()
+            .filter(|line| line.contains(text))
+            .collect::<Vec<_>>()
+    };
+    let selected = lines("selected video encoder");
+    assert!(
+        selected.len() == 1 && selected[0].contains("h264_vulkan"),
+        "{log}"
+    );
+    let warnings = lines("h264_vulkan is unavailable, encoding with libx264");
+    assert!(
+        warnings.len() == 1 && warnings[0].contains(id.as_str()),
+        "{log}"
+    );
+    let opened = lines("opened video encoder");
+    assert!(opened.len() == 1 && opened[0].contains("libx264"), "{log}");
+
+    let directory = tempfile::tempdir().expect("temp directory");
+    let path = directory.path().join("output.mp4");
+    std::fs::write(&path, artifact.bytes().expect("artifact bytes")).expect("write artifact");
+    let video = FfmpegVideoResolver::open(path.display().to_string()).expect("open artifact");
+    assert_eq!(video.metadata().frame_count, 1);
+    let MediaFrame::CpuRgba(decoded) = video.frame(0).expect("decode frame") else {
+        panic!("expected a CPU frame");
+    };
+    let offset = decoded.row_bytes * 8 + 8 * 4;
+    for (channel, want) in decoded.rgba[offset..offset + 3].iter().zip([255, 0, 0]) {
+        assert!(
+            (i32::from(*channel) - want).abs() <= 3,
+            "{:?}",
+            &decoded.rgba[offset..offset + 3]
+        );
+    }
 }
 
 #[test]

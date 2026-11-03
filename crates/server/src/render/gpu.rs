@@ -1,8 +1,8 @@
-use std::{env, fs, sync::mpsc};
+use std::{fs, sync::mpsc};
 
 use anyhow::Context;
 use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, media::MediaStore};
-use lumen_ffmpeg::VideoCodec;
+use lumen_ffmpeg::{VideoCodec, VideoEncoderChoice};
 
 use super::{
     ProjectBundle, RenderError, RenderOptions, RenderProgress,
@@ -87,12 +87,12 @@ pub fn render_project_mp4(
             retryable: false,
         })?;
 
-    let encoder =
-        choose_video_encoder(options.video_encoder.as_deref()).map_err(|err| RenderError {
-            code: "invalid_render_profile",
-            message: err.to_string(),
-            retryable: false,
-        })?;
+    let choice = VideoEncoderChoice::resolve(options.video_encoder.as_deref());
+    let encoder = video_encoder_selection(&choice.name).map_err(|err| RenderError {
+        code: "invalid_render_profile",
+        message: err.to_string(),
+        retryable: false,
+    })?;
     tracing::info!(
         encoder = encoder.name,
         codec = ?encoder.codec,
@@ -122,20 +122,31 @@ pub fn render_project_mp4(
     })?;
     let output_path = tmp.path().join("output.mp4");
     let include_audio = has_audio(composition);
-    let encoder = LumenFfmpegEncoder::create(
-        &output_path,
-        width,
-        height,
-        fps,
-        &encoder.name,
-        encoder.codec,
-        include_audio,
-    )
-    .map_err(|err| RenderError {
-        code: "encode_failed",
-        message: err.to_string(),
-        retryable: true,
-    })?;
+    let (encoder, encoder_name) = choice
+        .open(
+            |name| {
+                LumenFfmpegEncoder::create(
+                    &output_path,
+                    width,
+                    height,
+                    fps,
+                    name,
+                    encoder.codec,
+                    include_audio,
+                )
+            },
+            |warning| tracing::warn!("{warning}"),
+        )
+        .map_err(|err| RenderError {
+            code: "encode_failed",
+            message: err.to_string(),
+            retryable: true,
+        })?;
+    tracing::info!(
+        encoder = encoder_name,
+        path = "cpu_upload",
+        "opened video encoder"
+    );
     let (pixel_recycle_tx, _pixel_recycle_rx) =
         mpsc::sync_channel::<Vec<u8>>(ENCODER_FRAME_QUEUE_CAPACITY + 2);
 
@@ -361,29 +372,6 @@ struct VideoEncoderSelection {
     name: String,
     codec: VideoCodec,
     cuda_fast_path: bool,
-}
-
-fn choose_video_encoder(override_encoder: Option<&str>) -> anyhow::Result<VideoEncoderSelection> {
-    if let Some(encoder) = override_encoder {
-        let encoder = encoder.trim();
-        if !encoder.is_empty() {
-            return video_encoder_selection(encoder);
-        }
-    }
-
-    if let Ok(encoder) = env::var("LUMEN_VIDEO_ENCODER") {
-        let encoder = encoder.trim();
-        if !encoder.is_empty() {
-            return video_encoder_selection(encoder);
-        }
-    }
-
-    let name = if cfg!(target_os = "macos") {
-        "h264_videotoolbox"
-    } else {
-        "libx264"
-    };
-    video_encoder_selection(name)
 }
 
 fn video_encoder_selection(name: &str) -> anyhow::Result<VideoEncoderSelection> {

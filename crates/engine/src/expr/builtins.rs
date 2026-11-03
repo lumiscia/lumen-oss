@@ -1,5 +1,5 @@
 use crate::{
-    error::{ExpressionError, LumenError},
+    error::LumenError,
     expr::{
         ExpressionContext,
         ast::{BuiltinFn, ExprNode, ExpressionValue},
@@ -7,7 +7,7 @@ use crate::{
         eval::evaluate_expr,
     },
     node::{
-        DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
+        DelegateEvalContext, NodeId, NodeKind,
         source::{
             text::{
                 TextAlignmentHorizontal, TextFontStyle, TextLayoutStyle, TextLimits, TextTransform,
@@ -23,7 +23,7 @@ pub fn evaluate_builtin(
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<ExpressionValue> {
     let spec = builtin.spec();
-    let error = |details: String| eval_error(ctx, details);
+    let error = |details: String| LumenError::evaluate(details);
     if !spec.accepts_arity(args.len()) {
         return Err(error(format!(
             "builtin expects {} arguments, got {}",
@@ -237,13 +237,6 @@ fn interpolate(from: &ExpressionValue, to: &ExpressionValue, t: f64) -> Option<E
     }
 }
 
-fn eval_error(ctx: &ExpressionContext<'_>, details: String) -> LumenError {
-    LumenError::Expression(ExpressionError::Evaluate {
-        path: ctx.path.clone(),
-        details,
-    })
-}
-
 pub fn evaluate_text_measure_builtin(
     builtin: BuiltinFn,
     args: &[ExprNode],
@@ -251,18 +244,16 @@ pub fn evaluate_text_measure_builtin(
 ) -> crate::Result<ExpressionValue> {
     let builtin_name = builtin.name();
     if !builtin.spec().accepts_arity(args.len()) {
-        return Err(eval_error(
-            ctx,
-            format!("{builtin_name} expects 1 to 4 arguments"),
-        ));
+        return Err(LumenError::evaluate(format!(
+            "{builtin_name} expects 1 to 4 arguments"
+        )));
     }
 
     if let Some(ExprNode::Node(node_id)) = args.first() {
         if args.len() != 1 {
-            return Err(eval_error(
-                ctx,
-                format!("{builtin_name}(node(id)) does not accept override arguments"),
-            ));
+            return Err(LumenError::evaluate(format!(
+                "{builtin_name}(node(id)) does not accept override arguments"
+            )));
         }
         let measurement = measure_text_node(*node_id, ctx)?;
         return Ok(ExpressionValue::Number(match builtin {
@@ -282,7 +273,7 @@ pub fn evaluate_text_measure_builtin(
             .map(|value| {
                 value
                     .as_f64()
-                    .ok_or_else(|| eval_error(ctx, format!("{builtin_name} {details}")))
+                    .ok_or_else(|| LumenError::evaluate(format!("{builtin_name} {details}")))
             })
             .transpose()
     };
@@ -324,59 +315,42 @@ fn measure_text_node(
 ) -> crate::Result<lumen_text::TextMeasurement> {
     let ctx = &ctx.without_glyph();
     let graph = ctx.graph.ok_or_else(|| {
-        eval_error(
-            ctx,
-            format!("no graph available to resolve text node `{}`", node_id.0),
-        )
+        LumenError::evaluate(format!(
+            "no graph available to resolve text node `{}`",
+            node_id.0
+        ))
     })?;
     let node = graph
         .nodes
         .get(&node_id)
-        .ok_or_else(|| eval_error(ctx, format!("text node `{}` not found", node_id.0)))?;
+        .ok_or_else(|| LumenError::evaluate(format!("text node `{}` not found", node_id.0)))?;
     let NodeKind::Text(text) = node else {
-        return Err(eval_error(
-            ctx,
-            format!("node `{}` is not a text node", node_id.0),
-        ));
+        return Err(LumenError::evaluate(format!(
+            "node `{}` is not a text node",
+            node_id.0
+        )));
     };
 
-    let content = text.params.content.eval_layout(&DelegateEvalContext {
-        node_id,
-        property_path: "content",
-        expr: ctx,
-    })?;
+    let fields = DelegateEvalContext { node_id, expr: ctx };
+    let content = text
+        .params
+        .content
+        .eval_layout(&fields)
+        .map_err(|error| error.in_field("content"))?;
     let font_family = text.params.font_family.eval(node_id, "font_family", ctx)?;
     let font_size = text.params.font_size.eval(node_id, "font_size", ctx)?;
     let font_weight = text.params.font_weight.eval(node_id, "font_weight", ctx)?;
-    let font_style = text.params.font_style.eval(&DelegateEvalContext {
-        node_id,
-        property_path: "font_style",
-        expr: ctx,
-    })?;
+    let font_style = fields.eval_field("font_style", &text.params.font_style)?;
     let max_width = text.params.max_width.eval(node_id, "max_width", ctx)?;
     let letter_spacing = text
         .params
         .letter_spacing
         .eval(node_id, "letter_spacing", ctx)?;
-    let font_features = text.params.font_features.eval(&DelegateEvalContext {
-        node_id,
-        property_path: "font_features",
-        expr: ctx,
-    })?;
+    let font_features = fields.eval_field("font_features", &text.params.font_features)?;
     let line_height = text.params.line_height.eval(node_id, "line_height", ctx)?;
-    let alignment_horizontal = text
-        .params
-        .alignment_horizontal
-        .eval(&DelegateEvalContext {
-            node_id,
-            property_path: "alignment_horizontal",
-            expr: ctx,
-        })?;
-    let text_transform = text.params.text_transform.eval(&DelegateEvalContext {
-        node_id,
-        property_path: "text_transform",
-        expr: ctx,
-    })?;
+    let alignment_horizontal =
+        fields.eval_field("alignment_horizontal", &text.params.alignment_horizontal)?;
+    let text_transform = fields.eval_field("text_transform", &text.params.text_transform)?;
     let paragraph_spacing =
         text.params
             .paragraph_spacing

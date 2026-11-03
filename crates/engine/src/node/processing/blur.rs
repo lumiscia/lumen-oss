@@ -1,4 +1,4 @@
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -55,9 +55,9 @@ impl GpuCompiledNode for CompiledBlur {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&NodeParamEvalContext {
+        let params = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         self.passes.write(
             bound,
@@ -87,10 +87,9 @@ impl GpuCompileNode for Blur {
             .into_raster(self.source.id, &self.source.port)?;
         // The blur spreads the source's data by the radius, up to its largest over the timeline.
         let bounds = ctx.source_bounds(
-            self.id,
             compiler::SourceMotion::of(self.params.radius.is_expr(), &self.params),
             |expr| {
-                let params = self.params.eval(&NodeParamEvalContext {
+                let params = self.params.eval(&DelegateEvalContext {
                     node_id: self.id,
                     expr,
                 })?;

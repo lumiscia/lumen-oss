@@ -250,9 +250,14 @@ impl CompositionBuilder {
             Ok(_) => {}
             Err(graph_errors) => errors.extend(graph_errors),
         }
-        for template in self.compositions.values() {
+        for (name, template) in &self.compositions {
             if let Err(graph_errors) = template.graph.validate() {
-                errors.extend(graph_errors);
+                errors.extend(graph_errors.into_iter().map(|error| {
+                    LumenError::from(GraphValidationError::InTemplate {
+                        template: name.clone(),
+                        error: Box::new(error),
+                    })
+                }));
             }
         }
         let graphs = std::iter::once((None, &self.graph)).chain(

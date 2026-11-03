@@ -4,44 +4,17 @@ use lumen_engine::{
     composition::Composition,
     media::{VideoMetadata, collect_frame_requirements},
 };
-use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::{
     install_panic_hook,
     media::WasmMediaStore,
-    renderer::{SurfaceCompositionRenderer, collect_requirement_window},
+    renderer::SurfaceCompositionRenderer,
     types::{AudioTimelinePayload, FrameRequirementsPayload},
     utils::{
         composition_json_to_composition, image_frame_from_rgba, render_failure, validate_rgba_len,
     },
 };
-
-#[derive(Debug, Clone, Copy, Default)]
-struct RenderMetrics {
-    last_ms: f64,
-    avg_ms: f64,
-    max_ms: f64,
-    sample_count: u32,
-}
-
-impl RenderMetrics {
-    fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    fn update(&mut self, elapsed_ms: f64) {
-        self.last_ms = elapsed_ms;
-        self.sample_count = self.sample_count.saturating_add(1);
-        self.avg_ms = if self.sample_count == 1 {
-            elapsed_ms
-        } else {
-            ((self.avg_ms * f64::from(self.sample_count - 1)) + elapsed_ms)
-                / f64::from(self.sample_count)
-        };
-        self.max_ms = self.max_ms.max(elapsed_ms);
-    }
-}
 
 /// The GPU device is created once per controller and kept across composition and media changes.
 enum GpuSlot {
@@ -67,8 +40,6 @@ struct PreviewState {
     dirty: bool,
     last_tick_ms: Option<f64>,
     frame_accumulator_ms: f64,
-    composition_sync_ms: f64,
-    render_metrics: RenderMetrics,
 }
 
 impl Default for PreviewState {
@@ -89,8 +60,6 @@ impl Default for PreviewState {
             dirty: false,
             last_tick_ms: None,
             frame_accumulator_ms: 0.0,
-            composition_sync_ms: 0.0,
-            render_metrics: RenderMetrics::default(),
         }
     }
 }
@@ -111,8 +80,6 @@ impl PreviewState {
         self.dirty = false;
         self.last_tick_ms = None;
         self.frame_accumulator_ms = 0.0;
-        self.composition_sync_ms = 0.0;
-        self.render_metrics.reset();
     }
 
     /// Replaces the loaded composition and parks the playhead on frame 0.
@@ -123,8 +90,6 @@ impl PreviewState {
         self.fps = f64::from(composition.timeline().fps.max(1.0));
         self.composition = Some(composition);
         self.playing = false;
-        self.render_metrics.reset();
-        self.composition_sync_ms = 0.0;
         self.invalidate_renderer();
         self.move_playhead(0);
     }
@@ -234,24 +199,6 @@ impl PreviewState {
     }
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PreviewSnapshot {
-    width: u32,
-    height: u32,
-    duration_frames: u32,
-    fps: f64,
-    current_frame: u32,
-    playing: bool,
-    composition_sync_ms: f64,
-    last_render_ms: f64,
-    avg_render_ms: f64,
-    max_render_ms: f64,
-    render_sample_count: u32,
-    target_frame_duration_ms: f64,
-    ready: bool,
-}
-
 #[wasm_bindgen]
 pub struct LumenPreviewController {
     state: RefCell<PreviewState>,
@@ -331,14 +278,6 @@ impl LumenPreviewController {
         self.update_state(|state| state.set_playing(false))
     }
 
-    #[wasm_bindgen(js_name = "togglePlay")]
-    pub fn toggle_play(&self) -> Result<bool, JsValue> {
-        self.update_state(|state| {
-            state.set_playing(!state.playing);
-            state.playing
-        })
-    }
-
     #[wasm_bindgen(js_name = "isPlaying")]
     pub fn is_playing(&self) -> Result<bool, JsValue> {
         Ok(self.state()?.playing)
@@ -389,26 +328,6 @@ impl LumenPreviewController {
         Ok(self.state()?.target_frame_duration_ms())
     }
 
-    pub fn snapshot(&self) -> Result<String, JsValue> {
-        let state = self.state()?;
-        let snapshot = PreviewSnapshot {
-            width: state.width as u32,
-            height: state.height as u32,
-            duration_frames: state.duration_frames.max(1),
-            fps: state.fps,
-            current_frame: state.current_frame,
-            playing: state.playing,
-            composition_sync_ms: state.composition_sync_ms,
-            last_render_ms: state.render_metrics.last_ms,
-            avg_render_ms: state.render_metrics.avg_ms,
-            max_render_ms: state.render_metrics.max_ms,
-            render_sample_count: state.render_metrics.sample_count,
-            target_frame_duration_ms: state.target_frame_duration_ms(),
-            ready: state.ready(),
-        };
-        serde_json::to_string(&snapshot).map_err(|e| JsValue::from_str(&e.to_string()))
-    }
-
     /// Advances playback and renders when the current frame changed. Returns whether a frame was
     /// presented; it is `false` while another call is still creating the GPU device.
     pub async fn tick(&self, now_ms: f64, canvas: JsValue) -> Result<bool, JsValue> {
@@ -431,18 +350,6 @@ impl LumenPreviewController {
         self.render_current_frame(&canvas).await.map(|_| ())
     }
 
-    #[wasm_bindgen(js_name = "setCompositionSyncMs")]
-    pub fn set_composition_sync_ms(&self, elapsed_ms: f64) -> Result<(), JsValue> {
-        self.state_mut()?.composition_sync_ms = elapsed_ms.max(0.0);
-        Ok(())
-    }
-
-    #[wasm_bindgen(js_name = "recordRenderTiming")]
-    pub fn record_render_timing(&self, elapsed_ms: f64) -> Result<(), JsValue> {
-        self.state_mut()?.render_metrics.update(elapsed_ms.max(0.0));
-        Ok(())
-    }
-
     #[wasm_bindgen(js_name = "frameRequirements")]
     pub fn frame_requirements(&self, frame: u32) -> Result<String, JsValue> {
         let state = self.state()?;
@@ -454,19 +361,6 @@ impl LumenPreviewController {
         let payload = collect_frame_requirements(composition, &self.media, frame)
             .map(FrameRequirementsPayload::from)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        serde_json::to_string(&payload).map_err(|e| JsValue::from_str(&e.to_string()))
-    }
-
-    #[wasm_bindgen(js_name = "frameRequirementsWindow")]
-    pub fn frame_requirements_window(&self, frame: u32) -> Result<String, JsValue> {
-        let state = self.state()?;
-        validate_frame(&state, frame)?;
-        let composition = state
-            .composition
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
-        let payload =
-            collect_requirement_window(composition, &self.media, frame, state.lookahead_count)?;
         serde_json::to_string(&payload).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 

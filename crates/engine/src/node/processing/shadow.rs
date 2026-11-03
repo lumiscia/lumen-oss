@@ -1,4 +1,6 @@
-use crate::node::{NodeId, NodeParamEvalContext, NodeParams, PortRef, vector::paint::Paint};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PortRef, vector::paint::Paint,
+};
 
 use crate::gpu::{
     AlphaMode, BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode,
@@ -83,13 +85,12 @@ impl GpuCompileNode for Shadow {
         // at their largest over the timeline.
         let params = &self.params;
         let bounds = ctx.source_bounds(
-            self.id,
             compiler::SourceMotion::of(
                 params.offset_x.is_expr() || params.offset_y.is_expr() || params.radius.is_expr(),
                 params,
             ),
             |expr| {
-                let evaluated = params.eval(&NodeParamEvalContext {
+                let evaluated = params.eval(&DelegateEvalContext {
                     node_id: self.id,
                     expr,
                 })?;
@@ -201,9 +202,9 @@ impl GpuCompiledNode for CompiledShadow {
     }
 
     fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let evaluated = self.params.eval(&NodeParamEvalContext {
+        let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
-            expr: &ctx.expr_context(self.node_id, "params"),
+            expr: &ctx.expr_context(),
         })?;
         let color = evaluated.color.to_gpu([0, 0, 0, 255]).colors[0];
         // The color alpha is folded into the opacity so `color.w` can carry the

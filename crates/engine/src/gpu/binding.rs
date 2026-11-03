@@ -5,7 +5,7 @@ use crate::{
     error::RenderError,
     expr::ExpressionContext,
     media::MediaStore,
-    node::{NodeId, NodeKind, PortRef},
+    node::{NodeKind, PortRef},
     scope::{FrameTime, Routed, Scope},
 };
 
@@ -124,10 +124,10 @@ impl<'a> FrameBindContext<'a> {
         }
         visited.insert(visit.clone(), false);
 
-        let node = self.scope.node(port.id).ok_or(RenderError::MissingNode {
-            frame: self.frame(),
-            node_id: port.id,
-        })?;
+        let node = self
+            .scope
+            .node(port.id)
+            .ok_or(RenderError::MissingNode { node_id: port.id })?;
 
         let instance = cache
             .as_ref()
@@ -151,7 +151,7 @@ impl<'a> FrameBindContext<'a> {
                 let key = memo
                     .params
                     .key
-                    .eval(memo.id, "key", &self.expr_context(memo.id, "key"))?
+                    .eval(memo.id, "key", &self.expr_context())?
                     .to_bits();
                 // Without skipped passes the source is bound and dispatched as usual.
                 holds = cache.hold_memo(instance, key) && cache.layout.enabled();
@@ -227,12 +227,7 @@ impl<'a> FrameBindContext<'a> {
         self.media
     }
 
-    pub(crate) fn expr_context(
-        &self,
-        node_id: NodeId,
-        property_path: &str,
-    ) -> ExpressionContext<'_> {
-        self.scope
-            .expr_context(self.frame, format!("{node_id}.{property_path}"), self.media)
+    pub(crate) fn expr_context(&self) -> ExpressionContext<'_> {
+        self.scope.expr_context(self.frame, self.media)
     }
 }
