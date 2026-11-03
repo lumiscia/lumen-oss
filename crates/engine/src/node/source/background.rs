@@ -16,10 +16,10 @@ pub struct BackgroundParams {
     #[meta()]
     pub paint: Paint,
     /// Output width in pixels. Use 0 to match the composition width.
-    #[meta(min = 0, step = 1)]
+    #[meta(min = 0, step = 1, constant)]
     pub width: u32,
     /// Output height in pixels. Use 0 to match the composition height.
-    #[meta(min = 0, step = 1)]
+    #[meta(min = 0, step = 1, constant)]
     pub height: u32,
     /// Enables 4×4 supersampling when evaluating paint at each pixel.
     #[meta()]
@@ -79,8 +79,10 @@ impl GpuCompileNode for Background {
             node_id: self.id,
             expr: &ctx.expr_context(),
         })?;
-        let width = ctx.static_dimension_value(i64::from(params.width), "width");
-        let height = ctx.static_dimension_value(i64::from(params.height), "height");
+        let canvas = ctx.canvas_size();
+        let or_canvas = |size: u32, canvas: u32| if size == 0 { canvas } else { size };
+        let width = or_canvas(params.width, canvas.width);
+        let height = or_canvas(params.height, canvas.height);
         let source = ctx.compute_source(
             self.id,
             "background",

@@ -163,14 +163,16 @@ impl TextSystem {
         let mut buffer = Buffer::new(&mut self.font_system, request.span_metrics(&spans[0]));
         // cosmic-text adds tracking after every glyph, including the last on a
         // line, so every line is its last glyph's `letter_spacing` wider than its
-        // ink. Widening the layout width by the narrowest spacing makes wrapping
-        // see trimmed line widths; lines ending in a wider spacing wrap early by
-        // the difference. cosmic-text clamps negative widths to zero, so a
-        // negative spacing larger than `max_width` wraps less than it should.
+        // ink. Widening the layout width by the narrowest spacing of the spans with
+        // text makes wrapping see trimmed line widths; lines ending in a wider spacing
+        // wrap early by the difference. cosmic-text clamps negative widths to zero, so
+        // a negative spacing larger than `max_width` wraps less than it should.
         let widening = spans
             .iter()
+            .filter(|span| !span.text.is_empty())
             .map(|span| span.letter_spacing)
-            .fold(f32::INFINITY, f32::min);
+            .reduce(f32::min)
+            .unwrap_or(0.0);
         let layout_width = request.max_width.map(|width| width + widening);
         buffer.set_size(layout_width, None);
         buffer.set_wrap(if request.max_width.is_some() {
@@ -1248,6 +1250,14 @@ pub(crate) mod tests {
 
         request.spans[0].letter_spacing = -10.0;
         let natural = system.measure(&request).width;
+        assert_eq!(line_count(&mut system, &mut request, natural + 0.5), 1);
+        assert_eq!(line_count(&mut system, &mut request, natural - 0.5), 2);
+
+        // A span with no text does not move where the others wrap.
+        request.spans.push(TextSpan {
+            letter_spacing: -40.0,
+            ..span("", 40.0)
+        });
         assert_eq!(line_count(&mut system, &mut request, natural + 0.5), 1);
         assert_eq!(line_count(&mut system, &mut request, natural - 0.5), 2);
     }

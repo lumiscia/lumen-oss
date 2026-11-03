@@ -954,7 +954,10 @@ export type TextSpan = {
    * kept. Within a word, the first span's features apply to all of it.
    */
   readonly font_features?: FontFeatures;
-  /** Font size in pixels. */
+  /**
+   * Font size in pixels. Where spans of one family, weight and style meet, a ligature or
+   * other cluster across the boundary takes the size of the span it starts in.
+   */
   readonly font_size?: ExpressionValue<number>;
   /** Font style. */
   readonly font_style?: ExpressionValue<TextFontStyle>;
@@ -1013,10 +1016,10 @@ export interface AlphaPremultiplyNode extends CompositionNodeBase<"alpha_premult
 
 export interface BackgroundNode extends CompositionNodeBase<"background"> {
   readonly params?: {
-    readonly "height"?: ExpressionValue<number>;
+    readonly "height"?: number;
     readonly "paint"?: ExpressionValue<Paint>;
     readonly "paint_supersample"?: ExpressionValue<boolean>;
-    readonly "width"?: ExpressionValue<number>;
+    readonly "width"?: number;
   };
 }
 

@@ -232,7 +232,10 @@ pub(crate) fn expand_enum_delegate(
                 fn from_expression(
                     value: ::lumen_engine::expr::ExpressionValue,
                 ) -> ::core::result::Result<Self, ::lumen_engine::error::LumenError> {
-                    let value = ::lumen_engine::node::truncated_int(value)?;
+                    let value = ::lumen_engine::node::enum_value(
+                        value,
+                        <Self as ::lumen_engine::node::NodeEnum>::enum_def(),
+                    )?;
                     Self::from_i64(value).ok_or_else(|| {
                         ::lumen_engine::error::LumenError::evaluate(::std::format!(
                             "{value} is not a value of {}",

@@ -36,7 +36,8 @@ pub struct TextSpan {
     /// Font family name.
     #[meta(format = "font_family")]
     pub font_family: Option<String>,
-    /// Font size in pixels.
+    /// Font size in pixels. Where spans of one family, weight and style meet, a ligature or
+    /// other cluster across the boundary takes the size of the span it starts in.
     #[meta(min = 1, step = 1)]
     pub font_size: Option<f64>,
     /// Font weight. Variable fonts render any value in their weight range.
@@ -597,6 +598,32 @@ mod tests {
                 style: TextLineStyle::Double,
                 ..TextLine::default()
             })
+        );
+
+        let content = parse(serde_json::json!([{
+            "text": "a",
+            "font_style": "=if(frame > 10, 'oblique', 'normal')",
+            "underline": { "style": "='dashed'" }
+        }]))
+        .unwrap();
+        let TextContent::Spans(spans) = eval(&content).unwrap() else {
+            panic!("expected spans");
+        };
+        assert_eq!(spans[0].font_style, Some(TextFontStyle::Oblique));
+        assert_eq!(
+            spans[0].underline,
+            Override::Set(TextLine {
+                style: TextLineStyle::Dashed,
+                ..TextLine::default()
+            })
+        );
+
+        let content = parse(serde_json::json!([{ "text": "a", "font_style": "='bold'" }])).unwrap();
+        let error = eval(&content).unwrap_err().to_string();
+        assert!(
+            error.contains("one of `normal`, `italic`, `oblique` or a number")
+                && error.contains("`bold`"),
+            "{error}"
         );
     }
 
