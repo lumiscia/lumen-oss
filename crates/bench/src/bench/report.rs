@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use super::timing::PhaseTimer;
-
 /// Collects tabular rows and prints an aligned summary after detailed logs.
 #[derive(Debug, Default)]
 pub struct SummaryReport {
@@ -32,10 +30,6 @@ impl SummaryReport {
             "summary row width must match column count"
         );
         self.rows.push(cells);
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
     }
 
     pub fn print(&self) {
@@ -102,27 +96,4 @@ pub fn format_fps(frames: u32, elapsed: Duration) -> String {
         return "-".to_string();
     }
     format!("{:.1}", f64::from(frames) / elapsed.as_secs_f64().max(1e-9))
-}
-
-pub fn phase_mean(timer: &PhaseTimer, phase: &str) -> Option<Duration> {
-    let samples: Vec<Duration> = timer
-        .phases()
-        .iter()
-        .filter(|(name, _)| *name == phase)
-        .map(|(_, duration)| *duration)
-        .collect();
-    if samples.is_empty() {
-        return None;
-    }
-    let total_micros: u128 = samples.iter().map(|duration| duration.as_micros()).sum();
-    let mean_micros = (total_micros / samples.len() as u128).max(1);
-    Some(Duration::from_micros(mean_micros as u64))
-}
-
-pub fn phase_first(timer: &PhaseTimer, phase: &str) -> Option<Duration> {
-    timer
-        .phases()
-        .iter()
-        .find(|(name, _)| *name == phase)
-        .map(|(_, duration)| *duration)
 }

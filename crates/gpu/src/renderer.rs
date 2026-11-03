@@ -11,10 +11,9 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::{
     BindGroupLayoutSpec, Binding, BindingResource, BufferDesc, BufferId, BufferResource,
-    ComputeDispatch, ComputePassDesc, ComputeProgramDesc, CopyTextureDesc, DrawCommand,
-    FrameUpdate, LoadOp, PassDesc, ProgramDesc, ProgramId, RenderPassDesc, RenderPlan,
-    RenderProgramDesc, SamplerId, Size, TextureDesc, TextureDomain, TextureId, TextureResource,
-    Upload,
+    ComputePassDesc, ComputeProgramDesc, CopyTextureDesc, FrameUpdate, PassDesc, ProgramDesc,
+    ProgramId, RenderPassDesc, RenderPlan, RenderProgramDesc, SamplerId, Size, TextureDesc,
+    TextureDomain, TextureId, TextureResource, Upload,
 };
 
 struct RuntimeTexture {
@@ -74,7 +73,7 @@ struct CachedBindGroups {
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
-    adapter_info: GpuAdapterInfo,
+    adapter_info: Option<wgpu::AdapterInfo>,
     textures: Vec<RuntimeTexture>,
     buffers: Vec<RuntimeBuffer>,
     samplers: Vec<RuntimeSampler>,
@@ -121,10 +120,6 @@ impl ExternalTexture {
         Self::new(Arc::new(texture), domain)
     }
 
-    pub fn texture(&self) -> &wgpu::Texture {
-        &self.texture
-    }
-
     pub fn texture_arc(&self) -> Arc<wgpu::Texture> {
         Arc::clone(&self.texture)
     }
@@ -141,10 +136,6 @@ pub struct SubmittedExternalTexture {
 }
 
 impl SubmittedExternalTexture {
-    pub fn submission(&self) -> wgpu::SubmissionIndex {
-        self.submission.clone()
-    }
-
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
     }
@@ -157,31 +148,6 @@ impl SubmittedExternalTexture {
             })
             .context("wait for external texture submission")?;
         Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GpuAdapterInfo {
-    pub name: String,
-    pub backend: wgpu::Backend,
-    pub device_type: wgpu::DeviceType,
-    pub vendor: u32,
-    pub device: u32,
-    pub driver: String,
-    pub driver_info: String,
-}
-
-impl From<wgpu::AdapterInfo> for GpuAdapterInfo {
-    fn from(info: wgpu::AdapterInfo) -> Self {
-        Self {
-            name: info.name,
-            backend: info.backend,
-            device_type: info.device_type,
-            vendor: info.vendor,
-            device: info.device,
-            driver: info.driver,
-            driver_info: info.driver_info,
-        }
     }
 }
 
@@ -213,7 +179,7 @@ impl Renderer {
             })
             .await
             .context("no compatible wgpu adapter")?;
-        let adapter_info = GpuAdapterInfo::from(adapter.get_info());
+        let adapter_info = adapter.get_info();
         tracing::info!(
             target: "lumen_gpu",
             adapter = %adapter_info.name,
@@ -232,30 +198,18 @@ impl Renderer {
         Ok(Self::from_device_with_adapter_info(
             device,
             queue,
-            adapter_info,
+            Some(adapter_info),
         ))
     }
 
     pub fn from_device(device: wgpu::Device, queue: wgpu::Queue) -> Self {
-        Self::from_device_with_adapter_info(
-            device,
-            queue,
-            GpuAdapterInfo {
-                name: "external device".to_string(),
-                backend: wgpu::Backend::Noop,
-                device_type: wgpu::DeviceType::Other,
-                vendor: 0,
-                device: 0,
-                driver: "external".to_string(),
-                driver_info: "created outside lumen-gpu".to_string(),
-            },
-        )
+        Self::from_device_with_adapter_info(device, queue, None)
     }
 
     pub fn from_device_with_adapter_info(
         device: wgpu::Device,
         queue: wgpu::Queue,
-        adapter_info: GpuAdapterInfo,
+        adapter_info: Option<wgpu::AdapterInfo>,
     ) -> Self {
         Self {
             device,
@@ -290,8 +244,9 @@ impl Renderer {
         self.program_cache.created.load(Ordering::Relaxed)
     }
 
-    pub fn adapter_info(&self) -> &GpuAdapterInfo {
-        &self.adapter_info
+    /// `None` for a device created outside this crate.
+    pub fn adapter_info(&self) -> Option<&wgpu::AdapterInfo> {
+        self.adapter_info.as_ref()
     }
 
     pub fn prepare_plan(&mut self, plan: &RenderPlan) -> Result<()> {
@@ -369,12 +324,6 @@ impl Renderer {
         result
     }
 
-    pub fn texture_view(&self, id: TextureId) -> Option<&wgpu::TextureView> {
-        self.textures
-            .get(id.0 as usize)
-            .map(|texture| &texture.view)
-    }
-
     pub fn texture(&self, id: TextureId) -> Option<&wgpu::Texture> {
         self.textures
             .get(id.0 as usize)
@@ -426,16 +375,6 @@ impl Renderer {
         Ok(old)
     }
 
-    pub fn replace_texture_discard_old(
-        &mut self,
-        id: TextureId,
-        texture: wgpu::Texture,
-        desc: TextureDesc,
-    ) -> Result<()> {
-        let _ = self.replace_texture(id, texture, desc)?;
-        Ok(())
-    }
-
     pub fn copy_texture_to_external(
         &self,
         source_id: TextureId,
@@ -465,26 +404,8 @@ impl Renderer {
         Ok(self.queue.submit([encoder.finish()]))
     }
 
-    pub fn copy_texture_to_external_discard_submission(
-        &self,
-        source_id: TextureId,
-        destination: &wgpu::Texture,
-    ) -> Result<()> {
-        let _ = self.copy_texture_to_external(source_id, destination)?;
-        Ok(())
-    }
-
-    pub fn submit_plan_with_external_texture(
-        &mut self,
-        plan: &RenderPlan,
-        texture_id: TextureId,
-        external: ExternalTexture,
-    ) -> Result<SubmittedExternalTexture> {
-        self.submit_plan_with_external_texture_skipping(plan, texture_id, external, &[])
-    }
-
-    /// `submit_plan_with_external_texture` without the passes `skip` marks; see
-    /// `submit_plan_skipping`.
+    /// Runs `plan` with `external` standing in for `texture_id` and restores the texture
+    /// afterwards. Skips the passes `skip` marks; see `submit_plan_skipping`.
     pub fn submit_plan_with_external_texture_skipping(
         &mut self,
         plan: &RenderPlan,
@@ -613,15 +534,6 @@ impl Renderer {
         Ok(submission)
     }
 
-    pub fn execute_discard_submission(
-        &mut self,
-        plan: &RenderPlan,
-        update: &FrameUpdate<'_>,
-    ) -> Result<()> {
-        let _ = self.execute(plan, update)?;
-        Ok(())
-    }
-
     fn create_texture(&self, resource: &TextureResource) -> Result<RuntimeTexture> {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: resource.label.as_deref(),
@@ -684,7 +596,6 @@ impl Renderer {
                 bind_group_layouts: &layout_refs,
                 immediate_size: 0,
             });
-        let vertex_buffers: Vec<_> = desc.vertex_buffers.iter().cloned().map(Some).collect();
         let pipeline = self
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -694,7 +605,7 @@ impl Renderer {
                     module: &shader,
                     entry_point: Some(&desc.vertex_entry),
                     compilation_options: Default::default(),
-                    buffers: &vertex_buffers,
+                    buffers: &[],
                 },
                 primitive: desc.primitive,
                 depth_stencil: None,
@@ -935,7 +846,6 @@ impl Renderer {
             label = desc.label.as_deref().unwrap_or(""),
             targets = desc.targets.len(),
             bind_groups = desc.bindings.len(),
-            vertex_buffers = desc.vertex_buffers.len(),
             "encode render pass"
         );
         let RuntimeProgram::Render(program) = self.runtime_program(desc.program)? else {
@@ -951,10 +861,7 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: match target.load {
-                            LoadOp::Load => wgpu::LoadOp::Load,
-                            LoadOp::Clear(color) => wgpu::LoadOp::Clear(color),
-                        },
+                        load: target.load,
                         store: target.store,
                     },
                 }))
@@ -972,15 +879,6 @@ impl Renderer {
         for (group, bind_group) in bind_groups.iter().enumerate() {
             pass.set_bind_group(group as u32, bind_group, &[]);
         }
-        for (slot, buffer_id) in desc.vertex_buffers.iter().enumerate() {
-            pass.set_vertex_buffer(
-                slot as u32,
-                self.runtime_buffer(*buffer_id)?.buffer.slice(..),
-            );
-        }
-        if let Some((buffer_id, format)) = desc.index_buffer {
-            pass.set_index_buffer(self.runtime_buffer(buffer_id)?.buffer.slice(..), format);
-        }
         if let Some(viewport) = desc.viewport {
             pass.set_viewport(
                 viewport.x,
@@ -991,17 +889,7 @@ impl Renderer {
                 1.0,
             );
         }
-        if let Some(scissor) = desc.scissor {
-            pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
-        }
-        match &desc.draw {
-            DrawCommand::Draw(draw) => pass.draw(draw.vertices.clone(), draw.instances.clone()),
-            DrawCommand::DrawIndexed(draw) => pass.draw_indexed(
-                draw.indices.clone(),
-                draw.base_vertex,
-                draw.instances.clone(),
-            ),
-        }
+        pass.draw(desc.draw.vertices.clone(), desc.draw.instances.clone());
         Ok(())
     }
 
@@ -1014,30 +902,18 @@ impl Renderer {
         bind_groups: &[wgpu::BindGroup],
         pass: &mut wgpu::ComputePass<'static>,
     ) -> Result<()> {
-        match desc.dispatch {
-            ComputeDispatch::Direct(dispatch) => tracing::trace!(
-                target: "lumen_gpu",
-                label = desc.label.as_deref().unwrap_or(""),
-                x = dispatch.x,
-                y = dispatch.y,
-                z = dispatch.z,
-                "encode compute pass"
-            ),
-            ComputeDispatch::Indirect { buffer, offset } => tracing::trace!(
-                target: "lumen_gpu",
-                label = desc.label.as_deref().unwrap_or(""),
-                ?buffer,
-                offset,
-                "encode indirect compute pass"
-            ),
-        }
+        let dispatch = desc.dispatch;
+        tracing::trace!(
+            target: "lumen_gpu",
+            label = desc.label.as_deref().unwrap_or(""),
+            x = dispatch.x,
+            y = dispatch.y,
+            z = dispatch.z,
+            "encode compute pass"
+        );
         let RuntimeProgram::Compute(program) = self.runtime_program(desc.program)? else {
             bail!("program {:?} is not a compute program", desc.program);
         };
-        // Fails before the debug group opens, so an error cannot leave it unbalanced.
-        if let ComputeDispatch::Indirect { buffer, .. } = desc.dispatch {
-            self.runtime_buffer(buffer)?;
-        }
         if let Some(label) = &desc.label {
             pass.push_debug_group(label);
         }
@@ -1045,15 +921,7 @@ impl Renderer {
         for (group, bind_group) in bind_groups.iter().enumerate() {
             pass.set_bind_group(group as u32, bind_group, &[]);
         }
-        match desc.dispatch {
-            ComputeDispatch::Direct(dispatch) => {
-                pass.dispatch_workgroups(dispatch.x, dispatch.y, dispatch.z);
-            }
-            ComputeDispatch::Indirect { buffer, offset } => {
-                let buffer = &self.runtime_buffer(buffer)?.buffer;
-                pass.dispatch_workgroups_indirect(buffer, offset);
-            }
-        }
+        pass.dispatch_workgroups(dispatch.x, dispatch.y, dispatch.z);
         if desc.label.is_some() {
             pass.pop_debug_group();
         }

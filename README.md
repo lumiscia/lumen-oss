@@ -32,7 +32,7 @@ Self-hosting is possible, but still hands-on. The hosted platform is the smoothe
 
 ## Self Hosting
 
-The self-hosted entry point is `crates/server`. It provides render service primitives plus a small local HTTP server that can accept hosted-style render payloads, download direct `http`/`https` media URLs, run a local render, expose progress, and return an MP4 artifact.
+The self-hosted entry point is `crates/server`. It provides the render library plus a small local HTTP server that can accept hosted-style render payloads, download direct `http`/`https` media URLs, run a local render, expose progress, and return an MP4 artifact.
 
 For anything beyond local or single-process usage, expect to provide the surrounding infrastructure yourself: GPU machines, FFmpeg/runtime setup, queueing, durable artifact storage, API/auth layers, deployment, monitoring, and provider-specific worker logic.
 
@@ -43,7 +43,7 @@ See [`crates/server`](crates/server/README.md) for the current self-hosted HTTP 
 - `crates/engine`: core composition model, nodes, media handling, and GPU render orchestration
 - `crates/gpu`: lower-level `wgpu` renderer resources, programs, passes, and Vulkan export helpers
 - `crates/ffmpeg`: FFmpeg bindings for decode, encode, muxing, and GPU frame interop
-- `crates/server`: embeddable render service primitives and a small local HTTP binary
+- `crates/server`: embeddable render library and a small local HTTP binary
 - `crates/local`: local render/debug CLI
 - `crates/bench`: benchmark binaries for composition and decode paths
 - `crates/generators`: schema and metadata generators

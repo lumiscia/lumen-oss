@@ -105,12 +105,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
-            vertex_buffers: Vec::new(),
             primitive: wgpu::PrimitiveState::default(),
         }));
         plan.render_pass(RenderPassDesc {
             label: Some("copy pass".to_string()),
-            owner: Some(NodeKey(42)),
             program,
             targets: vec![RenderTargetRef {
                 texture: target,
@@ -121,13 +119,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 Binding::sampled_texture(0, 0, source),
                 Binding::sampler(0, 1, sampler),
             ],
-            vertex_buffers: Vec::new(),
-            index_buffer: None,
-            draw: DrawCommand::Draw(Draw {
+            draw: Draw {
                 vertices: 0..3,
                 instances: 0..1,
-            }),
-            scissor: None,
+            },
             viewport: None,
         });
         let plan = plan.build();

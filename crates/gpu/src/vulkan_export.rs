@@ -13,7 +13,6 @@ pub struct ExportableVulkanTexture {
     texture: Arc<wgpu::Texture>,
     memory_fd: OwnedFd,
     allocation_size: u64,
-    row_pitch: u64,
     device_info: VulkanDeviceInfo,
     memory_type_index: u32,
 }
@@ -47,10 +46,6 @@ impl ExportableVulkanTexture {
 
     pub fn allocation_size(&self) -> u64 {
         self.allocation_size
-    }
-
-    pub fn row_pitch(&self) -> u64 {
-        self.row_pitch
     }
 
     pub fn device_info(&self) -> &VulkanDeviceInfo {
@@ -201,7 +196,6 @@ impl Renderer {
             texture: Arc::new(texture),
             memory_fd,
             allocation_size: requirements.size,
-            row_pitch: u64::from(size.width).saturating_mul(4),
             device_info,
             memory_type_index,
         })

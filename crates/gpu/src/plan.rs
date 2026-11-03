@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
-    BufferDesc, BufferId, BufferResource, ComputePassDesc, NodeKey, ParamKey, ParamSlot,
-    ParamTarget, Pass, PassDesc, PassId, Program, ProgramDesc, ProgramId, RenderPassDesc,
-    SamplerId, SamplerResource, TextureDesc, TextureId, TextureResource,
+    BufferDesc, BufferId, BufferResource, ComputePassDesc, Pass, PassDesc, PassId, Program,
+    ProgramDesc, ProgramId, RenderPassDesc, SamplerId, SamplerResource, TextureDesc, TextureId,
+    TextureResource,
 };
 
 static NEXT_PLAN_ID: AtomicU64 = AtomicU64::new(0);
@@ -18,7 +18,6 @@ pub struct RenderPlan {
     pub(crate) samplers: Vec<SamplerResource>,
     pub(crate) programs: Vec<Program>,
     pub(crate) passes: Vec<Pass>,
-    params: Vec<ParamSlot>,
 }
 
 impl RenderPlan {
@@ -45,10 +44,6 @@ impl RenderPlan {
     pub fn passes(&self) -> &[Pass] {
         &self.passes
     }
-
-    pub fn params(&self) -> &[ParamSlot] {
-        &self.params
-    }
 }
 
 #[derive(Debug, Default)]
@@ -58,7 +53,6 @@ pub struct RenderPlanBuilder {
     samplers: Vec<SamplerResource>,
     programs: Vec<Program>,
     passes: Vec<Pass>,
-    params: Vec<ParamSlot>,
 }
 
 impl RenderPlanBuilder {
@@ -68,19 +62,7 @@ impl RenderPlanBuilder {
             id,
             label: label.into(),
             desc,
-            owner: None,
         });
-        id
-    }
-
-    pub fn texture_for(
-        &mut self,
-        owner: NodeKey,
-        label: impl Into<Option<String>>,
-        desc: TextureDesc,
-    ) -> TextureId {
-        let id = self.texture(label, desc);
-        self.textures[id.0 as usize].owner = Some(owner);
         id
     }
 
@@ -90,19 +72,7 @@ impl RenderPlanBuilder {
             id,
             label: label.into(),
             desc,
-            owner: None,
         });
-        id
-    }
-
-    pub fn buffer_for(
-        &mut self,
-        owner: NodeKey,
-        label: impl Into<Option<String>>,
-        desc: BufferDesc,
-    ) -> BufferId {
-        let id = self.buffer(label, desc);
-        self.buffers[id.0 as usize].owner = Some(owner);
         id
     }
 
@@ -122,17 +92,7 @@ impl RenderPlanBuilder {
 
     pub fn program(&mut self, desc: ProgramDesc) -> ProgramId {
         let id = ProgramId(self.programs.len() as u32);
-        self.programs.push(Program {
-            id,
-            owner: None,
-            desc,
-        });
-        id
-    }
-
-    pub fn program_for(&mut self, owner: NodeKey, desc: ProgramDesc) -> ProgramId {
-        let id = self.program(desc);
-        self.programs[id.0 as usize].owner = Some(owner);
+        self.programs.push(Program { id, desc });
         id
     }
 
@@ -164,11 +124,6 @@ impl RenderPlanBuilder {
         self.textures.get(id.0 as usize).map(|texture| texture.desc)
     }
 
-    pub fn param(&mut self, key: ParamKey, target: ParamTarget) -> &mut Self {
-        self.params.push(ParamSlot { key, target });
-        self
-    }
-
     pub fn build(self) -> RenderPlan {
         RenderPlan {
             id: NEXT_PLAN_ID.fetch_add(1, Ordering::Relaxed),
@@ -177,7 +132,6 @@ impl RenderPlanBuilder {
             samplers: self.samplers,
             programs: self.programs,
             passes: self.passes,
-            params: self.params,
         }
     }
 

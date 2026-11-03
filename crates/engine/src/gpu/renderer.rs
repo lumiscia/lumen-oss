@@ -20,7 +20,7 @@ use crate::{
 };
 
 #[cfg(feature = "ffmpeg")]
-use super::media::GpuMediaFrameImporter;
+use super::media::{GpuMediaFrameImporter, GpuMediaImports};
 
 /// Everything a frame can change that alters the compiled plan's structure, plus the composition
 /// it was compiled from, whose params the plan binds.
@@ -32,7 +32,7 @@ pub struct CompiledPlanKey {
     /// Whether the frame is a whole frame of the timeline, so animated sources may be sized to
     /// their bounds over it.
     on_timeline: bool,
-    /// The fonts the shared text system held once the literal font families of the frame's text
+    /// The fonts the store's text system held once the literal font families of the frame's text
     /// were loaded, which text bounds are measured with; loading any face may change how text is
     /// shaped. `None` without text, or when the text system is unavailable.
     text_font_generation: Option<u64>,
@@ -57,6 +57,8 @@ enum PlanChoice {
     /// bounds were measured with.
     TextFont(String),
     ShaderSource(u64),
+    /// The size of the media a media input shows, which its texture is compiled to.
+    MediaSize(u32, u32),
 }
 
 /// Estimated GPU memory compiled plans may hold before least recently used ones are dropped.
@@ -65,12 +67,114 @@ pub const DEFAULT_PLAN_CACHE_BUDGET_BYTES: u64 = 1 << 30;
 /// Rejected plan estimates remembered before they are all forgotten.
 const MAX_REJECTED_PLANS: usize = 256;
 
+/// Estimated GPU memory image textures no plan binds may hold before the least recently used are
+/// freed.
+pub const DEFAULT_MEDIA_TEXTURE_CACHE_BUDGET_BYTES: u64 = 256 << 20;
+
+struct CachedMediaTexture {
+    texture: Arc<lumen_gpu::wgpu::Texture>,
+    last_used: u64,
+}
+
+/// Image textures plans share, which are never written once cached. Replaced images get new keys,
+/// so textures no plan binds are freed least recently used first once they exceed the budget;
+/// textures a plan binds don't count against it and always stay.
+struct MediaTextureCache {
+    textures: HashMap<MediaTextureKey, CachedMediaTexture>,
+    budget: u64,
+    clock: u64,
+    upload_count: u64,
+}
+
+impl MediaTextureCache {
+    fn new() -> Self {
+        Self {
+            textures: HashMap::new(),
+            budget: DEFAULT_MEDIA_TEXTURE_CACHE_BUDGET_BYTES,
+            clock: 0,
+            upload_count: 0,
+        }
+    }
+
+    fn get(&mut self, key: &MediaTextureKey) -> Option<Arc<lumen_gpu::wgpu::Texture>> {
+        self.clock += 1;
+        let cached = self.textures.get_mut(key)?;
+        cached.last_used = self.clock;
+        Some(Arc::clone(&cached.texture))
+    }
+
+    fn insert(&mut self, key: MediaTextureKey, texture: Arc<lumen_gpu::wgpu::Texture>) {
+        self.upload_count += 1;
+        self.clock += 1;
+        self.textures.insert(
+            key,
+            CachedMediaTexture {
+                texture,
+                last_used: self.clock,
+            },
+        );
+    }
+
+    /// Frees unbound textures, least recently used first, until those left fit the budget. Call
+    /// after anything that may have released a plan's binding.
+    fn evict(&mut self) {
+        let mut unbound: Vec<_> = self
+            .textures
+            .iter()
+            .filter(|(_, cached)| Arc::strong_count(&cached.texture) == 1)
+            .map(|(key, cached)| (cached.last_used, key.clone()))
+            .collect();
+        let mut held: u64 = unbound.iter().map(|(_, key)| texture_bytes(key)).sum();
+        unbound.sort_unstable_by_key(|(last_used, _)| std::cmp::Reverse(*last_used));
+        while held > self.budget {
+            let Some((_, key)) = unbound.pop() else {
+                return;
+            };
+            if let Some(evicted) = self.textures.remove(&key) {
+                evicted.texture.destroy();
+            }
+            held -= texture_bytes(&key);
+        }
+    }
+
+    fn destroy_all(&mut self) {
+        for cached in self.textures.values() {
+            cached.texture.destroy();
+        }
+        self.textures.clear();
+    }
+}
+
+fn create_media_texture(
+    device: &lumen_gpu::wgpu::Device,
+    size: lumen_gpu::Size,
+) -> Arc<lumen_gpu::wgpu::Texture> {
+    Arc::new(device.create_texture(&lumen_gpu::wgpu::TextureDescriptor {
+        label: Some("lumen media frame"),
+        size: size.as_extent(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: lumen_gpu::wgpu::TextureDimension::D2,
+        format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+        usage: lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
+            | lumen_gpu::wgpu::TextureUsages::COPY_DST
+            | lumen_gpu::wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    }))
+}
+
+fn texture_bytes(key: &MediaTextureKey) -> u64 {
+    u64::from(key.width) * u64::from(key.height) * 4
+}
+
 struct PreparedComposition {
     renderer: lumen_gpu::Renderer,
     compiled: CompiledComposition,
     /// Output kept from frames submitted to this plan.
     cache: CacheState,
     current_media_textures: HashMap<lumen_gpu::TextureId, MediaTextureKey>,
+    #[cfg(feature = "ffmpeg")]
+    media_imports: GpuMediaImports,
     estimated_bytes: u64,
     last_used: u64,
 }
@@ -103,7 +207,7 @@ pub struct GpuCompositionRenderer {
     text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
     reuse_static_output: bool,
-    media_texture_cache: HashMap<MediaTextureKey, Arc<lumen_gpu::wgpu::Texture>>,
+    media_texture_cache: MediaTextureCache,
     #[cfg(feature = "ffmpeg")]
     gpu_media_importer: GpuMediaFrameImporter,
 }
@@ -147,7 +251,7 @@ impl GpuCompositionRenderer {
             text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             reuse_static_output: true,
-            media_texture_cache: HashMap::new(),
+            media_texture_cache: MediaTextureCache::new(),
             #[cfg(feature = "ffmpeg")]
             gpu_media_importer: GpuMediaFrameImporter::default(),
         }
@@ -227,6 +331,26 @@ impl GpuCompositionRenderer {
         self.rejected_plan_bytes.len()
     }
 
+    /// Number of image textures kept for plans to share.
+    #[doc(hidden)]
+    pub fn cached_media_texture_count(&self) -> usize {
+        self.media_texture_cache.textures.len()
+    }
+
+    /// Number of image textures created and uploaded, rather than reused from the cache.
+    #[doc(hidden)]
+    pub fn media_texture_upload_count(&self) -> u64 {
+        self.media_texture_cache.upload_count
+    }
+
+    /// Sets the estimated GPU memory image textures no plan binds may hold, which textures a plan
+    /// binds don't count against. The least recently used unbound ones past it are freed as plans
+    /// release them.
+    pub fn set_media_texture_cache_budget(&mut self, bytes: u64) {
+        self.media_texture_cache.budget = bytes;
+        self.media_texture_cache.evict();
+    }
+
     pub fn compile_with_media<M: MediaStore>(
         &mut self,
         composition: &Composition,
@@ -243,9 +367,7 @@ impl GpuCompositionRenderer {
     /// Retains the shared text atlas (64 MiB once allocated) and cached glyphs across recompilation.
     pub fn release_resources(&mut self) {
         self.bind_sequence += 1;
-        for texture in self.media_texture_cache.values() {
-            texture.destroy();
-        }
+        self.media_texture_cache.destroy_all();
         for prepared in self.compiled_plans.values() {
             for resource in prepared.compiled.plan.textures() {
                 if let Some(texture) = prepared.renderer.texture_arc(resource.id)
@@ -260,7 +382,6 @@ impl GpuCompositionRenderer {
                 }
             }
         }
-        self.media_texture_cache.clear();
         self.compiled_plans.clear();
         self.memo_snapshots.clear();
         self.plan_cache_bytes = 0;
@@ -284,12 +405,13 @@ impl GpuCompositionRenderer {
             target: "lumen_render",
             ?output_format,
             cached_plans = self.compiled_plans.len(),
-            media_textures = self.media_texture_cache.len(),
+            media_textures = self.media_texture_cache.textures.len(),
             "reset compiled composition"
         );
         self.bind_sequence += 1;
         self.output_format = output_format;
         self.compiled_plans.clear();
+        self.media_texture_cache.evict();
         self.memo_snapshots.clear();
         self.plan_cache_bytes = 0;
         self.pruned_fingerprint = None;
@@ -345,11 +467,15 @@ impl GpuCompositionRenderer {
                 compiled,
                 cache: CacheState::new(self.prepared_plan_count),
                 current_media_textures: HashMap::new(),
+                #[cfg(feature = "ffmpeg")]
+                media_imports: GpuMediaImports::default(),
                 estimated_bytes,
                 last_used: self.plan_use_clock,
             },
         ) {
             self.plan_cache_bytes -= replaced.estimated_bytes;
+            drop(replaced);
+            self.media_texture_cache.evict();
         }
         self.active_key = Some(key);
         Ok(())
@@ -375,6 +501,7 @@ impl GpuCompositionRenderer {
         if self.compiled_plans.len() == cached_plans {
             return;
         }
+        self.media_texture_cache.evict();
         tracing::debug!(
             target: "lumen_render",
             pruned = cached_plans - self.compiled_plans.len(),
@@ -402,7 +529,7 @@ impl GpuCompositionRenderer {
                 .min_by_key(|(_, prepared)| prepared.last_used)
                 .map(|(key, _)| key.clone())
             else {
-                return;
+                break;
             };
             let evicted = self.compiled_plans.remove(&key).expect("cached plan");
             self.plan_cache_bytes -= evicted.estimated_bytes;
@@ -414,6 +541,7 @@ impl GpuCompositionRenderer {
                 "evict least recently used compiled plan"
             );
         }
+        self.media_texture_cache.evict();
     }
 
     /// Compiles the plan for `frame` ahead of rendering it, unless it would not fit the plan cache
@@ -556,38 +684,44 @@ impl GpuCompositionRenderer {
         }
         self.bind_sequence += 1;
         // A font loaded while the plan compiles or the frame binds, here or by another renderer,
-        // can widen text past the bounds the plan measured. The plan is then keyed by the new
-        // font generation, so the frame is bound again to it; a font loads once, so this settles.
+        // can widen text past the bounds and glyph counts the plan measured. The plan is then
+        // keyed by the new font generation, so the frame is bound again to it; a font loads
+        // once, so this settles.
         let mut rebinds = 0;
+        let max_rebinds = max_font_rebinds(composition);
         let mut bound = loop {
-            let generation = text_font_generation();
+            let generation = text_font_generation(Some(media));
             self.ensure_compiled_for_frame(composition, frame, Some(media), PlanUse::Render)?;
             self.memo_snapshots
                 .retain_composition(composition.fingerprint());
             let prepared = self.active_prepared()?;
             let layout = &prepared.compiled.cache;
-            let epoch = layout.epoch(&prepared.renderer);
+            let fonts = text_font_generation(Some(media));
+            let epoch = layout.epoch(&prepared.renderer, fonts);
             let held =
                 self.memo_snapshots
                     .held(layout, prepared.cache.plan(), epoch, |plan, at, memo| {
                         self.memo_source(prepared, plan, memo)
-                            .is_some_and(|(epoch, ..)| epoch == at)
+                            .is_some_and(|(from, ..)| {
+                                from.compiled.cache.epoch(&from.renderer, fonts) == at
+                            })
                     });
-            let bound = FrameBindContext::with_media_at(composition, frame, media)
-                .bind_with_cache(
-                    &prepared.compiled,
-                    Some(BindCache::new(
-                        layout,
-                        &prepared.cache,
-                        epoch,
-                        composition.fingerprint(),
-                        held,
-                    )),
-                )?;
-            if text_font_generation() == generation {
-                break bound;
+            let bound = FrameBindContext::with_media_at(composition, frame, media).bind_with_cache(
+                &prepared.compiled,
+                Some(BindCache::new(
+                    layout,
+                    &prepared.cache,
+                    epoch,
+                    composition.fingerprint(),
+                    held,
+                )),
+            );
+            // A failure under fonts that changed may come from what the plan sized for the
+            // old ones, so it is bound again too.
+            if text_font_generation(Some(media)) == generation {
+                break bound?;
             }
-            if rebinds == MAX_FONT_REBINDS {
+            if rebinds == max_rebinds {
                 return Err(RenderError::Gpu {
                     details: format!(
                         "fonts kept loading while frame {frame} was bound; its text bounds could not settle"
@@ -655,7 +789,7 @@ impl GpuCompositionRenderer {
         self.copy_memo_snapshots(bound)
     }
 
-    /// The epoch of plan `plan` and the texture and bounds buffer holding its snapshot of `to`'s
+    /// Plan `plan` and the texture and bounds buffer holding its snapshot of `to`'s
     /// memo `memo`, if `to` can copy them.
     fn memo_source<'a>(
         &'a self,
@@ -663,7 +797,7 @@ impl GpuCompositionRenderer {
         plan: u64,
         memo: &LayoutMemo,
     ) -> Option<(
-        u64,
+        &'a PreparedComposition,
         &'a lumen_gpu::wgpu::Texture,
         &'a lumen_gpu::wgpu::Buffer,
     )> {
@@ -677,7 +811,7 @@ impl GpuCompositionRenderer {
             return None;
         }
         Some((
-            from.compiled.cache.epoch(&from.renderer),
+            from,
             from.renderer.texture(source.texture)?,
             from.renderer.buffer(source.bounds)?,
         ))
@@ -744,6 +878,12 @@ impl GpuCompositionRenderer {
     }
 
     fn upload_media_textures(&mut self, bound: &BoundFrame) -> crate::Result<()> {
+        let result = self.write_media_textures(bound);
+        self.media_texture_cache.evict();
+        result
+    }
+
+    fn write_media_textures(&mut self, bound: &BoundFrame) -> crate::Result<()> {
         let key = self.active_key.clone().ok_or_else(|| RenderError::Gpu {
             details: "composition has not been compiled".to_string(),
         })?;
@@ -760,8 +900,7 @@ impl GpuCompositionRenderer {
             tracing::trace!(
                 target: "lumen_render",
                 texture = ?upload.texture,
-                source = %upload.key.source,
-                frame = ?upload.key.frame,
+                key = ?upload.key,
                 width = upload.size.width,
                 height = upload.size.height,
                 "resolve media texture upload"
@@ -769,12 +908,18 @@ impl GpuCompositionRenderer {
             #[cfg(feature = "ffmpeg")]
             if let MediaFrame::GpuVideo(frame) = &upload.frame {
                 let texture = gpu_media_importer
-                    .import(&prepared.renderer, upload, frame)
+                    .import(
+                        &prepared.renderer,
+                        &mut prepared.media_imports,
+                        upload,
+                        frame,
+                    )
                     .map_err(|details| RenderError::Gpu {
                         details: format!("failed to import GPU media frame: {details}"),
                     })?;
+                let size = texture.size();
                 let desc = lumen_gpu::TextureDesc::sampled(
-                    upload.size,
+                    lumen_gpu::Size::new(size.width, size.height),
                     match frame.frame.backend() {
                         #[cfg(all(target_os = "macos", feature = "metal"))]
                         lumen_ffmpeg::GpuBackend::Metal => {
@@ -799,14 +944,32 @@ impl GpuCompositionRenderer {
                 MediaFrame::GpuVideo(_) => unreachable!("GPU video frames are imported above"),
             };
 
-            if upload.key.frame.is_some() {
+            let Some(key) = &upload.key else {
                 tracing::trace!(
                     target: "lumen_render",
                     texture = ?upload.texture,
-                    source = %upload.key.source,
-                    frame = ?upload.key.frame,
                     "upload uncached video frame"
                 );
+                if prepared
+                    .current_media_textures
+                    .remove(&upload.texture)
+                    .is_some()
+                {
+                    // The bound texture is a cached image's, which must not be written.
+                    prepared
+                        .renderer
+                        .replace_texture_arc(
+                            upload.texture,
+                            create_media_texture(&prepared.renderer.device, upload.size),
+                            lumen_gpu::TextureDesc::sampled(
+                                upload.size,
+                                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+                            ),
+                        )
+                        .map_err(|error| RenderError::Gpu {
+                            details: error.to_string(),
+                        })?;
+                }
                 let rgba = fit_frame_to_rgba8(frame, upload.size.width, upload.size.height);
                 prepared.renderer.queue.write_texture(
                     lumen_gpu::wgpu::TexelCopyTextureInfo {
@@ -827,56 +990,39 @@ impl GpuCompositionRenderer {
                     },
                     upload.size.as_extent(),
                 );
-                prepared.current_media_textures.remove(&upload.texture);
                 continue;
-            }
+            };
 
             if prepared
                 .current_media_textures
                 .get(&upload.texture)
-                .is_some_and(|current| current == &upload.key)
+                .is_some_and(|current| current == key)
             {
                 tracing::trace!(
                     target: "lumen_render",
                     texture = ?upload.texture,
-                    source = %upload.key.source,
-                    frame = ?upload.key.frame,
+                    source = %key.source,
                     "reuse current media texture binding"
                 );
                 continue;
             }
 
-            let texture = if let Some(texture) = media_texture_cache.get(&upload.key) {
+            let texture = if let Some(texture) = media_texture_cache.get(key) {
                 tracing::trace!(
                     target: "lumen_render",
-                    source = %upload.key.source,
-                    frame = ?upload.key.frame,
+                    source = %key.source,
                     "reuse cached media texture"
                 );
-                Arc::clone(texture)
+                texture
             } else {
                 tracing::debug!(
                     target: "lumen_render",
-                    source = %upload.key.source,
-                    frame = ?upload.key.frame,
+                    source = %key.source,
                     width = upload.size.width,
                     height = upload.size.height,
                     "cache media texture"
                 );
-                let texture = Arc::new(prepared.renderer.device.create_texture(
-                    &lumen_gpu::wgpu::TextureDescriptor {
-                        label: Some("lumen media cached frame"),
-                        size: upload.size.as_extent(),
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: lumen_gpu::wgpu::TextureDimension::D2,
-                        format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        usage: lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
-                            | lumen_gpu::wgpu::TextureUsages::COPY_DST
-                            | lumen_gpu::wgpu::TextureUsages::COPY_SRC,
-                        view_formats: &[],
-                    },
-                ));
+                let texture = create_media_texture(&prepared.renderer.device, upload.size);
                 let rgba = fit_frame_to_rgba8(frame, upload.size.width, upload.size.height);
                 prepared.renderer.queue.write_texture(
                     texture.as_image_copy(),
@@ -888,7 +1034,7 @@ impl GpuCompositionRenderer {
                     },
                     upload.size.as_extent(),
                 );
-                media_texture_cache.insert(upload.key.clone(), Arc::clone(&texture));
+                media_texture_cache.insert(key.clone(), Arc::clone(&texture));
                 texture
             };
 
@@ -908,7 +1054,7 @@ impl GpuCompositionRenderer {
             }
             prepared
                 .current_media_textures
-                .insert(upload.texture, upload.key.clone());
+                .insert(upload.texture, key.clone());
         }
         Ok(())
     }
@@ -1129,7 +1275,10 @@ impl GpuCompositionRenderer {
         Ok(CompiledPlanKey {
             composition: composition.fingerprint(),
             on_timeline: super::compiler::on_timeline(composition, frame),
-            text_font_generation: collector.has_text.then(text_font_generation).flatten(),
+            text_font_generation: collector
+                .has_text
+                .then(|| text_font_generation(media))
+                .flatten(),
             entries,
         })
     }
@@ -1216,6 +1365,15 @@ impl<'a> PlanKeyCollector<'a> {
                 }
                 self.has_text = true;
             }
+            NodeKind::MediaIn(media_in) => {
+                let ctx = scope.expr_context(frame, format!("{}.params", media_in.id), self.media);
+                if let Some(size) = self
+                    .media
+                    .and_then(|media| media_in.native_size(&ctx, media))
+                {
+                    self.push_entry(media_in.id, PlanChoice::MediaSize(size.width, size.height));
+                }
+            }
             NodeKind::WgslShader(shader) => {
                 let ctx = scope.expr_context(frame, format!("{}.params", shader.id), self.media);
                 let params = shader.params.eval(&NodeParamEvalContext {
@@ -1259,7 +1417,7 @@ impl<'a> PlanKeyCollector<'a> {
     /// font generation is taken once every font the frame's text names is loaded. Failures are
     /// left to the compile and bind, which load it again.
     fn load_font_family(&self, family: &str) {
-        if let Ok(mut text_system) = crate::node::source::text::text_system() {
+        if let Ok(mut text_system) = crate::node::source::text::text_system(self.media) {
             let _ =
                 crate::node::source::text::load_font_family(&mut text_system, self.media, family);
         }
@@ -1298,11 +1456,21 @@ fn estimated_plan_bytes(compiled: &CompiledComposition) -> u64 {
 }
 
 /// Times a frame is bound again after fonts load during binding, before binding fails rather
-/// than draw text past its bounds.
-const MAX_FONT_REBINDS: u32 = 3;
+/// than draw text past its bounds. A node loads all the fonts it names at once, and a bind can
+/// stop at the first text they outgrow, so this allows each node a bind of its own, with a margin
+/// for fonts other renderers load meanwhile. A node evaluated many times can name more fonts than
+/// this allows, and its frame then fails, but the fonts stay loaded for the next render.
+fn max_font_rebinds(composition: &Composition) -> usize {
+    let templates: usize = composition
+        .compositions()
+        .values()
+        .map(|template| template.graph.nodes.len())
+        .sum();
+    composition.graph().nodes.len() + templates + 3
+}
 
-fn text_font_generation() -> Option<u64> {
-    crate::node::source::text::text_system()
+fn text_font_generation(media: Option<&dyn MediaStore>) -> Option<u64> {
+    crate::node::source::text::text_system(media)
         .ok()
         .map(|text_system| text_system.font_generation())
 }

@@ -211,8 +211,7 @@ impl GpuCompileNode for Merge {
                 straight_mask: straight(&mask),
             }
         });
-        let texture = ctx.builder_mut().texture_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let texture = ctx.builder_mut().texture(
             Some(format!("merge:{}:output", self.id.0)),
             lumen_gpu::TextureDesc::storage(
                 domain.storage_size,
@@ -220,14 +219,12 @@ impl GpuCompileNode for Merge {
             )
             .with_domain(domain),
         );
-        let params = ctx.builder_mut().buffer_for(
-            lumen_gpu::NodeKey(self.id.0),
+        let params = ctx.builder_mut().buffer(
             Some(format!("merge:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::MergeParams>() as u64),
         );
-        let program = ctx.builder_mut().program_for(
-            lumen_gpu::NodeKey(self.id.0),
-            lumen_gpu::ProgramDesc::Compute(lumen_gpu::ComputeProgramDesc {
+        let program = ctx.builder_mut().program(lumen_gpu::ProgramDesc::Compute(
+            lumen_gpu::ComputeProgramDesc {
                 label: Some("merge".to_string()),
                 shader: SHADER.to_string(),
                 entry: "cs_main".to_string(),
@@ -259,11 +256,10 @@ impl GpuCompileNode for Merge {
                         lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
                     ),
                 ]),
-            }),
-        );
+            },
+        ));
         ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("merge:{}:blend", self.id.0)),
-            owner: Some(lumen_gpu::NodeKey(self.id.0)),
             program,
             bindings: vec![
                 lumen_gpu::Binding::sampled_texture(0, 0, base.texture),
@@ -283,15 +279,8 @@ impl GpuCompileNode for Merge {
                 lumen_gpu::Binding::uniform(0, 3, params),
                 lumen_gpu::Binding::storage_texture(0, 4, texture),
             ],
-            dispatch: compiler::dispatch_for(domain.storage_size).into(),
+            dispatch: compiler::dispatch_for(domain.storage_size),
         });
-        ctx.builder_mut().param(
-            lumen_gpu::ParamKey {
-                owner: lumen_gpu::NodeKey(self.id.0),
-                slot: 1,
-            },
-            lumen_gpu::ParamTarget::Buffer(params),
-        );
         ctx.register_compiled_node(CompiledMerge {
             node_id: self.id,
             params: self.params.clone(),

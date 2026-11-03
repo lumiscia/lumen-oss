@@ -26,7 +26,11 @@ pub fn build_node(
     id: NodeId,
     obj: &serde_json::Map<String, Value>,
 ) -> Result<NodeKind> {
-    let params = obj.get("params").and_then(Value::as_object);
+    let params = match obj.get("params") {
+        None => None,
+        Some(Value::Object(params)) => Some(params),
+        Some(_) => bail!("node {id} (`{kind}`): `params` must be an object"),
+    };
 
     match kind {
         "media_in" => Ok(NodeKind::MediaIn(MediaIn::from_json(id, params)?)),

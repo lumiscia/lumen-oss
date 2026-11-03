@@ -135,7 +135,6 @@ impl<'a> Scope<'a> {
             fps: self.timeline.fps,
             width: self.render_settings.width,
             height: self.render_settings.height,
-            duration_frames: self.timeline.duration_frames,
             path: Some(path),
             graph: Some(self.graph),
             media,

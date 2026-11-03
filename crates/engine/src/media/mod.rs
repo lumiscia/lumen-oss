@@ -24,4 +24,4 @@ pub use resolver::{
     CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, VideoFrameResolver,
     VideoMetadata,
 };
-pub use store::MediaStore;
+pub use store::{MediaStore, TextSession};

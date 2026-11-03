@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Embeddable render service primitives and local HTTP server for Lumen."
+description = "Embeddable render library and local HTTP server for Lumen."
 
 [lib]
 name = "lumen_server"
@@ -16,8 +16,15 @@ path = "src/bin/lumen-server.rs"
 required-features = ["cli"]
 
 [features]
-cli = ["dep:axum", "dep:clap", "dep:subtle", "dep:tracing-subscriber", "dep:uuid"]
-legacy-decode-tests = []
+cli = [
+  "dep:axum",
+  "dep:clap",
+  "dep:futures-util",
+  "dep:reqwest",
+  "dep:subtle",
+  "dep:tracing-subscriber",
+  "dep:uuid",
+]
 metal = ["lumen-engine/metal", "lumen-ffmpeg/metal"]
 vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
 cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
@@ -35,16 +42,18 @@ axum = { version = "0.8.7", default-features = false, features = [
   "tokio",
   "ws",
 ], optional = true }
-lumen-engine = { version = "0.3.1", path = "../engine", features = ["ffmpeg", "image", "json"] }
-lumen-gpu = { package = "lumen-engine-gpu", version = "0.3.1", path = "../gpu" }
-lumen-ffmpeg = { package = "lumen-engine-ffmpeg", version = "0.3.1", path = "../ffmpeg" }
+lumen-engine = { workspace = true, features = ["ffmpeg", "image", "json"] }
+lumen-gpu = { workspace = true }
+lumen-ffmpeg = { workspace = true }
 reqwest = { version = "0.12.24", default-features = false, features = [
   "json",
   "rustls-tls",
-  "blocking",
-] }
+], optional = true }
 tempfile = "3.25.0"
 clap = { version = "4.6.1", features = ["derive", "env"], optional = true }
-futures-util = "0.3.32"
+futures-util = { version = "0.3.32", optional = true }
 subtle = { version = "2.6.1", optional = true }
 uuid = { version = "1.18.1", features = ["v4"], optional = true }
+
+[dev-dependencies]
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking"] }

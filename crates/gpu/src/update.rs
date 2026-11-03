@@ -1,30 +1,4 @@
-use std::marker::PhantomData;
-
-use crate::{BufferId, NodeKey, TextureId};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DynamicResource {
-    Texture(TextureId),
-    Buffer(BufferId),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ParamKey {
-    pub owner: NodeKey,
-    pub slot: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParamTarget {
-    Buffer(BufferId),
-    Texture(TextureId),
-}
-
-#[derive(Debug, Clone)]
-pub struct ParamSlot {
-    pub key: ParamKey,
-    pub target: ParamTarget,
-}
+use crate::{BufferId, TextureId};
 
 #[derive(Debug, Clone)]
 pub enum Upload<'a> {
@@ -58,7 +32,6 @@ pub enum Upload<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct FrameUpdate<'a> {
     pub(crate) uploads: Vec<Upload<'a>>,
-    _marker: PhantomData<&'a ()>,
 }
 
 impl<'a> FrameUpdate<'a> {
