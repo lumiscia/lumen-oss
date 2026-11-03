@@ -560,7 +560,7 @@ fn to_number(value: &ExpressionValue, ctx: &ExpressionContext<'_>) -> crate::Res
 mod tests {
     use super::*;
     use crate::{
-        expr::ast::{BuiltinFn, ExprNode},
+        expr::ast::ExprNode,
         graph::Graph,
         node::{NodeId, NodeKind, PropertyValue, source::text::Text},
     };
@@ -640,17 +640,6 @@ mod tests {
     }
 
     #[test]
-    fn integer_frames_evaluate_to_whole_numbers() {
-        let ctx = test_context();
-
-        let expression = Expression::parse("vec2(frame * 2, time)").unwrap();
-        assert_eq!(
-            expression.evaluate(&ctx).unwrap(),
-            ExpressionValue::Vec2((96.0, 2.0))
-        );
-    }
-
-    #[test]
     fn subframe_offsets_frame_and_time() {
         let ctx = test_context().at_subframe(-0.25);
 
@@ -698,59 +687,17 @@ mod tests {
     }
 
     #[test]
-    fn evaluates_linear_and_step_builtins() {
-        let ctx = test_context();
-        let expression = Expression::new(
-            ExprNode::Builtin(
-                BuiltinFn::Linear,
-                vec![
-                    ExprNode::Literal(ExpressionValue::Number(10.0)),
-                    ExprNode::Literal(ExpressionValue::Number(20.0)),
-                    ExprNode::Literal(ExpressionValue::Number(0.25)),
-                ],
+    fn evaluates_builtins_and_components() {
+        for (source, expected) in [
+            ("linear(10, 20, 0.25)", ExpressionValue::Number(12.5)),
+            ("step(10, 20, 0.5)", ExpressionValue::Number(10.0)),
+            ("step(10, 20, 1)", ExpressionValue::Number(20.0)),
+            (
+                "vec2(frame * 2, time + 3)",
+                ExpressionValue::Vec2((96.0, 5.0)),
             ),
-            "linear(10, 20, 0.25)".to_string(),
-        );
-        let stepped = Expression::new(
-            ExprNode::Builtin(
-                BuiltinFn::Step,
-                vec![
-                    ExprNode::Literal(ExpressionValue::Number(10.0)),
-                    ExprNode::Literal(ExpressionValue::Number(20.0)),
-                    ExprNode::Literal(ExpressionValue::Number(0.5)),
-                ],
-            ),
-            "step(10, 20, 0.5)".to_string(),
-        );
-
-        assert_eq!(
-            expression.evaluate(&ctx).unwrap(),
-            ExpressionValue::Number(12.5)
-        );
-        assert_eq!(
-            stepped.evaluate(&ctx).unwrap(),
-            ExpressionValue::Number(10.0)
-        );
-    }
-
-    #[test]
-    fn evaluates_vec2_components_independently() {
-        let expression = Expression::parse("vec2(frame * 2, time + 3)").unwrap();
-
-        assert_eq!(
-            expression.evaluate(&test_context()).unwrap(),
-            ExpressionValue::Vec2((96.0, 5.0))
-        );
-    }
-
-    #[test]
-    fn vec2_requires_exactly_two_components() {
-        for source in ["vec2()", "vec2(1)", "vec2(1, 2, 3)"] {
-            let ExpressionError::Parse { details, .. } = Expression::parse(source).unwrap_err()
-            else {
-                panic!("expected parse error");
-            };
-            assert!(details.contains("`vec2`: expects 2 arguments"), "{details}");
+        ] {
+            assert_eq!(evaluate(source, 48).unwrap(), expected, "{source}");
         }
     }
 
@@ -819,8 +766,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_easing_arguments_at_parse_time() {
+    fn rejects_bad_builtin_arguments_at_parse_time() {
         for (source, expected) in [
+            ("vec2()", "`vec2`: expects 2 arguments"),
+            ("vec2(1)", "`vec2`: expects 2 arguments"),
+            ("vec2(1, 2, 3)", "`vec2`: expects 2 arguments"),
             ("tween(0, 1, 0, 10, 'bounce')", "unknown easing `bounce`"),
             ("tween(0, 1, 0, 10, frame)", "must be a quoted easing name"),
             ("tween(0, 1, 0)", "expects 4 to 5 arguments, got 3"),
@@ -1036,25 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn text_measure_builtins_use_explicit_text_inputs() {
-        let ctx = test_context();
-
-        let implicit = Expression::parse("text_width(\"Morning, update posted.\")").unwrap();
-        let explicit =
-            Expression::parse("text_width(node(8, \"content\"), 32, 300, \"Roboto\")").unwrap();
-        let implicit_height =
-            Expression::parse("text_height(\"Morning, update posted.\")").unwrap();
-        let explicit_height =
-            Expression::parse("text_height(node(8, \"content\"), 32, 300, \"Roboto\")").unwrap();
-
-        assert!(implicit.evaluate(&ctx).is_ok());
-        assert!(explicit.evaluate(&ctx).is_err());
-        assert!(implicit_height.evaluate(&ctx).is_ok());
-        assert!(explicit_height.evaluate(&ctx).is_err());
-    }
-
-    #[test]
-    fn text_measure_builtins_resolve_text_nodes_from_graph() {
+    fn text_measure_builtins_follow_the_nodes_text_properties() {
         let text_id = NodeId::new(8);
         let mut graph = Graph::new();
         graph.nodes.insert(
@@ -1063,31 +995,52 @@ mod tests {
                 id: text_id,
                 params: crate::node::source::text::TextParamsDelegate {
                     content: crate::node::source::text_content::TextContentDelegate::Text(
-                        crate::node::Deferred::value("Morning, update posted.".to_string()),
+                        crate::node::Deferred::Expr(
+                            Expression::parse("\"Morning update\"").unwrap(),
+                        ),
                     ),
-                    font_family: crate::node::Deferred::value("Roboto".to_string()),
-                    font_size: crate::node::Deferred::value(32.0),
-                    max_width: crate::node::Deferred::value(300.0),
+                    font_family: crate::node::Deferred::Expr(
+                        Expression::parse("\"Roboto\"").unwrap(),
+                    ),
+                    font_size: crate::node::Deferred::Expr(
+                        Expression::parse("24 + frame").unwrap(),
+                    ),
+                    max_width: crate::node::Deferred::Expr(Expression::parse("120").unwrap()),
                     ..Default::default()
                 },
             }),
         );
-        let ctx = ExpressionContext {
-            graph: Some(&graph),
-            ..test_context()
+        let measure = |function: &str, frame: f64, with_graph: bool| {
+            let ctx = ExpressionContext {
+                frame,
+                graph: with_graph.then_some(&graph),
+                ..test_context()
+            };
+            let source = if with_graph {
+                format!("{function}(node(8))")
+            } else {
+                let size = 24.0 + frame;
+                format!("{function}(\"Morning update\", {size}, 120, \"Roboto\")")
+            };
+            match Expression::parse(&source).unwrap().evaluate(&ctx) {
+                Ok(ExpressionValue::Number(value)) => value,
+                other => panic!("{source}: {other:?}"),
+            }
         };
+        for function in ["text_width", "text_height"] {
+            let (first, later) = (measure(function, 0.0, true), measure(function, 8.0, true));
+            assert_ne!(first, later, "{function} ignores the animated font size");
+            assert_eq!(first, measure(function, 0.0, false), "{function} at 0");
+            assert_eq!(later, measure(function, 8.0, false), "{function} at 8");
+        }
 
-        let width = Expression::parse("text_width(node(8))")
-            .unwrap()
-            .evaluate(&ctx)
-            .unwrap();
-        let height = Expression::parse("text_height(node(8))")
-            .unwrap()
-            .evaluate(&ctx)
-            .unwrap();
-
-        assert!(matches!(width, ExpressionValue::Number(value) if value > 0.0));
-        assert!(matches!(height, ExpressionValue::Number(value) if value > 32.0));
+        let ctx = test_context();
+        for source in [
+            "text_width(node(8), 32, 300, \"Roboto\")",
+            "text_height(node(8), 32, 300, \"Roboto\")",
+        ] {
+            assert!(Expression::parse(source).unwrap().evaluate(&ctx).is_err());
+        }
     }
 
     #[test]
@@ -1130,42 +1083,6 @@ mod tests {
             }
         };
         assert!(width(&[(b"pnum", 1)]) < width(&[]));
-    }
-
-    #[test]
-    fn text_measure_builtins_evaluate_expression_backed_text_properties() {
-        let text_id = NodeId::new(8);
-        let mut graph = Graph::new();
-        graph.nodes.insert(
-            text_id,
-            NodeKind::Text(Text {
-                id: text_id,
-                params: crate::node::source::text::TextParamsDelegate {
-                    content: crate::node::source::text_content::TextContentDelegate::Text(
-                        crate::node::Deferred::Expr(Expression::parse("\"Frame two\"").unwrap()),
-                    ),
-                    font_family: crate::node::Deferred::Expr(
-                        Expression::parse("\"Roboto\"").unwrap(),
-                    ),
-                    font_size: crate::node::Deferred::Expr(
-                        Expression::parse("24 + frame").unwrap(),
-                    ),
-                    max_width: crate::node::Deferred::Expr(Expression::parse("300").unwrap()),
-                    ..Default::default()
-                },
-            }),
-        );
-        let ctx = ExpressionContext {
-            frame: 2.0,
-            graph: Some(&graph),
-            ..test_context()
-        };
-
-        let result = Expression::parse("text_width(node(8))")
-            .unwrap()
-            .evaluate(&ctx);
-
-        assert!(matches!(result, Ok(ExpressionValue::Number(value)) if value > 0.0));
     }
 
     #[cfg(feature = "json")]
