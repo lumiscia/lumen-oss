@@ -6,6 +6,7 @@ use syn::{Attribute, Ident, LitBool, LitFloat, LitInt, LitStr, Result, Token};
 #[derive(Default)]
 pub(crate) struct PropertyConstraintsAttr {
     min: Option<f64>,
+    enforced_min: bool,
     max: Option<f64>,
     step: Option<f64>,
     format: Option<LitStr>,
@@ -19,6 +20,8 @@ impl PropertyConstraintsAttr {
     pub(crate) fn parse_key(&mut self, meta: &syn::meta::ParseNestedMeta<'_>) -> Result<bool> {
         if meta.path.is_ident("min") {
             self.min = Some(float_value(meta)?);
+        } else if meta.path.is_ident("enforced_min") {
+            self.enforced_min = optional_bool(meta)?;
         } else if meta.path.is_ident("max") {
             self.max = Some(float_value(meta)?);
         } else if meta.path.is_ident("step") {
@@ -39,6 +42,7 @@ impl PropertyConstraintsAttr {
 
     fn tokens(&self) -> proc_macro2::TokenStream {
         let min = option_f64_tokens(self.min);
+        let enforced_min = self.enforced_min;
         let max = option_f64_tokens(self.max);
         let step = option_f64_tokens(self.step);
         let format = option_lit_str_tokens(&self.format);
@@ -51,6 +55,7 @@ impl PropertyConstraintsAttr {
         quote! {
             ::lumen_engine::node::PropertyConstraints {
                 min: #min,
+                enforced_min: #enforced_min,
                 max: #max,
                 step: #step,
                 format: #format,

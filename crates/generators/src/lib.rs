@@ -559,8 +559,8 @@ fn property_schema_json(property: &PropertyDef, default: Option<Value>) -> Value
 
 fn value_schema_json(property: &PropertyDef) -> Value {
     match property.expected {
-        PropertyKind::Float => json!({ "type": "number" }),
-        PropertyKind::Int => json!({ "type": "integer" }),
+        PropertyKind::Float => number_schema_json(property, "number"),
+        PropertyKind::Int => number_schema_json(property, "integer"),
         PropertyKind::Bool => json!({ "type": "boolean" }),
         // A single leading `=` parses as an expression; `==` escapes a literal `=`.
         PropertyKind::String if !property.accepts_expressions => {
@@ -578,6 +578,15 @@ fn value_schema_json(property: &PropertyDef) -> Value {
         PropertyKind::FontFeatures => json!({ "$ref": "#/$defs/fontFeatures" }),
         PropertyKind::TextStroke => json!({ "$ref": "#/$defs/textStroke" }),
         PropertyKind::Enum => enum_schema_json(property),
+    }
+}
+
+fn number_schema_json(property: &PropertyDef, kind: &str) -> Value {
+    match property.constraints.min {
+        Some(minimum) if property.constraints.enforced_min => {
+            json!({ "type": kind, "minimum": minimum })
+        }
+        _ => json!({ "type": kind }),
     }
 }
 

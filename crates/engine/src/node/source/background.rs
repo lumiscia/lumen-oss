@@ -16,10 +16,10 @@ pub struct BackgroundParams {
     #[meta()]
     pub paint: Paint,
     /// Output width in pixels. Use 0 to match the composition width.
-    #[meta(min = 0, step = 1, constant)]
+    #[meta(min = 0, enforced_min, step = 1, constant)]
     pub width: u32,
     /// Output height in pixels. Use 0 to match the composition height.
-    #[meta(min = 0, step = 1, constant)]
+    #[meta(min = 0, enforced_min, step = 1, constant)]
     pub height: u32,
     /// Enables 4×4 supersampling when evaluating paint at each pixel.
     #[meta()]

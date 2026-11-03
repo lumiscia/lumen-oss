@@ -86,6 +86,17 @@ fn parse_current_value(root: &Value) -> Result<Composition> {
     })
 }
 
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
 /// Builds the nodes and connections of the root, or of a template whose props are `props`.
 fn parse_graph(
     obj: &Map<String, Value>,
@@ -116,7 +127,10 @@ fn parse_graph(
         let params = match node_obj.get("params") {
             None => None,
             Some(Value::Object(params)) => Some(params),
-            Some(_) => bail!("node {id} (`{kind_str}`): `params` must be an object"),
+            Some(other) => bail!(
+                "node {id} (`{kind_str}`): `params` must be an object, got {}",
+                json_type(other)
+            ),
         };
         let node_kind = NodeKind::from_json(kind_str, id, params)?;
         if let Some(params) = node_obj.get("params") {

@@ -587,13 +587,6 @@ fn editor_hint_ranges_are_not_enforced() {
             json!({ "selected_layer": -1 }),
             true,
         ),
-        // `background` sizes are `u32`, which the engine rejects outside its range.
-        (
-            "background width below 0",
-            "background",
-            json!({ "width": -1 }),
-            false,
-        ),
     ];
     for (label, kind, params, engine_accepts) in rows {
         let composition = composition_with_node(&node_schema(kind), params);
@@ -602,6 +595,33 @@ fn editor_hint_ranges_are_not_enforced() {
             lumen_engine::json::parse_value(&composition).is_ok(),
             engine_accepts,
             "{label} engine"
+        );
+    }
+}
+
+/// Each row is a node type, a param, its lowest literal and a literal below it the engine refuses.
+#[test]
+fn enforced_ranges_match_engine_parsing() {
+    let validator = schema_validator();
+    let rows = [
+        ("background", "width", json!(0), json!(-1)),
+        ("background", "height", json!(0), json!(-1)),
+        ("clip", "duration", json!(-1), json!(-2)),
+    ];
+    for (kind, param, lowest, below) in rows {
+        let composition =
+            |value: &Value| composition_with_node(&node_schema(kind), json!({ param: value }));
+        assert!(
+            validator.is_valid(&composition(&lowest)),
+            "{kind}.{param} {lowest} schema"
+        );
+        assert!(
+            !validator.is_valid(&composition(&below)),
+            "{kind}.{param} {below} schema"
+        );
+        assert!(
+            lumen_engine::json::parse_value(&composition(&below)).is_err(),
+            "{kind}.{param} {below} engine"
         );
     }
 }
