@@ -57,7 +57,11 @@ pub fn render_project_mp4(
         message: err.to_string(),
         retryable: false,
     })?;
-    let mut media_store = LocalMediaStore::new(media_root);
+    let mut media_store = LocalMediaStore::new(media_root).map_err(|err| RenderError {
+        code: "font_dir_error",
+        message: err.to_string(),
+        retryable: false,
+    })?;
     let mut renderer = create_gpu_renderer(&mut media_store).map_err(|err| RenderError {
         code: "render_failed",
         message: format!("failed to create GPU renderer: {err:#}"),

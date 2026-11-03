@@ -18,13 +18,13 @@ cargo run -p lumen-local -- --composition crates/local/demo/gradient-paints.json
 | `--composition <path>`                             |                         | Composition JSON to render. Required.                                                                                                                        |
 | `--output <path>`                                  |                         | `.mp4` or `.png`. Required. An `.mp4` is written beside the output and moved into place when the render succeeds, so a failed render keeps any earlier file. |
 | `--media-root <path>`                              |                         | Directory media sources must stay inside. Defaults to the current directory.                                                                                 |
-| `--font-dir <path>`                                | `LUMEN_FONT_DIR`        | Fonts looked up first, then `<media-root>/assets/fonts`, then the system fonts. The flag wins over the variable.                                             |
+| `--font-dir <path>`                                | `LUMEN_FONT_DIR`        | Must exist. Fonts looked up first, then `<media-root>/assets/fonts`, then the system fonts, by family name. The flag wins.                                   |
 | `--encoder <name>`                                 | `LUMEN_VIDEO_ENCODER`   | `.mp4` only. The flag wins over the variable, and `--encoder` with a `.png` output is an error.                                                              |
 | `--bitrate <bps\|Nk\|NM>`, `--crf <n>`, `--qp <n>` |                         | `.mp4` only. At most one of the three.                                                                                                                       |
 | `--preset <name>`                                  |                         | `.mp4` only.                                                                                                                                                 |
 | `--frame <n>`                                      |                         | `.png` only. Defaults to 0.                                                                                                                                  |
 |                                                    | `LUMEN_HARDWARE_DECODE` | `1`, `true`, `yes` or `on` decodes video on the GPU when the hardware supports it. Off when unset.                                                           |
-|                                                    | `RUST_LOG`              | Log filter. Defaults to `lumen_engine=warn`.                                                                                                                 |
+|                                                    | `RUST_LOG`              | Log filter. Defaults to `lumen_engine=warn,lumen_server=warn`.                                                                                               |
 
 Progress and the render summary go to stdout. Warnings and errors go to stderr.
 

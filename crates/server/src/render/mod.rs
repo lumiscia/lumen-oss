@@ -1,4 +1,5 @@
 mod encoder;
+mod fonts;
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 mod frame_timing;
 mod gpu;
@@ -9,6 +10,7 @@ use std::path::PathBuf;
 use lumen_engine::composition::Composition;
 use lumen_ffmpeg::EncoderQuality;
 
+pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir, font_dir_from_env};
 pub use gpu::render_project_mp4;
 
 #[derive(Debug, Clone)]

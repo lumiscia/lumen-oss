@@ -45,6 +45,8 @@ axum = { version = "0.8.7", default-features = false, features = [
 lumen-engine = { workspace = true, features = ["ffmpeg", "image"] }
 lumen-gpu = { workspace = true }
 lumen-ffmpeg = { workspace = true }
+lumen-text = { workspace = true }
+fontdb = "0.23.0"
 reqwest = { version = "0.12.24", default-features = false, features = [
   "json",
   "rustls-tls",

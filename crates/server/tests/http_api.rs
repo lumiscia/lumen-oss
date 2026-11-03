@@ -151,7 +151,7 @@ impl Drop for Server {
 fn server_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_lumen-server"));
     for name in [
-        "LUMEN_MEDIA_ROOT",
+        "LUMEN_FONT_DIR",
         "LUMEN_SERVER_ALLOW_MEDIA_HOSTS",
         "LUMEN_SERVER_BIND",
         "LUMEN_SERVER_TOKEN",
@@ -693,7 +693,7 @@ fn renders_read_only_manifest_media_with_gpu() {
     let server = serving_from(fixtures.path(), &["--allow-media-host", "localhost"]);
 
     // Both fallbacks a render could use are pointed at the fixture: the working directory and the
-    // configured root, so a source resolving through either one would render.
+    // font directory, so a source resolving through either one would render.
     for source in [
         "secret.png".to_string(),
         format!("file://{}", secret.display()),
@@ -859,6 +859,6 @@ fn serving_from(directory: &Path, args: &[&str]) -> Server {
     Server::start_with(args, |command| {
         command
             .current_dir(directory)
-            .env("LUMEN_MEDIA_ROOT", directory);
+            .env("LUMEN_FONT_DIR", directory);
     })
 }
