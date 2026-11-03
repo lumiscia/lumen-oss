@@ -101,8 +101,8 @@ struct RenderTiming {
     encode_finish_ms: u128,
 }
 
-/// Passes per frame skipped because their output was kept from an earlier frame (static nodes and
-/// holding memos), out of the passes per frame in the plans rendered.
+/// Passes per frame skipped because their output was kept from an earlier frame, out of the
+/// passes per frame in the plans rendered.
 fn cached_pass_summary(renderer: &GpuCompositionRenderer, frames: u32) -> String {
     let frames = f64::from(frames.max(1));
     format!(

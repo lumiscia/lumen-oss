@@ -2306,56 +2306,6 @@
           },
           {
             "additionalProperties": false,
-            "description": "Renders its source again only when `key` changes.",
-            "properties": {
-              "id": {
-                "type": "integer"
-              },
-              "params": {
-                "additionalProperties": false,
-                "properties": {
-                  "key": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "$ref": "#/$defs/expression"
-                      }
-                    ],
-                    "default": 0.0,
-                    "description": "Expression whose value decides when the source renders again: while it evaluates to the\nsame value as on the frame last rendered, the memo shows that frame's output and its\nsource is not rendered. A literal key adds nothing to the caching every node without\nframe-dependent params already gets.",
-                    "title": "Key",
-                    "x-lumen-kind": "float"
-                  }
-                },
-                "type": "object"
-              },
-              "type": {
-                "const": "memo"
-              }
-            },
-            "required": ["id", "type"],
-            "title": "Memo",
-            "type": "object",
-            "x-lumen-category": "processing",
-            "x-lumen-inputs": [
-              {
-                "kind": "raster_frame",
-                "name": "source",
-                "optional": false,
-                "variadic": false
-              }
-            ],
-            "x-lumen-outputs": [
-              {
-                "kind": "raster_frame",
-                "name": "output"
-              }
-            ]
-          },
-          {
-            "additionalProperties": false,
             "description": "Composites an overlay raster over a base raster.",
             "properties": {
               "id": {

@@ -4,7 +4,7 @@
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
 export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
-export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
 
@@ -1155,12 +1155,6 @@ export interface MediaOutputNode extends CompositionNodeBase<"media_output"> {
   readonly params?: Readonly<Record<string, never>>;
 }
 
-export interface MemoNode extends CompositionNodeBase<"memo"> {
-  readonly params?: {
-    readonly "key"?: ExpressionValue<number>;
-  };
-}
-
 export interface MergeNode extends CompositionNodeBase<"merge"> {
   readonly params?: {
     readonly "blend_mode"?: ExpressionValue<MergeBlendMode>;
@@ -1337,7 +1331,6 @@ export interface CompositionNodeByKind {
   readonly "levels": LevelsNode;
   readonly "media_in": MediaInNode;
   readonly "media_output": MediaOutputNode;
-  readonly "memo": MemoNode;
   readonly "merge": MergeNode;
   readonly "opacity": OpacityNode;
   readonly "path": PathNode;
@@ -1387,9 +1380,6 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "media_output": Omit<MediaOutputNode, "id"> & {
-    readonly id?: number;
-  };
-  readonly "memo": Omit<MemoNode, "id"> & {
     readonly id?: number;
   };
   readonly "merge": Omit<MergeNode, "id"> & {
@@ -1443,7 +1433,6 @@ export interface NodeInputPortNameByKind {
   readonly "levels": "source";
   readonly "media_in": never;
   readonly "media_output": "source";
-  readonly "memo": "source";
   readonly "merge": "base" | "mask" | "overlay";
   readonly "opacity": "source";
   readonly "path": never;

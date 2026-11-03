@@ -6,7 +6,6 @@ pub mod exposure;
 pub(crate) mod gaussian;
 pub mod hue_saturation;
 pub mod levels;
-pub mod memo;
 pub mod opacity;
 pub mod resize;
 pub mod shadow;

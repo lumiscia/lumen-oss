@@ -224,8 +224,7 @@ impl<'a> CompileContext<'a> {
         )
     }
 
-    /// Disables automatic reuse of static node output from earlier frames; memos with an
-    /// unchanged key still hold.
+    /// Disables automatic reuse of static node output from earlier frames.
     pub(crate) fn render_static(mut self, render_static: bool) -> Self {
         self.cache.render_static = render_static;
         self
@@ -332,22 +331,6 @@ impl<'a> CompileContext<'a> {
 
     pub(crate) fn builder_mut(&mut self) -> &mut lumen_gpu::RenderPlanBuilder {
         &mut self.builder
-    }
-
-    /// Records a keyed memo: its texture, the bounds buffer copied with it and the pass copying
-    /// its source into them.
-    pub(crate) fn record_memo(
-        &mut self,
-        texture: lumen_gpu::TextureId,
-        bounds: lumen_gpu::BufferId,
-        copy: lumen_gpu::PassId,
-    ) {
-        self.cache.record_memo(texture, bounds, copy);
-    }
-
-    /// Whether `texture` holds a keyed memo's copy, which only its memo may write.
-    pub(crate) fn is_memo_texture(&self, texture: lumen_gpu::TextureId) -> bool {
-        self.cache.is_memo_texture(texture)
     }
 
     pub(crate) fn register_compiled_node<N>(&mut self, node: N)
