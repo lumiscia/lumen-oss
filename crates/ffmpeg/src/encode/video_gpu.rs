@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 #[cfg(feature = "metal")]
 use std::ptr::NonNull;
 
@@ -10,8 +8,11 @@ use objc2_core_video::CVPixelBuffer;
 
 #[cfg(feature = "vulkan")]
 use crate::ffi;
+#[cfg(any(feature = "metal", feature = "cuda", feature = "vulkan"))]
 use crate::ffi::{AvFrame, sys};
-use crate::gpu::{GpuBackend, GpuVideoInput};
+#[cfg(any(feature = "metal", feature = "cuda", feature = "vulkan"))]
+use crate::gpu::GpuBackend;
+use crate::gpu::GpuVideoInput;
 use crate::video::EncodeMode;
 use crate::{FfmpegError, Result};
 #[cfg(feature = "cuda")]
@@ -20,10 +21,13 @@ use sys::AVPixelFormat::AV_PIX_FMT_CUDA;
 use sys::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX;
 
 use super::output::OutputContext;
-use super::telemetry::GpuUploadDescriptor;
 use super::video::VideoEncoder;
 
 impl VideoEncoder {
+    #[cfg_attr(
+        not(any(feature = "metal", feature = "cuda", feature = "vulkan")),
+        allow(unused_variables)
+    )]
     pub(in crate::encode) fn send_gpu_frame(
         &mut self,
         output: &mut OutputContext,
@@ -36,69 +40,20 @@ impl VideoEncoder {
             )
             .with_backend(frame.backend()));
         }
-        let upload = GpuUploadDescriptor::from_frame(frame);
-        self.gpu_telemetry.record_upload_started(&upload);
-        let started = Instant::now();
         match frame {
             #[cfg(feature = "metal")]
             GpuVideoInput::MetalPixelBuffer(pixel_buffer) => {
-                self.with_gpu_encode_telemetry(output, &upload, started, |encoder, output| {
-                    encoder.send_metal_pixel_buffer_frame(output, pixel_buffer)
-                })
+                self.send_metal_pixel_buffer_frame(output, pixel_buffer)
             }
             #[cfg(feature = "cuda")]
-            GpuVideoInput::Cuda(cuda_frame) => {
-                self.with_gpu_encode_telemetry(output, &upload, started, |encoder, output| {
-                    encoder.send_cuda_frame(output, cuda_frame)
-                })
-            }
+            GpuVideoInput::Cuda(cuda_frame) => self.send_cuda_frame(output, cuda_frame),
             #[cfg(feature = "vulkan")]
-            GpuVideoInput::Vulkan(vulkan_frame) => {
-                self.with_gpu_encode_telemetry(output, &upload, started, |encoder, output| {
-                    encoder.send_vulkan_frame(output, vulkan_frame)
-                })
-            }
-            _ => {
-                let error = FfmpegError::new(
-                    "VideoEncoder::send_gpu_frame",
-                    "GPU texture encode currently supports CVPixelBuffer-backed Metal frames, CUDA device pointers and Vulkan NV12 buffers",
-                )
-                .with_backend(frame.backend());
-                self.gpu_telemetry.record_upload_failed(
-                    &upload,
-                    started.elapsed(),
-                    error.message.clone(),
-                );
-                Err(error)
-            }
-        }
-    }
-
-    fn with_gpu_encode_telemetry(
-        &mut self,
-        output: &mut OutputContext,
-        upload: &GpuUploadDescriptor,
-        upload_started: Instant,
-        encode: impl FnOnce(&mut Self, &mut OutputContext) -> Result<()>,
-    ) -> Result<()> {
-        self.gpu_telemetry
-            .record_upload_finished(upload, upload_started.elapsed());
-        let encode_started = Instant::now();
-        self.gpu_telemetry.record_encode_started(upload);
-        match encode(self, output) {
-            Ok(()) => {
-                self.gpu_telemetry
-                    .record_encode_finished(upload, encode_started.elapsed());
-                Ok(())
-            }
-            Err(error) => {
-                self.gpu_telemetry.record_encode_failed(
-                    upload,
-                    encode_started.elapsed(),
-                    error.message.clone(),
-                );
-                Err(error)
-            }
+            GpuVideoInput::Vulkan(vulkan_frame) => self.send_vulkan_frame(output, vulkan_frame),
+            _ => Err(FfmpegError::new(
+                "VideoEncoder::send_gpu_frame",
+                "GPU texture encode currently supports CVPixelBuffer-backed Metal frames, CUDA device pointers and Vulkan NV12 buffers",
+            )
+            .with_backend(frame.backend())),
         }
     }
 

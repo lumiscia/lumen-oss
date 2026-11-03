@@ -3,7 +3,7 @@ use std::ptr;
 use crate::ffi::{self, sys};
 use crate::{FfmpegError, Result};
 
-pub struct OutputContext {
+pub(crate) struct OutputContext {
     path: String,
     pub(crate) ptr: *mut sys::AVFormatContext,
     opened_io: bool,

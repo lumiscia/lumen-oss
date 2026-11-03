@@ -30,10 +30,9 @@ use lumen_engine::{
 use lumen_ffmpeg::EncodeMode;
 #[cfg(target_os = "linux")]
 use lumen_ffmpeg::GpuVideoInput;
-use lumen_ffmpeg::encode::RateControl;
 use lumen_ffmpeg::{
-    AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, Rational,
-    SampleFormat, VideoCodec, VideoEncoderConfig,
+    AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, RateControl,
+    Rational, VideoCodec, VideoEncoderConfig,
 };
 use lumen_ffmpeg::{GpuBackend, gpu_texture_encode_support};
 
@@ -1396,7 +1395,7 @@ fn write_composited_audio(
         let mixed = mixer
             .mix_range(start_sample, frames)
             .map_err(|err| anyhow!("audio mix failed at sample {start_sample}: {err}"))?;
-        encoder.send_audio(audio_frame_from_buffer(&mixed, start_sample))?;
+        encoder.send_audio(audio_frame_from_buffer(&mixed))?;
         start_sample = start_sample.saturating_add(frames as u64);
     }
 
@@ -1428,7 +1427,7 @@ fn write_composited_audio_direct(
             .mix_range(start_sample, frames)
             .map_err(|err| anyhow!("audio mix failed at sample {start_sample}: {err}"))?;
         encoder
-            .write_audio_frame(&audio_frame_from_buffer(&mixed, start_sample))
+            .write_audio_frame(&audio_frame_from_buffer(&mixed))
             .map_err(|error| anyhow!("lumen-ffmpeg audio encode failed: {error}"))?;
         start_sample = start_sample.saturating_add(frames as u64);
     }
@@ -1443,15 +1442,10 @@ fn has_audio(composition: &Composition) -> bool {
         .is_some_and(|audio| !audio.clips.is_empty())
 }
 
-fn audio_frame_from_buffer(
-    buffer: &lumen_engine::audio::AudioBuffer,
-    start_sample: u64,
-) -> AudioFrame {
+fn audio_frame_from_buffer(buffer: &lumen_engine::audio::AudioBuffer) -> AudioFrame {
     AudioFrame {
         sample_rate: buffer.sample_rate(),
         channels: buffer.channel_count() as u16,
-        sample_format: SampleFormat::F32,
-        pts: Some(start_sample as i64),
         samples: buffer.frames(),
         interleaved_f32: buffer.interleaved_f32(),
     }

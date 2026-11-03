@@ -17,13 +17,11 @@ pub use ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver
 #[cfg(feature = "image")]
 pub use image::ImageFileResolver;
 pub use pixels::premultiply_rgba_in_place_if_needed;
-pub use prediction::{
-    FrameRequirements, RenderRequirements, VideoFrameRequirement, collect_frame_requirements,
-};
+pub use prediction::{FrameRequirements, VideoFrameRequirement, collect_frame_requirements};
 #[cfg(feature = "ffmpeg")]
 pub use resolver::GpuVideoMediaFrame;
 pub use resolver::{
-    CpuMediaFrame, ExternalTextureFrame, ExternalTextureHandle, FontResolver, ImageMetadata,
-    ImageResolver, MediaFrame, VideoFrameResolver, VideoMetadata,
+    CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, VideoFrameResolver,
+    VideoMetadata,
 };
 pub use store::{MediaStore, TextSession};

@@ -1,6 +1,6 @@
 use std::ptr;
 
-use crate::audio::{AudioFrame, SampleFormat};
+use crate::audio::AudioFrame;
 use crate::ffi::{self, AvFrame, AvPacket, CodecContextGuard, sys};
 use crate::{FfmpegError, Result};
 use sys::AVMediaType::AVMEDIA_TYPE_AUDIO;
@@ -29,7 +29,7 @@ impl AudioEncoderConfig {
     }
 }
 
-pub struct AudioEncoder {
+pub(crate) struct AudioEncoder {
     stream_index: usize,
     stream_time_base: sys::AVRational,
     context: *mut sys::AVCodecContext,
@@ -136,19 +136,12 @@ impl AudioEncoder {
     }
 
     fn validate_audio_frame(&self, frame: &AudioFrame) -> Result<()> {
-        if frame.sample_rate != self.sample_rate
-            || frame.channels != self.channels
-            || frame.sample_format != SampleFormat::F32
-        {
+        if frame.sample_rate != self.sample_rate || frame.channels != self.channels {
             return Err(FfmpegError::new(
                 "AudioEncoder::send_audio_frame",
                 format!(
-                    "expected {} Hz, {} channel interleaved f32 audio; got {} Hz, {} channel {:?}",
-                    self.sample_rate,
-                    self.channels,
-                    frame.sample_rate,
-                    frame.channels,
-                    frame.sample_format
+                    "expected {} Hz, {} channel audio; got {} Hz, {} channel",
+                    self.sample_rate, self.channels, frame.sample_rate, frame.channels
                 ),
             ));
         }
