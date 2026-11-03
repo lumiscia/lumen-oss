@@ -1,10 +1,11 @@
 use bytemuck::{Pod, Zeroable};
 
+use super::paint::Paint;
 use crate::expr::ExpressionContext;
+use crate::node::NodeId;
 use crate::node::motion::{
     self, Lerp, MAX_BOUNDED_MAGNITUDE, MAX_MOTION_TAPS, ROUNDING_ERROR_FACTOR, Shutter,
 };
-use crate::node::{Deferred, NodeId};
 
 pub(crate) const DRAWABLE_SHADER: &str = include_str!("drawable.wgsl");
 
@@ -106,25 +107,73 @@ impl Lerp for DrawableTransform {
     }
 }
 
-/// The unevaluated transform params of a shape, path or text node.
-pub(crate) struct DeferredTransform<'a> {
-    pub(crate) position: &'a Deferred<(f64, f64)>,
-    pub(crate) scale: &'a Deferred<(f64, f64)>,
-    pub(crate) rotation: &'a Deferred<f64>,
-    pub(crate) anchor: &'a Deferred<(f64, f64)>,
+/// Where a shape, path or text node draws, and how it fades and blurs.
+#[derive(Debug, Clone, lumen_macros::Delegate)]
+pub struct DrawablePlacement {
+    /// Origin in pixels.
+    #[meta()]
+    pub position: (f64, f64),
+    /// Scale multiplier per axis, about the anchor.
+    #[meta()]
+    pub scale: (f64, f64),
+    /// Clockwise rotation in degrees, about the anchor.
+    #[meta(step = 1)]
+    pub rotation: f64,
+    /// Pivot for scale and rotation, in pixels relative to `position`.
+    #[meta()]
+    pub anchor: (f64, f64),
+    /// Opacity multiplier.
+    #[meta(min = 0, max = 1, step = 0.01)]
+    pub opacity: f64,
+    /// Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
+    /// usual film look and 360 smears over the whole frame.
+    #[meta(min = 0, max = 360, step = 1)]
+    pub motion_blur: f64,
 }
 
-impl DeferredTransform<'_> {
-    /// Evaluates the transform at either end of a `shutter_angle` shutter around `frame`,
-    /// the transform at the frame. `None` when motion blur is off or nothing moves.
+impl Default for DrawablePlacement {
+    fn default() -> Self {
+        Self {
+            position: (0.0, 0.0),
+            scale: (1.0, 1.0),
+            rotation: 0.0,
+            anchor: (0.0, 0.0),
+            opacity: 1.0,
+            motion_blur: 0.0,
+        }
+    }
+}
+
+impl DrawablePlacement {
+    pub(crate) fn transform(&self) -> DrawableTransform {
+        DrawableTransform {
+            position: self.position,
+            scale: self.scale,
+            rotation: self.rotation,
+            anchor: self.anchor,
+            opacity: self.opacity,
+        }
+    }
+}
+
+impl DrawablePlacementDelegate {
+    /// Whether the transform may change between frames. Opacity is not part of it.
+    pub(crate) fn transform_is_animated(&self) -> bool {
+        self.position.is_expr()
+            || self.scale.is_expr()
+            || self.rotation.is_expr()
+            || self.anchor.is_expr()
+    }
+
+    /// Evaluates the transform at either end of the shutter around `frame`, these params at the
+    /// frame. `None` when motion blur is off or nothing moves.
     pub(crate) fn shutter(
         &self,
-        shutter_angle: f64,
-        frame: DrawableTransform,
+        frame: &DrawablePlacement,
         node_id: NodeId,
         expr: &ExpressionContext<'_>,
     ) -> crate::Result<Option<Shutter<DrawableTransform>>> {
-        let Some(offset) = motion::shutter_offset(shutter_angle) else {
+        let Some(offset) = motion::shutter_offset(frame.motion_blur) else {
             return Ok(None);
         };
         let at = |subframe: f64| -> crate::Result<DrawableTransform> {
@@ -139,10 +188,53 @@ impl DeferredTransform<'_> {
         };
         let shutter = Shutter {
             open: at(-offset)?,
-            frame,
+            frame: frame.transform(),
             close: at(offset)?,
         };
         Ok((!shutter.is_static()).then_some(shutter))
+    }
+}
+
+/// How a shape or path fills and strokes what it draws.
+#[derive(Debug, Clone, lumen_macros::Delegate)]
+pub struct DrawableStyle {
+    /// Enables fill rendering.
+    #[meta()]
+    pub fill_enabled: bool,
+    /// Fill paint. Accepts a solid color or gradient.
+    #[meta()]
+    pub fill_paint: Paint,
+    /// Enables stroke rendering.
+    #[meta()]
+    pub stroke_enabled: bool,
+    /// Stroke paint. Accepts a solid color or gradient.
+    #[meta()]
+    pub stroke_paint: Paint,
+    /// Stroke width in untransformed pixels.
+    #[meta(min = 0, step = 0.5)]
+    pub stroke_width: f64,
+    /// Enables analytic distance-based edge antialiasing.
+    #[meta()]
+    pub edge_antialias: bool,
+}
+
+impl Default for DrawableStyle {
+    fn default() -> Self {
+        Self {
+            fill_enabled: true,
+            fill_paint: Paint::solid([255, 255, 255, 255]),
+            stroke_enabled: false,
+            stroke_paint: Paint::solid([0, 0, 0, 255]),
+            stroke_width: 1.0,
+            edge_antialias: true,
+        }
+    }
+}
+
+impl DrawableStyleDelegate {
+    /// Whether what the style draws may reach further on some frames than others.
+    pub(crate) fn reach_is_animated(&self) -> bool {
+        self.fill_enabled.is_expr() || self.stroke_enabled.is_expr() || self.stroke_width.is_expr()
     }
 }
 

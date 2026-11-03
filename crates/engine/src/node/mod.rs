@@ -27,7 +27,7 @@ pub use deferred::Deferred;
 pub use deferred::{ParamValue, enum_value, truncated_int};
 pub use delegate::{
     DelegateEvalContext, DelegateEvaluable, Delegated, NodeParams, Override, PropertyRead,
-    field_path, nested_fields,
+    assert_unique_params, field_path, nested_fields,
 };
 pub use ids::NodeId;
 pub use kind::NodeKind;

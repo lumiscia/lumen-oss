@@ -72,12 +72,9 @@ pub(super) fn compile_text(
     // constantly off, or whose transform is constant, is drawn to the output directly.
     let params = &text.params;
     let blurred = !matches!(
-        params.motion_blur,
+        params.placement.motion_blur,
         Deferred::Value(angle) if shutter_offset(angle).is_none()
-    ) && !(matches!(params.position, Deferred::Value(_))
-        && matches!(params.scale, Deferred::Value(_))
-        && matches!(params.rotation, Deferred::Value(_))
-        && matches!(params.anchor, Deferred::Value(_)));
+    ) && params.placement.transform_is_animated();
     let constant = constant_text(ctx, text);
     let bounds = if blurred {
         None
@@ -280,7 +277,7 @@ pub(super) fn compile_text(
     }
     // Fading the composited layer keeps overlapping glyphs from doubling up. Fully
     // transparent text draws no glyphs, so constant full opacity needs no pass.
-    if !matches!(text.params.opacity, Deferred::Value(opacity) if opacity >= 1.0) {
+    if !matches!(text.params.placement.opacity, Deferred::Value(opacity) if opacity >= 1.0) {
         let multiply = lumen_gpu::wgpu::BlendComponent {
             src_factor: lumen_gpu::wgpu::BlendFactor::Zero,
             dst_factor: lumen_gpu::wgpu::BlendFactor::SrcAlpha,
@@ -410,13 +407,10 @@ fn text_bounds(
         });
     let line_height = constant.shaped.measurement.height;
     let alignment = constant.alignment;
-    let animated = params.position.is_expr()
-        || params.scale.is_expr()
-        || params.rotation.is_expr()
-        || params.anchor.is_expr();
-    let motion = compiler::SourceMotion::of(animated, params);
+    let placement = &params.placement;
+    let motion = compiler::SourceMotion::of(placement.transform_is_animated(), params);
     ctx.source_bounds(motion, |expr| {
-        let position = params.position.eval(text.id, "position", expr)?;
+        let position = placement.position.eval(text.id, "position", expr)?;
         let top = match alignment {
             TextAlignmentVertical::Top => position.1 as f32,
             TextAlignmentVertical::Middle => position.1 as f32 - line_height * 0.5,
@@ -426,9 +420,9 @@ fn text_bounds(
         let max = [position.0 as f32 + ink[2], top + ink[3]];
         let transform = DrawableTransform {
             position,
-            scale: params.scale.eval(text.id, "scale", expr)?,
-            rotation: params.rotation.eval(text.id, "rotation", expr)?,
-            anchor: params.anchor.eval(text.id, "anchor", expr)?,
+            scale: placement.scale.eval(text.id, "scale", expr)?,
+            rotation: placement.rotation.eval(text.id, "rotation", expr)?,
+            anchor: placement.anchor.eval(text.id, "anchor", expr)?,
             opacity: 1.0,
         };
         let [x0, y0, x1, y1] = transform.to_gpu().canvas_bounds(min, max);
@@ -468,12 +462,7 @@ fn constant_text(ctx: &CompileContext<'_>, text: &Text) -> Option<ConstantText> 
     // for binding to evaluate.
     let drawn = TextParamsDelegate::default();
     let layout_params = TextParamsDelegate {
-        position: drawn.position,
-        scale: drawn.scale,
-        rotation: drawn.rotation,
-        anchor: drawn.anchor,
-        opacity: drawn.opacity,
-        motion_blur: drawn.motion_blur,
+        placement: drawn.placement,
         glyph_offset: drawn.glyph_offset,
         glyph_scale: drawn.glyph_scale,
         glyph_rotation: drawn.glyph_rotation,

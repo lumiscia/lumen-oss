@@ -1,4 +1,5 @@
 use lumen_engine::node::source::text_content::TextContentDelegate;
+use lumen_engine::node::vector::drawable::{DrawablePlacementDelegate, DrawableStyleDelegate};
 use lumen_engine::{
     composition::{Composition, CompositionBuilder},
     graph::{Connection, Graph},
@@ -97,15 +98,21 @@ impl CompositionFixture for AntialiasingStress {
                     id,
                     params: PathParamsDelegate {
                         data: Deferred::value(data.to_string()),
-                        position: Deferred::value(position),
-                        fill_enabled: Deferred::value(true),
-                        fill_paint: fill.into(),
-                        stroke_enabled: Deferred::value(stroke_enabled),
-                        stroke_paint: Paint::solid([255, 255, 255, 210]).into(),
-                        stroke_width: Deferred::value(2.0),
                         trim_start: Deferred::value(0.0),
                         trim_end: Deferred::value(1.0),
-                        edge_antialias: Deferred::value(self.edge_antialias),
+                        placement: DrawablePlacementDelegate {
+                            position: Deferred::value(position),
+                            ..Default::default()
+                        },
+                        style: DrawableStyleDelegate {
+                            fill_enabled: Deferred::value(true),
+                            fill_paint: fill.into(),
+                            stroke_enabled: Deferred::value(stroke_enabled),
+                            stroke_paint: Paint::solid([255, 255, 255, 210]).into(),
+                            stroke_width: Deferred::value(2.0),
+                            edge_antialias: Deferred::value(self.edge_antialias),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
                 })
@@ -163,37 +170,43 @@ impl CompositionFixture for AntialiasingStress {
                 params: ShapeParamsDelegate {
                     width: Deferred::value(460.0),
                     height: Deferred::value(220.0),
-                    position: Deferred::value((222.45, 690.35)),
-                    fill_enabled: Deferred::value(true),
-                    fill_paint: Paint::Gradient(GradientPaint {
-                        kind: PaintKind::LinearGradient,
-                        stops: vec![
-                            GradientStop {
-                                offset: 0.0,
-                                color: [14, 165, 233, 255],
-                            },
-                            GradientStop {
-                                offset: 0.495,
-                                color: [14, 165, 233, 255],
-                            },
-                            GradientStop {
-                                offset: 0.505,
-                                color: [244, 63, 94, 255],
-                            },
-                            GradientStop {
-                                offset: 1.0,
-                                color: [244, 63, 94, 255],
-                            },
-                        ],
-                        start: [222.45, 690.35],
-                        end: [682.45, 910.35],
+                    placement: DrawablePlacementDelegate {
+                        position: Deferred::value((222.45, 690.35)),
                         ..Default::default()
-                    })
-                    .into(),
-                    stroke_enabled: Deferred::value(true),
-                    stroke_paint: Paint::solid([255, 255, 255, 220]).into(),
-                    stroke_width: Deferred::value(3.0),
-                    edge_antialias: Deferred::value(self.edge_antialias),
+                    },
+                    style: DrawableStyleDelegate {
+                        fill_enabled: Deferred::value(true),
+                        fill_paint: Paint::Gradient(GradientPaint {
+                            kind: PaintKind::LinearGradient,
+                            stops: vec![
+                                GradientStop {
+                                    offset: 0.0,
+                                    color: [14, 165, 233, 255],
+                                },
+                                GradientStop {
+                                    offset: 0.495,
+                                    color: [14, 165, 233, 255],
+                                },
+                                GradientStop {
+                                    offset: 0.505,
+                                    color: [244, 63, 94, 255],
+                                },
+                                GradientStop {
+                                    offset: 1.0,
+                                    color: [244, 63, 94, 255],
+                                },
+                            ],
+                            start: [222.45, 690.35],
+                            end: [682.45, 910.35],
+                            ..Default::default()
+                        })
+                        .into(),
+                        stroke_enabled: Deferred::value(true),
+                        stroke_paint: Paint::solid([255, 255, 255, 220]).into(),
+                        stroke_width: Deferred::value(3.0),
+                        edge_antialias: Deferred::value(self.edge_antialias),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
@@ -209,7 +222,6 @@ impl CompositionFixture for AntialiasingStress {
                     font_size: Deferred::value(68.0),
                     font_weight: Deferred::value(800),
                     max_width: Deferred::value(760.0),
-                    position: Deferred::value((1120.35, 770.65)),
                     color: Paint::Gradient(GradientPaint {
                         kind: PaintKind::LinearGradient,
                         stops: vec![
@@ -231,6 +243,10 @@ impl CompositionFixture for AntialiasingStress {
                         ..Default::default()
                     })
                     .into(),
+                    placement: DrawablePlacementDelegate {
+                        position: Deferred::value((1120.35, 770.65)),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),

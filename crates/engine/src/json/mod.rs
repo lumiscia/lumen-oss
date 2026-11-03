@@ -827,6 +827,7 @@ mod tests {
 
             assert_eq!(
                 path.params
+                    .placement
                     .position
                     .eval(path.id, "position", &context)
                     .unwrap(),

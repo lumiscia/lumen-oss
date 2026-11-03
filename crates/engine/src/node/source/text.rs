@@ -9,7 +9,7 @@ use crate::expr::{ExpressionContext, GlyphScope};
 use crate::gpu::{BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle};
 use crate::media::{FontResolver, MediaStore, TextSession};
 use crate::node::vector::{
-    drawable::{DeferredTransform, DrawableMotion, DrawableTransform},
+    drawable::{DrawableMotion, DrawablePlacement, DrawableTransform},
     paint::Paint,
 };
 use crate::node::{
@@ -182,27 +182,15 @@ pub struct TextParams {
     /// Distance between lines in pixels. Use 0 for 1.2 × the font size.
     #[meta(min = 0, step = 1)]
     pub line_height: f64,
-    /// Text origin in pixels.
-    #[meta()]
-    pub position: (f64, f64),
-    /// Scale multiplier per axis, about the anchor. Raster glyphs are resampled, so
-    /// use MSDF rendering to keep scaled text sharp.
-    #[meta()]
-    pub scale: (f64, f64),
-    /// Clockwise rotation in degrees, about the anchor.
-    #[meta(step = 1)]
-    pub rotation: f64,
-    /// Pivot for scale and rotation, in pixels relative to `position`.
-    #[meta()]
-    pub anchor: (f64, f64),
-    /// Opacity multiplier.
-    #[meta(min = 0, max = 1, step = 0.01)]
-    pub opacity: f64,
-    /// Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
-    /// usual film look and 360 smears over the whole frame. Blurs the text's own movement,
-    /// not that of the `glyph_*` params.
-    #[meta(min = 0, max = 360, step = 1)]
-    pub motion_blur: f64,
+    #[meta(
+        flatten,
+        doc(
+            position = "Text origin in pixels.",
+            scale = "Scale multiplier per axis, about the anchor. Raster glyphs are resampled, so\nuse MSDF rendering to keep scaled text sharp.",
+            motion_blur = "Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the\nusual film look and 360 smears over the whole frame. Blurs the text's own movement,\nnot that of the `glyph_*` params."
+        )
+    )]
+    pub placement: DrawablePlacement,
     /// Offset of each glyph in pixels. The `glyph_*` params are evaluated for every glyph,
     /// and can read its `glyph`, `word`, `line` and `span` index and their counts.
     #[meta()]
@@ -292,12 +280,7 @@ impl Default for TextParams {
             letter_spacing: 0.0,
             font_features: FontFeatures::default(),
             line_height: 0.0,
-            position: (0.0, 0.0),
-            scale: (1.0, 1.0),
-            rotation: 0.0,
-            anchor: (0.0, 0.0),
-            opacity: 1.0,
-            motion_blur: 0.0,
+            placement: DrawablePlacement::default(),
             glyph_offset: (0.0, 0.0),
             glyph_scale: (1.0, 1.0),
             glyph_rotation: 0.0,
@@ -420,21 +403,12 @@ impl CompiledText {
             expr: &expr,
         };
         let mut evaluated = self.params.eval(&fields)?;
-        let (position_x, position_y) = evaluated.position;
-        let drawable = DrawableTransform {
-            position: evaluated.position,
-            scale: evaluated.scale,
-            rotation: evaluated.rotation,
-            anchor: evaluated.anchor,
-            opacity: evaluated.opacity,
-        };
-        let shutter = DeferredTransform {
-            position: &self.params.position,
-            scale: &self.params.scale,
-            rotation: &self.params.rotation,
-            anchor: &self.params.anchor,
-        }
-        .shutter(evaluated.motion_blur, drawable, self.node_id, &expr)?;
+        let (position_x, position_y) = evaluated.placement.position;
+        let drawable = evaluated.placement.transform();
+        let shutter = self
+            .params
+            .placement
+            .shutter(&evaluated.placement, self.node_id, &expr)?;
         let style = TextLayoutStyle::take(&mut evaluated);
         let mut content = self
             .content

@@ -1,9 +1,8 @@
 use std::borrow::Cow;
 
 use super::drawable::{
-    DeferredTransform, DrawableMotion, DrawableTransform, largest_scale, peak_scale,
+    DrawableMotion, DrawablePlacement, DrawableStyle, DrawableTransform, largest_scale, peak_scale,
 };
-use super::paint::Paint;
 use super::renderer::{
     MAX_PATH_POINTS, PathBuffers, PathPoint, PathUniforms, domain_origin, style_flags,
 };
@@ -34,70 +33,31 @@ pub struct PathParams {
         recommended_rows = 5
     )]
     pub data: String,
-    /// Path origin in pixels.
-    #[meta()]
-    pub position: (f64, f64),
-    /// Scale multiplier per axis, about the anchor.
-    #[meta()]
-    pub scale: (f64, f64),
-    /// Clockwise rotation in degrees, about the anchor.
-    #[meta(step = 1)]
-    pub rotation: f64,
-    /// Pivot for scale and rotation, in pixels relative to `position`.
-    #[meta()]
-    pub anchor: (f64, f64),
-    /// Opacity multiplier.
-    #[meta(min = 0, max = 1, step = 0.01)]
-    pub opacity: f64,
-    /// Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the
-    /// usual film look and 360 smears over the whole frame.
-    #[meta(min = 0, max = 360, step = 1)]
-    pub motion_blur: f64,
-    /// Enables fill rendering.
-    #[meta()]
-    pub fill_enabled: bool,
-    /// Fill paint. Accepts a solid color or gradient.
-    #[meta()]
-    pub fill_paint: Paint,
-    /// Enables stroke rendering.
-    #[meta()]
-    pub stroke_enabled: bool,
-    /// Stroke paint. Accepts a solid color or gradient.
-    #[meta()]
-    pub stroke_paint: Paint,
-    /// Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches
-    /// with the path, so it is wider across the more scaled axis.
-    #[meta(min = 0, step = 0.5)]
-    pub stroke_width: f64,
+    #[meta(flatten, doc(position = "Path origin in pixels."))]
+    pub placement: DrawablePlacement,
+    #[meta(
+        flatten,
+        doc(
+            stroke_width = "Stroke width in untransformed pixels. Under non-uniform scale the stroke stretches\nwith the path, so it is wider across the more scaled axis."
+        )
+    )]
+    pub style: DrawableStyle,
     /// Normalized start of the visible stroke range for each contour.
     #[meta(name = "Trim start", min = 0, max = 1, step = 0.01)]
     pub trim_start: f64,
     /// Normalized end of the visible stroke range for each contour.
     #[meta(name = "Trim end", min = 0, max = 1, step = 0.01)]
     pub trim_end: f64,
-    /// Enables analytic distance-based edge antialiasing.
-    #[meta()]
-    pub edge_antialias: bool,
 }
 
 impl Default for PathParams {
     fn default() -> Self {
         Self {
             data: "M 0 0 L 100 0 L 100 100 L 0 100 Z".to_string(),
-            position: (0.0, 0.0),
-            scale: (1.0, 1.0),
-            rotation: 0.0,
-            anchor: (0.0, 0.0),
-            opacity: 1.0,
-            motion_blur: 0.0,
-            fill_enabled: true,
-            fill_paint: Paint::solid([255, 255, 255, 255]),
-            stroke_enabled: false,
-            stroke_paint: Paint::solid([0, 0, 0, 255]),
-            stroke_width: 1.0,
+            placement: DrawablePlacement::default(),
+            style: DrawableStyle::default(),
             trim_start: 0.0,
             trim_end: 1.0,
-            edge_antialias: true,
         }
     }
 }
@@ -113,12 +73,10 @@ pub struct Path {
 
 impl GpuCompileNode for Path {
     fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<RasterHandle> {
-        let fixed_points = fixed_points(&self.params.data, &self.params.scale);
+        let fixed_points = fixed_points(&self.params.data, &self.params.placement.scale);
         // Opacity only hides what is drawn, so it is left out of the bounds.
-        let opaque = PathParamsDelegate {
-            opacity: Deferred::value(1.0),
-            ..self.params.clone()
-        };
+        let mut opaque = self.params.clone();
+        opaque.placement.opacity = Deferred::value(1.0);
         let point_capacity = fixed_points
             .as_ref()
             .map_or(MAX_PATH_POINTS, Vec::len)
@@ -208,27 +166,16 @@ fn path_frame<'a>(
     band_capacity: usize,
 ) -> crate::Result<PathFrame<'a>> {
     let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
-    let transform = DrawableTransform {
-        position: evaluated.position,
-        scale: evaluated.scale,
-        rotation: evaluated.rotation,
-        anchor: evaluated.anchor,
-        opacity: evaluated.opacity,
-    };
-    let shutter = DeferredTransform {
-        position: &params.position,
-        scale: &params.scale,
-        rotation: &params.rotation,
-        anchor: &params.anchor,
-    }
-    .shutter(evaluated.motion_blur, transform, node_id, expr)?;
+    let shutter = params
+        .placement
+        .shutter(&evaluated.placement, node_id, expr)?;
     let points = match fixed_points {
         Some(points) => Cow::Borrowed(points),
         // Curves are flattened for the largest scale that the shutter draws them at.
         None => Cow::Owned(
             parse_path_points(
                 &evaluated.data,
-                flattening_tolerance(peak_scale(evaluated.scale, shutter.as_ref())),
+                flattening_tolerance(peak_scale(evaluated.placement.scale, shutter.as_ref())),
                 MAX_PATH_POINTS,
             )
             .map_err(|details| RenderError::NodeEvaluation {
@@ -238,18 +185,19 @@ fn path_frame<'a>(
             })?,
         ),
     };
-    let (x, y) = evaluated.position;
+    let (x, y) = evaluated.placement.position;
+    let style = &evaluated.style;
     let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
 
     let uniforms = PathUniforms {
-        fill_paint: evaluated.fill_paint.to_gpu(),
-        stroke_paint: evaluated.stroke_paint.to_gpu(),
+        fill_paint: style.fill_paint.to_gpu(),
+        stroke_paint: style.stroke_paint.to_gpu(),
         position: [x as f32, y as f32],
-        stroke_width: evaluated.stroke_width.max(0.0) as f32,
+        stroke_width: style.stroke_width.max(0.0) as f32,
         flags: style_flags(
-            evaluated.fill_enabled,
-            evaluated.stroke_enabled && evaluated.stroke_width > 0.0,
-            evaluated.edge_antialias,
+            style.fill_enabled,
+            style.stroke_enabled && style.stroke_width > 0.0,
+            style.edge_antialias,
         ),
         trim_start,
         trim_end,
@@ -258,7 +206,7 @@ fn path_frame<'a>(
     Ok(PathFrame::new(
         uniforms,
         points,
-        &transform,
+        &evaluated.placement.transform(),
         shutter.as_ref(),
         band_capacity,
     ))
@@ -267,14 +215,9 @@ fn path_frame<'a>(
 /// Whether a path node's canvas bounds may change between frames.
 fn path_is_animated(params: &PathParamsDelegate) -> bool {
     params.data.is_expr()
-        || params.position.is_expr()
-        || params.scale.is_expr()
-        || params.rotation.is_expr()
-        || params.anchor.is_expr()
-        || params.motion_blur.is_expr()
-        || params.fill_enabled.is_expr()
-        || params.stroke_enabled.is_expr()
-        || params.stroke_width.is_expr()
+        || params.placement.transform_is_animated()
+        || params.placement.motion_blur.is_expr()
+        || params.style.reach_is_animated()
 }
 
 /// A frame's uniforms, points and bands for the path shader.

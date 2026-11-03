@@ -20,6 +20,7 @@ use lumen_engine::{
         source::media_in::{MediaIn, MediaInParamsDelegate},
         source::text::{Text, TextParamsDelegate},
         source::text_content::TextContentDelegate,
+        vector::drawable::{DrawablePlacementDelegate, DrawableStyleDelegate},
         vector::{
             paint::{GradientPaint, GradientStop, Paint, PaintKind},
             shape::{Shape, ShapeParamsDelegate},
@@ -1396,8 +1397,14 @@ fn text_upload_repeats_until_it_is_marked_uploaded() {
                 params: ShapeParamsDelegate {
                     width: Deferred::value(6.0),
                     height: Deferred::value(4.0),
-                    position: Deferred::value((1.0, 0.0)),
-                    fill_paint: Paint::solid([255, 0, 0, 255]).into(),
+                    placement: DrawablePlacementDelegate {
+                        position: Deferred::value((1.0, 0.0)),
+                        ..Default::default()
+                    },
+                    style: DrawableStyleDelegate {
+                        fill_paint: Paint::solid([255, 0, 0, 255]).into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
@@ -1468,7 +1475,10 @@ fn text_bind_ahead_restores_the_committed_frame() {
                 id: text,
                 params: TextParamsDelegate {
                     content: TextContentDelegate::Text(Deferred::value("Bind ahead".to_string())),
-                    position: Deferred::Expr(Expression::parse("vec2(frame * 10, 0)").unwrap()),
+                    placement: DrawablePlacementDelegate {
+                        position: Deferred::Expr(Expression::parse("vec2(frame * 10, 0)").unwrap()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
