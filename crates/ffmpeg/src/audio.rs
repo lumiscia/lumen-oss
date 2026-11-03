@@ -1,4 +1,4 @@
-use std::ptr;
+use std::{collections::VecDeque, ptr};
 
 use crate::{
     FfmpegError, Result,
@@ -60,11 +60,18 @@ impl AudioDecoder {
                 "failed to allocate audio decoder context",
             ));
         }
+        let time_base: Rational = input.stream_time_base(stream_index)?.into();
         unsafe {
             ffi::check(
                 sys::avcodec_parameters_to_context(context.0, parameters),
                 "avcodec_parameters_to_context",
             )?;
+            // Without it the decoder trims priming samples but leaves the frame's timestamp where
+            // the untrimmed frame began.
+            (*context.0).pkt_timebase = sys::AVRational {
+                num: time_base.numerator,
+                den: time_base.denominator,
+            };
             ffi::check(
                 sys::avcodec_open2(context.0, codec, ptr::null_mut()),
                 "avcodec_open2",
@@ -72,7 +79,7 @@ impl AudioDecoder {
         }
         Ok(Self {
             stream_index,
-            time_base: input.stream_time_base(stream_index)?.into(),
+            time_base,
             context: context.release(),
         })
     }
@@ -133,6 +140,16 @@ pub struct DecodedAudioFrame {
     frame: AvFrame,
 }
 
+/// What a resampler is built for: a frame with any other of these needs a new one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceConfig {
+    sample_rate: i32,
+    format: i32,
+    channels: i32,
+    layout_order: i32,
+    layout_mask: u64,
+}
+
 impl DecodedAudioFrame {
     pub fn samples(&self) -> usize {
         self.frame.nb_samples()
@@ -144,6 +161,19 @@ impl DecodedAudioFrame {
 
     pub fn sample_rate(&self) -> i64 {
         i64::from(unsafe { (*self.frame.as_ptr()).sample_rate })
+    }
+
+    fn config(&self) -> SourceConfig {
+        let frame = self.frame.as_ptr();
+        unsafe {
+            SourceConfig {
+                sample_rate: (*frame).sample_rate,
+                format: (*frame).format,
+                channels: (*frame).ch_layout.nb_channels,
+                layout_order: (*frame).ch_layout.order as i32,
+                layout_mask: (*frame).ch_layout.u.mask,
+            }
+        }
     }
 
     /// Drops the first `count` samples, which must be fewer than the frame holds.
@@ -168,7 +198,7 @@ impl DecodedAudioFrame {
 pub struct AudioResampler {
     ptr: *mut sys::SwrContext,
     config: AudioResamplerConfig,
-    source_sample_rate: i64,
+    source: SourceConfig,
 }
 
 unsafe impl Send for AudioResampler {}
@@ -190,7 +220,7 @@ impl AudioResampler {
         let mut resampler = Self {
             ptr: ptr::null_mut(),
             config,
-            source_sample_rate: i64::from(unsafe { (*source.frame.as_ptr()).sample_rate }),
+            source: source.config(),
         };
         unsafe {
             ffi::check(
@@ -214,18 +244,34 @@ impl AudioResampler {
 
     pub fn convert(&mut self, source: &DecodedAudioFrame) -> Result<AudioFrame> {
         let input_samples = source.frame.nb_samples();
-        let delay = unsafe { sys::swr_get_delay(self.ptr, self.source_sample_rate) };
+        let source_rate = i64::from(self.source.sample_rate);
+        let delay = unsafe { sys::swr_get_delay(self.ptr, source_rate) };
         let capacity = unsafe {
             sys::av_rescale_rnd(
                 delay + input_samples as i64,
                 self.config.sample_rate as i64,
-                self.source_sample_rate,
+                source_rate,
                 AV_ROUND_UP,
             )
         } as usize;
         // `extended_data` is `data` up to eight channels and the only pointer array past them.
         let input = unsafe { (*source.frame.as_ptr()).extended_data } as *mut *const u8;
         self.convert_raw(input, input_samples, capacity)
+    }
+
+    /// Whether `frame` is in the format this resampler was built for.
+    fn accepts(&self, frame: &DecodedAudioFrame) -> bool {
+        self.source == frame.config()
+    }
+
+    /// Feeds `samples` of silence ahead of the next frame, as if the stream began that much earlier.
+    fn inject_silence(&mut self, samples: usize) -> Result<()> {
+        unsafe {
+            ffi::check(
+                sys::swr_inject_silence(self.ptr, samples as i32),
+                "swr_inject_silence",
+            )
+        }
     }
 
     /// Drains the samples the resampler still holds. Call it once, after the last frame.
@@ -276,32 +322,56 @@ impl Drop for AudioResampler {
 const FORWARD_SCAN_SAMPLES: i64 = 2 * 48_000;
 
 /// How far before the requested start a seek lands, so codecs that need earlier packets to decode
-/// cleanly (AAC's overlapped transform, MP3's bit reservoir) have them. This is the back-off the
-/// `ffmpeg` command applies to `-ss` on inputs with B-frame video, and the same landing keeps
-/// timestamps rounded to a coarse time base on the same samples.
+/// cleanly (AAC's overlapped transform, MP3's bit reservoir) and the resampler's filter have them.
+/// This is the back-off the `ffmpeg` command applies to `-ss` on inputs with B-frame video.
 const SEEK_PREROLL_SAMPLES: i64 = 3 * 48_000 / 23;
+
+/// How far a frame's timestamp may be from the samples before it without being a gap.
+const JITTER_MS: i64 = 15;
+
+const CHANNELS: usize = 2;
+const OUTPUT_RATE: i64 = 48_000;
+const OUTPUT_TIME_BASE: sys::AVRational = sys::AVRational {
+    num: 1,
+    den: 48_000,
+};
 
 /// Reads ranges of one audio stream as 48 kHz stereo f32.
 ///
-/// Positions count output samples from the container's first timestamp, so audio that starts after
-/// the container does reads as silence until it begins. Ranges that follow each other continue the
-/// decoder where it stopped; any other range seeks.
+/// Positions count output samples from the container's first timestamp. Audio that starts after
+/// the container does, or resumes after a gap in the timestamps, reads as silence until it begins.
+/// Ranges that follow each other continue the decoder where it stopped; any other range seeks.
+/// Whichever way a range is reached, its samples are the ones a decode from the start gives:
+/// resampling always starts on a whole output sample, so its phase doesn't depend on the seek.
 pub struct AudioRangeReader {
     input: InputContext,
     decoder: AudioDecoder,
     resampler: Option<AudioResampler>,
     /// The container's first timestamp, in output samples.
     origin: i64,
-    /// Where the next decoded block starts, unknown until the first frame after a seek.
-    next_position: Option<i64>,
-    /// Where the first block read after a seek or open starts.
-    anchor: i64,
+    /// The sample rate the container declares. Its timestamps count samples of that rate, so
+    /// frames decoded at another rate carry none that can be trusted.
+    declared_rate: i64,
+    /// One tick of the stream's time base, in output samples. Timestamps closer than this to the
+    /// sample clock are rounding, not gaps.
+    tick: i64,
+    /// Where the resampler's next output sample goes, unknown until a run's first frame.
+    clock: Option<i64>,
+    /// Where the next frame starts in source samples if the timestamps hold.
+    next_source: i64,
+    /// The longest frame of the current run, in source samples.
+    longest: i64,
+    /// Where the current read starts, for frames that carry no timestamp.
+    hint: i64,
     /// The end of the last range read. Earlier samples are gone.
     cursor: i64,
-    /// The part of a block past the last range read.
-    stash: Option<AudioBlock>,
+    /// Decoded output not yet read, in order.
+    blocks: VecDeque<AudioBlock>,
     input_ended: bool,
     finished: bool,
+    decoded_any: bool,
+    /// The first packet or frame that failed to decode, reported only if nothing ever decodes.
+    failure: Option<FfmpegError>,
 }
 
 /// Interleaved stereo samples and the position of the first one.
@@ -316,11 +386,13 @@ impl AudioBlock {
     }
 }
 
-const CHANNELS: usize = 2;
-const OUTPUT_TIME_BASE: sys::AVRational = sys::AVRational {
-    num: 1,
-    den: 48_000,
-};
+fn rescale(value: i64, from: sys::AVRational, to: sys::AVRational) -> i64 {
+    unsafe { sys::av_rescale_q(value, from, to) }
+}
+
+fn gcd(a: i64, b: i64) -> i64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
 
 impl AudioRangeReader {
     /// Opens the best audio stream of `path`, which must pass the same input allowlists as
@@ -329,12 +401,24 @@ impl AudioRangeReader {
         let input = InputContext::open(path)?;
         let stream_index = input.best_audio_stream()?.stream_index;
         let decoder = AudioDecoder::open(&input, stream_index)?;
+        let time_base = decoder.time_base();
+        let declared_rate =
+            i64::from(unsafe { (*input.stream_parameters(stream_index)?).sample_rate });
+        let tick = rescale(
+            1,
+            sys::AVRational {
+                num: time_base.numerator,
+                den: time_base.denominator,
+            },
+            OUTPUT_TIME_BASE,
+        )
+        .max(1);
         let origin = unsafe {
             let start = (*input.ptr).start_time;
             if start == sys::AV_NOPTS_VALUE {
                 0
             } else {
-                sys::av_rescale_q(
+                rescale(
                     start,
                     sys::AVRational {
                         num: 1,
@@ -357,17 +441,24 @@ impl AudioRangeReader {
             decoder,
             resampler: None,
             origin,
-            next_position: None,
-            anchor: 0,
+            declared_rate,
+            tick,
+            clock: None,
+            next_source: 0,
+            longest: 0,
+            hint: 0,
             cursor: 0,
-            stash: None,
+            blocks: VecDeque::new(),
             input_ended: false,
             finished: false,
+            decoded_any: false,
+            failure: None,
         })
     }
 
     /// `frames` samples from `start_sample`, or fewer when the stream ends first. A range wholly
-    /// past the end is empty.
+    /// past the end is empty. Damaged packets are skipped and their span reads as silence, unless
+    /// no packet of the stream decodes at all, which is an error.
     pub fn read(&mut self, start_sample: u64, frames: usize) -> Result<AudioFrame> {
         let start = i64::try_from(start_sample)
             .map_err(|_| FfmpegError::new("AudioRangeReader::read", "start sample is too large"))?;
@@ -375,7 +466,7 @@ impl AudioRangeReader {
         if start < self.cursor || start - self.cursor > FORWARD_SCAN_SAMPLES {
             self.seek(start)?;
         }
-        self.anchor = start;
+        self.hint = start;
         // A failed read leaves the decoder somewhere unknown, so the next one seeks.
         self.cursor = i64::MAX;
 
@@ -384,7 +475,7 @@ impl AudioRangeReader {
         while let Some(block) = self.next_block()? {
             if block.position >= end {
                 covered = end;
-                self.stash = Some(block);
+                self.blocks.push_front(block);
                 break;
             }
             let from = block.position.max(start);
@@ -394,12 +485,12 @@ impl AudioRangeReader {
                     [..(to - from) as usize * CHANNELS];
                 samples[(from - start) as usize * CHANNELS..][..source.len()]
                     .copy_from_slice(source);
-                covered = to;
+                covered = covered.max(to);
             }
             if block.end() >= end {
                 covered = end;
                 if block.end() > end {
-                    self.stash = Some(AudioBlock {
+                    self.blocks.push_front(AudioBlock {
                         position: end,
                         samples: block.samples[(end - block.position) as usize * CHANNELS..]
                             .to_vec(),
@@ -423,118 +514,185 @@ impl AudioRangeReader {
         // Seeking to the start skips the leading trim some containers apply on first read, so a
         // reader going back there starts over.
         if target <= 0 {
+            let decoded_any = self.decoded_any;
             *self = Self::open(self.input.path())?;
+            self.decoded_any = decoded_any;
             return Ok(());
         }
-        let target = target + self.origin;
         let time_base = self.decoder.time_base();
-        let timestamp = unsafe {
-            sys::av_rescale_q(
-                target,
-                OUTPUT_TIME_BASE,
-                sys::AVRational {
-                    num: time_base.numerator,
-                    den: time_base.denominator,
-                },
-            )
-        };
+        let timestamp = rescale(
+            target + self.origin,
+            OUTPUT_TIME_BASE,
+            sys::AVRational {
+                num: time_base.numerator,
+                den: time_base.denominator,
+            },
+        );
         self.input
             .seek_stream(self.decoder.stream_index(), timestamp)?;
         self.decoder.flush();
         self.resampler = None;
-        self.next_position = None;
-        self.stash = None;
+        self.clock = None;
+        self.longest = 0;
+        self.blocks.clear();
         self.input_ended = false;
         self.finished = false;
         Ok(())
     }
 
     fn next_block(&mut self) -> Result<Option<AudioBlock>> {
-        if let Some(block) = self.stash.take() {
-            return Ok(Some(block));
-        }
-        while !self.finished {
-            if let Some(mut frame) = self.decoder.receive_frame()? {
-                let position = match self.next_position {
-                    Some(position) => position,
-                    None => match self.start_run(&mut frame) {
-                        Some(position) => position,
-                        None => continue,
-                    },
-                };
-                let resampler = match &mut self.resampler {
-                    Some(resampler) => resampler,
-                    None => self.resampler.insert(AudioResampler::new(
-                        &frame,
-                        AudioResamplerConfig::default(),
-                    )?),
-                };
-                let converted = resampler.convert(&frame)?;
-                return Ok(Some(self.block_at(position, converted)));
+        loop {
+            if let Some(block) = self.blocks.pop_front() {
+                return Ok(Some(block));
             }
-            if self.input_ended {
-                self.finished = true;
-                let (Some(resampler), Some(position)) = (&mut self.resampler, self.next_position)
-                else {
-                    break;
+            if self.finished {
+                return match self.failure.take() {
+                    Some(failure) if !self.decoded_any => Err(failure),
+                    _ => Ok(None),
                 };
-                let tail = resampler.flush()?;
-                return Ok(Some(self.block_at(position, tail)));
             }
-            self.feed_decoder()?;
+            match self.decoder.receive_frame() {
+                Ok(Some(frame)) => {
+                    self.decoded_any = true;
+                    self.place_frame(frame)?;
+                }
+                Ok(None) if self.input_ended => self.finish()?,
+                Ok(None) => self.feed_decoder()?,
+                Err(error) => {
+                    self.failure.get_or_insert(error);
+                    if self.input_ended {
+                        self.finish()?;
+                    } else {
+                        self.feed_decoder()?;
+                    }
+                }
+            }
         }
-        Ok(None)
     }
 
-    fn block_at(&mut self, position: i64, converted: AudioFrame) -> AudioBlock {
+    fn finish(&mut self) -> Result<()> {
+        self.finished = true;
+        self.end_segment()
+    }
+
+    /// Drains the resampler into a block, ending the stretch of output it was producing.
+    fn end_segment(&mut self) -> Result<()> {
+        let (Some(mut resampler), Some(clock)) = (self.resampler.take(), self.clock) else {
+            return Ok(());
+        };
+        let tail = resampler.flush()?;
+        self.push_block(clock, tail);
+        Ok(())
+    }
+
+    fn push_block(&mut self, position: i64, converted: AudioFrame) {
         let block = AudioBlock {
             position,
             samples: converted.interleaved_f32,
         };
-        self.next_position = Some(block.end());
-        block
+        self.clock = Some(block.end());
+        self.blocks.push_back(block);
     }
 
-    /// Positions the first frame of a run. Samples before the anchor go, as `-ss` drops them, so
-    /// the resampler's output lands on whole samples from the anchor. Returns `None` when the
-    /// whole frame goes.
-    fn start_run(&mut self, frame: &mut DecodedAudioFrame) -> Option<i64> {
+    /// Puts a decoded frame where its timestamp says, against the source samples already fed to
+    /// the resampler. A frame within one tick of the next expected sample continues the stream, so
+    /// timestamps rounded to the time base don't add up. A later one leaves a gap of silence. An
+    /// earlier one overlaps, and its overlapping samples are dropped; one wholly behind continues
+    /// the stream as well, since it can't be told from timestamps that restarted. A frame in a new
+    /// format ends the resampler and starts another, joined to the output if the timestamps agree.
+    fn place_frame(&mut self, mut frame: DecodedAudioFrame) -> Result<()> {
         let rate = frame.sample_rate();
-        let wanted = unsafe { sys::av_rescale_rnd(self.anchor, rate, 48_000, AV_ROUND_UP) };
-        let first = frame
+        let source_start = frame
             .pts()
-            .map_or(wanted, |pts| self.source_position(pts, rate));
-        if first >= wanted {
-            return Some(if first == wanted {
-                self.anchor
+            .filter(|_| rate == self.declared_rate)
+            .map(|pts| self.source_position(pts, rate));
+        let to_output = |source: i64| unsafe {
+            sys::av_rescale_rnd(source, OUTPUT_RATE, rate, AVRounding::AV_ROUND_NEAR_INF)
+        };
+        let tolerance = self.tick.max((OUTPUT_RATE + rate - 1) / rate) + 1;
+        // Frames of codecs with several block sizes carry timestamps off by up to a quarter of
+        // their longest block, so a smaller jump than that and than JITTER_MS is not a gap.
+        self.longest = self.longest.max(frame.samples() as i64);
+        let source_tolerance = (tolerance * rate / OUTPUT_RATE)
+            .max(rate * JITTER_MS / 1000)
+            .max(self.longest / 2)
+            + 1;
+
+        let mut gap = false;
+        let mut resume = false;
+        if self
+            .resampler
+            .as_ref()
+            .is_some_and(|resampler| resampler.accepts(&frame))
+        {
+            let delta = source_start.map_or(0, |start| start - self.next_source);
+            if delta > source_tolerance {
+                gap = true;
             } else {
-                unsafe { sys::av_rescale_rnd(first, 48_000, rate, AVRounding::AV_ROUND_NEAR_INF) }
+                if delta < -source_tolerance && -delta < frame.samples() as i64 {
+                    frame.trim_start((-delta) as usize);
+                }
+                resume = true;
+            }
+        }
+        if !resume {
+            self.end_segment()?;
+        }
+
+        let position = if resume {
+            self.clock.unwrap_or_default()
+        } else {
+            let source = source_start.unwrap_or_else(|| unsafe {
+                sys::av_rescale_rnd(self.hint, rate, OUTPUT_RATE, AV_ROUND_UP)
             });
-        }
-        let skipped = (wanted - first) as usize;
-        if skipped >= frame.samples() {
-            return None;
-        }
-        frame.trim_start(skipped);
-        Some(self.anchor)
+            self.next_source = source;
+            let joins = self.clock.filter(|clock| {
+                !gap && (source_start.is_none() || to_output(source) <= clock + tolerance)
+            });
+            let (position, padding) = match joins {
+                Some(clock) => (clock, 0),
+                None => {
+                    // The resampler's output falls on whole output samples only from a source
+                    // sample that is one too, so a run starts at the last such sample and silence
+                    // fills in.
+                    let divisor = gcd(rate, OUTPUT_RATE);
+                    let period = rate / divisor;
+                    let padding = source.rem_euclid(period);
+                    (
+                        (source - padding) / period * (OUTPUT_RATE / divisor),
+                        padding,
+                    )
+                }
+            };
+            let mut resampler = AudioResampler::new(&frame, AudioResamplerConfig::default())?;
+            resampler.inject_silence(padding as usize)?;
+            self.resampler = Some(resampler);
+            position
+        };
+        self.next_source += frame.samples() as i64;
+
+        let Some(resampler) = &mut self.resampler else {
+            return Ok(());
+        };
+        let converted = resampler.convert(&frame)?;
+        self.push_block(position, converted);
+        Ok(())
     }
 
     /// A timestamp of the stream as source samples after the container's first timestamp.
     fn source_position(&self, pts: i64, rate: i64) -> i64 {
         let time_base = self.decoder.time_base();
-        unsafe {
-            sys::av_rescale_q(
-                pts,
-                sys::AVRational {
-                    num: time_base.numerator,
-                    den: time_base.denominator,
-                },
-                sys::AVRational {
-                    num: 1,
-                    den: rate as i32,
-                },
-            ) - sys::av_rescale_rnd(self.origin, rate, 48_000, AV_ROUND_UP)
-        }
+        rescale(
+            pts,
+            sys::AVRational {
+                num: time_base.numerator,
+                den: time_base.denominator,
+            },
+            sys::AVRational {
+                num: 1,
+                den: rate as i32,
+            },
+        ) - unsafe { sys::av_rescale_rnd(self.origin, rate, OUTPUT_RATE, AV_ROUND_UP) }
     }
 
     fn feed_decoder(&mut self) -> Result<()> {
@@ -542,10 +700,10 @@ impl AudioRangeReader {
             self.input_ended = true;
             return self.decoder.send_eof();
         };
-        match self.decoder.send_packet(&packet) {
+        if let Err(error) = self.decoder.send_packet(&packet) {
             // A damaged packet costs its own samples, not the rest of the stream.
-            Err(error) if error.code == Some(sys::AVERROR_INVALIDDATA) => Ok(()),
-            result => result,
+            self.failure.get_or_insert(error);
         }
+        Ok(())
     }
 }
