@@ -980,12 +980,16 @@ impl GpuCompositionRenderer {
                     .current_media_textures
                     .remove(&upload.texture)
                     .is_some();
-                // A source that moved to the CPU may leave a differently sized imported texture.
-                let wrong_size = prepared
+                // A source that moved to the CPU may leave an imported texture of another size or
+                // format.
+                let not_writable = prepared
                     .renderer
                     .texture(upload.texture)
-                    .is_some_and(|bound| bound.size() != upload.size.as_extent());
-                if cached_was_bound || wrong_size {
+                    .is_some_and(|bound| {
+                        bound.size() != upload.size.as_extent()
+                            || bound.format() != lumen_gpu::wgpu::TextureFormat::Rgba8Unorm
+                    });
+                if cached_was_bound || not_writable {
                     // The bound texture is a cached image's, which must not be written.
                     prepared
                         .renderer

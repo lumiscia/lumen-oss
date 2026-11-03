@@ -150,12 +150,14 @@ impl VulkanDecodedFrame {
             )
             .with_backend(BACKEND));
         }
+        // FFmpeg trims the right and bottom of hardware frames but leaves these two.
+        let crop_left = unsafe { (*raw).crop_left } as u32 & !1;
+        let crop_top = unsafe { (*raw).crop_top } as u32 & !1;
         Ok(Self {
-            width: frame.width(),
-            height: frame.height(),
-            // FFmpeg trims the right and bottom of hardware frames but leaves these two.
-            crop_left: unsafe { (*raw).crop_left } as u32 & !1,
-            crop_top: unsafe { (*raw).crop_top } as u32 & !1,
+            width: frame.width().saturating_sub(crop_left),
+            height: frame.height().saturating_sub(crop_top),
+            crop_left,
+            crop_top,
             pts: frame.pts(),
             frame: Arc::new(DecodedAvFrame(frame)),
             device,

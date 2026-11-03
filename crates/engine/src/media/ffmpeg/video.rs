@@ -78,8 +78,9 @@ impl VideoDecodeWorker {
             );
             self.decoder.options.prefer_hardware_decode = false;
             self.decoder.reopen()?;
-            self.cache.retain(&[]);
         }
+        // A source that moved to the CPU on a decode failure may still have GPU frames cached.
+        self.cache.retain(&[]);
         self.resolve_frame(frame)
     }
 
