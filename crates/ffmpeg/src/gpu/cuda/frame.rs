@@ -94,8 +94,8 @@ impl CudaVideoFrame {
         GpuBackend::Cuda
     }
 
-    /// Queues a copy of this frame's pixels into `destination`, a CUDA allocation of the same
-    /// dimensions, in the context that owns the frame.
+    /// Copies this frame's pixels into `destination`, a CUDA allocation of the same dimensions,
+    /// in the context that owns the frame, and waits for the copy to finish.
     pub(crate) fn copy_to_device(
         &self,
         destination: u64,
@@ -135,7 +135,11 @@ impl CudaVideoFrame {
             WidthInBytes: self.width as usize * 4,
             Height: self.height as usize,
         };
-        let copied = unsafe { sys::cuMemcpy2D_v2(&copy) }.result();
+        // FFmpeg's NVENC reads the destination from its own context, whose stream isn't ordered
+        // against this one, so the copy has to finish here.
+        let copied = unsafe { sys::cuMemcpy2D_v2(&copy) }
+            .result()
+            .and_then(|()| unsafe { sys::cuStreamSynchronize(std::ptr::null_mut()) }.result());
         let mut popped: sys::CUcontext = std::ptr::null_mut();
         let popped_result = unsafe { sys::cuCtxPopCurrent_v2(&mut popped) }.result();
         copied.and(popped_result).map_err(|error| error.to_string())
