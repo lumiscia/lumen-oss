@@ -9,7 +9,30 @@ use fdsm::{
 use image::{ImageBuffer, Luma, Rgb};
 use swash::zeno::{Command, Vector};
 
-use crate::{GLYPH_MODE_MSDF, GlyphPixels, MSDF_PX_RANGE, RenderedGlyph, msdf_em_size};
+use crate::GLYPH_MODE_MSDF;
+use crate::atlas::{GlyphPixels, RenderedGlyph};
+
+/// Em size, in atlas texels, of the coarsest distance fields.
+pub(crate) const MSDF_EM_SIZE: f32 = 48.0;
+/// Em size, in atlas texels, of the finest distance fields.
+pub(crate) const MSDF_MAX_EM_SIZE: f32 = 384.0;
+/// Drawn size at which a distance field with [`MSDF_EM_SIZE`] texels per em is
+/// outgrown. Past it, fine corners such as serifs show as facets.
+const MSDF_MAX_MAGNIFICATION: f32 = 4.0;
+/// Font size from which [`TextRenderMode::Auto`] draws distance fields.
+pub(crate) const MSDF_AUTO_MIN_SIZE: f32 = 512.0;
+/// Width of the MSDF distance range in atlas texels, centred on the outline.
+pub const MSDF_PX_RANGE: f32 = 6.0;
+
+/// Texels per em of the distance field drawn at `font_size`: the coarsest
+/// that is not magnified more than [`MSDF_MAX_MAGNIFICATION`] times.
+pub(crate) fn msdf_em_size(font_size: f32) -> f32 {
+    let mut em = MSDF_EM_SIZE;
+    while em < MSDF_MAX_EM_SIZE && font_size > em * MSDF_MAX_MAGNIFICATION {
+        em *= 2.0;
+    }
+    em
+}
 
 /// The key that an MSDF field is generated and cached for, shared by every size
 /// that [`msdf_em_size`] gives the same resolution.
