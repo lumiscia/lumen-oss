@@ -247,7 +247,7 @@ pub(super) fn prefetch_media_frames(
         return;
     };
     for video in requirements.videos {
-        let Some(resolver) = media_store.get_video_resolver(&video.stream_id) else {
+        let Ok(resolver) = media_store.get_video_resolver(&video.stream_id) else {
             continue;
         };
         let mut frames = video.frames;

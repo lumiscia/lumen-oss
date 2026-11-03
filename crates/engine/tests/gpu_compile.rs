@@ -130,14 +130,6 @@ impl lumen_engine::media::FontResolver for JobFontResolver {
 }
 
 impl MediaStore for JobFont {
-    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
-        None
-    }
-
-    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
-    }
-
     fn font_resolver_id(&self, family: &str) -> Option<String> {
         (family == self.family).then(|| self.id.clone())
     }
@@ -325,14 +317,6 @@ impl ChangingFonts {
 }
 
 impl MediaStore for ChangingFonts {
-    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
-        None
-    }
-
-    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
-    }
-
     fn font_resolver_id(&self, family: &str) -> Option<String> {
         Some(self.fonts.lock().unwrap().get(family)?.0.clone())
     }
@@ -576,14 +560,6 @@ impl lumen_engine::media::FontResolver for ScaledFontStore {
 }
 
 impl MediaStore for ScaledFontStore {
-    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
-        None
-    }
-
-    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
-    }
-
     fn font_resolver_id(&self, family: &str) -> Option<String> {
         (family == self.family).then(|| self.family.to_string())
     }
@@ -668,15 +644,7 @@ fn crop_accepts_sizes_beyond_i32() {
 #[derive(Debug)]
 struct EmptyMediaStore;
 
-impl MediaStore for EmptyMediaStore {
-    fn get_image_resolver(&self, _source: &str) -> Option<Box<dyn ImageResolver>> {
-        None
-    }
-
-    fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
-    }
-}
+impl MediaStore for EmptyMediaStore {}
 
 fn gpu_composition_renderer() -> Option<TestRenderer> {
     let lock = GpuTestLock::acquire();
@@ -794,12 +762,26 @@ struct TestMediaStore {
 }
 
 impl MediaStore for TestMediaStore {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
-        (source == self.id).then(|| Box::new(self.clone()) as Box<dyn ImageResolver>)
+    fn get_image_resolver(
+        &self,
+        source: &str,
+    ) -> Result<Box<dyn ImageResolver>, lumen_engine::error::MediaError> {
+        (source == self.id)
+            .then(|| Box::new(self.clone()) as Box<dyn ImageResolver>)
+            .ok_or_else(|| {
+                lumen_engine::error::MediaError::source_not_found(source, "not the test image")
+            })
     }
 
-    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        (stream_id == self.id).then(|| Box::new(self.clone()) as Box<dyn VideoFrameResolver>)
+    fn get_video_resolver(
+        &self,
+        stream_id: &str,
+    ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
+        (stream_id == self.id)
+            .then(|| Box::new(self.clone()) as Box<dyn VideoFrameResolver>)
+            .ok_or_else(|| {
+                lumen_engine::error::MediaError::source_not_found(stream_id, "not the test video")
+            })
     }
 }
 
@@ -1033,12 +1015,6 @@ impl lumen_engine::media::FontResolver for NoFont {
 }
 
 impl MediaStore for LateFont {
-    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
-        None
-    }
-    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
-    }
     fn font_resolver_id(&self, family: &str) -> Option<String> {
         match family {
             "Loader" => Some("late-font".to_string()),
@@ -1112,12 +1088,6 @@ impl lumen_engine::media::FontResolver for LateFontsResolver {
 }
 
 impl MediaStore for LateFonts {
-    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
-        None
-    }
-    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
-    }
     fn font_resolver_id(&self, family: &str) -> Option<String> {
         (family.starts_with("Load") || family.starts_with("Late")).then(|| family.to_string())
     }
@@ -1191,12 +1161,6 @@ impl lumen_engine::media::FontResolver for ChurningFontResolver {
 }
 
 impl MediaStore for ChurningFont {
-    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
-        None
-    }
-    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
-    }
     fn font_resolver_id(&self, family: &str) -> Option<String> {
         (family == "Churn").then(|| {
             let id = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1480,14 +1444,18 @@ impl ReplaceableImages {
 }
 
 impl MediaStore for ReplaceableImages {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+    fn get_image_resolver(
+        &self,
+        source: &str,
+    ) -> Result<Box<dyn ImageResolver>, lumen_engine::error::MediaError> {
         let images = self.0.lock().unwrap();
-        let image = images.get(source)?.clone();
-        Some(Box::new(image))
-    }
-
-    fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
+        let image = images
+            .get(source)
+            .ok_or_else(|| {
+                lumen_engine::error::MediaError::source_not_found(source, "not registered")
+            })?
+            .clone();
+        Ok(Box::new(image))
     }
 }
 
@@ -1675,12 +1643,18 @@ fn video_frames_do_not_overwrite_cached_images() {
         video: TestMediaStore,
     }
     impl MediaStore for ImagesAndVideo {
-        fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+        fn get_image_resolver(
+            &self,
+            source: &str,
+        ) -> Result<Box<dyn ImageResolver>, lumen_engine::error::MediaError> {
             self.images.get_image_resolver(source)
         }
 
-        fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
-            Some(Box::new(self.video.clone()))
+        fn get_video_resolver(
+            &self,
+            _stream_id: &str,
+        ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
+            Ok(Box::new(self.video.clone()))
         }
     }
 

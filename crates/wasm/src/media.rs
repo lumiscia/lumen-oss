@@ -411,15 +411,15 @@ impl WasmMediaStore {
 }
 
 impl MediaStore for WasmMediaStore {
-    fn get_image_resolver(&self, image_id: &str) -> Option<Box<dyn ImageResolver>> {
+    fn get_image_resolver(&self, image_id: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
         let version = self
             .inner
             .images
             .read()
-            .ok()?
+            .map_err(|_| MediaError::source_not_found(image_id, "media store lock poisoned"))?
             .get(image_id)
             .map(|image| image.version);
-        Some(Box::new(WasmImageResolver {
+        Ok(Box::new(WasmImageResolver {
             id: match version {
                 Some(version) => format!("wasm-image:{image_id}:{version}"),
                 None => format!("wasm-image:{image_id}"),
@@ -429,8 +429,11 @@ impl MediaStore for WasmMediaStore {
         }))
     }
 
-    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        Some(Box::new(WasmVideoResolver {
+    fn get_video_resolver(
+        &self,
+        stream_id: &str,
+    ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
+        Ok(Box::new(WasmVideoResolver {
             id: stream_id.to_string(),
             store: Arc::clone(&self.inner),
         }))
@@ -484,14 +487,10 @@ impl ImageResolver for WasmImageResolver {
         self.store
             .images
             .read()
-            .map_err(|_| MediaError::SourceNotFound {
-                media_source: self.source.clone(),
-            })?
+            .map_err(|_| MediaError::source_not_found(&self.source, "media store lock poisoned"))?
             .get(&self.source)
             .map(|entry| Arc::clone(&entry.frame))
-            .ok_or_else(|| MediaError::SourceNotFound {
-                media_source: self.source.clone(),
-            })
+            .ok_or_else(|| MediaError::source_not_found(&self.source, "image is not registered"))
             .map(MediaFrame::CpuRgba)
     }
 }
@@ -525,15 +524,11 @@ impl VideoFrameResolver for WasmVideoResolver {
             .store
             .videos
             .read()
-            .map_err(|_| MediaError::SourceNotFound {
-                media_source: self.id.clone(),
-            })?;
+            .map_err(|_| MediaError::source_not_found(&self.id, "media store lock poisoned"))?;
         let entry = videos
             .streams
             .get(&self.id)
-            .ok_or_else(|| MediaError::SourceNotFound {
-                media_source: self.id.clone(),
-            })?;
+            .ok_or_else(|| MediaError::source_not_found(&self.id, "video is not registered"))?;
         entry
             .frames
             .get(frame)

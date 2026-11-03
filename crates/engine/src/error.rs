@@ -101,8 +101,11 @@ pub enum ExpressionError {
 
 #[derive(Debug, Error, Clone)]
 pub enum MediaError {
-    #[error("media source not found: {media_source}")]
-    SourceNotFound { media_source: String },
+    #[error("media source `{media_source}` not found: {details}")]
+    SourceNotFound {
+        media_source: String,
+        details: String,
+    },
     #[error("media decoding failed for {media_source}: {details}")]
     Decode {
         media_source: String,
@@ -116,6 +119,15 @@ pub enum MediaError {
     },
     #[error("audio clip `{clip}` names unknown track `{track}`")]
     UnknownAudioTrack { clip: String, track: String },
+}
+
+impl MediaError {
+    pub fn source_not_found(source: &str, details: impl Into<String>) -> Self {
+        Self::SourceNotFound {
+            media_source: source.to_string(),
+            details: details.into(),
+        }
+    }
 }
 
 #[derive(Debug, Error, Clone)]

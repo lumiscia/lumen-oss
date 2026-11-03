@@ -8,7 +8,7 @@ use lumen_engine::{
     expr::{Expression, ExpressionContext},
     gpu::GpuCompositionRenderer,
     graph::Graph,
-    media::{FontResolver, ImageResolver, MediaStore, VideoFrameResolver},
+    media::{FontResolver, MediaStore},
     node::{
         Deferred, NodeId, NodeKind,
         media_output::MediaOutput,
@@ -170,12 +170,6 @@ struct BenchMedia {
 }
 
 impl MediaStore for BenchMedia {
-    fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
-        None
-    }
-    fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
-    }
     fn font_resolver_id(&self, _: &str) -> Option<String> {
         (!self.fonts.is_empty()).then(|| "bench".to_string())
     }

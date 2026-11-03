@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, anyhow};
 use lumen_engine::{
     audio::{AudioBuffer, AudioResolver},
+    error::MediaError,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
     media::{FontResolver, ImageResolver, MediaFrame, MediaStore, TextSession, VideoFrameResolver},
@@ -69,6 +70,13 @@ impl LocalMediaStore {
         resolve_local_path_with_root(source, &self.root)
             .ok()
             .map(|path| path.to_string_lossy().to_string())
+    }
+
+    /// `source` under the media root. The failure doesn't say why, as telling a missing file from
+    /// one outside the root would let a composition probe the server's disk.
+    fn stored_source(&self, source: &str) -> Result<String, MediaError> {
+        self.resolve_source(source)
+            .ok_or_else(|| MediaError::source_not_found(source, "no such file in the media root"))
     }
 
     fn resolved_font(&self, font_family: &str) -> Option<Arc<ResolvedFont>> {
@@ -167,27 +175,27 @@ impl LocalMediaStore {
         paths
     }
 
-    fn image_resolver(&self, source: &str) -> Option<Arc<ImageFileResolver>> {
+    fn image_resolver(&self, source: &str) -> Result<Arc<ImageFileResolver>, MediaError> {
         if let Ok(cache) = self.images.read()
             && let Some(resolver) = cache.get(source)
         {
-            return Some(Arc::clone(resolver));
+            return Ok(Arc::clone(resolver));
         }
 
-        let resolver = Arc::new(ImageFileResolver::open(source.to_string()).ok()?);
+        let resolver = Arc::new(ImageFileResolver::open(source.to_string())?);
         if let Ok(mut cache) = self.images.write() {
             cache
                 .entry(source.to_string())
                 .or_insert_with(|| Arc::clone(&resolver));
         }
-        Some(resolver)
+        Ok(resolver)
     }
 
-    fn video_resolver(&self, source: &str) -> Option<Arc<FfmpegVideoResolver>> {
+    fn video_resolver(&self, source: &str) -> Result<Arc<FfmpegVideoResolver>, MediaError> {
         if let Ok(cache) = self.videos.read()
             && let Some(resolver) = cache.get(source)
         {
-            return Some(Arc::clone(resolver));
+            return Ok(Arc::clone(resolver));
         }
 
         let resolver =
@@ -195,7 +203,7 @@ impl LocalMediaStore {
                 Ok(resolver) => Arc::new(resolver),
                 Err(error) => {
                     tracing::warn!(source, %error, "failed opening video media resolver");
-                    return None;
+                    return Err(error);
                 }
             };
         tracing::info!(
@@ -213,23 +221,23 @@ impl LocalMediaStore {
                 .entry(source.to_string())
                 .or_insert_with(|| Arc::clone(&resolver));
         }
-        Some(resolver)
+        Ok(resolver)
     }
 
-    fn audio_resolver(&self, source: &str) -> Option<Arc<FfmpegAudioResolver>> {
+    fn audio_resolver(&self, source: &str) -> Result<Arc<FfmpegAudioResolver>, MediaError> {
         if let Ok(cache) = self.audios.read()
             && let Some(resolver) = cache.get(source)
         {
-            return Some(Arc::clone(resolver));
+            return Ok(Arc::clone(resolver));
         }
 
-        let resolver = Arc::new(FfmpegAudioResolver::open(source.to_string()).ok()?);
+        let resolver = Arc::new(FfmpegAudioResolver::open(source.to_string())?);
         if let Ok(mut cache) = self.audios.write() {
             cache
                 .entry(source.to_string())
                 .or_insert_with(|| Arc::clone(&resolver));
         }
-        Some(resolver)
+        Ok(resolver)
     }
 }
 
@@ -270,7 +278,7 @@ impl ImageResolver for SharedImageResolver {
         self.0.metadata()
     }
 
-    fn frame(&self) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+    fn frame(&self) -> Result<MediaFrame, MediaError> {
         self.0.frame()
     }
 }
@@ -287,11 +295,11 @@ impl VideoFrameResolver for SharedVideoResolver {
         self.0.metadata()
     }
 
-    fn enqueue_frame(&self, frame: u32) -> Result<(), lumen_engine::error::MediaError> {
+    fn enqueue_frame(&self, frame: u32) -> Result<(), MediaError> {
         self.0.enqueue_frame(frame)
     }
 
-    fn frame(&self, frame: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+    fn frame(&self, frame: u32) -> Result<MediaFrame, MediaError> {
         self.0.frame(frame)
     }
 
@@ -316,28 +324,31 @@ impl AudioResolver for SharedAudioResolver {
         &self,
         start_sample: u64,
         frames: usize,
-    ) -> Result<Arc<AudioBuffer>, lumen_engine::error::MediaError> {
+    ) -> Result<Arc<AudioBuffer>, MediaError> {
         self.0.resolve_range(start_sample, frames)
     }
 }
 
 impl MediaStore for LocalMediaStore {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
-        let resolved = self.resolve_source(source)?;
+    fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
+        let resolved = self.stored_source(source)?;
         let resolver = self.image_resolver(&resolved)?;
-        Some(Box::new(SharedImageResolver(resolver)))
+        Ok(Box::new(SharedImageResolver(resolver)))
     }
 
-    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        let resolved = self.resolve_source(stream_id)?;
+    fn get_video_resolver(
+        &self,
+        stream_id: &str,
+    ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
+        let resolved = self.stored_source(stream_id)?;
         let resolver = self.video_resolver(&resolved)?;
-        Some(Box::new(SharedVideoResolver(resolver)))
+        Ok(Box::new(SharedVideoResolver(resolver)))
     }
 
-    fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
-        let resolved = self.resolve_source(source_id)?;
+    fn get_audio_resolver(&self, source_id: &str) -> Result<Box<dyn AudioResolver>, MediaError> {
+        let resolved = self.stored_source(source_id)?;
         let resolver = self.audio_resolver(&resolved)?;
-        Some(Box::new(SharedAudioResolver(resolver)))
+        Ok(Box::new(SharedAudioResolver(resolver)))
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {
@@ -373,12 +384,12 @@ impl FontResolver for LocalFontResolver {
         &self.font.id
     }
 
-    fn data(&self) -> Result<Vec<Vec<u8>>, lumen_engine::error::MediaError> {
+    fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
         self.font
             .paths
             .iter()
             .map(|path| {
-                std::fs::read(path).map_err(|err| lumen_engine::error::MediaError::Decode {
+                std::fs::read(path).map_err(|err| MediaError::Decode {
                     media_source: self.family.clone(),
                     details: format!("failed reading font data `{path}`: {err}"),
                 })
@@ -471,6 +482,27 @@ mod tests {
     use super::*;
 
     const ROBOTO: &[u8] = include_bytes!("../../../text/assets/roboto/Roboto-Regular.ttf");
+
+    #[test]
+    fn a_source_outside_the_root_fails_like_a_missing_one() {
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let store = LocalMediaStore::new(root.path().canonicalize().unwrap());
+        let outside = outside.path().display().to_string();
+        let failure = |source: &str| match store.get_image_resolver(source) {
+            Ok(_) => panic!("{source} should not open"),
+            Err(error) => error.to_string(),
+        };
+
+        assert_eq!(
+            failure("missing.png"),
+            "media source `missing.png` not found: no such file in the media root"
+        );
+        assert_eq!(
+            failure(&outside),
+            format!("media source `{outside}` not found: no such file in the media root")
+        );
+    }
 
     /// A media root holding `font` as the job's `Roboto`.
     fn job_with_roboto(font: &[u8]) -> (tempfile::TempDir, LocalMediaStore) {

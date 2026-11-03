@@ -153,100 +153,85 @@ impl LocalMediaStore {
         }
     }
 
-    fn resolve_source(&self, source: &str) -> Option<String> {
+    fn resolve_source(&self, source: &str) -> Result<String, MediaError> {
         resolve_local_path_with_root(source, &self.root)
-            .ok()
             .map(|path| path.to_string_lossy().to_string())
+            .map_err(|error| MediaError::source_not_found(source, format!("{error:#}")))
     }
 
-    fn image_resolver(&self, source: &str) -> Option<Arc<ImageFileResolver>> {
+    fn image_resolver(&self, source: &str) -> Result<Arc<ImageFileResolver>, MediaError> {
         if let Ok(cache) = self.images.read()
             && let Some(resolver) = cache.get(source)
         {
-            return Some(Arc::clone(resolver));
+            return Ok(Arc::clone(resolver));
         }
 
-        let resolver = Arc::new(
-            ImageFileResolver::open(source.to_string())
-                .map_err(|error| {
-                    eprintln!("failed opening image resolver for {source}: {error}");
-                    error
-                })
-                .ok()?,
-        );
+        let resolver = Arc::new(ImageFileResolver::open(source.to_string())?);
         if let Ok(mut cache) = self.images.write() {
             cache
                 .entry(source.to_string())
                 .or_insert_with(|| Arc::clone(&resolver));
         }
-        Some(resolver)
+        Ok(resolver)
     }
 
-    fn video_resolver(&self, source: &str) -> Option<Arc<FfmpegVideoResolver>> {
+    fn video_resolver(&self, source: &str) -> Result<Arc<FfmpegVideoResolver>, MediaError> {
         if let Ok(cache) = self.videos.read()
             && let Some(resolver) = cache.get(source)
         {
-            return Some(Arc::clone(resolver));
+            return Ok(Arc::clone(resolver));
         }
 
-        let resolver = Arc::new(
-            FfmpegVideoResolver::open_with_options(source.to_string(), self.video_options)
-                .map_err(|error| {
-                    eprintln!("failed opening video resolver for {source}: {error}");
-                    error
-                })
-                .ok()?,
-        );
+        let resolver = Arc::new(FfmpegVideoResolver::open_with_options(
+            source.to_string(),
+            self.video_options,
+        )?);
         if let Ok(mut cache) = self.videos.write() {
             cache
                 .entry(source.to_string())
                 .or_insert_with(|| Arc::clone(&resolver));
         }
-        Some(resolver)
+        Ok(resolver)
     }
 
-    fn audio_resolver(&self, source: &str) -> Option<Arc<FfmpegAudioResolver>> {
+    fn audio_resolver(&self, source: &str) -> Result<Arc<FfmpegAudioResolver>, MediaError> {
         if let Ok(cache) = self.audios.read()
             && let Some(resolver) = cache.get(source)
         {
-            return Some(Arc::clone(resolver));
+            return Ok(Arc::clone(resolver));
         }
 
-        let resolver = Arc::new(
-            FfmpegAudioResolver::open(source.to_string())
-                .map_err(|error| {
-                    eprintln!("failed opening audio resolver for {source}: {error}");
-                    error
-                })
-                .ok()?,
-        );
+        let resolver = Arc::new(FfmpegAudioResolver::open(source.to_string())?);
         if let Ok(mut cache) = self.audios.write() {
             cache
                 .entry(source.to_string())
                 .or_insert_with(|| Arc::clone(&resolver));
         }
-        Some(resolver)
+        Ok(resolver)
     }
 }
 
 impl MediaStore for LocalMediaStore {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+    fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
         let resolved = self.resolve_source(source)?;
-        Some(Box::new(SharedImageResolver(
+        Ok(Box::new(SharedImageResolver(
             self.image_resolver(&resolved)?,
         )))
     }
 
-    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+    fn get_video_resolver(
+        &self,
+        stream_id: &str,
+    ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
         let resolved = self.resolve_source(stream_id)?;
-        Some(Box::new(SharedVideoResolver(
+        Ok(Box::new(SharedVideoResolver(
             self.video_resolver(&resolved)?,
         )))
     }
 
-    fn get_audio_resolver(&self, source_id: &str) -> Option<Box<dyn AudioResolver>> {
+    fn get_audio_resolver(&self, source_id: &str) -> Result<Box<dyn AudioResolver>, MediaError> {
         let resolved = self.resolve_source(source_id)?;
-        Some(Box::new(SharedAudioResolver(
+        Ok(Box::new(SharedAudioResolver(
             self.audio_resolver(&resolved)?,
         )))
     }
@@ -365,7 +350,7 @@ impl ImageResolver for SharedImageResolver {
         self.0.metadata()
     }
 
-    fn frame(&self) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+    fn frame(&self) -> Result<MediaFrame, MediaError> {
         self.0.frame()
     }
 }
@@ -382,11 +367,11 @@ impl VideoFrameResolver for SharedVideoResolver {
         self.0.metadata()
     }
 
-    fn enqueue_frame(&self, frame: u32) -> Result<(), lumen_engine::error::MediaError> {
+    fn enqueue_frame(&self, frame: u32) -> Result<(), MediaError> {
         self.0.enqueue_frame(frame)
     }
 
-    fn frame(&self, frame: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+    fn frame(&self, frame: u32) -> Result<MediaFrame, MediaError> {
         self.0.frame(frame)
     }
 
@@ -411,7 +396,7 @@ impl AudioResolver for SharedAudioResolver {
         &self,
         start_sample: u64,
         frames: usize,
-    ) -> Result<Arc<lumen_engine::audio::AudioBuffer>, lumen_engine::error::MediaError> {
+    ) -> Result<Arc<lumen_engine::audio::AudioBuffer>, MediaError> {
         self.0.resolve_range(start_sample, frames)
     }
 }
@@ -2040,5 +2025,32 @@ mod tests {
         let error = resolve_local_path_with_root("https://example.com/image.png", tmp.path())
             .expect_err("remote source should fail");
         assert!(error.to_string().contains("remote media source"));
+    }
+
+    #[test]
+    fn media_lookups_report_why_a_source_failed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("root");
+        fs::write(root.join("corrupt.png"), b"not a png").expect("fixture");
+        let store = LocalMediaStore::new(root.clone(), None);
+        let failure = |source: &str| match store.get_image_resolver(source) {
+            Ok(_) => panic!("{source} should not open"),
+            Err(error) => error.to_string(),
+        };
+
+        assert_eq!(
+            failure("missing.png"),
+            format!(
+                "media source `missing.png` not found: failed to canonicalize asset path `{}`: No such file or directory (os error 2)",
+                root.join("missing.png").display()
+            )
+        );
+        assert_eq!(
+            failure("corrupt.png"),
+            format!(
+                "media decoding failed for {}: failed decoding image source: The image format could not be determined",
+                root.join("corrupt.png").display()
+            )
+        );
     }
 }

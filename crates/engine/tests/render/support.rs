@@ -222,20 +222,32 @@ impl FontResolver for TestFont {
 }
 
 impl MediaStore for TestMedia {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
-        let frame = Arc::clone(self.images.get(source)?);
-        Some(Box::new(TestImage {
+    fn get_image_resolver(
+        &self,
+        source: &str,
+    ) -> Result<Box<dyn ImageResolver>, lumen_engine::error::MediaError> {
+        let frame = Arc::clone(self.images.get(source).ok_or_else(|| {
+            lumen_engine::error::MediaError::source_not_found(source, "not registered")
+        })?);
+        Ok(Box::new(TestImage {
             id: source.to_string(),
             frame,
         }))
     }
 
-    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        (self.numbered_video.as_deref() == Some(stream_id)).then(|| {
-            Box::new(NumberedVideo {
-                id: stream_id.to_string(),
-            }) as _
-        })
+    fn get_video_resolver(
+        &self,
+        stream_id: &str,
+    ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
+        (self.numbered_video.as_deref() == Some(stream_id))
+            .then(|| {
+                Box::new(NumberedVideo {
+                    id: stream_id.to_string(),
+                }) as _
+            })
+            .ok_or_else(|| {
+                lumen_engine::error::MediaError::source_not_found(stream_id, "not registered")
+            })
     }
 
     fn font_resolver_id(&self, family: &str) -> Option<String> {
