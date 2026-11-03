@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ptr;
 
 #[cfg(feature = "metal")]
@@ -25,8 +26,8 @@ use sys::{
     AVPixelFormat::{
         AV_PIX_FMT_BGRA, AV_PIX_FMT_CUDA, AV_PIX_FMT_NONE, AV_PIX_FMT_NV12, AV_PIX_FMT_P010BE,
         AV_PIX_FMT_P010LE, AV_PIX_FMT_RGBA, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_VULKAN,
-        AV_PIX_FMT_YUVJ411P, AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ440P,
-        AV_PIX_FMT_YUVJ444P,
+        AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ411P, AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ422P,
+        AV_PIX_FMT_YUVJ440P, AV_PIX_FMT_YUVJ444P,
     },
 };
 
@@ -42,7 +43,6 @@ pub enum VideoCodec {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
-    Cuda,
     Rgba8,
     Bgra8,
     Nv12,
@@ -98,6 +98,10 @@ pub struct VideoDecoder {
     context: *mut sys::AVCodecContext,
     scaler: *mut sys::SwsContext,
     hw_device: Option<HwDeviceContext>,
+    #[cfg(feature = "vulkan")]
+    vulkan_device: Option<crate::gpu::VulkanDevice>,
+    /// Timestamps of the packets an edit list discards, for decoders where `drops_by_timestamp`.
+    discarded_pts: HashSet<i64>,
 }
 
 unsafe impl Send for VideoDecoder {}
@@ -130,7 +134,6 @@ impl PixelFormat {
     pub(crate) fn from_av_pixel_format(format: sys::AVPixelFormat) -> Self {
         match format {
             AV_PIX_FMT_RGBA => Self::Rgba8,
-            AV_PIX_FMT_CUDA => Self::Cuda,
             AV_PIX_FMT_BGRA => Self::Bgra8,
             AV_PIX_FMT_NV12 => Self::Nv12,
             AV_PIX_FMT_P010LE | AV_PIX_FMT_P010BE => Self::P010,
@@ -143,7 +146,6 @@ impl PixelFormat {
     pub(crate) fn to_av_pixel_format(self) -> sys::AVPixelFormat {
         match self {
             Self::Rgba8 => AV_PIX_FMT_RGBA,
-            Self::Cuda => AV_PIX_FMT_CUDA,
             Self::Bgra8 => AV_PIX_FMT_BGRA,
             Self::Nv12 => AV_PIX_FMT_NV12,
             Self::P010 => AV_PIX_FMT_P010LE,
@@ -156,13 +158,61 @@ impl PixelFormat {
 
 impl VideoDecoder {
     pub fn open(input: &InputContext, config: VideoDecoderConfig) -> Result<Self> {
+        let hw_device = match config.mode {
+            DecodeMode::Cpu => None,
+            DecodeMode::Gpu(GpuBackend::Cuda) => {
+                return Err(FfmpegError::new(
+                    "VideoDecoder::open",
+                    "CUDA hardware decode is not supported",
+                )
+                .with_backend(GpuBackend::Cuda));
+            }
+            DecodeMode::Gpu(backend) => Some(HwDeviceContext::create(backend)?),
+        };
+        Self::open_with_device(input, config, hw_device)
+    }
+
+    /// Opens a decoder whose frames [`receive_gpu_frame`](Self::receive_gpu_frame) returns on
+    /// `device`, for a renderer on that device to read. Fails for what that path doesn't cover:
+    /// FFmpeg older than 8.0, and anything other than 8-bit 4:2:0 H.264, HEVC or AV1.
+    #[cfg(feature = "vulkan")]
+    pub fn open_on_vulkan_device(
+        input: &InputContext,
+        stream_index: usize,
+        device: &crate::gpu::VulkanDevice,
+    ) -> Result<Self> {
+        let parameters = input.stream_parameters(stream_index)?;
+        let (codec_id, format) = unsafe { ((*parameters).codec_id, (*parameters).format) };
+        ensure_vulkan_texture_decode(
+            VideoCodec::from_av_codec_id(codec_id),
+            format,
+            unsafe { sys::avcodec_version() } >> 16,
+        )?;
+        let hw_device = device.hw_device()?;
+        let mut decoder = Self::open_with_device(
+            input,
+            VideoDecoderConfig {
+                stream_index,
+                mode: DecodeMode::Gpu(GpuBackend::Vulkan),
+            },
+            Some(HwDeviceContext::from_ref(&hw_device)?),
+        )?;
+        decoder.vulkan_device = Some(device.clone());
+        Ok(decoder)
+    }
+
+    fn open_with_device(
+        input: &InputContext,
+        config: VideoDecoderConfig,
+        hw_device: Option<HwDeviceContext>,
+    ) -> Result<Self> {
         let parameters = input.stream_parameters(config.stream_index)?;
         let codec_id = unsafe { (*parameters).codec_id };
         let stable_codec = VideoCodec::from_av_codec_id(codec_id);
-        let codec = find_decoder(codec_id)?;
-        if let DecodeMode::Gpu(backend) = config.mode {
-            ensure_hardware_decoder(codec, stable_codec, backend)?;
-        }
+        let codec = match config.mode {
+            DecodeMode::Cpu => find_decoder(codec_id)?,
+            DecodeMode::Gpu(backend) => find_hardware_decoder(codec_id, stable_codec, backend)?,
+        };
         let context = unsafe { sys::avcodec_alloc_context3(codec) };
         if context.is_null() {
             return Err(FfmpegError::new(
@@ -171,7 +221,7 @@ impl VideoDecoder {
             ));
         }
 
-        let mut decoder = Self {
+        let decoder = Self {
             stream_index: config.stream_index,
             mode: config.mode,
             codec: stable_codec,
@@ -179,7 +229,10 @@ impl VideoDecoder {
             rotation: crate::format::display_rotation(parameters),
             context,
             scaler: ptr::null_mut(),
-            hw_device: None,
+            hw_device,
+            #[cfg(feature = "vulkan")]
+            vulkan_device: None,
+            discarded_pts: HashSet::new(),
         };
 
         unsafe {
@@ -201,15 +254,13 @@ impl VideoDecoder {
             }
         }
 
-        if let DecodeMode::Gpu(backend) = config.mode {
-            decoder.hw_device = Some(HwDeviceContext::create(backend)?);
+        if let (DecodeMode::Gpu(backend), Some(hw_device)) = (config.mode, &decoder.hw_device) {
             unsafe {
-                (*decoder.context).hw_device_ctx =
-                    sys::av_buffer_ref(decoder.hw_device.as_ref().unwrap().ptr);
+                (*decoder.context).hw_device_ctx = sys::av_buffer_ref(hw_device.ptr);
                 (*decoder.context).get_format = match backend {
                     GpuBackend::Metal => Some(force_metal_pixel_format),
                     GpuBackend::Vulkan => Some(force_vulkan_pixel_format),
-                    GpuBackend::Cuda => Some(force_cuda_pixel_format),
+                    GpuBackend::Cuda => None,
                 };
             }
         }
@@ -245,9 +296,16 @@ impl VideoDecoder {
         if packet.stream_index() != self.stream_index {
             return Ok(());
         }
+        let undiscarded = if self.drops_by_timestamp() && packet.inner.is_discarded() {
+            self.discarded_pts.extend(packet.pts());
+            Some(packet.inner.clone_without_discard()?)
+        } else {
+            None
+        };
+        let packet = undiscarded.as_ref().unwrap_or(&packet.inner);
         unsafe {
             ffi::check(
-                sys::avcodec_send_packet(self.context, packet.inner.as_ptr()),
+                sys::avcodec_send_packet(self.context, packet.as_ptr()),
                 "avcodec_send_packet",
             )
             .map_err(|error| {
@@ -269,6 +327,14 @@ impl VideoDecoder {
 
     pub fn flush(&mut self) {
         unsafe { sys::avcodec_flush_buffers(self.context) };
+        self.discarded_pts.clear();
+    }
+
+    /// FFmpeg's native AV1 decoder keeps a packet's discard flag on every frame that packet
+    /// decodes, so a hidden frame from an edit list's preroll is dropped when a kept packet shows
+    /// it. Hardware AV1 therefore decodes with the flag cleared and drops frames by timestamp.
+    fn drops_by_timestamp(&self) -> bool {
+        self.codec == VideoCodec::Av1 && matches!(self.mode, DecodeMode::Gpu(_))
     }
 
     pub fn receive_cpu_frame(&mut self) -> Result<Option<CpuVideoFrame>> {
@@ -317,23 +383,27 @@ impl VideoDecoder {
     }
 
     fn receive_frame(&mut self, frame: &mut AvFrame) -> Result<ReceiveStatus> {
-        let result = unsafe { sys::avcodec_receive_frame(self.context, frame.as_mut_ptr()) };
-        if result == sys::AVERROR(libc::EAGAIN) || result == sys::AVERROR_EOF {
-            return Ok(ReceiveStatus::Again);
+        loop {
+            let result = unsafe { sys::avcodec_receive_frame(self.context, frame.as_mut_ptr()) };
+            if result == sys::AVERROR(libc::EAGAIN) || result == sys::AVERROR_EOF {
+                return Ok(ReceiveStatus::Again);
+            }
+            if result < 0 {
+                return Err(ffi::error_from_code("avcodec_receive_frame", result)
+                    .with_codec(self.codec)
+                    .with_stream_index(self.stream_index));
+            }
+            if !frame
+                .pts()
+                .is_some_and(|pts| self.discarded_pts.remove(&pts))
+            {
+                return Ok(ReceiveStatus::Frame);
+            }
         }
-        if result < 0 {
-            return Err(ffi::error_from_code("avcodec_receive_frame", result)
-                .with_codec(self.codec)
-                .with_stream_index(self.stream_index));
-        }
-        Ok(ReceiveStatus::Frame)
     }
 
     fn frame_to_rgba(&mut self, frame: &AvFrame) -> Result<CpuVideoFrame> {
-        if matches!(
-            frame.format(),
-            AV_PIX_FMT_CUDA | AV_PIX_FMT_VULKAN | AV_PIX_FMT_VIDEOTOOLBOX
-        ) {
+        if matches!(frame.format(), AV_PIX_FMT_VULKAN | AV_PIX_FMT_VIDEOTOOLBOX) {
             let mut cpu_frame = AvFrame::new()?;
             unsafe {
                 ffi::check(
@@ -365,10 +435,13 @@ impl VideoDecoder {
         let stride = (width as usize).checked_mul(4).ok_or_else(|| {
             FfmpegError::new("receive_rgba_frame", "decoded frame row is too large")
         })?;
-        let av_stride = i32::try_from(stride).map_err(|_| {
+        // swscale's x86 YUV-to-RGBA kernels convert whole groups of pixels and drop the tail of a row
+        // that has no padding, so it converts into rows padded to 64 bytes and packs them afterwards.
+        let padded_stride = stride.div_ceil(64) * 64;
+        let av_stride = i32::try_from(padded_stride).map_err(|_| {
             FfmpegError::new("receive_rgba_frame", "decoded frame row is too large")
         })?;
-        let len = stride
+        let len = padded_stride
             .checked_mul(height as usize)
             .ok_or_else(|| FfmpegError::new("receive_rgba_frame", "decoded frame is too large"))?;
         let mut data = vec![0; len];
@@ -421,6 +494,16 @@ impl VideoDecoder {
             )?;
         }
 
+        if padded_stride != stride {
+            for row in 1..height as usize {
+                data.copy_within(
+                    row * padded_stride..row * padded_stride + stride,
+                    row * stride,
+                );
+            }
+            data.truncate(stride * height as usize);
+        }
+
         let (width, height, data) = rotate_rgba(width, height, data, self.rotation);
         Ok(CpuVideoFrame {
             width,
@@ -434,14 +517,6 @@ impl VideoDecoder {
 
     fn frame_to_gpu(&self, frame: AvFrame) -> Result<GpuVideoFrame> {
         match (self.mode, frame.format()) {
-            #[cfg(feature = "cuda")]
-            (DecodeMode::Gpu(GpuBackend::Cuda), AV_PIX_FMT_CUDA) => self.frame_to_cuda(frame),
-            #[cfg(not(feature = "cuda"))]
-            (DecodeMode::Gpu(GpuBackend::Cuda), AV_PIX_FMT_CUDA) => Err(FfmpegError::new(
-                "receive_gpu_frame",
-                "crate was built without the cuda feature",
-            )
-            .with_backend(GpuBackend::Cuda)),
             #[cfg(feature = "metal")]
             (DecodeMode::Gpu(GpuBackend::Metal), AV_PIX_FMT_VIDEOTOOLBOX) => {
                 self.frame_to_metal(&frame)
@@ -453,14 +528,7 @@ impl VideoDecoder {
             )
             .with_backend(GpuBackend::Metal)),
             #[cfg(feature = "vulkan")]
-            (DecodeMode::Gpu(GpuBackend::Vulkan), AV_PIX_FMT_VULKAN) => {
-                let _ = frame;
-                Err(FfmpegError::new(
-                    "receive_gpu_frame",
-                    "ffmpeg-sys-next does not expose AVVkFrame, so decoded Vulkan image handles cannot be exported safely yet",
-                )
-                .with_backend(GpuBackend::Vulkan))
-            }
+            (DecodeMode::Gpu(GpuBackend::Vulkan), AV_PIX_FMT_VULKAN) => self.frame_to_vulkan(frame),
             #[cfg(not(feature = "vulkan"))]
             (DecodeMode::Gpu(GpuBackend::Vulkan), AV_PIX_FMT_VULKAN) => Err(FfmpegError::new(
                 "receive_gpu_frame",
@@ -491,43 +559,30 @@ impl VideoDecoder {
         }))
     }
 
-    #[cfg(feature = "cuda")]
-    fn frame_to_cuda(&self, frame: AvFrame) -> Result<GpuVideoFrame> {
-        let device_ptr = frame.data(0) as u64;
-        let pitch = frame.line_size(0);
-        let width = frame.width();
-        let height = frame.height();
-        let pts = frame.pts();
-        if device_ptr == 0 || pitch <= 0 {
+    #[cfg(feature = "vulkan")]
+    fn frame_to_vulkan(&self, frame: AvFrame) -> Result<GpuVideoFrame> {
+        let Some(device) = &self.vulkan_device else {
             return Err(FfmpegError::new(
                 "receive_gpu_frame",
-                "CUDA decoded frame did not contain a valid device pointer and pitch",
+                "this decoder has its own Vulkan device; use open_on_vulkan_device to decode on a renderer's",
             )
-            .with_backend(GpuBackend::Cuda));
-        }
+            .with_backend(GpuBackend::Vulkan));
+        };
+        // The renderer reads NV12. Failing here moves the source to the CPU.
         let pixel_format = frame
             .hw_sw_format()
             .map(PixelFormat::from_av_pixel_format)
             .unwrap_or(PixelFormat::Unknown);
-        // The renderer's CUDA converter only reads NV12. Failing here moves the source to the CPU.
         if pixel_format != PixelFormat::Nv12 {
             return Err(FfmpegError::new(
                 "receive_gpu_frame",
-                format!("CUDA decoded {pixel_format:?} frames, only NV12 converts to RGBA"),
+                format!("Vulkan decoded {pixel_format:?} frames, only NV12 converts to RGBA"),
             )
-            .with_backend(GpuBackend::Cuda));
+            .with_backend(GpuBackend::Vulkan));
         }
-        Ok(GpuVideoFrame::Cuda(
-            crate::gpu::CudaDecodedFrame::from_av_frame(
-                frame,
-                device_ptr,
-                width,
-                height,
-                pitch as u64,
-                pixel_format,
-                pts,
-            ),
-        ))
+        let yuv_to_rgb = yuv_to_rgb(&frame);
+        crate::gpu::VulkanDecodedFrame::new(frame, device.clone(), yuv_to_rgb)
+            .map(GpuVideoFrame::Vulkan)
     }
 }
 
@@ -538,22 +593,13 @@ fn set_source_colorspace(scaler: *mut sys::SwsContext, frame: &AvFrame) -> Resul
     const DEFAULT_CONTRAST: i32 = 1 << 16;
     const DEFAULT_SATURATION: i32 = 1 << 16;
 
-    let full_range = frame.color_range() == AVCOL_RANGE_JPEG
-        || matches!(
-            frame.format(),
-            AV_PIX_FMT_YUVJ411P
-                | AV_PIX_FMT_YUVJ420P
-                | AV_PIX_FMT_YUVJ422P
-                | AV_PIX_FMT_YUVJ440P
-                | AV_PIX_FMT_YUVJ444P
-        );
     unsafe {
         let coefficients = sys::sws_getCoefficients(source_matrix(frame));
         ffi::check(
             sys::sws_setColorspaceDetails(
                 scaler,
                 coefficients,
-                i32::from(full_range),
+                i32::from(is_full_range(frame)),
                 coefficients,
                 1,
                 DEFAULT_BRIGHTNESS,
@@ -562,6 +608,39 @@ fn set_source_colorspace(scaler: *mut sys::SwsContext, frame: &AvFrame) -> Resul
             ),
             "sws_setColorspaceDetails",
         )
+    }
+}
+
+fn is_full_range(frame: &AvFrame) -> bool {
+    frame.color_range() == AVCOL_RANGE_JPEG
+        || matches!(
+            frame.format(),
+            AV_PIX_FMT_YUVJ411P
+                | AV_PIX_FMT_YUVJ420P
+                | AV_PIX_FMT_YUVJ422P
+                | AV_PIX_FMT_YUVJ440P
+                | AV_PIX_FMT_YUVJ444P
+        )
+}
+
+/// The conversion swscale would use for this frame, from the same coefficients.
+#[cfg(feature = "vulkan")]
+fn yuv_to_rgb(frame: &AvFrame) -> crate::gpu::YuvToRgb {
+    let coefficients = unsafe { sys::sws_getCoefficients(source_matrix(frame)) };
+    let [crv, cbu, cgu, cgv] = std::array::from_fn(|index| {
+        let value = unsafe { *coefficients.add(index) };
+        value as f32 / 65536.0
+    });
+    let full_range = is_full_range(frame);
+    // swscale's coefficients are for limited-range chroma.
+    let chroma_scale = if full_range { 224.0 / 255.0 } else { 1.0 };
+    crate::gpu::YuvToRgb {
+        y_scale: if full_range { 1.0 } else { 255.0 / 219.0 },
+        y_offset: if full_range { 0.0 } else { 16.0 },
+        r_cr: crv * chroma_scale,
+        g_cb: -cgu * chroma_scale,
+        g_cr: -cgv * chroma_scale,
+        b_cb: cbu * chroma_scale,
     }
 }
 
@@ -612,13 +691,6 @@ unsafe extern "C" fn force_vulkan_pixel_format(
     force_pixel_format(formats, AV_PIX_FMT_VULKAN)
 }
 
-unsafe extern "C" fn force_cuda_pixel_format(
-    _context: *mut sys::AVCodecContext,
-    formats: *const sys::AVPixelFormat,
-) -> sys::AVPixelFormat {
-    force_pixel_format(formats, AV_PIX_FMT_CUDA)
-}
-
 fn force_pixel_format(
     formats: *const sys::AVPixelFormat,
     desired: sys::AVPixelFormat,
@@ -667,6 +739,18 @@ impl HwDeviceContext {
         }
         Ok(Self { ptr })
     }
+
+    #[cfg(feature = "vulkan")]
+    fn from_ref(device: &crate::encode::hw::AvBufferRef) -> Result<Self> {
+        let ptr = unsafe { sys::av_buffer_ref(device.ptr) };
+        if ptr.is_null() {
+            return Err(
+                FfmpegError::new("av_buffer_ref", "failed to reference the Vulkan device")
+                    .with_backend(GpuBackend::Vulkan),
+            );
+        }
+        Ok(Self { ptr })
+    }
 }
 
 fn hw_device_type(backend: GpuBackend) -> sys::AVHWDeviceType {
@@ -706,18 +790,41 @@ fn find_decoder(codec_id: sys::AVCodecID) -> Result<*const sys::AVCodec> {
     }
 }
 
-fn ensure_hardware_decoder(
-    decoder: *const sys::AVCodec,
+/// Finds a decoder for `codec_id` that can decode on `backend`. The default decoder may not: AV1
+/// defaults to libdav1d where FFmpeg was built with it, and only the native decoder has hardware
+/// acceleration.
+fn find_hardware_decoder(
+    codec_id: sys::AVCodecID,
     codec: VideoCodec,
     backend: GpuBackend,
-) -> Result<()> {
+) -> Result<*const sys::AVCodec> {
+    let mut iterator = ptr::null_mut();
+    loop {
+        let decoder = unsafe { sys::av_codec_iterate(&mut iterator) };
+        if decoder.is_null() {
+            return Err(FfmpegError::new(
+                "VideoDecoder::open",
+                format!("{backend:?} hardware decode is unavailable for {codec:?}"),
+            )
+            .with_backend(backend)
+            .with_codec(codec));
+        }
+        let matches_codec =
+            unsafe { (*decoder).id == codec_id && sys::av_codec_is_decoder(decoder) != 0 };
+        if matches_codec && decoder_supports_backend(decoder, backend) {
+            return Ok(decoder);
+        }
+    }
+}
+
+fn decoder_supports_backend(decoder: *const sys::AVCodec, backend: GpuBackend) -> bool {
     let device_type = hw_device_type(backend);
     let pixel_format = hw_pixel_format(backend);
     let mut index = 0;
     loop {
         let config = unsafe { sys::avcodec_get_hw_config(decoder, index) };
         if config.is_null() {
-            break;
+            return false;
         }
         let supports_device_context = unsafe {
             ((*config).methods & sys::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32) != 0
@@ -725,15 +832,64 @@ fn ensure_hardware_decoder(
         let matches_backend =
             unsafe { (*config).device_type == device_type && (*config).pix_fmt == pixel_format };
         if supports_device_context && matches_backend {
-            return Ok(());
+            return true;
         }
         index += 1;
     }
+}
 
-    Err(FfmpegError::new(
-        "VideoDecoder::open",
-        format!("{backend:?} hardware decode is unavailable for {codec:?}"),
+/// libavcodec 62 is FFmpeg 8.0. VP9 stays out: on NVIDIA it decodes wrongly from the second inter
+/// frame.
+#[cfg(feature = "vulkan")]
+fn ensure_vulkan_texture_decode(codec: VideoCodec, format: i32, avcodec_major: u32) -> Result<()> {
+    let refusal = if avcodec_major < 62 {
+        format!(
+            "Vulkan decode needs FFmpeg 8.0 or newer, but this FFmpeg has libavcodec {avcodec_major}"
+        )
+    } else if !matches!(codec, VideoCodec::H264 | VideoCodec::Hevc | VideoCodec::Av1) {
+        format!("Vulkan decode doesn't cover {codec:?}")
+    } else if ![
+        AV_PIX_FMT_NONE as i32,
+        AV_PIX_FMT_YUV420P as i32,
+        AV_PIX_FMT_YUVJ420P as i32,
+        AV_PIX_FMT_NV12 as i32,
+    ]
+    .contains(&format)
+    {
+        "Vulkan decode only covers 8-bit 4:2:0 sources".to_string()
+    } else {
+        return Ok(());
+    };
+    Err(
+        FfmpegError::new("VideoDecoder::open_on_vulkan_device", refusal)
+            .with_backend(GpuBackend::Vulkan)
+            .with_codec(codec),
     )
-    .with_backend(backend)
-    .with_codec(codec))
+}
+
+#[cfg(all(test, feature = "vulkan"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vulkan_texture_decode_covers_8_bit_4_2_0_h264_hevc_and_av1_from_ffmpeg_8() {
+        let yuv420p = AV_PIX_FMT_YUV420P as i32;
+        for codec in [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1] {
+            assert!(ensure_vulkan_texture_decode(codec, yuv420p, 62).is_ok());
+            assert!(ensure_vulkan_texture_decode(codec, AV_PIX_FMT_YUVJ420P as i32, 63).is_ok());
+            assert!(ensure_vulkan_texture_decode(codec, yuv420p, 61).is_err());
+            assert!(ensure_vulkan_texture_decode(codec, AV_PIX_FMT_P010LE as i32, 62).is_err());
+            assert!(
+                ensure_vulkan_texture_decode(
+                    codec,
+                    sys::AVPixelFormat::AV_PIX_FMT_YUV420P10LE as i32,
+                    62
+                )
+                .is_err()
+            );
+        }
+        for codec in [VideoCodec::Vp9, VideoCodec::ProRes, VideoCodec::Unknown] {
+            assert!(ensure_vulkan_texture_decode(codec, yuv420p, 62).is_err());
+        }
+    }
 }

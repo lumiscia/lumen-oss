@@ -20,7 +20,7 @@ pub const HARDWARE_DECODE_ENV: &str = "LUMEN_HARDWARE_DECODE";
 pub(super) struct LocalMediaStore {
     root: PathBuf,
     font_root: Option<PathBuf>,
-    video_options: FfmpegResolverOptions,
+    pub(super) video_options: FfmpegResolverOptions,
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
     videos: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
@@ -198,14 +198,16 @@ impl LocalMediaStore {
             return Ok(Arc::clone(resolver));
         }
 
-        let resolver =
-            match FfmpegVideoResolver::open_with_options(source.to_string(), self.video_options) {
-                Ok(resolver) => Arc::new(resolver),
-                Err(error) => {
-                    tracing::warn!(source, %error, "failed opening video media resolver");
-                    return Err(error);
-                }
-            };
+        let resolver = match FfmpegVideoResolver::open_with_options(
+            source.to_string(),
+            self.video_options.clone(),
+        ) {
+            Ok(resolver) => Arc::new(resolver),
+            Err(error) => {
+                tracing::warn!(source, %error, "failed opening video media resolver");
+                return Err(error);
+            }
+        };
         tracing::info!(
             source,
             width = resolver.metadata().width,
@@ -252,9 +254,7 @@ impl std::fmt::Debug for LocalMediaStore {
 
 fn video_resolver_options_from_env() -> FfmpegResolverOptions {
     match env::var(HARDWARE_DECODE_ENV) {
-        Ok(value) => FfmpegResolverOptions {
-            prefer_hardware_decode: matches_env_flag(&value),
-        },
+        Ok(value) => FfmpegResolverOptions::with_hardware_decode(matches_env_flag(&value)),
         Err(_) => FfmpegResolverOptions::default(),
     }
 }
