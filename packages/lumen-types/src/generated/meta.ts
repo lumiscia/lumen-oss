@@ -4,7 +4,7 @@
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
 export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
-export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "channel_shuffle" | "clip" | "color_grade" | "crop" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeKind = "alpha_premultiply" | "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "memo" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
 
@@ -885,10 +885,6 @@ export type Color =
 export type HexColor = `#${string}`;
 
 export type BooleanOperation = "union" | "intersect" | "subtract" | "xor";
-export type ChannelShuffleAlpha = "red" | "green" | "blue" | "alpha" | "zero" | "one";
-export type ChannelShuffleBlue = "red" | "green" | "blue" | "alpha" | "zero" | "one";
-export type ChannelShuffleGreen = "red" | "green" | "blue" | "alpha" | "zero" | "one";
-export type ChannelShuffleRed = "red" | "green" | "blue" | "alpha" | "zero" | "one";
 export type ClipEnd = "hide" | "hold" | "loop";
 export type ColorGradeInterpolation = "nearest" | "linear";
 export type MediaInKind = "image" | "video";
@@ -1086,15 +1082,6 @@ export interface BooleanNode extends CompositionNodeBase<"boolean"> {
   readonly params?: {
     readonly "operation"?: ExpressionValue<BooleanOperation>;
     readonly "threshold"?: ExpressionValue<number>;
-  };
-}
-
-export interface ChannelShuffleNode extends CompositionNodeBase<"channel_shuffle"> {
-  readonly params?: {
-    readonly "alpha"?: ChannelShuffleAlpha;
-    readonly "blue"?: ChannelShuffleBlue;
-    readonly "green"?: ChannelShuffleGreen;
-    readonly "red"?: ChannelShuffleRed;
   };
 }
 
@@ -1342,7 +1329,6 @@ export interface CompositionNodeByKind {
   readonly "background": BackgroundNode;
   readonly "blur": BlurNode;
   readonly "boolean": BooleanNode;
-  readonly "channel_shuffle": ChannelShuffleNode;
   readonly "clip": ClipNode;
   readonly "color_grade": ColorGradeNode;
   readonly "crop": CropNode;
@@ -1377,9 +1363,6 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "boolean": Omit<BooleanNode, "id"> & {
-    readonly id?: number;
-  };
-  readonly "channel_shuffle": Omit<ChannelShuffleNode, "id"> & {
     readonly id?: number;
   };
   readonly "clip": Omit<ClipNode, "id"> & {
@@ -1452,7 +1435,6 @@ export interface NodeInputPortNameByKind {
   readonly "background": never;
   readonly "blur": "source";
   readonly "boolean": "a" | "b";
-  readonly "channel_shuffle": "source";
   readonly "clip": "source";
   readonly "color_grade": "source";
   readonly "crop": "source";

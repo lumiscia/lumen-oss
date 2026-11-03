@@ -119,7 +119,6 @@ fn alpha_at(columns: [u8; 10]) -> Expect {
 #[test]
 fn operators_produce_hand_computed_colors() {
     let lift = json!({ "exposure": 1, "offset": 0.5 });
-    let swap = json!({ "red": "blue", "blue": "red", "alpha": "one" });
     let green_shadow = json!({ "offset_x": 0, "offset_y": 0, "radius": 0,
         "color": [0, 255, 0, 255], "opacity": 1 });
     let level = json!({ "black_point": 0.1, "white_point": 0.9, "gamma": 1.2,
@@ -215,12 +214,6 @@ fn operators_produce_hand_computed_colors() {
             "color grade",
             through([200, 100, 60, 128], "color_grade", lut),
             [100, 38, 15, 128],
-        ),
-        // Premultiplied (32, 64, 128, 128) with red and blue swapped and alpha forced to 1.
-        (
-            "channel shuffle",
-            through([64, 128, 255, 128], "channel_shuffle", swap),
-            [128, 64, 32, 255],
         ),
     ];
     let mut cases: Vec<_> = rows

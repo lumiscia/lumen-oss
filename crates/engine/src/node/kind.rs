@@ -109,7 +109,6 @@ node_kinds! {
     Opacity(processing::opacity::Opacity),
     AlphaPremultiply(processing::alpha_premultiply::AlphaPremultiply),
     Blur(processing::blur::Blur),
-    ChannelShuffle(processing::channel_shuffle::ChannelShuffle),
     ColorGrade(processing::color_grade::ColorGrade),
     Exposure(processing::exposure::Exposure),
     HueSaturation(processing::hue_saturation::HueSaturation),
