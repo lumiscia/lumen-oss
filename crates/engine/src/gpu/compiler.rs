@@ -30,6 +30,13 @@ pub trait GpuCompileNode {
 /// their params per frame each time a plan compiles.
 const MAX_UNION_FRAMES: u32 = 3600;
 
+/// What `CompileContext::compute_source` added to the plan.
+pub(crate) struct ComputeSource<const STORAGE: usize> {
+    pub(crate) output: RasterHandle,
+    pub(crate) params: lumen_gpu::BufferId,
+    pub(crate) storage: [lumen_gpu::BufferId; STORAGE],
+}
+
 /// The domain a unary filter writes, and so how it reads its source.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FilterDomain {
@@ -702,6 +709,37 @@ impl<'a> CompileContext<'a> {
             FilterDomain::Bounded(domain) => domain,
             _ => source.domain,
         };
+        let compute = self.compute_source(
+            node_id,
+            label,
+            "apply",
+            shader,
+            params_size,
+            Some(source.texture),
+            [],
+            domain,
+        );
+        Ok((source, compute.output.texture, compute.params))
+    }
+
+    /// Adds a compute pass that writes a new texture over the texels of `domain`. Its bindings
+    /// are, in order, `source` if there is one, the uniforms, a read-only storage buffer of each
+    /// name and size in `storage`, and the output.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every compute source passes the same flat set of compile inputs"
+    )]
+    pub(crate) fn compute_source<const STORAGE: usize>(
+        &mut self,
+        node_id: NodeId,
+        label: &str,
+        pass: &str,
+        shader: &str,
+        uniforms_size: u64,
+        source: Option<lumen_gpu::TextureId>,
+        storage: [(&str, u64); STORAGE],
+        domain: lumen_gpu::TextureDomain,
+    ) -> ComputeSource<STORAGE> {
         let size = domain.storage_size;
         let texture = self.builder.texture(
             Some(format!("{label}:{}:output", node_id.0)),
@@ -710,42 +748,63 @@ impl<'a> CompileContext<'a> {
         );
         let params = self.builder.buffer(
             Some(format!("{label}:{}:params", node_id.0)),
-            lumen_gpu::BufferDesc::uniform(params_size),
+            lumen_gpu::BufferDesc::uniform(uniforms_size),
         );
+        let storage = storage.map(|(name, size)| {
+            self.builder.buffer(
+                Some(format!("{label}:{}:{name}", node_id.0)),
+                lumen_gpu::BufferDesc::storage(size),
+            )
+        });
+
+        let stages = lumen_gpu::wgpu::ShaderStages::COMPUTE;
+        let mut layout = Vec::new();
+        let mut bindings = Vec::new();
+        if let Some(source) = source {
+            layout.push(lumen_gpu::BindingLayoutEntry::texture(0, stages));
+            bindings.push(lumen_gpu::Binding::sampled_texture(0, 0, source));
+        }
+        let index = layout.len() as u32;
+        layout.push(lumen_gpu::BindingLayoutEntry::uniform(index, stages));
+        bindings.push(lumen_gpu::Binding::uniform(0, index, params));
+        for buffer in storage {
+            let index = layout.len() as u32;
+            layout.push(lumen_gpu::BindingLayoutEntry::storage(index, stages, true));
+            bindings.push(lumen_gpu::Binding::storage_buffer(0, index, buffer));
+        }
+        let index = layout.len() as u32;
+        layout.push(lumen_gpu::BindingLayoutEntry::storage_texture(
+            index,
+            stages,
+            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
+        ));
+        bindings.push(lumen_gpu::Binding::storage_texture(0, index, texture));
+
         let program = self.builder.program(lumen_gpu::ProgramDesc::Compute(
             lumen_gpu::ComputeProgramDesc {
                 label: Some(label.to_string()),
                 shader: shader.to_string(),
                 entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::texture(
-                        0,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::uniform(
-                        1,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                    ),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        2,
-                        lumen_gpu::wgpu::ShaderStages::COMPUTE,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                ]),
+                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
             },
         ));
         self.builder.compute_pass(lumen_gpu::ComputePassDesc {
-            label: Some(format!("{label}:{}:apply", node_id.0)),
+            label: Some(format!("{label}:{}:{pass}", node_id.0)),
             program,
-            bindings: vec![
-                lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
-                lumen_gpu::Binding::uniform(0, 1, params),
-                lumen_gpu::Binding::storage_texture(0, 2, texture),
-            ],
+            bindings,
             dispatch: dispatch_for(size),
         });
-        Ok((source, texture, params))
+        ComputeSource {
+            output: RasterHandle {
+                texture,
+                domain,
+                metadata: RasterMetadata::default(),
+                bounds: None,
+            },
+            params,
+            storage,
+        }
     }
 
     /// A canvas-sized transparent raster, which stores a single texel. Textures start zeroed

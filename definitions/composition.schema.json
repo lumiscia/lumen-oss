@@ -3628,20 +3628,20 @@
                     "anyOf": [
                       {
                         "minimum": 0.0,
-                        "type": "integer"
+                        "type": "number"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
-                    "default": 1,
-                    "description": "Shape height in pixels; 0 draws nothing. Ignored for polygon geometry.",
+                    "default": 1.0,
+                    "description": "Shape height in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel\ntall. Ignored for polygon geometry.",
                     "title": "Height",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
                     },
-                    "x-lumen-kind": "int"
+                    "x-lumen-kind": "float"
                   },
                   "motion_blur": {
                     "anyOf": [
@@ -3800,20 +3800,20 @@
                     "anyOf": [
                       {
                         "minimum": 0.0,
-                        "type": "integer"
+                        "type": "number"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
-                    "default": 1,
-                    "description": "Shape width in pixels; 0 draws nothing. Ignored for polygon geometry.",
+                    "default": 1.0,
+                    "description": "Shape width in pixels; 0 draws nothing and anything thinner than a pixel draws a pixel\nwide. Ignored for polygon geometry.",
                     "title": "Width",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 1.0
                     },
-                    "x-lumen-kind": "int"
+                    "x-lumen-kind": "float"
                   }
                 },
                 "type": "object"

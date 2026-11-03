@@ -110,7 +110,30 @@ fn shape_coverage() -> Vec<Case> {
         )
     };
 
+    let fractional_width = |width: f64| {
+        shape(
+            (8, 4),
+            json!({ "position": [2, 0], "width": width, "height": 4, "fill_paint": RED }),
+        )
+    };
+
     vec![
+        Case::new(
+            "a fractional width covers the fraction of its last pixel",
+            fractional_width(2.5),
+            Expect::Probes(vec![
+                (2, 1, RED),
+                (3, 1, RED),
+                (4, 1, [128, 0, 0, 128]),
+                (5, 1, CLEAR),
+            ]),
+        )
+        .tolerance(2),
+        Case::new(
+            "a width under a pixel draws a pixel wide",
+            fractional_width(0.25),
+            Expect::Probes(vec![(1, 1, CLEAR), (2, 1, RED), (3, 1, CLEAR)]),
+        ),
         Case::new(
             "polygon draws its points, not a rectangle",
             triangle("0,0; 12,0; 0,12"),
