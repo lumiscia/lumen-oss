@@ -70,7 +70,7 @@
       "id": 5,
       "type": "text",
       "params": {
-        "content": "shape, path, text, boolean, raster_multimerge, wgsl_shader, curves, blur, shadow",
+        "content": "shape, path, text, boolean, raster_multimerge, wgsl_shader, color_grade, blur, shadow",
         "font_family": "Helvetica Neue",
         "font_size": 22,
         "font_weight": 400,
@@ -99,9 +99,9 @@
     },
     {
       "id": 8,
-      "type": "curves",
+      "type": "color_grade",
       "params": {
-        "curve_source": "rgb1d:0,0,0;0.22,0.18,0.28;1,1,1",
+        "lut_source": "rgb1d:0,0,0;0.22,0.18,0.28;1,1,1",
         "strength": 0.75
       }
     },

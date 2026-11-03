@@ -96,39 +96,6 @@ pub(crate) struct BlurParams {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct CurvesParams {
-    pub(crate) values: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct CurvesTable {
-    entries: [[f32; 4]; LUT_TABLE_SIZE],
-}
-
-impl CurvesTable {
-    pub(crate) fn parse(node_id: NodeId, source: &str) -> crate::Result<Self> {
-        let stops = parse_lut_stops(node_id, source)?;
-        let mut entries = [[0.0; 4]; LUT_TABLE_SIZE];
-        for (index, entry) in entries.iter_mut().enumerate() {
-            let value = index as f32 / (LUT_TABLE_SIZE - 1) as f32;
-            let scaled = value * (stops.len() - 1) as f32;
-            let low = scaled.floor() as usize;
-            let high = (low + 1).min(stops.len() - 1);
-            let t = scaled - low as f32;
-            *entry = [
-                stops[low][0] + (stops[high][0] - stops[low][0]) * t,
-                stops[low][1] + (stops[high][1] - stops[low][1]) * t,
-                stops[low][2] + (stops[high][2] - stops[low][2]) * t,
-                1.0,
-            ];
-        }
-        Ok(Self { entries })
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ShadowParams {
     pub(crate) color: [f32; 4],
     pub(crate) values: [f32; 4],
