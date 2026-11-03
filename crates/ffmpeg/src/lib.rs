@@ -37,7 +37,10 @@ pub use gpu::{
     Objc2MetalDevice, Objc2MetalTexture,
 };
 #[cfg(feature = "vulkan")]
-pub use gpu::{VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame};
+pub use gpu::{
+    VulkanDecodedFrame, VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame,
+    YuvToRgb,
+};
 pub use video::{
     CpuVideoFrame, DecodeMode, EncodeMode, PixelFormat, VideoCodec, VideoDecoder,
     VideoDecoderConfig,

@@ -37,7 +37,7 @@ generate-expression-fixture:
     pnpm exec vitest run packages/lumen-shared/test/expression.test.ts --update
 
 generate-definitions:
-    cargo run -p lumen-generators -- definitions --out-dir {{ definitions_out }}
+    cargo run -p lumen-generators -- {{ definitions_out }}
     pnpm exec oxfmt --write {{ definitions_out }}
 
 verify-definitions:
@@ -45,6 +45,6 @@ verify-definitions:
     set -euo pipefail
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' EXIT
-    cargo run -p lumen-generators -- definitions --out-dir "$tmpdir"
+    cargo run -p lumen-generators -- "$tmpdir"
     pnpm exec oxfmt --write "$tmpdir"
     diff -u {{ definitions_out }}/composition.schema.json "$tmpdir/composition.schema.json"

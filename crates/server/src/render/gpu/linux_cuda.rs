@@ -1,7 +1,7 @@
 use std::{fs, time::Instant};
 
 use lumen_engine::composition::Composition;
-use lumen_engine::gpu::CudaNvencTargetPool;
+use lumen_engine::gpu::{CudaNvencTargetPool, GpuCompositionRenderer};
 use lumen_ffmpeg::{
     AudioEncoderConfig, EncodeMode, GpuBackend, MuxedEncoder, Rational, VideoCodec,
     VideoEncoderConfig,
@@ -14,10 +14,11 @@ use crate::render::{
     media::LocalMediaStore,
 };
 
-use super::{MEDIA_PREFETCH_LOOKAHEAD_FRAMES, create_gpu_renderer, prefetch_media_frames};
+use super::{MEDIA_PREFETCH_LOOKAHEAD_FRAMES, prefetch_media_frames};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_project_mp4_cuda(
+    mut renderer: GpuCompositionRenderer,
     composition: &Composition,
     media_store: &LocalMediaStore,
     width: u32,
@@ -35,22 +36,6 @@ pub(super) fn render_project_mp4_cuda(
         retryable: true,
     })?;
     let output_path = tmp.path().join("output.mp4");
-    let mut renderer = create_gpu_renderer().map_err(|err| RenderError {
-        code: "render_failed",
-        message: format!("failed to create GPU renderer: {err:#}"),
-        retryable: true,
-    })?;
-    renderer
-        .compile_with_media(
-            composition,
-            media_store,
-            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-        )
-        .map_err(|err| RenderError {
-            code: "render_failed",
-            message: format!("failed to compile composition: {err}"),
-            retryable: false,
-        })?;
 
     let size = lumen_gpu::Size::new(width, height);
     let target_pool =

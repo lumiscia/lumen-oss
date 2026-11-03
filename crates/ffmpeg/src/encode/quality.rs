@@ -1,3 +1,4 @@
+use crate::video::EncodeMode;
 use crate::{FfmpegError, Result};
 
 /// How an encoder trades bitrate against quality.
@@ -63,6 +64,7 @@ pub(crate) fn quality_options(
     encoder: &str,
     rate_control: RateControl,
     preset: Option<&str>,
+    mode: EncodeMode,
 ) -> Result<QualityOptions> {
     let family = EncoderFamily::of(encoder);
     let unsupported = |what: &str, supported: &str| {
@@ -75,8 +77,10 @@ pub(crate) fn quality_options(
     let mut options = Vec::new();
     let mut global_quality = None;
     // NVIDIA's Vulkan H.264 encode can stall forever at a GOP boundary with more than one frame in
-    // flight, with or without B-frames.
-    if encoder == "h264_vulkan" {
+    // flight on more than one queue, with or without B-frames. Zero-copy encodes use the one
+    // encode queue lumen lists on the shared device. CPU-upload encodes create their own device
+    // with every queue, and `limit_queues` does nothing on FFmpeg 8.0.
+    if encoder == "h264_vulkan" && mode == EncodeMode::CpuUpload {
         options.push(("async_depth", "1".to_string()));
     }
     if let Some(preset) = preset {
@@ -179,13 +183,14 @@ pub(crate) fn quality_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu::GpuBackend;
 
     fn options(
         encoder: &str,
         rate_control: RateControl,
         preset: Option<&str>,
     ) -> Result<QualityOptions> {
-        quality_options(encoder, rate_control, preset)
+        quality_options(encoder, rate_control, preset, EncodeMode::CpuUpload)
     }
 
     #[test]
@@ -232,6 +237,17 @@ mod tests {
                 .collect();
             assert_eq!(actual, expected, "{encoder}");
         }
+    }
+
+    #[test]
+    fn h264_vulkan_limits_frames_in_flight_only_when_it_owns_its_device() {
+        let async_depth = |mode| {
+            let quality =
+                quality_options("h264_vulkan", RateControl::Bitrate(1), None, mode).unwrap();
+            quality.options.contains(&("async_depth", "1".to_string()))
+        };
+        assert!(async_depth(EncodeMode::CpuUpload));
+        assert!(!async_depth(EncodeMode::GpuTexture(GpuBackend::Vulkan)));
     }
 
     #[test]
