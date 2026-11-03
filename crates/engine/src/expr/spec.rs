@@ -197,10 +197,7 @@ pub fn builtin_for_name(name: &str) -> Option<&'static BuiltinSpec> {
 
 impl BuiltinFn {
     pub fn spec(self) -> &'static BuiltinSpec {
-        BUILTINS
-            .iter()
-            .find(|spec| spec.builtin == self)
-            .expect("every builtin is declared in BUILTINS")
+        &BUILTINS[self as usize]
     }
 
     pub fn name(self) -> &'static str {

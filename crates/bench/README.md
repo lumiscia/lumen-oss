@@ -10,7 +10,7 @@ This crate is experimental. Benchmarks track renderer development and may change
 - `src/bench/composition/`: GPU composition render/encode modes and in-process benchmark compositions.
 - `src/bench/fixtures.rs`: JSON fixtures used only by the parse benchmark (not render workloads).
 - `src/bench/json_parse.rs`: JSON parse + validate timing.
-- `src/bench/decode.rs`, `src/bench/text.rs`: media decode and text benchmarks.
+- `src/bench/decode.rs`, `src/bench/expression.rs`, `src/bench/text.rs`: media decode, expression and text benchmarks.
 
 Render benchmarks build compositions in Rust under `src/bench/composition/compositions/` instead of loading `crates/local/demo/*.json`.
 
@@ -30,6 +30,7 @@ Supported native targets today are:
 - `lumen-bench-composition`: benchmark composition render and encode modes: `render-only`, `readback`, `cpu-encode`, `metal-videotoolbox`, `vulkan-video` and `vk-cuda-nvenc`. `--profile` adds a per-phase breakdown to any of them.
 - `lumen-bench-json-parse`: benchmark JSON composition parse and validate (uses demo JSON fixtures).
 - `lumen-bench-decode`: compare in-process decoding with the ffmpeg CLI. The CLI figure is wall clock for the whole process, including start-up and the rawvideo pipe, so the comparison is end-to-end. The run fails if the two paths decode different amounts of video.
+- `lumen-bench-expression`: time parsing and evaluating representative expressions, with no GPU or media.
 - `lumen-bench-text`: benchmark text layout, production raster/MSDF rendering (`--case raster` / `--case msdf`), emoji fallback, and expression-driven text measurement. Rendering varies font size each frame with bidi, combining marks, and wrapping.
 
 The `emoji` case is skipped when no loaded font covers the emoji. The `measure-*` cases run a fixed workload and reject `--font` and `--text-repeats`.

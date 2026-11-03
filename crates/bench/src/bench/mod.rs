@@ -2,6 +2,7 @@
 
 pub mod composition;
 pub mod decode;
+pub mod expression;
 pub mod json_parse;
 pub mod text;
 
