@@ -1226,6 +1226,10 @@ mod tests {
                 "prop `a` default: expected a color, got \"red\"",
             ),
             (
+                serde_json::json!({ "a": { "type": "color", "default": "#+f+f+f" } }),
+                "prop `a` default: expected a color, got \"#+f+f+f\"",
+            ),
+            (
                 serde_json::json!({ "a": { "type": "vec2", "default": [1] } }),
                 "expected a vec2",
             ),

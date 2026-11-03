@@ -1,4 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
+};
 
 use crate::gpu::{
     BoundFrame, CompiledOutput, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
@@ -17,17 +19,6 @@ pub enum ResizeMode {
     Stretch = 0,
     Fit = 1,
     Fill = 2,
-}
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
-)]
-#[repr(i64)]
-#[delegate(kind = "enum")]
-pub enum ResizeSampling {
-    Nearest = 0,
-    #[default]
-    Linear = 1,
 }
 
 /// Resamples a raster into a rectangle placed on the composition canvas.
@@ -49,8 +40,8 @@ pub struct ResizeParams {
     #[meta(kind = "enum", enum_type = ResizeMode)]
     pub mode: ResizeMode,
     /// Sampling filter used when resizing.
-    #[meta(kind = "enum", enum_type = ResizeSampling)]
-    pub sampling: ResizeSampling,
+    #[meta(kind = "enum", enum_type = RasterSampling)]
+    pub sampling: RasterSampling,
 }
 
 impl Default for ResizeParams {
@@ -61,7 +52,7 @@ impl Default for ResizeParams {
             width: 1,
             height: 1,
             mode: ResizeMode::Stretch,
-            sampling: ResizeSampling::Linear,
+            sampling: RasterSampling::Linear,
         }
     }
 }

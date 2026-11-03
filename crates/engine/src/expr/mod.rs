@@ -10,6 +10,7 @@ mod spec;
 
 use crate::{error::ExpressionError, graph::Graph};
 
+pub(crate) use ast::parse_hex_color;
 pub use ast::{BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp};
 pub use easing::Easing;
 pub use functions::FunctionScope;

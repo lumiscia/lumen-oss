@@ -148,7 +148,7 @@ impl PropKind {
                 .as_f64()
                 .map(ExpressionValue::Number)
                 .ok_or_else(invalid),
-            Self::Color => color_literal(value)
+            Self::Color => crate::json::parse_color(value)
                 .map(ExpressionValue::color_from_u8)
                 .ok_or_else(invalid),
             Self::Vec2 => match value.as_array().map(Vec::as_slice) {
@@ -161,27 +161,6 @@ impl PropKind {
             },
         }
     }
-}
-
-fn color_literal(value: &serde_json::Value) -> Option<[u8; 4]> {
-    if let Some(hex) = value.as_str().and_then(|text| text.strip_prefix('#')) {
-        if !matches!(hex.len(), 6 | 8) || !hex.is_ascii() {
-            return None;
-        }
-        let mut color = [255; 4];
-        for (index, channel) in color.iter_mut().take(hex.len() / 2).enumerate() {
-            *channel = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).ok()?;
-        }
-        return Some(color);
-    }
-    let channels = value
-        .as_array()
-        .filter(|items| matches!(items.len(), 3 | 4))?;
-    let mut color = [255; 4];
-    for (channel, item) in color.iter_mut().zip(channels) {
-        *channel = u8::try_from(item.as_u64()?).ok()?;
-    }
-    Some(color)
 }
 
 impl Composition {

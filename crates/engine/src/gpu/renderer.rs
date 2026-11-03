@@ -371,8 +371,15 @@ impl GpuCompositionRenderer {
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
-        self.ensure_compiled_for_frame(composition, 0.0, Some(media), PlanUse::Render)
-            .map(drop)
+        // Frame 0 is only compiled ahead of time. The frames being rendered may never reach a
+        // source it can't open, and those that do fail with the same error.
+        match self.ensure_compiled_for_frame(composition, 0.0, Some(media), PlanUse::Render) {
+            Err(crate::error::LumenError::Media(error)) => {
+                tracing::debug!(target: "lumen_render", %error, "frame 0 did not compile ahead of time");
+                Ok(())
+            }
+            result => result.map(drop),
+        }
     }
 
     /// Drops every compiled plan and cached media texture, destroying the GPU textures and
@@ -1398,10 +1405,8 @@ impl<'a> PlanKeyCollector<'a> {
             }
             NodeKind::MediaIn(media_in) => {
                 let ctx = scope.expr_context(frame, self.media);
-                if let Some(size) = self
-                    .media
-                    .and_then(|media| media_in.native_size(&ctx, media))
-                {
+                // A failing source is left for compiling to report, like a font family above.
+                if let Ok(Some(size)) = media_in.native_size(&ctx) {
                     self.push_entry(media_in.id, PlanChoice::MediaSize(size.width, size.height));
                 }
             }

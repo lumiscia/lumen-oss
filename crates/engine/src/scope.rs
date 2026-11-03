@@ -14,7 +14,7 @@ use crate::{
     media::MediaStore,
     node::{
         DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
-        processing::time_remap::{TimeRemap, TimeRemapSettings, remap_frame},
+        processing::time_remap::{TimeRemap, remap_frame},
         required_input,
     },
 };
@@ -221,15 +221,7 @@ pub(crate) fn route_time_remap<'a>(
         node_id: node.id,
         expr: &scope.expr_context(frame, media),
     })?;
-    let frame = remap_frame(
-        node.id,
-        TimeRemapSettings {
-            frame: params.frame,
-            loop_enabled: params.loop_enabled,
-            loop_start: params.loop_start,
-            loop_end: params.loop_end,
-        },
-    )?;
+    let frame = remap_frame(node.id, &params)?;
     Ok(Routed {
         instance: Some(node.id),
         ..Routed::same(

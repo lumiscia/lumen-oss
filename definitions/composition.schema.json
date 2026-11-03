@@ -1316,7 +1316,7 @@
                       }
                     ],
                     "default": 4.0,
-                    "description": "Blur radius in pixels. Fractional radii blend smoothly.",
+                    "description": "Blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.",
                     "title": "Radius",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -1807,19 +1807,29 @@
                   "interpolation": {
                     "anyOf": [
                       {
-                        "type": "integer"
+                        "enum": ["nearest", "linear"],
+                        "type": "string"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
-                    "default": 1,
+                    "default": "linear",
                     "description": "Sampling filter used when reading LUT data.",
                     "title": "Interpolation",
-                    "x-lumen-constraints": {
-                      "format": "sampling_mode"
-                    },
-                    "x-lumen-kind": "int"
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Nearest",
+                        "name": "nearest",
+                        "value": 0
+                      },
+                      {
+                        "label": "Linear",
+                        "name": "linear",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
                   },
                   "lut_source": {
                     "anyOf": [
@@ -2465,8 +2475,7 @@
                         "$ref": "#/$defs/expression"
                       }
                     ],
-                    "default": 0,
-                    "description": "Last source frame to include.",
+                    "description": "First source frame past the range; the source's end when unset.",
                     "title": "Range End",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -2642,11 +2651,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "blend_mode": {
+                    "anyOf": [
+                      {
+                        "enum": ["normal", "multiply", "screen", "overlay", "darken", "lighten"],
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "normal",
                     "description": "Blend mode used when combining the overlay with the base raster.",
-                    "enum": ["normal", "multiply", "screen", "overlay", "darken", "lighten"],
                     "title": "Blend Mode",
-                    "type": "string",
                     "x-lumen-enumOptions": [
                       {
                         "label": "Normal",
@@ -2692,7 +2708,7 @@
                       }
                     ],
                     "default": 0.0,
-                    "description": "Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`.",
+                    "description": "Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`. Radii above about 588 look the same.",
                     "title": "Feather",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -3199,7 +3215,7 @@
                       }
                     ],
                     "default": 1.0,
-                    "description": "Opacity applied to each layer as it is composited.",
+                    "description": "Opacity of each layer above the first, which is the base and is used as is.",
                     "title": "Opacity",
                     "x-lumen-constraints": {
                       "max": 1.0,
@@ -3289,11 +3305,18 @@
                     "x-lumen-kind": "enum"
                   },
                   "sampling": {
+                    "anyOf": [
+                      {
+                        "enum": ["nearest", "linear"],
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "linear",
                     "description": "Sampling filter used when resizing.",
-                    "enum": ["nearest", "linear"],
                     "title": "Sampling",
-                    "type": "string",
                     "x-lumen-enumOptions": [
                       {
                         "label": "Nearest",
@@ -3407,7 +3430,7 @@
                       }
                     ],
                     "default": [0, 0, 0, 255],
-                    "description": "Shadow color.",
+                    "description": "Shadow color. Must be a solid color; a gradient is an error.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
@@ -3480,7 +3503,7 @@
                       }
                     ],
                     "default": 8.0,
-                    "description": "Shadow blur radius in pixels. Fractional radii blend smoothly.",
+                    "description": "Shadow blur radius in pixels. Fractional radii blend smoothly. Radii above about 588 look the same.",
                     "title": "Blur radius",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -4763,11 +4786,18 @@
                     "x-lumen-kind": "float"
                   },
                   "sampling": {
+                    "anyOf": [
+                      {
+                        "enum": ["nearest", "linear"],
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
                     "default": "linear",
                     "description": "Sampling filter used when transforming.",
-                    "enum": ["nearest", "linear"],
                     "title": "Sampling",
-                    "type": "string",
                     "x-lumen-enumOptions": [
                       {
                         "label": "Nearest",

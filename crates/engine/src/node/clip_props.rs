@@ -8,7 +8,10 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::expr::Expression;
+use crate::{
+    expr::Expression,
+    json::{StringParam, classify_string},
+};
 
 #[derive(Debug, Clone, Default, lumen_macros::StructuralHash)]
 pub struct ClipProps(pub BTreeMap<String, ClipPropValue>);
@@ -29,14 +32,14 @@ impl ClipProps {
         object
             .iter()
             .map(|(name, value)| {
-                let parsed = match value.as_str().and_then(expression_source) {
-                    Some(source) => Expression::parse(source)
+                let parsed = match value.as_str().and_then(classify_string) {
+                    Some(StringParam::Expression(source)) => Expression::parse(source)
                         .map(ClipPropValue::Expr)
                         .map_err(|error| format!("`{path}.{name}`: {error}"))?,
-                    None => ClipPropValue::Literal(match value.as_str() {
-                        Some(text) if text.starts_with("==") => Value::from(&text[1..]),
-                        _ => value.clone(),
-                    }),
+                    Some(StringParam::EscapedLiteral(text)) => {
+                        ClipPropValue::Literal(Value::from(text))
+                    }
+                    None => ClipPropValue::Literal(value.clone()),
                 };
                 Ok((name.clone(), parsed))
             })
@@ -61,11 +64,6 @@ impl ClipProps {
                 .collect(),
         )
     }
-}
-
-/// The source of a `=expression` string; `==` escapes are not expressions.
-fn expression_source(text: &str) -> Option<&str> {
-    text.strip_prefix('=').filter(|rest| !rest.starts_with('='))
 }
 
 #[cfg(test)]
