@@ -16,10 +16,7 @@ use lumen_engine::{
     },
 };
 
-use crate::bench::{
-    Bench,
-    report::{SummaryReport, format_duration},
-};
+use crate::bench::report::{SummaryReport, format_duration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BenchCase {
@@ -43,6 +40,13 @@ impl BenchCase {
         Self::MeasureNestedReference,
     ];
 
+    fn is_measurement(self) -> bool {
+        matches!(
+            self,
+            Self::MeasureLiteral | Self::MeasureExpression | Self::MeasureNestedReference
+        )
+    }
+
     fn name(self) -> &'static str {
         match self {
             Self::Layout => "layout",
@@ -56,79 +60,107 @@ impl BenchCase {
     }
 }
 
-pub struct TextBench;
-impl Bench for TextBench {
-    fn name() -> &'static str {
-        "text"
+pub fn run() -> anyhow::Result<()> {
+    let mut iterations = 100usize;
+    let mut repeats = None;
+    let mut selection = "all".to_string();
+    let mut fonts = Vec::new();
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--iterations" => {
+                iterations = positive_count(args.next(), "--iterations")?;
+            }
+            "--text-repeats" => {
+                repeats = Some(positive_count(args.next(), "--text-repeats")?);
+            }
+            "--case" => selection = args.next().context("--case requires a value")?,
+            "--font" => {
+                let path = args.next().context("--font requires a path")?;
+                fonts.push(std::fs::read(&path).with_context(|| format!("reading {path}"))?);
+            }
+            "--help" | "-h" | "--list" => {
+                println!(
+                    "lumen-bench-text [--case all|layout|raster|msdf|emoji|measure-literal|measure-expression|measure-nested-reference] [--iterations N] [--text-repeats N] [--font PATH]...\n\nOnly the bundled Roboto is loaded by default; pass --font with fonts covering emoji, Arabic and Hebrew to measure fallback. The emoji case is skipped when no loaded font covers it. The measure-* cases run a fixed workload, so --font and --text-repeats are rejected with them and ignored by `--case all`."
+                );
+                return Ok(());
+            }
+            _ => return Err(anyhow!("unknown argument `{arg}`")),
+        }
     }
-    fn run() -> anyhow::Result<()> {
-        let mut iterations = 100usize;
-        let mut repeats = 1usize;
-        let mut selection = "all".to_string();
-        let mut fonts = Vec::new();
-        let mut args = std::env::args().skip(1);
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "--iterations" => {
-                    iterations = args
-                        .next()
-                        .context("--iterations requires a value")?
-                        .parse()?
-                }
-                "--text-repeats" => {
-                    repeats = args
-                        .next()
-                        .context("--text-repeats requires a value")?
-                        .parse()?
-                }
-                "--case" => selection = args.next().context("--case requires a value")?,
-                "--font" => {
-                    let path = args.next().context("--font requires a path")?;
-                    fonts.push(std::fs::read(&path).with_context(|| format!("reading {path}"))?);
-                }
-                "--help" | "-h" | "--list" => {
-                    println!(
-                        "lumen-bench-text [--case all|layout|raster|msdf|emoji|measure-literal|measure-expression|measure-nested-reference] [--iterations N] [--text-repeats N] [--font PATH]...\n\nOnly the bundled Roboto is loaded by default; pass --font with fonts covering emoji, Arabic and Hebrew to measure fallback."
-                    );
-                    return Ok(());
-                }
-                _ => return Err(anyhow!("unknown argument `{arg}`")),
-            }
+    if selection == "gpu-msdf" {
+        selection = "msdf".to_string();
+    }
+    if selection != "all" && !BenchCase::ALL.iter().any(|case| case.name() == selection) {
+        return Err(anyhow!("unknown text case `{selection}`"));
+    }
+    if BenchCase::ALL
+        .iter()
+        .any(|case| case.name() == selection && case.is_measurement())
+        && (repeats.is_some() || !fonts.is_empty())
+    {
+        return Err(anyhow!(
+            "--font and --text-repeats do not apply to the fixed `{selection}` workload"
+        ));
+    }
+    let repeats = repeats.unwrap_or(1);
+    let media = BenchMedia { fonts };
+    let mut summary = SummaryReport::new(
+        "Text benchmark summary",
+        [
+            "case",
+            "workload",
+            "iterations",
+            "cold",
+            "total",
+            "mean/iter",
+        ],
+    );
+    for case in BenchCase::ALL {
+        if selection != "all" && selection != case.name() {
+            continue;
         }
-        if selection == "gpu-msdf" {
-            selection = "msdf".to_string();
-        }
-        if selection != "all" && !BenchCase::ALL.iter().any(|case| case.name() == selection) {
-            return Err(anyhow!("unknown text case `{selection}`"));
-        }
-        let media = BenchMedia { fonts };
-        let mut summary = SummaryReport::new(
-            "Text benchmark summary",
-            ["case", "glyphs", "iterations", "cold", "total", "mean/iter"],
-        );
-        for case in BenchCase::ALL {
-            if selection != "all" && selection != case.name() {
-                continue;
-            }
-            let result = run_case(case, iterations, repeats, &media)?;
-            summary.push_row(vec![
+        match run_case(case, iterations, repeats, &media)? {
+            CaseOutcome::Ran(result) => summary.push_row(vec![
                 case.name().to_string(),
-                result.glyph_count.to_string(),
+                result.workload,
                 iterations.to_string(),
                 format_duration(result.cold),
                 format_duration(result.elapsed),
-                format_duration(result.elapsed / iterations.max(1) as u32),
-            ]);
+                format_duration(result.elapsed / iterations as u32),
+            ]),
+            CaseOutcome::Skipped(reason) => summary.push_row(vec![
+                case.name().to_string(),
+                format!("skipped: {reason}"),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+            ]),
         }
-        summary.print();
-        Ok(())
     }
+    summary.print();
+    Ok(())
+}
+
+fn positive_count(value: Option<String>, option: &str) -> anyhow::Result<usize> {
+    value
+        .with_context(|| format!("{option} requires a value"))?
+        .parse::<usize>()
+        .ok()
+        .filter(|&count| count > 0)
+        .ok_or_else(|| anyhow!("{option} must be a positive integer"))
 }
 
 struct BenchResult {
     cold: Duration,
     elapsed: Duration,
-    glyph_count: usize,
+    workload: String,
+}
+
+enum CaseOutcome {
+    Ran(BenchResult),
+    Skipped(String),
 }
 
 /// Media with no images or video, whose `--font` files load for any font family.
@@ -169,25 +201,27 @@ fn run_case(
     iterations: usize,
     repeats: usize,
     media: &BenchMedia,
-) -> anyhow::Result<BenchResult> {
-    if matches!(
-        case,
-        BenchCase::MeasureLiteral
-            | BenchCase::MeasureExpression
-            | BenchCase::MeasureNestedReference
-    ) {
-        return run_measurement_case(case, iterations);
+) -> anyhow::Result<CaseOutcome> {
+    if case.is_measurement() {
+        return run_measurement_case(case, iterations).map(CaseOutcome::Ran);
     }
     let content = if case == BenchCase::Emoji { "🍋✨🚀🎬 " } else {
         "Lumen: AV fi — مرحبا بالعالم שלום 123 — a\u{301} e\u{308} n\u{303}. Wrapping varied text across lines. "
-    }.repeat(repeats.max(1));
+    }.repeat(repeats);
     let mut request = lumen_text::TextLayoutRequest::new(content.clone());
     request.max_width = Some(1300.0);
     let mut system = lumen_text::TextSystem::new();
     for font in &media.fonts {
         system.load_font_data(font.clone());
     }
-    let glyph_count = system.layout(&request).glyphs.len();
+    let layout = system.layout(&request);
+    // Glyph id 0 is the font's missing-glyph box.
+    if case == BenchCase::Emoji && layout.glyphs.iter().any(|glyph| glyph.key.0.glyph_id == 0) {
+        return Ok(CaseOutcome::Skipped(
+            "no loaded font covers the emoji (pass --font)".to_string(),
+        ));
+    }
+    let glyph_count = layout.glyphs.len();
     let mut graph = Graph::new();
     graph.nodes.insert(
         NodeId::new(1),
@@ -257,11 +291,11 @@ fn run_case(
     for frame in 1..=iterations {
         run(frame as u32)?;
     }
-    Ok(BenchResult {
+    Ok(CaseOutcome::Ran(BenchResult {
         cold,
         elapsed: start.elapsed(),
-        glyph_count,
-    })
+        workload: format!("{glyph_count} glyphs"),
+    }))
 }
 
 struct MeasurementFixture {
@@ -385,6 +419,6 @@ fn run_measurement_case(case: BenchCase, iterations: usize) -> anyhow::Result<Be
     Ok(BenchResult {
         cold,
         elapsed: started.elapsed(),
-        glyph_count: 2,
+        workload: "2 measurements/iteration".to_string(),
     })
 }

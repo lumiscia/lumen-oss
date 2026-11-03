@@ -67,8 +67,8 @@ pub async fn run(mut args: Args) -> anyhow::Result<()> {
     let bind = args.bind;
     let app = router(AppState::new(args)?);
 
-    tracing::info!(address = %bind, "starting lumen render server");
     let listener = tokio::net::TcpListener::bind(bind).await?;
+    tracing::info!(address = %listener.local_addr()?, "lumen render server listening");
     axum::serve(listener, app).await?;
 
     Ok(())

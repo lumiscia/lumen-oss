@@ -5,25 +5,6 @@ use std::sync::Arc;
 
 pub const BACKEND: GpuBackend = GpuBackend::Cuda;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CudaExternalMemoryHandle {
-    OpaqueFd(i32),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CudaExternalSemaphoreHandle {
-    OpaqueFd(i32),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VulkanToCudaExport {
-    pub memory: CudaExternalMemoryHandle,
-    pub ready_semaphore: Option<CudaExternalSemaphoreHandle>,
-    pub complete_semaphore: Option<CudaExternalSemaphoreHandle>,
-    pub allocation_size: u64,
-    pub row_pitch: u64,
-}
-
 #[derive(Clone)]
 pub struct CudaVideoFrame {
     device_ptr: u64,
