@@ -12,6 +12,10 @@ use lumen_engine::{
 };
 use serde_json::Value;
 
+/// Font metrics vary by machine, so these cases have no expected value; they must satisfy the
+/// finite and positive.
+const MEASUREMENTS: [&str; 2] = ["text_height", "text_width"];
+
 const FIXTURE: &str = include_str!("fixtures/ts_expressions.json");
 
 #[test]
@@ -36,6 +40,7 @@ fn typescript_helper_expressions_round_trip() {
     for spec in BUILTINS {
         assert!(cases.contains_key(spec.name), "no case for `{}`", spec.name);
     }
+    let mut values = BTreeMap::new();
     for (name, case) in cases {
         let source = case["expression"].as_str().unwrap();
         let body = source.strip_prefix('=').unwrap();
@@ -43,13 +48,35 @@ fn typescript_helper_expressions_round_trip() {
             .unwrap_or_else(|error| panic!("{name}: `{source}` does not parse: {error}"))
             .evaluate(&ctx)
             .unwrap_or_else(|error| panic!("{name}: `{source}` does not evaluate: {error}"));
-        if let Some(expected) = case.get("expected") {
-            assert!(
+        match case.get("expected") {
+            Some(expected) => assert!(
                 matches(&value, expected),
                 "{name}: `{source}` gave {value:?}, expected {expected}"
-            );
+            ),
+            None => assert!(
+                MEASUREMENTS.contains(&name.as_str()),
+                "{name}: `{source}` has neither an expected value nor an invariant"
+            ),
         }
+        values.insert(name.as_str(), value);
     }
+
+    let measure = |source: &str| match Expression::parse(source).unwrap().evaluate(&ctx).unwrap() {
+        ExpressionValue::Number(number) => number,
+        other => panic!("`{source}` gave {other:?}, expected a number"),
+    };
+    for name in MEASUREMENTS {
+        let ExpressionValue::Number(number) = values[name] else {
+            panic!("{name} gave {:?}, expected a number", values[name]);
+        };
+        assert!(number.is_finite() && number > 0.0, "{name} gave {number}");
+    }
+    let width = measure("text_width('Hello', 32, 300, 'Roboto')");
+    let height = measure("text_height('Hello', 32, 300, 'Roboto')");
+    assert!(
+        height > 0.0 && width > height,
+        "'Hello' should be wider than tall: {width} x {height}"
+    );
 }
 
 fn matches(value: &ExpressionValue, expected: &Value) -> bool {
