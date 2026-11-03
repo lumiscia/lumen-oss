@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     env,
     path::{Path, PathBuf},
     sync::{LazyLock, RwLock},
@@ -45,8 +45,9 @@ pub fn font_dir_from_env() -> anyhow::Result<Option<PathBuf>> {
 }
 
 /// Where a family's fonts are looked up, in order: the configured directory, the media root's
-/// `assets/fonts`, then the system fonts. A family is matched by the names inside the font files,
-/// not by file name, and the first place with a match supplies all of its faces.
+/// `assets/fonts`, then the system fonts. A family is matched exactly by the names inside the font
+/// files, as shaping does, not by file name, and the first place with a match supplies all of its
+/// faces.
 pub struct FontCatalog {
     tiers: Vec<FontTier>,
     resolved: RwLock<HashMap<String, Option<ResolvedFont>>>,
@@ -70,14 +71,10 @@ impl FontTier {
     }
 
     fn files(&self, family: &str) -> Vec<PathBuf> {
-        let database = self.database.as_ref().unwrap_or(&SYSTEM_FONTS);
+        let database = self.database.as_ref().unwrap_or_else(|| &SYSTEM_FONTS);
         let mut files: Vec<PathBuf> = database
             .faces()
-            .filter(|face| {
-                face.families
-                    .iter()
-                    .any(|(name, _)| name.eq_ignore_ascii_case(family))
-            })
+            .filter(|face| face.families.iter().any(|(name, _)| name == family))
             .filter_map(|face| match &face.source {
                 Source::File(path) | Source::SharedFile(path, _) => Some(path.clone()),
                 Source::Binary(_) => None,
@@ -124,7 +121,7 @@ impl FontCatalog {
             return font.clone();
         }
 
-        let is_bundled_family = family.eq_ignore_ascii_case(lumen_text::DEFAULT_FONT_FAMILY);
+        let is_bundled_family = family == lumen_text::DEFAULT_FONT_FAMILY;
         let files = match staged() {
             Some(file) => vec![file],
             // An installed Roboto doesn't replace the bundled one, so output stays the same on
@@ -138,16 +135,16 @@ impl FontCatalog {
                 .unwrap_or_default(),
         };
         let font = (!files.is_empty()).then(|| ResolvedFont::new(family, files));
-        if font.is_none() && !family.trim().is_empty() && !is_bundled_family {
-            tracing::warn!(
-                font_family = family,
-                "no font has this family name, so text using it falls back to other fonts"
-            );
-        }
-        if let Ok(mut resolved) = self.resolved.write() {
-            resolved
-                .entry(family.to_string())
-                .or_insert_with(|| font.clone());
+        if let Ok(mut resolved) = self.resolved.write()
+            && let Entry::Vacant(entry) = resolved.entry(family.to_string())
+        {
+            if font.is_none() && !family.trim().is_empty() && !is_bundled_family {
+                tracing::warn!(
+                    font_family = family,
+                    "no font has this family name, so text using it falls back to other fonts"
+                );
+            }
+            entry.insert(font.clone());
         }
         font
     }
@@ -226,8 +223,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let catalog = FontCatalog::new(Some(configured.path()), root.path());
 
-        let font = catalog.resolve("roboto", || None).expect("Roboto");
+        let font = catalog.resolve("Roboto", || None).expect("Roboto");
         assert_eq!(font.data().unwrap(), vec![ROBOTO.to_vec()]);
+        assert!(catalog.resolve("roboto", || None).is_none());
         assert!(catalog.resolve("not-the-family-name", || None).is_none());
     }
 
