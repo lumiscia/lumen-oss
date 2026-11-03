@@ -134,7 +134,7 @@ pub fn render_project_mp4(
     .map_err(|err| RenderError {
         code: "encode_failed",
         message: err.to_string(),
-        retryable: true,
+        retryable: false,
     })?;
     let (pixel_recycle_tx, _pixel_recycle_rx) =
         mpsc::sync_channel::<Vec<u8>>(ENCODER_FRAME_QUEUE_CAPACITY + 2);
@@ -407,6 +407,32 @@ fn video_encoder_selection(name: &str) -> anyhow::Result<VideoEncoderSelection> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn encoder_that_cannot_open_is_not_retryable() {
+        let bundle = super::super::convert_project_payload(&serde_json::json!({
+            "timeline": { "fps": 24, "duration_frames": 1 },
+            "render_settings": { "width": 16, "height": 16 },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255], "width": 16, "height": 16 } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+        }))
+        .unwrap();
+        let options = RenderOptions {
+            video_encoder: Some("h264_videotoolbox".to_string()),
+            ..RenderOptions::default()
+        };
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _runtime = runtime.enter();
+        let error = render_project_mp4(&bundle, &options, &mut |_| {}).unwrap_err();
+
+        assert_eq!(error.code, "encode_failed", "{error}");
+        assert!(!error.retryable, "{error}");
+    }
 
     #[test]
     fn nvenc_encoders_select_cuda_capable_codecs() {

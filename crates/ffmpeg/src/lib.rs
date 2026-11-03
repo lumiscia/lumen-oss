@@ -99,8 +99,40 @@ impl std::fmt::Display for FfmpegError {
         if let Some(path) = &self.path {
             write!(f, " [{path}]")?;
         }
+        if let Some(backend) = self.backend {
+            write!(f, " backend={backend:?}")?;
+        }
+        if let Some(codec) = self.codec {
+            write!(f, " codec={codec:?}")?;
+        }
+        if let Some(stream_index) = self.stream_index {
+            write!(f, " stream={stream_index}")?;
+        }
         Ok(())
     }
 }
 
 impl std::error::Error for FfmpegError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_includes_every_context_field_that_is_set() {
+        let mut error = FfmpegError::new("avcodec_send_packet", "Invalid data")
+            .with_path("clip.mp4")
+            .with_backend(GpuBackend::Cuda)
+            .with_codec(VideoCodec::H264)
+            .with_stream_index(1);
+        error.code = Some(-22);
+        assert_eq!(
+            error.to_string(),
+            "avcodec_send_packet failed: Invalid data (-22) [clip.mp4] backend=Cuda codec=H264 stream=1"
+        );
+        assert_eq!(
+            FfmpegError::new("avcodec_send_packet", "Invalid data").to_string(),
+            "avcodec_send_packet failed: Invalid data"
+        );
+    }
+}
