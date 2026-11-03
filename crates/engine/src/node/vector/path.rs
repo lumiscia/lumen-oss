@@ -221,8 +221,8 @@ pub(super) fn path_is_animated(params: &PathParamsDelegate) -> bool {
 /// A frame's uniforms, points and bands for the path shader.
 pub(super) struct PathFrame {
     pub(super) uniforms: PathUniforms,
-    points: Vec<PathPoint>,
-    bands: Vec<u32>,
+    pub(super) points: Vec<PathPoint>,
+    pub(super) bands: Vec<u32>,
 }
 
 impl PathFrame {
@@ -611,6 +611,22 @@ pub(super) fn bounds_size(points: &[super::renderer::PathPoint]) -> [f32; 2] {
         [acc[0].max(point.position[0]), acc[1].max(point.position[1])]
     });
     [(max[0] - min[0]).max(1.0), (max[1] - min[1]).max(1.0)]
+}
+
+impl crate::gpu::frame_graph::RecordNode for Path {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let frame = path_frame(
+            &self.params,
+            self.id,
+            &cx.expr(self.id, "params"),
+            super::renderer::MAX_PATH_POINTS,
+            super::path_bands::band_capacity(super::renderer::MAX_PATH_POINTS),
+        )?;
+        super::renderer::record_path_source(cx, frame)
+    }
 }
 
 #[cfg(test)]

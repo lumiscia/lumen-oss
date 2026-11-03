@@ -337,6 +337,76 @@ impl GpuCompiledNode for CompiledMediaInput {
     }
 }
 
+impl crate::gpu::frame_graph::RecordNode for MediaIn {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let media = cx.media().ok_or_else(|| RenderError::NodeEvaluation {
+            frame: cx.frame_number(),
+            node_id: self.id,
+            node_kind: "MediaIn",
+            details: "media store is required for media input nodes".to_string(),
+        })?;
+        let (kind, fps, size) = {
+            let expr = cx.expr(self.id, "source");
+            let size = self
+                .native_size(&expr, media)
+                .unwrap_or_else(|| cx.canvas_size());
+            (resolve_for_context(self, &expr)?, expr.fps, size)
+        };
+        let tex = match kind {
+            MediaInKind::Image { image_id } => {
+                let resolver = media.get_image_resolver(&image_id).ok_or_else(|| {
+                    MediaError::SourceNotFound {
+                        media_source: image_id.clone(),
+                    }
+                })?;
+                let key = MediaTextureKey {
+                    source: resolver.id().to_string(),
+                    width: size.width,
+                    height: size.height,
+                };
+                cx.image_texture(key, &resolver.frame()?, size)?
+            }
+            MediaInKind::Video {
+                stream_id,
+                range,
+                speed,
+                loop_mode,
+            } => {
+                let resolver = media.get_video_resolver(&stream_id).ok_or_else(|| {
+                    MediaError::SourceNotFound {
+                        media_source: stream_id.clone(),
+                    }
+                })?;
+                let metadata = resolver.metadata();
+                let source_frame = map_to_source_frame(
+                    cx.frame_time(),
+                    fps,
+                    metadata.fps,
+                    metadata.frame_count,
+                    range.as_ref(),
+                    speed,
+                    loop_mode,
+                )
+                .ok_or_else(|| MediaError::FrameOutOfRange {
+                    media_source: stream_id.clone(),
+                    frame: cx.frame_number(),
+                    frame_count: metadata.frame_count,
+                })?;
+                cx.video_texture(resolver.frame(source_frame)?, size)?
+            }
+        };
+        Ok(crate::gpu::frame_graph::Raster {
+            tex,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            metadata: RasterMetadata::default(),
+            bounds: None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{LoopMode, map_to_source_frame};

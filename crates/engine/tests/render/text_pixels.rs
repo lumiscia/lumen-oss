@@ -101,15 +101,19 @@ impl Mode {
 
 /// The glyph render mode of every glyph the text node 1 draws in a bound frame.
 fn glyph_modes(renderer: &GpuCompositionRenderer, bound: &BoundFrame) -> Vec<u32> {
-    let instances = renderer
-        .compiled()
-        .unwrap()
-        .plan
-        .buffers()
-        .iter()
-        .find(|buffer| buffer.label.as_deref() == Some("text:1:instances"))
-        .expect("a text node 1")
-        .id;
+    // Recording writes every text's instances under one id.
+    let instances = match renderer.compiled() {
+        Some(compiled) => {
+            compiled
+                .plan
+                .buffers()
+                .iter()
+                .find(|buffer| buffer.label.as_deref() == Some("text:1:instances"))
+                .expect("a text node 1")
+                .id
+        }
+        None => lumen_gpu::BufferId(1),
+    };
     let size = std::mem::size_of::<lumen_text::GpuGlyphInstance>();
     bound
         .frame_update()

@@ -121,3 +121,37 @@ impl GpuCompileNode for AlphaPremultiply {
         }))
     }
 }
+
+impl crate::gpu::frame_graph::RecordNode for AlphaPremultiply {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let Deferred::Value(mode) = &self.params.mode else {
+            return Err(crate::error::PropertyError::InvalidType {
+                node_id: self.id,
+                property_path: "mode".to_string(),
+                expected: "constant `premultiply` or `unpremultiply`",
+                actual: "Expression",
+            }
+            .into());
+        };
+        let operation = compiler::alpha_operation(self.id, mode)?;
+        let source = cx.input(&self.source)?;
+        let params = compiler::AlphaPremultiplyParams {
+            values: [operation, 0.0, 0.0, 0.0],
+        };
+        let raster = cx.filter("alpha-premultiply", SHADER, source, &params)?;
+        Ok(crate::gpu::frame_graph::Raster {
+            metadata: RasterMetadata {
+                alpha_mode: if operation >= 0.5 {
+                    AlphaMode::Unpremultiplied
+                } else {
+                    AlphaMode::Premultiplied
+                },
+                ..source.metadata
+            },
+            ..raster
+        })
+    }
+}

@@ -128,3 +128,43 @@ impl GpuCompileNode for Blur {
         }))
     }
 }
+
+impl crate::gpu::frame_graph::RecordNode for Blur {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.input(&self.source)?;
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(self.id, "params"),
+        })?;
+        let bounds = cx.bounds_of(gaussian::blur_bounds(
+            source.domain.data_rect,
+            [0.0; 2],
+            params.radius,
+        ));
+        let domain = cx.domain_within(source.domain.display_size(), bounds);
+        let tex = gaussian::record_passes(
+            cx,
+            source,
+            domain,
+            false,
+            &gaussian::GaussianSettings {
+                radius: params.radius,
+                straight_source: source.straight(),
+                transparent_edge: false,
+                offset: [0.0; 2],
+            },
+        )?;
+        Ok(crate::gpu::frame_graph::Raster {
+            tex,
+            domain,
+            metadata: RasterMetadata {
+                alpha_mode: AlphaMode::Premultiplied,
+                ..source.metadata
+            },
+            bounds: None,
+        })
+    }
+}

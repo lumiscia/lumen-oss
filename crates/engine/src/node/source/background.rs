@@ -149,3 +149,45 @@ impl GpuCompileNode for Background {
         }))
     }
 }
+
+const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(
+        1,
+        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+    ),
+];
+
+impl crate::gpu::frame_graph::RecordNode for Background {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(self.id, "params"),
+        })?;
+        let dimension = |value: u32, canvas: u32| if value == 0 { canvas } else { value };
+        let canvas = cx.canvas_size();
+        let size = lumen_gpu::Size::new(
+            dimension(params.width, canvas.width),
+            dimension(params.height, canvas.height),
+        );
+        let mut paint = params.paint.to_gpu([0, 0, 0, 255]);
+        paint.paint_supersample = u32::from(params.paint_supersample);
+        let tex = cx.storage_target(size);
+        let program = cx.program("background", SHADER, "cs_main", RECORD_LAYOUT)?;
+        let uniform = cx.rec.uniform(&paint);
+        cx.dispatch(
+            program,
+            &[(0, uniform), (1, lumen_gpu::Res::Tex(tex))],
+            compiler::dispatch_for(size),
+        );
+        Ok(crate::gpu::frame_graph::Raster {
+            tex,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            metadata: RasterMetadata::default(),
+            bounds: None,
+        })
+    }
+}

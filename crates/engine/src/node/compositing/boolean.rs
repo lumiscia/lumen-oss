@@ -195,3 +195,58 @@ fn straight_flag(metadata: RasterMetadata) -> f32 {
         0.0
     }
 }
+
+const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(
+        3,
+        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+    ),
+];
+
+impl crate::gpu::frame_graph::RecordNode for Boolean {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let a = cx.input_full(&self.a)?;
+        let b = cx.input_full(&self.b)?;
+        let params = self.params.eval(&crate::node::NodeParamEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(self.id, "params"),
+        })?;
+        let gpu_params = compiler::BooleanParams {
+            values: [
+                BooleanOperation::from_int(params.operation) as u32 as f32,
+                params.threshold as f32,
+                straight_flag(a.metadata),
+                straight_flag(b.metadata),
+            ],
+        };
+        let size = a.domain.storage_size;
+        let tex = cx.storage_target(size);
+        let program = cx.program("boolean", SHADER, "cs_main", RECORD_LAYOUT)?;
+        let uniform = cx.rec.uniform(&gpu_params);
+        cx.dispatch(
+            program,
+            &[
+                (0, lumen_gpu::Res::Tex(a.tex)),
+                (1, lumen_gpu::Res::Tex(b.tex)),
+                (2, uniform),
+                (3, lumen_gpu::Res::Tex(tex)),
+            ],
+            compiler::dispatch_for(size),
+        );
+        Ok(crate::gpu::frame_graph::Raster {
+            tex,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            metadata: RasterMetadata {
+                alpha_mode: AlphaMode::Premultiplied,
+                ..a.metadata
+            },
+            bounds: None,
+        })
+    }
+}

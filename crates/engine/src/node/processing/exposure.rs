@@ -112,3 +112,23 @@ impl GpuCompileNode for Exposure {
         }))
     }
 }
+
+impl crate::gpu::frame_graph::RecordNode for Exposure {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.premultiplied_source(&self.source)?;
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(self.id, "params"),
+        })?;
+        let gpu_params = compiler::ExposureParams {
+            exposure: params.exposure as f32,
+            contrast: params.contrast as f32,
+            offset: params.offset as f32,
+            premultiplied: u32::from(source.metadata.alpha_mode == AlphaMode::Premultiplied),
+        };
+        cx.filter("exposure", SHADER, source, &gpu_params)
+    }
+}

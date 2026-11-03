@@ -258,17 +258,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         }
 
         let size = self.ctx.canvas_size();
-        // Text that may move during the shutter is drawn still to a layer first, which is
-        // then smeared over the shutter's taps into the output. Text with motion blur
-        // constantly off, or whose transform is constant, is drawn to the output directly.
         let params = &text.params;
-        let blurred = !matches!(
-            params.motion_blur,
-            Deferred::Value(angle) if crate::node::motion::shutter_offset(angle).is_none()
-        ) && !(matches!(params.position, Deferred::Value(_))
-            && matches!(params.scale, Deferred::Value(_))
-            && matches!(params.rotation, Deferred::Value(_))
-            && matches!(params.anchor, Deferred::Value(_)));
+        let blurred = text_blurred(params);
         let constant = self.constant_text(text);
         let bounds = if blurred {
             None
@@ -297,13 +288,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             width: size.width as f32,
             height: size.height as f32,
         });
-        let layer_size = if blurred {
-            let fit =
-                |canvas: u32| (canvas * TEXT_LAYER_SCALE).min(MAX_TEXTURE_DIMENSION.max(canvas));
-            lumen_gpu::Size::new(fit(size.width), fit(size.height))
-        } else {
-            size
-        };
+        let layer_size = text_layer_size(blurred, size);
         let layer = blurred.then(|| {
             self.ctx.builder_mut().texture(
                 Some(format!("text:{}:layer", text.id.0)),
@@ -331,25 +316,7 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             Some(format!("text:{}:style", text.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<TextStyleUniforms>() as u64),
         );
-        let paint_count = match &params.content {
-            TextContentDelegate::Spans(spans) => spans.items.len().max(1),
-            TextContentDelegate::Text(_) => 1,
-        };
-        let decoration_paints = crate::node::source::text::decoration_paints(params);
-        let paints = paint_count + decoration_paints.unwrap_or(0);
-        if paints > lumen_text::GLYPH_MAX_PAINTS as usize {
-            return Err(crate::error::RenderError::NodeEvaluation {
-                frame: 0,
-                node_id: text.id,
-                node_kind: "Text",
-                details: format!(
-                    "text has {paints} span and decoration paints, more than the {} that can be \
-                     painted",
-                    lumen_text::GLYPH_MAX_PAINTS
-                ),
-            }
-            .into());
-        }
+        let paints = text_paint_count(text)?;
         let paints_buffer = self.ctx.builder_mut().buffer(
             Some(format!("text:{}:paints", text.id.0)),
             lumen_gpu::BufferDesc::storage((paints * std::mem::size_of::<GpuTextPaint>()) as u64),
@@ -503,62 +470,22 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
                 None,
             ));
         }
-        let mut params = text.params.clone();
-        let glyph = GlyphParams::take(&mut params);
-        let expr = self.ctx.expr_context(text.id, "params");
-        let decorations = DecorationParams::take(&mut params);
-        let decorations = if decorations.has_expressions() {
-            NodeDecorations::Animated(decorations)
-        } else {
-            NodeDecorations::Constant(decorations.eval(text.id, &expr)?)
-        };
-        let font_features =
-            if crate::node::DelegateEvaluable::has_expressions(&params.font_features) {
-                None
-            } else {
-                let features = std::mem::take(&mut params.font_features);
-                Some(crate::node::DelegateEvaluable::eval(
-                    &features,
-                    &crate::node::DelegateEvalContext {
-                        node_id: text.id,
-                        property_path: "font_features",
-                        expr: &expr,
-                    },
-                )?)
-            };
-        let content = if crate::node::DelegateEvaluable::has_expressions(&params.content) {
-            None
-        } else {
-            let content = std::mem::take(&mut params.content);
-            Some(crate::node::DelegateEvaluable::eval(
-                &content,
-                &crate::node::DelegateEvalContext {
-                    node_id: text.id,
-                    property_path: "content",
-                    expr: &expr,
-                },
-            )?)
-        };
-        self.ctx.register_compiled_node(CompiledText {
-            node_id: text.id,
-            params,
-            glyph,
-            content,
-            decorations,
-            font_features,
-            decorated: decoration_paints.is_some(),
-            stroked: crate::node::source::text::stroked(&text.params),
-            atlas_texture,
-            globals_buffer,
-            instances_buffer,
-            style_buffer,
-            paints_buffer,
-            paint_count,
+        let compiled = compiled_text(
+            text,
+            &self.ctx.expr_context(text.id, "params"),
+            TextResources {
+                atlas_texture,
+                globals_buffer,
+                instances_buffer,
+                style_buffer,
+                paints_buffer,
+            },
             capacity,
             size,
             layer_size,
-            state: std::sync::Arc::new(std::sync::Mutex::new(TextState::default())),
-        });
+            false,
+        )?;
+        self.ctx.register_compiled_node(compiled);
 
         Ok(CompiledOutput::Raster(RasterHandle {
             texture,
@@ -582,37 +509,8 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
         constant: Option<&ConstantText>,
     ) -> Option<lumen_gpu::RectI> {
         let params = &text.params;
-        let solid = |paint: &super::paint::PaintDelegate| {
-            matches!(paint, super::paint::PaintDelegate::SolidColor(..))
-        };
-        let solid_line = |line: &TextLineDelegate| line.paint.as_ref().is_none_or(solid);
-        let solid_span = |span: &TextSpanDelegate| {
-            span.color.as_ref().is_none_or(solid)
-                && [&span.underline, &span.strikethrough]
-                    .into_iter()
-                    .all(|line| !matches!(line, Override::Set(line) if !solid_line(line)))
-                && !matches!(&span.highlight, Override::Set(highlight) if !solid(&highlight.paint))
-                && !matches!(&span.stroke, Override::Set(stroke) if !solid(&stroke.paint))
-        };
         let constant = constant?;
-        if GlyphParams::any(params)
-            || !solid(&params.color)
-            || matches!(&params.content, TextContentDelegate::Spans(spans)
-                if !spans.items.iter().all(solid_span))
-            || !params
-                .stroke
-                .as_ref()
-                .is_none_or(|stroke| solid(&stroke.paint))
-            || !params
-                .underline
-                .iter()
-                .chain(&params.strikethrough)
-                .all(solid_line)
-            || !params
-                .highlight
-                .as_ref()
-                .is_none_or(|highlight| solid(&highlight.paint))
-        {
+        if !text_may_be_bounded(params) {
             return None;
         }
         let ink = crate::node::source::text::text_system(self.ctx.media())
@@ -873,6 +771,435 @@ impl<'a, 'b> VectorRenderer<'a, 'b> {
             storage,
         })
     }
+}
+
+/// Whether text may move during the shutter: it is then drawn still to a layer first, which is
+/// smeared over the shutter's taps into the output. Text with motion blur constantly off, or
+/// whose transform is constant, is drawn to the output directly.
+fn text_blurred(params: &TextParamsDelegate) -> bool {
+    !matches!(
+        params.motion_blur,
+        Deferred::Value(angle) if crate::node::motion::shutter_offset(angle).is_none()
+    ) && !(matches!(params.position, Deferred::Value(_))
+        && matches!(params.scale, Deferred::Value(_))
+        && matches!(params.rotation, Deferred::Value(_))
+        && matches!(params.anchor, Deferred::Value(_)))
+}
+
+fn text_layer_size(blurred: bool, size: lumen_gpu::Size) -> lumen_gpu::Size {
+    if !blurred {
+        return size;
+    }
+    let fit = |canvas: u32| (canvas * TEXT_LAYER_SCALE).min(MAX_TEXTURE_DIMENSION.max(canvas));
+    lumen_gpu::Size::new(fit(size.width), fit(size.height))
+}
+
+/// Whether text's paints are all solid colours and no `glyph_*` param moves its glyphs. A paint
+/// is otherwise evaluated at the pixel it is drawn to, which a viewport offset moves.
+fn text_may_be_bounded(params: &TextParamsDelegate) -> bool {
+    let solid = |paint: &super::paint::PaintDelegate| {
+        matches!(paint, super::paint::PaintDelegate::SolidColor(..))
+    };
+    let solid_line = |line: &TextLineDelegate| line.paint.as_ref().is_none_or(solid);
+    let solid_span = |span: &TextSpanDelegate| {
+        span.color.as_ref().is_none_or(solid)
+            && [&span.underline, &span.strikethrough]
+                .into_iter()
+                .all(|line| !matches!(line, Override::Set(line) if !solid_line(line)))
+            && !matches!(&span.highlight, Override::Set(highlight) if !solid(&highlight.paint))
+            && !matches!(&span.stroke, Override::Set(stroke) if !solid(&stroke.paint))
+    };
+    !(GlyphParams::any(params)
+        || !solid(&params.color)
+        || matches!(&params.content, TextContentDelegate::Spans(spans)
+                if !spans.items.iter().all(solid_span))
+        || !params
+            .stroke
+            .as_ref()
+            .is_none_or(|stroke| solid(&stroke.paint))
+        || !params
+            .underline
+            .iter()
+            .chain(&params.strikethrough)
+            .all(solid_line)
+        || !params
+            .highlight
+            .as_ref()
+            .is_none_or(|highlight| solid(&highlight.paint)))
+}
+
+/// How many paints the text binds, failing when that is more than can be painted.
+fn text_paint_count(text: &Text) -> crate::Result<usize> {
+    let paints = text_span_paints(&text.params)
+        + crate::node::source::text::decoration_paints(&text.params).unwrap_or(0);
+    if paints > lumen_text::GLYPH_MAX_PAINTS as usize {
+        return Err(crate::error::RenderError::NodeEvaluation {
+            frame: 0,
+            node_id: text.id,
+            node_kind: "Text",
+            details: format!(
+                "text has {paints} span and decoration paints, more than the {} that can be \
+                 painted",
+                lumen_text::GLYPH_MAX_PAINTS
+            ),
+        }
+        .into());
+    }
+    Ok(paints)
+}
+
+fn text_span_paints(params: &TextParamsDelegate) -> usize {
+    match &params.content {
+        TextContentDelegate::Spans(spans) => spans.items.len().max(1),
+        TextContentDelegate::Text(_) => 1,
+    }
+}
+
+/// What a compiled text writes to.
+struct TextResources {
+    atlas_texture: lumen_gpu::TextureId,
+    globals_buffer: lumen_gpu::BufferId,
+    instances_buffer: lumen_gpu::BufferId,
+    style_buffer: lumen_gpu::BufferId,
+    paints_buffer: lumen_gpu::BufferId,
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the flat inputs of a compiled text"
+)]
+fn compiled_text(
+    text: &Text,
+    expr: &crate::expr::ExpressionContext<'_>,
+    resources: TextResources,
+    capacity: usize,
+    size: lumen_gpu::Size,
+    layer_size: lumen_gpu::Size,
+    measure_ink: bool,
+) -> crate::Result<CompiledText> {
+    let mut params = text.params.clone();
+    let glyph = GlyphParams::take(&mut params);
+    let decorations = DecorationParams::take(&mut params);
+    let decorations = if decorations.has_expressions() {
+        NodeDecorations::Animated(decorations)
+    } else {
+        NodeDecorations::Constant(decorations.eval(text.id, expr)?)
+    };
+    let font_features = if crate::node::DelegateEvaluable::has_expressions(&params.font_features) {
+        None
+    } else {
+        let features = std::mem::take(&mut params.font_features);
+        Some(crate::node::DelegateEvaluable::eval(
+            &features,
+            &crate::node::DelegateEvalContext {
+                node_id: text.id,
+                property_path: "font_features",
+                expr,
+            },
+        )?)
+    };
+    let content = if crate::node::DelegateEvaluable::has_expressions(&params.content) {
+        None
+    } else {
+        let content = std::mem::take(&mut params.content);
+        Some(crate::node::DelegateEvaluable::eval(
+            &content,
+            &crate::node::DelegateEvalContext {
+                node_id: text.id,
+                property_path: "content",
+                expr,
+            },
+        )?)
+    };
+    Ok(CompiledText {
+        node_id: text.id,
+        params,
+        glyph,
+        content,
+        decorations,
+        font_features,
+        decorated: crate::node::source::text::decoration_paints(&text.params).is_some(),
+        stroked: crate::node::source::text::stroked(&text.params),
+        atlas_texture: resources.atlas_texture,
+        globals_buffer: resources.globals_buffer,
+        instances_buffer: resources.instances_buffer,
+        style_buffer: resources.style_buffer,
+        paints_buffer: resources.paints_buffer,
+        paint_count: text_span_paints(&text.params),
+        capacity,
+        size,
+        layer_size,
+        measure_ink,
+        state: std::sync::Arc::new(std::sync::Mutex::new(TextState::default())),
+    })
+}
+
+const RECORD_STORAGE_TEXTURE: lumen_gpu::LayoutKind =
+    lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm);
+const RECORD_SHAPE_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(1, RECORD_STORAGE_TEXTURE),
+];
+const RECORD_PATH_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(3, RECORD_STORAGE_TEXTURE),
+];
+
+/// Records a rectangle or ellipse, sized to what its uniforms draw this frame.
+pub(super) fn record_shape_source(
+    cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    uniforms: &mut ShapeUniforms,
+) -> crate::Result<crate::gpu::frame_graph::Raster> {
+    let bounds = cx.bounds_of(Some(uniforms.screen_bounds));
+    let domain = cx.source_domain(bounds);
+    uniforms.origin = domain_origin(domain);
+    let size = domain.storage_size;
+    let tex = cx.storage_target(size);
+    let program = cx.program("shape", SHAPE_SHADER, "cs_main", RECORD_SHAPE_LAYOUT)?;
+    let uniform = cx.rec.uniform(&*uniforms);
+    cx.dispatch(
+        program,
+        &[(0, uniform), (1, lumen_gpu::Res::Tex(tex))],
+        compiler::dispatch_for(size),
+    );
+    Ok(crate::gpu::frame_graph::Raster {
+        tex,
+        domain,
+        metadata: RasterMetadata::default(),
+        bounds: None,
+    })
+}
+
+/// Records a source the path shader rasterizes, sized to what `frame` draws.
+pub(super) fn record_path_source(
+    cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    frame: super::path::PathFrame,
+) -> crate::Result<crate::gpu::frame_graph::Raster> {
+    let mut uniforms = frame.uniforms;
+    let bounds = cx.bounds_of(Some(uniforms.screen_bounds));
+    let domain = cx.source_domain(bounds);
+    uniforms.origin = domain_origin(domain);
+    let size = domain.storage_size;
+    let tex = cx.storage_target(size);
+    let program = cx.program("path", PATH_SHADER, "cs_main", RECORD_PATH_LAYOUT)?;
+    let uniform = cx.rec.uniform(&uniforms);
+    let points = cx.rec.storage_parts(&[bytemuck::cast_slice(&frame.points)]);
+    let bands = cx.rec.storage_parts(&[bytemuck::cast_slice(&frame.bands)]);
+    cx.dispatch(
+        program,
+        &[
+            (0, uniform),
+            (1, points),
+            (2, bands),
+            (3, lumen_gpu::Res::Tex(tex)),
+        ],
+        compiler::dispatch_for(size),
+    );
+    Ok(crate::gpu::frame_graph::Raster {
+        tex,
+        domain,
+        metadata: RasterMetadata::default(),
+        bounds: None,
+    })
+}
+
+const VF: lumen_gpu::wgpu::ShaderStages = lumen_gpu::wgpu::ShaderStages::VERTEX_FRAGMENT;
+const FRAG: lumen_gpu::wgpu::ShaderStages = lumen_gpu::wgpu::ShaderStages::FRAGMENT;
+const RECORD_TEXT_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::staged(0, VF, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::staged(1, FRAG, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::staged(2, FRAG, lumen_gpu::LayoutKind::Sampler),
+    lumen_gpu::LayoutEntry::staged(3, VF, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::staged(4, VF, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::staged(6, FRAG, lumen_gpu::LayoutKind::Storage),
+];
+const RECORD_SMEAR_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::staged(0, VF, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::staged(1, FRAG, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::staged(2, FRAG, lumen_gpu::LayoutKind::Sampler),
+    lumen_gpu::LayoutEntry::staged(3, VF, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::staged(4, VF, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::staged(5, FRAG, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::staged(6, FRAG, lumen_gpu::LayoutKind::Storage),
+];
+
+fn shared_text_shader() -> &'static str {
+    static SHADER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SHADER.get_or_init(text_shader)
+}
+
+const GLOBALS: lumen_gpu::BufferId = lumen_gpu::BufferId(0);
+const INSTANCES: lumen_gpu::BufferId = lumen_gpu::BufferId(1);
+const STYLE: lumen_gpu::BufferId = lumen_gpu::BufferId(2);
+const PAINTS: lumen_gpu::BufferId = lumen_gpu::BufferId(3);
+
+/// Records a text, binding it as a plan would and drawing what it placed this frame. Its
+/// instances still fit `MAX_TEXT_GLYPHS`, which bounds the work one node can ask for.
+pub(crate) fn record_text(
+    text: &Text,
+    cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+) -> crate::Result<crate::gpu::frame_graph::Raster> {
+    use lumen_gpu::{RenderTargetSpec, Res, TargetLoad, wgpu};
+
+    let size = cx.canvas_size();
+    let blurred = text_blurred(&text.params);
+    let layer_size = text_layer_size(blurred, size);
+    let atlas = cx.atlas()?;
+    let compiled = cx.text_instance(text.id, |cx| {
+        text_paint_count(text)?;
+        compiled_text(
+            text,
+            &cx.expr(text.id, "params"),
+            TextResources {
+                atlas_texture: lumen_gpu::TextureId(0),
+                globals_buffer: GLOBALS,
+                instances_buffer: INSTANCES,
+                style_buffer: STYLE,
+                paints_buffer: PAINTS,
+            },
+            MAX_TEXT_GLYPHS,
+            size,
+            layer_size,
+            !blurred && text_may_be_bounded(&text.params),
+        )
+    })?;
+    for family in std::iter::once(&text.params.font_family).chain(
+        match &text.params.content {
+            TextContentDelegate::Spans(spans) => spans.items.as_slice(),
+            TextContentDelegate::Text(_) => &[],
+        }
+        .iter()
+        .filter_map(|span| span.font_family.as_ref()),
+    ) {
+        if let Deferred::Value(family) = family {
+            cx.note_font(family);
+        }
+    }
+    let bind = cx.bind_context();
+    compiled.bind_text(&bind, &mut cx.bound, false)?;
+    let drawn = compiled.drawn();
+
+    let uploads = cx.bound.take_buffer_uploads();
+    let part = |id: lumen_gpu::BufferId| {
+        uploads
+            .iter()
+            .filter(move |(buffer, ..)| *buffer == id)
+            .map(|(_, _, data)| data.as_slice())
+    };
+    let globals_data = part(GLOBALS).next().expect("text globals");
+    let globals: lumen_text::GpuTextGlobals = bytemuck::pod_read_unaligned(globals_data);
+    let globals_res = cx.rec.uniform_bytes(globals_data);
+    let style_res = cx
+        .rec
+        .uniform_bytes(part(STYLE).next().expect("text style"));
+    let instance_parts: smallvec::SmallVec<[&[u8]; 5]> = part(INSTANCES).collect();
+    let instances = cx.rec.storage_parts(&instance_parts);
+    drop(instance_parts);
+    let paints = cx
+        .rec
+        .storage_parts(&[part(PAINTS).next().expect("text paints")]);
+
+    let bounds = cx.bounds_of(drawn.canvas_bounds);
+    let domain = cx.source_domain(bounds);
+    let target = cx.render_target(domain.storage_size);
+    let viewport = (!domain.is_full_frame()).then_some([
+        -domain.data_rect.x as f32,
+        -domain.data_rect.y as f32,
+        size.width as f32,
+        size.height as f32,
+    ]);
+    let sampler = cx.sampler(3, || wgpu::SamplerDescriptor {
+        label: Some("lumen text atlas sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
+    });
+    let shared = [
+        (0, globals_res),
+        (1, Res::Tex(atlas)),
+        (2, Res::Sampler(sampler)),
+        (3, instances),
+        (4, style_res),
+        (6, paints),
+    ];
+    let spec = |blend| RenderTargetSpec {
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        blend,
+    };
+    let shader = shared_text_shader();
+    let program = cx.render_program(
+        "text",
+        shader,
+        "vs_main",
+        "fs_main",
+        RECORD_TEXT_LAYOUT,
+        spec(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        0,
+    )?;
+    let layer = blurred.then(|| cx.render_target(layer_size));
+    cx.rec.draw(
+        program,
+        &shared,
+        layer.unwrap_or(target),
+        TargetLoad::Clear,
+        6,
+        globals.glyph_count,
+        viewport,
+    );
+    cx.bound.keep_recorded_uploads(
+        uploads
+            .into_iter()
+            .filter(|(buffer, ..)| *buffer == INSTANCES),
+    );
+    if let Some(layer) = layer {
+        let program = cx.render_program(
+            "text smear",
+            shader,
+            "vs_fullscreen",
+            "fs_smear",
+            RECORD_SMEAR_LAYOUT,
+            spec(wgpu::BlendState::REPLACE),
+            1,
+        )?;
+        let mut bindings = smallvec::SmallVec::<[(u32, Res); 7]>::from_slice(&shared);
+        bindings.push((5, Res::Tex(layer)));
+        cx.rec
+            .draw(program, &bindings, target, TargetLoad::Clear, 3, 1, None);
+    }
+    // Fading the composited layer keeps overlapping glyphs from doubling up.
+    if drawn.opacity < 1.0 {
+        let multiply = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::SrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let program = cx.render_program(
+            "text opacity",
+            shader,
+            "vs_fullscreen",
+            "fs_opacity",
+            RECORD_TEXT_LAYOUT,
+            spec(wgpu::BlendState {
+                color: multiply,
+                alpha: multiply,
+            }),
+            2,
+        )?;
+        cx.rec
+            .draw(program, &shared, target, TargetLoad::Load, 3, 1, None);
+    }
+    Ok(crate::gpu::frame_graph::Raster {
+        tex: target,
+        domain,
+        metadata: RasterMetadata::default(),
+        bounds: None,
+    })
 }
 
 /// The canvas pixel of a domain's first texel.

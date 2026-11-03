@@ -27,7 +27,10 @@ pub(crate) struct SurfaceCompositionRenderer {
 impl SurfaceCompositionRenderer {
     pub(crate) async fn new(canvas: &JsValue) -> Result<Self, JsValue> {
         let gpu = SurfaceGpu::new(canvas).await?;
-        let renderer = GpuCompositionRenderer::from_device(gpu.device.clone(), gpu.queue.clone());
+        let mut renderer =
+            GpuCompositionRenderer::from_device(gpu.device.clone(), gpu.queue.clone());
+        // The preview runs in a worker, so the prototype's flag is chosen when building it.
+        renderer.set_frame_graph(option_env!("LUMEN_FRAME_GRAPH") == Some("1"));
         Ok(Self {
             renderer,
             gpu,

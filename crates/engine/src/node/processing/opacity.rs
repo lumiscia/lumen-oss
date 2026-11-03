@@ -106,3 +106,29 @@ impl GpuCompileNode for Opacity {
         }))
     }
 }
+
+impl crate::gpu::frame_graph::RecordNode for Opacity {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.input(&self.source)?;
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(self.id, "params"),
+        })?;
+        let premultiplied = match source.metadata.alpha_mode {
+            AlphaMode::Premultiplied => 1.0,
+            AlphaMode::Unpremultiplied => 0.0,
+        };
+        let params = compiler::OpacityParams {
+            values: [
+                evaluated.opacity.clamp(0.0, 1.0) as f32,
+                premultiplied,
+                0.0,
+                0.0,
+            ],
+        };
+        cx.filter("opacity", SHADER, source, &params)
+    }
+}

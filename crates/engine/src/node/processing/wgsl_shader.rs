@@ -831,6 +831,143 @@ fn strip_comments(source: &str) -> String {
     out
 }
 
+const RECORD_PREMULTIPLY_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(
+        OUTPUT_BINDING,
+        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+    ),
+];
+
+impl crate::gpu::frame_graph::RecordNode for WgslShader {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        use lumen_gpu::{LayoutEntry, LayoutKind, Res};
+
+        let frame = cx.frame_number();
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(self.id, "params"),
+        })?;
+        let mut inputs = smallvec::SmallVec::<[crate::gpu::frame_graph::Raster; 4]>::new();
+        for source in self.sources.iter().filter(|source| !source.is_empty()) {
+            inputs.push(cx.input_full(source)?);
+        }
+        let Some(first) = inputs.first().copied() else {
+            return Err(shader_error(self.id, frame, "needs at least one input"));
+        };
+        if inputs.len() > MAX_INPUTS {
+            return Err(shader_error(
+                self.id,
+                frame,
+                format!(
+                    "has {} inputs; WebGPU allows at most {MAX_INPUTS}",
+                    inputs.len()
+                ),
+            ));
+        }
+        let user_source = if params.shader.trim().is_empty() {
+            DEFAULT_SHADER
+        } else {
+            params.shader.as_str()
+        };
+        let input_count = inputs.len();
+        let node_id = self.id;
+        let shader = cx.cached_shader(user_source, input_count, || {
+            let interface = ShaderInterface::parse(user_source)
+                .map_err(|details| shader_error(node_id, frame, format!("shader: {details}")))?;
+            let assembled = interface.assemble(user_source, input_count);
+            let mut layout = vec![
+                LayoutEntry::compute(1, LayoutKind::Uniform),
+                LayoutEntry::compute(
+                    OUTPUT_BINDING,
+                    LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+                ),
+                LayoutEntry::compute(3, LayoutKind::Uniform),
+                LayoutEntry::compute(4, LayoutKind::Sampler),
+            ];
+            layout.extend(
+                (0..input_count)
+                    .map(|index| LayoutEntry::compute(input_binding(index), LayoutKind::Texture)),
+            );
+            Ok((std::sync::Arc::new(interface) as _, assembled, layout))
+        })?;
+        let interface = shader
+            .interface
+            .downcast_ref::<ShaderInterface>()
+            .expect("shader interface");
+        let size = first.domain.storage_size;
+        let (uniforms, globals) = {
+            let expr = cx.expr(self.id, "uniforms");
+            (
+                interface
+                    .uniform_bytes(self.id, &params.uniforms, &expr)?
+                    .to_vec(),
+                LumenGlobals {
+                    resolution: [size.width as f32, size.height as f32],
+                    time: expr.time_seconds() as f32,
+                    frame: expr.frame as u32,
+                },
+            )
+        };
+        let mut textures = smallvec::SmallVec::<[lumen_gpu::TexRef; 4]>::new();
+        for input in &inputs {
+            if input.metadata.alpha_mode == AlphaMode::Premultiplied {
+                textures.push(input.tex);
+                continue;
+            }
+            let input_size = input.domain.storage_size;
+            let tex = cx.storage_target(input_size);
+            let program = cx.program(
+                "wgsl-shader-premultiply",
+                PREMULTIPLY_SHADER,
+                "cs_main",
+                RECORD_PREMULTIPLY_LAYOUT,
+            )?;
+            cx.dispatch(
+                program,
+                &[(0, Res::Tex(input.tex)), (OUTPUT_BINDING, Res::Tex(tex))],
+                compiler::dispatch_for(input_size),
+            );
+            textures.push(tex);
+        }
+        let tex = cx.storage_target(size);
+        let program = cx.dynamic_program("wgsl-shader", &shader)?;
+        let uniform = cx.rec.uniform_bytes(&uniforms);
+        let globals = cx.rec.uniform(&globals);
+        let sampler = cx.sampler(4, || lumen_gpu::wgpu::SamplerDescriptor {
+            address_mode_u: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+            address_mode_v: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+            address_mode_w: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+            mag_filter: lumen_gpu::wgpu::FilterMode::Linear,
+            min_filter: lumen_gpu::wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let mut bindings = smallvec::SmallVec::<[(u32, Res); lumen_gpu::MAX_PASS_BINDINGS]>::new();
+        bindings.extend([
+            (1, uniform),
+            (OUTPUT_BINDING, Res::Tex(tex)),
+            (3, globals),
+            (4, Res::Sampler(sampler)),
+        ]);
+        for (index, texture) in textures.iter().enumerate() {
+            bindings.push((input_binding(index), Res::Tex(*texture)));
+        }
+        cx.dispatch(program, &bindings, compiler::dispatch_for(size));
+        Ok(crate::gpu::frame_graph::Raster {
+            tex,
+            domain: first.domain,
+            metadata: RasterMetadata {
+                alpha_mode: AlphaMode::Premultiplied,
+                ..first.metadata
+            },
+            bounds: None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

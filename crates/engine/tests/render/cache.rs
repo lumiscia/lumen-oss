@@ -87,6 +87,7 @@ fn uncached(
     composition: &Composition,
     frame: f64,
 ) -> Vec<u8> {
+    renderer.set_frame_graph(false);
     renderer.release_resources();
     at(renderer, composition, frame)
 }

@@ -125,3 +125,26 @@ impl GpuCompileNode for Levels {
         }))
     }
 }
+
+impl crate::gpu::frame_graph::RecordNode for Levels {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.premultiplied_source(&self.source)?;
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(self.id, "params"),
+        })?;
+        let gpu_params = compiler::LevelsParams {
+            black_point: params.black_point as f32,
+            white_point: params.white_point as f32,
+            gamma: params.gamma as f32,
+            output_black: params.output_black as f32,
+            output_white: params.output_white as f32,
+            premultiplied: u32::from(source.metadata.alpha_mode == AlphaMode::Premultiplied),
+            _pad: [0.0; 2],
+        };
+        cx.filter("levels", SHADER, source, &gpu_params)
+    }
+}

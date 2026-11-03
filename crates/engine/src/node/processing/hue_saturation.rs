@@ -118,3 +118,23 @@ impl GpuCompileNode for HueSaturation {
         }))
     }
 }
+
+impl crate::gpu::frame_graph::RecordNode for HueSaturation {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.premultiplied_source(&self.source)?;
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(self.id, "params"),
+        })?;
+        let gpu_params = compiler::HueSaturationParams {
+            hue_offset: (params.hue_degrees / 360.0) as f32,
+            saturation: params.saturation as f32,
+            lightness: params.lightness as f32,
+            premultiplied: u32::from(source.metadata.alpha_mode == AlphaMode::Premultiplied),
+        };
+        cx.filter("hue-saturation", SHADER, source, &gpu_params)
+    }
+}

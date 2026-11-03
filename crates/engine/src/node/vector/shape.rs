@@ -374,6 +374,26 @@ fn parse_polygon_points(text: &str) -> Option<Vec<[f32; 2]>> {
     (vertices.len() >= 3).then_some(vertices)
 }
 
+impl crate::gpu::frame_graph::RecordNode for Shape {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        if let ShapeGeometryKindDelegate::Polygon = self.params.geometry_kind {
+            let frame = polygon_frame(
+                &self.params,
+                self.id,
+                &cx.expr(self.id, "params"),
+                MAX_PATH_POINTS,
+                super::path_bands::band_capacity(MAX_PATH_POINTS),
+            )?;
+            return super::renderer::record_path_source(cx, frame);
+        }
+        let mut uniforms = shape_frame(&self.params, self.id, &cx.expr(self.id, "params"))?;
+        super::renderer::record_shape_source(cx, &mut uniforms)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

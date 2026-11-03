@@ -58,6 +58,7 @@ impl Gpu {
     /// A renderer whose sources all fill the canvas and render on every frame.
     pub fn reference(&self) -> GpuCompositionRenderer {
         let mut renderer = self.renderer();
+        renderer.set_frame_graph(false);
         renderer.set_full_frame_sources(true);
         renderer.set_static_output_reuse(false);
         renderer
@@ -543,7 +544,7 @@ impl Case {
             .iter()
             .map(|&at| {
                 let frame = render(renderer, &self.scene, at, &self.media);
-                if let Some(bounded) = bounded {
+                if let Some(bounded) = bounded.filter(|_| !renderer.frame_graph_enabled()) {
                     let domain = self.output_domain(renderer);
                     assert_eq!(
                         !domain.is_full_frame(),

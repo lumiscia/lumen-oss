@@ -129,6 +129,10 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 ";
 
+pub(crate) const fn clip_crop_shader() -> &'static str {
+    CLIP_CROP_SHADER
+}
+
 #[derive(Debug, Clone)]
 struct ClipCropBinding {
     node_id: NodeId,

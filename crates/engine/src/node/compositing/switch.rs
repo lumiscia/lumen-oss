@@ -89,3 +89,16 @@ impl GpuCompiledNode for CompiledSwitch {
         Ok(())
     }
 }
+
+impl crate::gpu::frame_graph::RecordNode for Switch {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let selected = selected_layer_for_frame(self, &cx.expr(self.id, "selected_layer"))?;
+        match selected.and_then(|index| self.layers.get(index)) {
+            Some(layer) if !layer.is_empty() => cx.input(layer),
+            _ => Ok(cx.transparent(cx.canvas_size())),
+        }
+    }
+}

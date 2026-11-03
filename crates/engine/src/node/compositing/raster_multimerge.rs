@@ -242,3 +242,104 @@ impl GpuCompileNode for RasterMultiMerge {
         Ok(CompiledOutput::Raster(current))
     }
 }
+
+const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(
+        3,
+        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+    ),
+];
+
+impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let mut layers = smallvec::SmallVec::<[crate::gpu::frame_graph::Raster; 16]>::new();
+        for layer in self.layers.iter().filter(|layer| !layer.is_empty()) {
+            layers.push(cx.input(layer)?);
+        }
+        let Some((&first, overlays)) = layers.split_first() else {
+            return Ok(cx.transparent(cx.canvas_size()));
+        };
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(self.id, "params"),
+        })?;
+        // Compositing transparent over a pixel leaves it as it was, so the stack is written
+        // only where some layer has texels, and a pass changes its base only within its
+        // overlay's texels.
+        let domain = cx.domain_within(
+            first.domain.display_size(),
+            Some(layers.iter().fold(first.domain.data_rect, |union, layer| {
+                union.union(layer.domain.data_rect)
+            })),
+        );
+        let program = cx.program("raster-multimerge", SHADER, "cs_main", RECORD_LAYOUT)?;
+        // Passes alternate between two textures. Each of the first two writes its whole
+        // texture; after that a texture still holds the stack from two passes before, which
+        // differs from the stack now only within this overlay's texels and the last one's.
+        let mut targets: [Option<lumen_gpu::TexRef>; 2] = [None; 2];
+        let mut current = first;
+        for (index, overlay) in overlays.iter().enumerate() {
+            let tex = match targets[index % 2] {
+                Some(tex) => tex,
+                None => {
+                    let tex = cx.storage_target(domain.storage_size);
+                    targets[index % 2] = Some(tex);
+                    tex
+                }
+            };
+            let changed = if index < 2 {
+                domain.data_rect
+            } else {
+                overlay
+                    .domain
+                    .data_rect
+                    .union(overlays[index - 1].domain.data_rect)
+                    .intersection(domain.data_rect)
+            };
+            let params = compiler::RasterMultiMergeParams {
+                values: [
+                    evaluated.opacity as f32,
+                    evaluated.blend_mode as f32,
+                    f32::from(u8::from(current.straight())),
+                    f32::from(u8::from(overlay.straight())),
+                ],
+                origins: [
+                    [
+                        changed.x - domain.data_rect.x,
+                        changed.y - domain.data_rect.y,
+                    ],
+                    [domain.data_rect.x, domain.data_rect.y],
+                    current.origin(),
+                    overlay.origin(),
+                ],
+            };
+            let uniform = cx.rec.uniform(&params);
+            cx.dispatch(
+                program,
+                &[
+                    (0, lumen_gpu::Res::Tex(current.tex)),
+                    (1, lumen_gpu::Res::Tex(overlay.tex)),
+                    (2, uniform),
+                    (3, lumen_gpu::Res::Tex(tex)),
+                ],
+                compiler::dispatch_for(changed.size()),
+            );
+            current = crate::gpu::frame_graph::Raster {
+                tex,
+                domain,
+                metadata: RasterMetadata {
+                    alpha_mode: AlphaMode::Premultiplied,
+                    ..current.metadata
+                },
+                bounds: None,
+            };
+        }
+        Ok(current)
+    }
+}

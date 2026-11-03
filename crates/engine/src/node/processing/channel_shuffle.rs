@@ -149,3 +149,27 @@ impl GpuCompileNode for ChannelShuffle {
         }))
     }
 }
+
+impl crate::gpu::frame_graph::RecordNode for ChannelShuffle {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.input_full(&self.source)?;
+        let params = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(self.id, "params"),
+        })?;
+        let selectors = [
+            compiler::channel_selector(self.id, "red", params.red.as_spec())?,
+            compiler::channel_selector(self.id, "green", params.green.as_spec())?,
+            compiler::channel_selector(self.id, "blue", params.blue.as_spec())?,
+            compiler::channel_selector(self.id, "alpha", params.alpha.as_spec())?,
+        ];
+        let gpu_params = compiler::ChannelShuffleParams {
+            selector_indices: selectors.map(|selector| selector.index),
+            selector_values: selectors.map(|selector| selector.value),
+        };
+        cx.filter("channel-shuffle", SHADER, source, &gpu_params)
+    }
+}

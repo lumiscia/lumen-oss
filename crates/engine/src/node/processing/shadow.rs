@@ -233,3 +233,97 @@ impl GpuCompiledNode for CompiledShadow {
         Ok(())
     }
 }
+
+const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(
+        3,
+        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+    ),
+];
+
+impl crate::gpu::frame_graph::RecordNode for Shadow {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.input(&self.source)?;
+        let evaluated = self.params.eval(&NodeParamEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(self.id, "params"),
+        })?;
+        let bounds = cx.bounds_of(gaussian::blur_bounds(
+            source.domain.data_rect,
+            [evaluated.offset_x, evaluated.offset_y],
+            evaluated.radius,
+        ));
+        let display = source.domain.display_size();
+        let shadow_domain = cx.domain_within(display, bounds);
+        // The source is composited over its shadow, so both are written.
+        let domain = cx.domain_within(
+            display,
+            Some(source.domain.data_rect.union(shadow_domain.data_rect)),
+        );
+        let straight = source.straight();
+        let blurred = gaussian::record_passes(
+            cx,
+            source,
+            shadow_domain,
+            true,
+            &gaussian::GaussianSettings {
+                radius: evaluated.radius,
+                straight_source: straight,
+                transparent_edge: true,
+                offset: [evaluated.offset_x, evaluated.offset_y],
+            },
+        )?;
+        let color = evaluated.color.to_gpu([0, 0, 0, 255]).colors[0];
+        let opacity = evaluated.opacity.clamp(0.0, 1.0) as f32 * color[3];
+        let params = compiler::ShadowParams {
+            color: [
+                color[0],
+                color[1],
+                color[2],
+                if straight { 1.0 } else { 0.0 },
+            ],
+            values: [0.0, 0.0, 0.0, opacity],
+            origins: [
+                domain.data_rect.x,
+                domain.data_rect.y,
+                shadow_domain.data_rect.x,
+                shadow_domain.data_rect.y,
+            ],
+            source_origin: [source.domain.data_rect.x, source.domain.data_rect.y, 0, 0],
+        };
+        let size = domain.storage_size;
+        let tex = cx.storage_target(size);
+        let program = cx.program(
+            "shadow-composite",
+            COMPOSITE_SHADER,
+            "composite_main",
+            RECORD_LAYOUT,
+        )?;
+        let uniform = cx.rec.uniform(&params);
+        cx.dispatch(
+            program,
+            &[
+                (0, lumen_gpu::Res::Tex(blurred)),
+                (1, lumen_gpu::Res::Tex(source.tex)),
+                (2, uniform),
+                (3, lumen_gpu::Res::Tex(tex)),
+            ],
+            compiler::dispatch_for(size),
+        );
+        Ok(crate::gpu::frame_graph::Raster {
+            tex,
+            domain,
+            metadata: RasterMetadata {
+                alpha_mode: AlphaMode::Premultiplied,
+                ..source.metadata
+            },
+            bounds: None,
+        })
+    }
+}

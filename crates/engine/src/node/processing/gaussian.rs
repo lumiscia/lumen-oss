@@ -405,3 +405,160 @@ pub(crate) fn compile_passes_with(
         ],
     }
 }
+
+const RECORD_LEVEL_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(3, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(4, lumen_gpu::LayoutKind::Sampler),
+    lumen_gpu::LayoutEntry::compute(
+        5,
+        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba16Float),
+    ),
+];
+const RECORD_RESOLVE_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(3, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(4, lumen_gpu::LayoutKind::Sampler),
+    lumen_gpu::LayoutEntry::compute(
+        6,
+        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+    ),
+];
+
+fn record_shader(shifted: bool) -> &'static str {
+    static SHADERS: [std::sync::OnceLock<String>; 2] =
+        [std::sync::OnceLock::new(), std::sync::OnceLock::new()];
+    SHADERS[usize::from(shifted)]
+        .get_or_init(|| format!("{}{SHADER_BODY}", Padding::new(shifted).shader_header()))
+}
+
+/// Records the blur of `source` into a texture of `output`'s size, scheduling only the levels
+/// this radius reads.
+pub(crate) fn record_passes(
+    cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    source: crate::gpu::frame_graph::Raster,
+    output: lumen_gpu::TextureDomain,
+    shifted: bool,
+    settings: &GaussianSettings,
+) -> crate::Result<lumen_gpu::TexRef> {
+    use lumen_gpu::Res;
+
+    let region = output.data_rect;
+    let size = output.storage_size;
+    let sigma = sigma_for_radius(settings.radius);
+    let padding = Padding::new(shifted);
+    let shader = record_shader(shifted);
+    let flag = |value: bool| if value { 1.0 } else { 0.0 };
+    let params = compiler::BlurParams {
+        values: [
+            sigma,
+            flag(settings.straight_source),
+            flag(settings.transparent_edge),
+            0.0,
+        ],
+        offset: [
+            settings.offset[0].round() as f32,
+            settings.offset[1].round() as f32,
+            0.0,
+            0.0,
+        ],
+        region: [region.x, region.y, 0, 0],
+        source: [
+            source.domain.data_rect.x,
+            source.domain.data_rect.y,
+            source.domain.display_size().width as i32,
+            source.domain.display_size().height as i32,
+        ],
+    };
+    let uniform = cx.rec.uniform(&params);
+    let sampler = cx.sampler(1, || lumen_gpu::wgpu::SamplerDescriptor {
+        mag_filter: lumen_gpu::wgpu::FilterMode::Linear,
+        min_filter: lumen_gpu::wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let sampler = Res::Sampler(sampler);
+
+    let level = |cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+                 entry: &'static str,
+                 input: lumen_gpu::TexRef,
+                 target: lumen_gpu::TexRef,
+                 target_size: lumen_gpu::Size|
+     -> crate::Result<()> {
+        let program = cx.program("gaussian", shader, entry, RECORD_LEVEL_LAYOUT)?;
+        cx.dispatch(
+            program,
+            &[
+                (0, Res::Tex(input)),
+                (3, uniform),
+                (4, sampler),
+                (5, Res::Tex(target)),
+            ],
+            compiler::dispatch_for(target_size),
+        );
+        Ok(())
+    };
+
+    let unused = cx.unused_float();
+    let mut full = unused;
+    if f64::from(sigma) < QUARTER_BAND.1 {
+        let padded_size = lumen_gpu::Size::new(size.width, size.height + 2 * padding.full);
+        full = cx.float_target(padded_size);
+        level(cx, "horizontal_main", source.tex, full, padded_size)?;
+    }
+    let reduced = |cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+                   used: bool,
+                   factor: u32,
+                   pad: u32,
+                   entries: [&'static str; 3]|
+     -> crate::Result<lumen_gpu::TexRef> {
+        if !used {
+            return Ok(unused);
+        }
+        let level_size = padded(region, factor, pad);
+        let a = cx.float_target(level_size);
+        let b = cx.float_target(level_size);
+        level(cx, entries[0], source.tex, a, level_size)?;
+        level(cx, entries[1], a, b, level_size)?;
+        level(cx, entries[2], b, a, level_size)?;
+        Ok(a)
+    };
+    let quarter = reduced(
+        cx,
+        f64::from(sigma) > QUARTER_BAND.0 && f64::from(sigma) < SIXTEENTH_BAND.1,
+        QUARTER_FACTOR,
+        padding.quarter,
+        [
+            "quarter_down_main",
+            "quarter_horizontal_main",
+            "quarter_vertical_main",
+        ],
+    )?;
+    let sixteenth = reduced(
+        cx,
+        f64::from(sigma) > SIXTEENTH_BAND.0,
+        SIXTEENTH_FACTOR,
+        padding.sixteenth,
+        [
+            "sixteenth_down_main",
+            "sixteenth_horizontal_main",
+            "sixteenth_vertical_main",
+        ],
+    )?;
+    let target = cx.storage_target(size);
+    let program = cx.program("gaussian", shader, "resolve_main", RECORD_RESOLVE_LAYOUT)?;
+    cx.dispatch(
+        program,
+        &[
+            (0, Res::Tex(full)),
+            (1, Res::Tex(quarter)),
+            (2, Res::Tex(sixteenth)),
+            (3, uniform),
+            (4, sampler),
+            (6, Res::Tex(target)),
+        ],
+        compiler::dispatch_for(size),
+    );
+    Ok(target)
+}

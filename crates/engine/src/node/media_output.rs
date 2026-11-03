@@ -175,3 +175,95 @@ fn media_output_texture_desc(
         }
     }
 }
+
+const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(
+        1,
+        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+    ),
+];
+const RECORD_RENDER_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::staged(
+        0,
+        lumen_gpu::wgpu::ShaderStages::FRAGMENT,
+        lumen_gpu::LayoutKind::Texture,
+    ),
+    lumen_gpu::LayoutEntry::staged(
+        1,
+        lumen_gpu::wgpu::ShaderStages::FRAGMENT,
+        lumen_gpu::LayoutKind::Sampler,
+    ),
+];
+
+impl crate::gpu::frame_graph::RecordNode for MediaOutput {
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.input_full(&self.source)?;
+        let settings = cx.composition().render_settings();
+        let size = lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1));
+        let format = cx.output_format();
+        let rgba8 = format == lumen_gpu::wgpu::TextureFormat::Rgba8Unorm;
+        let written = cx.rec.usage(source.tex).intersects(
+            lumen_gpu::wgpu::TextureUsages::STORAGE_BINDING
+                | lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        if rgba8 && source.domain == lumen_gpu::TextureDomain::full_frame(size) && written {
+            return Ok(source);
+        }
+        let tex = cx.output_target(size, format);
+        if rgba8 {
+            let program = cx.program("media-output", SHADER, "cs_main", RECORD_LAYOUT)?;
+            cx.dispatch(
+                program,
+                &[
+                    (0, lumen_gpu::Res::Tex(source.tex)),
+                    (1, lumen_gpu::Res::Tex(tex)),
+                ],
+                compiler::dispatch_for(size),
+            );
+        } else {
+            let sampler = cx.sampler(2, || lumen_gpu::wgpu::SamplerDescriptor {
+                address_mode_u: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+                address_mode_v: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+                address_mode_w: lumen_gpu::wgpu::AddressMode::ClampToEdge,
+                mag_filter: lumen_gpu::wgpu::FilterMode::Nearest,
+                min_filter: lumen_gpu::wgpu::FilterMode::Nearest,
+                mipmap_filter: lumen_gpu::wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            });
+            let program = cx.render_program(
+                "media-output",
+                RENDER_SHADER,
+                "vs_main",
+                "fs_main",
+                RECORD_RENDER_LAYOUT,
+                lumen_gpu::RenderTargetSpec {
+                    format,
+                    blend: lumen_gpu::wgpu::BlendState::REPLACE,
+                },
+                0,
+            )?;
+            cx.rec.draw(
+                program,
+                &[
+                    (0, lumen_gpu::Res::Tex(source.tex)),
+                    (1, lumen_gpu::Res::Sampler(sampler)),
+                ],
+                tex,
+                lumen_gpu::TargetLoad::Clear,
+                3,
+                1,
+                None,
+            );
+        }
+        Ok(crate::gpu::frame_graph::Raster {
+            tex,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            metadata: source.metadata,
+            bounds: None,
+        })
+    }
+}
