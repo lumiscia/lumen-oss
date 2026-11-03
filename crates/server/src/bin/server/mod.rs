@@ -3,7 +3,7 @@ mod media_staging;
 mod types;
 mod util;
 
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, path::Path, time::Instant};
 
 pub use types::{
     ApiRenderJob, ArtifactOutput, CreateRenderResponse, GetRenderResponse, RenderJobError,
@@ -54,8 +54,9 @@ where
     let media_stage_ms = stage_started.elapsed().as_millis();
     tracing::info!(job_id, media_stage_ms, "staged render media");
 
+    let staged_path = staged_media.path().to_path_buf();
     let options = RenderOptions {
-        media_root: Some(staged_media.path().to_path_buf()),
+        media_root: Some(staged_path.clone()),
         verbose_debug,
         video_encoder: None,
     };
@@ -93,7 +94,11 @@ where
         message: format!("render worker join failed: {err}"),
         retryable: true,
     })?
-    .map_err(map_execution_error)?;
+    .map_err(|mut error| {
+        tracing::warn!(job_id, code = error.code, error = %error.message, "render failed");
+        error.message = without_staging_path(&error.message, &staged_path);
+        map_execution_error(error)
+    })?;
     let render_ms = render_started.elapsed().as_millis();
     tracing::info!(
         job_id,
@@ -124,6 +129,17 @@ where
         bytes: rendered_bytes,
         metrics,
     })
+}
+
+/// Leaves file names relative to the job's media, since clients know those and not where it's staged.
+fn without_staging_path(message: &str, staged_path: &Path) -> String {
+    let canonical = staged_path.canonicalize().ok();
+    [Some(staged_path), canonical.as_deref()]
+        .into_iter()
+        .flatten()
+        .fold(message.to_string(), |message, root| {
+            message.replace(&format!("{}/", root.display()), "")
+        })
 }
 
 pub(super) fn map_execution_error(error: RenderPipelineError) -> RenderJobError {
