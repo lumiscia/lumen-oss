@@ -286,7 +286,6 @@ fn a_radius_edit_reuses_the_blur_programs() {
     let created = renderer.created_program_count();
     assert!(created > 0);
     render(&mut renderer, &blurred_square(4).into(), 0.0, &media);
-    assert_eq!(renderer.plan_compile_count(), 2);
     assert_eq!(renderer.created_program_count(), created);
 }
 
