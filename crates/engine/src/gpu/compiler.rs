@@ -13,8 +13,7 @@ use crate::{
     },
     media::MediaStore,
     node::{
-        ClipPropValue, NodeId, NodeKind, NodeParams, PropertyRead, compositing::clip::Clip,
-        required_input,
+        ClipPropValue, NodeId, NodeParams, PropertyRead, compositing::clip::Clip, required_input,
     },
     scope::{FrameTime, PropValues, Routed, Scope},
 };
@@ -412,35 +411,7 @@ impl<'a> CompileContext<'a> {
             .scope
             .node(node_id)
             .ok_or(RenderError::MissingNode { node_id })?;
-        Ok(match node {
-            NodeKind::MediaIn(node) => node.compile_gpu(self)?,
-            NodeKind::Background(node) => node.compile_gpu(self)?,
-            NodeKind::Text(node) => node.compile_gpu(self)?,
-            NodeKind::Path(node) => node.compile_gpu(self)?,
-            NodeKind::Shape(node) => node.compile_gpu(self)?,
-            NodeKind::Boolean(node) => node.compile_gpu(self)?,
-            NodeKind::Merge(node) => node.compile_gpu(self)?,
-            NodeKind::RasterMultiMerge(node) => node.compile_gpu(self)?,
-            NodeKind::AlphaPremultiply(node) => node.compile_gpu(self)?,
-            NodeKind::Blur(node) => node.compile_gpu(self)?,
-            NodeKind::ChannelShuffle(node) => node.compile_gpu(self)?,
-            NodeKind::ColorGrade(node) => node.compile_gpu(self)?,
-            NodeKind::Curves(node) => node.compile_gpu(self)?,
-            NodeKind::Exposure(node) => node.compile_gpu(self)?,
-            NodeKind::HueSaturation(node) => node.compile_gpu(self)?,
-            NodeKind::Levels(node) => node.compile_gpu(self)?,
-            NodeKind::Memo(node) => node.compile_gpu(self)?,
-            NodeKind::Opacity(node) => node.compile_gpu(self)?,
-            NodeKind::TimeRemap(node) => node.compile_gpu(self)?,
-            NodeKind::Transform(node) => node.compile_gpu(self)?,
-            NodeKind::Crop(node) => node.compile_gpu(self)?,
-            NodeKind::Resize(node) => node.compile_gpu(self)?,
-            NodeKind::Shadow(node) => node.compile_gpu(self)?,
-            NodeKind::WgslShader(node) => node.compile_gpu(self)?,
-            NodeKind::Switch(node) => node.compile_gpu(self)?,
-            NodeKind::Clip(node) => node.compile_gpu(self)?,
-            NodeKind::MediaOutput(node) => node.compile_gpu(self)?,
-        })
+        node.compile_gpu(self)
     }
 
     /// Compiles the input `routed` names, in its frame, scope and instance. `bound_frames` are

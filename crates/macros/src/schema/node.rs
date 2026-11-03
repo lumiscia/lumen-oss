@@ -99,6 +99,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
         }
     });
 
+    let metas_fields = metas.iter().map(|(field, _)| field);
     let kind = node.kind;
     let node_name = node.name;
     let description = doc_string(&node.docs);
@@ -134,6 +135,8 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
         }
 
         impl ::lumen_engine::node::JsonNode for #ident {
+            const KIND: &'static str = #kind;
+
             fn from_json(
                 id: ::lumen_engine::node::NodeId,
                 params: Option<&::serde_json::Map<String, ::serde_json::Value>>,
@@ -182,6 +185,10 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                 let mut ports = ::std::vec::Vec::new();
                 #(#input_port_collectors;)*
                 ports
+            }
+
+            fn has_expressions(&self) -> bool {
+                false #(|| ::lumen_engine::node::DelegateEvaluable::has_expressions(&self.#metas_fields))*
             }
         }
 

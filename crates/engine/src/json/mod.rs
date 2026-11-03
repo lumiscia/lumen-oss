@@ -9,7 +9,6 @@
 //! - [`node`] — per-node-type construction, property application, and port wiring
 
 mod migrations;
-mod node;
 mod property;
 
 use std::collections::BTreeMap;
@@ -25,7 +24,7 @@ use crate::{
     },
     expr::{BuiltinFn, ExprNode, Expression, ExpressionValue, FunctionScope},
     graph::{Connection, Graph},
-    node::NodeId,
+    node::{NodeId, NodeKind},
 };
 
 pub(crate) use property::{
@@ -114,7 +113,12 @@ fn parse_graph(
             .and_then(|v| v.as_str())
             .context("node missing `type` string")?;
 
-        let node_kind = node::build_node(kind_str, id, node_obj)?;
+        let params = match node_obj.get("params") {
+            None => None,
+            Some(Value::Object(params)) => Some(params),
+            Some(_) => bail!("node {id} (`{kind_str}`): `params` must be an object"),
+        };
+        let node_kind = NodeKind::from_json(kind_str, id, params)?;
         if let Some(params) = node_obj.get("params") {
             check_prop_reads(params, props).with_context(|| format!("node {id}"))?;
         }
@@ -509,7 +513,7 @@ fn parse_node_id(val: &Value) -> Result<NodeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::NodeKind;
+    use crate::node::Node;
 
     #[test]
     fn parses_every_bundled_demo() {

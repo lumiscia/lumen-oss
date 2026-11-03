@@ -13,7 +13,7 @@ use crate::{
     graph::Graph,
     media::MediaStore,
     node::{
-        DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
+        DelegateEvalContext, DelegateEvaluable, Node, NodeId, NodeKind,
         processing::time_remap::{TimeRemap, remap_frame},
         required_input,
     },
