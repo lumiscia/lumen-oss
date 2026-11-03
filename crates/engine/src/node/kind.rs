@@ -105,7 +105,6 @@ node_kinds! {
     RasterMultiMerge(compositing::raster_multimerge::RasterMultiMerge),
     Switch(compositing::switch::Switch),
     Clip(compositing::clip::Clip),
-    Memo(processing::memo::Memo),
     Opacity(processing::opacity::Opacity),
     AlphaPremultiply(processing::alpha_premultiply::AlphaPremultiply),
     Blur(processing::blur::Blur),

@@ -31,11 +31,10 @@ impl GpuCompileNode for MediaOutput {
                     )
                 });
         // External output textures stand in for the output, so a pass has to write it: uploaded
-        // media is copied, and a memo's copy stays its own.
+        // media is copied.
         if output_format == lumen_gpu::wgpu::TextureFormat::Rgba8Unorm
             && source.domain == lumen_gpu::TextureDomain::full_frame(size)
             && source_is_written
-            && !ctx.is_memo_texture(source.texture)
         {
             return Ok(source);
         }

@@ -765,16 +765,15 @@ fn routing_selects_one_branch() {
             unselected: Some(1),
         },
         Row {
-            name: "time remap and memo",
+            name: "time remap",
             nodes: json!([
                 solid(1, [64, 128, 255, 255]),
                 { "id": 2, "type": "time_remap", "params": {
                     "frame": 8.0, "loop_enabled": true, "loop_start": 4, "loop_end": 12
                 }, "in": { "source": 1 } },
-                { "id": 3, "type": "memo", "in": { "source": 2 } },
             ]),
             frame: None,
-            aliases: &[2, 3],
+            aliases: &[2],
             path: &[2],
             selected: 1,
             unselected: None,
