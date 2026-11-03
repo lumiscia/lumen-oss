@@ -729,11 +729,10 @@ mod tests {
             "node 3 `content[0].font_size`: expected a number, got string `large`"
         );
 
-        let content = parse(serde_json::json!([{ "text": "a", "font_size": "=foo + 1" }])).unwrap();
-        assert_eq!(
-            eval(&content).unwrap_err().to_string(),
-            "node 3 `content[0].font_size`: undefined variable `foo`"
-        );
+        let error =
+            parse(serde_json::json!([{ "text": "a", "font_size": "=foo + 1" }])).unwrap_err();
+        assert!(error.contains("font_size"), "{error}");
+        assert!(error.contains("unknown variable `foo`"), "{error}");
     }
 
     #[test]

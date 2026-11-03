@@ -462,7 +462,7 @@ fn prop_declaration_json(kind: &str, default: Value) -> Value {
 }
 
 fn expressions_json() -> Value {
-    use lumen_engine::expr::{BUILTINS, Easing, GLOBALS};
+    use lumen_engine::expr::{BUILTINS, Easing, FORMS, GLOBALS, reserved_names};
     let builtins = BUILTINS
         .iter()
         .map(|spec| {
@@ -486,7 +486,18 @@ fn expressions_json() -> Value {
         .map(|global| json!({ "name": global.name, "doc": global.doc }))
         .collect::<Vec<_>>();
     let easings = Easing::ALL.map(Easing::name);
-    json!({ "builtins": builtins, "easings": easings, "globals": globals })
+    let forms = FORMS
+        .iter()
+        .map(|form| json!({ "name": form.name, "signature": form.signature, "doc": form.doc }))
+        .collect::<Vec<_>>();
+    let reserved = reserved_names().collect::<Vec<_>>();
+    json!({
+        "builtins": builtins,
+        "easings": easings,
+        "forms": forms,
+        "globals": globals,
+        "reserved": reserved,
+    })
 }
 
 fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {

@@ -226,27 +226,6 @@ export const expressionBuiltins = [
   {
     "args": [
       {
-        "kind": "any",
-        "name": "from"
-      },
-      {
-        "kind": "any",
-        "name": "to"
-      },
-      {
-        "kind": "number",
-        "name": "t"
-      }
-    ],
-    "doc": "Same as `lerp`. Not to be confused with the `'linear'` easing name.",
-    "maxArgs": 3,
-    "minArgs": 3,
-    "name": "linear",
-    "returns": "any"
-  },
-  {
-    "args": [
-      {
         "kind": "number",
         "name": "from"
       },
@@ -454,6 +433,69 @@ export const expressionBuiltins = [
     "args": [
       {
         "kind": "number",
+        "name": "x1"
+      },
+      {
+        "kind": "number",
+        "name": "y1"
+      },
+      {
+        "kind": "number",
+        "name": "x2"
+      },
+      {
+        "kind": "number",
+        "name": "y2"
+      },
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.",
+    "maxArgs": 5,
+    "minArgs": 5,
+    "name": "cubic_bezier",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "string",
+        "name": "name"
+      }
+    ],
+    "doc": "The value of a composition template's prop, e.g. `prop('title')`. Only inside a template.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "prop",
+    "returns": "any"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      },
+      {
+        "kind": "number",
+        "name": "stiffness"
+      },
+      {
+        "kind": "number",
+        "name": "damping"
+      }
+    ],
+    "doc": "Spring from 0 to 1, `t` seconds after release, e.g. `spring((frame - 12) / fps)`. Stiffness defaults to 170 and damping to 26.",
+    "maxArgs": 3,
+    "minArgs": 1,
+    "name": "spring",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
         "name": "t"
       }
     ],
@@ -605,69 +647,6 @@ export const expressionBuiltins = [
     "minArgs": 1,
     "name": "in_out_back",
     "returns": "number"
-  },
-  {
-    "args": [
-      {
-        "kind": "number",
-        "name": "x1"
-      },
-      {
-        "kind": "number",
-        "name": "y1"
-      },
-      {
-        "kind": "number",
-        "name": "x2"
-      },
-      {
-        "kind": "number",
-        "name": "y2"
-      },
-      {
-        "kind": "number",
-        "name": "t"
-      }
-    ],
-    "doc": "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.",
-    "maxArgs": 5,
-    "minArgs": 5,
-    "name": "cubic_bezier",
-    "returns": "number"
-  },
-  {
-    "args": [
-      {
-        "kind": "string",
-        "name": "name"
-      }
-    ],
-    "doc": "The value of a composition template's prop, e.g. `prop('title')`. Only inside a template.",
-    "maxArgs": 1,
-    "minArgs": 1,
-    "name": "prop",
-    "returns": "any"
-  },
-  {
-    "args": [
-      {
-        "kind": "number",
-        "name": "t"
-      },
-      {
-        "kind": "number",
-        "name": "stiffness"
-      },
-      {
-        "kind": "number",
-        "name": "damping"
-      }
-    ],
-    "doc": "Spring from 0 to 1, `t` seconds after release, e.g. `spring((frame - 12) / fps)`. Stiffness defaults to 170 and damping to 26.",
-    "maxArgs": 3,
-    "minArgs": 1,
-    "name": "spring",
-    "returns": "number"
   }
 ] as const;
 export type ExpressionBuiltinName = (typeof expressionBuiltins)[number]["name"];
@@ -687,7 +666,7 @@ export const easingNames = [
   "out_back",
   "in_out_back"
 ] as const;
-/** Easing names accepted by `tween`. `'linear'` here is unrelated to the `linear(a, b, t)` builtin. */
+/** Easing names accepted by `tween`. */
 export type EasingName = (typeof easingNames)[number];
 
 export const expressionGlobals = [
@@ -745,6 +724,80 @@ export const expressionGlobals = [
   }
 ] as const;
 export type ExpressionGlobalName = (typeof expressionGlobals)[number]["name"];
+
+/** Calls the expression parser handles itself, such as `if` and `node`, listed for documentation. */
+export const expressionForms = [
+  {
+    "doc": "`then` when `condition` is truthy, otherwise `else`. Only the chosen branch is evaluated.",
+    "name": "if",
+    "signature": "if(condition, then, else)"
+  },
+  {
+    "doc": "The value of another node's param. `node(id)` alone names a text node for `text_width` and `text_height`.",
+    "name": "node",
+    "signature": "node(id, 'property')"
+  }
+] as const;
+
+/** Names that composition functions and their parameters may not take. */
+export const expressionReservedNames = [
+  "true",
+  "false",
+  "if",
+  "node",
+  "min",
+  "max",
+  "abs",
+  "floor",
+  "ceil",
+  "round",
+  "sin",
+  "cos",
+  "clamp",
+  "lerp",
+  "pow",
+  "mod",
+  "fract",
+  "smoothstep",
+  "step",
+  "text_height",
+  "text_width",
+  "uppercase",
+  "lowercase",
+  "vec2",
+  "rgb",
+  "rgba",
+  "progress",
+  "tween",
+  "cubic_bezier",
+  "prop",
+  "spring",
+  "in_quad",
+  "out_quad",
+  "in_out_quad",
+  "in_cubic",
+  "out_cubic",
+  "in_out_cubic",
+  "in_expo",
+  "out_expo",
+  "in_out_expo",
+  "in_back",
+  "out_back",
+  "in_out_back",
+  "frame",
+  "time",
+  "fps",
+  "width",
+  "height",
+  "glyph",
+  "word",
+  "line",
+  "span",
+  "glyph_count",
+  "word_count",
+  "line_count",
+  "span_count"
+] as const;
 
 export interface MetaManifest {
   readonly schemaVersion: 1;

@@ -153,8 +153,6 @@ pub enum ExpressionError {
     Parse { details: String },
     #[error("{details}")]
     Evaluate { details: String },
-    #[error("undefined variable `{name}`")]
-    UndefinedVariable { name: String },
     #[error("node {node_id}{}: {failure}", if .path.is_empty() { String::new() } else { format!(" `{path}`") })]
     Located {
         node_id: NodeId,

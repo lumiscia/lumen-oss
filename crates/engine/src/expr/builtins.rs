@@ -3,8 +3,9 @@ use crate::{
     expr::{
         ExpressionContext,
         ast::{BuiltinFn, ExprNode, ExpressionValue},
-        easing::{Easing, SPRING_DAMPING, SPRING_STIFFNESS, cubic_bezier, spring},
+        easing::{SPRING_DAMPING, SPRING_STIFFNESS, cubic_bezier, spring},
         eval::evaluate_expr,
+        spec::{Easing, easing_builtins},
     },
     node::{
         DelegateEvalContext, NodeId, NodeKind,
@@ -75,7 +76,7 @@ pub fn evaluate_builtin(
             }
             Ok(ExpressionValue::Number(value.clamp(min, max)))
         }
-        BuiltinFn::Lerp | BuiltinFn::Linear => {
+        BuiltinFn::Lerp => {
             interpolate(&args[0], &args[1], number(2)?).ok_or_else(|| mismatch(spec.name))
         }
         BuiltinFn::Pow => Ok(ExpressionValue::Number(number(0)?.powf(number(1)?))),
@@ -127,18 +128,7 @@ pub fn evaluate_builtin(
             let t = ease.apply(progress(ctx, start, start + number(3)?));
             interpolate(&args[0], &args[1], t).ok_or_else(|| mismatch(spec.name))
         }
-        BuiltinFn::InQuad
-        | BuiltinFn::OutQuad
-        | BuiltinFn::InOutQuad
-        | BuiltinFn::InCubic
-        | BuiltinFn::OutCubic
-        | BuiltinFn::InOutCubic
-        | BuiltinFn::InExpo
-        | BuiltinFn::OutExpo
-        | BuiltinFn::InOutExpo
-        | BuiltinFn::InBack
-        | BuiltinFn::OutBack
-        | BuiltinFn::InOutBack => {
+        easing_builtins!() => {
             let easing = Easing::for_builtin(builtin).expect("easing builtin");
             Ok(ExpressionValue::Number(easing.apply(number(0)?)))
         }

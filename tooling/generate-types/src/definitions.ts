@@ -11,7 +11,9 @@ export interface MetaManifest {
 export interface ExpressionsSpec {
   readonly builtins: readonly unknown[];
   readonly easings: readonly string[];
+  readonly forms: readonly unknown[];
   readonly globals: readonly unknown[];
+  readonly reserved: readonly string[];
 }
 
 export interface NodeSpec {
@@ -84,7 +86,9 @@ function manifestFromCompositionSchema(schema: JsonSchema): MetaManifest {
     expressions: {
       builtins: arrayValue(expressions.builtins),
       easings: arrayValue(expressions.easings).filter((value) => typeof value === "string"),
+      forms: arrayValue(expressions.forms),
       globals: arrayValue(expressions.globals),
+      reserved: arrayValue(expressions.reserved).filter((value) => typeof value === "string"),
     },
     nodeKinds: Object.keys(nodeSpecs),
     nodeSpecs,

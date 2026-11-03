@@ -11,9 +11,11 @@ mod spec;
 use crate::{error::ExpressionError, graph::Graph};
 
 pub use ast::{BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp};
-pub use easing::Easing;
 pub use functions::FunctionScope;
-pub use spec::{BUILTINS, BuiltinArg, BuiltinSpec, GLOBALS, GlobalSpec, ValueKind};
+pub use spec::{
+    BUILTINS, BuiltinArg, BuiltinSpec, Easing, FORMS, FormSpec, GLOBALS, GlobalSpec, ValueKind,
+    reserved_names,
+};
 
 impl Expression {
     pub fn parse(source: &str) -> Result<Self, ExpressionError> {

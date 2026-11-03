@@ -27,7 +27,6 @@ export {
   lerp,
   line,
   lineCount,
-  linear,
   lowercase,
   max,
   min,

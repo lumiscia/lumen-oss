@@ -71,7 +71,6 @@
     "mod": { "expression": "=mod(-7, 3)", "expected": -1 },
     "fract": { "expression": "=fract(2.25)", "expected": 0.25 },
     "smoothstep": { "expression": "=smoothstep(0, 1, 0.5)", "expected": 0.5 },
-    "linear": { "expression": "=linear(0, 100, 0.5)", "expected": 50 },
     "step": { "expression": "=step(1, 2, 1)", "expected": 2 },
     "text_height": { "expression": "=text_height('Hello')" },
     "text_width": { "expression": "=text_width('Hello', 32, 300, 'Roboto')" },
@@ -123,7 +122,7 @@
     },
     "moves_number": { "expression": "=(100 + tween(0, 50, 30, 30))", "expected": 125 },
     "number_formatting": {
-      "expression": "=(vec2(0.0000001, 1000000000000000000000) + vec2(0, 0.30000000000000004))",
+      "expression": "=(vec2(1e-7, 1e+21) + vec2(0, 0.30000000000000004))",
       "expected": [1e-7, 1e21]
     },
     "colour_tuple": { "expression": "=lerp(rgb(255, 0, 0), #0000ff80, 0)", "expected": "#ff0000ff" }

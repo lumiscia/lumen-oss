@@ -657,6 +657,25 @@ mod tests {
     }
 
     #[test]
+    fn unknown_variables_name_the_node_param_and_variable_at_load() {
+        for (params, param) in [
+            (serde_json::json!({ "opacity": "=foo + 1" }), "opacity"),
+            (
+                serde_json::json!({ "content": [{ "text": "a", "font_size": "=foo + 1" }] }),
+                "font_size",
+            ),
+        ] {
+            let error = graph_error(
+                serde_json::json!([{ "id": 3, "type": "text", "params": params }]),
+                serde_json::json!([]),
+            );
+            for expected in ["node 3", param, "unknown variable `foo`"] {
+                assert!(error.contains(expected), "{expected}: {error}");
+            }
+        }
+    }
+
+    #[test]
     fn duplicate_node_ids_are_rejected_within_a_graph() {
         let error = graph_error(
             serde_json::json!([
