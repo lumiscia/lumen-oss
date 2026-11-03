@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 
+use lumen_engine::composition::Composition;
 use lumen_engine::gpu::GpuCompositionRenderer;
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Frame, Gpu, Scene, check};
+use crate::support::{Case, Expect, Frame, Gpu, Scene, check, render};
 use crate::text_pixels::{
     Mode, alpha, changes, check_rows, frame_of, frame_with, ink_box, ink_columns, ink_rows,
     inter_text, mass, media, merged, text_scene, whole,
@@ -459,22 +460,36 @@ fn typography_params_move_ink() {
             assert_eq!(spaced[1].start, tight[1].start + 10);
         }),
         (
-            "weights between hundreds grow the ink step by step",
+            "weights grow the ink every ten units, animated or not",
             |gpu| {
                 let media = media();
                 for mode in [Mode::Raster, Mode::Msdf] {
-                    let mut renderer = gpu.renderer();
-                    let ink = [400, 425, 450, 475, 500].map(|weight| {
+                    let scene = |weight: Value| {
                         let params = json!({
                             "font_size": 96, "font_weight": weight, "render_mode": mode.name()
                         });
-                        let scene = styled(160, json!("H"), params);
-                        mass(&frame_with(&mut renderer, scene, &media, mode))
-                    });
-                    assert!(
-                        ink.windows(2).all(|pair| pair[0] < pair[1]),
-                        "{mode:?}: {ink:?}"
-                    );
+                        styled(160, json!("H"), params)
+                    };
+                    let animated = Composition::from(scene(json!("=400 + frame * 10")).frames(11));
+                    let (mut literals, mut sweep) = (gpu.renderer(), gpu.renderer());
+                    let mut previous = 0;
+                    for step in 0..=10 {
+                        let weight = 400 + step * 10;
+                        let literal = frame_with(&mut literals, scene(json!(weight)), &media, mode);
+                        let ink = mass(&literal);
+                        assert!(
+                            ink > previous,
+                            "{mode:?}: weight {weight} has ink {ink}, after {previous}"
+                        );
+                        previous = ink;
+                        let moved = render(&mut sweep, &animated, f64::from(step), &media);
+                        // Atlas placement depends on the glyphs before it, and moves MSDF samples by a level.
+                        let (_, most) = changes(&moved, &literal);
+                        assert!(
+                            most <= 1,
+                            "{mode:?}: animated weight {weight} is {most} levels from the literal"
+                        );
+                    }
                 }
             },
         ),
