@@ -197,6 +197,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
       throw new LumenMediaError(
         "source_not_registered",
         `image source "${imageId}" is not registered`,
+        { sourceId: imageId },
       );
     }
     if (this.target.hasImage(imageId)) {
@@ -250,6 +251,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
       throw new LumenMediaError(
         "source_not_registered",
         `video source "${streamId}" is not registered`,
+        { sourceId: streamId },
       );
     }
     return entry;

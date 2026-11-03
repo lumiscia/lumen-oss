@@ -267,8 +267,7 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
     }
 
     private isRecoverableFrameMiss(error: unknown): boolean {
-      const message = error instanceof Error ? error.message : String(error);
-      return message.includes("media frame") && message.includes("out of range");
+      return (error as { code?: unknown } | null)?.code === "media_frame_out_of_range";
     }
   }
 
