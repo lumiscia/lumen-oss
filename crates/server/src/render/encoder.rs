@@ -189,7 +189,7 @@ pub(super) fn has_audio(composition: &Composition) -> bool {
 
 fn audio_frame_from_buffer(buffer: &AudioBuffer) -> AudioFrame {
     AudioFrame {
-        sample_rate: buffer.sample_rate(),
+        sample_rate: AUDIO_SAMPLE_RATE,
         channels: buffer.channel_count() as u16,
         samples: buffer.frames(),
         interleaved_f32: buffer.interleaved_f32(),
