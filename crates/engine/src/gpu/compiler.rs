@@ -13,7 +13,8 @@ use crate::{
     },
     media::MediaStore,
     node::{
-        ClipPropValue, NodeId, NodeParams, PropertyRead, compositing::clip::Clip, required_input,
+        ClipPropValue, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, PropertyRead,
+        compositing::clip::Clip, required_input,
     },
     scope::{FrameTime, PropValues, Routed, Scope},
 };
@@ -35,6 +36,59 @@ pub(crate) struct ComputeSource<const STORAGE: usize> {
     pub(crate) storage: [lumen_gpu::BufferId; STORAGE],
 }
 
+/// What one binding of a compute program holds. Every binding is visible to the compute stage.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Slot {
+    Texture,
+    Uniform,
+    StorageRead,
+    Sampler,
+    /// A write-only `Rgba8Unorm` storage texture.
+    Output,
+    /// A write-only `Rgba16Float` storage texture.
+    OutputFloat,
+}
+
+/// The program of a compute pass whose bindings are `slots`, each at the index it is listed
+/// at in `slots`, in the entry point `entry` of `shader`.
+pub(crate) fn compute_program_at(
+    builder: &mut lumen_gpu::RenderPlanBuilder,
+    label: &str,
+    shader: &str,
+    entry: &str,
+    slots: &[(u32, Slot)],
+) -> lumen_gpu::ProgramId {
+    use lumen_gpu::{BindingLayoutEntry as Entry, wgpu};
+    let stage = wgpu::ShaderStages::COMPUTE;
+    let storage_texture = |binding, format| {
+        Entry::storage_texture(
+            binding,
+            stage,
+            format,
+            wgpu::StorageTextureAccess::WriteOnly,
+        )
+    };
+    let layout = slots
+        .iter()
+        .map(|&(binding, slot)| match slot {
+            Slot::Texture => Entry::texture(binding, stage),
+            Slot::Uniform => Entry::uniform(binding, stage),
+            Slot::StorageRead => Entry::storage(binding, stage, true),
+            Slot::Sampler => Entry::sampler(binding, stage),
+            Slot::Output => storage_texture(binding, wgpu::TextureFormat::Rgba8Unorm),
+            Slot::OutputFloat => storage_texture(binding, wgpu::TextureFormat::Rgba16Float),
+        })
+        .collect();
+    builder.program(lumen_gpu::ProgramDesc::Compute(
+        lumen_gpu::ComputeProgramDesc {
+            label: Some(label.to_string()),
+            shader: shader.to_string(),
+            entry: entry.to_string(),
+            bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
+        },
+    ))
+}
+
 /// The domain a unary filter writes, and so how it reads its source.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FilterDomain {
@@ -43,6 +97,45 @@ pub(crate) enum FilterDomain {
     Source,
     /// Reads the source through its domain and writes this one.
     Bounded(lumen_gpu::TextureDomain),
+}
+
+/// A unary filter at bind time, which writes the uniforms `pack` builds from its evaluated
+/// params.
+#[derive(Clone)]
+struct CompiledFilter<D: DelegateEvaluable, U> {
+    node_id: NodeId,
+    params: D,
+    buffer: lumen_gpu::BufferId,
+    pack: fn(&D::Evaluated) -> U,
+}
+
+impl<D: DelegateEvaluable + std::fmt::Debug, U> std::fmt::Debug for CompiledFilter<D, U> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledFilter")
+            .field("node_id", &self.node_id)
+            .field("params", &self.params)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<D, U> GpuCompiledNode for CompiledFilter<D, U>
+where
+    D: DelegateEvaluable + std::fmt::Debug + Send + Sync,
+    U: bytemuck::Pod,
+{
+    fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
+        let evaluated = self.params.eval(&DelegateEvalContext {
+            node_id: self.node_id,
+            expr: &ctx.expr_context(),
+        })?;
+        let uniforms = (self.pack)(&evaluated);
+        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&uniforms));
+        Ok(())
+    }
 }
 
 /// How a source's canvas bounds vary, which decides how they are held.
@@ -646,6 +739,42 @@ impl<'a> CompileContext<'a> {
         Ok((source, compute.output.texture, compute.params))
     }
 
+    /// Compiles a filter that maps each texel of its `source` input with the uniforms `pack`
+    /// builds from `params`. Returns the output, which has the source's domain and bounds.
+    pub(crate) fn unary_filter<D, U>(
+        &mut self,
+        node_id: NodeId,
+        source: Option<NodeId>,
+        label: &str,
+        shader: &str,
+        params: &D,
+        pack: fn(&D::Evaluated) -> U,
+    ) -> crate::Result<RasterHandle>
+    where
+        D: DelegateEvaluable + std::fmt::Debug + Send + Sync + 'static,
+        U: bytemuck::Pod,
+    {
+        let (source, texture, buffer) = self.compile_unary_filter(
+            node_id,
+            source,
+            label,
+            shader,
+            std::mem::size_of::<U>() as u64,
+            FilterDomain::Source,
+        )?;
+        self.register_compiled_node(CompiledFilter {
+            node_id,
+            params: params.clone(),
+            buffer,
+            pack,
+        });
+        Ok(RasterHandle {
+            texture,
+            domain: source.domain,
+            bounds: source.bounds,
+        })
+    }
+
     /// Adds a compute pass that writes a new texture over the texels of `domain`. Its bindings
     /// are, in order, `source` if there is one, the uniforms, a read-only storage buffer of each
     /// name and size in `storage`, and the output.
@@ -681,38 +810,33 @@ impl<'a> CompileContext<'a> {
             )
         });
 
-        let stages = lumen_gpu::wgpu::ShaderStages::COMPUTE;
-        let mut layout = Vec::new();
+        let mut slots = Vec::new();
         let mut bindings = Vec::new();
         if let Some(source) = source {
-            layout.push(lumen_gpu::BindingLayoutEntry::texture(0, stages));
+            slots.push(Slot::Texture);
             bindings.push(lumen_gpu::Binding::sampled_texture(0, 0, source));
         }
-        let index = layout.len() as u32;
-        layout.push(lumen_gpu::BindingLayoutEntry::uniform(index, stages));
-        bindings.push(lumen_gpu::Binding::uniform(0, index, params));
+        slots.push(Slot::Uniform);
+        bindings.push(lumen_gpu::Binding::uniform(
+            0,
+            bindings.len() as u32,
+            params,
+        ));
         for buffer in storage {
-            let index = layout.len() as u32;
-            layout.push(lumen_gpu::BindingLayoutEntry::storage(index, stages, true));
-            bindings.push(lumen_gpu::Binding::storage_buffer(0, index, buffer));
+            slots.push(Slot::StorageRead);
+            bindings.push(lumen_gpu::Binding::storage_buffer(
+                0,
+                bindings.len() as u32,
+                buffer,
+            ));
         }
-        let index = layout.len() as u32;
-        layout.push(lumen_gpu::BindingLayoutEntry::storage_texture(
-            index,
-            stages,
-            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-            lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
+        slots.push(Slot::Output);
+        bindings.push(lumen_gpu::Binding::storage_texture(
+            0,
+            bindings.len() as u32,
+            texture,
         ));
-        bindings.push(lumen_gpu::Binding::storage_texture(0, index, texture));
-
-        let program = self.builder.program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some(label.to_string()),
-                shader: shader.to_string(),
-                entry: "cs_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(layout),
-            },
-        ));
+        let program = self.compute_program(label, shader, &slots);
         self.builder.compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("{label}:{}:{pass}", node_id.0)),
             program,
@@ -750,6 +874,18 @@ impl<'a> CompileContext<'a> {
             domain,
             bounds: None,
         }
+    }
+
+    /// The program of a compute pass with entry point `cs_main` whose binding at each index is
+    /// the slot at the same position in `slots`.
+    pub(crate) fn compute_program(
+        &mut self,
+        label: &str,
+        shader: &str,
+        slots: &[Slot],
+    ) -> lumen_gpu::ProgramId {
+        let slots: Vec<_> = (0..).zip(slots.iter().copied()).collect();
+        compute_program_at(&mut self.builder, label, shader, "cs_main", &slots)
     }
 
     pub(crate) fn expr_context(&self) -> ExpressionContext<'_> {

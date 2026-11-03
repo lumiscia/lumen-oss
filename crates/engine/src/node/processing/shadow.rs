@@ -3,6 +3,7 @@ use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
 
+use crate::gpu::compiler::Slot;
 use crate::gpu::{
     BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
 };
@@ -107,25 +108,18 @@ impl GpuCompileNode for Shadow {
             Some(format!("shadow:{}:params", self.id.0)),
             lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::ShadowParams>() as u64),
         );
-        let stage = lumen_gpu::wgpu::ShaderStages::COMPUTE;
-        let program = builder.program(lumen_gpu::ProgramDesc::Compute(
-            lumen_gpu::ComputeProgramDesc {
-                label: Some("shadow-composite".to_string()),
-                shader: COMPOSITE_SHADER.to_string(),
-                entry: "composite_main".to_string(),
-                bind_groups: lumen_gpu::BindGroupLayoutSpec::single(vec![
-                    lumen_gpu::BindingLayoutEntry::texture(0, stage),
-                    lumen_gpu::BindingLayoutEntry::texture(1, stage),
-                    lumen_gpu::BindingLayoutEntry::uniform(2, stage),
-                    lumen_gpu::BindingLayoutEntry::storage_texture(
-                        3,
-                        stage,
-                        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                        lumen_gpu::wgpu::StorageTextureAccess::WriteOnly,
-                    ),
-                ]),
-            },
-        ));
+        let program = compiler::compute_program_at(
+            builder,
+            "shadow-composite",
+            COMPOSITE_SHADER,
+            "composite_main",
+            &[
+                (0, Slot::Texture),
+                (1, Slot::Texture),
+                (2, Slot::Uniform),
+                (3, Slot::Output),
+            ],
+        );
         builder.compute_pass(lumen_gpu::ComputePassDesc {
             label: Some(format!("shadow:{}:composite", self.id.0)),
             program,

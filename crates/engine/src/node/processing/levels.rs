@@ -1,8 +1,6 @@
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{NodeId, NodeParams};
 
-use crate::gpu::{
-    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
-};
+use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -53,54 +51,21 @@ pub struct Levels {
     pub source: Option<NodeId>,
 }
 
-#[derive(Debug, Clone)]
-struct CompiledLevels {
-    node_id: NodeId,
-    params: LevelsParamsDelegate,
-    buffer: lumen_gpu::BufferId,
-}
-
-impl GpuCompiledNode for CompiledLevels {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&DelegateEvalContext {
-            node_id: self.node_id,
-            expr: &ctx.expr_context(),
-        })?;
-        let gpu_params = compiler::LevelsParams {
-            black_point: params.black_point as f32,
-            white_point: params.white_point as f32,
-            gamma: params.gamma as f32,
-            output_black: params.output_black as f32,
-            output_white: params.output_white as f32,
-        };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
-        Ok(())
-    }
-}
-
 impl GpuCompileNode for Levels {
     fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        let (source, texture, params) = ctx.compile_unary_filter(
+        ctx.unary_filter(
             self.id,
             self.source,
             "levels",
             SHADER,
-            std::mem::size_of::<compiler::LevelsParams>() as u64,
-            compiler::FilterDomain::Source,
-        )?;
-        ctx.register_compiled_node(CompiledLevels {
-            node_id: self.id,
-            params: self.params.clone(),
-            buffer: params,
-        });
-        Ok(RasterHandle {
-            texture,
-            domain: source.domain,
-            bounds: source.bounds,
-        })
+            &self.params,
+            |params| compiler::LevelsParams {
+                black_point: params.black_point as f32,
+                white_point: params.white_point as f32,
+                gamma: params.gamma as f32,
+                output_black: params.output_black as f32,
+                output_white: params.output_white as f32,
+            },
+        )
     }
 }

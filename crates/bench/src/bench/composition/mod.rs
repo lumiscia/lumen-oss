@@ -1,7 +1,6 @@
 mod compositions;
 mod modes;
 mod profile;
-mod readback;
 
 use anyhow::anyhow;
 use std::path::PathBuf;

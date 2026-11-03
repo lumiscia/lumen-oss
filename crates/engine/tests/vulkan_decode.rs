@@ -13,7 +13,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex},
 };
 
 use lumen_engine::{
@@ -206,44 +206,8 @@ fn read_rgba8(
     texture: &wgpu::Texture,
     size: lumen_gpu::Size,
 ) -> Vec<u8> {
-    let row = size.width as usize * 4;
-    let padded_row = (size.width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("lumen-engine vulkan decode test readback"),
-        size: u64::from(padded_row) * u64::from(size.height),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = gpu.device.create_command_encoder(&Default::default());
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_row),
-                rows_per_image: Some(size.height),
-            },
-        },
-        size.as_extent(),
-    );
-    gpu.queue.submit([encoder.finish()]);
-    let (sender, receiver) = mpsc::channel();
-    buffer
-        .slice(..)
-        .map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).unwrap()
-        });
-    gpu.device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .unwrap();
-    receiver.recv().unwrap().unwrap();
-    let mapped = buffer.slice(..).get_mapped_range().unwrap();
-    mapped
-        .chunks(padded_row as usize)
-        .flat_map(|padded| &padded[..row])
-        .copied()
-        .collect()
+    gpu.read_texture_rgba8(texture, size)
+        .unwrap_or_else(|error| panic!("readback fails: {error}"))
 }
 
 fn patch_edges(size: usize, count: usize) -> Vec<usize> {
