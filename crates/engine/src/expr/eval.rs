@@ -963,18 +963,21 @@ mod tests {
             NodeKind::Text(Text {
                 id: text_id,
                 params: crate::node::source::text::TextParamsDelegate {
-                    content: crate::node::source::text_content::TextContentDelegate::Text(
-                        crate::node::Deferred::Expr(
-                            Expression::parse("\"Morning update\"").unwrap(),
+                    layout: crate::node::source::text::TextLayoutParamsDelegate {
+                        content: crate::node::source::text_content::TextContentDelegate::Text(
+                            crate::node::Deferred::Expr(
+                                Expression::parse("\"Morning update\"").unwrap(),
+                            ),
                         ),
-                    ),
-                    font_family: crate::node::Deferred::Expr(
-                        Expression::parse("\"Roboto\"").unwrap(),
-                    ),
-                    font_size: crate::node::Deferred::Expr(
-                        Expression::parse("24 + frame").unwrap(),
-                    ),
-                    max_width: crate::node::Deferred::Expr(Expression::parse("120").unwrap()),
+                        font_family: crate::node::Deferred::Expr(
+                            Expression::parse("\"Roboto\"").unwrap(),
+                        ),
+                        font_size: crate::node::Deferred::Expr(
+                            Expression::parse("24 + frame").unwrap(),
+                        ),
+                        max_width: crate::node::Deferred::Expr(Expression::parse("120").unwrap()),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
@@ -1030,11 +1033,14 @@ mod tests {
                 NodeKind::Text(Text {
                     id: text_id,
                     params: crate::node::source::text::TextParamsDelegate {
-                        content: crate::node::source::text_content::TextContentDelegate::Text(
-                            crate::node::Deferred::value("1111".to_string()),
-                        ),
-                        font_size: crate::node::Deferred::value(32.0),
-                        font_features: crate::node::Delegated::into_delegate(features),
+                        layout: crate::node::source::text::TextLayoutParamsDelegate {
+                            content: crate::node::source::text_content::TextContentDelegate::Text(
+                                crate::node::Deferred::value("1111".to_string()),
+                            ),
+                            font_size: crate::node::Deferred::value(32.0),
+                            font_features: crate::node::Delegated::into_delegate(features),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
                 }),
@@ -1055,6 +1061,44 @@ mod tests {
     }
 
     #[test]
+    fn a_measured_string_takes_the_defaults_of_a_text_node() {
+        let mut graph = Graph::new();
+        graph.nodes.insert(
+            NodeId::new(8),
+            NodeKind::Text(Text {
+                id: NodeId::new(8),
+                params: crate::node::source::text::TextParamsDelegate {
+                    layout: crate::node::source::text::TextLayoutParamsDelegate {
+                        content: crate::node::source::text_content::TextContentDelegate::Text(
+                            crate::node::Deferred::value("Morning update".to_string()),
+                        ),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            }),
+        );
+        let ctx = ExpressionContext {
+            graph: Some(&graph),
+            ..test_context()
+        };
+        let measure = |source: &str| Expression::parse(source).unwrap().evaluate(&ctx).unwrap();
+
+        assert_eq!(
+            measure("text_width('Morning update')"),
+            measure("text_width(node(8))")
+        );
+        assert_eq!(
+            measure("text_height('Morning update')"),
+            measure("text_height(node(8))")
+        );
+        assert_eq!(
+            crate::node::source::text::TextLayoutParams::default().font_family,
+            lumen_text::DEFAULT_FONT_FAMILY
+        );
+    }
+
+    #[test]
     fn span_colors_may_read_the_measurement_of_their_text() {
         let text_id = NodeId::new(8);
         let content = crate::node::source::text_content::TextContentDelegate::from_json_value(
@@ -1072,7 +1116,10 @@ mod tests {
             NodeKind::Text(Text {
                 id: text_id,
                 params: crate::node::source::text::TextParamsDelegate {
-                    content,
+                    layout: crate::node::source::text::TextLayoutParamsDelegate {
+                        content,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
@@ -1106,7 +1153,10 @@ mod tests {
             NodeKind::Text(Text {
                 id: text_id,
                 params: crate::node::source::text::TextParamsDelegate {
-                    content,
+                    layout: crate::node::source::text::TextLayoutParamsDelegate {
+                        content,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
@@ -1132,11 +1182,14 @@ mod tests {
             NodeKind::Text(Text {
                 id: text_id,
                 params: crate::node::source::text::TextParamsDelegate {
-                    content: crate::node::source::text_content::TextContentDelegate::Text(
-                        crate::node::Deferred::Expr(
-                            Expression::parse("text_width(node(8))").unwrap(),
+                    layout: crate::node::source::text::TextLayoutParamsDelegate {
+                        content: crate::node::source::text_content::TextContentDelegate::Text(
+                            crate::node::Deferred::Expr(
+                                Expression::parse("text_width(node(8))").unwrap(),
+                            ),
                         ),
-                    ),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
@@ -1162,14 +1215,15 @@ mod tests {
             let mut params = crate::node::source::text::TextParamsDelegate::default();
             if id < count {
                 let next = (id + 1).to_string();
-                params.font_size = crate::node::Deferred::Expr(
+                params.layout.font_size = crate::node::Deferred::Expr(
                     Expression::parse(&font_size.replace("{next}", &next)).unwrap(),
                 );
-                params.content = crate::node::source::text_content::TextContentDelegate::Text(
-                    crate::node::Deferred::Expr(
-                        Expression::parse(&content.replace("{next}", &next)).unwrap(),
-                    ),
-                );
+                params.layout.content =
+                    crate::node::source::text_content::TextContentDelegate::Text(
+                        crate::node::Deferred::Expr(
+                            Expression::parse(&content.replace("{next}", &next)).unwrap(),
+                        ),
+                    );
             }
             graph.nodes.insert(
                 NodeId::new(id),
@@ -1205,7 +1259,7 @@ mod tests {
             let NodeKind::Text(text) = graph.nodes.get_mut(&NodeId::new(id)).unwrap() else {
                 unreachable!()
             };
-            text.params.font_size = crate::node::Deferred::Expr(
+            text.params.layout.font_size = crate::node::Deferred::Expr(
                 Expression::parse(&format!("node({other}, 'font_size')")).unwrap(),
             );
         }

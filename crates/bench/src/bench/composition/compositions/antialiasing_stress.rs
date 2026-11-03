@@ -9,7 +9,7 @@ use lumen_engine::{
         media_output::MediaOutput,
         source::{
             background::{Background, BackgroundParamsDelegate},
-            text::{Text, TextParamsDelegate},
+            text::{Text, TextDrawParamsDelegate, TextLayoutParamsDelegate, TextParamsDelegate},
         },
         vector::{
             paint::{GradientPaint, GradientStop, Paint, PaintKind},
@@ -216,35 +216,41 @@ impl CompositionFixture for AntialiasingStress {
             NodeKind::Text(Text {
                 id: label,
                 params: TextParamsDelegate {
-                    content: TextContentDelegate::Text(Deferred::value(
-                        "subpixel diagonals".to_string(),
-                    )),
-                    font_size: Deferred::value(68.0),
-                    font_weight: Deferred::value(800),
-                    max_width: Deferred::value(760.0),
-                    color: Paint::Gradient(GradientPaint {
-                        kind: PaintKind::LinearGradient,
-                        stops: vec![
-                            GradientStop {
-                                offset: 0.0,
-                                color: [255, 77, 109, 255],
-                            },
-                            GradientStop {
-                                offset: 0.5,
-                                color: [63, 220, 255, 255],
-                            },
-                            GradientStop {
-                                offset: 1.0,
-                                color: [255, 226, 89, 255],
-                            },
-                        ],
-                        start: [1120.0, 770.0],
-                        end: [1800.0, 860.0],
-                        ..Default::default()
-                    })
-                    .into(),
                     placement: DrawablePlacementDelegate {
                         position: Deferred::value((1120.35, 770.65)),
+                        ..Default::default()
+                    },
+                    layout: TextLayoutParamsDelegate {
+                        content: TextContentDelegate::Text(Deferred::value(
+                            "subpixel diagonals".to_string(),
+                        )),
+                        font_size: Deferred::value(68.0),
+                        font_weight: Deferred::value(800),
+                        max_width: Deferred::value(760.0),
+                        ..Default::default()
+                    },
+                    draw: TextDrawParamsDelegate {
+                        color: Paint::Gradient(GradientPaint {
+                            kind: PaintKind::LinearGradient,
+                            stops: vec![
+                                GradientStop {
+                                    offset: 0.0,
+                                    color: [255, 77, 109, 255],
+                                },
+                                GradientStop {
+                                    offset: 0.5,
+                                    color: [63, 220, 255, 255],
+                                },
+                                GradientStop {
+                                    offset: 1.0,
+                                    color: [255, 226, 89, 255],
+                                },
+                            ],
+                            start: [1120.0, 770.0],
+                            end: [1800.0, 860.0],
+                            ..Default::default()
+                        })
+                        .into(),
                         ..Default::default()
                     },
                     ..Default::default()

@@ -9,7 +9,7 @@ use crate::expr::{ExpressionContext, GlyphScope};
 use crate::gpu::{BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle};
 use crate::media::{FontResolver, MediaStore, TextSession};
 use crate::node::vector::{
-    drawable::{DrawableMotion, DrawablePlacement, DrawableTransform},
+    drawable::{DrawableMotion, DrawablePlacement, DrawablePlacementDelegate, DrawableTransform},
     paint::Paint,
 };
 use crate::node::{
@@ -18,9 +18,8 @@ use crate::node::{
 
 use super::text_compile::{GpuTextPaint, TextStyleUniforms};
 use super::text_content::{
-    FontFeatures, FontFeaturesDelegate, TextContent, TextContentDelegate, TextHighlight,
-    TextHighlightDelegate, TextLine, TextLineDelegate, TextSpan, TextStroke, TextStrokeAlign,
-    TextStrokeDelegate,
+    FontFeatures, SpanLayout, SpanStyle, SpanStyleDelegate, TextContent, TextContentDelegate,
+    TextHighlight, TextLine, TextLineDelegate, TextStroke, TextStrokeAlign,
 };
 
 /// A param enum and the conversion to its `lumen_text` twin, which has the same variants.
@@ -145,9 +144,11 @@ text_enum! {
     }
 }
 
-/// Produces a text source.
-#[derive(Debug, Clone, lumen_macros::Delegate)]
-pub struct TextParams {
+/// What a text shapes with: its content, the style its spans inherit, and how its lines wrap,
+/// space and align. Evaluating these reads neither paint nor decorations, which may measure the
+/// text.
+#[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
+pub struct TextLayoutParams {
     /// Text to render: a string, or spans that each override the style these params give. A
     /// node draws at most 2048 glyphs, counting a stroked glyph twice and each decoration rect
     /// once; whitespace is not drawn, and more is a render error.
@@ -165,9 +166,6 @@ pub struct TextParams {
     /// Font style.
     #[meta(kind = "enum", enum_type = TextFontStyle)]
     pub font_style: TextFontStyle,
-    /// Glyph rendering mode. MSDF reuses outline distance fields across sizes; Auto is MSDF from 512 px.
-    #[meta(kind = "enum", enum_type = TextRenderMode)]
-    pub render_mode: TextRenderMode,
     /// Maximum line width in pixels. Use 0 for automatic width.
     #[meta(min = 0, step = 1)]
     pub max_width: f64,
@@ -182,60 +180,9 @@ pub struct TextParams {
     /// Distance between lines in pixels. Use 0 for 1.2 × the font size.
     #[meta(min = 0, step = 1)]
     pub line_height: f64,
-    #[meta(
-        flatten,
-        doc(
-            position = "Text origin in pixels.",
-            scale = "Scale multiplier per axis, about the anchor. Raster glyphs are resampled, so\nuse MSDF rendering to keep scaled text sharp.",
-            motion_blur = "Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the\nusual film look and 360 smears over the whole frame. Blurs the text's own movement,\nnot that of the `glyph_*` params."
-        )
-    )]
-    pub placement: DrawablePlacement,
-    /// Offset of each glyph in pixels. The `glyph_*` params are evaluated for every glyph,
-    /// and can read its `glyph`, `word`, `line` and `span` index and their counts.
-    #[meta()]
-    pub glyph_offset: (f64, f64),
-    /// Scale multiplier of each glyph per axis, about the middle of its advance and line.
-    #[meta()]
-    pub glyph_scale: (f64, f64),
-    /// Clockwise rotation of each glyph in degrees, about the middle of its advance and line.
-    #[meta(step = 1)]
-    pub glyph_rotation: f64,
-    /// Opacity multiplier of each glyph, applied before `opacity`.
-    #[meta(min = 0, max = 1, step = 0.01)]
-    pub glyph_opacity: f64,
-    /// Text color, and that of spans without their own.
-    #[meta(role = "color")]
-    pub color: Paint,
-    /// Box a span's own gradient `color` spans: the span's lines, or the whole text. The
-    /// node's `color` always spans the whole text.
-    #[meta(kind = "enum", enum_type = TextPaintSpace)]
-    pub paint_space: TextPaintSpace,
-    /// Line under the text, and under spans that leave theirs unset. Off when absent. Its
-    /// fields take literals or expressions, but the whole line cannot be an expression.
-    #[meta()]
-    pub underline: Option<TextLine>,
-    /// Line through the text, and through spans that leave theirs unset. Off when absent.
-    #[meta()]
-    pub strikethrough: Option<TextLine>,
-    /// Box behind each line of the text, and of spans that leave theirs unset. Off when
-    /// absent.
-    #[meta()]
-    pub highlight: Option<TextHighlight>,
-    /// Outline along the glyphs, and along those of spans that leave theirs unset. Off when
-    /// absent. It does not change the layout or the measured size. `glyph_opacity` fades a
-    /// glyph's stroke and fill as one.
-    #[meta()]
-    pub stroke: Option<TextStroke>,
     /// Horizontal text alignment.
     #[meta(kind = "enum", enum_type = TextAlignmentHorizontal)]
     pub alignment_horizontal: TextAlignmentHorizontal,
-    /// Vertical text alignment.
-    #[meta(kind = "enum", enum_type = TextAlignmentVertical)]
-    pub alignment_vertical: TextAlignmentVertical,
-    /// Enables 4×4 supersampling when evaluating paint at each glyph pixel.
-    #[meta()]
-    pub paint_supersample: bool,
     /// Most lines to show. Unlimited when absent.
     #[meta(min = 0, step = 1)]
     pub max_lines: Option<i64>,
@@ -267,7 +214,7 @@ pub struct TextParams {
     pub paragraph_spacing: f64,
 }
 
-impl Default for TextParams {
+impl Default for TextLayoutParams {
     fn default() -> Self {
         Self {
             content: TextContent::default(),
@@ -275,25 +222,11 @@ impl Default for TextParams {
             font_size: 16.0,
             font_weight: 400,
             font_style: TextFontStyle::Normal,
-            render_mode: TextRenderMode::Raster,
             max_width: 0.0,
             letter_spacing: 0.0,
             font_features: FontFeatures::default(),
             line_height: 0.0,
-            placement: DrawablePlacement::default(),
-            glyph_offset: (0.0, 0.0),
-            glyph_scale: (1.0, 1.0),
-            glyph_rotation: 0.0,
-            glyph_opacity: 1.0,
-            color: Paint::solid([255, 255, 255, 255]),
-            paint_space: TextPaintSpace::Span,
-            underline: None,
-            strikethrough: None,
-            highlight: None,
-            stroke: None,
             alignment_horizontal: TextAlignmentHorizontal::Left,
-            alignment_vertical: TextAlignmentVertical::Top,
-            paint_supersample: true,
             max_lines: None,
             max_height: None,
             overflow: TextOverflow::Clip,
@@ -303,6 +236,111 @@ impl Default for TextParams {
             paragraph_spacing: 0.0,
         }
     }
+}
+
+/// The node's decorations and stroke, which spans that leave theirs unset take.
+#[derive(Debug, Clone, Default, PartialEq, lumen_macros::Delegate)]
+pub struct TextDecorationParams {
+    /// Line under the text, and under spans that leave theirs unset. Off when absent. Its
+    /// fields take literals or expressions, but the whole line cannot be an expression.
+    #[meta()]
+    pub underline: Option<TextLine>,
+    /// Line through the text, and through spans that leave theirs unset. Off when absent.
+    #[meta()]
+    pub strikethrough: Option<TextLine>,
+    /// Box behind each line of the text, and of spans that leave theirs unset. Off when
+    /// absent.
+    #[meta()]
+    pub highlight: Option<TextHighlight>,
+    /// Outline along the glyphs, and along those of spans that leave theirs unset. Off when
+    /// absent. It does not change the layout or the measured size. `glyph_opacity` fades a
+    /// glyph's stroke and fill as one.
+    #[meta()]
+    pub stroke: Option<TextStroke>,
+}
+
+/// How a text's shaped lines are drawn and placed about `position`.
+#[derive(Debug, Clone, lumen_macros::Delegate)]
+pub struct TextDrawParams {
+    /// Glyph rendering mode. MSDF reuses outline distance fields across sizes; Auto is MSDF from 512 px.
+    #[meta(kind = "enum", enum_type = TextRenderMode)]
+    pub render_mode: TextRenderMode,
+    /// Text color, and that of spans without their own.
+    #[meta(role = "color")]
+    pub color: Paint,
+    /// Box a span's own gradient `color` spans: the span's lines, or the whole text. The
+    /// node's `color` always spans the whole text.
+    #[meta(kind = "enum", enum_type = TextPaintSpace)]
+    pub paint_space: TextPaintSpace,
+    /// Vertical text alignment.
+    #[meta(kind = "enum", enum_type = TextAlignmentVertical)]
+    pub alignment_vertical: TextAlignmentVertical,
+    /// Enables 4×4 supersampling when evaluating paint at each glyph pixel.
+    #[meta()]
+    pub paint_supersample: bool,
+}
+
+impl Default for TextDrawParams {
+    fn default() -> Self {
+        Self {
+            render_mode: TextRenderMode::Raster,
+            color: Paint::solid([255, 255, 255, 255]),
+            paint_space: TextPaintSpace::Span,
+            alignment_vertical: TextAlignmentVertical::Top,
+            paint_supersample: true,
+        }
+    }
+}
+
+/// The per-glyph params, which are evaluated for each glyph rather than with the others.
+#[derive(Debug, Clone, lumen_macros::Delegate)]
+pub struct TextGlyphParams {
+    /// Offset of each glyph in pixels. The `glyph_*` params are evaluated for every glyph,
+    /// and can read its `glyph`, `word`, `line` and `span` index and their counts.
+    #[meta()]
+    pub glyph_offset: (f64, f64),
+    /// Scale multiplier of each glyph per axis, about the middle of its advance and line.
+    #[meta()]
+    pub glyph_scale: (f64, f64),
+    /// Clockwise rotation of each glyph in degrees, about the middle of its advance and line.
+    #[meta(step = 1)]
+    pub glyph_rotation: f64,
+    /// Opacity multiplier of each glyph, applied before `opacity`.
+    #[meta(min = 0, max = 1, step = 0.01)]
+    pub glyph_opacity: f64,
+}
+
+impl Default for TextGlyphParams {
+    fn default() -> Self {
+        Self {
+            glyph_offset: (0.0, 0.0),
+            glyph_scale: (1.0, 1.0),
+            glyph_rotation: 0.0,
+            glyph_opacity: 1.0,
+        }
+    }
+}
+
+/// Produces a text source.
+#[derive(Debug, Clone, Default, lumen_macros::Delegate)]
+pub struct TextParams {
+    #[meta(flatten)]
+    pub layout: TextLayoutParams,
+    #[meta(flatten)]
+    pub decorations: TextDecorationParams,
+    #[meta(flatten)]
+    pub draw: TextDrawParams,
+    #[meta(
+        flatten,
+        doc(
+            position = "Text origin in pixels.",
+            scale = "Scale multiplier per axis, about the anchor. Raster glyphs are resampled, so\nuse MSDF rendering to keep scaled text sharp.",
+            motion_blur = "Motion blur shutter angle in degrees, centred on the frame. 0 is off, 180 is the\nusual film look and 360 smears over the whole frame. Blurs the text's own movement,\nnot that of the `glyph_*` params."
+        )
+    )]
+    pub placement: DrawablePlacement,
+    #[meta(flatten)]
+    pub glyph: TextGlyphParams,
 }
 
 /// Produces a text source.
@@ -323,12 +361,13 @@ impl GpuCompileNode for Text {
 #[derive(Debug)]
 pub(crate) struct CompiledText {
     pub(crate) node_id: NodeId,
-    /// The node's params, less the per-glyph ones in `glyph` and those below.
-    pub(crate) params: TextParamsDelegate,
-    pub(crate) glyph: GlyphParams,
-    pub(crate) content: Stable<TextContentDelegate>,
-    pub(crate) decorations: Stable<DecorationParams>,
-    pub(crate) font_features: Stable<FontFeaturesDelegate>,
+    pub(crate) draw: TextDrawParamsDelegate,
+    pub(crate) placement: DrawablePlacementDelegate,
+    pub(crate) glyph: TextGlyphParamsDelegate,
+    /// The layout, whose spans' styles are in `span_styles`.
+    pub(crate) layout: Stable<TextLayoutParamsDelegate>,
+    pub(crate) span_styles: Stable<Vec<SpanStyleDelegate>>,
+    pub(crate) decorations: Stable<TextDecorationParamsDelegate>,
     /// Whether the node or any span has a decoration or stroke.
     pub(crate) decorated: bool,
     /// Whether the node or any span has a stroke.
@@ -402,32 +441,20 @@ impl CompiledText {
             node_id: self.node_id,
             expr: &expr,
         };
-        let mut evaluated = self.params.eval(&fields)?;
-        let (position_x, position_y) = evaluated.placement.position;
-        let drawable = evaluated.placement.transform();
-        let shutter = self
-            .params
-            .placement
-            .shutter(&evaluated.placement, self.node_id, &expr)?;
-        let style = TextLayoutStyle::take(&mut evaluated);
-        let mut content = self
-            .content
+        let draw = self.draw.eval(&fields)?;
+        let placement = self.placement.eval(&fields)?;
+        let (position_x, position_y) = placement.position;
+        let drawable = placement.transform();
+        let shutter = self.placement.shutter(&placement, self.node_id, &expr)?;
+        let layout = self.layout.get(&fields)?;
+        let span_styles = self
+            .span_styles
             .get(&fields)
             .map_err(|error| error.in_field("content"))?;
-        // Undecorated text only needs the span colors.
-        let (span_paints, span_styles) = match &mut content {
-            Cow::Owned(content) if self.decorated => (Vec::new(), take_span_styles(content)),
-            Cow::Owned(content) => (take_span_paints(content), Vec::new()),
-            Cow::Borrowed(_) => Default::default(),
-        };
-        let font_features = self
-            .font_features
-            .get(&fields)
-            .map_err(|error| error.in_field("font_features"))?;
         let decorations = self.decorations.get(&fields)?;
 
         let mut text_system = text_system(ctx.media())?;
-        load_font_families(&mut text_system, ctx.media(), &style, Some(&content))?;
+        load_font_families(&mut text_system, ctx.media(), &layout)?;
         let mut state = self.state.lock().map_err(|_| {
             LumenError::Render(RenderError::Gpu {
                 details: format!("text node {} state lock was poisoned", self.node_id.0),
@@ -440,14 +467,16 @@ impl CompiledText {
         if state
             .shaped
             .as_ref()
-            .is_none_or(|(key, _)| !key.holds(&style, &content, &font_features, font_generation))
+            .is_none_or(|(key, _)| !key.holds(&layout, &span_styles, font_generation))
         {
             let layout_started = trace_started.map(|_| trace_now_ms());
-            let shaped = text_system.shape_changed(&style.request(&content, &font_features));
+            let shaped = text_system.shape_changed(&layout.request(&span_styles));
             let key = TextShapeKey {
-                style,
-                content: animated(content),
-                font_features: animated(font_features),
+                layout: match layout {
+                    Cow::Owned(layout) => Some(layout),
+                    Cow::Borrowed(_) => None,
+                },
+                baseline_shifts: span_styles.iter().map(|span| span.baseline_shift).collect(),
                 font_generation,
             };
             state.shaped = Some((key, shaped));
@@ -462,32 +491,22 @@ impl CompiledText {
         let height = shaped.measurement.height;
         let origin = [
             position_x as f32,
-            match evaluated.alignment_vertical {
+            match draw.alignment_vertical {
                 TextAlignmentVertical::Top => position_y as f32,
                 TextAlignmentVertical::Middle => position_y as f32 - height * 0.5,
                 TextAlignmentVertical::Bottom => position_y as f32 - height,
             },
         ];
         let layout = shaped.place(origin);
-        let spans: &[TextSpan] = match &self.content {
-            Stable::Constant(TextContent::Spans(spans)) => spans,
-            Stable::Constant(TextContent::Text(_)) => &[],
-            Stable::Animated(_) => &span_styles,
-        };
-        let span_color = |span: usize| match &self.content {
-            Stable::Animated(_) if !self.decorated => {
-                span_paints.get(span).and_then(Option::as_ref)
-            }
-            _ => spans.get(span).and_then(|span| span.color.as_ref()),
-        };
+        let spans: &[SpanStyle] = &span_styles;
         // A span's own gradient spans its box under `TextPaintSpace::Span`, and other paints
         // the whole text.
         let text_paint = |paint: &Paint, span: Option<usize>| {
             let mut gpu = paint.to_gpu();
-            gpu.paint_supersample = u32::from(evaluated.paint_supersample);
+            gpu.paint_supersample = u32::from(draw.paint_supersample);
             let own_box = span
                 .filter(|_| {
-                    evaluated.paint_space == TextPaintSpace::Span
+                    draw.paint_space == TextPaintSpace::Span
                         && !matches!(paint, Paint::SolidColor(..))
                 })
                 .and_then(|span| shaped.span_boxes.get(span).copied().flatten());
@@ -536,7 +555,7 @@ impl CompiledText {
                 );
             }
         }
-        let mode = lumen_text::TextRenderMode::from(evaluated.render_mode);
+        let mode = lumen_text::TextRenderMode::from(draw.render_mode);
         let atlas_started = (trace_started.is_some() || mode != lumen_text::TextRenderMode::Raster)
             .then(trace_now_ms);
         let mut atlas = bound
@@ -598,11 +617,10 @@ impl CompiledText {
         }
         state.paints.clear();
         for span in 0..self.paint_count {
-            let own = span_color(span);
-            state.paints.push(text_paint(
-                own.unwrap_or(&evaluated.color),
-                own.and(Some(span)),
-            ));
+            let own = spans.get(span).and_then(|span| span.color.as_ref());
+            state
+                .paints
+                .push(text_paint(own.unwrap_or(&draw.color), own.and(Some(span))));
         }
         for (paint, span, half_width) in decoration_paints {
             let mut paint = text_paint(paint, span);
@@ -810,51 +828,13 @@ fn write_instances<const N: usize>(
     }
 }
 
-/// The per-glyph params, which are evaluated for each glyph rather than with the others.
-#[derive(Debug, Clone)]
-pub(crate) struct GlyphParams {
-    offset: Deferred<(f64, f64)>,
-    scale: Deferred<(f64, f64)>,
-    rotation: Deferred<f64>,
-    opacity: Deferred<f64>,
-}
-
-impl GlyphParams {
-    /// Moves the per-glyph params out of `params`, leaving their defaults.
-    pub(crate) fn take(params: &mut TextParamsDelegate) -> Self {
-        let defaults = TextParamsDelegate::default();
-        Self {
-            offset: std::mem::replace(&mut params.glyph_offset, defaults.glyph_offset),
-            scale: std::mem::replace(&mut params.glyph_scale, defaults.glyph_scale),
-            rotation: std::mem::replace(&mut params.glyph_rotation, defaults.glyph_rotation),
-            opacity: std::mem::replace(&mut params.glyph_opacity, defaults.glyph_opacity),
-        }
-    }
-
-    /// Whether `params` transform or fade any glyph.
-    pub(crate) fn any(params: &TextParamsDelegate) -> bool {
-        !Self::identity(
-            &params.glyph_offset,
-            &params.glyph_scale,
-            &params.glyph_rotation,
-            &params.glyph_opacity,
-        )
-    }
-
-    fn is_identity(&self) -> bool {
-        Self::identity(&self.offset, &self.scale, &self.rotation, &self.opacity)
-    }
-
-    fn identity(
-        offset: &Deferred<(f64, f64)>,
-        scale: &Deferred<(f64, f64)>,
-        rotation: &Deferred<f64>,
-        opacity: &Deferred<f64>,
-    ) -> bool {
-        matches!(offset, Deferred::Value(offset) if *offset == (0.0, 0.0))
-            && matches!(scale, Deferred::Value(scale) if *scale == (1.0, 1.0))
-            && matches!(rotation, Deferred::Value(rotation) if *rotation == 0.0)
-            && matches!(opacity, Deferred::Value(opacity) if *opacity >= 1.0)
+impl TextGlyphParamsDelegate {
+    /// Whether these params leave every glyph as it is.
+    pub(crate) fn is_identity(&self) -> bool {
+        matches!(&self.glyph_offset, Deferred::Value(offset) if *offset == (0.0, 0.0))
+            && matches!(&self.glyph_scale, Deferred::Value(scale) if *scale == (1.0, 1.0))
+            && matches!(&self.glyph_rotation, Deferred::Value(rotation) if *rotation == 0.0)
+            && matches!(&self.glyph_opacity, Deferred::Value(opacity) if *opacity >= 1.0)
     }
 
     /// Transforms and fades each glyph instance by its params, evaluated with `expr` scoped
@@ -871,10 +851,10 @@ impl GlyphParams {
         if self.is_identity() {
             return Ok(None);
         }
-        let mut offset = PerGlyph::new(&self.offset, "glyph_offset");
-        let mut scale = PerGlyph::new(&self.scale, "glyph_scale");
-        let mut rotation = PerGlyph::new(&self.rotation, "glyph_rotation");
-        let mut opacity = PerGlyph::new(&self.opacity, "glyph_opacity");
+        let mut offset = PerGlyph::new(&self.glyph_offset, "glyph_offset");
+        let mut scale = PerGlyph::new(&self.glyph_scale, "glyph_scale");
+        let mut rotation = PerGlyph::new(&self.glyph_rotation, "glyph_rotation");
+        let mut opacity = PerGlyph::new(&self.glyph_opacity, "glyph_opacity");
         let mut bounds: Option<[f32; 4]> = None;
         // The instance and cluster that the instances so far fade as one.
         let mut fading: Option<(usize, (u32, u32))> = None;
@@ -1057,11 +1037,9 @@ pub(crate) struct TextState {
 
 #[derive(Debug)]
 struct TextShapeKey {
-    style: TextLayoutStyle,
-    /// The content, or `None` when it is constant.
-    content: Option<TextContent>,
-    /// The font features, or `None` when they are constant.
-    font_features: Option<FontFeatures>,
+    /// The layout, or `None` when it is constant.
+    layout: Option<TextLayoutParams>,
+    baseline_shifts: Vec<Option<f64>>,
     font_generation: u64,
 }
 
@@ -1069,293 +1047,93 @@ impl TextShapeKey {
     /// Whether this is the key of text evaluated to these values.
     fn holds(
         &self,
-        style: &TextLayoutStyle,
-        content: &TextContent,
-        font_features: &FontFeatures,
+        layout: &TextLayoutParams,
+        span_styles: &[SpanStyle],
         font_generation: u64,
     ) -> bool {
         self.font_generation == font_generation
-            && self.style == *style
-            && self.content.as_ref().is_none_or(|own| own == content)
+            && self.layout.as_ref().is_none_or(|own| own == layout)
             && self
-                .font_features
-                .as_ref()
-                .is_none_or(|own| own == font_features)
-    }
-}
-
-/// What [`Stable`] needs of a value.
-pub(crate) trait StableValue {
-    type Evaluated;
-
-    fn evaluate(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated>;
-    fn is_animated(&self) -> bool;
-}
-
-impl<D: DelegateEvaluable> StableValue for D {
-    type Evaluated = D::Evaluated;
-
-    fn evaluate(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<D::Evaluated> {
-        self.eval(ctx)
-    }
-
-    fn is_animated(&self) -> bool {
-        self.has_expressions()
+                .baseline_shifts
+                .iter()
+                .copied()
+                .eq(span_styles.iter().map(|span| span.baseline_shift))
     }
 }
 
 /// A value evaluated at compile when it has no expressions, or else on each bind.
 #[derive(Debug)]
-pub(crate) enum Stable<D: StableValue> {
+pub(crate) enum Stable<D: DelegateEvaluable> {
     Constant(D::Evaluated),
     Animated(D),
 }
 
 impl<D> Stable<D>
 where
-    D: StableValue,
+    D: DelegateEvaluable,
     D::Evaluated: Clone,
 {
     pub(crate) fn new(delegate: D, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self> {
-        Ok(if delegate.is_animated() {
+        Ok(if delegate.has_expressions() {
             Self::Animated(delegate)
         } else {
-            Self::Constant(delegate.evaluate(ctx)?)
+            Self::Constant(delegate.eval(ctx)?)
         })
     }
 
     fn get(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Cow<'_, D::Evaluated>> {
         Ok(match self {
             Self::Constant(value) => Cow::Borrowed(value),
-            Self::Animated(delegate) => Cow::Owned(delegate.evaluate(ctx)?),
+            Self::Animated(delegate) => Cow::Owned(delegate.eval(ctx)?),
         })
     }
 }
 
-/// The value of an animated `Stable`, or `None` for a constant one's.
-fn animated<T: Clone>(value: Cow<'_, T>) -> Option<T> {
-    match value {
-        Cow::Owned(value) => Some(value),
-        Cow::Borrowed(_) => None,
-    }
-}
-
-/// What a text's layout reads besides its content: the style its spans inherit, and how its
-/// lines wrap, space and align.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct TextLayoutStyle {
-    pub(crate) font_family: String,
-    pub(crate) font_size: f64,
-    pub(crate) font_weight: i64,
-    pub(crate) font_style: TextFontStyle,
-    pub(crate) letter_spacing: f64,
-    pub(crate) max_width: f64,
-    pub(crate) line_height: f64,
-    pub(crate) alignment_horizontal: TextAlignmentHorizontal,
-    pub(crate) text_transform: TextTransform,
-    pub(crate) paragraph_spacing: f64,
-    pub(crate) limits: TextLimits,
-}
-
-/// How a text's lines are limited and fitted.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub(crate) struct TextLimits {
-    pub(crate) max_lines: Option<i64>,
-    pub(crate) max_height: Option<f64>,
-    pub(crate) overflow: TextOverflow,
-    pub(crate) fit: TextFit,
-    pub(crate) min_font_size: f64,
-}
-
-impl TextLimits {
-    pub(crate) fn eval(
-        params: &TextParamsDelegate,
-        node_id: NodeId,
-        expr: &ExpressionContext<'_>,
-    ) -> crate::Result<Self> {
-        let ctx = DelegateEvalContext { node_id, expr };
-        Ok(Self {
-            max_lines: ctx.eval_field("max_lines", &params.max_lines)?,
-            max_height: ctx.eval_field("max_height", &params.max_height)?,
-            overflow: ctx.eval_field("overflow", &params.overflow)?,
-            fit: ctx.eval_field("fit", &params.fit)?,
-            min_font_size: params.min_font_size.eval(node_id, "min_font_size", expr)?,
-        })
-    }
-}
-
-impl TextLayoutStyle {
-    pub(crate) fn take(params: &mut TextParams) -> Self {
-        Self {
-            font_family: std::mem::take(&mut params.font_family),
-            font_size: params.font_size,
-            font_weight: params.font_weight,
-            font_style: params.font_style,
-            letter_spacing: params.letter_spacing,
-            max_width: params.max_width,
-            line_height: params.line_height,
-            alignment_horizontal: params.alignment_horizontal,
-            limits: TextLimits {
-                max_lines: params.max_lines,
-                max_height: params.max_height,
-                overflow: params.overflow,
-                fit: params.fit,
-                min_font_size: params.min_font_size,
-            },
-            text_transform: params.text_transform,
-            paragraph_spacing: params.paragraph_spacing,
-        }
-    }
-
+impl TextLayoutParams {
+    /// The request that shapes this text, with each span's baseline shift from `span_styles`.
     /// A `max_width` or `line_height` of 0 or less is automatic.
-    pub(crate) fn request(
-        &self,
-        content: &TextContent,
-        font_features: &FontFeatures,
-    ) -> lumen_text::TextLayoutRequest {
-        let spans = match content {
-            TextContent::Text(text) => vec![self.span(text, None, font_features)],
-            TextContent::Spans(spans) => spans
-                .iter()
-                .map(|span| self.span(&span.text, Some(span), font_features))
-                .collect(),
-        };
+    pub(crate) fn request(&self, span_styles: &[SpanStyle]) -> lumen_text::TextLayoutRequest {
+        let spans = self
+            .content
+            .0
+            .iter()
+            .enumerate()
+            .map(|(index, span)| {
+                let shift = span_styles.get(index).and_then(|span| span.baseline_shift);
+                self.span(span, shift)
+            })
+            .collect();
         let mut request = lumen_text::TextLayoutRequest::from_spans(spans);
         request.max_width = Some(self.max_width as f32).filter(|width| *width > 0.0);
         request.line_height = (self.line_height > 0.0).then_some(self.line_height as f32);
         request.paragraph_spacing = self.paragraph_spacing.max(0.0) as f32;
         request.align = self.alignment_horizontal.into();
-        let limits = &self.limits;
-        request.max_lines = limits
+        request.max_lines = self
             .max_lines
             .map(|lines| lines.clamp(0, u32::MAX.into()) as u32);
-        request.max_height = limits.max_height.map(|height| height.max(0.0) as f32);
-        request.overflow = limits.overflow.into();
-        request.min_fit_scale = (limits.fit == TextFit::Shrink)
-            .then(|| (limits.min_font_size / self.font_size.max(1.0)) as f32);
+        request.max_height = self.max_height.map(|height| height.max(0.0) as f32);
+        request.overflow = self.overflow.into();
+        request.min_fit_scale = (self.fit == TextFit::Shrink)
+            .then(|| (self.min_font_size / self.font_size.max(1.0)) as f32);
         request
     }
 
-    fn span(
-        &self,
-        text: &str,
-        span: Option<&TextSpan>,
-        font_features: &FontFeatures,
-    ) -> lumen_text::TextSpan {
-        let font_style = span
-            .and_then(|span| span.font_style)
-            .unwrap_or(self.font_style);
+    fn span(&self, span: &SpanLayout, baseline_shift: Option<f64>) -> lumen_text::TextSpan {
         lumen_text::TextSpan {
-            text: text.to_string(),
+            text: span.text.clone(),
             font_family: span
-                .and_then(|span| span.font_family.as_deref())
+                .font_family
+                .as_deref()
                 .unwrap_or(&self.font_family)
                 .to_string(),
-            font_size: span
-                .and_then(|span| span.font_size)
-                .unwrap_or(self.font_size) as f32,
-            font_weight: span
-                .and_then(|span| span.font_weight)
-                .unwrap_or(self.font_weight)
-                .clamp(1, 1000) as u16,
-            font_style: font_style.into(),
-            letter_spacing: span
-                .and_then(|span| span.letter_spacing)
-                .unwrap_or(self.letter_spacing) as f32,
-            font_features: font_features.merged(span.and_then(|span| span.font_features.as_ref())),
-            transform: span
-                .and_then(|span| span.text_transform)
-                .unwrap_or(self.text_transform)
-                .into(),
-            baseline_shift: span.and_then(|span| span.baseline_shift).unwrap_or(0.0) as f32,
+            font_size: span.font_size.unwrap_or(self.font_size) as f32,
+            font_weight: span.font_weight.unwrap_or(self.font_weight).clamp(1, 1000) as u16,
+            font_style: span.font_style.unwrap_or(self.font_style).into(),
+            letter_spacing: span.letter_spacing.unwrap_or(self.letter_spacing) as f32,
+            font_features: self.font_features.merged(span.font_features.as_ref()),
+            transform: span.text_transform.unwrap_or(self.text_transform).into(),
+            baseline_shift: baseline_shift.unwrap_or(0.0) as f32,
         }
-    }
-}
-
-/// Takes what does not affect the layout out of `content`'s spans: their colors, returned in
-/// order, and their decorations.
-fn take_span_paints(content: &mut TextContent) -> Vec<Option<Paint>> {
-    let TextContent::Spans(spans) = content else {
-        return Vec::new();
-    };
-    spans
-        .iter_mut()
-        .map(|span| {
-            span.underline = Override::Inherit;
-            span.strikethrough = Override::Inherit;
-            span.highlight = Override::Inherit;
-            span.stroke = Override::Inherit;
-            span.color.take()
-        })
-        .collect()
-}
-
-/// Takes what does not affect the layout out of `content`'s spans, returning spans that hold
-/// only their colors, decorations and strokes.
-fn take_span_styles(content: &mut TextContent) -> Vec<TextSpan> {
-    let TextContent::Spans(spans) = content else {
-        return Vec::new();
-    };
-    spans
-        .iter_mut()
-        .map(|span| TextSpan {
-            color: span.color.take(),
-            underline: std::mem::take(&mut span.underline),
-            strikethrough: std::mem::take(&mut span.strikethrough),
-            highlight: std::mem::take(&mut span.highlight),
-            stroke: std::mem::take(&mut span.stroke),
-            ..TextSpan::default()
-        })
-        .collect()
-}
-
-/// The node's decorations and stroke, which spans that leave theirs unset take.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct TextDecorations {
-    pub(crate) underline: Option<TextLine>,
-    pub(crate) strikethrough: Option<TextLine>,
-    pub(crate) highlight: Option<TextHighlight>,
-    pub(crate) stroke: Option<TextStroke>,
-}
-
-/// The node's decoration and stroke params, moved out of the others.
-#[derive(Debug, Clone)]
-pub(crate) struct DecorationParams {
-    underline: Option<TextLineDelegate>,
-    strikethrough: Option<TextLineDelegate>,
-    highlight: Option<TextHighlightDelegate>,
-    stroke: Option<TextStrokeDelegate>,
-}
-
-impl DecorationParams {
-    /// Moves the node's decorations and stroke out of `params`, leaving them unset.
-    pub(crate) fn take(params: &mut TextParamsDelegate) -> Self {
-        Self {
-            underline: params.underline.take(),
-            strikethrough: params.strikethrough.take(),
-            highlight: params.highlight.take(),
-            stroke: params.stroke.take(),
-        }
-    }
-}
-
-impl StableValue for DecorationParams {
-    type Evaluated = TextDecorations;
-
-    fn evaluate(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<TextDecorations> {
-        Ok(TextDecorations {
-            underline: ctx.eval_field("underline", &self.underline)?,
-            strikethrough: ctx.eval_field("strikethrough", &self.strikethrough)?,
-            highlight: ctx.eval_field("highlight", &self.highlight)?,
-            stroke: ctx.eval_field("stroke", &self.stroke)?,
-        })
-    }
-
-    fn is_animated(&self) -> bool {
-        self.underline.has_expressions()
-            || self.strikethrough.has_expressions()
-            || self.highlight.has_expressions()
-            || self.stroke.has_expressions()
     }
 }
 
@@ -1371,8 +1149,8 @@ impl StableValue for DecorationParams {
 /// returned paints.
 pub(crate) fn decorate<'a>(
     shaped: &lumen_text::ShapedText,
-    node: &'a TextDecorations,
-    spans: &'a [TextSpan],
+    node: &'a TextDecorationParams,
+    spans: &'a [SpanStyle],
     origin: [f32; 2],
     paint_count: usize,
     instances: &mut Vec<lumen_text::GpuGlyphInstance>,
@@ -1382,7 +1160,7 @@ pub(crate) fn decorate<'a>(
         .position(|span| span.color.is_none())
         .unwrap_or(0) as u32;
     let text_paint = |span: usize| match spans.get(span) {
-        Some(TextSpan { color: Some(_), .. }) => span as u32,
+        Some(SpanStyle { color: Some(_), .. }) => span as u32,
         _ => plain,
     };
     let mut paints = Vec::new();
@@ -1492,23 +1270,21 @@ pub(crate) fn decorate<'a>(
 /// The number of paints that `params`' decorations with their own and strokes add, or `None`
 /// when neither the node nor any span has a decoration or stroke.
 pub(crate) fn decoration_paints(params: &TextParamsDelegate) -> Option<usize> {
-    let mut lines: Vec<&TextLineDelegate> = params
-        .underline
-        .iter()
-        .chain(&params.strikethrough)
-        .collect();
+    let node = &params.decorations;
+    let mut lines: Vec<&TextLineDelegate> =
+        node.underline.iter().chain(&node.strikethrough).collect();
     // Highlights and strokes each have a paint.
-    let mut painted =
-        usize::from(params.highlight.is_some()) + usize::from(params.stroke.is_some());
-    if let TextContentDelegate::Spans(spans) = &params.content {
+    let mut painted = usize::from(node.highlight.is_some()) + usize::from(node.stroke.is_some());
+    if let TextContentDelegate::Spans(spans) = &params.layout.content {
         for span in spans {
-            for line in [&span.underline, &span.strikethrough] {
+            let style = &span.style;
+            for line in [&style.underline, &style.strikethrough] {
                 if let Override::Set(line) = line {
                     lines.push(line);
                 }
             }
-            painted += usize::from(matches!(span.highlight, Override::Set(_)))
-                + usize::from(matches!(span.stroke, Override::Set(_)));
+            painted += usize::from(matches!(style.highlight, Override::Set(_)))
+                + usize::from(matches!(style.stroke, Override::Set(_)));
         }
     }
     (!lines.is_empty() || painted > 0)
@@ -1517,9 +1293,9 @@ pub(crate) fn decoration_paints(params: &TextParamsDelegate) -> Option<usize> {
 
 /// Whether the node or any span of `params` has a stroke.
 pub(crate) fn stroked(params: &TextParamsDelegate) -> bool {
-    params.stroke.is_some()
-        || matches!(&params.content, TextContentDelegate::Spans(spans)
-            if spans.iter().any(|span| matches!(span.stroke, Override::Set(_))))
+    params.decorations.stroke.is_some()
+        || matches!(&params.layout.content, TextContentDelegate::Spans(spans)
+            if spans.iter().any(|span| matches!(span.style.stroke, Override::Set(_))))
 }
 
 /// A span's stroke: how far it reaches to each side of the glyph edge, whether it is drawn
@@ -1537,7 +1313,7 @@ pub(crate) struct SpanStroke {
 /// and its half width, and returns its index.
 pub(crate) fn span_strokes<'a>(
     node: Option<&'a TextStroke>,
-    spans: &'a [TextSpan],
+    spans: &'a [SpanStyle],
     shaped: &lumen_text::ShapedText,
     mut push_paint: impl FnMut(&'a TextStroke, Option<usize>, f32) -> u32,
     strokes: &mut Vec<Option<SpanStroke>>,
@@ -1571,13 +1347,13 @@ pub(crate) fn span_strokes<'a>(
 
 /// Calls `run` with each run of the `span_count` spans that draws a decoration, its value and,
 /// for a span's own, the span: consecutive spans that take the node's `inherited` value, and
-/// each span with its own. `spans` holds the spans' decorations, which `own` reads; plain
-/// string content has none, so takes the node's.
+/// each span with its own. `spans` holds the spans' styles, which `own` reads; plain string
+/// content has none, so takes the node's.
 fn for_each_run<'a, T>(
     inherited: Option<&'a T>,
-    spans: &'a [TextSpan],
+    spans: &'a [SpanStyle],
     span_count: usize,
-    own: impl Fn(&'a TextSpan) -> &'a Override<T>,
+    own: impl Fn(&'a SpanStyle) -> &'a Override<T>,
     mut run: impl FnMut(std::ops::Range<usize>, &'a T, Option<usize>),
 ) {
     let inherits = |span: usize| {
@@ -1604,18 +1380,20 @@ fn for_each_run<'a, T>(
     }
 }
 
-/// Loads the families `style` and the spans of `content` name.
+/// Loads the families `layout` and its spans name.
 pub(crate) fn load_font_families(
     text_system: &mut lumen_text::TextSystem,
     media: Option<&dyn MediaStore>,
-    style: &TextLayoutStyle,
-    content: Option<&TextContent>,
+    layout: &TextLayoutParams,
 ) -> crate::Result<()> {
-    load_font_family(text_system, media, &style.font_family)?;
-    if let Some(TextContent::Spans(spans)) = content {
-        for family in spans.iter().filter_map(|span| span.font_family.as_deref()) {
-            load_font_family(text_system, media, family)?;
-        }
+    load_font_family(text_system, media, &layout.font_family)?;
+    for family in layout
+        .content
+        .0
+        .iter()
+        .filter_map(|span| span.font_family.as_deref())
+    {
+        load_font_family(text_system, media, family)?;
     }
     Ok(())
 }

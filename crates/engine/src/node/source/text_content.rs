@@ -14,23 +14,27 @@ use crate::node::{
 
 use super::text::{TextFontStyle, TextTransform, text_enum};
 
-/// Text to render: a string, or spans that each override the node's text style. In JSON a
-/// string is the shorthand for unstyled text, and an `=expression` evaluates to one.
-#[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
-pub enum TextContent {
-    Text(String),
-    Spans(Vec<TextSpan>),
-}
+/// Text to render, as the spans it shapes as: a string is one span that overrides nothing. In
+/// JSON a string is the shorthand for unstyled text, and an `=expression` evaluates to one. No
+/// spans is what the default empty string stands for.
+///
+/// This holds what shaping reads and nothing else, since a span's [`SpanStyle`] may measure the
+/// text it belongs to.
+#[derive(Debug, Clone, Default, PartialEq, lumen_macros::StructuralHash)]
+pub struct TextContent(pub Vec<SpanLayout>);
 
-impl Default for TextContent {
-    fn default() -> Self {
-        Self::Text(String::new())
+impl TextContent {
+    pub fn plain(text: String) -> Self {
+        Self(vec![SpanLayout {
+            text,
+            ..SpanLayout::default()
+        }])
     }
 }
 
-/// A run of text. Absent overrides take the node's value.
+/// What a run of text shapes with. Absent overrides take the node's value.
 #[derive(Debug, Clone, Default, PartialEq, lumen_macros::Delegate)]
-pub struct TextSpan {
+pub struct SpanLayout {
     /// Text of the span. Required.
     #[meta(multiline, required)]
     pub text: String,
@@ -54,6 +58,14 @@ pub struct TextSpan {
     /// kept. Within a word, the first span's features apply to all of it.
     #[meta()]
     pub font_features: Option<FontFeatures>,
+    /// Case applied to the span's text.
+    #[meta()]
+    pub text_transform: Option<TextTransform>,
+}
+
+/// How a run of text draws. Absent overrides take the node's value.
+#[derive(Debug, Clone, Default, PartialEq, lumen_macros::Delegate)]
+pub struct SpanStyle {
     /// Text color.
     #[meta(role = "color")]
     pub color: Option<Paint>,
@@ -69,9 +81,6 @@ pub struct TextSpan {
     /// expressions, but the whole highlight cannot be an expression.
     #[meta()]
     pub highlight: Override<TextHighlight>,
-    /// Case applied to the span's text.
-    #[meta()]
-    pub text_transform: Option<TextTransform>,
     /// Pixels the span's glyphs and its own decorations sit above the baseline; negative
     /// values sit below it. The line keeps its height, so shifted text can overlap the
     /// lines around it.
@@ -81,6 +90,15 @@ pub struct TextSpan {
     /// expressions, but the whole stroke cannot be an expression.
     #[meta()]
     pub stroke: Override<TextStroke>,
+}
+
+/// A run of text.
+#[derive(Debug, Clone, Default, PartialEq, lumen_macros::Delegate)]
+pub struct TextSpan {
+    #[meta(flatten)]
+    pub layout: SpanLayout,
+    #[meta(flatten)]
+    pub style: SpanStyle,
 }
 
 /// OpenType features by four-character tag. A value of 0 turns a feature off, 1 turns it on and
@@ -329,37 +347,15 @@ impl Default for TextContentDelegate {
 }
 
 impl TextContentDelegate {
-    /// Evaluates the text and what shapes it, leaving the spans' colors, decorations and baseline
-    /// shifts, which a measurement of the text may be an input of, unevaluated.
-    pub(crate) fn eval_layout(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<TextContent> {
-        let Self::Spans(spans) = self else {
-            return self.eval(ctx);
-        };
-        spans
-            .iter()
-            .enumerate()
-            .map(|(index, span)| {
-                TextSpanDelegate {
-                    text: span.text.clone(),
-                    font_family: span.font_family.clone(),
-                    font_size: span.font_size.clone(),
-                    font_weight: span.font_weight.clone(),
-                    font_style: span.font_style.clone(),
-                    letter_spacing: span.letter_spacing.clone(),
-                    font_features: span.font_features.clone(),
-                    text_transform: span.text_transform.clone(),
-                    baseline_shift: None,
-                    color: None,
-                    underline: Override::Inherit,
-                    strikethrough: Override::Inherit,
-                    highlight: Override::Inherit,
-                    stroke: Override::Inherit,
-                }
-                .eval(ctx)
-                .map_err(|error| error.in_index(index))
-            })
-            .collect::<crate::Result<_>>()
-            .map(TextContent::Spans)
+    /// Moves each span's style out, leaving this holding only what shapes the text.
+    pub(crate) fn take_span_styles(&mut self) -> Vec<SpanStyleDelegate> {
+        match self {
+            Self::Text(_) => Vec::new(),
+            Self::Spans(spans) => spans
+                .iter_mut()
+                .map(|span| std::mem::take(&mut span.style))
+                .collect(),
+        }
     }
 
     /// The whole text when it is literal, with spans joined.
@@ -369,7 +365,7 @@ impl TextContentDelegate {
             Self::Text(Deferred::Expr(_)) => None,
             Self::Spans(spans) => spans
                 .iter()
-                .map(|span| match &span.text {
+                .map(|span| match &span.layout.text {
                     Deferred::Value(text) => Some(text.as_str()),
                     Deferred::Expr(_) => None,
                 })
@@ -382,24 +378,41 @@ impl Delegated for TextContent {
     type Delegate = TextContentDelegate;
 
     fn into_delegate(self) -> Self::Delegate {
-        match self {
-            Self::Text(text) => TextContentDelegate::Text(text.into_delegate()),
-            Self::Spans(spans) => TextContentDelegate::Spans(spans.into_delegate()),
+        if self.0.is_empty() {
+            return TextContentDelegate::Text(String::new().into_delegate());
         }
+        TextContentDelegate::Spans(
+            self.0
+                .into_iter()
+                .map(|layout| {
+                    TextSpan {
+                        layout,
+                        style: SpanStyle::default(),
+                    }
+                    .into_delegate()
+                })
+                .collect(),
+        )
     }
 }
 
-/// A whole-content expression evaluates to the text.
+/// Evaluates what shapes the text and leaves the spans' styles alone. A whole-content expression
+/// evaluates to the text.
 impl DelegateEvaluable for TextContentDelegate {
     type Evaluated = TextContent;
 
     const ACCEPTS_EXPRESSIONS: bool = true;
 
     fn eval(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Self::Evaluated> {
-        Ok(match self {
-            Self::Text(text) => TextContent::Text(DelegateEvaluable::eval(text, ctx)?),
-            Self::Spans(spans) => TextContent::Spans(spans.eval(ctx)?),
-        })
+        match self {
+            Self::Text(text) => DelegateEvaluable::eval(text, ctx).map(TextContent::plain),
+            Self::Spans(spans) => spans
+                .iter()
+                .enumerate()
+                .map(|(index, span)| span.layout.eval(ctx).map_err(|error| error.in_index(index)))
+                .collect::<crate::Result<_>>()
+                .map(TextContent),
+        }
     }
 
     fn for_each_expression(&self, f: &mut dyn FnMut(&Expression)) {
@@ -459,14 +472,58 @@ mod tests {
         .eval_field("content", content)
     }
 
+    /// The layout and style of each span of `content`.
+    fn eval_spans(content: &TextContentDelegate) -> crate::Result<Vec<TextSpan>> {
+        let TextContentDelegate::Spans(spans) = content else {
+            panic!("expected spans");
+        };
+        let expr = ExpressionContext {
+            frame: 12.0,
+            ..ExpressionContext::default()
+        };
+        DelegateEvalContext {
+            node_id: NodeId::new(3),
+            expr: &expr,
+        }
+        .eval_field("content", spans)
+    }
+
     #[test]
     fn plain_strings_and_expressions_are_text() {
         let content = parse(serde_json::json!("Hello")).unwrap();
-        assert_eq!(eval(&content).unwrap(), TextContent::Text("Hello".into()));
+        assert_eq!(eval(&content).unwrap(), TextContent::plain("Hello".into()));
         let content = parse(serde_json::json!("=frame * 2")).unwrap();
-        assert_eq!(eval(&content).unwrap(), TextContent::Text("24".into()));
+        assert_eq!(eval(&content).unwrap(), TextContent::plain("24".into()));
         let content = parse(serde_json::json!("==sum")).unwrap();
-        assert_eq!(eval(&content).unwrap(), TextContent::Text("=sum".into()));
+        assert_eq!(eval(&content).unwrap(), TextContent::plain("=sum".into()));
+    }
+
+    #[test]
+    fn the_default_is_the_empty_string() {
+        let content = TextContent::default().into_delegate();
+        assert_eq!(content.to_json_value(), Some(serde_json::json!("")));
+        assert_eq!(eval(&content).unwrap(), TextContent::plain(String::new()));
+    }
+
+    #[test]
+    fn evaluating_content_leaves_span_styles_alone() {
+        let mut content = parse(serde_json::json!([{
+            "text": "=frame",
+            "color": "=node(99, 'color')",
+            "baseline_shift": "=node(99, 'x')",
+            "underline": { "offset": "=node(99, 'x')" }
+        }]))
+        .unwrap();
+        assert_eq!(eval(&content).unwrap(), TextContent::plain("12".into()));
+
+        let styles = content.take_span_styles();
+        assert_eq!(styles.len(), 1);
+        assert!(styles[0].has_expressions());
+        assert!(eval(&content).is_ok());
+        assert_eq!(
+            content.to_json_value().unwrap(),
+            serde_json::json!([{ "text": "=frame" }])
+        );
     }
 
     #[test]
@@ -486,23 +543,27 @@ mod tests {
             }
         ]))
         .unwrap();
-        let TextContent::Spans(spans) = eval(&content).unwrap() else {
-            panic!("expected spans");
-        };
+        let spans = eval_spans(&content).unwrap();
         assert_eq!(
             spans[0],
             TextSpan {
-                text: "Hello, ".into(),
+                layout: SpanLayout {
+                    text: "Hello, ".into(),
+                    ..SpanLayout::default()
+                },
                 ..TextSpan::default()
             }
         );
-        assert_eq!(spans[1].font_weight, Some(600));
-        assert_eq!(spans[1].font_style, Some(TextFontStyle::Italic));
-        assert_eq!(spans[1].text_transform, Some(TextTransform::Uppercase));
-        assert_eq!(spans[1].baseline_shift, Some(6.0));
-        assert_eq!(spans[1].color, Some(Paint::solid([255, 0, 0, 255])));
+        assert_eq!(spans[1].layout.font_weight, Some(600));
+        assert_eq!(spans[1].layout.font_style, Some(TextFontStyle::Italic));
         assert_eq!(
-            spans[1].underline,
+            spans[1].layout.text_transform,
+            Some(TextTransform::Uppercase)
+        );
+        assert_eq!(spans[1].style.baseline_shift, Some(6.0));
+        assert_eq!(spans[1].style.color, Some(Paint::solid([255, 0, 0, 255])));
+        assert_eq!(
+            spans[1].style.underline,
             Override::Set(TextLine {
                 style: TextLineStyle::Wavy,
                 thickness: Some(2.0),
@@ -510,9 +571,9 @@ mod tests {
                 ..TextLine::default()
             })
         );
-        assert_eq!(spans[1].strikethrough, Override::Clear);
+        assert_eq!(spans[1].style.strikethrough, Override::Clear);
         assert_eq!(
-            spans[1].highlight,
+            spans[1].style.highlight,
             Override::Set(TextHighlight {
                 paint: Paint::solid([255, 255, 0, 255]),
                 padding: (4.0, 2.0),
@@ -591,12 +652,10 @@ mod tests {
             "underline": { "style": "=frame / 12" }
         }]))
         .unwrap();
-        let TextContent::Spans(spans) = eval(&content).unwrap() else {
-            panic!("expected spans");
-        };
-        assert_eq!(spans[0].font_style, Some(TextFontStyle::Italic));
+        let spans = eval_spans(&content).unwrap();
+        assert_eq!(spans[0].layout.font_style, Some(TextFontStyle::Italic));
         assert_eq!(
-            spans[0].underline,
+            spans[0].style.underline,
             Override::Set(TextLine {
                 style: TextLineStyle::Double,
                 ..TextLine::default()
@@ -609,12 +668,10 @@ mod tests {
             "underline": { "style": "='dashed'" }
         }]))
         .unwrap();
-        let TextContent::Spans(spans) = eval(&content).unwrap() else {
-            panic!("expected spans");
-        };
-        assert_eq!(spans[0].font_style, Some(TextFontStyle::Oblique));
+        let spans = eval_spans(&content).unwrap();
+        assert_eq!(spans[0].layout.font_style, Some(TextFontStyle::Oblique));
         assert_eq!(
-            spans[0].underline,
+            spans[0].style.underline,
             Override::Set(TextLine {
                 style: TextLineStyle::Dashed,
                 ..TextLine::default()
@@ -651,7 +708,7 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(
-            eval(&content).unwrap_err().to_string(),
+            eval_spans(&content).unwrap_err().to_string(),
             "node 3 `content[0].underline.extent`: vec2 expects numeric arguments"
         );
 
@@ -708,9 +765,7 @@ mod tests {
             { "text": "b", "font_features": { "liga": 0, "onum": "=frame - 11", "ss01": "=frame / 6" } }
         ]))
         .unwrap();
-        let TextContent::Spans(spans) = eval(&content).unwrap() else {
-            panic!("expected spans");
-        };
+        let TextContent(spans) = eval(&content).unwrap();
         let merged = |over: Option<&FontFeatures>| {
             node.merged(over)
                 .into_iter()
@@ -784,7 +839,7 @@ mod tests {
         ] {
             assert_eq!(
                 content(serde_json::json!(json)).unwrap(),
-                TextContent::Text(expected.into()),
+                TextContent::plain(expected.into()),
                 "{json}"
             );
         }

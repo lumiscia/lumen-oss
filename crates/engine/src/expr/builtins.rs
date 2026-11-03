@@ -7,13 +7,8 @@ use crate::{
         spec::{Easing, easing_builtins},
     },
     node::{
-        DelegateEvalContext, NodeId, NodeKind,
-        source::{
-            text::{
-                TextAlignmentHorizontal, TextFontStyle, TextLayoutStyle, TextLimits, TextTransform,
-            },
-            text_content::TextContent,
-        },
+        DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
+        source::{text::TextLayoutParams, text_content::TextContent},
     },
 };
 
@@ -241,23 +236,14 @@ fn measure_text(
     font_family: Option<String>,
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<ExpressionValue> {
-    let style = TextLayoutStyle {
+    let layout = TextLayoutParams {
+        content: TextContent::plain(text),
         font_family: font_family.unwrap_or_else(|| lumen_text::DEFAULT_FONT_FAMILY.to_string()),
         font_size,
-        font_weight: 400,
-        font_style: TextFontStyle::Normal,
-        letter_spacing: 0.0,
         max_width,
-        line_height: 0.0,
-        alignment_horizontal: TextAlignmentHorizontal::Left,
-        limits: TextLimits::default(),
-        text_transform: TextTransform::None,
-        paragraph_spacing: 0.0,
+        ..TextLayoutParams::default()
     };
-    let measurement = measure_text_value(
-        ctx,
-        style.request(&TextContent::Text(text), &Default::default()),
-    )?;
+    let measurement = measure_text_value(ctx, layout.request(&[]))?;
     Ok(measured(builtin, measurement))
 }
 
@@ -292,44 +278,11 @@ fn measure_text_node(
         )));
     };
 
-    let fields = DelegateEvalContext { node_id, expr: ctx };
-    let content = text
+    let layout = text
         .params
-        .content
-        .eval_layout(&fields)
-        .map_err(|error| error.in_field("content"))?;
-    let font_family = text.params.font_family.eval(node_id, "font_family", ctx)?;
-    let font_size = text.params.font_size.eval(node_id, "font_size", ctx)?;
-    let font_weight = text.params.font_weight.eval(node_id, "font_weight", ctx)?;
-    let font_style = fields.eval_field("font_style", &text.params.font_style)?;
-    let max_width = text.params.max_width.eval(node_id, "max_width", ctx)?;
-    let letter_spacing = text
-        .params
-        .letter_spacing
-        .eval(node_id, "letter_spacing", ctx)?;
-    let font_features = fields.eval_field("font_features", &text.params.font_features)?;
-    let line_height = text.params.line_height.eval(node_id, "line_height", ctx)?;
-    let alignment_horizontal =
-        fields.eval_field("alignment_horizontal", &text.params.alignment_horizontal)?;
-    let text_transform = fields.eval_field("text_transform", &text.params.text_transform)?;
-    let paragraph_spacing =
-        text.params
-            .paragraph_spacing
-            .eval(node_id, "paragraph_spacing", ctx)?;
-    let style = TextLayoutStyle {
-        font_family,
-        font_size,
-        font_weight,
-        font_style,
-        letter_spacing,
-        max_width,
-        line_height,
-        alignment_horizontal,
-        limits: TextLimits::eval(&text.params, node_id, ctx)?,
-        text_transform,
-        paragraph_spacing,
-    };
-    measure_text_value(ctx, style.request(&content, &font_features))
+        .layout
+        .eval(&DelegateEvalContext { node_id, expr: ctx })?;
+    measure_text_value(ctx, layout.request(&[]))
 }
 
 fn measure_text_value(

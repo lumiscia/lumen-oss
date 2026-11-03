@@ -10,11 +10,13 @@ use crate::node::vector::{
 use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, Override};
 
 use super::text::{
-    CompiledText, DecorationParams, GlyphParams, Stable, Text, TextAlignmentVertical,
-    TextDecorations, TextLayoutStyle, TextParamsDelegate, TextState, decorate, decoration_paints,
-    load_font_families, span_strokes, stroked, text_system,
+    CompiledText, Stable, Text, TextAlignmentVertical, TextDecorationParamsDelegate,
+    TextLayoutParamsDelegate, TextState, decorate, decoration_paints, load_font_families,
+    span_strokes, stroked, text_system,
 };
-use super::text_content::{TextContent, TextContentDelegate, TextLineDelegate, TextSpanDelegate};
+use super::text_content::{
+    SpanStyleDelegate, TextContentDelegate, TextLineDelegate, TextSpanDelegate,
+};
 
 fn text_shader() -> String {
     [
@@ -75,7 +77,23 @@ pub(super) fn compile_text(
         params.placement.motion_blur,
         Deferred::Value(angle) if shutter_offset(angle).is_none()
     ) && params.placement.transform_is_animated();
-    let constant = constant_text(ctx, text);
+    // What sets how the text is drawn, not laid out, may read other nodes, so it is left for
+    // binding to evaluate.
+    let mut layout = params.layout.clone();
+    let span_styles = layout.content.take_span_styles();
+    let (layout, span_styles, decorations) = {
+        let expr = ctx.expr_context();
+        let fields = DelegateEvalContext {
+            node_id: text.id,
+            expr: &expr,
+        };
+        (
+            Stable::new(layout, &fields)?,
+            Stable::new(span_styles, &fields).map_err(|error| error.in_field("content"))?,
+            Stable::new(params.decorations.clone(), &fields)?,
+        )
+    };
+    let constant = constant_text(ctx, text, &layout, &span_styles, &decorations);
     let bounds = if blurred {
         None
     } else {
@@ -133,7 +151,7 @@ pub(super) fn compile_text(
         Some(format!("text:{}:style", text.id.0)),
         lumen_gpu::BufferDesc::uniform(std::mem::size_of::<TextStyleUniforms>() as u64),
     );
-    let paint_count = match &params.content {
+    let paint_count = match &params.layout.content {
         TextContentDelegate::Spans(spans) => spans.len().max(1),
         TextContentDelegate::Text(_) => 1,
     };
@@ -303,25 +321,14 @@ pub(super) fn compile_text(
             None,
         ));
     }
-    let mut params = text.params.clone();
-    let glyph = GlyphParams::take(&mut params);
-    let expr = ctx.expr_context();
-    let fields = DelegateEvalContext {
-        node_id: text.id,
-        expr: &expr,
-    };
-    let decorations = Stable::new(DecorationParams::take(&mut params), &fields)?;
-    let font_features = Stable::new(std::mem::take(&mut params.font_features), &fields)
-        .map_err(|error| error.in_field("font_features"))?;
-    let content = Stable::new(std::mem::take(&mut params.content), &fields)
-        .map_err(|error| error.in_field("content"))?;
     ctx.register_compiled_node(CompiledText {
         node_id: text.id,
-        params,
-        glyph,
-        content,
+        draw: text.params.draw.clone(),
+        placement: text.params.placement.clone(),
+        glyph: text.params.glyph.clone(),
+        layout,
+        span_styles,
         decorations,
-        font_features,
         decorated: decoration_paints.is_some(),
         stroked: stroked(&text.params),
         atlas_texture,
@@ -360,28 +367,30 @@ fn text_bounds(
     let solid = |paint: &PaintDelegate| matches!(paint, PaintDelegate::SolidColor(..));
     let solid_line = |line: &TextLineDelegate| line.paint.as_ref().is_none_or(solid);
     let solid_span = |span: &TextSpanDelegate| {
-        span.color.as_ref().is_none_or(solid)
-            && [&span.underline, &span.strikethrough]
+        let style = &span.style;
+        style.color.as_ref().is_none_or(solid)
+            && [&style.underline, &style.strikethrough]
                 .into_iter()
                 .all(|line| !matches!(line, Override::Set(line) if !solid_line(line)))
-            && !matches!(&span.highlight, Override::Set(highlight) if !solid(&highlight.paint))
-            && !matches!(&span.stroke, Override::Set(stroke) if !solid(&stroke.paint))
+            && !matches!(&style.highlight, Override::Set(highlight) if !solid(&highlight.paint))
+            && !matches!(&style.stroke, Override::Set(stroke) if !solid(&stroke.paint))
     };
     let constant = constant?;
-    if GlyphParams::any(params)
-        || !solid(&params.color)
-        || matches!(&params.content, TextContentDelegate::Spans(spans)
+    let decorations = &params.decorations;
+    if !params.glyph.is_identity()
+        || !solid(&params.draw.color)
+        || matches!(&params.layout.content, TextContentDelegate::Spans(spans)
             if !spans.iter().all(solid_span))
-        || !params
+        || !decorations
             .stroke
             .as_ref()
             .is_none_or(|stroke| solid(&stroke.paint))
-        || !params
+        || !decorations
             .underline
             .iter()
-            .chain(&params.strikethrough)
+            .chain(&decorations.strikethrough)
             .all(solid_line)
-        || !params
+        || !decorations
             .highlight
             .as_ref()
             .is_none_or(|highlight| solid(&highlight.paint))
@@ -433,52 +442,19 @@ fn text_bounds(
 /// The layout and decorations of `text`, shaped as the font that will draw it shapes
 /// them, when nothing that sets them is animated. Text in a font that the media store has
 /// not resolved has none, since the font drawn later may shape it differently.
-fn constant_text(ctx: &CompileContext<'_>, text: &Text) -> Option<ConstantText> {
-    let params = &text.params;
-    if crate::node::DelegateEvaluable::has_expressions(&params.content)
-        || crate::node::DelegateEvaluable::has_expressions(&params.underline)
-        || crate::node::DelegateEvaluable::has_expressions(&params.strikethrough)
-        || crate::node::DelegateEvaluable::has_expressions(&params.highlight)
-        || crate::node::DelegateEvaluable::has_expressions(&params.stroke)
-        || params.font_family.is_expr()
-        || params.font_size.is_expr()
-        || params.font_weight.is_expr()
-        || crate::node::DelegateEvaluable::has_expressions(&params.font_style)
-        || crate::node::DelegateEvaluable::has_expressions(&params.font_features)
-        || params.max_width.is_expr()
-        || params.letter_spacing.is_expr()
-        || params.line_height.is_expr()
-        || crate::node::DelegateEvaluable::has_expressions(&params.max_lines)
-        || crate::node::DelegateEvaluable::has_expressions(&params.max_height)
-        || crate::node::DelegateEvaluable::has_expressions(&params.overflow)
-        || crate::node::DelegateEvaluable::has_expressions(&params.fit)
-        || params.min_font_size.is_expr()
-        || params.paragraph_spacing.is_expr()
-        || crate::node::DelegateEvaluable::has_expressions(&params.text_transform)
-    {
+fn constant_text(
+    ctx: &CompileContext<'_>,
+    text: &Text,
+    layout: &Stable<TextLayoutParamsDelegate>,
+    span_styles: &Stable<Vec<SpanStyleDelegate>>,
+    decorations: &Stable<TextDecorationParamsDelegate>,
+) -> Option<ConstantText> {
+    let (Stable::Constant(layout), Stable::Constant(spans), Stable::Constant(decorations)) =
+        (layout, span_styles, decorations)
+    else {
         return None;
-    }
-    // What sets how the text is drawn, not laid out, may read other nodes, so it is left
-    // for binding to evaluate.
-    let drawn = TextParamsDelegate::default();
-    let layout_params = TextParamsDelegate {
-        placement: drawn.placement,
-        glyph_offset: drawn.glyph_offset,
-        glyph_scale: drawn.glyph_scale,
-        glyph_rotation: drawn.glyph_rotation,
-        glyph_opacity: drawn.glyph_opacity,
-        color: drawn.color,
-        ..params.clone()
     };
-    let expr = ctx.expr_context();
-    let mut evaluated = layout_params
-        .eval(&DelegateEvalContext {
-            node_id: text.id,
-            expr: &expr,
-        })
-        .ok()?;
-    let style = TextLayoutStyle::take(&mut evaluated);
-    let request = style.request(&evaluated.content, &evaluated.font_features);
+    let request = layout.request(spans);
     let unresolved = request.spans.iter().any(|span| {
         let family = span.font_family.as_str();
         !family.is_empty()
@@ -492,29 +468,13 @@ fn constant_text(ctx: &CompileContext<'_>, text: &Text) -> Option<ConstantText> 
     }
     let shaped = {
         let mut text_system = text_system(ctx.media()).ok()?;
-        load_font_families(
-            &mut text_system,
-            ctx.media(),
-            &style,
-            Some(&evaluated.content),
-        )
-        .ok()?;
+        load_font_families(&mut text_system, ctx.media(), layout).ok()?;
         text_system.shape(&request)
-    };
-    let decorations = TextDecorations {
-        underline: evaluated.underline.take(),
-        strikethrough: evaluated.strikethrough.take(),
-        highlight: evaluated.highlight.take(),
-        stroke: evaluated.stroke.take(),
-    };
-    let spans = match &evaluated.content {
-        TextContent::Spans(spans) => &spans[..],
-        TextContent::Text(_) => &[],
     };
     let mut rects = Vec::new();
     decorate(
         &shaped,
-        &decorations,
+        decorations,
         spans,
         [0.0; 2],
         spans.len().max(1),
@@ -533,9 +493,19 @@ fn constant_text(ctx: &CompileContext<'_>, text: &Text) -> Option<ConstantText> 
         .flatten()
         .map(|stroke| lumen_text::stroke_reach(stroke.half_width))
         .fold(0.0, f32::max);
+    let expr = ctx.expr_context();
+    let alignment = text
+        .params
+        .draw
+        .alignment_vertical
+        .eval(&DelegateEvalContext {
+            node_id: text.id,
+            expr: &expr,
+        })
+        .ok()?;
     Some(ConstantText {
         shaped,
-        alignment: evaluated.alignment_vertical,
+        alignment,
         decorations: rects,
         stroke_reach,
     })

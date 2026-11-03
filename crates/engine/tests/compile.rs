@@ -18,7 +18,10 @@ use lumen_engine::{
         processing::{blur::Blur, exposure::Exposure, opacity::Opacity, time_remap::TimeRemap},
         source::background::Background,
         source::media_in::{MediaIn, MediaInParamsDelegate},
-        source::text::{Text, TextParamsDelegate},
+        source::text::{
+            Text, TextDrawParamsDelegate, TextGlyphParamsDelegate, TextLayoutParamsDelegate,
+            TextParamsDelegate,
+        },
         source::text_content::TextContentDelegate,
         vector::drawable::{DrawablePlacementDelegate, DrawableStyleDelegate},
         vector::{
@@ -1161,8 +1164,14 @@ fn glyph_scope_crosses_functions() {
             NodeKind::Text(Text {
                 id: NodeId::new(1),
                 params: TextParamsDelegate {
-                    content: TextContentDelegate::Text(Deferred::value("Lumen".to_string())),
-                    glyph_offset,
+                    glyph: TextGlyphParamsDelegate {
+                        glyph_offset,
+                        ..Default::default()
+                    },
+                    layout: TextLayoutParamsDelegate {
+                        content: TextContentDelegate::Text(Deferred::value("Lumen".to_string())),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
@@ -1414,23 +1423,29 @@ fn text_upload_repeats_until_it_is_marked_uploaded() {
             NodeKind::Text(Text {
                 id: text,
                 params: TextParamsDelegate {
-                    content: TextContentDelegate::Text(Deferred::value("hi".to_string())),
-                    font_size: Deferred::value(4.0),
-                    color: Paint::Gradient(GradientPaint {
-                        kind: PaintKind::LinearGradient,
-                        stops: vec![
-                            GradientStop {
-                                offset: 0.0,
-                                color: [255, 0, 0, 255],
-                            },
-                            GradientStop {
-                                offset: 1.0,
-                                color: [0, 0, 255, 255],
-                            },
-                        ],
+                    layout: TextLayoutParamsDelegate {
+                        content: TextContentDelegate::Text(Deferred::value("hi".to_string())),
+                        font_size: Deferred::value(4.0),
                         ..Default::default()
-                    })
-                    .into(),
+                    },
+                    draw: TextDrawParamsDelegate {
+                        color: Paint::Gradient(GradientPaint {
+                            kind: PaintKind::LinearGradient,
+                            stops: vec![
+                                GradientStop {
+                                    offset: 0.0,
+                                    color: [255, 0, 0, 255],
+                                },
+                                GradientStop {
+                                    offset: 1.0,
+                                    color: [0, 0, 255, 255],
+                                },
+                            ],
+                            ..Default::default()
+                        })
+                        .into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             }),
@@ -1474,9 +1489,14 @@ fn text_bind_ahead_restores_the_committed_frame() {
             NodeKind::Text(Text {
                 id: text,
                 params: TextParamsDelegate {
-                    content: TextContentDelegate::Text(Deferred::value("Bind ahead".to_string())),
                     placement: DrawablePlacementDelegate {
                         position: Deferred::Expr(Expression::parse("vec2(frame * 10, 0)").unwrap()),
+                        ..Default::default()
+                    },
+                    layout: TextLayoutParamsDelegate {
+                        content: TextContentDelegate::Text(Deferred::value(
+                            "Bind ahead".to_string(),
+                        )),
                         ..Default::default()
                     },
                     ..Default::default()

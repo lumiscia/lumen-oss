@@ -13,7 +13,10 @@ use lumen_engine::{
     node::{
         Deferred, NodeId, NodeKind,
         media_output::MediaOutput,
-        source::text::{Text, TextParamsDelegate, TextRenderMode},
+        source::text::{
+            Text, TextDrawParamsDelegate, TextLayoutParamsDelegate, TextParamsDelegate,
+            TextRenderMode,
+        },
     },
 };
 
@@ -223,17 +226,23 @@ fn run_case(
         NodeKind::Text(Text {
             id: NodeId::new(1),
             params: TextParamsDelegate {
-                content: TextContentDelegate::Text(Deferred::value(content)),
-                font_size: Deferred::Expr(Expression::parse("24 + frame % 96")?),
-                max_width: Deferred::value(1300.0),
-                render_mode: if case == BenchCase::Msdf {
-                    TextRenderMode::Msdf
-                } else {
-                    TextRenderMode::Raster
-                }
-                .into(),
                 placement: DrawablePlacementDelegate {
                     position: Deferred::value((16.0, 16.0)),
+                    ..Default::default()
+                },
+                layout: TextLayoutParamsDelegate {
+                    content: TextContentDelegate::Text(Deferred::value(content)),
+                    font_size: Deferred::Expr(Expression::parse("24 + frame % 96")?),
+                    max_width: Deferred::value(1300.0),
+                    ..Default::default()
+                },
+                draw: TextDrawParamsDelegate {
+                    render_mode: if case == BenchCase::Msdf {
+                        TextRenderMode::Msdf
+                    } else {
+                        TextRenderMode::Raster
+                    }
+                    .into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -323,12 +332,15 @@ impl MeasurementFixture {
                     NodeKind::Text(Text {
                         id: target_id,
                         params: lumen_engine::node::source::text::TextParamsDelegate {
-                            content: TextContentDelegate::Text(Deferred::Expr(Expression::parse(
-                                "\"Hello from Lumen measurement.\"",
-                            )?)),
-                            font_family: Deferred::Expr(Expression::parse("\"Roboto\"")?),
-                            font_size: Deferred::Expr(Expression::parse("32 + frame")?),
-                            max_width: Deferred::Expr(Expression::parse("width")?),
+                            layout: TextLayoutParamsDelegate {
+                                content: TextContentDelegate::Text(Deferred::Expr(
+                                    Expression::parse("\"Hello from Lumen measurement.\"")?,
+                                )),
+                                font_family: Deferred::Expr(Expression::parse("\"Roboto\"")?),
+                                font_size: Deferred::Expr(Expression::parse("32 + frame")?),
+                                max_width: Deferred::Expr(Expression::parse("width")?),
+                                ..Default::default()
+                            },
                             ..Default::default()
                         },
                     }),
@@ -342,12 +354,15 @@ impl MeasurementFixture {
                     NodeKind::Text(Text {
                         id: source_id,
                         params: lumen_engine::node::source::text::TextParamsDelegate {
-                            content: TextContentDelegate::Text(Deferred::value(
-                                "Referenced text measurement.".to_string(),
-                            )),
-                            font_family: Deferred::value("Roboto".to_string()),
-                            font_size: Deferred::value(24.0),
-                            max_width: Deferred::value(700.0),
+                            layout: TextLayoutParamsDelegate {
+                                content: TextContentDelegate::Text(Deferred::value(
+                                    "Referenced text measurement.".to_string(),
+                                )),
+                                font_family: Deferred::value("Roboto".to_string()),
+                                font_size: Deferred::value(24.0),
+                                max_width: Deferred::value(700.0),
+                                ..Default::default()
+                            },
                             ..Default::default()
                         },
                     }),
@@ -357,14 +372,21 @@ impl MeasurementFixture {
                     NodeKind::Text(Text {
                         id: target_id,
                         params: lumen_engine::node::source::text::TextParamsDelegate {
-                            content: TextContentDelegate::Text(Deferred::Expr(Expression::parse(
-                                "node(7, \"content\")",
-                            )?)),
-                            font_family: Deferred::Expr(Expression::parse(
-                                "node(7, \"font_family\")",
-                            )?),
-                            font_size: Deferred::Expr(Expression::parse("text_height(node(7))")?),
-                            max_width: Deferred::Expr(Expression::parse("node(7, \"max_width\")")?),
+                            layout: TextLayoutParamsDelegate {
+                                content: TextContentDelegate::Text(Deferred::Expr(
+                                    Expression::parse("node(7, \"content\")")?,
+                                )),
+                                font_family: Deferred::Expr(Expression::parse(
+                                    "node(7, \"font_family\")",
+                                )?),
+                                font_size: Deferred::Expr(Expression::parse(
+                                    "text_height(node(7))",
+                                )?),
+                                max_width: Deferred::Expr(Expression::parse(
+                                    "node(7, \"max_width\")",
+                                )?),
+                                ..Default::default()
+                            },
                             ..Default::default()
                         },
                     }),
