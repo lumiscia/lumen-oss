@@ -124,8 +124,10 @@ fn vulkan_av1_crops_coded_padding_in_the_container() {
         );
         assert!(!side_data.is_null(), "stream has no cropping side data");
         std::slice::from_raw_parts((*side_data).data, 16)
-            .chunks_exact(4)
-            .map(|side| u32::from_le_bytes(side.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|side| u32::from_le_bytes(*side))
             .collect::<Vec<_>>()
             .try_into()
             .unwrap()

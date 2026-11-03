@@ -2,7 +2,7 @@ use std::fmt::Debug;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::audio::AudioResolver;
-use crate::error::{LumenError, RenderError};
+use crate::error::{LumenError, MediaError, RenderError};
 
 use super::{FontResolver, ImageResolver, VideoFrameResolver};
 
@@ -42,12 +42,30 @@ impl Default for TextSession {
 }
 
 pub trait MediaStore: Send + Sync + Debug {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>>;
+    /// The resolver for `source`. A source this store doesn't have fails with
+    /// `MediaError::SourceNotFound`, and one it has but can't open fails with why.
+    fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
+        Err(MediaError::source_not_found(
+            source,
+            "this store has no images",
+        ))
+    }
 
-    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>>;
+    fn get_video_resolver(
+        &self,
+        stream_id: &str,
+    ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
+        Err(MediaError::source_not_found(
+            stream_id,
+            "this store has no videos",
+        ))
+    }
 
-    fn get_audio_resolver(&self, _source: &str) -> Option<Box<dyn AudioResolver>> {
-        None
+    fn get_audio_resolver(&self, source: &str) -> Result<Box<dyn AudioResolver>, MediaError> {
+        Err(MediaError::source_not_found(
+            source,
+            "this store has no audio",
+        ))
     }
 
     /// Returns the current font resolver ID without loading font data. Must match the resolver's

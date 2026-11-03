@@ -55,7 +55,6 @@ pub(crate) fn expand_node_enum(input: DeriveInput) -> Result<proc_macro2::TokenS
     });
 
     Ok(quote! {
-        #[cfg(any(feature = "json", feature = "metadata"))]
         impl ::lumen_engine::node::NodeEnum for #ident {
             fn enum_def() -> &'static ::lumen_engine::node::EnumDef {
                 const OPTIONS: &[::lumen_engine::node::EnumOptionDef] = &[#(#option_tokens),*];

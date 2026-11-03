@@ -129,7 +129,6 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             }
         }
 
-        #[cfg(feature = "json")]
         impl ::lumen_engine::node::JsonNode for #ident {
             fn from_json(
                 id: ::lumen_engine::node::NodeId,

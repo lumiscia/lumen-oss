@@ -1,284 +1,46 @@
 // The composition schema is one large `json!` literal.
 #![recursion_limit = "256"]
 
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Serialize;
-use serde_json::{Value, json};
+use lumen_engine::node::{
+    EnumDef, InputPortDef, NodeCategory, NodeKind, NodeParams, NodeSchemaDef, PortKind,
+    PropertyDef, PropertyKind, PropertyValue, SINGLE_RASTER_OUTPUT,
+};
+use serde_json::{Map, Value, json};
 
-pub const DEFAULT_DEFINITIONS_OUTPUT_DIR: &str = "definitions";
-pub const META_SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CliArgs {
-    pub target: GenerateTarget,
-    pub out_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Command {
-    Generate(CliArgs),
-    Help,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GenerateTarget {
-    Definitions,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NodeCategory {
-    Compositing,
-    Processing,
-    Source,
-    Output,
-    Vector,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NodePortKind {
-    RasterFrame,
-    Vector,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NodeParamKind {
-    Float,
-    Int,
-    Bool,
-    String,
-    Color,
-    Paint,
-    Vec2,
-    Enum,
-    ShaderUniforms,
-    ClipProps,
-    TextContent,
-    TextLine,
-    TextHighlight,
-    FontFeatures,
-    TextStroke,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(untagged)]
-pub enum NodeLiteralValue {
-    Float(f64),
-    Int(i64),
-    Bool(bool),
-    String(String),
-    Color([u8; 4]),
-    Paint(Value),
-    Vec2((f64, f64)),
-    ShaderUniforms(Value),
-    ClipProps(Value),
-    TextContent(Value),
-    TextLine(Value),
-    TextHighlight(Value),
-    FontFeatures(Value),
-    TextStroke(Value),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeInputPortSpec {
-    pub name: String,
-    pub kind: NodePortKind,
-    pub optional: bool,
-    pub variadic: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeOutputPortSpec {
-    pub name: String,
-    pub kind: NodePortKind,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeParamSpec {
-    pub id: String,
-    pub name: String,
-    pub kind: NodeParamKind,
-    pub description: String,
-    /// Absent for optional params, which are unset unless given, and optional fields of a param
-    /// kind, which take their parent's value.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_value: Option<NodeLiteralValue>,
-    pub accepts_expressions: bool,
-    #[serde(skip_serializing_if = "is_false")]
-    pub nullable: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub enum_options: Vec<NodeEnumOptionSpec>,
-    #[serde(skip_serializing_if = "PropertyConstraintsSpec::is_empty")]
-    pub constraints: PropertyConstraintsSpec,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PropertyConstraintsSpec {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub step: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub format: Option<String>,
-    #[serde(skip_serializing_if = "is_false")]
-    pub multiline: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recommended_rows: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-}
-
-impl PropertyConstraintsSpec {
-    fn is_empty(&self) -> bool {
-        self.min.is_none()
-            && self.max.is_none()
-            && self.step.is_none()
-            && self.format.is_none()
-            && !self.multiline
-            && self.recommended_rows.is_none()
-            && self.role.is_none()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeEnumOptionSpec {
-    pub name: String,
-    pub label: String,
-    pub value: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeSpec {
-    pub kind: String,
-    pub name: String,
-    pub description: String,
-    pub category: NodeCategory,
-    pub inputs: Vec<NodeInputPortSpec>,
-    pub outputs: Vec<NodeOutputPortSpec>,
-    pub params: Vec<NodeParamSpec>,
-    pub default_params: BTreeMap<String, NodeLiteralValue>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MetaManifest {
-    pub schema_version: u32,
-    pub node_specs: BTreeMap<String, NodeSpec>,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
-pub fn parse_args_from<I>(args: I) -> Result<Command>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut out_dir = PathBuf::from(DEFAULT_DEFINITIONS_OUTPUT_DIR);
-    let target = GenerateTarget::Definitions;
-
-    let mut args = args.into_iter().skip(1);
-    while let Some(flag) = args.next() {
-        match flag.as_str() {
-            "definitions" => {}
-            "--out-dir" => {
-                out_dir = PathBuf::from(
-                    args.next()
-                        .ok_or_else(|| anyhow!("missing value for --out-dir"))?,
-                );
-            }
-            "--help" | "-h" => return Ok(Command::Help),
-            unknown => bail!("unknown argument: {unknown}"),
-        }
-    }
-
-    Ok(Command::Generate(CliArgs { target, out_dir }))
-}
-
-pub fn print_usage() {
-    println!("Usage: cargo run -p lumen-generators -- [definitions] [--out-dir <path>]");
-}
-
-pub fn generate(args: &CliArgs) -> Result<()> {
-    match args.target {
-        GenerateTarget::Definitions => generate_definitions(&args.out_dir),
-    }
-}
-
-pub fn generate_definitions(out_dir: &Path) -> Result<()> {
-    let artifacts = render_definition_artifacts()?;
+/// Writes `composition.schema.json` into `out_dir`.
+pub fn generate(out_dir: &Path) -> Result<()> {
+    let schema_json = render_composition_schema_json()?;
     fs::create_dir_all(out_dir)
         .with_context(|| format!("failed to create output directory `{}`", out_dir.display()))?;
-    write_if_changed(
-        &out_dir.join("composition.schema.json"),
-        &artifacts.composition_schema_json,
-    )?;
-    Ok(())
+    write_if_changed(&out_dir.join("composition.schema.json"), &schema_json)
 }
 
-#[derive(Debug, Clone)]
-pub struct DefinitionArtifacts {
-    pub manifest: MetaManifest,
-    pub composition_schema_json: String,
-}
-
-pub fn render_definition_artifacts() -> Result<DefinitionArtifacts> {
-    let manifest = meta_manifest()?;
-    let composition_schema_json = render_composition_schema_json(&manifest)?;
-    validate_generated_artifacts(&composition_schema_json)?;
-    Ok(DefinitionArtifacts {
-        composition_schema_json,
-        manifest,
-    })
-}
-
-fn validate_generated_artifacts(composition_schema_json: &str) -> Result<()> {
-    let composition_schema: Value = serde_json::from_str(composition_schema_json)?;
-    jsonschema::meta::validate(&composition_schema)
+/// The composition schema, checked to be a valid JSON Schema.
+pub fn render_composition_schema_json() -> Result<String> {
+    let schema_json = render_schema()?;
+    let schema: Value = serde_json::from_str(&schema_json)?;
+    jsonschema::meta::validate(&schema)
         .map_err(|error| anyhow!("generated composition schema is invalid: {error}"))?;
-    Ok(())
+    Ok(schema_json)
 }
 
-pub fn meta_manifest() -> Result<MetaManifest> {
-    let specs = lumen_engine::node::NodeKind::schemas()
+fn render_schema() -> Result<String> {
+    let node_schemas = NodeKind::schemas()
         .into_iter()
-        .map(spec_from_schema)
-        .collect::<Result<Vec<_>>>()?;
-    let node_specs = specs
-        .into_iter()
-        .map(|spec| (spec.kind.clone(), spec))
-        .collect();
-    Ok(MetaManifest {
-        schema_version: META_SCHEMA_VERSION,
-        node_specs,
-    })
-}
-
-pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String> {
-    let node_variants = manifest
-        .node_specs
+        .map(|schema| (schema.kind, schema))
+        .collect::<BTreeMap<_, _>>();
+    let node_variants = node_schemas
         .values()
         .map(node_schema_json)
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     let mut schema = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "x-lumen-schemaVersion": manifest.schema_version,
+        "x-lumen-schemaVersion": SCHEMA_VERSION,
         "x-lumen-expressions": expressions_json(),
         "type": "object",
         "required": ["timeline", "render_settings", "nodes", "connections"],
@@ -474,7 +236,7 @@ pub fn render_composition_schema_json(manifest: &MetaManifest) -> Result<String>
 /// `$defs` of the param kinds whose fields are a delegate's `property_defs()`, and the outer
 /// shapes around them that the property metadata can't express. Each carries the TypeScript
 /// type name `x-lumen-type`.
-fn kind_defs_json() -> Result<serde_json::Map<String, Value>> {
+fn kind_defs_json() -> Result<Map<String, Value>> {
     use lumen_engine::node::{
         source::text_content::{
             TextHighlightDelegate, TextLineDelegate, TextSpanDelegate, TextStrokeDelegate,
@@ -482,7 +244,7 @@ fn kind_defs_json() -> Result<serde_json::Map<String, Value>> {
         vector::paint::{GradientPaintDelegate, GradientStopDelegate},
     };
 
-    let mut defs = serde_json::Map::new();
+    let mut defs = Map::new();
     insert_object_def::<TextSpanDelegate>(&mut defs, "TextSpan", &[])?;
     insert_object_def::<TextLineDelegate>(&mut defs, "TextLine", &[])?;
     insert_object_def::<TextHighlightDelegate>(&mut defs, "TextHighlight", &[])?;
@@ -623,13 +385,13 @@ fn def_key(type_name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn insert_def(defs: &mut serde_json::Map<String, Value>, type_name: &str, mut schema: Value) {
+fn insert_def(defs: &mut Map<String, Value>, type_name: &str, mut schema: Value) {
     schema["x-lumen-type"] = json!(type_name);
     defs.insert(def_key(type_name), schema);
 }
 
-fn insert_object_def<P: lumen_engine::node::NodeParams>(
-    defs: &mut serde_json::Map<String, Value>,
+fn insert_object_def<P: NodeParams>(
+    defs: &mut Map<String, Value>,
     type_name: &str,
     value_schemas: &[(&str, Value)],
 ) -> Result<()> {
@@ -641,34 +403,39 @@ fn insert_object_def<P: lumen_engine::node::NodeParams>(
 /// An object schema with a field per param of `P`, described like node params. Fields marked
 /// `required` must be present and have no default. Enum fields reference a `$def` of their
 /// enum, and `value_schemas` replaces the value schemas of fields the metadata can't describe.
-fn object_schema_json<P: lumen_engine::node::NodeParams>(
-    defs: &mut serde_json::Map<String, Value>,
+fn object_schema_json<P: NodeParams>(
+    defs: &mut Map<String, Value>,
     value_schemas: &[(&str, Value)],
 ) -> Result<Value> {
-    let properties = P::property_defs();
-    let mut specs = param_specs(&properties, &P::default().default_properties())?;
-    let mut fields = serde_json::Map::new();
+    let defaults = P::default().default_properties();
+    let mut fields = Map::new();
     let mut required = Vec::new();
-    for (property, spec) in properties.iter().zip(&mut specs) {
-        if property.required {
-            spec.default_value = None;
+    for property in &P::property_defs() {
+        let default = if property.required {
             required.push(property.id);
-        }
+            None
+        } else {
+            default_json(property, &defaults)?
+        };
         let replaced = value_schemas.iter().find(|(id, _)| *id == property.id);
         let value_schema = match (replaced, property.enum_def) {
             (Some((_, schema)), _) => schema.clone(),
             (None, Some(enum_def)) => {
-                insert_def(defs, enum_def.name, enum_def_schema_json(spec, enum_def));
+                insert_def(
+                    defs,
+                    enum_def.name,
+                    enum_def_schema_json(property, enum_def),
+                );
                 json!({ "$ref": format!("#/$defs/{}", def_key(enum_def.name)) })
             }
-            (None, None) => value_schema_json(spec),
+            (None, None) => value_schema_json(property),
         };
-        let mut field = field_schema_json(spec, value_schema);
+        let mut field = field_schema_json(property, default, value_schema);
         // The param kind describes the field's Rust type, not the replaced shape.
         if let (Some(_), Value::Object(object)) = (replaced, &mut field) {
             object.remove("x-lumen-kind");
         }
-        fields.insert(spec.id.clone(), field);
+        fields.insert(property.id.to_string(), field);
     }
     if let Some(id) = value_schemas
         .iter()
@@ -722,22 +489,29 @@ fn expressions_json() -> Value {
     json!({ "builtins": builtins, "easings": easings, "globals": globals })
 }
 
-fn node_schema_json(spec: &NodeSpec) -> Value {
-    let mut properties = serde_json::Map::new();
-    for property in &spec.params {
-        properties.insert(property.id.clone(), property_schema_json(property));
+fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {
+    let mut properties = Map::new();
+    for property in &schema.properties {
+        let default = default_json(property, &schema.default_properties)?;
+        properties.insert(
+            property.id.to_string(),
+            property_schema_json(property, default),
+        );
     }
-    json!({
-        "title": spec.name,
-        "description": spec.description,
-        "x-lumen-category": spec.category,
-        "x-lumen-inputs": spec.inputs,
-        "x-lumen-outputs": spec.outputs,
+    Ok(json!({
+        "title": schema.name,
+        "description": schema.description,
+        "x-lumen-category": category_name(schema.category),
+        "x-lumen-inputs": schema.inputs.iter().map(input_port_json).collect::<Vec<_>>(),
+        "x-lumen-outputs": SINGLE_RASTER_OUTPUT
+            .iter()
+            .map(|output| json!({ "name": output.name, "kind": port_kind_name(output.kind) }))
+            .collect::<Vec<_>>(),
         "type": "object",
         "required": ["id", "type"],
         "properties": {
             "id": { "type": "integer" },
-            "type": { "const": spec.kind },
+            "type": { "const": schema.kind },
             "params": {
                 "type": "object",
                 "properties": properties,
@@ -745,48 +519,62 @@ fn node_schema_json(spec: &NodeSpec) -> Value {
             }
         },
         "additionalProperties": false
+    }))
+}
+
+fn input_port_json(input: &InputPortDef) -> Value {
+    json!({
+        "name": input.name,
+        "kind": port_kind_name(input.kind),
+        "optional": input.optional,
+        "variadic": input.variadic,
     })
 }
 
-fn property_schema_json(property: &NodeParamSpec) -> Value {
-    field_schema_json(property, value_schema_json(property))
+fn property_schema_json(property: &PropertyDef, default: Option<Value>) -> Value {
+    field_schema_json(property, default, value_schema_json(property))
 }
 
-fn value_schema_json(property: &NodeParamSpec) -> Value {
-    match property.kind {
-        NodeParamKind::Float => numeric_property_schema_json("number", property),
-        NodeParamKind::Int => numeric_property_schema_json("integer", property),
-        NodeParamKind::Bool => json!({ "type": "boolean" }),
+fn value_schema_json(property: &PropertyDef) -> Value {
+    match property.expected {
+        PropertyKind::Float => numeric_property_schema_json("number", property),
+        PropertyKind::Int => numeric_property_schema_json("integer", property),
+        PropertyKind::Bool => json!({ "type": "boolean" }),
         // A single leading `=` parses as an expression; `==` escapes a literal `=`.
-        NodeParamKind::String if !property.accepts_expressions => {
+        PropertyKind::String if !property.accepts_expressions => {
             json!({ "type": "string", "not": { "pattern": "^=([^=]|$)" } })
         }
-        NodeParamKind::String => json!({ "type": "string" }),
-        NodeParamKind::Color => json!({ "$ref": "#/$defs/color" }),
-        NodeParamKind::Paint => json!({ "$ref": "#/$defs/paint" }),
-        NodeParamKind::Vec2 => json!({ "$ref": "#/$defs/vec2" }),
-        NodeParamKind::ShaderUniforms => json!({ "$ref": "#/$defs/shaderUniforms" }),
-        NodeParamKind::ClipProps => json!({ "$ref": "#/$defs/clipProps" }),
-        NodeParamKind::TextContent => json!({ "$ref": "#/$defs/textContent" }),
-        NodeParamKind::TextLine => json!({ "$ref": "#/$defs/textLine" }),
-        NodeParamKind::TextHighlight => json!({ "$ref": "#/$defs/textHighlight" }),
-        NodeParamKind::FontFeatures => json!({ "$ref": "#/$defs/fontFeatures" }),
-        NodeParamKind::TextStroke => json!({ "$ref": "#/$defs/textStroke" }),
-        NodeParamKind::Enum => enum_schema_json(property),
+        PropertyKind::String => json!({ "type": "string" }),
+        PropertyKind::Color => json!({ "$ref": "#/$defs/color" }),
+        PropertyKind::Paint => json!({ "$ref": "#/$defs/paint" }),
+        PropertyKind::Vec2 => json!({ "$ref": "#/$defs/vec2" }),
+        PropertyKind::ShaderUniforms => json!({ "$ref": "#/$defs/shaderUniforms" }),
+        PropertyKind::ClipProps => json!({ "$ref": "#/$defs/clipProps" }),
+        PropertyKind::TextContent => json!({ "$ref": "#/$defs/textContent" }),
+        PropertyKind::TextLine => json!({ "$ref": "#/$defs/textLine" }),
+        PropertyKind::TextHighlight => json!({ "$ref": "#/$defs/textHighlight" }),
+        PropertyKind::FontFeatures => json!({ "$ref": "#/$defs/fontFeatures" }),
+        PropertyKind::TextStroke => json!({ "$ref": "#/$defs/textStroke" }),
+        PropertyKind::Enum => enum_schema_json(property),
     }
 }
 
-fn enum_schema_json(property: &NodeParamSpec) -> Value {
+fn enum_schema_json(property: &PropertyDef) -> Value {
     let values = property
-        .enum_options
-        .iter()
-        .map(|option| option.name.clone())
-        .collect::<Vec<_>>();
+        .enum_def
+        .map(|enum_def| {
+            enum_def
+                .options
+                .iter()
+                .map(|option| option.name)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     json!({ "type": "string", "enum": values })
 }
 
 /// The schema of an enum `$def`, which also lists the serde aliases the engine accepts.
-fn enum_def_schema_json(property: &NodeParamSpec, enum_def: &lumen_engine::node::EnumDef) -> Value {
+fn enum_def_schema_json(property: &PropertyDef, enum_def: &EnumDef) -> Value {
     let mut schema = enum_schema_json(property);
     if let Some(values) = schema["enum"].as_array_mut() {
         let aliases = enum_def.options.iter().flat_map(|option| option.aliases);
@@ -801,7 +589,7 @@ fn nullable_schema_json(schema: Value) -> Value {
 }
 
 /// `value_schema` with the param's expression, `null` and metadata keywords.
-fn field_schema_json(property: &NodeParamSpec, value_schema: Value) -> Value {
+fn field_schema_json(property: &PropertyDef, default: Option<Value>, value_schema: Value) -> Value {
     let mut schema = if property.accepts_expressions {
         json!({ "anyOf": [value_schema, { "$ref": "#/$defs/expression" }] })
     } else {
@@ -813,28 +601,61 @@ fn field_schema_json(property: &NodeParamSpec, value_schema: Value) -> Value {
     if let Value::Object(object) = &mut schema {
         object.insert("title".to_string(), json!(property.name));
         object.insert("description".to_string(), json!(property.description));
-        object.insert("x-lumen-kind".to_string(), json!(property.kind));
-        if let Some(default_value) = &property.default_value {
-            object.insert("default".to_string(), json!(default_value));
+        object.insert(
+            "x-lumen-kind".to_string(),
+            json!(property_kind_name(property.expected)),
+        );
+        if let Some(default) = default {
+            object.insert("default".to_string(), default);
         }
-        if !property.enum_options.is_empty() {
+        if let Some(enum_def) = property.enum_def
+            && !enum_def.options.is_empty()
+        {
+            let options = enum_def.options.iter().map(|option| {
+                json!({ "name": option.name, "label": option.label, "value": option.value })
+            });
             object.insert(
                 "x-lumen-enumOptions".to_string(),
-                json!(property.enum_options),
+                options.collect::<Vec<_>>().into(),
             );
         }
-        if !property.constraints.is_empty() {
-            object.insert(
-                "x-lumen-constraints".to_string(),
-                json!(property.constraints),
-            );
+        if let Some(constraints) = constraints_json(property) {
+            object.insert("x-lumen-constraints".to_string(), constraints);
         }
     }
     schema
 }
 
-fn numeric_property_schema_json(kind: &str, property: &NodeParamSpec) -> Value {
-    let mut schema = serde_json::Map::new();
+/// The editor hints a property sets, or `None` when it sets none.
+fn constraints_json(property: &PropertyDef) -> Option<Value> {
+    let constraints = &property.constraints;
+    let mut hints = Map::new();
+    if let Some(min) = constraints.min {
+        hints.insert("min".to_string(), json!(min));
+    }
+    if let Some(max) = constraints.max {
+        hints.insert("max".to_string(), json!(max));
+    }
+    if let Some(step) = constraints.step {
+        hints.insert("step".to_string(), json!(step));
+    }
+    if let Some(format) = constraints.format {
+        hints.insert("format".to_string(), json!(format));
+    }
+    if constraints.multiline {
+        hints.insert("multiline".to_string(), json!(true));
+    }
+    if let Some(rows) = constraints.recommended_rows {
+        hints.insert("recommendedRows".to_string(), json!(rows));
+    }
+    if let Some(role) = constraints.role {
+        hints.insert("role".to_string(), json!(role));
+    }
+    (!hints.is_empty()).then_some(Value::Object(hints))
+}
+
+fn numeric_property_schema_json(kind: &str, property: &PropertyDef) -> Value {
+    let mut schema = Map::new();
     schema.insert("type".to_string(), json!(kind));
     if let Some(min) = property.constraints.min {
         schema.insert("minimum".to_string(), json!(min));
@@ -842,184 +663,83 @@ fn numeric_property_schema_json(kind: &str, property: &NodeParamSpec) -> Value {
     if let Some(max) = property.constraints.max {
         schema.insert("maximum".to_string(), json!(max));
     }
-    json!(schema)
+    Value::Object(schema)
 }
 
-fn spec_from_schema(schema: lumen_engine::node::NodeSchemaDef) -> Result<NodeSpec> {
-    let params = param_specs(&schema.properties, &schema.default_properties)?;
-    let default_params = params
-        .iter()
-        .filter_map(|property| Some((property.id.clone(), property.default_value.clone()?)))
-        .collect();
-    Ok(NodeSpec {
-        kind: schema.kind.to_string(),
-        name: schema.name.to_string(),
-        description: schema.description.to_string(),
-        category: category_from_schema(schema.category),
-        inputs: schema
-            .inputs
-            .iter()
-            .map(|input| NodeInputPortSpec {
-                name: input.name.to_string(),
-                kind: port_kind_from_schema(input.kind),
-                optional: input.optional,
-                variadic: input.variadic,
-            })
-            .collect(),
-        outputs: lumen_engine::node::SINGLE_RASTER_OUTPUT
-            .iter()
-            .map(|output| NodeOutputPortSpec {
-                name: output.name.to_string(),
-                kind: port_kind_from_schema(output.kind),
-            })
-            .collect(),
-        params,
-        default_params,
-    })
-}
-
-fn param_specs(
-    properties: &[lumen_engine::node::PropertyDef],
-    defaults: &[(&'static str, lumen_engine::node::PropertyValue)],
-) -> Result<Vec<NodeParamSpec>> {
-    properties
-        .iter()
-        .map(|property| {
-            let default_value = defaults
-                .iter()
-                .find(|(name, _)| *name == property.id)
-                .map(|(_, value)| literal_from_property_value(value, property.enum_def))
-                .transpose()?;
-            let enum_options = property
-                .enum_def
-                .map(|enum_def| {
-                    enum_def
-                        .options
-                        .iter()
-                        .map(|option| NodeEnumOptionSpec {
-                            name: option.name.to_string(),
-                            label: option.label.to_string(),
-                            value: option.value,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            Ok(NodeParamSpec {
-                id: property.id.to_string(),
-                name: property.name.to_string(),
-                kind: property_kind_from_schema(property.expected),
-                description: property.description.to_string(),
-                default_value,
-                accepts_expressions: property.accepts_expressions,
-                nullable: property.nullable,
-                enum_options,
-                constraints: constraints_from_schema(property.constraints),
-            })
-        })
-        .collect()
-}
-
-fn category_from_schema(category: lumen_engine::node::NodeCategory) -> NodeCategory {
+fn category_name(category: NodeCategory) -> &'static str {
     match category {
-        lumen_engine::node::NodeCategory::Compositing => NodeCategory::Compositing,
-        lumen_engine::node::NodeCategory::Processing => NodeCategory::Processing,
-        lumen_engine::node::NodeCategory::Source => NodeCategory::Source,
-        lumen_engine::node::NodeCategory::Output => NodeCategory::Output,
-        lumen_engine::node::NodeCategory::Vector => NodeCategory::Vector,
+        NodeCategory::Compositing => "compositing",
+        NodeCategory::Processing => "processing",
+        NodeCategory::Source => "source",
+        NodeCategory::Output => "output",
+        NodeCategory::Vector => "vector",
     }
 }
 
-fn port_kind_from_schema(kind: lumen_engine::node::PortKind) -> NodePortKind {
+fn port_kind_name(kind: PortKind) -> &'static str {
     match kind {
-        lumen_engine::node::PortKind::Raster => NodePortKind::RasterFrame,
-        lumen_engine::node::PortKind::Vector => NodePortKind::Vector,
+        PortKind::Raster => "raster_frame",
+        PortKind::Vector => "vector",
     }
 }
 
-fn property_kind_from_schema(kind: lumen_engine::node::PropertyKind) -> NodeParamKind {
+fn property_kind_name(kind: PropertyKind) -> &'static str {
     match kind {
-        lumen_engine::node::PropertyKind::Float => NodeParamKind::Float,
-        lumen_engine::node::PropertyKind::Int => NodeParamKind::Int,
-        lumen_engine::node::PropertyKind::Bool => NodeParamKind::Bool,
-        lumen_engine::node::PropertyKind::String => NodeParamKind::String,
-        lumen_engine::node::PropertyKind::Color => NodeParamKind::Color,
-        lumen_engine::node::PropertyKind::Paint => NodeParamKind::Paint,
-        lumen_engine::node::PropertyKind::Vec2 => NodeParamKind::Vec2,
-        lumen_engine::node::PropertyKind::Enum => NodeParamKind::Enum,
-        lumen_engine::node::PropertyKind::ShaderUniforms => NodeParamKind::ShaderUniforms,
-        lumen_engine::node::PropertyKind::ClipProps => NodeParamKind::ClipProps,
-        lumen_engine::node::PropertyKind::TextContent => NodeParamKind::TextContent,
-        lumen_engine::node::PropertyKind::TextLine => NodeParamKind::TextLine,
-        lumen_engine::node::PropertyKind::TextHighlight => NodeParamKind::TextHighlight,
-        lumen_engine::node::PropertyKind::FontFeatures => NodeParamKind::FontFeatures,
-        lumen_engine::node::PropertyKind::TextStroke => NodeParamKind::TextStroke,
+        PropertyKind::Float => "float",
+        PropertyKind::Int => "int",
+        PropertyKind::Bool => "bool",
+        PropertyKind::String => "string",
+        PropertyKind::Color => "color",
+        PropertyKind::Paint => "paint",
+        PropertyKind::Vec2 => "vec2",
+        PropertyKind::Enum => "enum",
+        PropertyKind::ShaderUniforms => "shader_uniforms",
+        PropertyKind::ClipProps => "clip_props",
+        PropertyKind::TextContent => "text_content",
+        PropertyKind::TextLine => "text_line",
+        PropertyKind::TextHighlight => "text_highlight",
+        PropertyKind::FontFeatures => "font_features",
+        PropertyKind::TextStroke => "text_stroke",
     }
 }
 
-fn constraints_from_schema(
-    constraints: lumen_engine::node::PropertyConstraints,
-) -> PropertyConstraintsSpec {
-    PropertyConstraintsSpec {
-        min: constraints.min,
-        max: constraints.max,
-        step: constraints.step,
-        format: constraints.format.map(String::from),
-        multiline: constraints.multiline,
-        recommended_rows: constraints.recommended_rows,
-        role: constraints.role.map(String::from),
-    }
-}
-
-fn literal_from_property_value(
-    property: &lumen_engine::node::PropertyValue,
-    enum_def: Option<&'static lumen_engine::node::EnumDef>,
-) -> Result<NodeLiteralValue> {
-    if let Some(enum_def) = enum_def {
-        let lumen_engine::node::PropertyValue::Int(value) = property else {
-            bail!("enum default param must be stored as an int: {property:?}");
+/// The JSON form of `property`'s entry in `defaults`, which is absent for optional params and
+/// for optional fields of a param kind, since they are unset unless given.
+fn default_json(
+    property: &PropertyDef,
+    defaults: &[(&'static str, PropertyValue)],
+) -> Result<Option<Value>> {
+    let Some((_, value)) = defaults.iter().find(|(name, _)| *name == property.id) else {
+        return Ok(None);
+    };
+    if let Some(enum_def) = property.enum_def {
+        let PropertyValue::Int(value) = value else {
+            bail!("enum default param must be stored as an int: {value:?}");
         };
         let option = enum_def
             .options
             .iter()
             .find(|option| option.value == *value)
             .with_context(|| format!("enum default `{value}` not found in `{}`", enum_def.name))?;
-        return Ok(NodeLiteralValue::String(option.name.to_string()));
+        return Ok(Some(json!(option.name)));
     }
 
-    match property {
-        lumen_engine::node::PropertyValue::Float(value) => Ok(NodeLiteralValue::Float(*value)),
-        lumen_engine::node::PropertyValue::Int(value) => Ok(NodeLiteralValue::Int(*value)),
-        lumen_engine::node::PropertyValue::Bool(value) => Ok(NodeLiteralValue::Bool(*value)),
-        lumen_engine::node::PropertyValue::String(value) => {
-            Ok(NodeLiteralValue::String(value.clone()))
-        }
-        lumen_engine::node::PropertyValue::Color(value) => Ok(NodeLiteralValue::Color(*value)),
-        lumen_engine::node::PropertyValue::Paint(value) => {
-            Ok(NodeLiteralValue::Paint(value.to_json_value()))
-        }
-        lumen_engine::node::PropertyValue::Vec2(value) => Ok(NodeLiteralValue::Vec2(*value)),
-        lumen_engine::node::PropertyValue::ShaderUniforms(value) => {
-            Ok(NodeLiteralValue::ShaderUniforms(value.to_json_value()))
-        }
-        lumen_engine::node::PropertyValue::ClipProps(value) => {
-            Ok(NodeLiteralValue::ClipProps(value.to_json_value()))
-        }
-        lumen_engine::node::PropertyValue::TextContent(value) => {
-            Ok(NodeLiteralValue::TextContent(value.to_json_value()))
-        }
-        lumen_engine::node::PropertyValue::TextLine(value) => {
-            Ok(NodeLiteralValue::TextLine(Value::Object(value.to_json())))
-        }
-        lumen_engine::node::PropertyValue::TextHighlight(value) => Ok(
-            NodeLiteralValue::TextHighlight(Value::Object(value.to_json())),
-        ),
-        lumen_engine::node::PropertyValue::FontFeatures(value) => {
-            Ok(NodeLiteralValue::FontFeatures(value.to_json_value()))
-        }
-        lumen_engine::node::PropertyValue::TextStroke(value) => {
-            Ok(NodeLiteralValue::TextStroke(Value::Object(value.to_json())))
-        }
-    }
+    Ok(Some(match value {
+        PropertyValue::Float(value) => json!(value),
+        PropertyValue::Int(value) => json!(value),
+        PropertyValue::Bool(value) => json!(value),
+        PropertyValue::String(value) => json!(value),
+        PropertyValue::Color(value) => json!(value),
+        PropertyValue::Paint(value) => value.to_json_value(),
+        PropertyValue::Vec2(value) => json!(value),
+        PropertyValue::ShaderUniforms(value) => value.to_json_value(),
+        PropertyValue::ClipProps(value) => value.to_json_value(),
+        PropertyValue::TextContent(value) => value.to_json_value(),
+        PropertyValue::TextLine(value) => Value::Object(value.to_json()),
+        PropertyValue::TextHighlight(value) => Value::Object(value.to_json()),
+        PropertyValue::FontFeatures(value) => value.to_json_value(),
+        PropertyValue::TextStroke(value) => Value::Object(value.to_json()),
+    }))
 }
 
 fn write_if_changed(path: &Path, content: &str) -> Result<()> {
@@ -1031,475 +751,4 @@ fn write_if_changed(path: &Path, content: &str) -> Result<()> {
         return Ok(());
     }
     fs::write(path, content).with_context(|| format!("failed to write `{}`", path.display()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SOURCE_ID: i64 = 100;
-    const OUTPUT_ID: i64 = 101;
-
-    fn composition(node: Value, connections: Vec<Value>, background_color: Value) -> Value {
-        json!({
-            "timeline": { "fps": 30, "duration_frames": 10 },
-            "render_settings": { "width": 16, "height": 16, "background_color": background_color },
-            "nodes": [
-                node,
-                { "id": SOURCE_ID, "type": "background" },
-                { "id": OUTPUT_ID, "type": "media_output" }
-            ],
-            "connections": connections
-        })
-    }
-
-    /// A renderable composition containing `spec` with `params`, its required inputs fed by a
-    /// background node, and its output wired to the media output.
-    fn composition_with_node(spec: &NodeSpec, params: Value) -> Value {
-        let mut connections = spec
-            .inputs
-            .iter()
-            .filter(|input| !input.optional)
-            .map(|input| json!({ "from_node": SOURCE_ID, "to_node": 1, "to_port": input.name }))
-            .collect::<Vec<_>>();
-        connections.push(json!({ "from_node": 1, "to_node": OUTPUT_ID, "to_port": "source" }));
-        composition(
-            json!({ "id": 1, "type": spec.kind, "params": params }),
-            connections,
-            json!([0, 0, 0, 255]),
-        )
-    }
-
-    fn schema_validator() -> jsonschema::Validator {
-        let artifacts = render_definition_artifacts().unwrap();
-        let schema: Value = serde_json::from_str(&artifacts.composition_schema_json).unwrap();
-        jsonschema::validator_for(&schema).unwrap()
-    }
-
-    #[test]
-    fn expression_support_matches_engine_parsing() {
-        let manifest = meta_manifest().unwrap();
-        let validator = schema_validator();
-        for spec in manifest.node_specs.values() {
-            for param in &spec.params {
-                let label = format!("{}.{}", spec.kind, param.id);
-                // Optional params have no default to try.
-                if let Some(default_value) = &param.default_value {
-                    let literal =
-                        composition_with_node(spec, json!({ param.id.clone(): default_value }));
-                    lumen_engine::json::parse_value(&literal)
-                        .unwrap_or_else(|error| panic!("{label} literal should parse: {error:#}"));
-                    assert!(
-                        validator.is_valid(&literal),
-                        "{label} literal should validate"
-                    );
-                }
-
-                let expression = composition_with_node(spec, json!({ param.id.clone(): "=1" }));
-                let engine_accepts = lumen_engine::json::parse_value(&expression).is_ok();
-                assert_eq!(engine_accepts, param.accepts_expressions, "{label} engine");
-                assert_eq!(
-                    validator.is_valid(&expression),
-                    param.accepts_expressions,
-                    "{label} schema"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn text_kind_schemas_match_engine_parsing() {
-        use lumen_engine::node::{
-            Delegated,
-            source::text_content::{
-                TextContent, TextContentDelegate, TextHighlightDelegate, TextLineDelegate,
-                TextSpanDelegate, TextStrokeDelegate,
-            },
-        };
-
-        let artifacts = render_definition_artifacts().unwrap();
-        let schema: Value = serde_json::from_str(&artifacts.composition_schema_json).unwrap();
-        let validator = |def: &str| {
-            jsonschema::validator_for(&json!({
-                "$defs": schema["$defs"].clone(),
-                "$ref": format!("#/$defs/{def}")
-            }))
-            .unwrap()
-        };
-        let content = validator("textContent");
-
-        for (def, value) in [
-            (
-                "textContent",
-                TextContent::default().into_delegate().to_json_value(),
-            ),
-            (
-                "textSpan",
-                Value::Object(TextSpanDelegate::default().to_json()),
-            ),
-            (
-                "textLine",
-                Value::Object(TextLineDelegate::default().to_json()),
-            ),
-            (
-                "textHighlight",
-                Value::Object(TextHighlightDelegate::default().to_json()),
-            ),
-            (
-                "textStroke",
-                Value::Object(TextStrokeDelegate::default().to_json()),
-            ),
-        ] {
-            assert!(validator(def).is_valid(&value), "{def} default: {value}");
-        }
-
-        let example = json!([
-            { "text": "Hello, " },
-            {
-                "text": "=prop('name')",
-                "font_family": "Inter",
-                "font_size": 48.0,
-                "font_weight": "=frame * 10",
-                "font_style": "italic",
-                "letter_spacing": -0.5,
-                "font_features": { "liga": "=frame % 2", "tnum": 1 },
-                "color": [255, 0, 0, 255],
-                "underline": {
-                    "style": "wavy",
-                    "paint": "=rgb(0, 0, 255)",
-                    "thickness": 2.0,
-                    "offset": 3.0,
-                    "extent": "=vec2(0, frame / 24)"
-                },
-                "strikethrough": null,
-                "highlight": {
-                    "paint": [255, 255, 0, 128],
-                    "padding": [4.0, 2.0],
-                    "radius": 3.0,
-                    "extent": [0.0, 1.0]
-                },
-                "stroke": { "paint": [0, 0, 0, 255], "width": "=frame / 4", "align": "center" }
-            }
-        ]);
-        let parsed = TextContentDelegate::from_json_value(&example).unwrap();
-        assert_eq!(parsed.to_json_value(), example);
-        assert!(content.is_valid(&example));
-
-        let enum_expressions = json!([{
-            "text": "a",
-            "font_style": "=frame % 3",
-            "underline": { "style": "=1" }
-        }]);
-        assert!(content.is_valid(&enum_expressions));
-        assert!(TextContentDelegate::from_json_value(&enum_expressions).is_ok());
-
-        for invalid in [
-            json!(5),
-            json!([{ "text": "a", "font_wieght": 700 }]),
-            json!([{ "text": "a", "font_size": null }]),
-            json!([{ "font_size": 12 }]),
-            json!([{ "text": "a", "font_style": "bold" }]),
-            json!([{ "text": "a", "underline": "=1" }]),
-            json!([{ "text": "a", "highlight": { "radius": "big" } }]),
-            json!([{ "text": "a", "font_features": "=1" }]),
-            json!([{ "text": "a", "font_features": { "tnu": 1 } }]),
-            json!([{ "text": "a", "font_features": { "tnum": -1 } }]),
-            json!([{ "text": "a", "font_features": { "tnum": 1.5 } }]),
-            json!([{ "text": "a", "font_features": { "tnum": 4294967296u64 } }]),
-            json!([{ "text": "a", "font_features": { "liga\n": 1 } }]),
-            json!([{ "text": "a", "stroke": { "align": "inside" } }]),
-        ] {
-            assert!(!content.is_valid(&invalid), "{invalid}");
-            assert!(
-                TextContentDelegate::from_json_value(&invalid).is_err(),
-                "{invalid}"
-            );
-        }
-    }
-
-    #[test]
-    fn paint_shader_uniform_and_clip_props_schemas_match_engine_parsing() {
-        let manifest = meta_manifest().unwrap();
-        let validator = schema_validator();
-        let check = |label: &str, composition: Value, valid: bool| {
-            assert_eq!(validator.is_valid(&composition), valid, "{label} schema");
-            assert_eq!(
-                lumen_engine::json::parse_value(&composition).is_ok(),
-                valid,
-                "{label} engine"
-            );
-        };
-
-        let stops = json!([[0.0, [255, 0, 0]], { "offset": 1.0, "color": "#0000ff" }]);
-        let gradient = |field: &str, value: Value| {
-            let mut paint = json!({ "type": "linear", "stops": stops });
-            paint[field] = value;
-            paint
-        };
-        let mut paints = vec![
-            (json!([255, 0, 0]), true),
-            (json!([255, 0, 0, 128]), true),
-            (json!("#ff0000"), true),
-            (json!("#ff000080"), true),
-            (json!("=rgb(255, 0, 0)"), true),
-            (
-                json!({
-                    "type": "radial_gradient",
-                    "units": "user_space",
-                    "spread": "reflect",
-                    "interpolation": "linear_srgb",
-                    "start": [0, 0],
-                    "end": [1, 0],
-                    "center": [0.5, 0.5],
-                    "radius": [0.25, 0.5],
-                    "angle": 90,
-                    "stops": [{ "offset": -0.5, "color": [0, 0, 0, 255] }, [1.5, "#ffffff"]]
-                }),
-                true,
-            ),
-            (gradient("radius", json!(0.25)), true),
-            (json!("red"), false),
-            (json!("#ff00"), false),
-            (json!([255, 0]), false),
-            (json!([256, 0, 0]), false),
-            (json!({ "stops": stops }), false),
-            (json!({ "type": "linear" }), false),
-            (gradient("stops", json!([])), false),
-            (gradient("type", json!("diamond")), false),
-            (gradient("units", json!("user")), false),
-            (gradient("spread", json!("mirror")), false),
-            (gradient("interpolation", json!("oklab")), false),
-            (gradient("radius", json!("big")), false),
-            (gradient("radius", json!([1])), false),
-            (gradient("start", json!("=vec2(0, 0)")), false),
-            (gradient("angle", json!("=frame")), false),
-            (gradient("stops", json!([[0]])), false),
-            (gradient("stops", json!([[0, [0, 0, 0], 1]])), false),
-            (gradient("stops", json!([["0", [0, 0, 0]]])), false),
-            (gradient("stops", json!([{ "color": [0, 0, 0] }])), false),
-            (
-                gradient("stops", json!([{ "offset": 0, "color": "=frame" }])),
-                false,
-            ),
-            (
-                gradient(
-                    "stops",
-                    json!([{ "offset": 0, "color": [0, 0, 0], "x": 1 }]),
-                ),
-                false,
-            ),
-        ];
-        for (field, values) in [
-            (
-                "type",
-                &[
-                    "linear",
-                    "linear_gradient",
-                    "radial",
-                    "radial_gradient",
-                    "conic",
-                    "conic_gradient",
-                ][..],
-            ),
-            (
-                "units",
-                &["object_bounding_box", "user_space", "userSpaceOnUse"],
-            ),
-            ("spread", &["pad", "repeat", "reflect"]),
-            ("interpolation", &["srgb", "linear_srgb", "linear"]),
-        ] {
-            paints.extend(
-                values
-                    .iter()
-                    .map(|value| (gradient(field, json!(value)), true)),
-            );
-        }
-        for (paint, valid) in paints {
-            let composition = composition_with_node(
-                &manifest.node_specs["shape"],
-                json!({ "fill_paint": paint }),
-            );
-            check(&paint.to_string(), composition, valid);
-        }
-
-        for (uniforms, valid) in [
-            (
-                json!({
-                    "a": 1,
-                    "b": [1, "=frame"],
-                    "c": [1, 2, 3],
-                    "d": [1, 2, 3, "=frame"],
-                    "e": "=vec2(1, 2)",
-                    "f": "#ff0000",
-                    "g": "#ff000080"
-                }),
-                true,
-            ),
-            (json!({ "a": true }), false),
-            (json!({ "a": [1] }), false),
-            (json!({ "a": [1, 2, 3, 4, 5] }), false),
-            (json!({ "a": [1, "x"] }), false),
-            (json!({ "a": [1, [2]] }), false),
-            (json!({ "a": "red" }), false),
-            (json!({ "a": "#ff00" }), false),
-            (json!([1, 2]), false),
-        ] {
-            let composition = composition_with_node(
-                &manifest.node_specs["wgsl_shader"],
-                json!({ "uniforms": uniforms }),
-            );
-            check(&uniforms.to_string(), composition, valid);
-        }
-
-        let demo: Value =
-            serde_json::from_str(include_str!("../../local/demo/clips.json")).unwrap();
-        let clip = demo["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .position(|node| node["type"] == "clip")
-            .unwrap();
-        for (props, valid) in [
-            (
-                json!({ "title": "=frame", "subtitle": "==x", "accent": [255, 0, 0], "index": 2 }),
-                true,
-            ),
-            (json!({ "accent": "#ff0000", "index": "=frame" }), true),
-            (json!({ "index": true }), false),
-            (json!({ "index": {} }), false),
-            (json!({ "title": null }), false),
-            (json!([1]), false),
-        ] {
-            let mut composition = demo.clone();
-            composition["nodes"][clip]["params"]["props"] = props.clone();
-            check(&props.to_string(), composition, valid);
-        }
-    }
-
-    #[test]
-    fn compositions_schema_matches_engine_parsing() {
-        let validator = schema_validator();
-        let demo: Value =
-            serde_json::from_str(include_str!("../../local/demo/clips.json")).unwrap();
-        assert!(validator.is_valid(&demo), "clips demo should validate");
-        lumen_engine::json::parse_value(&demo).unwrap();
-
-        let with_template = |template: Value| {
-            let mut value = demo.clone();
-            value["compositions"]["title_card"] = template;
-            value
-        };
-        let template = &demo["compositions"]["title_card"];
-        for (patch, valid) in [
-            (json!({}), true),
-            (
-                json!({ "props": { "n": { "type": "number", "default": "x" } } }),
-                false,
-            ),
-            (json!({ "props": { "n": { "type": "matrix" } } }), false),
-            (json!({ "functions": {} }), false),
-        ] {
-            let mut template = template.clone();
-            for (key, value) in patch.as_object().unwrap() {
-                template[key] = value.clone();
-            }
-            let composition = with_template(template);
-            assert_eq!(validator.is_valid(&composition), valid, "{patch}");
-            assert_eq!(
-                lumen_engine::json::parse_value(&composition).is_ok(),
-                valid,
-                "{patch}"
-            );
-        }
-    }
-
-    #[test]
-    fn timeline_schema_matches_engine_parsing() {
-        let manifest = meta_manifest().unwrap();
-        let validator = schema_validator();
-        let with_timeline = |timeline: Value| {
-            let mut value = composition_with_node(&manifest.node_specs["exposure"], json!({}));
-            value["timeline"] = timeline;
-            value
-        };
-
-        for (timeline, valid) in [
-            (json!({ "duration_frames": 10 }), true),
-            (json!({ "fps": 24, "duration_frames": 10.0 }), true),
-            (json!({ "fps": 0, "duration_frames": 10 }), false),
-            (json!({ "fps": -30, "duration_frames": 10 }), false),
-            (json!({ "fps": 30, "duration_frames": 0 }), false),
-            (
-                json!({ "fps": 30, "duration_frames": 4294967296u64 }),
-                false,
-            ),
-        ] {
-            let composition = with_timeline(timeline.clone());
-            assert_eq!(validator.is_valid(&composition), valid, "{timeline}");
-            assert_eq!(
-                lumen_engine::json::parse_value(&composition).is_ok(),
-                valid,
-                "{timeline}"
-            );
-        }
-    }
-
-    #[test]
-    fn schema_accepts_expressions_only_for_expression_params() {
-        let manifest = meta_manifest().unwrap();
-        let validator = schema_validator();
-        let node =
-            |kind: &str, params: Value| composition_with_node(&manifest.node_specs[kind], params);
-
-        assert!(validator.is_valid(&node("exposure", json!({ "exposure": "=frame * 0.1" }))));
-        assert!(validator.is_valid(&node("text", json!({ "position": "=vec2(frame, 0)" }))));
-        // `media_in.kind` is an `i64`-backed enum, so it evaluates expressions.
-        assert!(validator.is_valid(&node("media_in", json!({ "kind": "=1" }))));
-
-        assert!(!validator.is_valid(&node("exposure", json!({ "exposure": "frame" }))));
-        assert!(validator.is_valid(&node("text", json!({ "color": "=rgb(255, 0, 0)" }))));
-        assert!(validator.is_valid(&node("shape", json!({ "fill_paint": "=#ff0000" }))));
-        assert!(!validator.is_valid(&node("text", json!({ "position": ["=frame", 0] }))));
-        assert!(!validator.is_valid(&node("transform", json!({ "sampling": "=1" }))));
-        // `alpha_premultiply.mode` decides output metadata, so it is literal-only.
-        let mode = manifest.node_specs["alpha_premultiply"]
-            .params
-            .iter()
-            .find(|param| param.id == "mode")
-            .unwrap();
-        assert!(!mode.accepts_expressions);
-        let expression_mode = node("alpha_premultiply", json!({ "mode": "='premultiply'" }));
-        assert!(!validator.is_valid(&expression_mode));
-        assert!(lumen_engine::json::parse_value(&expression_mode).is_err());
-        let escaped_mode = node("alpha_premultiply", json!({ "mode": "==premultiply" }));
-        assert!(validator.is_valid(&escaped_mode));
-        assert!(lumen_engine::json::parse_value(&escaped_mode).is_ok());
-        let gradient_with_expression_stop = json!({
-            "type": "linear",
-            "stops": [{ "offset": 0, "color": "=frame" }]
-        });
-        assert!(!validator.is_valid(&node(
-            "text",
-            json!({ "color": gradient_with_expression_stop })
-        )));
-        for (signature, valid) in [
-            ("rise(start)", true),
-            ("pop( )", true),
-            ("rise(start", false),
-        ] {
-            let mut value = node("shape", json!({ "position": "=vec2(0, 0)" }));
-            value["functions"] = json!({ signature: "vec2(0, 0)" });
-            assert_eq!(validator.is_valid(&value), valid, "{signature}");
-            assert_eq!(
-                lumen_engine::json::parse_value(&value).is_ok(),
-                valid,
-                "{signature}"
-            );
-        }
-        assert!(!validator.is_valid(&composition(
-            json!({ "id": 1, "type": "background" }),
-            vec![json!({ "from_node": 1, "to_node": OUTPUT_ID, "to_port": "source" })],
-            json!("=frame"),
-        )));
-    }
 }

@@ -18,10 +18,10 @@ metal = ["lumen-engine/metal", "lumen-ffmpeg/metal", "lumen-gpu/metal"]
 anyhow = "1.0.101"
 pollster = "1.0.1"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
-lumen-engine = { workspace = true, features = ["ffmpeg", "image", "json"] }
+lumen-engine = { workspace = true, features = ["ffmpeg", "image"] }
 lumen-gpu = { workspace = true }
 lumen-ffmpeg = { workspace = true }
-lumen-text = { workspace = true, features = ["msdf"] }
+lumen-text = { workspace = true }
 
 [[bin]]
 name = "lumen-bench-composition"

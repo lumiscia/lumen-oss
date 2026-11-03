@@ -2,8 +2,6 @@
 //! by `packages/lumen-shared/test/expression.test.ts`; regenerate it with
 //! `just generate-expression-fixture`.
 
-#![cfg(feature = "json")]
-
 use std::collections::BTreeMap;
 
 use lumen_engine::{

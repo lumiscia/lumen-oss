@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use lumen_engine::{
     error::MediaError,
-    media::{
-        CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
-    },
+    media::{CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore},
 };
 
 #[derive(Debug, Default)]
@@ -15,15 +13,14 @@ pub enum BenchmarkMediaStore {
 }
 
 impl MediaStore for BenchmarkMediaStore {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
+    fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
         match self {
-            Self::Image(image) if image.id() == source => Some(Box::new(image.clone())),
-            Self::Empty | Self::Image(_) => None,
+            Self::Image(image) if image.id() == source => Ok(Box::new(image.clone())),
+            Self::Empty | Self::Image(_) => Err(MediaError::source_not_found(
+                source,
+                "not the benchmark's image",
+            )),
         }
-    }
-
-    fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
     }
 }
 
@@ -99,8 +96,8 @@ mod tests {
     #[test]
     fn store_only_resolves_its_registered_image() {
         let store = BenchmarkMediaStore::Image(InMemoryImage::checkerboard("small", 2, 2));
-        assert!(store.get_image_resolver("small").is_some());
-        assert!(store.get_image_resolver("missing").is_none());
-        assert!(store.get_video_resolver("small").is_none());
+        assert!(store.get_image_resolver("small").is_ok());
+        assert!(store.get_image_resolver("missing").is_err());
+        assert!(store.get_video_resolver("small").is_err());
     }
 }

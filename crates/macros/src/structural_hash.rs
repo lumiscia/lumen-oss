@@ -11,17 +11,17 @@ pub(crate) fn expand(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
             .filter_map(|(index, field)| {
                 let mut skip = false;
                 for attr in &field.attrs {
-                    if attr.path().is_ident("structural_hash") {
-                        if let Err(error) = attr.parse_nested_meta(|meta| {
+                    if attr.path().is_ident("structural_hash")
+                        && let Err(error) = attr.parse_nested_meta(|meta| {
                             if meta.path.is_ident("skip") {
                                 skip = true;
                                 Ok(())
                             } else {
                                 Err(meta.error("expected `skip`"))
                             }
-                        }) {
-                            return Some(Err(error));
-                        }
+                        })
+                    {
+                        return Some(Err(error));
                     }
                 }
                 if skip {

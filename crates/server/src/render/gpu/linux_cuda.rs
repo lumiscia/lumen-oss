@@ -119,7 +119,7 @@ pub(super) fn render_project_mp4_cuda(
             .map_err(|err| RenderError {
             code: "encode_failed",
             message: err.to_string(),
-            retryable: true,
+            retryable: false,
         })?;
 
     tracing::info!(
@@ -169,7 +169,7 @@ pub(super) fn render_project_mp4_cuda(
             .copy_rendered_frame_to_cuda()
             .map_err(|err| RenderError {
                 code: "encode_failed",
-                message: format!("failed to copy Vulkan frame into CUDA frame: {err}"),
+                message: format!("failed to copy Vulkan frame into CUDA at frame {frame}: {err}"),
                 retryable: true,
             })?;
         timing.cuda_copy = started.elapsed();
@@ -180,7 +180,7 @@ pub(super) fn render_project_mp4_cuda(
             .write_gpu_frame(&target.video_input(&frame_ref))
             .map_err(|err| RenderError {
                 code: "encode_failed",
-                message: err.to_string(),
+                message: format!("encode failed at frame {frame}: {err}"),
                 retryable: true,
             })?;
         timing.encode_write = started.elapsed();

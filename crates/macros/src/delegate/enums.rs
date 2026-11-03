@@ -159,7 +159,6 @@ pub(crate) fn expand_enum_delegate(
     let property_kind = property_kind_tokens(kind);
     let enum_def_method: Option<proc_macro2::TokenStream> = is_enum_kind.then(|| {
         quote! {
-            #[cfg(any(feature = "json", feature = "metadata"))]
             fn enum_def() -> ::core::option::Option<&'static ::lumen_engine::node::EnumDef> {
                 ::core::option::Option::Some(<#ident as ::lumen_engine::node::NodeEnum>::enum_def())
             }
@@ -190,8 +189,7 @@ pub(crate) fn expand_enum_delegate(
             Self::Expr(deferred) => ::lumen_engine::node::DelegateEvaluable::has_expressions(deferred)
         ));
         // Enum names deserialize to the other variants; expressions come from properties.
-        let skip_deserializing =
-            is_enum_kind.then(|| quote!(#[cfg_attr(feature = "json", serde(skip_deserializing))]));
+        let skip_deserializing = is_enum_kind.then(|| quote!(#[serde(skip_deserializing)]));
         delegate_variants
             .push(quote!(#skip_deserializing Expr(::lumen_engine::node::Deferred<#ident>)));
         eval_matches.push(quote!(
@@ -226,7 +224,7 @@ pub(crate) fn expand_enum_delegate(
                     match deferred {
                         ::lumen_engine::node::Deferred::Value(value) => Ok(*value),
                         ::lumen_engine::node::Deferred::Expr(expr) => {
-                            let value = ::lumen_engine::node::eval_number(expr, ctx)? as i64;
+                            let value = ::lumen_engine::node::eval_int(expr, ctx)?;
                             Self::from_i64(value).ok_or_else(|| {
                                 ::lumen_engine::error::LumenError::evaluate(::std::format!(
                                     "{value} is not a value of {}",
@@ -339,8 +337,7 @@ pub(crate) fn expand_enum_delegate(
     };
 
     Ok(quote! {
-        #[derive(Debug, Clone, ::lumen_engine::fingerprint::StructuralHash)]
-        #[cfg_attr(feature = "json", derive(::serde::Deserialize))]
+        #[derive(Debug, Clone, ::lumen_engine::fingerprint::StructuralHash, ::serde::Deserialize)]
         pub enum #delegate_ident {
             #(#delegate_variants,)*
         }

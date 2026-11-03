@@ -20,7 +20,6 @@ use etagere::{AllocId, size2};
 use swash::scale::Source;
 
 mod gpu;
-#[cfg(feature = "msdf")]
 mod msdf;
 pub use gpu::*;
 
@@ -28,8 +27,6 @@ pub use gpu::*;
 pub const TEXT_SHADER: &str = include_str!("shaders/text.wgsl");
 pub const DEFAULT_FONT_FAMILY: &str = "Roboto";
 pub const ROBOTO_REGULAR_BYTES: &[u8] = include_bytes!("../assets/roboto/Roboto-Regular.ttf");
-/// Whether [`TextRenderMode::Msdf`] is compiled in.
-pub const MSDF_SUPPORTED: bool = cfg!(feature = "msdf");
 /// Em size, in atlas texels, of the coarsest distance fields.
 pub const MSDF_EM_SIZE: f32 = 48.0;
 /// Em size, in atlas texels, of the finest distance fields.
@@ -62,8 +59,7 @@ pub enum TextRenderMode {
     Raster,
     /// Outline glyphs share distance fields across sizes, regenerated at a
     /// finer resolution for each doubling of size past [`MSDF_EM_SIZE`] × 6.
-    /// Colour, bitmap and overlapping-contour glyphs, and every glyph in builds
-    /// without the `msdf` feature, are rasterized.
+    /// Colour, bitmap and overlapping-contour glyphs are rasterized.
     Msdf,
     /// [`Self::Raster`] below [`MSDF_AUTO_MIN_SIZE`] and [`Self::Msdf`] from it.
     Auto,
@@ -1320,7 +1316,6 @@ impl TextSystem {
             AtlasKey::RasterStroke(key, half_width) => {
                 self.render_stroke(key, f32::from_bits(half_width), max_size)
             }
-            #[cfg(feature = "msdf")]
             AtlasKey::Msdf(key) => msdf::render_msdf_glyph(
                 &mut self.font_system,
                 &mut self.swash_cache,
@@ -1328,7 +1323,6 @@ impl TextSystem {
                 None,
                 max_size,
             ),
-            #[cfg(feature = "msdf")]
             AtlasKey::Sdf(key, tier) => msdf::render_msdf_glyph(
                 &mut self.font_system,
                 &mut self.swash_cache,
@@ -2213,11 +2207,9 @@ enum AtlasKey {
     /// A raster glyph's outline stroked to each side by the half width whose bits
     /// [`stroke_width_key`] gives.
     RasterStroke(CacheKey, u32),
-    #[cfg(feature = "msdf")]
     Msdf(CacheKey),
     /// A true distance field, which strokes are drawn from, with the range tier from
     /// `msdf::stroke_key`.
-    #[cfg(feature = "msdf")]
     Sdf(CacheKey, u32),
 }
 
@@ -2226,7 +2218,6 @@ impl AtlasKey {
     fn cache_key(self) -> CacheKey {
         match self {
             Self::Raster(key) | Self::RasterStroke(key, _) => key,
-            #[cfg(feature = "msdf")]
             Self::Msdf(key) | Self::Sdf(key, _) => key,
         }
     }
@@ -2352,20 +2343,15 @@ impl GlyphAtlas {
     fn key_for(&mut self, key: GlyphKey, mode: TextRenderMode) -> AtlasKey {
         let raster = AtlasKey::Raster(key.0);
         let oversized = self.mark_used(&raster, true);
-        #[cfg(feature = "msdf")]
-        {
-            let msdf = AtlasKey::Msdf(msdf::msdf_key(key.0));
-            let wanted = match mode {
-                TextRenderMode::Raster => false,
-                TextRenderMode::Msdf => true,
-                TextRenderMode::Auto => f32::from_bits(key.0.font_size_bits) >= MSDF_AUTO_MIN_SIZE,
-            } || oversized;
-            if wanted && !self.mark_used(&msdf, false) {
-                return msdf;
-            }
+        let msdf = AtlasKey::Msdf(msdf::msdf_key(key.0));
+        let wanted = match mode {
+            TextRenderMode::Raster => false,
+            TextRenderMode::Msdf => true,
+            TextRenderMode::Auto => f32::from_bits(key.0.font_size_bits) >= MSDF_AUTO_MIN_SIZE,
+        } || oversized;
+        if wanted && !self.mark_used(&msdf, false) {
+            return msdf;
         }
-        #[cfg(not(feature = "msdf"))]
-        let _ = (mode, oversized);
         raster
     }
 
@@ -2375,17 +2361,12 @@ impl GlyphAtlas {
     fn stroke_key_for(&mut self, key: GlyphKey, mode: TextRenderMode, half_width: f32) -> AtlasKey {
         let raster = AtlasKey::RasterStroke(key.0, stroke_width_key(half_width));
         let oversized = self.mark_used(&raster, true);
-        #[cfg(feature = "msdf")]
-        {
-            let (field, tier) = msdf::stroke_key(key.0, half_width);
-            let field = AtlasKey::Sdf(field, tier);
-            let wanted = matches!(self.key_for(key, mode), AtlasKey::Msdf(_)) || oversized;
-            if wanted && !self.mark_used(&field, false) {
-                return field;
-            }
+        let (field, tier) = msdf::stroke_key(key.0, half_width);
+        let field = AtlasKey::Sdf(field, tier);
+        let wanted = matches!(self.key_for(key, mode), AtlasKey::Msdf(_)) || oversized;
+        if wanted && !self.mark_used(&field, false) {
+            return field;
         }
-        #[cfg(not(feature = "msdf"))]
-        let _ = (mode, oversized);
         raster
     }
 
@@ -2518,7 +2499,6 @@ impl PlacedGlyph {
             )
         };
         let flags = match key {
-            #[cfg(feature = "msdf")]
             AtlasKey::Sdf(_, tier) => tier << GLYPH_RANGE_SHIFT,
             _ => 0,
         };
@@ -2540,7 +2520,6 @@ enum RenderedGlyph {
     Pixels(GlyphPixels),
     Empty,
     Oversized,
-    #[cfg_attr(not(feature = "msdf"), allow(dead_code))]
     RasterOnly,
 }
 
@@ -3625,7 +3604,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "msdf")]
     mod msdf_tests {
         use super::*;
         use crate::msdf;

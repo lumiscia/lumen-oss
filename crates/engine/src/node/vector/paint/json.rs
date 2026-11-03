@@ -1,12 +1,8 @@
-#[cfg(feature = "json")]
 use serde::Deserialize;
-#[cfg(feature = "json")]
 use serde_json::Value;
 
-#[cfg(feature = "json")]
 use super::types::{GradientPaint, GradientStop, Paint};
 
-#[cfg(feature = "json")]
 pub fn from_json_value(value: &Value) -> Result<Paint, String> {
     if let Some(color) = crate::json::parse_color(value) {
         return Ok(Paint::solid(color));
@@ -17,7 +13,6 @@ pub fn from_json_value(value: &Value) -> Result<Paint, String> {
         .map_err(|error| format!("expected paint: {error}"))
 }
 
-#[cfg(feature = "json")]
 pub fn to_json_value(paint: &Paint) -> Value {
     match paint {
         Paint::SolidColor(r, g, b, a) => Value::Array(
@@ -31,7 +26,6 @@ pub fn to_json_value(paint: &Paint) -> Value {
     }
 }
 
-#[cfg(feature = "json")]
 #[derive(serde::Serialize)]
 struct GradientPaintJsonRef<'a> {
     #[serde(rename = "type")]
@@ -47,7 +41,6 @@ struct GradientPaintJsonRef<'a> {
     stops: &'a [GradientStop],
 }
 
-#[cfg(feature = "json")]
 #[derive(serde::Deserialize)]
 struct GradientPaintJsonOwned {
     #[serde(rename = "type")]
@@ -72,7 +65,6 @@ struct GradientPaintJsonOwned {
     stops: Vec<GradientStop>,
 }
 
-#[cfg(feature = "json")]
 impl<'a> From<&'a GradientPaint> for GradientPaintJsonRef<'a> {
     fn from(gradient: &'a GradientPaint) -> Self {
         Self {
@@ -90,7 +82,6 @@ impl<'a> From<&'a GradientPaint> for GradientPaintJsonRef<'a> {
     }
 }
 
-#[cfg(feature = "json")]
 impl From<GradientPaintJsonOwned> for GradientPaint {
     fn from(value: GradientPaintJsonOwned) -> Self {
         let mut stops = value.stops;
@@ -110,22 +101,18 @@ impl From<GradientPaintJsonOwned> for GradientPaint {
     }
 }
 
-#[cfg(feature = "json")]
 fn default_end() -> [f32; 2] {
     [1.0, 0.0]
 }
 
-#[cfg(feature = "json")]
 fn default_center() -> [f32; 2] {
     [0.5, 0.5]
 }
 
-#[cfg(feature = "json")]
 fn default_radius() -> [f32; 2] {
     [0.5, 0.5]
 }
 
-#[cfg(feature = "json")]
 fn deserialize_radius<'de, D>(deserializer: D) -> Result<[f32; 2], D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -144,7 +131,6 @@ where
     }
 }
 
-#[cfg(feature = "json")]
 fn deserialize_stops<'de, D>(deserializer: D) -> Result<Vec<GradientStop>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -166,7 +152,6 @@ where
 }
 
 /// Parses `[offset, color]` or `{ "offset": number, "color": color }`.
-#[cfg(feature = "json")]
 fn parse_stop(value: &Value) -> Result<GradientStop, String> {
     let (offset, color) = match value {
         Value::Array(array) => match array.as_slice() {
@@ -198,7 +183,7 @@ fn parse_stop(value: &Value) -> Result<GradientStop, String> {
     })
 }
 
-#[cfg(all(test, feature = "json"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

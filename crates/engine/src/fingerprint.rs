@@ -111,7 +111,7 @@ impl<K: StructuralHash, V: StructuralHash> StructuralHash for BTreeMap<K, V> {
 impl<K: StructuralHash + Ord, V: StructuralHash, S> StructuralHash for HashMap<K, V, S> {
     fn structural_hash<H: Hasher>(&self, state: &mut H) {
         let mut entries = self.iter().collect::<Vec<_>>();
-        entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+        entries.sort_unstable_by_key(|(key, _)| *key);
         entries.len().hash(state);
         for (key, value) in entries {
             key.structural_hash(state);
@@ -142,7 +142,7 @@ impl StructuralHash for serde_json::Value {
             Self::Object(values) => {
                 // Also deterministic when serde_json's `preserve_order` feature is enabled.
                 let mut entries = values.iter().collect::<Vec<_>>();
-                entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+                entries.sort_unstable_by_key(|(key, _)| *key);
                 entries.len().hash(state);
                 for (key, value) in entries {
                     key.structural_hash(state);

@@ -1036,7 +1036,6 @@ mod tests {
         assert!(width(&[(b"pnum", 1)]) < width(&[]));
     }
 
-    #[cfg(feature = "json")]
     #[test]
     fn span_colors_may_read_the_measurement_of_their_text() {
         let text_id = NodeId::new(8);
@@ -1071,7 +1070,6 @@ mod tests {
         assert!(matches!(width, Ok(ExpressionValue::Number(value)) if value > 10.0));
     }
 
-    #[cfg(feature = "json")]
     #[test]
     fn span_baseline_shifts_may_read_the_measurement_of_their_text() {
         let text_id = NodeId::new(8);

@@ -254,26 +254,38 @@ impl FontResolver for TestFont {
 }
 
 impl MediaStore for TestMedia {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
-        let (id, frame) = self.images.get(source)?;
-        Some(Box::new(TestImage {
+    fn get_image_resolver(
+        &self,
+        source: &str,
+    ) -> Result<Box<dyn ImageResolver>, lumen_engine::error::MediaError> {
+        let (id, frame) = self.images.get(source).ok_or_else(|| {
+            lumen_engine::error::MediaError::source_not_found(source, "not registered")
+        })?;
+        Ok(Box::new(TestImage {
             id: id.clone(),
             frame: Arc::clone(frame),
         }))
     }
 
-    fn get_video_resolver(&self, stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
+    fn get_video_resolver(
+        &self,
+        stream_id: &str,
+    ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
         if let Some(frame) = self.still_videos.get(stream_id) {
-            return Some(Box::new(StillVideo {
+            return Ok(Box::new(StillVideo {
                 id: stream_id.to_string(),
                 frame: Arc::clone(frame),
             }));
         }
-        (self.numbered_video.as_deref() == Some(stream_id)).then(|| {
-            Box::new(NumberedVideo {
-                id: stream_id.to_string(),
-            }) as _
-        })
+        (self.numbered_video.as_deref() == Some(stream_id))
+            .then(|| {
+                Box::new(NumberedVideo {
+                    id: stream_id.to_string(),
+                }) as _
+            })
+            .ok_or_else(|| {
+                lumen_engine::error::MediaError::source_not_found(stream_id, "not registered")
+            })
     }
 
     fn font_resolver_id(&self, family: &str) -> Option<String> {

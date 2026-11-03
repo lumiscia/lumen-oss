@@ -1,11 +1,7 @@
 use std::{
     collections::HashMap,
-    sync::atomic::{AtomicU64, Ordering},
-    sync::{Arc, LazyLock, Mutex, OnceLock, Weak},
+    sync::{Arc, LazyLock, Mutex, Weak},
 };
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-use std::time::Instant;
 
 use crate::error::{LumenError, MediaError, RenderError};
 use crate::expr::{ExprNode, ExpressionContext, GlobalVar, GlyphScope};
@@ -415,7 +411,8 @@ impl CompiledText {
         bound: &mut BoundFrame,
         kept: bool,
     ) -> crate::Result<bool> {
-        let trace_started = crate::log_level_enabled(tracing::Level::TRACE).then(trace_now_ms);
+        let trace_started =
+            tracing::enabled!(target: "lumen_text", tracing::Level::TRACE).then(trace_now_ms);
         let mut expr = ctx.expr_context();
         let mut evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.node_id,
@@ -580,16 +577,11 @@ impl CompiledText {
         }
         let mode = match evaluated.render_mode {
             TextRenderMode::Raster => lumen_text::TextRenderMode::Raster,
-            TextRenderMode::Msdf => {
-                if !lumen_text::MSDF_SUPPORTED {
-                    static WARN: std::sync::Once = std::sync::Once::new();
-                    WARN.call_once(|| tracing::warn!(target: "lumen_text", "MSDF support is disabled; using raster text"));
-                }
-                lumen_text::TextRenderMode::Msdf
-            }
+            TextRenderMode::Msdf => lumen_text::TextRenderMode::Msdf,
             TextRenderMode::Auto => lumen_text::TextRenderMode::Auto,
         };
-        let atlas_started = trace_now_ms();
+        let atlas_started = (trace_started.is_some() || mode != lumen_text::TextRenderMode::Raster)
+            .then(trace_now_ms);
         let mut atlas = bound
             .text_atlas
             .as_ref()
@@ -608,7 +600,7 @@ impl CompiledText {
         let atlas_size = atlas.size();
         drop(atlas);
         drop(text_system);
-        let atlas_ms = trace_now_ms() - atlas_started;
+        let atlas_ms = atlas_started.map_or(0.0, |started| trace_now_ms() - started);
         if mode != lumen_text::TextRenderMode::Raster {
             bound.text_generation_count += prepared.uploads.len();
             bound.text_generation_ms += atlas_ms;
@@ -1694,11 +1686,8 @@ fn trace_text_bind(
     if uploads == 0 && total_ms < 1.0 {
         return;
     }
-    static BIND_COUNT: AtomicU64 = AtomicU64::new(0);
-    let bind_count = BIND_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     tracing::trace!(
         target: "lumen_text",
-        bind = bind_count,
         node_id = node_id.0,
         atlas_uploads = uploads,
         glyphs = glyph_count,
@@ -1711,6 +1700,8 @@ fn trace_text_bind(
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn trace_now_ms() -> f64 {
+    use std::{sync::OnceLock, time::Instant};
+
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
 }
@@ -1722,6 +1713,8 @@ fn trace_now_ms() -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
 
     #[derive(Debug, Default)]
@@ -1750,14 +1743,6 @@ mod tests {
     }
 
     impl MediaStore for CountingStore {
-        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
-            None
-        }
-
-        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
-            None
-        }
-
         fn font_resolver_id(&self, family: &str) -> Option<String> {
             (family == "Known").then(|| "counting-store-test-font".to_string())
         }
@@ -1788,14 +1773,6 @@ mod tests {
     struct NoIdStore(Arc<AtomicU64>);
 
     impl MediaStore for NoIdStore {
-        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
-            None
-        }
-
-        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
-            None
-        }
-
         fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
             (family == "Known").then(|| {
                 Box::new(CountingResolver {
@@ -1828,14 +1805,6 @@ mod tests {
     struct OneIdStore(Arc<AtomicU64>);
 
     impl MediaStore for OneIdStore {
-        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn crate::media::ImageResolver>> {
-            None
-        }
-
-        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn crate::media::VideoFrameResolver>> {
-            None
-        }
-
         fn font_resolver_id(&self, _: &str) -> Option<String> {
             Some("one-id-store-test-font".to_string())
         }

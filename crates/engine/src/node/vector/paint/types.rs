@@ -3,39 +3,63 @@
 pub(crate) const MAX_GRADIENT_STOPS: usize = 8;
 
 #[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::NodeEnum, lumen_macros::Delegate,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    lumen_macros::NodeEnum,
+    lumen_macros::Delegate,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+#[serde(rename_all = "snake_case")]
 #[delegate(kind = "enum")]
 pub enum PaintKind {
     #[default]
-    #[cfg_attr(feature = "json", serde(alias = "linear"))]
+    #[serde(alias = "linear")]
     LinearGradient,
-    #[cfg_attr(feature = "json", serde(alias = "radial"))]
+    #[serde(alias = "radial")]
     RadialGradient,
-    #[cfg_attr(feature = "json", serde(alias = "conic"))]
+    #[serde(alias = "conic")]
     ConicGradient,
 }
 
 #[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::NodeEnum, lumen_macros::Delegate,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    lumen_macros::NodeEnum,
+    lumen_macros::Delegate,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+#[serde(rename_all = "snake_case")]
 #[delegate(kind = "enum")]
 pub enum GradientUnits {
     #[default]
     ObjectBoundingBox,
-    #[cfg_attr(feature = "json", serde(alias = "userSpaceOnUse"))]
+    #[serde(alias = "userSpaceOnUse")]
     UserSpace,
 }
 
 #[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::NodeEnum, lumen_macros::Delegate,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    lumen_macros::NodeEnum,
+    lumen_macros::Delegate,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+#[serde(rename_all = "snake_case")]
 #[delegate(kind = "enum")]
 pub enum GradientSpread {
     #[default]
@@ -45,23 +69,32 @@ pub enum GradientSpread {
 }
 
 #[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, lumen_macros::NodeEnum, lumen_macros::Delegate,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    lumen_macros::NodeEnum,
+    lumen_macros::Delegate,
+    serde::Serialize,
+    serde::Deserialize,
 )]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "json", serde(rename_all = "snake_case"))]
+#[serde(rename_all = "snake_case")]
 #[delegate(kind = "enum")]
 pub enum GradientInterpolation {
     #[default]
     #[enum_option(label = "sRGB")]
     Srgb,
-    #[cfg_attr(feature = "json", serde(alias = "linear"))]
+    #[serde(alias = "linear")]
     #[enum_option(label = "Linear sRGB")]
     LinearSrgb,
 }
 
 /// A color at a point along a gradient. Gradient fields take literals only.
-#[derive(Debug, Clone, Default, PartialEq, lumen_macros::Delegate)]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(
+    Debug, Clone, Default, PartialEq, lumen_macros::Delegate, serde::Serialize, serde::Deserialize,
+)]
 pub struct GradientStop {
     /// Position along the gradient from 0 to 1. Values outside that range are clamped.
     #[meta(step = 0.01, constant, required)]
@@ -72,8 +105,7 @@ pub struct GradientStop {
 }
 
 /// A linear, radial or conic gradient. Gradient fields take literals only.
-#[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, lumen_macros::Delegate, serde::Serialize, serde::Deserialize)]
 pub struct GradientPaint {
     /// Gradient shape. Required.
     #[meta(id = "type", name = "Type", required)]
@@ -107,8 +139,7 @@ pub struct GradientPaint {
     pub stops: Vec<GradientStop>,
 }
 
-#[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, lumen_macros::Delegate, serde::Serialize, serde::Deserialize)]
 #[delegate(kind = "paint", expressions)]
 pub enum Paint {
     SolidColor(u8, u8, u8, u8),

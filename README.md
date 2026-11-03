@@ -99,4 +99,4 @@ just generate-types
 
 Lumen is open source, but still early. Expect breaking changes in crate APIs, schema shapes, node behavior, render internals, and package structure while the project settles.
 
-Text nodes use `render_mode: "raster"` by default. Set `"msdf"` to reuse CPU-generated outline distance fields across sizes; colour, bitmap, and overlapping glyphs use raster. MSDF support is enabled by default in the engine and WASM crates.
+Text nodes use `render_mode: "raster"` by default. Set `"msdf"` to reuse CPU-generated outline distance fields across sizes; colour, bitmap, and overlapping glyphs use raster.

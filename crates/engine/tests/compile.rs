@@ -194,12 +194,15 @@ impl TestMediaStore {
 }
 
 impl MediaStore for TestMediaStore {
-    fn get_image_resolver(&self, source: &str) -> Option<Box<dyn ImageResolver>> {
-        (source == self.id).then(|| Box::new(self.clone()) as Box<dyn ImageResolver>)
-    }
-
-    fn get_video_resolver(&self, _stream_id: &str) -> Option<Box<dyn VideoFrameResolver>> {
-        None
+    fn get_image_resolver(
+        &self,
+        source: &str,
+    ) -> Result<Box<dyn ImageResolver>, lumen_engine::error::MediaError> {
+        (source == self.id)
+            .then(|| Box::new(self.clone()) as Box<dyn ImageResolver>)
+            .ok_or_else(|| {
+                lumen_engine::error::MediaError::source_not_found(source, "not the test image")
+            })
     }
 }
 
@@ -505,12 +508,12 @@ fn media_prediction_visits_shared_inputs_once() {
     #[derive(Debug, Default)]
     struct CountingStore(AtomicUsize);
     impl MediaStore for CountingStore {
-        fn get_image_resolver(&self, _: &str) -> Option<Box<dyn ImageResolver>> {
-            None
-        }
-        fn get_video_resolver(&self, _: &str) -> Option<Box<dyn VideoFrameResolver>> {
+        fn get_video_resolver(
+            &self,
+            _: &str,
+        ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
             self.0.fetch_add(1, Ordering::Relaxed);
-            Some(Box::new(OneFrameVideo))
+            Ok(Box::new(OneFrameVideo))
         }
     }
     struct OneFrameVideo;

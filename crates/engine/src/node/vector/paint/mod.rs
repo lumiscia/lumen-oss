@@ -14,7 +14,6 @@ impl Paint {
         Self::SolidColor(color[0], color[1], color[2], color[3])
     }
 
-    #[cfg(feature = "json")]
     pub fn from_json_value(value: &serde_json::Value) -> Result<Self, String> {
         json::from_json_value(value)
     }
@@ -26,7 +25,6 @@ impl Paint {
         }
     }
 
-    #[cfg(feature = "json")]
     pub fn to_json_value(&self) -> serde_json::Value {
         json::to_json_value(self)
     }
@@ -103,7 +101,6 @@ mod tests {
         assert!((gpu.offsets[1][0] - 1.0).abs() < 0.001);
     }
 
-    #[cfg(feature = "json")]
     #[test]
     fn paint_json_parses_the_public_forms_and_roundtrips() {
         let red_to_blue = vec![
@@ -189,7 +186,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "json")]
     #[test]
     fn paint_parses_gradient_shorthand_type_names() {
         for (name, kind) in [
@@ -208,7 +204,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "json")]
     #[test]
     fn paint_parses_scalar_gradient_radius() {
         let json = serde_json::json!({

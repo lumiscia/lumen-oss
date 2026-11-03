@@ -1,6 +1,6 @@
 # lumen-generators
 
-`lumen-generators` generates schema and metadata artifacts from the Rust node definitions.
+`lumen-generators` generates the composition schema from the Rust node definitions.
 
 This crate is experimental because the node system, schemas, and generated package contracts are still changing.
 
