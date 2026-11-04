@@ -115,6 +115,21 @@ impl std::fmt::Display for FfmpegError {
 
 impl std::error::Error for FfmpegError {}
 
+/// Raises this process's open file limit to its hard limit. NVIDIA's Vulkan driver holds a file
+/// descriptor for each fence and timeline semaphore, so a job on Vulkan decode holds about 100 per
+/// video source, and a few of them outgrow the usual soft limit of 1024.
+pub fn raise_open_file_limit() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut limit = std::mem::zeroed::<libc::rlimit>();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 && limit.rlim_cur < limit.rlim_max
+        {
+            limit.rlim_cur = limit.rlim_max;
+            libc::setrlimit(libc::RLIMIT_NOFILE, &limit);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

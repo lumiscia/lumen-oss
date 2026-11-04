@@ -79,7 +79,7 @@ Encoder names are FFmpeg's own, such as `libx264` or `hevc_nvenc`, and are check
 
 ### Hardware decode
 
-`LUMEN_HARDWARE_DECODE=1` asks for hardware video decode. On Linux with `--features vulkan`, H.264, HEVC and AV1 at 8-bit 4:2:0 decode through FFmpeg Vulkan on the renderer's own device, which needs FFmpeg 8.0 or newer. A source moves to CPU decode for the rest of the render, with one warning, if its hardware decoder won't open, fails while decoding, or delivers a frame the renderer can't import. That covers older FFmpeg, VP9, 10-bit, other pixel formats and hardware without the codec. Rotated sources and sources with an alpha channel always decode on the CPU, also with one warning.
+`LUMEN_HARDWARE_DECODE=1` asks for hardware video decode. On Linux with `--features vulkan`, H.264, HEVC and AV1 at 8-bit 4:2:0 decode through FFmpeg Vulkan on the renderer's own device, which needs FFmpeg 8.0 or newer. A source moves to CPU decode for the whole render, with one warning, if its hardware decoder won't open, or fails or delivers a frame the renderer can't import before any of its frames were drawn. That covers older FFmpeg, VP9, 10-bit, other pixel formats and hardware without the codec. Once frames from the GPU were drawn, a failure stops the render with an error, because moving to the CPU then would change the source's pixels partway through. Rotated sources and sources with an alpha channel always decode on the CPU, also with one warning.
 
 ## CI Coverage
 

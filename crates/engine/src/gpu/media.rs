@@ -21,7 +21,31 @@ pub(super) struct GpuMediaFrameImporter {
 }
 
 impl GpuMediaFrameImporter {
-    pub(super) fn import(
+    /// Imports a bound frame's GPU frames, in upload order, before any reaches a texture. A failed
+    /// import settles its source on the CPU, so the source's other frames here go there with it
+    /// instead of mixing the two in one output frame.
+    pub(super) fn import_all(
+        &mut self,
+        renderer: &lumen_gpu::Renderer,
+        imports: &mut GpuMediaImports,
+        uploads: &[MediaTextureUpload],
+    ) -> Vec<Result<Arc<lumen_gpu::wgpu::Texture>, String>> {
+        uploads
+            .iter()
+            .filter_map(|upload| {
+                let crate::media::MediaFrame::GpuVideo(frame) = &upload.frame else {
+                    return None;
+                };
+                let imported = self.import(renderer, imports, upload, frame);
+                if imported.is_err() {
+                    frame.settle_on_cpu();
+                }
+                Some(imported)
+            })
+            .collect()
+    }
+
+    fn import(
         &mut self,
         renderer: &lumen_gpu::Renderer,
         imports: &mut GpuMediaImports,

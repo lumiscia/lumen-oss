@@ -1,3 +1,4 @@
+use std::cell::UnsafeCell;
 use std::collections::HashSet;
 use std::ptr;
 
@@ -6,6 +7,7 @@ use std::ptr::NonNull;
 
 use crate::{
     FfmpegError, Result,
+    encode::hw::AvBufferRef,
     ffi::{self, AvFrame, SWS_BILINEAR, sys},
     format::{InputContext, Packet, Rational},
     gpu::{GpuBackend, GpuVideoFrame},
@@ -100,6 +102,8 @@ pub struct VideoDecoder {
     hw_device: Option<HwDeviceContext>,
     #[cfg(feature = "vulkan")]
     vulkan_device: Option<crate::gpu::VulkanDevice>,
+    /// Reached through the codec context's `opaque` by [`force_vulkan_pixel_format`].
+    vulkan_frames: Box<UnsafeCell<Option<VulkanFrames>>>,
     /// Timestamps of the packets an edit list discards, for decoders where `drops_by_timestamp`.
     discarded_pts: HashSet<i64>,
     drops_alpha: bool,
@@ -232,6 +236,7 @@ impl VideoDecoder {
             hw_device,
             #[cfg(feature = "vulkan")]
             vulkan_device: None,
+            vulkan_frames: Box::default(),
             discarded_pts: HashSet::new(),
             drops_alpha: alpha_layer && alpha_decoder.is_none(),
             last_frame_had_alpha: false,
@@ -259,6 +264,8 @@ impl VideoDecoder {
         if let (DecodeMode::Gpu(backend), Some(hw_device)) = (config.mode, &decoder.hw_device) {
             unsafe {
                 (*decoder.context).hw_device_ctx = sys::av_buffer_ref(hw_device.ptr);
+                (*decoder.context).opaque =
+                    ptr::from_ref(&*decoder.vulkan_frames).cast_mut().cast();
                 (*decoder.context).get_format = match backend {
                     GpuBackend::Metal => Some(force_metal_pixel_format),
                     GpuBackend::Vulkan => Some(force_vulkan_pixel_format),
@@ -582,7 +589,7 @@ impl VideoDecoder {
             )
             .with_backend(GpuBackend::Vulkan));
         };
-        // The renderer reads NV12. Failing here moves the source to the CPU.
+        // The renderer reads NV12.
         let pixel_format = frame
             .hw_sw_format()
             .map(PixelFormat::from_av_pixel_format)
@@ -699,10 +706,80 @@ unsafe extern "C" fn force_metal_pixel_format(
 }
 
 unsafe extern "C" fn force_vulkan_pixel_format(
-    _context: *mut sys::AVCodecContext,
+    context: *mut sys::AVCodecContext,
     formats: *const sys::AVPixelFormat,
 ) -> sys::AVPixelFormat {
-    force_pixel_format(formats, AV_PIX_FMT_VULKAN)
+    let format = force_pixel_format(formats, AV_PIX_FMT_VULKAN);
+    if format == AV_PIX_FMT_VULKAN && !unsafe { share_vulkan_frames(context) } {
+        return AV_PIX_FMT_NONE;
+    }
+    format
+}
+
+/// The frames context a Vulkan decoder keeps across FFmpeg's rebuilds of its hardware decoder.
+struct VulkanFrames {
+    params: VulkanFramesParams,
+    frames: AvBufferRef,
+}
+
+/// What decides whether frames can serve a rebuilt decoder: their size and format, and the Vulkan
+/// video profile they were created for.
+#[derive(PartialEq)]
+struct VulkanFramesParams {
+    width: i32,
+    height: i32,
+    sw_format: sys::AVPixelFormat,
+    profile: i32,
+    progressive: bool,
+}
+
+/// Gives the decoder the frames context it already has, unless the stream's parameters changed.
+///
+/// H.264 rebuilds its hardware decoder on every flush, and FFmpeg's default gives each rebuild a new
+/// frames context. Every decoded frame keeps its context alive, along with the context's command
+/// pools and all its images, so a cache of frames from around a seek would hold one context per
+/// frame. NVIDIA's driver holds a file descriptor for each fence and timeline semaphore in them.
+///
+/// `avcodec_get_hw_frames_parameters` runs on every call because it also sets up the Vulkan hwaccel,
+/// and FFmpeg's documentation allows using it only to compare parameters.
+unsafe fn share_vulkan_frames(context: *mut sys::AVCodecContext) -> bool {
+    unsafe {
+        let kept = &mut *(*context).opaque.cast::<Option<VulkanFrames>>();
+        let mut frames = AvBufferRef {
+            ptr: ptr::null_mut(),
+        };
+        if sys::avcodec_get_hw_frames_parameters(
+            context,
+            (*context).hw_device_ctx,
+            AV_PIX_FMT_VULKAN,
+            &mut frames.ptr,
+        ) < 0
+        {
+            return false;
+        }
+        let frames_context = (*frames.ptr).data.cast::<sys::AVHWFramesContext>();
+        let params = VulkanFramesParams {
+            width: (*frames_context).width,
+            height: (*frames_context).height,
+            sw_format: (*frames_context).sw_format,
+            profile: (*context).profile,
+            progressive: matches!(
+                (*context).field_order,
+                sys::AVFieldOrder::AV_FIELD_UNKNOWN | sys::AVFieldOrder::AV_FIELD_PROGRESSIVE
+            ),
+        };
+        if kept.as_ref().is_none_or(|kept| kept.params != params) {
+            if sys::av_hwframe_ctx_init(frames.ptr) < 0 {
+                return false;
+            }
+            *kept = Some(VulkanFrames { params, frames });
+        }
+        let Some(kept) = kept else {
+            return false;
+        };
+        (*context).hw_frames_ctx = sys::av_buffer_ref(kept.frames.ptr);
+        !(*context).hw_frames_ctx.is_null()
+    }
 }
 
 fn force_pixel_format(
@@ -890,6 +967,69 @@ fn ensure_vulkan_texture_decode(codec: VideoCodec, format: i32, avcodec_major: u
             .with_backend(GpuBackend::Vulkan)
             .with_codec(codec),
     )
+}
+
+#[cfg(test)]
+mod hardware_tests {
+    use std::process::Command;
+
+    use super::*;
+
+    /// The frames context of the first frame decoded after the input is read from the start.
+    fn first_frame_context(input: &mut InputContext, decoder: &mut VideoDecoder) -> Option<usize> {
+        input.seek_stream(0, 0).expect("seek to the start");
+        decoder.flush();
+        let mut frame = AvFrame::new().expect("frame");
+        while let Some(packet) = input.read_packet().expect("read packet") {
+            decoder.send_packet(&packet).ok()?;
+            if matches!(
+                decoder.receive_frame(&mut frame).ok()?,
+                ReceiveStatus::Frame
+            ) {
+                return Some(unsafe { (*(*frame.as_ptr()).hw_frames_ctx).data } as usize);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn seeks_on_a_vulkan_decoder_keep_one_frames_context() {
+        let path = std::env::temp_dir().join(format!(
+            "lumen_ffmpeg_frames_context_{}.mp4",
+            std::process::id()
+        ));
+        let encoded = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", "testsrc=s=64x64:r=30:d=1"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&path)
+            .status();
+        if !encoded.is_ok_and(|status| status.success()) {
+            eprintln!("no ffmpeg CLI with libx264; skipping");
+            return;
+        }
+        let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open clip");
+        let config = VideoDecoderConfig {
+            stream_index: 0,
+            mode: DecodeMode::Gpu(GpuBackend::Vulkan),
+        };
+        let Ok(mut decoder) = VideoDecoder::open(&input, config) else {
+            eprintln!("no Vulkan decoder; skipping");
+            return;
+        };
+        let Some(first) = first_frame_context(&mut input, &mut decoder) else {
+            eprintln!("this device doesn't decode H.264 on Vulkan; skipping");
+            return;
+        };
+        for _ in 0..3 {
+            assert_eq!(
+                first_frame_context(&mut input, &mut decoder),
+                Some(first),
+                "a seek gave the decoder a new frames context"
+            );
+        }
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[cfg(all(test, feature = "vulkan"))]
