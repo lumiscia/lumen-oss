@@ -258,7 +258,7 @@ async fn measure(args: &Args, composition: &Composition, media: &Fixture) -> any
             timings.allocations.0.push(allocations as f64);
             timings.allocated_bytes.0.push(bytes as f64);
             rendered += 1;
-            if rendered % 120 == 0 {
+            if rendered.is_multiple_of(120) {
                 let held = renderer.plan_cache_bytes();
                 let rss = rss_bytes();
                 let vram = vram_bytes();

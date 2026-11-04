@@ -29,7 +29,7 @@ impl SurfaceCompositionRenderer {
         let gpu = SurfaceGpu::new(canvas).await?;
         let mut renderer =
             GpuCompositionRenderer::from_device(gpu.device.clone(), gpu.queue.clone());
-        // The preview runs in a worker, so the prototype's flag is chosen when building it.
+        // The preview runs in a worker, so the frame graph flag is chosen when building it.
         renderer.set_frame_graph(option_env!("LUMEN_FRAME_GRAPH") == Some("1"));
         Ok(Self {
             renderer,

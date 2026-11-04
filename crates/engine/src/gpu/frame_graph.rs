@@ -1,5 +1,5 @@
-//! Prototype of recording each frame's passes directly from the graph, behind
-//! `LUMEN_FRAME_GRAPH=1`, instead of binding a compiled plan.
+//! Records each frame's passes directly from the graph, behind `LUMEN_FRAME_GRAPH=1`, instead of
+//! binding a compiled plan.
 //!
 //! A frame walks from the media output, evaluating each node once and recording its passes into
 //! pooled textures, sized to what the node draws this frame. Outputs of static subtrees are
@@ -848,7 +848,6 @@ impl<'a> FrameCx<'a> {
                 tex: full,
                 domain: TextureDomain::full_frame(raster.domain.display_size()),
                 bounds: None,
-                ..raster
             });
         }
         let full = self.full_frame(raster);
