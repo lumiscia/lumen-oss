@@ -120,6 +120,42 @@ pub trait VideoFrameResolver: Send + Sync {
     fn retain_frames(&self, _frames: &[u32]) {}
 }
 
+impl<T: ImageResolver + ?Sized> ImageResolver for Arc<T> {
+    fn id(&self) -> &str {
+        (**self).id()
+    }
+
+    fn metadata(&self) -> ImageMetadata {
+        (**self).metadata()
+    }
+
+    fn frame(&self) -> Result<MediaFrame, MediaError> {
+        (**self).frame()
+    }
+}
+
+impl<T: VideoFrameResolver + ?Sized> VideoFrameResolver for Arc<T> {
+    fn id(&self) -> &str {
+        (**self).id()
+    }
+
+    fn metadata(&self) -> VideoMetadata {
+        (**self).metadata()
+    }
+
+    fn enqueue_frame(&self, frame: u32) -> Result<(), MediaError> {
+        (**self).enqueue_frame(frame)
+    }
+
+    fn frame(&self, frame: u32) -> Result<MediaFrame, MediaError> {
+        (**self).frame(frame)
+    }
+
+    fn retain_frames(&self, frames: &[u32]) {
+        (**self).retain_frames(frames);
+    }
+}
+
 pub trait FontResolver: Send + Sync {
     fn id(&self) -> &str;
 

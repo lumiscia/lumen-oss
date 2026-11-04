@@ -1,41 +1,17 @@
-#[cfg(all(target_os = "macos", feature = "metal"))]
-use std::collections::VecDeque;
 use std::{
-    collections::HashMap,
     env, fs,
-    path::{Component, Path, PathBuf},
-    sync::{Arc, RwLock, mpsc},
-    thread::{self, JoinHandle},
-    time::Instant,
+    path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgGroup, Parser};
 use image::{ImageEncoder, codecs::png::PngEncoder};
-#[cfg(target_os = "linux")]
-use lumen_engine::gpu::VulkanVideoTarget;
-#[cfg(all(target_os = "macos", feature = "metal"))]
-use lumen_engine::gpu::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
-use lumen_engine::{
-    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioMixer, AudioResolver, duration_samples},
-    composition::Composition,
-    error::MediaError,
-    ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
-    gpu::GpuCompositionRenderer,
-    image::ImageFileResolver,
-    media::{FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver},
+use lumen_engine::composition::Composition;
+use lumen_ffmpeg::{EncoderQuality, RateControl};
+use lumen_server::render::{
+    FONT_DIR_ENV, LocalMediaStore, Mp4Render, RenderReport, create_gpu_renderer, existing_font_dir,
 };
-#[cfg(any(all(target_os = "macos", feature = "metal"), target_os = "linux"))]
-use lumen_ffmpeg::EncodeMode;
-#[cfg(any(all(target_os = "macos", feature = "metal"), target_os = "linux"))]
-use lumen_ffmpeg::GpuBackend;
-use lumen_ffmpeg::{
-    AudioEncoderConfig, AudioFrame, CpuVideoFrame, EncoderQuality, MuxedEncoder, PixelFormat,
-    RateControl, Rational, VideoEncoderChoice, VideoEncoderConfig,
-};
-#[cfg(target_os = "linux")]
-use lumen_ffmpeg::{EncoderFamily, GpuVideoInput, VulkanDevice};
-use lumen_server::render::{FONT_DIR_ENV, FontCatalog, existing_font_dir};
 use tracing_subscriber::EnvFilter;
 
 /// Renders a Lumen composition to an .mp4 video, or one frame to a .png image.
@@ -164,344 +140,6 @@ impl Cli {
     }
 }
 
-const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
-#[cfg(all(target_os = "macos", feature = "metal"))]
-const GPU_ENCODER_FRAMES_IN_FLIGHT: usize = 3;
-
-struct EncoderFrame {
-    frame: u32,
-    pixels: Vec<u8>,
-    recycle_tx: mpsc::SyncSender<Vec<u8>>,
-}
-
-enum EncoderMessage {
-    Video(EncoderFrame),
-    Audio(AudioFrame),
-}
-
-struct LumenFfmpegEncoder {
-    message_tx: Option<mpsc::SyncSender<EncoderMessage>>,
-    writer_handle: Option<JoinHandle<Result<()>>>,
-}
-
-#[derive(Debug, Default, Clone)]
-struct RenderTiming {
-    audio_mix_ms: u128,
-    bind_ms: u128,
-    upload_ms: u128,
-    render_ms: u128,
-    flush_ms: u128,
-    readback_ms: u128,
-    encode_send_ms: u128,
-    encode_finish_ms: u128,
-}
-
-/// Passes per frame skipped because their output was kept from an earlier frame, out of the
-/// passes per frame in the plans rendered.
-fn cached_pass_summary(renderer: &GpuCompositionRenderer, frames: u32) -> String {
-    let frames = f64::from(frames.max(1));
-    format!(
-        "static_cached={:.1} passes={:.1}",
-        renderer.cached_pass_count() as f64 / frames,
-        renderer.submitted_pass_count() as f64 / frames,
-    )
-}
-
-struct LocalMediaStore {
-    root: PathBuf,
-    fonts: FontCatalog,
-    video_options: FfmpegResolverOptions,
-    audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
-    images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
-    videos: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
-}
-
-impl std::fmt::Debug for LocalMediaStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LocalMediaStore")
-            .field("root", &self.root)
-            .field("video_options", &self.video_options)
-            .finish_non_exhaustive()
-    }
-}
-
-impl LocalMediaStore {
-    fn new(root: PathBuf, font_dir: Option<PathBuf>) -> Self {
-        let fonts = FontCatalog::new(font_dir.as_deref(), &root);
-
-        Self {
-            root,
-            fonts,
-            video_options: video_resolver_options_from_env(),
-            audios: RwLock::new(HashMap::new()),
-            images: RwLock::new(HashMap::new()),
-            videos: RwLock::new(HashMap::new()),
-        }
-    }
-
-    fn resolve_source(&self, source: &str) -> Result<String, MediaError> {
-        resolve_local_path_with_root(source, &self.root)
-            .map(|path| path.to_string_lossy().to_string())
-            .map_err(|error| MediaError::source_not_found(source, format!("{error:#}")))
-    }
-
-    fn image_resolver(&self, source: &str) -> Result<Arc<ImageFileResolver>, MediaError> {
-        if let Ok(cache) = self.images.read()
-            && let Some(resolver) = cache.get(source)
-        {
-            return Ok(Arc::clone(resolver));
-        }
-
-        let resolver = Arc::new(ImageFileResolver::open(source.to_string())?);
-        if let Ok(mut cache) = self.images.write() {
-            cache
-                .entry(source.to_string())
-                .or_insert_with(|| Arc::clone(&resolver));
-        }
-        Ok(resolver)
-    }
-
-    fn video_resolver(&self, source: &str) -> Result<Arc<FfmpegVideoResolver>, MediaError> {
-        if let Ok(cache) = self.videos.read()
-            && let Some(resolver) = cache.get(source)
-        {
-            return Ok(Arc::clone(resolver));
-        }
-
-        let resolver = Arc::new(FfmpegVideoResolver::open_with_options(
-            source.to_string(),
-            self.video_options.clone(),
-        )?);
-        if let Ok(mut cache) = self.videos.write() {
-            cache
-                .entry(source.to_string())
-                .or_insert_with(|| Arc::clone(&resolver));
-        }
-        Ok(resolver)
-    }
-
-    fn audio_resolver(&self, source: &str) -> Result<Arc<FfmpegAudioResolver>, MediaError> {
-        if let Ok(cache) = self.audios.read()
-            && let Some(resolver) = cache.get(source)
-        {
-            return Ok(Arc::clone(resolver));
-        }
-
-        let resolver = Arc::new(FfmpegAudioResolver::open(source.to_string())?);
-        if let Ok(mut cache) = self.audios.write() {
-            cache
-                .entry(source.to_string())
-                .or_insert_with(|| Arc::clone(&resolver));
-        }
-        Ok(resolver)
-    }
-}
-
-impl MediaStore for LocalMediaStore {
-    fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
-        let resolved = self.resolve_source(source)?;
-        Ok(Box::new(SharedImageResolver(
-            self.image_resolver(&resolved)?,
-        )))
-    }
-
-    fn get_video_resolver(
-        &self,
-        stream_id: &str,
-    ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
-        let resolved = self.resolve_source(stream_id)?;
-        Ok(Box::new(SharedVideoResolver(
-            self.video_resolver(&resolved)?,
-        )))
-    }
-
-    fn get_audio_resolver(&self, source_id: &str) -> Result<Box<dyn AudioResolver>, MediaError> {
-        let resolved = self.resolve_source(source_id)?;
-        Ok(Box::new(SharedAudioResolver(
-            self.audio_resolver(&resolved)?,
-        )))
-    }
-
-    fn font_resolver_id(&self, font_family: &str) -> Option<String> {
-        Some(self.fonts.resolve(font_family, || None)?.id().to_string())
-    }
-
-    fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
-        Some(Box::new(self.fonts.resolve(font_family, || None)?))
-    }
-}
-
-#[derive(Clone)]
-struct SharedImageResolver(Arc<ImageFileResolver>);
-
-impl ImageResolver for SharedImageResolver {
-    fn id(&self) -> &str {
-        self.0.id()
-    }
-
-    fn metadata(&self) -> lumen_engine::media::ImageMetadata {
-        self.0.metadata()
-    }
-
-    fn frame(&self) -> Result<MediaFrame, MediaError> {
-        self.0.frame()
-    }
-}
-
-#[derive(Clone)]
-struct SharedVideoResolver(Arc<FfmpegVideoResolver>);
-
-impl VideoFrameResolver for SharedVideoResolver {
-    fn id(&self) -> &str {
-        self.0.id()
-    }
-
-    fn metadata(&self) -> lumen_engine::media::VideoMetadata {
-        self.0.metadata()
-    }
-
-    fn enqueue_frame(&self, frame: u32) -> Result<(), MediaError> {
-        self.0.enqueue_frame(frame)
-    }
-
-    fn frame(&self, frame: u32) -> Result<MediaFrame, MediaError> {
-        self.0.frame(frame)
-    }
-
-    fn retain_frames(&self, frames: &[u32]) {
-        self.0.retain_frames(frames);
-    }
-}
-
-#[derive(Clone)]
-struct SharedAudioResolver(Arc<FfmpegAudioResolver>);
-
-impl AudioResolver for SharedAudioResolver {
-    fn resolve_range(
-        &self,
-        start_sample: u64,
-        frames: usize,
-    ) -> Result<Arc<lumen_engine::audio::AudioBuffer>, MediaError> {
-        self.0.resolve_range(start_sample, frames)
-    }
-}
-
-impl LumenFfmpegEncoder {
-    fn create(
-        output: &Path,
-        width: u32,
-        height: u32,
-        fps: f32,
-        encoder: &str,
-        quality: &EncoderQuality,
-        include_audio: bool,
-    ) -> Result<Self> {
-        let mut config = VideoEncoderConfig::cpu_rgba(
-            width,
-            height,
-            Rational::from_fps(f64::from(fps))?,
-            encoder,
-        );
-        config.quality = quality.clone();
-        let audio = include_audio
-            .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
-        let (message_tx, message_rx) =
-            mpsc::sync_channel::<EncoderMessage>(ENCODER_FRAME_QUEUE_CAPACITY);
-        let (startup_tx, startup_rx) = mpsc::sync_channel::<Result<()>>(1);
-        let output = output.to_string_lossy().to_string();
-        let writer_handle = thread::spawn(move || {
-            let mut encoder = match MuxedEncoder::create_with_audio(output, config, audio) {
-                Ok(encoder) => {
-                    warn_if_container_cropped(&encoder);
-                    let _ = startup_tx.send(Ok(()));
-                    encoder
-                }
-                Err(error) => {
-                    let _ = startup_tx.send(Err(anyhow!(
-                        "lumen-ffmpeg encoder failed to start: {error}"
-                    )));
-                    return Ok(());
-                }
-            };
-            while let Ok(message) = message_rx.recv() {
-                match message {
-                    EncoderMessage::Video(frame) => {
-                        let frame_index = frame.frame;
-                        let cpu_frame = CpuVideoFrame {
-                            width,
-                            height,
-                            stride: (width as usize) * 4,
-                            pixel_format: PixelFormat::Rgba8,
-                            pts: Some(i64::from(frame_index)),
-                            data: frame.pixels,
-                        };
-                        encoder.write_video_frame(&cpu_frame).map_err(|error| {
-                            anyhow!("lumen-ffmpeg encode failed at frame {frame_index}: {error}")
-                        })?;
-                        recycle_pixels(cpu_frame.data, &frame.recycle_tx);
-                    }
-                    EncoderMessage::Audio(frame) => encoder
-                        .write_audio_frame(&frame)
-                        .map_err(|error| anyhow!("lumen-ffmpeg audio encode failed: {error}"))?,
-                }
-            }
-            encoder
-                .finish()
-                .map_err(|error| anyhow!("lumen-ffmpeg encoder finish failed: {error}"))
-        });
-        startup_rx
-            .recv()
-            .map_err(|_| anyhow!("lumen-ffmpeg encoder startup thread stopped"))??;
-        Ok(Self {
-            message_tx: Some(message_tx),
-            writer_handle: Some(writer_handle),
-        })
-    }
-
-    fn send(&self, frame: EncoderFrame) -> Result<()> {
-        self.message_tx
-            .as_ref()
-            .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer unavailable"))?
-            .send(EncoderMessage::Video(frame))
-            .map_err(|_| anyhow!("lumen-ffmpeg encoder writer stopped"))
-    }
-
-    fn send_audio(&self, frame: AudioFrame) -> Result<()> {
-        self.message_tx
-            .as_ref()
-            .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer unavailable"))?
-            .send(EncoderMessage::Audio(frame))
-            .map_err(|_| anyhow!("lumen-ffmpeg encoder writer stopped"))
-    }
-
-    fn finish(mut self) -> Result<()> {
-        self.message_tx.take();
-        self.writer_handle
-            .take()
-            .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer thread missing"))?
-            .join()
-            .map_err(|_| anyhow!("lumen-ffmpeg encoder writer thread panicked"))?
-    }
-}
-
-fn warn_if_container_cropped(encoder: &MuxedEncoder) {
-    if let Some(crop) = encoder.container_crop() {
-        eprintln!(
-            "warning: the encoder coded {coded_width}x{coded_height} for a {width}x{height} canvas; \
-             the container crops it back, but players that ignore the crop (including Chromium) \
-             show the padding. Render at {coded_width}x{coded_height} to avoid this.",
-            coded_width = crop.coded_width,
-            coded_height = crop.coded_height,
-            width = crop.width,
-            height = crop.height,
-        );
-    }
-}
-
-fn recycle_pixels(pixels: Vec<u8>, recycle_tx: &mpsc::SyncSender<Vec<u8>>) {
-    let _ = recycle_tx.try_send(pixels);
-}
-
 /// Parses bits per second, with optional `k` or `M` suffixes (`14M` is 14,000,000).
 fn parse_bitrate(value: &str) -> Result<u64> {
     let (digits, multiplier) = match value.strip_suffix(['k', 'K']) {
@@ -540,7 +178,9 @@ fn run(cli: Cli) -> Result<()> {
     let kind = cli.output_kind()?;
     let composition = load_composition(&cli.composition)?;
     let media_root = media_root(cli.media_root.as_deref())?;
-    let mut media_store = LocalMediaStore::new(media_root, cli.font_dir());
+    let font_dir = cli.font_dir();
+    let mut media_store =
+        LocalMediaStore::new(media_root, font_dir.as_deref()).explaining_missing_sources();
 
     match kind {
         OutputKind::Png => {
@@ -550,7 +190,7 @@ fn run(cli: Cli) -> Result<()> {
             let quality = cli.quality().unwrap_or_default();
             render_to_partial(&cli.output, |partial| {
                 render_mp4(
-                    composition,
+                    &composition,
                     media_store,
                     partial,
                     cli.encoder.as_deref(),
@@ -631,35 +271,6 @@ fn load_composition(path: &Path) -> Result<Composition> {
         .with_context(|| format!("failed to parse composition {}", path.display()))
 }
 
-fn read_texture(
-    renderer: &lumen_gpu::Renderer,
-    id: lumen_gpu::TextureId,
-    size: lumen_gpu::Size,
-) -> Result<Vec<u8>> {
-    let texture = renderer
-        .texture(id)
-        .ok_or_else(|| anyhow!("render output texture {id:?} is unavailable"))?;
-    renderer.read_texture_rgba8(texture, size)
-}
-
-/// Creates a renderer that hardware decode can share a device with, when decode is asked for and
-/// the hardware has it.
-fn create_renderer(media_store: &mut LocalMediaStore) -> Result<GpuCompositionRenderer> {
-    #[cfg(target_os = "linux")]
-    if media_store.video_options.prefer_hardware_decode {
-        match pollster::block_on(GpuCompositionRenderer::new_vulkan_decode()) {
-            Ok((renderer, device)) => {
-                media_store.video_options.vulkan_device = Some(device);
-                return Ok(renderer);
-            }
-            Err(error) => eprintln!("renderer has no Vulkan decode device: {error}"),
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = media_store;
-    pollster::block_on(GpuCompositionRenderer::new()).context("failed to create GPU renderer")
-}
-
 fn render_single_png(
     composition: &Composition,
     media_store: &mut LocalMediaStore,
@@ -674,7 +285,7 @@ fn render_single_png(
         ));
     }
 
-    let mut renderer = create_renderer(media_store)?;
+    let mut renderer = create_gpu_renderer(media_store).context("failed to create GPU renderer")?;
     renderer
         .compile(composition)
         .context("failed to compile composition")?;
@@ -682,7 +293,15 @@ fn render_single_png(
         .render_frame(composition, frame, &*media_store)
         .with_context(|| format!("render failed at frame {frame}"))?;
     let size = rendered.domain.storage_size;
-    let mut pixels = read_texture(renderer.gpu_renderer(), rendered.texture, size)
+    let gpu = renderer.gpu_renderer();
+    let texture = gpu.texture(rendered.texture).ok_or_else(|| {
+        anyhow!(
+            "render output texture {:?} is unavailable",
+            rendered.texture
+        )
+    })?;
+    let mut pixels = gpu
+        .read_texture_rgba8(texture, size)
         .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
     unpremultiply_rgba8(&mut pixels);
 
@@ -693,595 +312,55 @@ fn render_single_png(
 }
 
 fn render_mp4(
-    composition: Composition,
-    mut media_store: LocalMediaStore,
-    output: &Path,
-    override_encoder: Option<&str>,
-    quality: &EncoderQuality,
-) -> Result<()> {
-    let choice = VideoEncoderChoice::resolve(override_encoder);
-    let width = composition.render_settings().width;
-    let height = composition.render_settings().height;
-    let total_frames = composition.timeline().duration_frames;
-    if choice.name == "h264_videotoolbox_gpu" || choice.name == "hevc_videotoolbox_gpu" {
-        return render_video_gpu_videotoolbox(
-            composition,
-            media_store,
-            output,
-            width,
-            height,
-            total_frames,
-            &choice.name,
-            quality,
-        );
-    }
-    let (choice, encoder_info) = choice.look_up(|warning| eprintln!("warning: {warning}"))?;
-    #[cfg(not(target_os = "linux"))]
-    let _ = encoder_info;
-    #[cfg(target_os = "linux")]
-    let choice = if encoder_info.family == EncoderFamily::Vulkan {
-        match start_vulkan_video_encode(&composition, output, &choice.name, quality) {
-            Ok(session) => {
-                println!("video_encoder name={} path=zero_copy", choice.name);
-                return render_video_gpu_vulkan(composition, media_store, total_frames, session);
-            }
-            Err(error) => match choice.fall_back(&error) {
-                Some((fallback, warning)) => {
-                    eprintln!("warning: {warning}");
-                    fallback
-                }
-                None => {
-                    eprintln!(
-                        "vulkan zero-copy encode unavailable, uploading frames from the CPU instead: {error}"
-                    );
-                    choice
-                }
-            },
-        }
-    } else {
-        choice
-    };
-    let mut renderer = create_renderer(&mut media_store)?;
-    renderer
-        .compile_with_media(
-            &composition,
-            &media_store,
-            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-        )
-        .context("failed to compile composition")?;
-    let mut timings = RenderTiming::default();
-    let include_audio = has_audio(&composition);
-
-    let (encoder_sink, encoder) = choice.open(
-        |encoder| {
-            LumenFfmpegEncoder::create(
-                output,
-                width,
-                height,
-                composition.timeline().fps,
-                encoder,
-                quality,
-                include_audio,
-            )
-        },
-        |warning| eprintln!("warning: {warning}"),
-    )?;
-    println!("video_encoder name={encoder} path=cpu_upload");
-    let render_started = Instant::now();
-    let (pixel_recycle_tx, _pixel_recycle_rx) =
-        mpsc::sync_channel::<Vec<u8>>(ENCODER_FRAME_QUEUE_CAPACITY + 2);
-
-    for frame in 0..total_frames {
-        let bind_started = Instant::now();
-        let bound = renderer
-            .bind_frame(&composition, frame, &media_store)
-            .with_context(|| format!("frame bind failed at frame {frame}"))?;
-        timings.bind_ms = timings
-            .bind_ms
-            .saturating_add(bind_started.elapsed().as_millis());
-
-        let upload_started = Instant::now();
-        renderer
-            .upload_bound_frame(&bound)
-            .with_context(|| format!("frame upload failed at frame {frame}"))?;
-        timings.upload_ms = timings
-            .upload_ms
-            .saturating_add(upload_started.elapsed().as_millis());
-
-        let render_frame_started = Instant::now();
-        let (raster, _submission) = renderer
-            .submit_render()
-            .with_context(|| format!("render submit failed at frame {frame}"))?;
-        timings.render_ms = timings
-            .render_ms
-            .saturating_add(render_frame_started.elapsed().as_millis());
-
-        let flush_started = Instant::now();
-        renderer
-            .gpu_renderer()
-            .device
-            .poll(lumen_gpu::wgpu::PollType::Poll)?;
-        timings.flush_ms = timings
-            .flush_ms
-            .saturating_add(flush_started.elapsed().as_millis());
-
-        let storage_width = raster.domain.storage_size.width;
-        let storage_height = raster.domain.storage_size.height;
-        if storage_width != width || storage_height != height {
-            return Err(anyhow!(
-                "unexpected frame {frame} dimensions {}x{} (expected {}x{})",
-                storage_width,
-                storage_height,
-                width,
-                height
-            ));
-        }
-        let readback_started = Instant::now();
-        let pixels = read_texture(
-            renderer.gpu_renderer(),
-            raster.texture,
-            raster.domain.storage_size,
-        )
-        .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
-        timings.readback_ms = timings
-            .readback_ms
-            .saturating_add(readback_started.elapsed().as_millis());
-
-        let encode_send_started = Instant::now();
-        encoder_sink.send(EncoderFrame {
-            frame,
-            pixels,
-            recycle_tx: pixel_recycle_tx.clone(),
-        })?;
-        timings.encode_send_ms = timings
-            .encode_send_ms
-            .saturating_add(encode_send_started.elapsed().as_millis());
-
-        if frame == 0 || frame + 1 == total_frames || frame % 60 == 0 {
-            println!("progress frame={}/{}", frame + 1, total_frames);
-        }
-    }
-
-    if include_audio {
-        let audio_started = Instant::now();
-        write_composited_audio(&composition, &media_store, &encoder_sink)?;
-        timings.audio_mix_ms = audio_started.elapsed().as_millis();
-    }
-
-    let encode_finish_started = Instant::now();
-    encoder_sink.finish()?;
-    timings.encode_finish_ms = encode_finish_started.elapsed().as_millis();
-
-    let total_ms = render_started.elapsed().as_millis();
-    println!(
-        "render complete frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
-        total_frames,
-        timings.audio_mix_ms,
-        timings.bind_ms,
-        timings.upload_ms,
-        timings.render_ms,
-        timings.flush_ms,
-        timings.readback_ms,
-        timings.encode_send_ms,
-        timings.encode_finish_ms,
-        total_ms,
-        renderer.plan_cache_bytes(),
-        cached_pass_summary(&renderer, total_frames),
-    );
-    Ok(())
-}
-
-#[cfg(all(target_os = "macos", feature = "metal"))]
-#[allow(clippy::too_many_arguments)]
-fn render_video_gpu_videotoolbox(
-    composition: Composition,
+    composition: &Composition,
     media_store: LocalMediaStore,
     output: &Path,
-    width: u32,
-    height: u32,
-    total_frames: u32,
-    encoder: &str,
+    encoder: Option<&str>,
     quality: &EncoderQuality,
 ) -> Result<()> {
-    let mut renderer = pollster::block_on(GpuCompositionRenderer::new())
-        .context("failed to create GPU renderer")?;
-    renderer
-        .compile_with_media(
-            &composition,
-            &media_store,
-            lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
-        )
-        .context("failed to compile composition")?;
-    let mut config = VideoEncoderConfig::cpu_rgba(
-        width,
-        height,
-        Rational::from_fps(f64::from(composition.timeline().fps))?,
-        encoder.trim_end_matches("_gpu"),
-    );
-    config.mode = EncodeMode::GpuTexture(GpuBackend::Metal);
-    config.quality = quality.clone();
-    let include_audio = has_audio(&composition);
-    let audio =
-        include_audio.then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
-
-    let mut target_pool = MetalVideoToolboxTargetPool::bgra8(
-        renderer.gpu_renderer(),
-        lumen_gpu::Size::new(width, height),
-    )?;
-    let mut encoder =
-        MuxedEncoder::create_with_audio(output.to_string_lossy().to_string(), config, audio)
-            .map_err(|error| anyhow!("lumen-ffmpeg GPU encoder failed to start: {error}"))?;
-
-    let mut timings = RenderTiming::default();
-    let render_started = Instant::now();
-    let mut pending = VecDeque::<PendingGpuEncodeFrame>::new();
-    for frame in 0..total_frames {
-        let target = target_pool.acquire(renderer.gpu_renderer(), frame)?;
-
-        let render_frame_started = Instant::now();
-        let submitted = renderer
-            .render_frame_into_external(
-                &composition,
-                frame,
-                &media_store,
-                target.external_texture(),
-            )
-            .with_context(|| format!("render submit failed at frame {frame}"))?;
-        timings.render_ms = timings
-            .render_ms
-            .saturating_add(render_frame_started.elapsed().as_millis());
-
-        pending.push_back(PendingGpuEncodeFrame {
-            frame,
-            target,
-            submitted,
-        });
-        if pending.len() >= GPU_ENCODER_FRAMES_IN_FLIGHT {
-            encode_ready_gpu_frame(&renderer, &mut encoder, &mut timings, &mut pending)?;
-        }
-
-        if frame == 0 || frame + 1 == total_frames || frame % 60 == 0 {
-            println!("progress frame={}/{}", frame + 1, total_frames);
-        }
-    }
-    while !pending.is_empty() {
-        encode_ready_gpu_frame(&renderer, &mut encoder, &mut timings, &mut pending)?;
-    }
-
-    if include_audio {
-        let audio_started = Instant::now();
-        write_composited_audio_direct(&composition, &media_store, &mut encoder)?;
-        timings.audio_mix_ms = audio_started.elapsed().as_millis();
-    }
-
-    let encode_finish_started = Instant::now();
-    encoder
-        .finish()
-        .map_err(|error| anyhow!("lumen-ffmpeg GPU encoder finish failed: {error}"))?;
-    timings.encode_finish_ms = encode_finish_started.elapsed().as_millis();
-
-    let total_ms = render_started.elapsed().as_millis();
+    let render = Mp4Render::open(composition, media_store, encoder, quality, output)?;
     println!(
-        "render complete frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
-        total_frames,
-        timings.audio_mix_ms,
-        timings.bind_ms,
-        timings.upload_ms,
-        timings.render_ms,
-        timings.flush_ms,
-        timings.encode_send_ms,
-        timings.encode_finish_ms,
-        total_ms,
-        renderer.plan_cache_bytes(),
-        cached_pass_summary(&renderer, total_frames),
+        "video_encoder name={} path={}",
+        render.encoder(),
+        render.path()
     );
-    Ok(())
-}
-
-#[cfg(all(target_os = "macos", feature = "metal"))]
-struct PendingGpuEncodeFrame {
-    frame: u32,
-    target: MetalVideoToolboxTarget,
-    submitted: lumen_gpu::SubmittedExternalTexture,
-}
-
-#[cfg(all(target_os = "macos", feature = "metal"))]
-fn encode_ready_gpu_frame(
-    renderer: &GpuCompositionRenderer,
-    encoder: &mut MuxedEncoder,
-    timings: &mut RenderTiming,
-    pending: &mut VecDeque<PendingGpuEncodeFrame>,
-) -> Result<()> {
-    let PendingGpuEncodeFrame {
-        frame,
-        target,
-        submitted,
-    } = pending
-        .pop_front()
-        .ok_or_else(|| anyhow!("no pending GPU frame to encode"))?;
-    let flush_started = Instant::now();
-    submitted.wait(&renderer.gpu_renderer().device)?;
-    timings.flush_ms = timings
-        .flush_ms
-        .saturating_add(flush_started.elapsed().as_millis());
-
-    let encode_send_started = Instant::now();
-    encoder
-        .write_gpu_frame(&target.video_input())
-        .map_err(|error| anyhow!("lumen-ffmpeg GPU encode failed at frame {}: {error}", frame))?;
-    timings.encode_send_ms = timings
-        .encode_send_ms
-        .saturating_add(encode_send_started.elapsed().as_millis());
-    Ok(())
-}
-
-#[cfg(not(all(target_os = "macos", feature = "metal")))]
-#[allow(clippy::too_many_arguments)]
-fn render_video_gpu_videotoolbox(
-    _composition: Composition,
-    _media_store: LocalMediaStore,
-    _output: &Path,
-    _width: u32,
-    _height: u32,
-    _total_frames: u32,
-    _encoder: &str,
-    _quality: &EncoderQuality,
-) -> Result<()> {
-    Err(anyhow!(
-        "VideoToolbox GPU texture encode is only available on macOS"
-    ))
-}
-
-#[cfg(target_os = "linux")]
-struct VulkanVideoSession {
-    renderer: GpuCompositionRenderer,
-    device: VulkanDevice,
-    target: VulkanVideoTarget,
-    encoder: MuxedEncoder,
-}
-
-/// Renders and encodes on one Vulkan device, so frames never leave the GPU.
-#[cfg(target_os = "linux")]
-fn start_vulkan_video_encode(
-    composition: &Composition,
-    output: &Path,
-    encoder: &str,
-    quality: &EncoderQuality,
-) -> Result<VulkanVideoSession> {
-    let (width, height) = (
-        composition.render_settings().width,
-        composition.render_settings().height,
-    );
-    if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
-        return Err(anyhow!(
-            "NV12 frames need even dimensions, got {width}x{height}"
-        ));
-    }
-    let (renderer, device) = pollster::block_on(GpuCompositionRenderer::new_vulkan_video())?;
-    let target =
-        VulkanVideoTarget::nv12(renderer.gpu_renderer(), lumen_gpu::Size::new(width, height));
-    let mut config = VideoEncoderConfig::cpu_rgba(
-        width,
-        height,
-        Rational::from_fps(f64::from(composition.timeline().fps))?,
-        encoder,
-    );
-    config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
-    config.vulkan_device = Some(device.clone());
-    config.quality = quality.clone();
-    let audio = has_audio(composition)
-        .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
-    let encoder =
-        MuxedEncoder::create_with_audio(output.to_string_lossy().to_string(), config, audio)
-            .map_err(|error| anyhow!("lumen-ffmpeg Vulkan encoder failed to start: {error}"))?;
-    warn_if_container_cropped(&encoder);
-    Ok(VulkanVideoSession {
-        renderer,
-        device,
-        target,
-        encoder,
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn render_video_gpu_vulkan(
-    composition: Composition,
-    mut media_store: LocalMediaStore,
-    total_frames: u32,
-    session: VulkanVideoSession,
-) -> Result<()> {
-    let VulkanVideoSession {
-        mut renderer,
-        device,
-        target,
-        mut encoder,
-    } = session;
-    media_store.video_options.vulkan_device = device.can_decode().then_some(device);
-    renderer
-        .compile_with_media(
-            &composition,
-            &media_store,
-            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-        )
-        .context("failed to compile composition")?;
-    let (width, height) = (
-        composition.render_settings().width,
-        composition.render_settings().height,
-    );
-
-    let mut timings = RenderTiming::default();
-    let render_started = Instant::now();
-    for frame in 0..total_frames {
-        let bind_started = Instant::now();
-        let bound = renderer
-            .bind_frame(&composition, frame, &media_store)
-            .with_context(|| format!("frame bind failed at frame {frame}"))?;
-        timings.bind_ms = timings
-            .bind_ms
-            .saturating_add(bind_started.elapsed().as_millis());
-
-        let upload_started = Instant::now();
-        renderer
-            .upload_bound_frame(&bound)
-            .with_context(|| format!("frame upload failed at frame {frame}"))?;
-        timings.upload_ms = timings
-            .upload_ms
-            .saturating_add(upload_started.elapsed().as_millis());
-
-        let render_frame_started = Instant::now();
-        let (raster, _submission) = renderer
-            .submit_render()
-            .with_context(|| format!("render submit failed at frame {frame}"))?;
-        let size = raster.domain.storage_size;
-        if (size.width, size.height) != (width, height) {
-            return Err(anyhow!(
-                "unexpected frame {frame} dimensions {}x{} (expected {width}x{height})",
-                size.width,
-                size.height,
-            ));
+    let report = render.run(&mut |progress| {
+        if progress.frame == 1
+            || progress.frame == progress.total_frames
+            || (progress.frame - 1).is_multiple_of(60)
+        {
+            println!(
+                "progress frame={}/{}",
+                progress.frame, progress.total_frames
+            );
         }
-        let texture = renderer
-            .gpu_renderer()
-            .texture(raster.texture)
-            .ok_or_else(|| anyhow!("render output texture {:?} is unavailable", raster.texture))?;
-        let video_frame = target
-            .convert(renderer.gpu_renderer(), texture, Some(i64::from(frame)))
-            .with_context(|| format!("NV12 conversion failed at frame {frame}"))?;
-        timings.render_ms = timings
-            .render_ms
-            .saturating_add(render_frame_started.elapsed().as_millis());
-
-        let flush_started = Instant::now();
-        renderer
-            .gpu_renderer()
-            .device
-            .poll(lumen_gpu::wgpu::PollType::Poll)?;
-        timings.flush_ms = timings
-            .flush_ms
-            .saturating_add(flush_started.elapsed().as_millis());
-
-        let encode_send_started = Instant::now();
-        encoder
-            .write_gpu_frame(&GpuVideoInput::Vulkan(&video_frame))
-            .map_err(|error| {
-                anyhow!("lumen-ffmpeg Vulkan encode failed at frame {frame}: {error}")
-            })?;
-        timings.encode_send_ms = timings
-            .encode_send_ms
-            .saturating_add(encode_send_started.elapsed().as_millis());
-
-        if frame == 0 || frame + 1 == total_frames || frame % 60 == 0 {
-            println!("progress frame={}/{}", frame + 1, total_frames);
-        }
-    }
-
-    if has_audio(&composition) {
-        let audio_started = Instant::now();
-        write_composited_audio_direct(&composition, &media_store, &mut encoder)?;
-        timings.audio_mix_ms = audio_started.elapsed().as_millis();
-    }
-
-    let encode_finish_started = Instant::now();
-    encoder
-        .finish()
-        .map_err(|error| anyhow!("lumen-ffmpeg Vulkan encoder finish failed: {error}"))?;
-    timings.encode_finish_ms = encode_finish_started.elapsed().as_millis();
-
-    let total_ms = render_started.elapsed().as_millis();
-    println!(
-        "render complete frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms=0 encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} {}",
-        total_frames,
-        timings.audio_mix_ms,
-        timings.bind_ms,
-        timings.upload_ms,
-        timings.render_ms,
-        timings.flush_ms,
-        timings.encode_send_ms,
-        timings.encode_finish_ms,
-        total_ms,
-        renderer.plan_cache_bytes(),
-        cached_pass_summary(&renderer, total_frames),
-    );
+    })?;
+    println!("{}", render_summary(&report));
     Ok(())
 }
 
-fn write_composited_audio(
-    composition: &Composition,
-    media_store: &LocalMediaStore,
-    encoder: &LumenFfmpegEncoder,
-) -> Result<()> {
-    let Some(audio) = composition.audio() else {
-        return Ok(());
-    };
-
-    let total_samples = duration_samples(
-        composition.timeline().duration_frames,
-        composition.timeline().fps,
-    );
-    let mixer = AudioMixer::new(audio, media_store);
-    let mut start_sample = 0_u64;
-    let chunk_frames = (AUDIO_SAMPLE_RATE as usize).saturating_mul(30);
-
-    while start_sample < total_samples {
-        let frames = usize::try_from((total_samples - start_sample).min(chunk_frames as u64))
-            .unwrap_or(chunk_frames);
-        let mixed = mixer
-            .mix_range(start_sample, frames)
-            .map_err(|err| anyhow!("audio mix failed at sample {start_sample}: {err}"))?;
-        encoder.send_audio(audio_frame_from_buffer(&mixed))?;
-        start_sample = start_sample.saturating_add(frames as u64);
-    }
-
-    Ok(())
-}
-
-#[cfg(any(all(target_os = "macos", feature = "metal"), target_os = "linux"))]
-fn write_composited_audio_direct(
-    composition: &Composition,
-    media_store: &LocalMediaStore,
-    encoder: &mut MuxedEncoder,
-) -> Result<()> {
-    let Some(audio) = composition.audio() else {
-        return Ok(());
-    };
-
-    let total_samples = duration_samples(
-        composition.timeline().duration_frames,
-        composition.timeline().fps,
-    );
-    let mixer = AudioMixer::new(audio, media_store);
-    let mut start_sample = 0_u64;
-    let chunk_frames = (AUDIO_SAMPLE_RATE as usize).saturating_mul(30);
-
-    while start_sample < total_samples {
-        let frames = usize::try_from((total_samples - start_sample).min(chunk_frames as u64))
-            .unwrap_or(chunk_frames);
-        let mixed = mixer
-            .mix_range(start_sample, frames)
-            .map_err(|err| anyhow!("audio mix failed at sample {start_sample}: {err}"))?;
-        encoder
-            .write_audio_frame(&audio_frame_from_buffer(&mixed))
-            .map_err(|error| anyhow!("lumen-ffmpeg audio encode failed: {error}"))?;
-        start_sample = start_sample.saturating_add(frames as u64);
-    }
-
-    Ok(())
-}
-
-fn has_audio(composition: &Composition) -> bool {
-    composition
-        .audio()
-        .as_ref()
-        .is_some_and(|audio| !audio.clips.is_empty())
-}
-
-fn audio_frame_from_buffer(buffer: &lumen_engine::audio::AudioBuffer) -> AudioFrame {
-    AudioFrame {
-        sample_rate: AUDIO_SAMPLE_RATE,
-        channels: buffer.channel_count() as u16,
-        samples: buffer.frames(),
-        interleaved_f32: buffer.interleaved_f32(),
-    }
+/// The summary line, with passes per frame: those skipped because their output was kept from an
+/// earlier frame, out of those in the plans rendered.
+fn render_summary(report: &RenderReport) -> String {
+    let millis = |duration: Duration| duration.as_millis();
+    let timing = &report.timing;
+    let frames = f64::from(report.frames.max(1));
+    format!(
+        "render complete frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} static_cached={:.1} passes={:.1}",
+        report.frames,
+        millis(timing.audio_mix),
+        millis(timing.bind),
+        millis(timing.upload),
+        millis(timing.render),
+        millis(timing.flush),
+        millis(timing.readback),
+        millis(timing.encode_send),
+        millis(timing.encode_finish),
+        millis(timing.total),
+        report.plan_cache_bytes,
+        report.cached_passes as f64 / frames,
+        report.submitted_passes as f64 / frames,
+    )
 }
 
 /// PNG holds straight alpha, so colour is divided back out of premultiplied pixels. Fully
@@ -1322,72 +401,6 @@ fn media_root(override_root: Option<&Path>) -> Result<PathBuf> {
         .with_context(|| format!("failed to canonicalize media root {}", root.display()))
 }
 
-fn video_resolver_options_from_env() -> FfmpegResolverOptions {
-    FfmpegResolverOptions::with_hardware_decode(
-        env::var("LUMEN_HARDWARE_DECODE")
-            .ok()
-            .map(|value| matches_flag(&value))
-            .unwrap_or_default(),
-    )
-}
-
-fn matches_flag(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-fn resolve_local_path_with_root(source: &str, root: &Path) -> Result<PathBuf> {
-    if source.starts_with("http://") || source.starts_with("https://") {
-        return Err(anyhow!(
-            "remote media source `{source}` is not supported by lumen-local"
-        ));
-    }
-
-    if source.contains("://") && !source.starts_with("file://") {
-        return Err(anyhow!("unsupported URI scheme for `{source}`"));
-    }
-
-    let raw_path = source.strip_prefix("file://").unwrap_or(source);
-    let path = Path::new(raw_path);
-
-    if path.as_os_str().is_empty() {
-        return Err(anyhow!("asset path must not be empty"));
-    }
-
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err(anyhow!(
-            "parent traversal is not allowed in asset paths: `{source}`"
-        ));
-    }
-
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    };
-
-    let candidate = candidate.canonicalize().with_context(|| {
-        format!(
-            "failed to canonicalize asset path `{}`",
-            candidate.display()
-        )
-    })?;
-
-    if !candidate.starts_with(root) {
-        return Err(anyhow!(
-            "asset path escapes allowed media root: `{}`",
-            candidate.display()
-        ));
-    }
-
-    Ok(candidate)
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -1395,12 +408,8 @@ mod tests {
     use std::{fs, path::Path};
 
     use clap::{CommandFactory, Parser};
-    use lumen_engine::media::MediaStore;
 
-    use super::{
-        Cli, EncoderQuality, LocalMediaStore, RateControl, parse_bitrate, render_to_partial,
-        resolve_local_path_with_root,
-    };
+    use super::{Cli, EncoderQuality, RateControl, parse_bitrate, render_to_partial};
 
     #[test]
     fn failed_renders_leave_no_partial_file_and_keep_earlier_output() {
@@ -1712,48 +721,5 @@ mod tests {
         assert!(parse_bitrate("0").is_err());
         assert!(parse_bitrate("fast").is_err());
         assert!(parse_bitrate("18446744073709551615M").is_err());
-    }
-
-    #[test]
-    fn reject_parent_traversal_paths() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let error = resolve_local_path_with_root("../secret.png", tmp.path())
-            .expect_err("traversal should fail");
-        assert!(error.to_string().contains("parent traversal"));
-    }
-
-    #[test]
-    fn reject_remote_sources() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let error = resolve_local_path_with_root("https://example.com/image.png", tmp.path())
-            .expect_err("remote source should fail");
-        assert!(error.to_string().contains("remote media source"));
-    }
-
-    #[test]
-    fn media_lookups_report_why_a_source_failed() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let root = tmp.path().canonicalize().expect("root");
-        fs::write(root.join("corrupt.png"), b"not a png").expect("fixture");
-        let store = LocalMediaStore::new(root.clone(), None);
-        let failure = |source: &str| match store.get_image_resolver(source) {
-            Ok(_) => panic!("{source} should not open"),
-            Err(error) => error.to_string(),
-        };
-
-        assert_eq!(
-            failure("missing.png"),
-            format!(
-                "media source `missing.png` not found: failed to canonicalize asset path `{}`: No such file or directory (os error 2)",
-                root.join("missing.png").display()
-            )
-        );
-        assert_eq!(
-            failure("corrupt.png"),
-            format!(
-                "media decoding failed for {}: failed decoding image source: The image format could not be determined",
-                root.join("corrupt.png").display()
-            )
-        );
     }
 }
