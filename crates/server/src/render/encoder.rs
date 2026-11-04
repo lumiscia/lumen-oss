@@ -145,6 +145,17 @@ impl LumenFfmpegEncoder {
     }
 }
 
+/// A render abandoned on an error still waits for the writer, as its FFmpeg device holds room in
+/// the budget until it closes.
+impl Drop for LumenFfmpegEncoder {
+    fn drop(&mut self) {
+        self.message_tx.take();
+        if let Some(writer) = self.writer_handle.take() {
+            let _ = writer.join();
+        }
+    }
+}
+
 pub(super) fn write_composited_audio(
     composition: &Composition,
     media_store: &LocalMediaStore,
@@ -196,5 +207,36 @@ fn audio_frame_from_buffer(buffer: &AudioBuffer) -> AudioFrame {
         channels: buffer.channel_count() as u16,
         samples: buffer.frames(),
         interleaved_f32: buffer.interleaved_f32(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
+
+    use super::*;
+
+    #[test]
+    fn dropping_an_encoder_waits_for_its_writer_to_close() {
+        let (message_tx, message_rx) = mpsc::sync_channel::<EncoderMessage>(1);
+        let closed = Arc::new(AtomicBool::new(false));
+        let writer_closed = Arc::clone(&closed);
+        let writer_handle = thread::spawn(move || {
+            while message_rx.recv().is_ok() {}
+            thread::sleep(Duration::from_millis(50));
+            writer_closed.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        drop(LumenFfmpegEncoder {
+            message_tx: Some(message_tx),
+            writer_handle: Some(writer_handle),
+        });
+        assert!(closed.load(Ordering::SeqCst));
     }
 }

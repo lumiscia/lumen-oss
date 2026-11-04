@@ -38,8 +38,15 @@ pub(super) fn reserve_devices(
 
 struct DeviceBudget {
     capacity: u32,
-    used: Mutex<u32>,
+    state: Mutex<BudgetState>,
     freed: Condvar,
+}
+
+/// Renders start in the order they asked, so a stream of small ones can't hold back a large one.
+struct BudgetState {
+    used: u32,
+    next_ticket: u64,
+    serving: u64,
 }
 
 pub(super) struct DeviceReservation<'a> {
@@ -51,28 +58,36 @@ impl DeviceBudget {
     const fn new(capacity: u32) -> Self {
         Self {
             capacity,
-            used: Mutex::new(0),
+            state: Mutex::new(BudgetState {
+                used: 0,
+                next_ticket: 0,
+                serving: 0,
+            }),
             freed: Condvar::new(),
         }
     }
 
     fn reserve(&self, contexts: u32) -> DeviceReservation<'_> {
         let contexts = contexts.min(self.capacity);
-        let mut used = self.used.lock().unwrap_or_else(PoisonError::into_inner);
-        if *used + contexts > self.capacity {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let ticket = state.next_ticket;
+        state.next_ticket += 1;
+        if state.serving != ticket || state.used + contexts > self.capacity {
             tracing::info!(
                 contexts,
-                used = *used,
+                used = state.used,
                 "render waiting for room for its GPU devices"
             );
         }
-        while *used + contexts > self.capacity {
-            used = self
+        while state.serving != ticket || state.used + contexts > self.capacity {
+            state = self
                 .freed
-                .wait(used)
+                .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        *used += contexts;
+        state.used += contexts;
+        state.serving += 1;
+        self.freed.notify_all();
         DeviceReservation {
             budget: self,
             contexts,
@@ -82,11 +97,11 @@ impl DeviceBudget {
 
 impl Drop for DeviceReservation<'_> {
     fn drop(&mut self) {
-        *self
-            .budget
-            .used
+        self.budget
+            .state
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) -= self.contexts;
+            .unwrap_or_else(PoisonError::into_inner)
+            .used -= self.contexts;
         self.budget.freed.notify_all();
     }
 }
@@ -112,14 +127,40 @@ mod tests {
             drop(first);
             waiting.recv_timeout(Duration::from_secs(10)).unwrap();
         });
-        assert_eq!(*budget.used.lock().unwrap(), 0);
+        assert_eq!(budget.state.lock().unwrap().used, 0);
     }
 
     #[test]
     fn a_render_larger_than_the_budget_still_runs_alone() {
         let budget = DeviceBudget::new(10);
         let reservation = budget.reserve(12);
-        assert_eq!(*budget.used.lock().unwrap(), 10);
+        assert_eq!(budget.state.lock().unwrap().used, 10);
         drop(reservation);
+    }
+
+    #[test]
+    fn a_small_render_does_not_pass_a_large_one_waiting() {
+        let budget = DeviceBudget::new(10);
+        let first = budget.reserve(6);
+        std::thread::scope(|scope| {
+            let (started, order) = mpsc::channel();
+            let budget = &budget;
+            let large_started = started.clone();
+            scope.spawn(move || {
+                let _large = budget.reserve(6);
+                large_started.send("large").unwrap();
+            });
+            while budget.state.lock().unwrap().next_ticket < 2 {
+                std::thread::yield_now();
+            }
+            scope.spawn(move || {
+                let _small = budget.reserve(4);
+                started.send("small").unwrap();
+            });
+            assert!(order.recv_timeout(Duration::from_millis(100)).is_err());
+            drop(first);
+            assert_eq!(order.recv_timeout(Duration::from_secs(10)), Ok("large"));
+            assert_eq!(order.recv_timeout(Duration::from_secs(10)), Ok("small"));
+        });
     }
 }
