@@ -681,6 +681,7 @@ pub(crate) fn record_text(
     compiled.bind_text(&bind, &mut cx.bound, false)?;
     let drawn = compiled.drawn();
 
+    cx.bound.keep_recorded_atlas_regions();
     let uploads = cx.bound.take_buffer_uploads();
     let part = |id: lumen_gpu::BufferId| {
         uploads

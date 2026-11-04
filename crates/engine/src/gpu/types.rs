@@ -120,6 +120,8 @@ pub struct BoundFrame {
     pub(crate) renderer_binding: Option<(u64, super::renderer::CompiledPlanKey)>,
     /// Glyph instances of a recorded frame, already copied to its bump buffer.
     recorded_uploads: Vec<(lumen_gpu::BufferId, u64, Vec<u8>)>,
+    /// How many texture writes are the atlas regions of a recorded frame's text.
+    recorded_atlas_regions: usize,
     /// The bind sequence of a frame recorded rather than bound to a plan.
     pub(crate) recorded: Option<u64>,
     /// Which nodes were bound, when bound against a renderer's kept output.
@@ -178,6 +180,16 @@ impl BoundFrame {
         uploads: impl IntoIterator<Item = (lumen_gpu::BufferId, u64, Vec<u8>)>,
     ) {
         self.recorded_uploads.extend(uploads);
+    }
+
+    /// Marks the texture writes so far as atlas regions text placed in a recorded frame.
+    pub(crate) fn keep_recorded_atlas_regions(&mut self) {
+        self.recorded_atlas_regions = self.texture_uploads.len();
+    }
+
+    /// Whether a buffer or texture write was added to a recorded frame after it was recorded.
+    pub(crate) fn has_added_writes(&self) -> bool {
+        !self.buffer_uploads.is_empty() || self.texture_uploads.len() != self.recorded_atlas_regions
     }
 
     /// Writes the atlas regions text placed this frame into `atlas`.

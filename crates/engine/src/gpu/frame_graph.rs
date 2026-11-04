@@ -439,6 +439,8 @@ impl FrameGraph {
             self.reset();
             self.state.fingerprint = Some(fingerprint);
         }
+        // What an earlier compile built stays cached, and no frame in hand still needs it pinned.
+        self.recorder.begin_frame();
         let mut programs = Programs {
             rec: &mut self.recorder,
             st: &mut self.state,
@@ -472,11 +474,11 @@ impl FrameGraph {
         bound: &BoundFrame,
         atlas_texture: Option<&wgpu::Texture>,
     ) -> crate::Result<()> {
-        if !bound.media_textures().is_empty() {
+        if !bound.media_textures().is_empty() || bound.has_added_writes() {
             self.forget_unbound_media();
             return Err(RenderError::Gpu {
-                details: "a recorded frame binds its media itself; it has no texture for an \
-                          upload added to it"
+                details: "a recorded frame writes its own buffers, textures and media; it has \
+                          no resource for an upload added to it"
                     .to_string(),
             }
             .into());

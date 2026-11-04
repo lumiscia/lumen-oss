@@ -430,3 +430,57 @@ fn releasing_resources_frees_what_recording_held_and_it_renders_again() {
         first.rgba
     );
 }
+
+#[test]
+fn compiling_without_rendering_keeps_the_program_cache_bounded() {
+    const LIMIT: usize = 64;
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    recording(&mut renderer);
+    for edit in 0..LIMIT as u32 * 2 {
+        let shader = format!(
+            "const EDIT: u32 = {edit}u;\n\
+             @compute @workgroup_size(8, 8, 1)\n\
+             fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {{\n\
+               textureStore(output, vec2<i32>(id.xy), vec4<f32>(f32(EDIT) * 0.0));\n\
+             }}"
+        );
+        let composition = scene(
+            (8, 8),
+            json!([
+                { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } },
+                { "id": 2, "type": "wgsl_shader", "in": { "source": 1 }, "params": { "shader": shader } }
+            ]),
+        )
+        .into();
+        compile(&mut renderer, &composition).unwrap();
+    }
+    let programs = renderer.frame_graph_stats().unwrap().programs;
+    assert!(programs <= LIMIT + 8, "{programs} programs after compiling");
+}
+
+#[test]
+fn a_write_added_to_a_recorded_frame_is_refused() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    recording(&mut renderer);
+    let composition = every_program().into();
+    let media = TestMedia::default();
+
+    let mut bound = renderer.bind_frame_at(&composition, 1.0, &media).unwrap();
+    bound.write_buffer(lumen_gpu::BufferId(u32::MAX), 0, [0u8; 4]);
+    assert!(renderer.submit_bound_frame(&bound).is_err());
+
+    let mut bound = renderer.bind_frame_at(&composition, 2.0, &media).unwrap();
+    bound.write_texture_rgba8_region(
+        lumen_gpu::TextureId(u32::MAX),
+        [0u8; 4],
+        [0, 0, 0],
+        lumen_gpu::Size::new(1, 1),
+        4,
+        1,
+    );
+    assert!(renderer.submit_bound_frame(&bound).is_err());
+
+    render(&mut renderer, &composition, 3.0, &media);
+}
