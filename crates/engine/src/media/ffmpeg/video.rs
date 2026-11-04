@@ -57,7 +57,7 @@ impl VideoDecodeWorker {
             return Ok(cached);
         }
 
-        let decoded = self.decoder.decode_frame(frame)?;
+        let decoded = self.decoder.decode_frame(frame, &mut self.cache)?;
         self.cache.insert(frame, decoded.clone(), false);
         Ok(decoded)
     }
@@ -90,17 +90,16 @@ impl VideoDecodeWorker {
                 reason,
                 "hardware decode failed, decoding this source on the CPU"
             );
-            self.decoder.options.prefer_hardware_decode = false;
-            self.decoder.reopen()?;
+            self.decoder.move_to_cpu(&mut self.cache)?;
         }
-        // A source that moved to the CPU on a decode failure may still have GPU frames cached.
+        // A reopen that found the hardware decoder gone may have left GPU frames cached.
         self.cache.retain(&[]);
         self.resolve_frame(frame)
     }
 
     fn prefetch_frame(&mut self, frame: u32) {
         if !self.cache.contains(frame)
-            && let Ok(decoded) = self.decoder.decode_frame(frame)
+            && let Ok(decoded) = self.decoder.decode_frame(frame, &mut self.cache)
         {
             self.cache.insert(frame, decoded, true);
         }
@@ -124,7 +123,9 @@ struct LibavStreamDecoder {
     time_base_seconds: f64,
     start_time: i64,
     input: InputContext,
-    decoder: VideoDecoder,
+    /// `None` between releasing a failed hardware decoder and opening its CPU replacement, and after
+    /// that replacement failed to open.
+    decoder: Option<VideoDecoder>,
     next_frame_hint: u32,
     sent_eof: bool,
     gpu_decode_status: GpuDecodeStatus,
@@ -256,7 +257,7 @@ impl LibavStreamDecoder {
             time_base_seconds,
             start_time: stream.start_time,
             input,
-            decoder,
+            decoder: Some(decoder),
             next_frame_hint: 0,
             sent_eof: false,
             gpu_decode_status,
@@ -286,7 +287,11 @@ impl LibavStreamDecoder {
         }
     }
 
-    fn decode_frame(&mut self, frame: u32) -> Result<MediaFrame, MediaError> {
+    fn decode_frame(
+        &mut self,
+        frame: u32,
+        cache: &mut FrameLruCache,
+    ) -> Result<MediaFrame, MediaError> {
         if frame >= self.frame_count {
             return Err(MediaError::FrameOutOfRange {
                 media_source: self.source.clone(),
@@ -320,9 +325,10 @@ impl LibavStreamDecoder {
                         error = %primary_error,
                         "hardware decode failed, decoding this source on the CPU"
                     );
-                    self.options.prefer_hardware_decode = false;
+                    self.move_to_cpu(cache)?;
+                } else {
+                    self.reopen()?;
                 }
-                self.reopen()?;
                 self.seek_to_frame(frame)?;
                 self.decode_frame_inner(frame).map_err(|fallback_error| {
                     if hardware_failed
@@ -353,18 +359,20 @@ impl LibavStreamDecoder {
 
             match self.input.read_packet() {
                 Ok(Some(packet)) => {
-                    self.decoder
-                        .send_packet(&packet)
-                        .map_err(|err| MediaError::Decode {
+                    self.open_decoder()?.send_packet(&packet).map_err(|err| {
+                        MediaError::Decode {
                             media_source: self.source.clone(),
                             details: format!("failed sending packet to decoder: {err}"),
-                        })?;
+                        }
+                    })?;
                 }
                 Ok(None) => {
-                    self.decoder.send_eof().map_err(|err| MediaError::Decode {
-                        media_source: self.source.clone(),
-                        details: format!("failed sending decoder EOF: {err}"),
-                    })?;
+                    self.open_decoder()?
+                        .send_eof()
+                        .map_err(|err| MediaError::Decode {
+                            media_source: self.source.clone(),
+                            details: format!("failed sending decoder EOF: {err}"),
+                        })?;
                     self.sent_eof = true;
                 }
                 Err(err) => {
@@ -383,7 +391,7 @@ impl LibavStreamDecoder {
     ) -> Result<Option<MediaFrame>, MediaError> {
         loop {
             if matches!(self.gpu_decode_status, GpuDecodeStatus::Active { .. }) {
-                match self.decoder.receive_gpu_frame() {
+                match self.open_decoder()?.receive_gpu_frame() {
                     Ok(Some(decoded)) => {
                         let decoded_frame = self.frame_for_pts(decoded.pts());
                         self.next_frame_hint = decoded_frame.saturating_add(1);
@@ -404,7 +412,7 @@ impl LibavStreamDecoder {
                     }
                 }
             } else {
-                match self.decoder.receive_rgba_frame() {
+                match self.open_decoder()?.receive_rgba_frame() {
                     Ok(Some(decoded)) => {
                         let decoded_frame = self.frame_for_pts(decoded.pts);
                         self.next_frame_hint = decoded_frame.saturating_add(1);
@@ -471,7 +479,11 @@ impl LibavStreamDecoder {
         }
 
         let mut rgba = decoded.data;
-        if self.decoder.last_frame_had_alpha() {
+        if self
+            .decoder
+            .as_ref()
+            .is_some_and(VideoDecoder::last_frame_had_alpha)
+        {
             premultiply_rgba_in_place_if_needed(&mut rgba);
         }
         Ok(Arc::new(CpuMediaFrame {
@@ -502,7 +514,9 @@ impl LibavStreamDecoder {
                     details: format!("seek failed: {err}"),
                 })?;
         }
-        self.decoder.flush();
+        if let Some(decoder) = &mut self.decoder {
+            decoder.flush();
+        }
         self.sent_eof = false;
         self.next_frame_hint = target_frame;
         Ok(())
@@ -524,6 +538,24 @@ impl LibavStreamDecoder {
 
     fn frame_bytes(&self) -> usize {
         self.width as usize * self.height as usize * 4
+    }
+
+    fn open_decoder(&mut self) -> Result<&mut VideoDecoder, MediaError> {
+        self.decoder.as_mut().ok_or_else(|| MediaError::Decode {
+            media_source: self.source.clone(),
+            details: "the CPU decoder that replaces the hardware one is not open".to_string(),
+        })
+    }
+
+    /// Moves the source to the CPU. Cached GPU frames and the hardware decoder go first, as they
+    /// hold the file descriptors the replacement may need to open. If it still can't open, the next
+    /// decode tries again.
+    fn move_to_cpu(&mut self, cache: &mut FrameLruCache) -> Result<(), MediaError> {
+        self.options.prefer_hardware_decode = false;
+        self.gpu_decode_status = GpuDecodeStatus::NotRequested;
+        cache.retain(&[]);
+        self.decoder = None;
+        self.reopen()
     }
 
     fn reopen(&mut self) -> Result<(), MediaError> {
@@ -1149,7 +1181,9 @@ mod tests {
         };
 
         for frame in [5, 6, 2] {
-            let decoded = decoder.decode_frame(frame).expect("decode on the CPU");
+            let decoded = decoder
+                .decode_frame(frame, &mut FrameLruCache::default())
+                .expect("decode on the CPU");
             assert_eq!(frame_index(&decoded), frame);
             assert!(!decoder.options.prefer_hardware_decode);
             assert!(!matches!(
@@ -1166,6 +1200,39 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_hardware_decoder_is_released_before_its_replacement_opens() {
+        let Some(path) = encode_counting_clip("release_first.mp4", &[]) else {
+            return;
+        };
+        let source = path.to_string_lossy().to_string();
+        let mut decoder =
+            LibavStreamDecoder::open(source.clone(), Default::default()).expect("open clip");
+        let cached = decoder
+            .decode_frame(2, &mut FrameLruCache::default())
+            .expect("frame to retire");
+        decoder.options.prefer_hardware_decode = true;
+        decoder.gpu_decode_status = GpuDecodeStatus::Active {
+            backend: GpuBackend::Vulkan,
+        };
+        let mut worker = VideoDecodeWorker::new(decoder);
+        worker.cache.insert(2, cached, false);
+
+        // A source that can't reopen stands in for one out of file descriptors.
+        worker.decoder.source = format!("{source}.missing");
+        worker.resolve_frame(3).unwrap_err();
+        assert!(worker.decoder.decoder.is_none());
+        assert!(!worker.cache.contains(2));
+        worker.resolve_frame(3).unwrap_err();
+
+        worker.decoder.source = source;
+        let decoded = worker
+            .resolve_frame(3)
+            .expect("the next decode tries again");
+        assert_eq!(frame_index(&decoded), 3);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn a_frame_the_renderer_rejects_moves_the_source_to_the_cpu_and_drops_cached_gpu_frames() {
         let Some(path) = encode_counting_clip("import_failure.mp4", &[]) else {
             return;
@@ -1173,7 +1240,9 @@ mod tests {
         let mut decoder =
             LibavStreamDecoder::open(path.to_string_lossy().to_string(), Default::default())
                 .expect("open clip");
-        let cached = decoder.decode_frame(8).expect("frame to retire");
+        let cached = decoder
+            .decode_frame(8, &mut FrameLruCache::default())
+            .expect("frame to retire");
         decoder.gpu_decode_status = GpuDecodeStatus::Active {
             backend: GpuBackend::Vulkan,
         };
