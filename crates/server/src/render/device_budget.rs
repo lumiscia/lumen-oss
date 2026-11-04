@@ -70,15 +70,17 @@ impl DeviceBudget {
     fn reserve(&self, contexts: u32) -> DeviceReservation<'_> {
         let contexts = contexts.min(self.capacity);
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let ticket = state.next_ticket;
-        state.next_ticket += 1;
-        if state.serving != ticket || state.used + contexts > self.capacity {
+        if state.serving != state.next_ticket || state.used + contexts > self.capacity {
             tracing::info!(
                 contexts,
                 used = state.used,
                 "render waiting for room for its GPU devices"
             );
         }
+        // Nothing that can panic runs from here until the ticket is served, as a ticket never
+        // served would hold up every render behind it.
+        let ticket = state.next_ticket;
+        state.next_ticket += 1;
         while state.serving != ticket || state.used + contexts > self.capacity {
             state = self
                 .freed
