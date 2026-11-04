@@ -270,6 +270,7 @@ impl RecordState {
     ) -> crate::Result<CachedShader> {
         let tick = self.tick;
         let key = (Arc::<str>::from(source), inputs);
+        let cached = self.shaders.len();
         let entry = match self.shaders.entry(key) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(vacant) => {
@@ -288,10 +289,13 @@ impl RecordState {
         };
         entry.last_used = tick;
         let shader = entry.shader.clone();
-        if self.shaders.len() > MAX_SHADERS {
+        // Only a new source evicts, and not what this frame used: a frame using more than the limit
+        // keeps them all, rather than compile again each frame.
+        if self.shaders.len() > cached && self.shaders.len() > MAX_SHADERS {
             let oldest = self
                 .shaders
                 .iter()
+                .filter(|(_, entry)| entry.last_used < tick)
                 .min_by_key(|(_, entry)| entry.last_used)
                 .map(|(key, _)| key.clone());
             if let Some(oldest) = oldest {
@@ -468,6 +472,15 @@ impl FrameGraph {
         bound: &BoundFrame,
         atlas_texture: Option<&wgpu::Texture>,
     ) -> crate::Result<()> {
+        if bound.media_textures().first().is_some() {
+            self.forget_unbound_media();
+            return Err(RenderError::Gpu {
+                details: "a recorded frame binds its media itself; it has no texture for an \
+                          upload added to it"
+                    .to_string(),
+            }
+            .into());
+        }
         for (tex, frame, size) in self.state.video_uploads.drain(..) {
             let rgba = fit_frame_to_rgba8(&frame, size.width, size.height);
             self.recorder.queue().write_texture(
@@ -486,7 +499,12 @@ impl FrameGraph {
         }
         bound.mark_uploaded()?;
         self.recorder.upload();
-        // The media cache frees what only it holds, so images this frame doesn't bind are let go.
+        self.forget_unbound_media();
+        Ok(())
+    }
+
+    /// The media cache frees what only it holds, so images this frame doesn't bind are let go.
+    fn forget_unbound_media(&mut self) {
         let tick = self.state.tick;
         let recorder = &mut self.recorder;
         self.state.media.retain(|_, (tex, last_used)| {
@@ -496,7 +514,6 @@ impl FrameGraph {
             }
             kept
         });
-        Ok(())
     }
 
     /// Commits what the frame retained after submitting its passes, and sweeps what idled.
@@ -555,6 +572,20 @@ impl FrameGraph {
         self.state.output
     }
 
+    /// The domain `node` of the root graph had in the frame last recorded.
+    pub(crate) fn node_domain(
+        &self,
+        composition: &Composition,
+        node: NodeId,
+    ) -> Option<TextureDomain> {
+        let graph = std::ptr::from_ref(composition.graph()) as usize;
+        let recorded =
+            self.state.memo.iter().find_map(|(key, raster)| {
+                (key.0 == graph && key.2 == node).then_some(raster.domain)
+            });
+        recorded.or_else(|| Some(self.state.slots.get(&(graph, node))?.raster.domain))
+    }
+
     pub(crate) fn output_desc(&self) -> Option<TextureDesc> {
         let raster = self.state.output?;
         let texture = self.recorder.texture(raster.tex);
@@ -567,6 +598,10 @@ impl FrameGraph {
 
     pub(crate) fn reset(&mut self) {
         self.drop_slots();
+        // A caller may hold the last frame of what is being replaced, so nothing writes it again.
+        if let Some(output) = self.state.output {
+            self.recorder.disown(output.tex);
+        }
         let state = &mut self.state;
         state.fingerprint = None;
         state.video_uploads.clear();
@@ -591,6 +626,16 @@ impl FrameGraph {
         if let Some(atlas) = state.atlas.take() {
             self.recorder.forget(atlas);
         }
+    }
+
+    /// Frees everything recording holds, as `reset` alone keeps its pool and programs for the next
+    /// composition.
+    pub(crate) fn release(&mut self) {
+        self.reset();
+        self.drop_pending();
+        self.state.transparent = None;
+        self.state.dummy_float = None;
+        self.recorder.release_all();
     }
 
     /// Whether a family text named now resolves differently. Retained text doesn't shape again,
@@ -922,6 +967,15 @@ impl<'a> FrameCx<'a> {
             Some(bounds) => quantized_domain(display, bounds),
             None => TextureDomain::full_frame(display),
         }
+    }
+
+    /// A storage target that starts transparent, for a writer that may not cover all of it.
+    pub(crate) fn cleared_storage_target(&mut self, size: Size) -> TexRef {
+        let tex = self
+            .rec
+            .acquire(size, RGBA8, copyable_texture_desc(size).usage);
+        self.rec.clear(tex);
+        tex
     }
 
     pub(crate) fn storage_target(&mut self, size: Size) -> TexRef {

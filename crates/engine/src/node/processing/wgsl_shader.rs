@@ -805,7 +805,8 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
                 },
             )
         };
-        let tex = cx.storage_target(size);
+        // A shader need not write every pixel, and what it leaves must not be another node's.
+        let tex = cx.cleared_storage_target(size);
         let program = cx.dynamic_program("wgsl-shader", &shader)?;
         let uniform = cx.rec.uniform_bytes(&uniforms);
         let globals = cx.rec.uniform(&globals);

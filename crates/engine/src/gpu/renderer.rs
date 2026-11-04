@@ -320,6 +320,22 @@ impl GpuCompositionRenderer {
             .map_or_else(Vec::new, |graph| graph.recorder.frame_texture_sizes())
     }
 
+    /// The domain a node of the root graph had in the frame last recorded.
+    #[doc(hidden)]
+    pub fn recorded_domain(
+        &self,
+        composition: &Composition,
+        node: NodeId,
+    ) -> Option<lumen_gpu::TextureDomain> {
+        self.frame_graph.as_ref()?.node_domain(composition, node)
+    }
+
+    /// The shared text atlas, once a frame has needed one.
+    #[doc(hidden)]
+    pub fn text_atlas_texture(&self) -> Option<Arc<lumen_gpu::wgpu::Texture>> {
+        self.text_atlas_texture.clone()
+    }
+
     /// The passes the frame last recorded.
     #[doc(hidden)]
     pub fn recorded_pass_count(&self) -> usize {
@@ -386,6 +402,9 @@ impl GpuCompositionRenderer {
     /// Sets the estimated GPU memory compiled plans may hold. Rendering drops least recently used
     /// plans past it, and lookahead skips plans that would not fit. The current plan always stays.
     pub fn set_plan_cache_budget(&mut self, bytes: u64) {
+        if let Some(graph) = &mut self.frame_graph {
+            graph.recorder.set_pool_budget(bytes);
+        }
         self.plan_cache_budget = bytes;
         let active = self.active_key.clone();
         self.evict_over_budget(&[active.as_ref()]);
@@ -493,7 +512,8 @@ impl GpuCompositionRenderer {
     /// Retains the shared text atlas (64 MiB once allocated) and cached glyphs across recompilation.
     pub fn release_resources(&mut self) {
         if let Some(graph) = &mut self.frame_graph {
-            graph.reset();
+            graph.release();
+            self.renderer.clear_recorded_output();
         }
         self.bind_sequence += 1;
         self.media_texture_cache.destroy_all();
@@ -921,9 +941,9 @@ impl GpuCompositionRenderer {
                 }
                 .into());
             }
-            graph.upload(bound, self.text_atlas_texture.as_deref())?;
+            let result = graph.upload(bound, self.text_atlas_texture.as_deref());
             self.media_texture_cache.evict();
-            return Ok(());
+            return result;
         }
         if bound
             .renderer_binding

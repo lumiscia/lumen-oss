@@ -258,6 +258,11 @@ impl Renderer {
         }
     }
 
+    /// Lets go of the output from `set_recorded_output`.
+    pub fn clear_recorded_output(&mut self) {
+        self.textures.clear();
+    }
+
     /// An empty renderer on the same device that reuses programs this renderer and its other
     /// siblings compiled.
     pub fn sibling(&self) -> Self {
