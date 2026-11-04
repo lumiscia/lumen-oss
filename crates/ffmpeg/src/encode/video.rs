@@ -107,6 +107,7 @@ pub(crate) struct VideoEncoder {
     stream_time_base: sys::AVRational,
     context: *mut sys::AVCodecContext,
     pub(in crate::encode) transport: Transport,
+    sent_frame: bool,
 }
 
 unsafe impl Send for VideoEncoder {}
@@ -281,6 +282,7 @@ impl VideoEncoder {
             stream_time_base: time_base,
             context: context_guard.release(),
             transport,
+            sent_frame: false,
         })
     }
 
@@ -364,7 +366,12 @@ impl VideoEncoder {
         self.send_frame(output, frame)
     }
 
+    /// Drains the encoder. One that never got a frame has nothing to drain, and FFmpeg's Vulkan
+    /// encoders read their last frame on a flush, so they would crash on a null pointer.
     pub(in crate::encode) fn flush(&mut self, output: &mut OutputContext) -> Result<()> {
+        if !self.sent_frame {
+            return Ok(());
+        }
         self.send_frame(output, ptr::null())
     }
 
@@ -376,7 +383,9 @@ impl VideoEncoder {
             self.stream_index,
             self.stream_time_base,
             1,
-        )
+        )?;
+        self.sent_frame = true;
+        Ok(())
     }
 }
 

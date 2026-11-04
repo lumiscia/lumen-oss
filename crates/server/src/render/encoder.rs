@@ -27,6 +27,7 @@ pub(super) struct EncoderFrame {
 enum EncoderMessage {
     Video(EncoderFrame),
     Audio(AudioFrame),
+    Finish,
 }
 
 pub(super) struct LumenFfmpegEncoder {
@@ -82,8 +83,15 @@ impl LumenFfmpegEncoder {
                     return Ok(());
                 }
             };
+            // An encoder dropped without `finish` belongs to a render that failed, whose output
+            // nothing will read.
             while let Ok(message) = message_rx.recv() {
                 match message {
+                    EncoderMessage::Finish => {
+                        return encoder.finish().map_err(|error| {
+                            anyhow!("lumen-ffmpeg encoder finish failed: {error}")
+                        });
+                    }
                     EncoderMessage::Video(frame) => {
                         let frame_index = frame.frame;
                         let cpu_frame = CpuVideoFrame {
@@ -106,9 +114,7 @@ impl LumenFfmpegEncoder {
                     }
                 }
             }
-            encoder
-                .finish()
-                .map_err(|error| anyhow!("lumen-ffmpeg encoder finish failed: {error}"))
+            Ok(())
         });
         startup_rx
             .recv()
@@ -136,7 +142,10 @@ impl LumenFfmpegEncoder {
     }
 
     pub(super) fn finish(mut self) -> anyhow::Result<()> {
-        self.message_tx.take();
+        // The writer stops by itself if it already failed, and its join below reports why.
+        if let Some(message_tx) = self.message_tx.take() {
+            let _ = message_tx.send(EncoderMessage::Finish);
+        }
         self.writer_handle
             .take()
             .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer thread missing"))?
