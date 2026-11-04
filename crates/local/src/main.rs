@@ -529,6 +529,7 @@ fn main() {
         )
         .with_writer(std::io::stderr)
         .init();
+    lumen_ffmpeg::raise_open_file_limit();
     if let Err(error) = run(Cli::parse()) {
         eprintln!("lumen-local failed: {error:#}");
         std::process::exit(1);

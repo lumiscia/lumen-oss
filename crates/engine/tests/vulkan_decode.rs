@@ -622,3 +622,27 @@ fn a_frame_the_renderer_cannot_import_moves_its_source_to_the_cpu() {
     let resolver = store.resolver(&source);
     assert!(matches!(resolver.frame(5), Ok(MediaFrame::CpuRgba(_))));
 }
+
+#[test]
+fn a_source_that_drew_from_the_gpu_fails_rather_than_moving_to_the_cpu() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let Some(clip) = playback_clips(directory.path()).into_iter().next() else {
+        return;
+    };
+    let source = clip.to_string_lossy();
+    let Some((_renderer, store)) = hardware() else {
+        return;
+    };
+    if !decodes_on_hardware(&store, &clip) {
+        return;
+    }
+    let resolver = store.resolver(&source);
+    let Ok(MediaFrame::GpuVideo(frame)) = resolver.frame(1) else {
+        panic!("frame 1 should decode on the GPU like frame 0");
+    };
+
+    let error = frame.decode_on_cpu("test").unwrap_err().to_string();
+
+    assert!(error.contains("would change"), "{error}");
+    assert!(matches!(resolver.frame(2), Ok(MediaFrame::GpuVideo(_))));
+}

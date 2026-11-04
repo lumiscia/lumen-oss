@@ -44,7 +44,8 @@ impl GpuVideoMediaFrame {
     }
 
     /// Moves this frame's source to the CPU for good and decodes the frame there, for when the
-    /// renderer couldn't use the GPU frame because of `reason`.
+    /// renderer couldn't use the GPU frame because of `reason`. Fails once the renderer has drawn
+    /// other frames of the source from the GPU, as a move would change its pixels partway through.
     pub fn decode_on_cpu(&self, reason: &str) -> Result<Arc<CpuMediaFrame>, MediaError> {
         match (self.cpu_retry)(reason)? {
             MediaFrame::CpuRgba(frame) => Ok(frame),

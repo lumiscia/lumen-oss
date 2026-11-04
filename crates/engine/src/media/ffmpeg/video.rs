@@ -62,12 +62,25 @@ impl VideoDecodeWorker {
         Ok(decoded)
     }
 
+    /// Decodes a frame the renderer asked for and notes that it drew from the GPU.
+    fn request_frame(&mut self, frame: u32) -> Result<MediaFrame, MediaError> {
+        let decoded = self.resolve_frame(frame)?;
+        if matches!(decoded, MediaFrame::GpuVideo(_)) {
+            self.decoder.drawn_gpu_frames.note(frame);
+        }
+        Ok(decoded)
+    }
+
     fn has_room_to_prefetch(&self) -> bool {
         self.cache.has_room_for(self.decoder.frame_bytes())
     }
 
     /// Moves the source to the CPU, warning unless it is already there, and decodes `frame` on it.
+    /// Fails if the renderer has already drawn other frames of this source from the GPU.
     fn resolve_on_cpu(&mut self, frame: u32, reason: &str) -> Result<MediaFrame, MediaError> {
+        if self.decoder.drawn_gpu_frames.includes_other_than(frame) {
+            return Err(self.decoder.mid_render_failure(frame, reason));
+        }
         if matches!(
             self.decoder.gpu_decode_status,
             GpuDecodeStatus::Active { .. }
@@ -115,6 +128,35 @@ struct LibavStreamDecoder {
     next_frame_hint: u32,
     sent_eof: bool,
     gpu_decode_status: GpuDecodeStatus,
+    drawn_gpu_frames: DrawnGpuFrames,
+    /// A decode failure after GPU frames were drawn. The stream can't continue from a lost packet
+    /// and the CPU would change the pixels, so every later decode fails the same way.
+    mid_render_failure: Option<MediaError>,
+}
+
+/// Which of a source's GPU frames the renderer has asked for, as opposed to decoded ahead. Hardware
+/// and software decode differ by a few levels per channel. A source can move to the CPU until it has
+/// drawn from the GPU, and after that a move would change its pixels partway through a render.
+#[derive(Default)]
+struct DrawnGpuFrames {
+    first: Option<u32>,
+    others: bool,
+}
+
+impl DrawnGpuFrames {
+    fn note(&mut self, frame: u32) {
+        if *self.first.get_or_insert(frame) != frame {
+            self.others = true;
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.first.is_some()
+    }
+
+    fn includes_other_than(&self, frame: u32) -> bool {
+        self.others || self.first.is_some_and(|first| first != frame)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +260,21 @@ impl LibavStreamDecoder {
             next_frame_hint: 0,
             sent_eof: false,
             gpu_decode_status,
+            drawn_gpu_frames: DrawnGpuFrames::default(),
+            mid_render_failure: None,
         })
+    }
+
+    fn mid_render_failure(&self, frame: u32, cause: &str) -> MediaError {
+        MediaError::Decode {
+            media_source: self.source.clone(),
+            details: format!(
+                "hardware decode failed at source frame {frame}, after earlier frames were drawn \
+                 from the GPU. Finishing on the CPU would change this source's pixels partway \
+                 through the render, so the render stops. Retry it, or set \
+                 LUMEN_HARDWARE_DECODE=0 to decode on the CPU from the start: {cause}"
+            ),
+        }
     }
 
     fn metadata(&self) -> VideoMetadata {
@@ -239,6 +295,10 @@ impl LibavStreamDecoder {
             });
         }
 
+        if let Some(failure) = &self.mid_render_failure {
+            return Err(failure.clone());
+        }
+
         if self.should_seek(frame) {
             self.seek_to_frame(frame)?;
         }
@@ -249,6 +309,11 @@ impl LibavStreamDecoder {
                 let hardware_failed =
                     matches!(self.gpu_decode_status, GpuDecodeStatus::Active { .. })
                         && !matches!(primary_error, MediaError::FrameOutOfRange { .. });
+                if hardware_failed && self.drawn_gpu_frames.any() {
+                    let failure = self.mid_render_failure(frame, &primary_error.to_string());
+                    self.mid_render_failure = Some(failure.clone());
+                    return Err(failure);
+                }
                 if hardware_failed {
                     tracing::warn!(
                         source = self.source,
@@ -463,7 +528,16 @@ impl LibavStreamDecoder {
 
     fn reopen(&mut self) -> Result<(), MediaError> {
         let mut reopened = Self::open(self.source.clone(), self.options.clone())?;
+        if let Some(reason) = reopened.gpu_decode_status.unavailable_reason()
+            && self.drawn_gpu_frames.any()
+        {
+            let failure = self.mid_render_failure(self.next_frame_hint, reason);
+            self.mid_render_failure = Some(failure.clone());
+            return Err(failure);
+        }
         reopened.worker = self.worker.take();
+        reopened.drawn_gpu_frames = std::mem::take(&mut self.drawn_gpu_frames);
+        reopened.mid_render_failure = self.mid_render_failure.take();
         *self = reopened;
         Ok(())
     }
@@ -553,7 +627,7 @@ fn handle_worker_request(
         }
         WorkerRequest::Resolve { frame, response_tx } => {
             pending.remove(&frame);
-            let _ = response_tx.send(worker.resolve_frame(frame));
+            let _ = response_tx.send(worker.request_frame(frame));
             false
         }
         WorkerRequest::ResolveOnCpu {
