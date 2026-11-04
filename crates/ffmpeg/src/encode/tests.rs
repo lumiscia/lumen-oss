@@ -155,6 +155,26 @@ fn noisy_frame(width: u32, height: u32, seed: u32) -> CpuVideoFrame {
     }
 }
 
+/// A render that fails before its first frame still closes its encoder.
+#[cfg(ffmpeg_frame_cropping)]
+#[test]
+fn finishing_a_vulkan_encoder_that_got_no_frames_does_not_crash() {
+    for name in ["h264_vulkan", "av1_vulkan"] {
+        let path = temp_path("vulkan_no_frames", "mp4");
+        let config = VideoEncoderConfig::cpu_rgba(256, 144, 30, name);
+        let encoder = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+            Ok(encoder) => encoder,
+            Err(error) if vulkan_encode_unavailable(&error) => {
+                eprintln!("{name} unavailable ({error}); skipping");
+                continue;
+            }
+            Err(error) => panic!("{name} is available but failed to initialise: {error}"),
+        };
+        encoder.finish().expect("finish encode");
+        let _ = fs::remove_file(path);
+    }
+}
+
 #[test]
 fn unsupported_rate_control_errors_at_create() {
     let path = temp_path("unsupported_crf", "mp4");
