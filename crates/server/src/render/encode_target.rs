@@ -107,7 +107,12 @@ impl EncodeTarget {
                             devices,
                         });
                     }
-                    Err(error) => Some(anyhow::anyhow!(error.message)),
+                    Err(error) if error.code == "invalid_fps" => return Err(error),
+                    Err(error) => {
+                        // The failed renderer's device goes before its room in the budget does.
+                        media_store.video_options.vulkan_device = None;
+                        Some(anyhow::anyhow!(error.message))
+                    }
                 }
             }
             #[cfg(all(target_os = "macos", feature = "metal"))]
