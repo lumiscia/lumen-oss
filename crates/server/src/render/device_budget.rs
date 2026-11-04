@@ -149,7 +149,7 @@ mod tests {
             let budget = &budget;
             let large_started = started.clone();
             scope.spawn(move || {
-                let _large = budget.reserve(6);
+                let _large = budget.reserve(8);
                 large_started.send("large").unwrap();
             });
             while budget.state.lock().unwrap().next_ticket < 2 {
