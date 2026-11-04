@@ -49,6 +49,8 @@ A failed request answers with its status and `{ "code": "...", "error": "..." }`
 
 A render that fails after being accepted keeps why. `GET /renders/:id` and `GET /renders/:id/progress` return it as `render.error`: `{ "code": "...", "message": "...", "retryable": false }`. The `progress` object has the same as `error`, `errorCode` and `retryable`, and the WebSocket's `render.failed` event carries it as `error`.
 
+`GET /renders/:id/artifact` returns `409` with `artifact_not_ready` until the render succeeds, and `409` with the render's own error code if it failed. A succeeded render also reports the artifact's relative URL as `render.outputUrl`. `render.status` is `queued`, `processing`, `succeeded` or `failed`.
+
 S3-compatible artifact storage is planned for a future self-hosted release. For now, the HTTP binary's in-memory artifact storage is intended for local development and single-process testing, not durable production delivery. Only the most recent `--retained-renders` finished renders (default 16, `LUMEN_SERVER_RETAINED_RENDERS`) are kept, and their artifacts stay in memory until then. Older renders are dropped, record and artifact together, and return `404`.
 
 Renders run in submission order, `--max-concurrent-renders` at a time (default 1, `LUMEN_SERVER_MAX_CONCURRENT_RENDERS`). Later renders stay `queued` until a slot frees. Raise it only if the GPU has the memory for parallel renders.
@@ -69,15 +71,15 @@ Each job's manifest is limited to 256 entries, 512 MiB per file, and 2 GiB in to
 
 Downloads refuse hosts that resolve to private, loopback, link-local, and other non-public addresses. The check runs on every connection, so it covers DNS rebinding and redirects. Up to 5 redirects are followed. Environment proxy settings are ignored. To download from an internal host, list it as it appears in the URL with `--allow-media-host` (repeatable; `LUMEN_SERVER_ALLOW_MEDIA_HOSTS` takes a comma-separated list).
 
-`LUMEN_MEDIA_ROOT` is the one server-side directory a composition can reach, and only for fonts. It is not a media root for this binary. If you set it, a text node's font family is looked up in three places:
+Fonts are found by the family name inside each font file, not by file name, in the same order as `lumen-local`:
 
-- as a path to any file inside the job directory or `LUMEN_MEDIA_ROOT`. Paths with `..`, and symlinks that lead outside the directory, are refused. The contents go only to the font parser and are never returned, but a composition can make the server read any file there, so point the variable at a directory of fonts and nothing else.
-- as `fonts/<family>.ttf`, `.otf`, `.ttc`, or `.otc`, and the same with `-Regular`, with the same containment.
-- by scanning `LUMEN_MEDIA_ROOT/fonts/` for `<family>.*` and `<family>-*.*` with those extensions. This scan follows symlinks without checking where they lead, so a symlink you place in that directory is trusted. Clients cannot create one: job directories only contain regular files named by alias, and an alias cannot contain `/`.
+- a font staged in the job's manifest, named by its alias (`"font_family": "<alias>"`).
+- the directory `LUMEN_FONT_DIR` names, if set. The server refuses to start if it isn't a directory. It is scanned once per render.
+- the installed system fonts, scanned the first time a family isn't found above and then kept for the life of the process. The family `Roboto` skips this step, so it is always the bundled font unless the directory has one.
 
-Without `LUMEN_MEDIA_ROOT`, the server's own files are not readable as fonts or media, and text can only use fonts staged in the job's manifest (`"font_family": "<alias>"`) and the bundled fonts.
+A family that none of them has is logged once per render as a warning, and text using it falls back to the bundled font. A composition can only read fonts that are in the font directory or the system fonts, never other files on the server. A font directory is trusted, so it follows symlinks.
 
-`GET /renders/:id/progress` and `GET /renders/:id/socket` mirror the hosted progress shape. The WebSocket sends SDK render events like:
+`GET /renders/:id/progress` and `GET /renders/:id/socket` mirror the hosted progress shape. The WebSocket sends the render's current status when it connects, then each change, and closes after the render succeeds or fails. It sends SDK render events like:
 
 ```json
 {
@@ -113,9 +115,8 @@ broadcast. The value is a `0.0` to `1.0` fraction; the default is `0.02`.
 Terminal updates, state changes, and stage changes are still broadcast
 immediately. Set it to `0` to emit every renderer progress update.
 
-Verbose render diagnostics are off by default. Set `--verbose-debug` or
-`LUMEN_SERVER_VERBOSE_DEBUG=true` to enable detailed per-frame render progress
-logs, CUDA/Vulkan device diagnostics, and frame timing output.
+Set `RUST_LOG=lumen_server=debug` for detailed per-frame render progress logs
+and CUDA/Vulkan device diagnostics.
 
 The renderer logs the selected adapter name, backend, device type, vendor,
 device, driver, and driver details when a render starts. For software Vulkan or
@@ -132,6 +133,21 @@ cargo run -p lumen-server --features cli,vulkan --bin lumen-server
 On Linux CI, the SDK integration test also points Vulkan at lavapipe with
 `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`. This is a portability
 baseline, not a hardware performance target.
+
+### Flags and environment
+
+| Flag                              | Environment                           | Default          | Meaning                                                                                           |
+| --------------------------------- | ------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------- |
+| `--bind <addr>`                   | `LUMEN_SERVER_BIND`                   | `127.0.0.1:8080` | Address to listen on. A non-loopback address requires a token.                                    |
+| `--token <token>`                 | `LUMEN_SERVER_TOKEN`                  | none             | Bearer token required on every route except `/health`.                                            |
+| `--max-concurrent-renders <n>`    | `LUMEN_SERVER_MAX_CONCURRENT_RENDERS` | 1                | Renders that run at once.                                                                         |
+| `--retained-renders <n>`          | `LUMEN_SERVER_RETAINED_RENDERS`       | 16               | Finished renders kept in memory.                                                                  |
+| `--allow-media-host <host>`       | `LUMEN_SERVER_ALLOW_MEDIA_HOSTS`      | none             | Hosts allowed to resolve to non-public addresses. Repeatable, or comma-separated in the variable. |
+| `--progress-min-delta <fraction>` | `LUMEN_SERVER_PROGRESS_MIN_DELTA`     | 0.02             | Minimum progress increase between non-terminal updates.                                           |
+| `--verbose-debug`                 | `LUMEN_SERVER_VERBOSE_DEBUG`          | false            | Per-frame renderer diagnostics.                                                                   |
+|                                   | `LUMEN_FONT_DIR`                      | none             | Directory of fonts, looked up before the system fonts. Must exist.                                |
+|                                   | `LUMEN_VIDEO_ENCODER`                 | platform default | Encoder name, used when the render options name none.                                             |
+|                                   | `LUMEN_HARDWARE_DECODE`               |                  | `1`, `true`, `yes` or `on` turns GPU video decode on, and any other value turns it off.           |
 
 ## Development
 

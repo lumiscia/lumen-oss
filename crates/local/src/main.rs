@@ -2,16 +2,15 @@
 use std::collections::VecDeque;
 use std::{
     collections::HashMap,
-    env,
-    ffi::OsString,
-    fs,
+    env, fs,
     path::{Component, Path, PathBuf},
     sync::{Arc, RwLock, mpsc},
     thread::{self, JoinHandle},
     time::Instant,
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
+use clap::{ArgGroup, Parser};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 #[cfg(target_os = "linux")]
 use lumen_engine::gpu::VulkanVideoTarget;
@@ -30,42 +29,138 @@ use lumen_engine::{
 use lumen_ffmpeg::EncodeMode;
 #[cfg(any(all(target_os = "macos", feature = "metal"), target_os = "linux"))]
 use lumen_ffmpeg::GpuBackend;
-#[cfg(target_os = "linux")]
-use lumen_ffmpeg::gpu_texture_encode_support;
 use lumen_ffmpeg::{
-    AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, RateControl,
-    Rational, VideoCodec, VideoEncoderChoice, VideoEncoderConfig,
+    AudioEncoderConfig, AudioFrame, CpuVideoFrame, EncoderQuality, MuxedEncoder, PixelFormat,
+    RateControl, Rational, VideoEncoderChoice, VideoEncoderConfig,
 };
 #[cfg(target_os = "linux")]
-use lumen_ffmpeg::{GpuVideoInput, VulkanDevice};
+use lumen_ffmpeg::{EncoderFamily, GpuVideoInput, VulkanDevice};
+use lumen_server::render::{FONT_DIR_ENV, FontCatalog, existing_font_dir};
 use tracing_subscriber::EnvFilter;
 
-#[derive(Debug)]
-struct CliArgs {
+/// Renders a Lumen composition to an .mp4 video, or one frame to a .png image.
+#[derive(Debug, Parser)]
+#[command(
+    name = "lumen-local",
+    version,
+    args_override_self = true,
+    group(ArgGroup::new("rate_control").args(["bitrate", "crf", "qp"])),
+    after_help = "\
+Media sources in the composition resolve inside --media-root, which defaults to the current \
+directory. Fonts come from --font-dir, which must exist, then <media-root>/assets/fonts, then the \
+system, matched by the family name inside each font file. A family none of them has warns once \
+and renders in the bundled font.
+
+On .mp4 output, --encoder or LUMEN_VIDEO_ENCODER names the encoder, and a named encoder that \
+won't open fails the render. With neither set, Linux uses h264_vulkan and falls back to libx264 \
+with a warning when it won't open, which includes --crf and --preset, as h264_vulkan supports \
+neither. macOS uses h264_videotoolbox. The default is a 14 Mb/s target. --bitrate, --crf, --qp \
+and --preset override it where the encoder supports them (--crf: libx264, NVENC; --qp: libx264, \
+NVENC, Vulkan; --preset: libx264 ultrafast..placebo, NVENC p1..p7) and fail otherwise.
+
+LUMEN_HARDWARE_DECODE=1 decodes video on the GPU when the hardware supports it. RUST_LOG sets the \
+log filter (default lumen_engine=warn,lumen_server=warn)."
+)]
+struct Cli {
+    /// Composition JSON to render
+    #[arg(long, value_name = "PATH")]
     composition: PathBuf,
+
+    /// Where to write the render: .mp4 renders every frame, .png renders one
+    #[arg(long, value_name = "PATH.[png|mp4]")]
     output: PathBuf,
+
+    /// Directory that media sources must stay inside [default: the current directory]
+    #[arg(long, value_name = "PATH")]
     media_root: Option<PathBuf>,
+
+    /// Directory of fonts to look in before the media root's assets/fonts and the system fonts
+    #[arg(long, env = FONT_DIR_ENV, value_name = "PATH", value_parser = existing_font_dir)]
     font_dir: Option<PathBuf>,
+
+    /// Video encoder name, defaulting to LUMEN_VIDEO_ENCODER. .mp4 only
+    #[arg(long, value_name = "NAME")]
     encoder: Option<String>,
-    quality: EncoderQuality,
+
+    /// Target bits per second, as 14000000, 14000k or 14M. .mp4 only
+    #[arg(long, value_name = "BPS|Nk|NM", value_parser = parse_bitrate)]
+    bitrate: Option<u64>,
+
+    /// Constant rate factor. .mp4 only
+    #[arg(long, value_name = "N")]
+    crf: Option<u8>,
+
+    /// Constant quantizer. .mp4 only
+    #[arg(long, value_name = "N")]
+    qp: Option<u8>,
+
+    /// Encoder speed preset. .mp4 only
+    #[arg(long, value_name = "NAME")]
+    preset: Option<String>,
+
+    /// Frame to render [default: 0]. .png only
+    #[arg(long, value_name = "N")]
     frame: Option<u32>,
 }
 
-/// Encoder quality flags. With none set the encoder keeps its default 14 Mb/s target.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct EncoderQuality {
-    rate_control: Option<RateControl>,
-    preset: Option<String>,
+enum OutputKind {
+    Png,
+    Mp4,
 }
 
-impl EncoderQuality {
-    fn is_default(&self) -> bool {
-        *self == Self::default()
+impl Cli {
+    /// An empty `LUMEN_FONT_DIR` counts as unset.
+    fn font_dir(&self) -> Option<PathBuf> {
+        self.font_dir
+            .clone()
+            .filter(|dir| !dir.as_os_str().is_empty())
     }
 
-    fn apply(&self, config: &mut VideoEncoderConfig) {
-        config.rate_control = self.rate_control;
-        config.preset = self.preset.clone();
+    /// The rate control and preset the command line asked for, or `None` if it asked for neither.
+    fn quality(&self) -> Option<EncoderQuality> {
+        let rate_control = [
+            self.bitrate.map(RateControl::Bitrate),
+            self.crf.map(RateControl::Crf),
+            self.qp.map(RateControl::Qp),
+        ]
+        .into_iter()
+        .flatten()
+        .next();
+        (rate_control.is_some() || self.preset.is_some()).then(|| EncoderQuality {
+            rate_control: rate_control.unwrap_or_default(),
+            preset: self.preset.clone(),
+        })
+    }
+
+    /// The kind of output asked for, after checking that no flag only the other kind supports was
+    /// given. `LUMEN_VIDEO_ENCODER` is a default, so only `--encoder` conflicts with .png.
+    fn output_kind(&self) -> Result<OutputKind> {
+        let extension = self
+            .output
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        match extension.as_str() {
+            "png" => {
+                if self.encoder.is_some() || self.quality().is_some() {
+                    bail!(
+                        "--encoder, --bitrate, --crf, --qp and --preset are only supported when output is .mp4"
+                    );
+                }
+                Ok(OutputKind::Png)
+            }
+            "mp4" => {
+                if self.frame.is_some() {
+                    bail!("--frame is only supported when output is .png");
+                }
+                Ok(OutputKind::Mp4)
+            }
+            _ => bail!(
+                "unsupported output extension; use .png or .mp4 (got `{}`)",
+                self.output.display()
+            ),
+        }
     }
 }
 
@@ -114,7 +209,7 @@ fn cached_pass_summary(renderer: &GpuCompositionRenderer, frames: u32) -> String
 
 struct LocalMediaStore {
     root: PathBuf,
-    font_catalogs: Vec<FontCatalog>,
+    fonts: FontCatalog,
     video_options: FfmpegResolverOptions,
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
@@ -132,24 +227,11 @@ impl std::fmt::Debug for LocalMediaStore {
 
 impl LocalMediaStore {
     fn new(root: PathBuf, font_dir: Option<PathBuf>) -> Self {
-        let bundled_font_dir = root.join("assets/fonts");
-        let mut font_dirs = Vec::new();
-        if let Some(font_dir) = font_dir {
-            font_dirs.push(("configured", font_dir));
-        }
-        if !font_dirs.iter().any(|(_, path)| path == &bundled_font_dir) {
-            font_dirs.push(("bundled", bundled_font_dir));
-        }
-
-        let mut font_catalogs = font_dirs
-            .into_iter()
-            .filter_map(|(name, path)| FontCatalog::from_dir(name, path))
-            .collect::<Vec<_>>();
-        font_catalogs.push(FontCatalog::system());
+        let fonts = FontCatalog::new(font_dir.as_deref(), &root);
 
         Self {
             root,
-            font_catalogs,
+            fonts,
             video_options: video_resolver_options_from_env(),
             audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
@@ -241,104 +323,11 @@ impl MediaStore for LocalMediaStore {
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {
-        self.font_catalogs
-            .iter()
-            .find(|catalog| {
-                catalog.database.faces().any(|face| {
-                    face.families
-                        .iter()
-                        .any(|(family, _)| family.eq_ignore_ascii_case(font_family))
-                })
-            })
-            .map(|catalog| {
-                format!(
-                    "local-font:{}:{font_family}:{}",
-                    catalog.name, catalog.source
-                )
-            })
+        Some(self.fonts.resolve(font_family, || None)?.id().to_string())
     }
 
     fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
-        self.font_catalogs
-            .iter()
-            .find_map(|catalog| catalog.resolve(font_family))
-            .map(|resolver| Box::new(resolver) as Box<dyn FontResolver>)
-    }
-}
-
-struct FontCatalog {
-    name: &'static str,
-    source: String,
-    database: fontdb::Database,
-}
-
-impl FontCatalog {
-    fn from_dir(name: &'static str, path: PathBuf) -> Option<Self> {
-        if !path.is_dir() {
-            return None;
-        }
-        let mut database = fontdb::Database::new();
-        database.load_fonts_dir(&path);
-        Some(Self {
-            name,
-            source: path.display().to_string(),
-            database,
-        })
-    }
-
-    fn system() -> Self {
-        let mut database = fontdb::Database::new();
-        database.load_system_fonts();
-        Self {
-            name: "system",
-            source: "system".to_string(),
-            database,
-        }
-    }
-
-    fn resolve(&self, font_family: &str) -> Option<LocalFontResolver> {
-        let face_ids = self
-            .database
-            .faces()
-            .filter(|face| {
-                face.families
-                    .iter()
-                    .any(|(family, _)| family.eq_ignore_ascii_case(font_family))
-            })
-            .map(|face| face.id)
-            .collect::<Vec<_>>();
-        if face_ids.is_empty() {
-            return None;
-        }
-
-        let mut data: Vec<Vec<u8>> = Vec::with_capacity(face_ids.len());
-        for face_id in face_ids {
-            self.database.with_face_data(face_id, |bytes, _| {
-                if !data.iter().any(|existing| existing.as_slice() == bytes) {
-                    data.push(bytes.to_vec());
-                }
-            })?;
-        }
-        (!data.is_empty()).then(|| LocalFontResolver {
-            id: format!("local-font:{}:{font_family}:{}", self.name, self.source),
-            data,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-struct LocalFontResolver {
-    id: String,
-    data: Vec<Vec<u8>>,
-}
-
-impl FontResolver for LocalFontResolver {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn data(&self) -> std::result::Result<Vec<Vec<u8>>, MediaError> {
-        Ok(self.data.clone())
+        Some(Box::new(self.fonts.resolve(font_family, || None)?))
     }
 }
 
@@ -411,11 +400,9 @@ impl LumenFfmpegEncoder {
             width,
             height,
             Rational::from_fps(f64::from(fps))?,
-            video_codec_for_encoder(encoder),
+            encoder,
         );
-        config.encoder_name = Some(encoder.to_string());
-        config.bit_rate = 14_000_000;
-        quality.apply(&mut config);
+        config.quality = quality.clone();
         let audio = include_audio
             .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
         let (message_tx, message_rx) =
@@ -511,150 +498,8 @@ fn warn_if_container_cropped(encoder: &MuxedEncoder) {
     }
 }
 
-fn video_codec_for_encoder(encoder: &str) -> VideoCodec {
-    match encoder {
-        "hevc" | "hevc_videotoolbox" | "hevc_vulkan" | "libx265" => VideoCodec::Hevc,
-        "av1_vulkan" | "libsvtav1" | "libaom-av1" => VideoCodec::Av1,
-        _ => VideoCodec::H264,
-    }
-}
-
 fn recycle_pixels(pixels: Vec<u8>, recycle_tx: &mpsc::SyncSender<Vec<u8>>) {
     let _ = recycle_tx.try_send(pixels);
-}
-
-fn parse_args() -> Result<CliArgs> {
-    parse_args_from(env::args())
-}
-
-fn parse_args_from<I>(args: I) -> Result<CliArgs>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut args = args.into_iter().skip(1);
-    let mut composition = None;
-    let mut output = None;
-    let mut media_root = None;
-    let mut font_dir = None;
-    let mut encoder = None;
-    let mut bitrate = None;
-    let mut crf = None;
-    let mut qp = None;
-    let mut preset = None;
-    let mut frame = None;
-
-    while let Some(flag) = args.next() {
-        match flag.as_str() {
-            "--composition" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for --composition"))?;
-                composition = Some(PathBuf::from(value));
-            }
-            "--output" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for --output"))?;
-                output = Some(PathBuf::from(value));
-            }
-            "--media-root" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for --media-root"))?;
-                media_root = Some(PathBuf::from(value));
-            }
-            "--font-dir" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for --font-dir"))?;
-                font_dir = Some(PathBuf::from(value));
-            }
-            "--encoder" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for --encoder"))?;
-                encoder = Some(value);
-            }
-            "--bitrate" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for --bitrate"))?;
-                bitrate = Some(
-                    parse_bitrate(&value)
-                        .with_context(|| format!("invalid value for --bitrate: {value}"))?,
-                );
-            }
-            "--crf" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for --crf"))?;
-                crf = Some(
-                    value
-                        .parse::<u8>()
-                        .with_context(|| format!("invalid value for --crf: {value}"))?,
-                );
-            }
-            "--qp" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for --qp"))?;
-                qp = Some(
-                    value
-                        .parse::<u8>()
-                        .with_context(|| format!("invalid value for --qp: {value}"))?,
-                );
-            }
-            "--preset" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for --preset"))?;
-                preset = Some(value);
-            }
-            "--frame" => {
-                let value = args
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for --frame"))?;
-                frame = Some(
-                    value
-                        .parse::<u32>()
-                        .with_context(|| format!("invalid u32 value for --frame: {value}"))?,
-                );
-            }
-            "--help" | "-h" => {
-                print_usage();
-                std::process::exit(0);
-            }
-            "--project" => {
-                return Err(anyhow!(
-                    "--project is no longer supported; use --composition"
-                ));
-            }
-            unknown => return Err(anyhow!("unknown argument: {unknown}")),
-        }
-    }
-
-    let composition = composition.ok_or_else(|| anyhow!("--composition is required"))?;
-    let output = output.ok_or_else(|| anyhow!("--output is required"))?;
-    let rate_control = match (bitrate, crf, qp) {
-        (None, None, None) => None,
-        (Some(bitrate), None, None) => Some(RateControl::Bitrate(bitrate)),
-        (None, Some(crf), None) => Some(RateControl::Crf(crf)),
-        (None, None, Some(qp)) => Some(RateControl::Qp(qp)),
-        _ => return Err(anyhow!("--bitrate, --crf and --qp are mutually exclusive")),
-    };
-
-    Ok(CliArgs {
-        composition,
-        output,
-        media_root,
-        font_dir,
-        encoder,
-        quality: EncoderQuality {
-            rate_control,
-            preset,
-        },
-        frame,
-    })
 }
 
 /// Parses bits per second, with optional `k` or `M` suffixes (`14M` is 14,000,000).
@@ -676,67 +521,42 @@ fn parse_bitrate(value: &str) -> Result<u64> {
     Ok(bitrate)
 }
 
-fn print_usage() {
-    eprintln!(
-        "usage: lumen-local --composition <path> --output <path.[png|mp4]> [--media-root <path>] [--font-dir <path>] [--encoder <name>] [--bitrate <bps|Nk|NM> | --crf <n> | --qp <n>] [--preset <name>] [--frame <n>]\n\n--font-dir overrides the LUMEN_FONT_DIR environment variable; bundled fonts and system fonts are fallback sources.\n\nOn .mp4 output, --encoder or LUMEN_VIDEO_ENCODER names the encoder, and a named encoder that won't open fails the render. With neither set, Linux uses h264_vulkan and falls back to libx264 with a warning when it won't open, which includes --crf and --preset, as h264_vulkan supports neither. macOS uses h264_videotoolbox.\n\nOn .mp4 output the default is a 14 Mb/s target. --bitrate, --crf, --qp and --preset override it where the encoder supports them (--crf: libx264, NVENC; --qp: libx264, NVENC, Vulkan, VAAPI; --preset: libx264 ultrafast..placebo, NVENC p1..p7) and fail otherwise."
-    )
-}
-
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("lumen_engine=warn")),
+                .unwrap_or_else(|_| EnvFilter::new("lumen_engine=warn,lumen_server=warn")),
         )
         .with_writer(std::io::stderr)
         .init();
-    if let Err(error) = run() {
+    if let Err(error) = run(Cli::parse()) {
         eprintln!("lumen-local failed: {error:#}");
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<()> {
-    let args = parse_args().inspect_err(|_| print_usage())?;
-    let composition = load_composition(&args.composition)?;
-    let media_root = media_root(args.media_root.as_deref())?;
-    let font_dir = resolve_font_dir(args.font_dir, env::var_os("LUMEN_FONT_DIR"));
-    let mut media_store = LocalMediaStore::new(media_root, font_dir);
+fn run(cli: Cli) -> Result<()> {
+    let kind = cli.output_kind()?;
+    let composition = load_composition(&cli.composition)?;
+    let media_root = media_root(cli.media_root.as_deref())?;
+    let mut media_store = LocalMediaStore::new(media_root, cli.font_dir());
 
-    let extension = args
-        .output
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .unwrap_or_default();
-
-    match extension.as_str() {
-        "png" => {
-            if !args.quality.is_default() {
-                return Err(anyhow!(
-                    "--bitrate, --crf, --qp and --preset are only supported when output is .mp4"
-                ));
-            }
-            render_single_png(&composition, &mut media_store, &args.output, args.frame)
+    match kind {
+        OutputKind::Png => {
+            render_single_png(&composition, &mut media_store, &cli.output, cli.frame)
         }
-        "mp4" => {
-            if args.frame.is_some() {
-                return Err(anyhow!("--frame is only supported when output is .png"));
-            }
-            render_to_partial(&args.output, |partial| {
+        OutputKind::Mp4 => {
+            let quality = cli.quality().unwrap_or_default();
+            render_to_partial(&cli.output, |partial| {
                 render_mp4(
                     composition,
                     media_store,
                     partial,
-                    args.encoder.as_deref(),
-                    &args.quality,
+                    cli.encoder.as_deref(),
+                    &quality,
                 )
             })
         }
-        _ => Err(anyhow!(
-            "unsupported output extension; use .png or .mp4 (got `{}`)",
-            args.output.display()
-        )),
     }
 }
 
@@ -894,8 +714,11 @@ fn render_mp4(
             quality,
         );
     }
+    let (choice, encoder_info) = choice.look_up(|warning| eprintln!("warning: {warning}"))?;
+    #[cfg(not(target_os = "linux"))]
+    let _ = encoder_info;
     #[cfg(target_os = "linux")]
-    let choice = if is_vulkan_video_encoder(&choice.name) {
+    let choice = if encoder_info.family == EncoderFamily::Vulkan {
         match start_vulkan_video_encode(&composition, output, &choice.name, quality) {
             Ok(session) => {
                 println!("video_encoder name={} path=zero_copy", choice.name);
@@ -1072,15 +895,10 @@ fn render_video_gpu_videotoolbox(
         width,
         height,
         Rational::from_fps(f64::from(composition.timeline().fps))?,
-        if encoder.starts_with("hevc") {
-            VideoCodec::Hevc
-        } else {
-            VideoCodec::H264
-        },
+        encoder.trim_end_matches("_gpu"),
     );
     config.mode = EncodeMode::GpuTexture(GpuBackend::Metal);
-    config.bit_rate = 14_000_000;
-    quality.apply(&mut config);
+    config.quality = quality.clone();
     let include_audio = has_audio(&composition);
     let audio =
         include_audio.then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
@@ -1214,12 +1032,6 @@ fn render_video_gpu_videotoolbox(
 }
 
 #[cfg(target_os = "linux")]
-fn is_vulkan_video_encoder(encoder: &str) -> bool {
-    let support = gpu_texture_encode_support(video_codec_for_encoder(encoder), GpuBackend::Vulkan);
-    support.available && support.encoder_name == Some(encoder)
-}
-
-#[cfg(target_os = "linux")]
 struct VulkanVideoSession {
     renderer: GpuCompositionRenderer,
     device: VulkanDevice,
@@ -1251,12 +1063,11 @@ fn start_vulkan_video_encode(
         width,
         height,
         Rational::from_fps(f64::from(composition.timeline().fps))?,
-        video_codec_for_encoder(encoder),
+        encoder,
     );
     config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
     config.vulkan_device = Some(device.clone());
-    config.bit_rate = 14_000_000;
-    quality.apply(&mut config);
+    config.quality = quality.clone();
     let audio = has_audio(composition)
         .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
     let encoder =
@@ -1510,17 +1321,6 @@ fn media_root(override_root: Option<&Path>) -> Result<PathBuf> {
         .with_context(|| format!("failed to canonicalize media root {}", root.display()))
 }
 
-fn resolve_font_dir(
-    cli_font_dir: Option<PathBuf>,
-    env_font_dir: Option<OsString>,
-) -> Option<PathBuf> {
-    cli_font_dir.or_else(|| {
-        env_font_dir
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-    })
-}
-
 fn video_resolver_options_from_env() -> FfmpegResolverOptions {
     FfmpegResolverOptions::with_hardware_decode(
         env::var("LUMEN_HARDWARE_DECODE")
@@ -1591,13 +1391,14 @@ fn resolve_local_path_with_root(source: &str, root: &Path) -> Result<PathBuf> {
 mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::FileTypeExt;
-    use std::{ffi::OsString, fs, path::Path};
+    use std::{fs, path::Path};
 
-    use lumen_engine::media::{FontResolver, MediaStore};
+    use clap::{CommandFactory, Parser};
+    use lumen_engine::media::MediaStore;
 
     use super::{
-        EncoderQuality, FontCatalog, LocalMediaStore, RateControl, parse_args_from, parse_bitrate,
-        render_to_partial, resolve_font_dir, resolve_local_path_with_root,
+        Cli, EncoderQuality, LocalMediaStore, RateControl, parse_bitrate, render_to_partial,
+        resolve_local_path_with_root,
     };
 
     #[test]
@@ -1743,10 +1544,6 @@ mod tests {
         assert_eq!(fs::read(&target).expect("target"), b"new");
     }
 
-    fn argv(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_string()).collect()
-    }
-
     #[test]
     fn unpremultiply_restores_straight_colour() {
         let mut pixels = [
@@ -1758,79 +1555,152 @@ mod tests {
         assert_eq!(pixels, [128, 64, 0, 128, 0, 0, 0, 0, 10, 20, 30, 255]);
     }
 
-    #[test]
-    fn parse_args_requires_composition_flag() {
-        let error = parse_args_from(argv(&["lumen-local", "--output", "out.png"]))
-            .expect_err("missing composition should fail");
-        assert!(error.to_string().contains("--composition is required"));
+    fn parse(flags: &[&str]) -> Result<Cli, clap::Error> {
+        let base = ["lumen-local", "--composition", "in.json"];
+        Cli::try_parse_from(base.into_iter().chain(flags.iter().copied()))
     }
 
     #[test]
-    fn parse_args_rejects_legacy_project_flag() {
-        let error = parse_args_from(argv(&[
-            "lumen-local",
-            "--project",
-            "in.json",
-            "--output",
-            "out.png",
-        ]))
-        .expect_err("legacy project flag should fail");
-        assert!(error.to_string().contains("no longer supported"));
+    fn cli_definition_is_consistent() {
+        Cli::command().debug_assert();
     }
 
     #[test]
-    fn parse_args_accepts_font_directory() {
-        let args = parse_args_from(argv(&[
-            "lumen-local",
-            "--composition",
-            "in.json",
-            "--output",
-            "out.png",
-            "--font-dir",
-            "./fonts",
-        ]))
-        .expect("font directory should parse");
-        assert_eq!(args.font_dir.as_deref(), Some(Path::new("./fonts")));
-    }
+    fn rate_control_flags_conflict_and_validate() {
+        let quality = |flags: &[&str]| parse(flags).unwrap().quality().unwrap();
+        let output = ["--output", "o.mp4"];
+        assert_eq!(
+            quality(&[&output[..], &["--crf", "23", "--preset", "fast"]].concat()),
+            EncoderQuality {
+                rate_control: RateControl::Crf(23),
+                preset: Some("fast".into()),
+            }
+        );
+        assert_eq!(
+            quality(&[&output[..], &["--bitrate", "8M"]].concat()).rate_control,
+            RateControl::Bitrate(8_000_000)
+        );
+        assert_eq!(
+            quality(&[&output[..], &["--qp", "30"]].concat()).rate_control,
+            RateControl::Qp(30)
+        );
 
-    fn parse_quality(flags: &[&str]) -> anyhow::Result<EncoderQuality> {
-        let mut values = vec![
-            "lumen-local",
-            "--composition",
-            "in.json",
-            "--output",
-            "o.mp4",
-        ];
-        values.extend(flags);
-        parse_args_from(argv(&values)).map(|args| args.quality)
-    }
-
-    #[test]
-    fn quality_flags_default_to_unset() {
-        assert!(parse_quality(&[]).unwrap().is_default());
-    }
-
-    #[test]
-    fn parse_args_accepts_quality_flags() {
-        let quality = parse_quality(&["--crf", "23", "--preset", "fast"]).unwrap();
-        assert_eq!(quality.rate_control, Some(RateControl::Crf(23)));
-        assert_eq!(quality.preset.as_deref(), Some("fast"));
-
-        let quality = parse_quality(&["--qp", "30"]).unwrap();
-        assert_eq!(quality.rate_control, Some(RateControl::Qp(30)));
-
-        let quality = parse_quality(&["--bitrate", "8M"]).unwrap();
-        assert_eq!(quality.rate_control, Some(RateControl::Bitrate(8_000_000)));
+        for pair in [
+            ["--crf", "--qp"],
+            ["--bitrate", "--crf"],
+            ["--bitrate", "--qp"],
+        ] {
+            let value = |flag: &str| if flag == "--bitrate" { "1M" } else { "20" };
+            let error = parse(&[
+                "--output",
+                "o.mp4",
+                pair[0],
+                value(pair[0]),
+                pair[1],
+                value(pair[1]),
+            ])
+            .unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        assert!(parse(&["--output", "o.mp4", "--crf", "300"]).is_err());
+        assert!(parse(&["--output", "o.mp4", "--bitrate", "0"]).is_err());
     }
 
     #[test]
-    fn parse_args_rejects_conflicting_or_invalid_quality_flags() {
-        let error = parse_quality(&["--crf", "23", "--qp", "20"]).unwrap_err();
-        assert!(error.to_string().contains("mutually exclusive"));
-        let error = parse_quality(&["--bitrate", "1M", "--crf", "23"]).unwrap_err();
-        assert!(error.to_string().contains("mutually exclusive"));
-        assert!(parse_quality(&["--crf", "300"]).is_err());
-        assert!(parse_quality(&["--crf"]).is_err());
+    fn output_kind_rejects_flags_the_output_cannot_use() {
+        let kind = |flags: &[&str]| parse(flags).unwrap().output_kind();
+        assert!(kind(&["--output", "o.mp4", "--crf", "23"]).is_ok());
+        assert!(kind(&["--output", "o.png", "--frame", "3"]).is_ok());
+
+        let error = kind(&["--output", "o.png", "--encoder", "libx264"])
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("only supported when output is .mp4")
+        );
+        for quality in [["--bitrate", "14M"], ["--crf", "23"], ["--preset", "fast"]] {
+            let error = kind(&["--output", "o.png", quality[0], quality[1]])
+                .err()
+                .unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("only supported when output is .mp4"),
+                "{quality:?}"
+            );
+        }
+        let error = kind(&["--output", "o.mp4", "--frame", "3"]).err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("only supported when output is .png")
+        );
+        let error = kind(&["--output", "o.gif"]).err().unwrap();
+        assert!(error.to_string().contains("unsupported output extension"));
+    }
+
+    /// Runs `parsed_font_dir` in a child process, since clap reads `LUMEN_FONT_DIR` from the real
+    /// environment and a test must not change that for the others.
+    fn font_dir_with(env_dir: Option<&str>, flags: &[&str]) -> String {
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"));
+        child
+            .args(["--exact", "tests::parsed_font_dir", "--nocapture"])
+            .env("LUMEN_TEST_FONT_FLAGS", flags.join(" "))
+            .env_remove("LUMEN_FONT_DIR");
+        if let Some(env_dir) = env_dir {
+            child.env("LUMEN_FONT_DIR", env_dir);
+        }
+        let output = child.output().expect("run test binary");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find_map(|line| line.strip_prefix("font_dir=").map(str::to_string))
+            .expect("child output")
+    }
+
+    #[test]
+    fn parsed_font_dir() {
+        let Ok(flags) = std::env::var("LUMEN_TEST_FONT_FLAGS") else {
+            return;
+        };
+        let cli = parse(&flags.split_whitespace().collect::<Vec<_>>()).unwrap();
+        println!("font_dir={:?}", cli.font_dir());
+    }
+
+    #[test]
+    fn cli_font_directory_takes_precedence_over_environment() {
+        let (cli_dir, environment_dir) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (cli_dir, environment_dir) = (
+            cli_dir.path().to_str().unwrap(),
+            environment_dir.path().to_str().unwrap(),
+        );
+        let output = ["--output", "o.png"];
+        let with = |env_dir, flags: &[&str]| font_dir_with(env_dir, &[&output[..], flags].concat());
+        assert_eq!(
+            with(Some(environment_dir), &["--font-dir", cli_dir]),
+            format!("Some({cli_dir:?})")
+        );
+        assert_eq!(
+            with(Some(environment_dir), &[]),
+            format!("Some({environment_dir:?})")
+        );
+        assert_eq!(with(Some(""), &[]), "None");
+        assert_eq!(with(None, &[]), "None");
+    }
+
+    #[test]
+    fn a_font_directory_that_does_not_exist_fails_the_parse() {
+        let error = parse(&["--output", "o.png", "--font-dir", "no-such-fonts"])
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("`no-such-fonts` is not a directory")
+        );
     }
 
     #[test]
@@ -1841,81 +1711,6 @@ mod tests {
         assert!(parse_bitrate("0").is_err());
         assert!(parse_bitrate("fast").is_err());
         assert!(parse_bitrate("18446744073709551615M").is_err());
-    }
-
-    #[test]
-    fn cli_font_directory_takes_precedence_over_environment() {
-        assert_eq!(
-            resolve_font_dir(
-                Some("cli-fonts".into()),
-                Some(OsString::from("environment-fonts")),
-            ),
-            Some("cli-fonts".into())
-        );
-        assert_eq!(
-            resolve_font_dir(None, Some(OsString::from("environment-fonts"))),
-            Some("environment-fonts".into())
-        );
-        assert_eq!(resolve_font_dir(None, Some(OsString::new())), None);
-    }
-
-    fn copy_roboto_to(directory: &Path, file_name: &str) {
-        let source =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../text/assets/roboto/Roboto-Regular.ttf");
-        fs::create_dir_all(directory).expect("create font directory");
-        fs::copy(source, directory.join(file_name)).expect("copy test font");
-    }
-
-    #[test]
-    fn font_directory_matches_family_metadata_instead_of_filename() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        copy_roboto_to(tmp.path(), "name-does-not-match-family.ttf");
-        let catalog =
-            FontCatalog::from_dir("configured", tmp.path().to_path_buf()).expect("font catalog");
-
-        let resolver = catalog.resolve("Roboto").expect("Roboto resolver");
-        assert!(resolver.id().starts_with("local-font:configured:Roboto:"));
-        assert_eq!(resolver.data().expect("font bytes").len(), 1);
-        assert!(catalog.resolve("name-does-not-match-family").is_none());
-    }
-
-    #[test]
-    fn configured_fonts_take_precedence_over_bundled_fonts() {
-        let media_root = tempfile::tempdir().expect("media root");
-        let configured = tempfile::tempdir().expect("configured fonts");
-        copy_roboto_to(&media_root.path().join("assets/fonts"), "bundled.ttf");
-        copy_roboto_to(configured.path(), "configured.ttf");
-        let store = LocalMediaStore::new(
-            media_root.path().to_path_buf(),
-            Some(configured.path().to_path_buf()),
-        );
-
-        let resolver = store.get_font_resolver("Roboto").expect("Roboto resolver");
-        assert!(resolver.id().starts_with("local-font:configured:Roboto:"));
-    }
-
-    #[test]
-    fn bundled_fonts_take_precedence_over_system_fonts() {
-        let media_root = tempfile::tempdir().expect("media root");
-        copy_roboto_to(&media_root.path().join("assets/fonts"), "bundled.ttf");
-        let store = LocalMediaStore::new(media_root.path().to_path_buf(), None);
-
-        let resolver = store.get_font_resolver("Roboto").expect("Roboto resolver");
-        assert!(resolver.id().starts_with("local-font:bundled:Roboto:"));
-    }
-
-    #[test]
-    fn system_font_catalog_resolves_discovered_family() {
-        let catalog = FontCatalog::system();
-        let family = catalog
-            .database
-            .faces()
-            .find_map(|face| face.families.first().map(|(family, _)| family.clone()))
-            .expect("system should expose at least one font family");
-
-        let resolver = catalog.resolve(&family).expect("system font resolver");
-        assert!(resolver.id().starts_with("local-font:system:"));
-        assert!(!resolver.data().expect("system font bytes").is_empty());
     }
 
     #[test]

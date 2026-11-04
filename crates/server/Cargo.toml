@@ -31,6 +31,7 @@ cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
 
 [dependencies]
 anyhow = "1.0.101"
+pollster = "1.0.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"], optional = true }
 tokio = { version = "1.49.0", features = ["full"] }
@@ -45,6 +46,8 @@ axum = { version = "0.8.7", default-features = false, features = [
 lumen-engine = { workspace = true, features = ["ffmpeg", "image"] }
 lumen-gpu = { workspace = true }
 lumen-ffmpeg = { workspace = true }
+lumen-text = { workspace = true }
+fontdb = "0.23.0"
 reqwest = { version = "0.12.24", default-features = false, features = [
   "json",
   "rustls-tls",
@@ -57,3 +60,4 @@ uuid = { version = "1.18.1", features = ["v4"], optional = true }
 
 [dev-dependencies]
 reqwest = { version = "0.12.24", default-features = false, features = ["blocking"] }
+tungstenite = { version = "0.29.0", default-features = false, features = ["handshake"] }

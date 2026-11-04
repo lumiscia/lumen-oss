@@ -6,13 +6,13 @@ mod util;
 use std::{collections::HashMap, path::Path, time::Instant};
 
 pub use types::{
-    ApiRenderJob, ArtifactOutput, CreateRenderResponse, GetRenderResponse, RenderJobError,
-    RenderJobInput, RenderJobMetrics, RenderNotification, RenderProgressResponse, RenderQueueState,
+    ApiRenderJob, Artifact, CreateRenderResponse, GetRenderResponse, RenderJobError,
+    RenderJobInput, RenderProgressResponse, RenderQueueState, RenderRecord, RenderStatus,
 };
 
+use lumen_engine::composition::Composition;
 use lumen_server::render::{
-    ProjectBundle, RenderError as RenderPipelineError, RenderOptions, RenderProgress,
-    render_project_mp4,
+    RenderError as RenderPipelineError, RenderOptions, RenderProgress, render_project_mp4,
 };
 
 pub(super) use media_staging::{MediaClient, validate_media_manifest};
@@ -22,21 +22,18 @@ use self::{media_staging::stage_remote_media, util::sanitize_error_message};
 
 pub struct RenderJob {
     pub id: String,
-    pub bundle: ProjectBundle,
+    pub composition: Composition,
     pub media: HashMap<String, String>,
 }
 
 pub struct CompletedRender {
-    pub artifact: ArtifactOutput,
     pub bytes: Vec<u8>,
-    pub metrics: RenderJobMetrics,
+    pub render_ms: u128,
 }
 
 pub async fn execute_render_job<F>(
     job: RenderJob,
     media_client: &MediaClient,
-    artifact_url: String,
-    verbose_debug: bool,
     mut on_progress: F,
 ) -> Result<CompletedRender, RenderJobError>
 where
@@ -45,7 +42,7 @@ where
     let stage_started = Instant::now();
     let RenderJob {
         id: job_id,
-        bundle,
+        composition,
         media,
     } = job;
     tracing::info!(job_id, media_count = media.len(), "starting render request");
@@ -56,13 +53,12 @@ where
     let staged_path = staged_media.path().to_path_buf();
     let options = RenderOptions {
         media_root: Some(staged_path.clone()),
-        verbose_debug,
-        video_encoder: None,
+        ..RenderOptions::default()
     };
 
-    let output_width = bundle.project.width;
-    let output_height = bundle.project.height;
-    let total_frames = bundle.project.duration_frames;
+    let output_width = composition.render_settings().width;
+    let output_height = composition.render_settings().height;
+    let total_frames = composition.timeline().duration_frames;
     let render_started = Instant::now();
     tracing::info!(
         job_id,
@@ -76,15 +72,13 @@ where
         let _render_span = render_span.enter();
         let mut frame_started = std::time::Instant::now();
         let mut progress_callback = |event: RenderProgress| {
-            if verbose_debug {
-                tracing::debug!(
-                    stage = event.stage,
-                    frame = event.frame,
-                    total_frames = event.total_frames,
-                    ratio = event.ratio,
-                    "render progress"
-                );
-            }
+            tracing::debug!(
+                stage = event.stage,
+                frame = event.frame,
+                total_frames = event.total_frames,
+                ratio = event.ratio,
+                "render progress"
+            );
             tracing::debug!(
                 target: "lumen_frame_time",
                 frame = event.frame,
@@ -95,7 +89,7 @@ where
             on_progress(event);
         };
 
-        render_project_mp4(&bundle, &options, &mut progress_callback)
+        render_project_mp4(&composition, &options, &mut progress_callback)
     })
     .await
     .map_err(|err| RenderJobError {
@@ -116,17 +110,6 @@ where
         "finished mp4 render"
     );
 
-    let artifact = ArtifactOutput {
-        download_url: artifact_url,
-        content_type: "video/mp4",
-        bytes: rendered_bytes.len(),
-    };
-    let metrics = RenderJobMetrics {
-        stage_ms: stage_started.elapsed().as_millis(),
-        render_ms,
-        total_frames: total_frames as u64,
-    };
-
     tracing::info!(
         width = output_width,
         height = output_height,
@@ -134,9 +117,8 @@ where
     );
 
     Ok(CompletedRender {
-        artifact,
         bytes: rendered_bytes,
-        metrics,
+        render_ms,
     })
 }
 

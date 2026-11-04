@@ -2,34 +2,78 @@ use std::ffi::CString;
 
 use crate::ffi::sys;
 use crate::gpu::GpuBackend;
-use crate::video::{EncodeMode, VideoCodec};
+use crate::video::VideoCodec;
 use crate::{FfmpegError, Result};
 
 use super::audio::AudioEncoderConfig;
-use super::hardware::hardware_texture_encoder_name;
-use super::video::VideoEncoderConfig;
 
-pub(crate) fn find_encoder(config: &VideoEncoderConfig) -> Result<*const sys::AVCodec> {
-    let encoder_name = match config.mode {
-        EncodeMode::GpuTexture(backend) => {
-            Some(hardware_encoder_name(config.codec, backend)?.to_string())
-        }
-        EncodeMode::CpuUpload => config.encoder_name.clone(),
-    };
+/// A video encoder this FFmpeg build has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EncoderInfo {
+    pub codec: VideoCodec,
+    pub family: EncoderFamily,
+}
 
-    if let Some(name) = encoder_name.as_deref() {
-        encoder_by_name(name).map_err(|error| error.with_codec(config.codec))
-    } else {
-        let codec = unsafe { sys::avcodec_find_encoder(config.codec.to_av_codec_id()) };
-        if codec.is_null() {
-            Err(
-                FfmpegError::new("avcodec_find_encoder", "requested encoder is unavailable")
-                    .with_codec(config.codec),
-            )
+/// The encoders lumen drives differently from the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderFamily {
+    X264,
+    Nvenc,
+    Vulkan,
+    VideoToolbox,
+    Other,
+}
+
+impl EncoderFamily {
+    pub(crate) fn of(encoder: &str) -> Self {
+        if encoder == "libx264" {
+            Self::X264
+        } else if encoder.ends_with("_nvenc") {
+            Self::Nvenc
+        } else if encoder.ends_with("_vulkan") {
+            Self::Vulkan
+        } else if encoder.ends_with("_videotoolbox") {
+            Self::VideoToolbox
         } else {
-            Ok(codec)
+            Self::Other
         }
     }
+
+    pub(crate) fn takes_textures_from(self, backend: GpuBackend) -> bool {
+        matches!(
+            (self, backend),
+            (Self::Nvenc, GpuBackend::Cuda)
+                | (Self::Vulkan, GpuBackend::Vulkan)
+                | (Self::VideoToolbox, GpuBackend::Metal)
+        )
+    }
+}
+
+/// Looks up a video encoder by its FFmpeg name, such as `libx264` or `h264_vulkan`.
+pub fn encoder_info(name: &str) -> Result<EncoderInfo> {
+    let codec = video_encoder_by_name(name)?;
+    Ok(EncoderInfo {
+        codec: VideoCodec::from_av_codec_id(unsafe { (*codec).id }),
+        family: EncoderFamily::of(name),
+    })
+}
+
+pub(crate) fn video_encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
+    // These take only VAAPI frames, and lumen has no way to fill those.
+    if name.ends_with("_vaapi") {
+        return Err(FfmpegError::new(
+            "encoder_info",
+            format!("VAAPI encoder `{name}` is not supported; use a Vulkan encoder or libx264"),
+        ));
+    }
+    let codec = encoder_by_name(name)?;
+    if unsafe { (*codec).type_ } != sys::AVMediaType::AVMEDIA_TYPE_VIDEO {
+        return Err(FfmpegError::new(
+            "encoder_info",
+            format!("`{name}` is not a video encoder"),
+        ));
+    }
+    Ok(codec)
 }
 
 pub(crate) fn encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
@@ -59,24 +103,6 @@ fn missing_encoder_message(name: &str, avcodec_major: u32) -> String {
     } else {
         format!("requested encoder `{name}` is unavailable")
     }
-}
-
-pub(crate) fn hardware_encoder_name(
-    codec: VideoCodec,
-    backend: GpuBackend,
-) -> Result<&'static str> {
-    hardware_texture_encoder_name(backend, codec).ok_or_else(|| {
-        FfmpegError::new(
-            "VideoEncoder::create",
-            if matches!(backend, GpuBackend::Vulkan) {
-                format!("{backend:?} hardware texture encode is not available yet")
-            } else {
-                format!("{backend:?} hardware encode is unavailable for {codec:?}")
-            },
-        )
-        .with_backend(backend)
-        .with_codec(codec)
-    })
 }
 
 pub(crate) fn find_audio_encoder(config: &AudioEncoderConfig) -> Result<*const sys::AVCodec> {
@@ -132,7 +158,45 @@ pub(crate) fn select_audio_sample_format(
 
 #[cfg(test)]
 mod tests {
-    use super::missing_encoder_message;
+    use super::*;
+
+    #[test]
+    fn encoder_names_resolve_to_the_codec_ffmpeg_registered_them_under() {
+        for (name, codec) in [
+            ("libx264", VideoCodec::H264),
+            ("libx265", VideoCodec::Hevc),
+            ("libsvtav1", VideoCodec::Av1),
+            ("libaom-av1", VideoCodec::Av1),
+            ("h264_nvenc", VideoCodec::H264),
+            ("hevc_nvenc", VideoCodec::Hevc),
+            ("av1_nvenc", VideoCodec::Av1),
+            ("h264_vulkan", VideoCodec::H264),
+            ("hevc_vulkan", VideoCodec::Hevc),
+            ("av1_vulkan", VideoCodec::Av1),
+            ("h264_videotoolbox", VideoCodec::H264),
+            ("hevc_videotoolbox", VideoCodec::Hevc),
+        ] {
+            // A build only registers some of these.
+            if let Ok(info) = encoder_info(name) {
+                assert_eq!(info.codec, codec, "{name}");
+            }
+        }
+        assert_eq!(encoder_info("libx264").unwrap().codec, VideoCodec::H264);
+    }
+
+    #[test]
+    fn names_that_cannot_encode_video_are_refused() {
+        for (name, expected) in [
+            ("definitely_not_an_encoder", "unavailable"),
+            ("h264", "unavailable"),
+            ("h265", "unavailable"),
+            ("aac", "not a video encoder"),
+            ("h264_vaapi", "VAAPI"),
+        ] {
+            let error = encoder_info(name).unwrap_err();
+            assert!(error.message.contains(expected), "{name}: {error}");
+        }
+    }
 
     #[test]
     fn av1_vulkan_below_ffmpeg_8_says_so() {

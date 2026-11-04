@@ -1,5 +1,7 @@
 use std::{env, fmt::Display};
 
+use super::codec::{EncoderInfo, encoder_info};
+
 const ENCODER_ENV: &str = "LUMEN_VIDEO_ENCODER";
 const CPU_ENCODER: &str = "libx264";
 
@@ -34,6 +36,18 @@ impl VideoEncoderChoice {
             name: name.to_string(),
             fallback,
         }
+    }
+
+    /// Looks the encoder up in this FFmpeg build, so a bad name fails before a render does any work.
+    /// The automatic default moves to its fallback when the build doesn't have it.
+    pub fn look_up(self, warn: impl FnOnce(&str)) -> crate::Result<(Self, EncoderInfo)> {
+        let (info, name) = self.open(encoder_info, warn)?;
+        let fallback = if name == self.name {
+            self.fallback
+        } else {
+            None
+        };
+        Ok((Self { name, fallback }, info))
     }
 
     /// The choice to continue with after this encoder failed to open, and the warning to show for
@@ -147,6 +161,31 @@ mod tests {
             format!("{} failed", default.name)
         };
         assert_eq!(opened, Err(expected));
+    }
+
+    #[test]
+    fn a_default_this_build_lacks_moves_to_the_fallback_at_look_up() {
+        let default = VideoEncoderChoice {
+            name: "missing_encoder".to_string(),
+            fallback: Some(CPU_ENCODER),
+        };
+        let mut warnings = Vec::new();
+        let (choice, info) = default
+            .look_up(|warning| warnings.push(warning.to_string()))
+            .unwrap();
+        assert_eq!(choice.name, CPU_ENCODER);
+        assert_eq!(info.codec, crate::VideoCodec::H264);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(choice.fall_back("no").is_none());
+    }
+
+    #[test]
+    fn a_named_encoder_this_build_lacks_errors_at_look_up() {
+        let named = VideoEncoderChoice::from_requests(Some("missing_encoder"), None);
+        let error = named
+            .look_up(|warning| panic!("unexpected warning: {warning}"))
+            .unwrap_err();
+        assert!(error.message.contains("missing_encoder"), "{error}");
     }
 
     #[test]

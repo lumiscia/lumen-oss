@@ -60,10 +60,7 @@ fn audio_frame(sample_rate: u32, channels: u16, samples: usize, offset: usize) -
 
 /// A software H.264 encoder every test machine must have.
 fn libx264(width: u32, height: u32, fps: impl Into<Rational>) -> VideoEncoderConfig {
-    VideoEncoderConfig {
-        encoder_name: Some("libx264".to_string()),
-        ..VideoEncoderConfig::cpu_rgba(width, height, fps, VideoCodec::H264)
-    }
+    VideoEncoderConfig::cpu_rgba(width, height, fps, "libx264")
 }
 
 fn create_encoder(
@@ -133,9 +130,9 @@ fn make_cuda_video_with_nvenc(path: &Path, width: u32, height: u32, with_audio: 
         .expect("CUDA frame allocation");
     frame.clear(0x7f).expect("CUDA frame clear");
 
-    let mut video = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::H264);
+    let mut video = VideoEncoderConfig::cpu_rgba(width, height, 30, "h264_nvenc");
     video.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
-    video.bit_rate = 2_000_000;
+    video.quality.rate_control = RateControl::Bitrate(2_000_000);
     let audio = with_audio.then(|| AudioEncoderConfig::aac(48_000, 2));
     let mut encoder = create_encoder(path, video, audio);
     for pts in 0..30 {
@@ -232,9 +229,8 @@ fn encodes_cpu_frames_with_nvenc_when_requested() {
     }
 
     let path = temp_path("nvenc_roundtrip", "mp4");
-    let mut config = VideoEncoderConfig::cpu_rgba(640, 360, 30, VideoCodec::H264);
-    config.encoder_name = Some("h264_nvenc".to_string());
-    config.bit_rate = 2_000_000;
+    let mut config = VideoEncoderConfig::cpu_rgba(640, 360, 30, "h264_nvenc");
+    config.quality.rate_control = RateControl::Bitrate(2_000_000);
     write_video(&path, config, 30);
 
     let input = InputContext::open(path.to_string_lossy().to_string()).expect("open output");
@@ -291,9 +287,9 @@ fn cuda_nvenc_keeps_each_frame_when_the_source_buffer_is_reused() {
         .expect("CUDA frame allocation");
 
     let path = temp_path("cuda_nvenc_order", "mp4");
-    let mut video = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::H264);
+    let mut video = VideoEncoderConfig::cpu_rgba(width, height, 30, "h264_nvenc");
     video.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
-    video.bit_rate = 4_000_000;
+    video.quality.rate_control = RateControl::Bitrate(4_000_000);
     let mut encoder = create_encoder(&path, video, None);
     for index in 0..count {
         source.clear(index as u8 * 2).expect("CUDA frame clear");
@@ -452,7 +448,7 @@ fn noisy_frame(width: u32, height: u32, seed: u32) -> CpuVideoFrame {
         height,
         stride,
         pixel_format: PixelFormat::Rgba8,
-        pts: None,
+        pts: Some(i64::from(seed)),
         data,
     }
 }
@@ -472,8 +468,8 @@ fn libx264_crf_controls_output_size() {
     for crf in [18, 40] {
         let path = temp_path("x264_crf", "mp4");
         let mut config = libx264(128, 72, 30);
-        config.rate_control = Some(RateControl::Crf(crf));
-        config.preset = Some("ultrafast".to_string());
+        config.quality.rate_control = RateControl::Crf(crf);
+        config.quality.preset = Some("ultrafast".to_string());
         encode_noise(&path, config).expect("libx264 CRF encode");
         let info = InputContext::open(path.to_string_lossy().to_string())
             .expect("open encoded file")
@@ -488,9 +484,7 @@ fn libx264_crf_controls_output_size() {
 const VULKAN_TEST_VARIABLE: &str = "LUMEN_FFMPEG_TEST_VULKAN";
 
 fn av1_vulkan(width: u32, height: u32) -> VideoEncoderConfig {
-    let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::Av1);
-    config.encoder_name = Some("av1_vulkan".to_string());
-    config
+    VideoEncoderConfig::cpu_rgba(width, height, 30, "av1_vulkan")
 }
 
 /// Needs Vulkan AV1 encode and decode. On RADV, set `RADV_PERFTEST=video_encode,video_decode`.
@@ -514,11 +508,11 @@ fn vulkan_encoder_uploads_cpu_frames() {
             patches.extend([r, g, b, 255]);
         }
     }
-    for _ in 0..FRAMES {
+    for index in 0..FRAMES {
         encoder
             .write_video_frame(&CpuVideoFrame {
                 data: patches.clone(),
-                ..noisy_frame(width as u32, height as u32, 0)
+                ..noisy_frame(width as u32, height as u32, index as u32)
             })
             .expect("upload and encode frame");
     }
@@ -582,14 +576,14 @@ fn vulkan_encoder_supports_qp_and_rejects_crf() {
     }
     let path = temp_path("vulkan_qp", "mkv");
     let mut config = av1_vulkan(256, 144);
-    config.rate_control = Some(RateControl::Crf(23));
+    config.quality.rate_control = RateControl::Crf(23);
     let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config.clone()) {
         Ok(_) => panic!("av1_vulkan has no CRF mode"),
         Err(error) => error,
     };
     assert!(error.message.contains("CRF"), "{error}");
 
-    config.rate_control = Some(RateControl::Qp(100));
+    config.quality.rate_control = RateControl::Qp(100);
     encode_noise(&path, config).expect("av1_vulkan QP encode");
     let _ = fs::remove_file(path);
 }

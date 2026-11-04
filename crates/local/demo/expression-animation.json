@@ -56,7 +56,6 @@
       "type": "text",
       "params": {
         "content": "Expression animation",
-        "font_family": "Roboto",
         "font_size": 48,
         "font_weight": 700,
         "position": "=vec2(120, 80) + tween(vec2(0, -40), vec2(0, 0), 6, 0.6s, 'out_back')",

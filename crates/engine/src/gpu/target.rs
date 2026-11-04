@@ -563,7 +563,7 @@ mod tests {
         assert!(nv12[..chroma].iter().all(|&luma| luma == 63));
         assert!(nv12[chroma..].chunks(2).all(|cbcr| cbcr == [102, 240]));
 
-        let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::Av1);
+        let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, "av1_vulkan");
         config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
         config.vulkan_device = Some(device);
         let path =

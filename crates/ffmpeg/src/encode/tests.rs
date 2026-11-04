@@ -10,13 +10,10 @@ use crate::FfmpegError;
 use crate::ffi::sys;
 #[cfg(ffmpeg_frame_cropping)]
 use crate::format::InputContext;
+use crate::gpu::GpuBackend;
 #[cfg(feature = "vulkan")]
-use crate::gpu::{GpuBackend, GpuVideoInput};
-#[cfg(feature = "vulkan")]
-use crate::video::EncodeMode;
-use crate::video::VideoCodec;
-#[cfg(ffmpeg_frame_cropping)]
-use crate::video::{CpuVideoFrame, PixelFormat};
+use crate::gpu::GpuVideoInput;
+use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat};
 
 use super::{muxed::MuxedEncoder, quality::RateControl, video::VideoEncoderConfig};
 
@@ -36,8 +33,7 @@ fn cpu_upload_encoder_rejects_gpu_input() {
     use crate::gpu::VulkanVideoFrame;
 
     let path = temp_path("gpu_failure", "mp4");
-    let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, VideoCodec::H264);
-    config.encoder_name = Some("libx264".to_string());
+    let config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
     let mut encoder =
         MuxedEncoder::create(path.to_string_lossy().to_string(), config).expect("libx264 encoder");
     // SAFETY: The CPU encoder rejects the frame before any work could read the fake buffer.
@@ -70,7 +66,7 @@ fn vulkan_texture_encoder_rejects_invalid_config_at_create() {
         (16, 16, "vulkan_device"),
     ] {
         let path = temp_path("gpu_create_failure", "mp4");
-        let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::H264);
+        let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, "h264_vulkan");
         config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
 
         let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
@@ -90,8 +86,7 @@ fn vulkan_texture_encoder_rejects_invalid_config_at_create() {
 fn vulkan_av1_crops_coded_padding_in_the_container() {
     let (width, height) = (256, 138);
     let path = temp_path("vulkan_crop", "mp4");
-    let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, VideoCodec::Av1);
-    config.encoder_name = Some("av1_vulkan".to_string());
+    let config = VideoEncoderConfig::cpu_rgba(width, height, 30, "av1_vulkan");
     let mut encoder = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
         Ok(encoder) => encoder,
         Err(error) if vulkan_encode_unavailable(&error) => {
@@ -140,7 +135,6 @@ fn vulkan_av1_crops_coded_padding_in_the_container() {
     let _ = fs::remove_file(path);
 }
 
-#[cfg(ffmpeg_frame_cropping)]
 fn noisy_frame(width: u32, height: u32, seed: u32) -> CpuVideoFrame {
     let stride = width as usize * 4;
     let data = (0..stride * height as usize)
@@ -156,7 +150,7 @@ fn noisy_frame(width: u32, height: u32, seed: u32) -> CpuVideoFrame {
         height,
         stride,
         pixel_format: PixelFormat::Rgba8,
-        pts: None,
+        pts: Some(i64::from(seed)),
         data,
     }
 }
@@ -164,16 +158,43 @@ fn noisy_frame(width: u32, height: u32, seed: u32) -> CpuVideoFrame {
 #[test]
 fn unsupported_rate_control_errors_at_create() {
     let path = temp_path("unsupported_crf", "mp4");
-    let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, VideoCodec::H264);
-    config.encoder_name = Some("libx264".to_string());
-    config.rate_control = Some(RateControl::Crf(23));
-    config.preset = Some("p4".to_string());
+    let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
+    config.quality.rate_control = RateControl::Crf(23);
+    config.quality.preset = Some("p4".to_string());
 
     let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
         Ok(_) => panic!("an NVENC preset should be rejected for libx264"),
         Err(error) => error,
     };
     assert!(error.message.contains("invalid preset"), "{error}");
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn a_frame_without_a_pts_errors() {
+    let path = temp_path("no_pts", "mp4");
+    let config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
+    let mut encoder =
+        MuxedEncoder::create(path.to_string_lossy().to_string(), config).expect("libx264 encoder");
+    let frame = CpuVideoFrame {
+        pts: None,
+        ..noisy_frame(16, 16, 0)
+    };
+    let error = encoder.write_video_frame(&frame).unwrap_err();
+    assert!(error.message.contains("pts"), "{error}");
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn texture_input_needs_an_encoder_of_that_backend() {
+    let path = temp_path("texture_mismatch", "mp4");
+    let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
+    config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
+    let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+        Ok(_) => panic!("libx264 takes no CUDA textures"),
+        Err(error) => error,
+    };
+    assert!(error.message.contains("libx264"), "{error}");
     let _ = fs::remove_file(path);
 }
 

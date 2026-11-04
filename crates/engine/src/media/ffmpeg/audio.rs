@@ -1,106 +1,32 @@
-use std::{
-    process::Command,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
-use ffmpeg::media::Type;
-use ffmpeg_next as ffmpeg;
-use lumen_ffmpeg::{ALLOWED_INPUT_FORMATS, ALLOWED_INPUT_PROTOCOLS};
+use lumen_ffmpeg::AudioRangeReader;
 
 use crate::{
-    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioResolver},
+    audio::{AUDIO_CHANNELS, AudioBuffer, AudioResolver},
     error::MediaError,
 };
 
-use super::ensure_ffmpeg_init;
+/// Readers kept open per source. A seek can't land on exactly the samples a continuous read gives,
+/// so clips that overlap on one source each keep a reader and never seek during playback.
+const MAX_READERS: usize = 4;
 
 pub struct FfmpegAudioResolver {
     source: String,
-    decoded_ranges: Mutex<Vec<CachedAudioRange>>,
+    /// Least recently used first.
+    readers: Mutex<Vec<AudioRangeReader>>,
 }
 
 impl FfmpegAudioResolver {
-    const DECODE_WINDOW_SAMPLES: usize = AUDIO_SAMPLE_RATE as usize * 30;
-
     pub fn open(source: impl Into<String>) -> Result<Self, MediaError> {
-        ensure_ffmpeg_init()?;
         let source = source.into();
-        ensure_audio_stream(&source)?;
-
+        let reader =
+            AudioRangeReader::open(source.as_str()).map_err(|err| decode_error(&source, err))?;
         Ok(Self {
             source,
-            decoded_ranges: Mutex::new(Vec::new()),
+            readers: Mutex::new(vec![reader]),
         })
     }
-
-    fn cached_range(&self, start_sample: u64, frames: usize) -> Option<ResolvedAudioRange> {
-        let cache = self.decoded_ranges.lock().ok()?;
-        cache
-            .iter()
-            .find(|range| range.covers(start_sample, frames))
-            .map(CachedAudioRange::resolved)
-    }
-
-    fn decode_range(
-        &self,
-        start_sample: u64,
-        frames: usize,
-    ) -> Result<ResolvedAudioRange, MediaError> {
-        if let Some(range) = self.cached_range(start_sample, frames) {
-            return Ok(range);
-        }
-
-        let frames_to_decode = frames.max(Self::DECODE_WINDOW_SAMPLES);
-        let buffer = Arc::new(decode_audio_range_to_f32_stereo(
-            &self.source,
-            start_sample,
-            frames_to_decode,
-        )?);
-        if let Ok(mut cache) = self.decoded_ranges.lock() {
-            if let Some(existing) = cache
-                .iter()
-                .find(|range| range.covers(start_sample, frames))
-            {
-                return Ok(existing.resolved());
-            }
-            cache.push(CachedAudioRange {
-                start_sample,
-                buffer: Arc::clone(&buffer),
-            });
-        }
-
-        Ok(ResolvedAudioRange {
-            start_sample,
-            buffer,
-        })
-    }
-}
-
-struct CachedAudioRange {
-    start_sample: u64,
-    buffer: Arc<AudioBuffer>,
-}
-
-impl CachedAudioRange {
-    fn resolved(&self) -> ResolvedAudioRange {
-        ResolvedAudioRange {
-            start_sample: self.start_sample,
-            buffer: Arc::clone(&self.buffer),
-        }
-    }
-
-    fn covers(&self, start_sample: u64, frames: usize) -> bool {
-        let end_sample = start_sample.saturating_add(frames as u64);
-        let cached_end = self
-            .start_sample
-            .saturating_add(self.buffer.frames() as u64);
-        start_sample >= self.start_sample && end_sample <= cached_end
-    }
-}
-
-struct ResolvedAudioRange {
-    start_sample: u64,
-    buffer: Arc<AudioBuffer>,
 }
 
 impl AudioResolver for FfmpegAudioResolver {
@@ -109,107 +35,52 @@ impl AudioResolver for FfmpegAudioResolver {
         start_sample: u64,
         frames: usize,
     ) -> Result<Arc<AudioBuffer>, MediaError> {
-        let decoded = self.decode_range(start_sample, frames)?;
-        let relative_start = start_sample.saturating_sub(decoded.start_sample);
-        let start = usize::try_from(relative_start).unwrap_or(usize::MAX);
-        let mut channels = vec![vec![0.0; frames]; AUDIO_CHANNELS];
-        if start < decoded.buffer.frames() {
-            let end = start.saturating_add(frames).min(decoded.buffer.frames());
-            let copy_len = end.saturating_sub(start);
-            for (channel_index, channel) in channels.iter_mut().enumerate() {
-                let source = &decoded.buffer.channels()
-                    [channel_index.min(decoded.buffer.channel_count().saturating_sub(1))];
-                channel[..copy_len].copy_from_slice(&source[start..end]);
+        let mut readers = self.readers.lock().map_err(|_| MediaError::Decode {
+            media_source: self.source.clone(),
+            details: "audio reader panicked".to_string(),
+        })?;
+        // The reader that is already there, else one that hasn't read yet, else a new one while
+        // there's room, else the least recently used one, which seeks.
+        let index = match [start_sample, 0].into_iter().find_map(|position| {
+            readers
+                .iter()
+                .position(|reader| reader.position() == position)
+        }) {
+            Some(index) => index,
+            None if readers.len() < MAX_READERS => {
+                let reader = AudioRangeReader::open(self.source.as_str())
+                    .map_err(|err| decode_error(&self.source, err))?;
+                readers.push(reader);
+                readers.len() - 1
             }
-        }
+            None => 0,
+        };
+        let mut reader = readers.remove(index);
+        let decoded = reader.read(start_sample, frames);
+        readers.push(reader);
+        let decoded = decoded.map_err(|err| decode_error(&self.source, err))?;
+        drop(readers);
 
+        let channels = (0..AUDIO_CHANNELS)
+            .map(|channel| {
+                decoded
+                    .interleaved_f32
+                    .iter()
+                    .skip(channel)
+                    .step_by(AUDIO_CHANNELS)
+                    .copied()
+                    .collect()
+            })
+            .collect();
         Ok(Arc::new(AudioBuffer::from_channels(channels)))
     }
 }
 
-fn ensure_audio_stream(source: &str) -> Result<(), MediaError> {
-    let mut options = ffmpeg::Dictionary::new();
-    options.set("format_whitelist", ALLOWED_INPUT_FORMATS);
-    options.set("protocol_whitelist", ALLOWED_INPUT_PROTOCOLS);
-    let format = ffmpeg::format::input_with_dictionary(source, options).map_err(|err| {
-        MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!("failed opening audio source: {err}"),
-        }
-    })?;
-    if format.streams().best(Type::Audio).is_none() {
-        return Err(MediaError::Decode {
-            media_source: source.to_string(),
-            details: "file has no audio stream".to_string(),
-        });
+fn decode_error(source: &str, err: lumen_ffmpeg::FfmpegError) -> MediaError {
+    MediaError::Decode {
+        media_source: source.to_string(),
+        details: format!("audio decode failed: {err}"),
     }
-    Ok(())
-}
-
-fn decode_audio_range_to_f32_stereo(
-    source: &str,
-    start_sample: u64,
-    frames: usize,
-) -> Result<AudioBuffer, MediaError> {
-    let start_seconds = start_sample as f64 / f64::from(AUDIO_SAMPLE_RATE);
-    let duration_seconds = frames as f64 / f64::from(AUDIO_SAMPLE_RATE);
-    let output = Command::new("ffmpeg")
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-ss")
-        .arg(format!("{start_seconds:.9}"))
-        .arg("-t")
-        .arg(format!("{duration_seconds:.9}"))
-        .arg("-format_whitelist")
-        .arg(ALLOWED_INPUT_FORMATS)
-        .arg("-protocol_whitelist")
-        .arg(ALLOWED_INPUT_PROTOCOLS)
-        .arg("-i")
-        .arg(source)
-        .arg("-vn")
-        .arg("-f")
-        .arg("f32le")
-        .arg("-acodec")
-        .arg("pcm_f32le")
-        .arg("-ac")
-        .arg(AUDIO_CHANNELS.to_string())
-        .arg("-ar")
-        .arg(AUDIO_SAMPLE_RATE.to_string())
-        .arg("pipe:1")
-        .output()
-        .map_err(|err| MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!("failed spawning ffmpeg audio decoder: {err}"),
-        })?;
-
-    if !output.status.success() {
-        return Err(MediaError::Decode {
-            media_source: source.to_string(),
-            details: format!(
-                "ffmpeg audio decode failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        });
-    }
-
-    let sample_count = output.stdout.len() / std::mem::size_of::<f32>();
-    let frame_count = sample_count / AUDIO_CHANNELS;
-    let mut channels = vec![vec![0.0; frame_count]; AUDIO_CHANNELS];
-    for frame in 0..frame_count {
-        for (channel_index, channel) in channels.iter_mut().enumerate() {
-            let byte_index = (frame * AUDIO_CHANNELS + channel_index) * 4;
-            let bytes = [
-                output.stdout[byte_index],
-                output.stdout[byte_index + 1],
-                output.stdout[byte_index + 2],
-                output.stdout[byte_index + 3],
-            ];
-            channel[frame] = f32::from_le_bytes(bytes);
-        }
-    }
-
-    Ok(AudioBuffer::from_channels(channels))
 }
 
 #[cfg(test)]
@@ -219,7 +90,11 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{decode_audio_range_to_f32_stereo, ensure_audio_stream};
+    use crate::audio::AudioResolver;
+
+    use lumen_ffmpeg::AudioRangeReader;
+
+    use super::FfmpegAudioResolver;
 
     #[test]
     fn audio_paths_read_uploads_but_not_playlists() {
@@ -254,14 +129,57 @@ mod tests {
         let wav = wav.to_str().expect("wav path");
         let playlist = playlist.to_str().expect("playlist path");
 
-        assert!(ensure_audio_stream(wav).is_ok());
-        let decoded = decode_audio_range_to_f32_stereo(wav, 0, 4800).expect("decode wav");
-        assert!(decoded.frames() > 0);
-
-        let stream = ensure_audio_stream(playlist);
-        let decoded = decode_audio_range_to_f32_stereo(playlist, 0, 4800);
+        let decoded = FfmpegAudioResolver::open(wav)
+            .expect("open wav")
+            .resolve_range(0, 4800)
+            .expect("decode wav");
+        let playlist = FfmpegAudioResolver::open(playlist);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(stream.is_err());
-        assert!(decoded.is_err());
+        assert_eq!(decoded.frames(), 4800);
+        assert!(playlist.is_err());
+    }
+
+    /// Two clips of one source read in turn. A seek lands within a millisecond of the continuous
+    /// read in Matroska, so each position must keep its own reader to match one read on its own.
+    #[test]
+    fn positions_read_in_turn_each_match_a_reader_of_their_own() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("lumen_audio_pool_{unique}.mkv"));
+        let generated = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", "aevalsrc=0.4*sin(2*PI*(300+200*t)*t):d=6:s=48000"])
+            .args(["-c:a", "pcm_s16le"])
+            .arg(&path)
+            .status();
+        if !matches!(generated, Ok(status) if status.success()) {
+            eprintln!("ffmpeg CLI unavailable; skipping audio reader pool test");
+            return;
+        }
+        let source = path.to_str().expect("path");
+        const CHUNK: usize = 4_800;
+        let starts = [12_345_u64, 100_000];
+
+        let pooled = FfmpegAudioResolver::open(source).expect("open");
+        let mut readers = starts.map(|_| AudioRangeReader::open(source).expect("open reader"));
+        for round in 0..4 {
+            for (start, reader) in starts.iter().zip(&mut readers) {
+                let start = start + (round * CHUNK) as u64;
+                let expected = reader.read(start, CHUNK).expect("read");
+                let range = pooled.resolve_range(start, CHUNK).expect("resolve");
+                let channel = |channel: usize| -> Vec<f32> {
+                    expected.interleaved_f32[channel..]
+                        .iter()
+                        .step_by(2)
+                        .copied()
+                        .collect()
+                };
+                assert_eq!(range.channels()[0], channel(0), "left from {start}");
+                assert_eq!(range.channels()[1], channel(1), "right from {start}");
+            }
+        }
+        let _ = std::fs::remove_file(path);
     }
 }

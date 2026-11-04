@@ -2,7 +2,6 @@ mod audio;
 mod choice;
 mod codec;
 mod common;
-mod hardware;
 pub(crate) mod hw;
 mod muxed;
 mod output;
@@ -14,7 +13,7 @@ mod video_gpu;
 
 pub use audio::AudioEncoderConfig;
 pub use choice::VideoEncoderChoice;
-pub use hardware::{GpuTextureEncodeSupport, gpu_texture_encode_support};
+pub use codec::{EncoderFamily, EncoderInfo, encoder_info};
 pub use muxed::MuxedEncoder;
-pub use quality::RateControl;
+pub use quality::{EncoderQuality, RateControl};
 pub use video::{ContainerCrop, VideoEncoderConfig};

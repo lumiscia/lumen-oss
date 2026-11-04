@@ -665,17 +665,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ffmpeg-next"
-version = "9.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6380599799e175191eb7ffe82c97f36a2a90a36cbc54c738a903e5287d7f516a"
-dependencies = [
- "bitflags",
- "ffmpeg-sys-next",
- "libc",
-]
-
-[[package]]
 name = "ffmpeg-sys-next"
 version = "9.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1616,7 +1605,6 @@ version = "0.3.1"
 dependencies = [
  "anyhow",
  "bytemuck",
- "ffmpeg-next",
  "foldhash",
  "image",
  "js-sys",
@@ -1708,11 +1696,12 @@ name = "lumen-local"
 version = "0.3.1"
 dependencies = [
  "anyhow",
- "fontdb",
+ "clap",
  "image",
  "lumen-engine",
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",
+ "lumen-server",
  "pollster",
  "serde_json",
  "tempfile",
@@ -1726,10 +1715,13 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "fontdb",
  "futures-util",
  "lumen-engine",
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",
+ "lumen-engine-text",
+ "pollster",
  "reqwest",
  "serde",
  "serde_json",
@@ -1738,6 +1730,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "tungstenite",
  "uuid",
 ]
 

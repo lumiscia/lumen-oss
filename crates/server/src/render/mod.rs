@@ -1,13 +1,14 @@
 mod encoder;
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-mod frame_timing;
+mod fonts;
 mod gpu;
 mod media;
 
 use std::path::PathBuf;
 
 use lumen_engine::composition::Composition;
+use lumen_ffmpeg::EncoderQuality;
 
+pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir, font_dir_from_env};
 pub use gpu::render_project_mp4;
 
 #[derive(Debug, Clone)]
@@ -36,35 +37,15 @@ pub struct RenderProgress {
 #[derive(Debug, Clone, Default)]
 pub struct RenderOptions {
     pub media_root: Option<PathBuf>,
-    pub verbose_debug: bool,
     pub video_encoder: Option<String>,
+    pub quality: EncoderQuality,
 }
 
-#[derive(Debug, Clone)]
-pub struct ProjectInfo {
-    pub width: u32,
-    pub height: u32,
-    pub duration_frames: u32,
-}
-
-pub struct ProjectBundle {
-    pub project: ProjectInfo,
-    pub composition: Composition,
-}
-
-pub fn convert_project_payload(payload: &serde_json::Value) -> Result<ProjectBundle, RenderError> {
-    let composition = lumen_engine::json::parse_value(payload).map_err(|err| RenderError {
+pub fn parse_composition(payload: &serde_json::Value) -> Result<Composition, RenderError> {
+    lumen_engine::json::parse_value(payload).map_err(|err| RenderError {
         code: "invalid_project_payload",
         message: format!("{err:#}"),
         retryable: false,
-    })?;
-    Ok(ProjectBundle {
-        project: ProjectInfo {
-            width: composition.render_settings().width,
-            height: composition.render_settings().height,
-            duration_frames: composition.timeline().duration_frames,
-        },
-        composition,
     })
 }
 
@@ -72,7 +53,7 @@ pub fn convert_project_payload(payload: &serde_json::Value) -> Result<ProjectBun
 mod tests {
     use serde_json::json;
 
-    use super::convert_project_payload;
+    use super::parse_composition;
 
     #[test]
     fn invalid_payload_message_includes_the_nested_cause() {
@@ -89,7 +70,7 @@ mod tests {
             "connections": []
         });
 
-        let Err(error) = convert_project_payload(&payload) else {
+        let Err(error) = parse_composition(&payload) else {
             panic!("the payload should be rejected");
         };
         assert!(
@@ -98,46 +79,5 @@ mod tests {
             error.message
         );
         assert!(error.message.contains("not_real"), "{}", error.message);
-    }
-
-    #[test]
-    fn convert_current_composition_preserves_duration_frames() {
-        let payload = json!({
-            "timeline": {
-                "fps": 24,
-                "duration_frames": 120
-            },
-            "render_settings": {
-                "width": 64,
-                "height": 64
-            },
-            "nodes": [
-                {
-                    "id": 1,
-                    "type": "background",
-                    "params": {
-                        "paint": [255, 255, 255, 255],
-                        "width": 64,
-                        "height": 64
-                    }
-                },
-                {
-                    "id": 2,
-                    "type": "media_output",
-                    "params": {}
-                }
-            ],
-            "connections": [
-                {
-                    "from_node": 1,
-                    "from_port": "output",
-                    "to_node": 2,
-                    "to_port": "source"
-                }
-            ]
-        });
-
-        let bundle = convert_project_payload(&payload).expect("project bundle");
-        assert_eq!(bundle.project.duration_frames, 120);
     }
 }

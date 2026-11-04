@@ -12,16 +12,15 @@ path = "src/main.rs"
 default = []
 cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
 metal = ["lumen-engine/metal", "lumen-ffmpeg/metal", "lumen-gpu/metal"]
-vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
-
 
 [dependencies]
 anyhow = "1.0.101"
-fontdb = "0.23.0"
-image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
+clap = { version = "4.6.1", features = ["derive", "env"] }
+image = { version = "0.25.9", default-features = false, features = ["png"] }
 tempfile = "3.23.0"
 lumen-engine = { workspace = true, features = ["ffmpeg", "image"] }
 lumen-gpu = { workspace = true }
+lumen-server = { workspace = true }
 lumen-ffmpeg = { workspace = true, features = ["vulkan"] }
 pollster = "1.0.1"
 tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"] }
