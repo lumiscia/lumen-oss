@@ -14,7 +14,7 @@ use std::{
 };
 
 use lumen_ffmpeg::{
-    CudaDriver, EncodeMode, GpuBackend, GpuVideoInput, MuxedEncoder, VideoCodec,
+    CudaDriver, EncodeMode, GpuBackend, GpuVideoInput, MuxedEncoder, RateControl,
     VideoEncoderConfig, import_owned_vulkan_opaque_fd_image,
 };
 
@@ -84,10 +84,10 @@ fn vulkan_texture_imports_into_cuda_and_encodes_with_nvenc() {
         .expect("copy imported Vulkan image into CUDA RGBA frame");
 
     let path = temp_path("vk_cuda_nvenc", "mp4");
-    let mut config = VideoEncoderConfig::cpu_rgba(size.width, size.height, 30, VideoCodec::H264);
+    let mut config = VideoEncoderConfig::cpu_rgba(size.width, size.height, 30, "h264_nvenc");
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
     config.cuda_ordinal = Some(ordinal);
-    config.bit_rate = 2_000_000;
+    config.quality.rate_control = RateControl::Bitrate(2_000_000);
     let mut encoder =
         MuxedEncoder::create(path.to_string_lossy().to_string(), config).expect("create NVENC");
     for pts in 0..30 {

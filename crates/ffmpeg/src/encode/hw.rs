@@ -4,15 +4,19 @@ use crate::ffi::{self, sys};
 use crate::gpu::GpuBackend;
 use crate::video::EncodeMode;
 use crate::{FfmpegError, Result};
-use sys::AVHWDeviceType::{AV_HWDEVICE_TYPE_CUDA, AV_HWDEVICE_TYPE_VULKAN};
-use sys::AVPixelFormat::{AV_PIX_FMT_CUDA, AV_PIX_FMT_NV12, AV_PIX_FMT_RGBA, AV_PIX_FMT_VULKAN};
+#[cfg(feature = "cuda")]
+use sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA;
+use sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN;
+#[cfg(feature = "cuda")]
+use sys::AVPixelFormat::{AV_PIX_FMT_CUDA, AV_PIX_FMT_RGBA};
+use sys::AVPixelFormat::{AV_PIX_FMT_NV12, AV_PIX_FMT_VULKAN};
 
 use super::video::VideoEncoderConfig;
 
 pub(crate) struct EncoderHwContexts {
     pub backend: GpuBackend,
-    pub device: AvBufferRef,
-    pub frames: Option<AvBufferRef>,
+    /// Holds its own reference to the device it was created on.
+    pub frames: AvBufferRef,
     pub hw_format: sys::AVPixelFormat,
     /// Software format the encoder reads from its hardware frames.
     pub sw_format: sys::AVPixelFormat,
@@ -23,6 +27,7 @@ pub(crate) fn create_encoder_hw_contexts(
     codec: *const sys::AVCodec,
 ) -> Result<Option<EncoderHwContexts>> {
     match config.mode {
+        #[cfg(feature = "cuda")]
         EncodeMode::GpuTexture(GpuBackend::Cuda) => {
             let ordinal = config
                 .cuda_ordinal
@@ -43,8 +48,7 @@ pub(crate) fn create_encoder_hw_contexts(
             )?;
             Ok(Some(EncoderHwContexts {
                 backend: GpuBackend::Cuda,
-                device,
-                frames: Some(frames),
+                frames,
                 hw_format: AV_PIX_FMT_CUDA,
                 sw_format: AV_PIX_FMT_RGBA,
             }))
@@ -56,44 +60,44 @@ pub(crate) fn create_encoder_hw_contexts(
                 .as_ref()
                 .ok_or_else(missing_vulkan_device)?
                 .hw_device()?;
-            let frames = AvBufferRef::new_hw_frames(
-                &device,
-                GpuBackend::Vulkan,
-                AV_PIX_FMT_VULKAN,
-                AV_PIX_FMT_NV12,
-                config.width,
-                config.height,
-            )?;
-            Ok(Some(EncoderHwContexts {
-                backend: GpuBackend::Vulkan,
-                device,
-                frames: Some(frames),
-                hw_format: AV_PIX_FMT_VULKAN,
-                sw_format: AV_PIX_FMT_NV12,
-            }))
+            vulkan_nv12_contexts(&device, config).map(Some)
         }
+        #[cfg(feature = "metal")]
+        EncodeMode::GpuTexture(GpuBackend::Metal) => Ok(None),
+        #[allow(unreachable_patterns)]
+        EncodeMode::GpuTexture(backend) => Err(FfmpegError::new(
+            "VideoEncoder::create",
+            format!("this build has no {backend:?} texture encode"),
+        )
+        .with_backend(backend)),
         // Vulkan Video encoders only accept Vulkan frames, so CPU frames are uploaded as NV12.
         EncodeMode::CpuUpload if takes_hw_frames(codec, AV_PIX_FMT_VULKAN) => {
             let device =
                 AvBufferRef::new_hw_device(AV_HWDEVICE_TYPE_VULKAN, GpuBackend::Vulkan, None)?;
-            let frames = AvBufferRef::new_hw_frames(
-                &device,
-                GpuBackend::Vulkan,
-                AV_PIX_FMT_VULKAN,
-                AV_PIX_FMT_NV12,
-                config.width,
-                config.height,
-            )?;
-            Ok(Some(EncoderHwContexts {
-                backend: GpuBackend::Vulkan,
-                device,
-                frames: Some(frames),
-                hw_format: AV_PIX_FMT_VULKAN,
-                sw_format: AV_PIX_FMT_NV12,
-            }))
+            vulkan_nv12_contexts(&device, config).map(Some)
         }
-        _ => Ok(None),
+        EncodeMode::CpuUpload => Ok(None),
     }
+}
+
+fn vulkan_nv12_contexts(
+    device: &AvBufferRef,
+    config: &VideoEncoderConfig,
+) -> Result<EncoderHwContexts> {
+    let frames = AvBufferRef::new_hw_frames(
+        device,
+        GpuBackend::Vulkan,
+        AV_PIX_FMT_VULKAN,
+        AV_PIX_FMT_NV12,
+        config.width,
+        config.height,
+    )?;
+    Ok(EncoderHwContexts {
+        backend: GpuBackend::Vulkan,
+        frames,
+        hw_format: AV_PIX_FMT_VULKAN,
+        sw_format: AV_PIX_FMT_NV12,
+    })
 }
 
 #[cfg(feature = "vulkan")]
@@ -183,6 +187,7 @@ impl AvBufferRef {
         Ok(Self { ptr })
     }
 
+    #[cfg(feature = "vulkan")]
     pub(crate) fn clone_ref(&self) -> Option<Self> {
         let ptr = unsafe { sys::av_buffer_ref(self.ptr) };
         (!ptr.is_null()).then_some(Self { ptr })

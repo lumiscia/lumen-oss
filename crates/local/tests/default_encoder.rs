@@ -15,7 +15,7 @@ use lumen_engine::{
     ffmpeg::FfmpegVideoResolver,
     media::{CpuMediaFrame, MediaFrame, VideoFrameResolver},
 };
-use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoCodec, VideoEncoderConfig};
+use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoEncoderConfig};
 use serde_json::{Value, json};
 
 const WIDTH: u32 = 320;
@@ -116,7 +116,7 @@ fn write_composition(directory: &Path, composition: &Value) -> PathBuf {
 }
 
 fn write_solid_video(path: &Path, colour: [u8; 3]) {
-    let config = VideoEncoderConfig::cpu_rgba(WIDTH, HEIGHT, 30, VideoCodec::H264);
+    let config = VideoEncoderConfig::cpu_rgba(WIDTH, HEIGHT, 30, "libx264");
     let mut encoder =
         MuxedEncoder::create(path.to_string_lossy().to_string(), config).expect("create encoder");
     let pixels: Vec<u8> = colour

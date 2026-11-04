@@ -73,7 +73,7 @@ Software Vulkan through lavapipe is the deterministic CI baseline. It is useful 
 | macOS    | `h264_videotoolbox` | The render fails                                       |
 | Other    | `libx264`           | The render fails                                       |
 
-Only the automatic default falls back. An encoder you name either opens or fails the render, and `av1_vulkan` needs FFmpeg 8.0 or newer. The fallback covers everything that stops the encoder opening: FFmpeg built without `h264_vulkan`, no Vulkan driver, a device without `VK_KHR_video_encode_queue`, no H.264 encode support, a canvas size the hardware rejects, and `--crf` or `--preset`, which `h264_vulkan` doesn't support. A failure after the encoder has opened stays an error.
+Encoder names are FFmpeg's own, such as `libx264` or `hevc_nvenc`, and are checked against your FFmpeg build before rendering starts. `*_vaapi` encoders aren't supported. Only the automatic default falls back. An encoder you name either opens or fails the render, and `av1_vulkan` needs FFmpeg 8.0 or newer. The fallback covers everything that stops the encoder opening: FFmpeg built without `h264_vulkan`, no Vulkan driver, a device without `VK_KHR_video_encode_queue`, no H.264 encode support, a canvas size the hardware rejects, and `--crf` or `--preset`, which `h264_vulkan` doesn't support. A failure after the encoder has opened stays an error.
 
 `lumen-local` renders and encodes `h264_vulkan` on one Vulkan device, so frames never leave the GPU. `lumen-server` reads frames back and uploads them to the encoder. Each logs the encoder it opened and how frames reach it.
 

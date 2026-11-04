@@ -3,7 +3,7 @@ use std::{fs, time::Instant};
 use lumen_engine::composition::Composition;
 use lumen_engine::gpu::{CudaNvencTargetPool, GpuCompositionRenderer};
 use lumen_ffmpeg::{
-    AudioEncoderConfig, EncodeMode, GpuBackend, MuxedEncoder, Rational, VideoCodec,
+    AudioEncoderConfig, EncodeMode, EncoderQuality, GpuBackend, MuxedEncoder, Rational,
     VideoEncoderConfig,
 };
 
@@ -26,7 +26,7 @@ pub(super) fn render_project_mp4_cuda(
     fps: f32,
     total_frames: u32,
     encoder_name: &str,
-    codec: VideoCodec,
+    quality: &EncoderQuality,
     verbose_debug: bool,
     on_progress: &mut dyn FnMut(RenderProgress),
 ) -> Result<Vec<u8>, RenderError> {
@@ -88,11 +88,10 @@ pub(super) fn render_project_mp4_cuda(
         message: err.to_string(),
         retryable: false,
     })?;
-    let mut config = VideoEncoderConfig::cpu_rgba(width, height, frame_rate, codec);
-    config.encoder_name = Some(encoder_name.to_string());
+    let mut config = VideoEncoderConfig::cpu_rgba(width, height, frame_rate, encoder_name);
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
     config.cuda_ordinal = Some(target_pool.cuda_ordinal());
-    config.bit_rate = 14_000_000;
+    config.quality = quality.clone();
     let audio = include_audio.then(|| {
         AudioEncoderConfig::aac(
             lumen_engine::audio::AUDIO_SAMPLE_RATE,

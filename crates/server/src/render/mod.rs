@@ -7,6 +7,7 @@ mod media;
 use std::path::PathBuf;
 
 use lumen_engine::composition::Composition;
+use lumen_ffmpeg::EncoderQuality;
 
 pub use gpu::render_project_mp4;
 
@@ -38,6 +39,7 @@ pub struct RenderOptions {
     pub media_root: Option<PathBuf>,
     pub verbose_debug: bool,
     pub video_encoder: Option<String>,
+    pub quality: EncoderQuality,
 }
 
 #[derive(Debug, Clone)]

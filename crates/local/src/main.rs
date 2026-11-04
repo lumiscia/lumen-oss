@@ -30,14 +30,12 @@ use lumen_engine::{
 use lumen_ffmpeg::EncodeMode;
 #[cfg(any(all(target_os = "macos", feature = "metal"), target_os = "linux"))]
 use lumen_ffmpeg::GpuBackend;
-#[cfg(target_os = "linux")]
-use lumen_ffmpeg::gpu_texture_encode_support;
 use lumen_ffmpeg::{
-    AudioEncoderConfig, AudioFrame, CpuVideoFrame, MuxedEncoder, PixelFormat, RateControl,
-    Rational, VideoCodec, VideoEncoderChoice, VideoEncoderConfig,
+    AudioEncoderConfig, AudioFrame, CpuVideoFrame, EncoderQuality, MuxedEncoder, PixelFormat,
+    RateControl, Rational, VideoEncoderChoice, VideoEncoderConfig,
 };
 #[cfg(target_os = "linux")]
-use lumen_ffmpeg::{GpuVideoInput, VulkanDevice};
+use lumen_ffmpeg::{EncoderFamily, GpuVideoInput, VulkanDevice};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug)]
@@ -49,24 +47,6 @@ struct CliArgs {
     encoder: Option<String>,
     quality: EncoderQuality,
     frame: Option<u32>,
-}
-
-/// Encoder quality flags. With none set the encoder keeps its default 14 Mb/s target.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct EncoderQuality {
-    rate_control: Option<RateControl>,
-    preset: Option<String>,
-}
-
-impl EncoderQuality {
-    fn is_default(&self) -> bool {
-        *self == Self::default()
-    }
-
-    fn apply(&self, config: &mut VideoEncoderConfig) {
-        config.rate_control = self.rate_control;
-        config.preset = self.preset.clone();
-    }
 }
 
 const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
@@ -411,11 +391,9 @@ impl LumenFfmpegEncoder {
             width,
             height,
             Rational::from_fps(f64::from(fps))?,
-            video_codec_for_encoder(encoder),
+            encoder,
         );
-        config.encoder_name = Some(encoder.to_string());
-        config.bit_rate = 14_000_000;
-        quality.apply(&mut config);
+        config.quality = quality.clone();
         let audio = include_audio
             .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
         let (message_tx, message_rx) =
@@ -508,14 +486,6 @@ fn warn_if_container_cropped(encoder: &MuxedEncoder) {
             width = crop.width,
             height = crop.height,
         );
-    }
-}
-
-fn video_codec_for_encoder(encoder: &str) -> VideoCodec {
-    match encoder {
-        "hevc" | "hevc_videotoolbox" | "hevc_vulkan" | "libx265" => VideoCodec::Hevc,
-        "av1_vulkan" | "libsvtav1" | "libaom-av1" => VideoCodec::Av1,
-        _ => VideoCodec::H264,
     }
 }
 
@@ -636,10 +606,10 @@ where
     let composition = composition.ok_or_else(|| anyhow!("--composition is required"))?;
     let output = output.ok_or_else(|| anyhow!("--output is required"))?;
     let rate_control = match (bitrate, crf, qp) {
-        (None, None, None) => None,
-        (Some(bitrate), None, None) => Some(RateControl::Bitrate(bitrate)),
-        (None, Some(crf), None) => Some(RateControl::Crf(crf)),
-        (None, None, Some(qp)) => Some(RateControl::Qp(qp)),
+        (None, None, None) => RateControl::default(),
+        (Some(bitrate), None, None) => RateControl::Bitrate(bitrate),
+        (None, Some(crf), None) => RateControl::Crf(crf),
+        (None, None, Some(qp)) => RateControl::Qp(qp),
         _ => return Err(anyhow!("--bitrate, --crf and --qp are mutually exclusive")),
     };
 
@@ -678,7 +648,7 @@ fn parse_bitrate(value: &str) -> Result<u64> {
 
 fn print_usage() {
     eprintln!(
-        "usage: lumen-local --composition <path> --output <path.[png|mp4]> [--media-root <path>] [--font-dir <path>] [--encoder <name>] [--bitrate <bps|Nk|NM> | --crf <n> | --qp <n>] [--preset <name>] [--frame <n>]\n\n--font-dir overrides the LUMEN_FONT_DIR environment variable; bundled fonts and system fonts are fallback sources.\n\nOn .mp4 output, --encoder or LUMEN_VIDEO_ENCODER names the encoder, and a named encoder that won't open fails the render. With neither set, Linux uses h264_vulkan and falls back to libx264 with a warning when it won't open, which includes --crf and --preset, as h264_vulkan supports neither. macOS uses h264_videotoolbox.\n\nOn .mp4 output the default is a 14 Mb/s target. --bitrate, --crf, --qp and --preset override it where the encoder supports them (--crf: libx264, NVENC; --qp: libx264, NVENC, Vulkan, VAAPI; --preset: libx264 ultrafast..placebo, NVENC p1..p7) and fail otherwise."
+        "usage: lumen-local --composition <path> --output <path.[png|mp4]> [--media-root <path>] [--font-dir <path>] [--encoder <name>] [--bitrate <bps|Nk|NM> | --crf <n> | --qp <n>] [--preset <name>] [--frame <n>]\n\n--font-dir overrides the LUMEN_FONT_DIR environment variable; bundled fonts and system fonts are fallback sources.\n\nOn .mp4 output, --encoder or LUMEN_VIDEO_ENCODER names the encoder, and a named encoder that won't open fails the render. With neither set, Linux uses h264_vulkan and falls back to libx264 with a warning when it won't open, which includes --crf and --preset, as h264_vulkan supports neither. macOS uses h264_videotoolbox.\n\nOn .mp4 output the default is a 14 Mb/s target. --bitrate, --crf, --qp and --preset override it where the encoder supports them (--crf: libx264, NVENC; --qp: libx264, NVENC, Vulkan; --preset: libx264 ultrafast..placebo, NVENC p1..p7) and fail otherwise."
     )
 }
 
@@ -712,7 +682,7 @@ fn run() -> Result<()> {
 
     match extension.as_str() {
         "png" => {
-            if !args.quality.is_default() {
+            if args.quality != EncoderQuality::default() {
                 return Err(anyhow!(
                     "--bitrate, --crf, --qp and --preset are only supported when output is .mp4"
                 ));
@@ -894,8 +864,11 @@ fn render_mp4(
             quality,
         );
     }
+    let (choice, encoder_info) = choice.look_up(|warning| eprintln!("warning: {warning}"))?;
+    #[cfg(not(target_os = "linux"))]
+    let _ = encoder_info;
     #[cfg(target_os = "linux")]
-    let choice = if is_vulkan_video_encoder(&choice.name) {
+    let choice = if encoder_info.family == EncoderFamily::Vulkan {
         match start_vulkan_video_encode(&composition, output, &choice.name, quality) {
             Ok(session) => {
                 println!("video_encoder name={} path=zero_copy", choice.name);
@@ -1072,15 +1045,10 @@ fn render_video_gpu_videotoolbox(
         width,
         height,
         Rational::from_fps(f64::from(composition.timeline().fps))?,
-        if encoder.starts_with("hevc") {
-            VideoCodec::Hevc
-        } else {
-            VideoCodec::H264
-        },
+        encoder.trim_end_matches("_gpu"),
     );
     config.mode = EncodeMode::GpuTexture(GpuBackend::Metal);
-    config.bit_rate = 14_000_000;
-    quality.apply(&mut config);
+    config.quality = quality.clone();
     let include_audio = has_audio(&composition);
     let audio =
         include_audio.then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
@@ -1214,12 +1182,6 @@ fn render_video_gpu_videotoolbox(
 }
 
 #[cfg(target_os = "linux")]
-fn is_vulkan_video_encoder(encoder: &str) -> bool {
-    let support = gpu_texture_encode_support(video_codec_for_encoder(encoder), GpuBackend::Vulkan);
-    support.available && support.encoder_name == Some(encoder)
-}
-
-#[cfg(target_os = "linux")]
 struct VulkanVideoSession {
     renderer: GpuCompositionRenderer,
     device: VulkanDevice,
@@ -1251,12 +1213,11 @@ fn start_vulkan_video_encode(
         width,
         height,
         Rational::from_fps(f64::from(composition.timeline().fps))?,
-        video_codec_for_encoder(encoder),
+        encoder,
     );
     config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
     config.vulkan_device = Some(device.clone());
-    config.bit_rate = 14_000_000;
-    quality.apply(&mut config);
+    config.quality = quality.clone();
     let audio = has_audio(composition)
         .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
     let encoder =
@@ -1807,20 +1768,20 @@ mod tests {
 
     #[test]
     fn quality_flags_default_to_unset() {
-        assert!(parse_quality(&[]).unwrap().is_default());
+        assert_eq!(parse_quality(&[]).unwrap(), EncoderQuality::default());
     }
 
     #[test]
     fn parse_args_accepts_quality_flags() {
         let quality = parse_quality(&["--crf", "23", "--preset", "fast"]).unwrap();
-        assert_eq!(quality.rate_control, Some(RateControl::Crf(23)));
+        assert_eq!(quality.rate_control, RateControl::Crf(23));
         assert_eq!(quality.preset.as_deref(), Some("fast"));
 
         let quality = parse_quality(&["--qp", "30"]).unwrap();
-        assert_eq!(quality.rate_control, Some(RateControl::Qp(30)));
+        assert_eq!(quality.rate_control, RateControl::Qp(30));
 
         let quality = parse_quality(&["--bitrate", "8M"]).unwrap();
-        assert_eq!(quality.rate_control, Some(RateControl::Bitrate(8_000_000)));
+        assert_eq!(quality.rate_control, RateControl::Bitrate(8_000_000));
     }
 
     #[test]

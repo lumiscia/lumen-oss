@@ -12,8 +12,8 @@ use crate::{
 };
 use sys::{
     AVCodecID::{
-        AV_CODEC_ID_AV1, AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_NONE, AV_CODEC_ID_PRORES,
-        AV_CODEC_ID_VP8, AV_CODEC_ID_VP9,
+        AV_CODEC_ID_AV1, AV_CODEC_ID_H264, AV_CODEC_ID_HEVC, AV_CODEC_ID_PRORES, AV_CODEC_ID_VP8,
+        AV_CODEC_ID_VP9,
     },
     AVColorRange::AVCOL_RANGE_JPEG,
     AVColorSpace::{
@@ -117,17 +117,6 @@ impl VideoCodec {
             AV_CODEC_ID_VP9 => Self::Vp9,
             AV_CODEC_ID_PRORES => Self::ProRes,
             _ => Self::Unknown,
-        }
-    }
-
-    pub(crate) fn to_av_codec_id(self) -> sys::AVCodecID {
-        match self {
-            Self::H264 => AV_CODEC_ID_H264,
-            Self::Hevc => AV_CODEC_ID_HEVC,
-            Self::Av1 => AV_CODEC_ID_AV1,
-            Self::Vp9 => AV_CODEC_ID_VP9,
-            Self::ProRes => AV_CODEC_ID_PRORES,
-            Self::Unknown => AV_CODEC_ID_NONE,
         }
     }
 }

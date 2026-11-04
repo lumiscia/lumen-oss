@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, anyhow, ensure};
 use lumen_ffmpeg::{
-    CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, VideoCodec, VideoDecoder,
+    CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, RateControl, VideoDecoder,
     VideoDecoderConfig, VideoEncoderConfig,
 };
 
@@ -125,7 +125,8 @@ fn parse_args() -> anyhow::Result<Args> {
 }
 
 fn make_video(path: &Path, frames: u32) -> anyhow::Result<()> {
-    let config = VideoEncoderConfig::cpu_rgba(WIDTH, HEIGHT, 30, VideoCodec::H264);
+    let mut config = VideoEncoderConfig::cpu_rgba(WIDTH, HEIGHT, 30, "libx264");
+    config.quality.rate_control = RateControl::Bitrate(8_000_000);
     let mut encoder = MuxedEncoder::create(path.to_string_lossy().to_string(), config)
         .context("create source encoder")?;
     for pts in 0..i64::from(frames) {

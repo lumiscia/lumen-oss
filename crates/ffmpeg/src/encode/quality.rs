@@ -1,6 +1,10 @@
 use crate::video::EncodeMode;
 use crate::{FfmpegError, Result};
 
+use super::codec::EncoderFamily;
+
+const DEFAULT_BIT_RATE: u64 = 14_000_000;
+
 /// How an encoder trades bitrate against quality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RateControl {
@@ -8,33 +12,22 @@ pub enum RateControl {
     Bitrate(u64),
     /// Constant rate factor; lower is higher quality. Supported by libx264 and NVENC.
     Crf(u8),
-    /// Constant quantizer for every frame. Supported by libx264, NVENC, Vulkan and VAAPI.
+    /// Constant quantizer for every frame. Supported by libx264, NVENC and Vulkan.
     Qp(u8),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EncoderFamily {
-    X264,
-    Nvenc,
-    Vulkan,
-    Vaapi,
-    Other,
+impl Default for RateControl {
+    fn default() -> Self {
+        Self::Bitrate(DEFAULT_BIT_RATE)
+    }
 }
 
-impl EncoderFamily {
-    fn of(encoder: &str) -> Self {
-        if encoder == "libx264" {
-            Self::X264
-        } else if encoder.ends_with("_nvenc") {
-            Self::Nvenc
-        } else if encoder.ends_with("_vulkan") {
-            Self::Vulkan
-        } else if encoder.ends_with("_vaapi") {
-            Self::Vaapi
-        } else {
-            Self::Other
-        }
-    }
+/// The quality settings a render asks its encoder for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EncoderQuality {
+    pub rate_control: RateControl,
+    /// Encoder preset: `ultrafast`..`placebo` for libx264, `p1`..`p7` for NVENC.
+    pub preset: Option<String>,
 }
 
 const X264_PRESETS: [&str; 10] = [
@@ -56,7 +49,6 @@ const NVENC_PRESETS: [&str; 7] = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QualityOptions {
     pub bit_rate: i64,
-    pub global_quality: Option<i32>,
     pub options: Vec<(&'static str, String)>,
 }
 
@@ -75,7 +67,6 @@ pub(crate) fn quality_options(
     };
 
     let mut options = Vec::new();
-    let mut global_quality = None;
     // NVIDIA's Vulkan H.264 encode can stall forever at a GOP boundary with more than one frame in
     // flight on more than one queue, with or without B-frames. Zero-copy encodes use the one
     // encode queue lumen lists on the shared device. CPU-upload encodes create their own device
@@ -140,44 +131,15 @@ pub(crate) fn quality_options(
             options.push(("qp", qp.to_string()));
             0
         }
-        // AV1 and VP9 VAAPI encoders take the quantizer from the context's global quality.
-        (RateControl::Qp(qp), EncoderFamily::Vaapi)
-            if encoder.starts_with("av1_") || encoder.starts_with("vp9_") =>
-        {
-            if qp == 0 {
-                return Err(FfmpegError::new(
-                    "VideoEncoder::create",
-                    format!("encoder `{encoder}` treats QP 0 as unset; use 1-255"),
-                ));
-            }
-            options.push(("rc_mode", "CQP".to_string()));
-            global_quality = Some(i32::from(qp));
-            0
-        }
-        (RateControl::Qp(0), EncoderFamily::Vaapi) => {
-            return Err(FfmpegError::new(
-                "VideoEncoder::create",
-                format!("encoder `{encoder}` treats QP 0 as unset; use 1-52"),
-            ));
-        }
-        (RateControl::Qp(qp), EncoderFamily::Vaapi) => {
-            options.push(("rc_mode", "CQP".to_string()));
-            options.push(("qp", qp.to_string()));
-            0
-        }
-        (RateControl::Qp(_), EncoderFamily::Other) => {
+        (RateControl::Qp(_), EncoderFamily::VideoToolbox | EncoderFamily::Other) => {
             return Err(unsupported(
                 "constant quantizer rate control",
-                "libx264, NVENC, Vulkan and VAAPI encoders",
+                "libx264, NVENC and Vulkan encoders",
             ));
         }
     };
 
-    Ok(QualityOptions {
-        bit_rate,
-        global_quality,
-        options,
-    })
+    Ok(QualityOptions { bit_rate, options })
 }
 
 #[cfg(test)]
@@ -221,12 +183,6 @@ mod tests {
                 None,
                 &[("rc_mode", "cqp"), ("qp", "100")],
             ),
-            (
-                "h264_vaapi",
-                RateControl::Qp(24),
-                None,
-                &[("rc_mode", "CQP"), ("qp", "24")],
-            ),
         ] {
             let quality = options(encoder, rate_control, preset).unwrap();
             assert_eq!(quality.bit_rate, 0, "{encoder}");
@@ -253,12 +209,6 @@ mod tests {
     #[test]
     fn zero_quality_that_means_automatic_errors() {
         assert!(options("h264_nvenc", RateControl::Crf(0), None).is_err());
-        for encoder in ["h264_vaapi", "av1_vaapi", "vp9_vaapi"] {
-            assert!(
-                options(encoder, RateControl::Qp(0), None).is_err(),
-                "{encoder}"
-            );
-        }
         assert!(options("libx264", RateControl::Crf(0), None).is_ok());
     }
 
@@ -266,7 +216,6 @@ mod tests {
     fn unsupported_combinations_error() {
         for (encoder, rate_control, preset, expected) in [
             ("av1_vulkan", RateControl::Crf(23), None, "CRF"),
-            ("h264_vaapi", RateControl::Crf(23), None, "CRF"),
             ("h264_videotoolbox", RateControl::Qp(23), None, "quantizer"),
             (
                 "libx264",

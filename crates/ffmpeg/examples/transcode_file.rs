@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf, time::Instant};
 
 use lumen_ffmpeg::{
-    DecodeMode, InputContext, MuxedEncoder, Rational, VideoCodec, VideoDecoder, VideoDecoderConfig,
+    DecodeMode, InputContext, MuxedEncoder, Rational, VideoDecoder, VideoDecoderConfig,
     VideoEncoderConfig,
 };
 
@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .ok_or("missing output path")?;
     let max_frames = args.next().and_then(|value| value.parse::<usize>().ok());
-    let encoder_name = args.next();
+    let encoder_name = args.next().unwrap_or_else(|| "libx264".to_string());
 
     let started = Instant::now();
     let mut input = InputContext::open(input_path.to_string_lossy().to_string())?;
@@ -31,19 +31,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fps = Some(stream.avg_frame_rate)
         .filter(|rate| rate.numerator > 0 && rate.denominator > 0)
         .unwrap_or(Rational::new(60, 1));
-    let mut config =
-        VideoEncoderConfig::cpu_rgba(stream.width, stream.height, fps, VideoCodec::H264);
-    if let Some(encoder_name) = encoder_name {
-        config.encoder_name = Some(encoder_name);
-    }
+    let config = VideoEncoderConfig::cpu_rgba(stream.width, stream.height, fps, encoder_name);
     let mut encoder = MuxedEncoder::create(output_path.to_string_lossy().to_string(), config)?;
 
     let mut frames = 0_usize;
     'decode: while let Some(packet) = input.read_packet()? {
         decoder.send_packet(&packet)?;
         while let Some(mut frame) = decoder.receive_cpu_frame()? {
-            // Decoder timestamps are in the input time base, so let the encoder number frames.
-            frame.pts = None;
+            // Decoder timestamps are in the input time base, so number frames for the encoder.
+            frame.pts = Some(frames as i64);
             encoder.write_video_frame(&frame)?;
             frames = frames.saturating_add(1);
             if max_frames.is_some_and(|limit| frames >= limit) {
@@ -55,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if max_frames.is_none_or(|limit| frames < limit) {
         decoder.send_eof()?;
         while let Some(mut frame) = decoder.receive_cpu_frame()? {
-            frame.pts = None;
+            frame.pts = Some(frames as i64);
             encoder.write_video_frame(&frame)?;
             frames = frames.saturating_add(1);
             if max_frames.is_some_and(|limit| frames >= limit) {
