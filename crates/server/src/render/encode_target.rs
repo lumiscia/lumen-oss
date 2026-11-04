@@ -8,6 +8,7 @@ use lumen_engine::{
     gpu::{GpuCompositionRenderer, RasterHandle},
 };
 use lumen_ffmpeg::{EncoderFamily, EncoderQuality, VideoEncoderChoice};
+use lumen_gpu::wgpu::{PollType, SubmissionIndex};
 
 use super::{
     RenderError,
@@ -194,14 +195,15 @@ impl EncodeTarget {
     ) -> Result<(), RenderError> {
         match self {
             Self::Cpu(sink) => {
-                let raster = render_raster(renderer, composition, media_store, frame, timing)?;
+                let (raster, _submission) =
+                    render_raster(renderer, composition, media_store, frame, timing)?;
                 // Hold this frame's output so a later plan change cannot free it before readback.
                 let output = renderer
                     .gpu_renderer()
                     .texture_arc(raster.texture)
                     .ok_or_else(|| missing_output(&raster, frame))?;
                 precompile_ahead(renderer, composition, media_store, frame);
-                poll(renderer, frame, timing)?;
+                poll(renderer, frame, timing, None)?;
                 let size = checked_size(composition, &raster, frame)?;
                 let pixels = timed(&mut timing.readback, || {
                     renderer.gpu_renderer().read_texture_rgba8(&output, size)
@@ -333,7 +335,7 @@ fn render_raster(
     media_store: &LocalMediaStore,
     frame: u32,
     timing: &mut RenderTiming,
-) -> Result<RasterHandle, RenderError> {
+) -> Result<(RasterHandle, SubmissionIndex), RenderError> {
     let failed = |err: lumen_engine::error::LumenError| {
         render_failed(format!("render failed at frame {frame}: {err}"))
     };
@@ -342,9 +344,7 @@ fn render_raster(
     })
     .map_err(failed)?;
     timed(&mut timing.upload, || renderer.upload_bound_frame(&bound)).map_err(failed)?;
-    let (raster, _submission) =
-        timed(&mut timing.render, || renderer.submit_render()).map_err(failed)?;
-    Ok(raster)
+    timed(&mut timing.render, || renderer.submit_render()).map_err(failed)
 }
 
 fn checked_size(
@@ -385,16 +385,22 @@ fn poll_failed(frame: u32, err: impl std::fmt::Display) -> RenderError {
     render_failed(format!("GPU poll failed at frame {frame}: {err}"))
 }
 
+/// Collects finished GPU work, first waiting for the submission `until` if there is one.
 fn poll(
     renderer: &GpuCompositionRenderer,
     frame: u32,
     timing: &mut RenderTiming,
+    until: Option<SubmissionIndex>,
 ) -> Result<(), RenderError> {
+    let poll_type = match until {
+        Some(submission) => PollType::Wait {
+            submission_index: Some(submission),
+            timeout: None,
+        },
+        None => PollType::Poll,
+    };
     timed(&mut timing.flush, || {
-        renderer
-            .gpu_renderer()
-            .device
-            .poll(lumen_gpu::wgpu::PollType::Poll)
+        renderer.gpu_renderer().device.poll(poll_type)
     })
     .map(|_| ())
     .map_err(|err| render_failed(format!("GPU poll failed at frame {frame}: {err}")))

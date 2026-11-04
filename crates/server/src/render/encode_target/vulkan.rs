@@ -10,6 +10,7 @@ use lumen_ffmpeg::{
     AudioEncoderConfig, EncodeMode, EncoderQuality, GpuBackend, GpuVideoInput, MuxedEncoder,
     Rational, VideoEncoderConfig,
 };
+use lumen_gpu::wgpu::SubmissionIndex;
 
 use super::{
     RenderError, RenderTiming, checked_size, encode_failed, has_audio, missing_output, poll,
@@ -20,6 +21,7 @@ use crate::render::{encoder::warn_if_container_cropped, media::LocalMediaStore};
 pub(in crate::render) struct VulkanTarget {
     target: VulkanVideoTarget,
     encoder: MuxedEncoder,
+    previous_render: Option<SubmissionIndex>,
 }
 
 impl VulkanTarget {
@@ -58,7 +60,14 @@ impl VulkanTarget {
                 .context("lumen-ffmpeg Vulkan encoder failed to start")?;
         warn_if_container_cropped(&encoder);
         media_store.video_options.vulkan_device = device.can_decode().then_some(device);
-        Ok((renderer, Self { target, encoder }))
+        Ok((
+            renderer,
+            Self {
+                target,
+                encoder,
+                previous_render: None,
+            },
+        ))
     }
 
     pub(super) fn write_frame(
@@ -69,7 +78,8 @@ impl VulkanTarget {
         frame: u32,
         timing: &mut RenderTiming,
     ) -> Result<(), RenderError> {
-        let raster = render_raster(renderer, composition, media_store, frame, timing)?;
+        let (raster, submission) =
+            render_raster(renderer, composition, media_store, frame, timing)?;
         checked_size(composition, &raster, frame)?;
         let texture = renderer
             .gpu_renderer()
@@ -81,7 +91,15 @@ impl VulkanTarget {
         })
         .map_err(|err| render_failed(format!("NV12 conversion failed at frame {frame}: {err}")))?;
         precompile_ahead(renderer, composition, media_store, frame);
-        poll(renderer, frame, timing)?;
+        // Holds the GPU to the frame before this one, so a frame waits for about one frame's work.
+        // With the queue free to run ahead, that wait builds up in the encoder and lands on every
+        // third frame, where B-frames make it take three at once.
+        poll(
+            renderer,
+            frame,
+            timing,
+            self.previous_render.replace(submission),
+        )?;
         timed(&mut timing.encode_send, || {
             self.encoder
                 .write_gpu_frame(&GpuVideoInput::Vulkan(&video_frame))
