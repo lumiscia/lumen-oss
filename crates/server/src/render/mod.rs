@@ -1,3 +1,4 @@
+mod device_budget;
 mod encoder;
 mod fonts;
 mod gpu;

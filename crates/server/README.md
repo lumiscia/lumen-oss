@@ -53,7 +53,7 @@ A render that fails after being accepted keeps why. `GET /renders/:id` and `GET 
 
 S3-compatible artifact storage is planned for a future self-hosted release. For now, the HTTP binary's in-memory artifact storage is intended for local development and single-process testing, not durable production delivery. Only the most recent `--retained-renders` finished renders (default 16, `LUMEN_SERVER_RETAINED_RENDERS`) are kept, and their artifacts stay in memory until then. Older renders are dropped, record and artifact together, and return `404`.
 
-Renders run in submission order, `--max-concurrent-renders` at a time (default 1, `LUMEN_SERVER_MAX_CONCURRENT_RENDERS`). Later renders stay `queued` until a slot frees. Raise it only if the GPU has the memory for parallel renders.
+Renders run in submission order, `--max-concurrent-renders` at a time (default 1, `LUMEN_SERVER_MAX_CONCURRENT_RENDERS`). Later renders stay `queued` until a slot frees. Raise it only if the GPU has the memory for parallel renders. A running render also waits before its first frame while others hold most of the Vulkan contexts NVIDIA's driver allows a process: at most 14 NVENC renders, 9 `h264_vulkan` renders, or 6 with hardware decode. GPU memory can still run out first. Renders then usually fail with an error, but it has also hung the driver on a Blackwell card, so stay within what the card's memory holds.
 
 ### Media and fonts
 
