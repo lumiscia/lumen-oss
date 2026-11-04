@@ -146,7 +146,7 @@ impl AvBufferRef {
                     ptr::null_mut(),
                     0,
                 ),
-                "av_hwdevice_ctx_create",
+                "opening a GPU device for the encoder, which needs free video memory and driver contexts,",
             )
             .map_err(|error| error.with_backend(backend))?;
         }

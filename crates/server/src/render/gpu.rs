@@ -6,6 +6,7 @@ use lumen_ffmpeg::{EncoderFamily, VideoEncoderChoice};
 
 use super::{
     RenderError, RenderOptions, RenderProgress,
+    device_budget::reserve_devices,
     encoder::{
         ENCODER_FRAME_QUEUE_CAPACITY, EncoderFrame, LumenFfmpegEncoder, has_audio,
         write_composited_audio,
@@ -55,11 +56,17 @@ pub fn render_project_mp4(
         message: err.to_string(),
         retryable: false,
     })?;
+    // Declared before the store, so its decoders close before this room is given back.
+    let _devices;
     let mut media_store = LocalMediaStore::new(media_root).map_err(|err| RenderError {
         code: "font_dir_error",
         message: err.to_string(),
         retryable: false,
     })?;
+    _devices = reserve_devices(
+        encoder.family,
+        media_store.video_options.prefer_hardware_decode,
+    );
     let mut renderer = create_gpu_renderer(&mut media_store).map_err(|err| RenderError {
         code: "render_failed",
         message: format!("failed to create GPU renderer: {err:#}"),
