@@ -1,3 +1,4 @@
+use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
 use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
@@ -41,5 +42,26 @@ impl GpuCompileNode for Opacity {
                 opacity: params.opacity.clamp(0.0, 1.0) as f32,
             },
         )
+    }
+}
+
+impl crate::gpu::frame_graph::RecordNode for Opacity {
+    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        programs.spatial("opacity", SHADER)
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.required(self.id, "source", self.source)?;
+        let evaluated = self.params.eval(&DelegateEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(),
+        })?;
+        let params = compiler::OpacityParams {
+            opacity: evaluated.opacity.clamp(0.0, 1.0) as f32,
+        };
+        cx.filter("opacity", SHADER, source, &params)
     }
 }

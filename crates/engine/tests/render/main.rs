@@ -3,6 +3,7 @@ mod alpha;
 mod cache;
 mod clips;
 mod effects;
+mod frame_graph;
 mod geometry;
 mod harness;
 mod media;

@@ -28,6 +28,19 @@ impl<'a> FrameBindContext<'a> {
         }
     }
 
+    /// A context for a node recorded in `scope` at `frame`.
+    pub(crate) fn recording(
+        scope: Scope<'a>,
+        frame: FrameTime,
+        media: Option<&'a dyn MediaStore>,
+    ) -> Self {
+        Self {
+            scope,
+            frame,
+            media,
+        }
+    }
+
     pub fn with_media<M: MediaStore>(
         composition: &'a Composition,
         frame: u32,

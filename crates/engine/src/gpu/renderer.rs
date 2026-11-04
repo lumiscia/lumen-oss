@@ -79,7 +79,7 @@ struct CachedMediaTexture {
 /// Image textures plans share, which are never written once cached. Replaced images get new keys,
 /// so textures no plan binds are freed least recently used first once they exceed the budget;
 /// textures a plan binds don't count against it and always stay.
-struct MediaTextureCache {
+pub(crate) struct MediaTextureCache {
     textures: HashMap<MediaTextureKey, CachedMediaTexture>,
     budget: u64,
     clock: u64,
@@ -96,14 +96,14 @@ impl MediaTextureCache {
         }
     }
 
-    fn get(&mut self, key: &MediaTextureKey) -> Option<Arc<lumen_gpu::wgpu::Texture>> {
+    pub(super) fn get(&mut self, key: &MediaTextureKey) -> Option<Arc<lumen_gpu::wgpu::Texture>> {
         self.clock += 1;
         let cached = self.textures.get_mut(key)?;
         cached.last_used = self.clock;
         Some(Arc::clone(&cached.texture))
     }
 
-    fn insert(&mut self, key: MediaTextureKey, texture: Arc<lumen_gpu::wgpu::Texture>) {
+    pub(super) fn insert(&mut self, key: MediaTextureKey, texture: Arc<lumen_gpu::wgpu::Texture>) {
         self.upload_count += 1;
         self.clock += 1;
         self.textures.insert(
@@ -145,7 +145,7 @@ impl MediaTextureCache {
     }
 }
 
-fn create_media_texture(
+pub(super) fn create_media_texture(
     device: &lumen_gpu::wgpu::Device,
     size: lumen_gpu::Size,
 ) -> Arc<lumen_gpu::wgpu::Texture> {
@@ -179,6 +179,18 @@ struct PreparedComposition {
     last_used: u64,
 }
 
+/// What recording has cost, across every frame so far.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameGraphStats {
+    /// Bytes of textures the graph adopted, such as external targets and images.
+    pub adopted_bytes: u64,
+    pub recorder: lumen_gpu::RecorderStats,
+    pub held_bytes: u64,
+    pub retained_bytes: u64,
+    pub bind_groups: usize,
+    pub programs: usize,
+}
+
 pub struct GpuCompositionRenderer {
     renderer: lumen_gpu::Renderer,
     compiled_plans: foldhash::HashMap<CompiledPlanKey, PreparedComposition>,
@@ -204,6 +216,8 @@ pub struct GpuCompositionRenderer {
     media_texture_cache: MediaTextureCache,
     #[cfg(feature = "ffmpeg")]
     gpu_media_importer: GpuMediaFrameImporter,
+    /// Records frames instead of binding compiled plans.
+    frame_graph: Option<Box<super::frame_graph::FrameGraph>>,
 }
 
 impl GpuCompositionRenderer {
@@ -222,7 +236,18 @@ impl GpuCompositionRenderer {
     }
 
     pub fn from_renderer(renderer: lumen_gpu::Renderer) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let frame_graph = std::env::var_os("LUMEN_FRAME_GRAPH").is_some_and(|value| value == "1");
+        #[cfg(target_arch = "wasm32")]
+        let frame_graph = false;
+        let recording = frame_graph.then(|| {
+            Box::new(super::frame_graph::FrameGraph::new(
+                renderer.device.clone(),
+                renderer.queue.clone(),
+            ))
+        });
         Self {
+            frame_graph: recording,
             renderer,
             compiled_plans: foldhash::HashMap::default(),
             active_key: None,
@@ -249,6 +274,88 @@ impl GpuCompositionRenderer {
         }
     }
 
+    /// Records frames rather than binding plans, or goes back to plans.
+    pub fn set_frame_graph(&mut self, enabled: bool) {
+        if enabled == self.frame_graph.is_some() {
+            return;
+        }
+        self.release_resources();
+        self.frame_graph = enabled.then(|| {
+            Box::new(super::frame_graph::FrameGraph::new(
+                self.renderer.device.clone(),
+                self.renderer.queue.clone(),
+            ))
+        });
+    }
+
+    /// Whether frames are recorded rather than bound to plans.
+    pub fn frame_graph_enabled(&self) -> bool {
+        self.frame_graph.is_some()
+    }
+
+    /// Bounds what recorded frames keep in pooled textures.
+    #[doc(hidden)]
+    pub fn set_frame_graph_pool_budget(&mut self, bytes: u64) {
+        if let Some(graph) = &mut self.frame_graph {
+            graph.recorder.set_pool_budget(bytes);
+        }
+    }
+
+    /// The size, format and usage of the output of the frame last rendered.
+    pub fn output_desc(&self) -> Option<lumen_gpu::TextureDesc> {
+        match &self.frame_graph {
+            Some(graph) => graph.output_desc(),
+            None => {
+                let output = self.compiled()?.output;
+                self.gpu_renderer().texture_desc(output.texture)
+            }
+        }
+    }
+
+    /// The textures the frame last recorded used, before they shared any.
+    #[doc(hidden)]
+    pub fn recorded_texture_sizes(&self) -> Vec<lumen_gpu::Size> {
+        self.frame_graph
+            .as_ref()
+            .map_or_else(Vec::new, |graph| graph.recorder.frame_texture_sizes())
+    }
+
+    /// The domain a node of the root graph had in the frame last recorded.
+    #[doc(hidden)]
+    pub fn recorded_domain(
+        &self,
+        composition: &Composition,
+        node: NodeId,
+    ) -> Option<lumen_gpu::TextureDomain> {
+        self.frame_graph.as_ref()?.node_domain(composition, node)
+    }
+
+    /// The shared text atlas, once a frame has needed one.
+    #[doc(hidden)]
+    pub fn text_atlas_texture(&self) -> Option<Arc<lumen_gpu::wgpu::Texture>> {
+        self.text_atlas_texture.clone()
+    }
+
+    /// The passes the frame last recorded.
+    #[doc(hidden)]
+    pub fn recorded_pass_count(&self) -> usize {
+        self.frame_graph
+            .as_ref()
+            .map_or(0, |graph| graph.recorder.pass_count())
+    }
+
+    /// What recording has cost so far, when frames are recorded.
+    pub fn frame_graph_stats(&self) -> Option<FrameGraphStats> {
+        self.frame_graph.as_ref().map(|graph| FrameGraphStats {
+            recorder: graph.recorder.stats(),
+            held_bytes: graph.recorder.held_bytes(),
+            adopted_bytes: graph.recorder.adopted_bytes(),
+            retained_bytes: graph.retained_bytes(),
+            bind_groups: graph.recorder.bind_group_count(),
+            programs: graph.recorder.program_count(),
+        })
+    }
+
     pub fn compile(&mut self, composition: &Composition) -> crate::Result<()> {
         self.compile_with_output_format(composition, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
     }
@@ -259,6 +366,9 @@ impl GpuCompositionRenderer {
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
+        if let Some(graph) = &mut self.frame_graph {
+            return graph.prepare(composition, output_format);
+        }
         let key = self.compiled_plan_key(composition, 0.0, None)?;
         self.plan_compile_count += 1;
         let compiled = CompileContext::with_options(composition, 0.0, None, output_format, true)
@@ -292,6 +402,9 @@ impl GpuCompositionRenderer {
     /// Sets the estimated GPU memory compiled plans may hold. Rendering drops least recently used
     /// plans past it, and lookahead skips plans that would not fit. The current plan always stays.
     pub fn set_plan_cache_budget(&mut self, bytes: u64) {
+        if let Some(graph) = &mut self.frame_graph {
+            graph.recorder.set_pool_budget(bytes);
+        }
         self.plan_cache_budget = bytes;
         let active = self.active_key.clone();
         self.evict_over_budget(&[active.as_ref()]);
@@ -299,7 +412,10 @@ impl GpuCompositionRenderer {
 
     /// Estimated GPU memory held by compiled plans, excluding the shared text atlas and media cache.
     pub fn plan_cache_bytes(&self) -> u64 {
-        self.plan_cache_bytes
+        match &self.frame_graph {
+            Some(graph) => graph.recorder.held_bytes(),
+            None => self.plan_cache_bytes,
+        }
     }
 
     pub fn cached_plan_count(&self) -> usize {
@@ -313,18 +429,35 @@ impl GpuCompositionRenderer {
 
     /// Number of programs built for prepared plans, rather than reused from another plan.
     pub fn created_program_count(&self) -> u64 {
-        self.renderer.created_program_count()
+        match &self.frame_graph {
+            Some(graph) => graph.recorder.stats().programs_created,
+            None => self.renderer.created_program_count(),
+        }
+    }
+
+    /// Bind groups the plans still cached have rebuilt.
+    pub fn plan_bind_group_rebuilds(&self) -> u64 {
+        self.compiled_plans
+            .values()
+            .map(|prepared| prepared.renderer.bind_group_rebuilds())
+            .sum()
     }
 
     /// Number of passes in the plans of submitted frames, whether they ran or not.
     pub fn submitted_pass_count(&self) -> u64 {
-        self.submitted_pass_count
+        match &self.frame_graph {
+            Some(graph) => graph.recorder.stats().passes,
+            None => self.submitted_pass_count,
+        }
     }
 
     /// Number of passes submitted frames skipped because the output they would write was kept
     /// from an earlier frame: that of nodes without frame-dependent params.
     pub fn cached_pass_count(&self) -> u64 {
-        self.cached_pass_count
+        match &self.frame_graph {
+            Some(graph) => graph.skipped_passes(),
+            None => self.cached_pass_count,
+        }
     }
 
     /// Number of rejected lookahead plans whose estimated size is remembered.
@@ -360,6 +493,9 @@ impl GpuCompositionRenderer {
         output_format: lumen_gpu::wgpu::TextureFormat,
     ) -> crate::Result<()> {
         self.reset_compiled(output_format);
+        if let Some(graph) = &mut self.frame_graph {
+            return graph.prepare(composition, output_format);
+        }
         // Frame 0 is only compiled ahead of time. The frames being rendered may never reach a
         // source it can't open, and those that do fail with the same error.
         match self.ensure_compiled_for_frame(composition, 0.0, Some(media), PlanUse::Render) {
@@ -375,6 +511,10 @@ impl GpuCompositionRenderer {
     /// buffers this renderer exclusively owns instead of waiting for them to be garbage collected.
     /// Retains the shared text atlas (64 MiB once allocated) and cached glyphs across recompilation.
     pub fn release_resources(&mut self) {
+        if let Some(graph) = &mut self.frame_graph {
+            graph.release();
+            self.renderer.clear_recorded_output();
+        }
         self.bind_sequence += 1;
         self.media_texture_cache.destroy_all();
         for prepared in self.compiled_plans.values() {
@@ -416,6 +556,9 @@ impl GpuCompositionRenderer {
             media_textures = self.media_texture_cache.textures.len(),
             "reset compiled composition"
         );
+        if let Some(graph) = &mut self.frame_graph {
+            graph.reset();
+        }
         self.bind_sequence += 1;
         self.output_format = output_format;
         self.compiled_plans.clear();
@@ -553,6 +696,9 @@ impl GpuCompositionRenderer {
         frame: u32,
         media: &M,
     ) -> crate::Result<()> {
+        if self.frame_graph.is_some() {
+            return Ok(());
+        }
         self.ensure_compiled_for_frame(
             composition,
             f64::from(frame),
@@ -569,6 +715,9 @@ impl GpuCompositionRenderer {
         frame_count: u32,
         media: &M,
     ) -> crate::Result<()> {
+        if self.frame_graph.is_some() {
+            return Ok(());
+        }
         tracing::trace!(
             target: "lumen_render",
             start_frame,
@@ -641,6 +790,9 @@ impl GpuCompositionRenderer {
     ) -> crate::Result<lumen_gpu::SubmittedExternalTexture> {
         let span = tracing::trace_span!(target: "lumen_render", "render frame into external texture", frame);
         let _entered = span.enter();
+        if self.frame_graph.is_some() {
+            return self.record_into_external(composition, frame, media, external);
+        }
         let bound = self.bind_frame(composition, frame, media)?;
         self.upload_bound_frame(&bound)?;
         let prepared = self.active_prepared_mut()?;
@@ -657,6 +809,32 @@ impl GpuCompositionRenderer {
             })?;
         self.count_submitted();
         Ok(submitted)
+    }
+
+    /// Records a frame whose output is `external`, which then stays with the caller: the graph
+    /// holds no other claim on it once it is the only one left holding the texture.
+    fn record_into_external<M: MediaStore>(
+        &mut self,
+        composition: &Composition,
+        frame: u32,
+        media: &M,
+        external: lumen_gpu::ExternalTexture,
+    ) -> crate::Result<lumen_gpu::SubmittedExternalTexture> {
+        let texture = external.texture_arc();
+        let graph = self.frame_graph.as_mut().expect("recording");
+        graph.set_external(external);
+        let bound = self.bind_frame(composition, frame, media);
+        let graph = self.frame_graph.as_mut().expect("recording");
+        graph.take_external();
+        self.upload_bound_frame(&bound?)?;
+        let graph = self.frame_graph.as_mut().expect("recording");
+        let submission = graph.recorder.submit().map_err(|error| RenderError::Gpu {
+            details: error.to_string(),
+        })?;
+        graph.finish_frame();
+        Ok(lumen_gpu::SubmittedExternalTexture::new(
+            submission, texture,
+        ))
     }
 
     pub fn bind_frame<M: MediaStore>(
@@ -684,6 +862,26 @@ impl GpuCompositionRenderer {
             .into());
         }
         self.bind_sequence += 1;
+        if let Some(graph) = &mut self.frame_graph {
+            let mut bound = graph.record(super::frame_graph::RecordInput {
+                composition,
+                frame,
+                media: Some(media),
+                output_format: self.output_format,
+                full_frame_sources: self.full_frame_sources,
+                retain_static: self.reuse_static_output,
+                media_cache: &mut self.media_texture_cache,
+                text_atlas: &self.text_atlas,
+                atlas_texture: &mut self.text_atlas_texture,
+                max_rebinds: max_font_rebinds(composition),
+                #[cfg(feature = "ffmpeg")]
+                renderer: &self.renderer,
+                #[cfg(feature = "ffmpeg")]
+                importer: &mut self.gpu_media_importer,
+            })?;
+            bound.recorded = Some(self.bind_sequence);
+            return Ok(bound);
+        }
         // A font loaded while the plan compiles or the frame binds, here or by another renderer,
         // can widen text past the bounds and glyph counts the plan measured. The plan is then
         // keyed by the new font generation, so the frame is bound again to it; a font loads
@@ -736,6 +934,17 @@ impl GpuCompositionRenderer {
             media_textures = bound.media_textures().len(),
             "upload bound frame"
         );
+        if let Some(graph) = &mut self.frame_graph {
+            if bound.recorded != Some(self.bind_sequence) {
+                return Err(RenderError::Gpu {
+                    details: "stale recorded frame; record it again before uploading".to_string(),
+                }
+                .into());
+            }
+            let result = graph.upload(bound, self.text_atlas_texture.as_deref());
+            self.media_texture_cache.evict();
+            return result;
+        }
         if bound
             .renderer_binding
             .as_ref()
@@ -985,6 +1194,26 @@ impl GpuCompositionRenderer {
     pub fn submit_render(
         &mut self,
     ) -> crate::Result<(RasterHandle, lumen_gpu::wgpu::SubmissionIndex)> {
+        if let Some(graph) = &mut self.frame_graph {
+            let output = graph.output().ok_or_else(|| RenderError::Gpu {
+                details: "no recorded frame".to_string(),
+            })?;
+            let submission = graph.recorder.submit().map_err(|error| RenderError::Gpu {
+                details: error.to_string(),
+            })?;
+            if let Some((texture, desc)) = graph.changed_output() {
+                self.renderer.set_recorded_output(texture, desc);
+            }
+            graph.finish_frame();
+            return Ok((
+                RasterHandle {
+                    texture: lumen_gpu::TextureId(0),
+                    domain: output.domain,
+                    bounds: None,
+                },
+                submission,
+            ));
+        }
         let prepared = self.active_prepared_mut()?;
         tracing::trace!(
             target: "lumen_render",
@@ -1396,7 +1625,7 @@ fn source_hash(source: &str) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
-fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32) -> Vec<u8> {
+pub(super) fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32) -> Vec<u8> {
     if frame.width == width && frame.height == height && frame.row_bytes == width as usize * 4 {
         return frame.rgba.as_ref().clone();
     }

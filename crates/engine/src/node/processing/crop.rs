@@ -113,3 +113,41 @@ impl GpuCompiledNode for CompiledCrop {
         Ok(())
     }
 }
+
+impl crate::gpu::frame_graph::RecordNode for Crop {
+    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        programs.spatial("crop", SHADER)
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        let source = cx.required_full(self.id, "source", self.source)?;
+        let params = self.params.eval(&DelegateEvalContext {
+            node_id: self.id,
+            expr: &cx.expr(),
+        })?;
+        let x = compiler::pixel_origin(self.id, "x", params.x)?;
+        let y = compiler::pixel_origin(self.id, "y", params.y)?;
+        let width = compiler::pixel_extent(self.id, "width", params.width, 0)?;
+        let height = compiler::pixel_extent(self.id, "height", params.height, 0)?;
+        let size = source.domain.storage_size;
+        let left = i64::from(x).clamp(0, i64::from(size.width));
+        let top = i64::from(y).clamp(0, i64::from(size.height));
+        let right = (i64::from(x) + i64::from(width)).clamp(left, i64::from(size.width));
+        let bottom = (i64::from(y) + i64::from(height)).clamp(top, i64::from(size.height));
+        let gpu_params = compiler::CropParams {
+            origin: [left as i32, top as i32],
+            size: [(right - left) as u32, (bottom - top) as u32],
+        };
+        let tex = cx.storage_target(size);
+        cx.spatial_pass("crop", SHADER, source.tex, &gpu_params, tex, size)?;
+        Ok(crate::gpu::frame_graph::Raster {
+            tex,
+            domain: lumen_gpu::TextureDomain::full_frame(size),
+            // The region is clamped to the source, so it is the output's logical bounds.
+            bounds: Some(gpu_params),
+        })
+    }
+}

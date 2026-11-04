@@ -1589,11 +1589,13 @@ name = "lumen-bench"
 version = "0.3.1"
 dependencies = [
  "anyhow",
+ "fontdb",
  "lumen-engine",
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",
  "lumen-engine-text",
  "pollster",
+ "serde_json",
  "tokio",
 ]
 
@@ -1645,6 +1647,7 @@ dependencies = [
  "anyhow",
  "ash",
  "bytemuck",
+ "foldhash",
  "objc2",
  "objc2-metal",
  "pollster",

@@ -1,17 +1,17 @@
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use cosmic_text::{CacheKey, SwashContent, SwashImage};
 use etagere::{AllocId, size2};
 use swash::scale::Source;
 
-use crate::TextSystem;
 use crate::gpu::{
     GLYPH_MODE_MSDF, GLYPH_MODE_RASTER_COLOR, GLYPH_MODE_RASTER_MASK, GLYPH_RANGE_SHIFT,
     GpuGlyphInstance,
 };
 use crate::msdf::{self, MSDF_AUTO_MIN_SIZE};
 use crate::shape::{GlyphKey, ShapedText, TextGlyph, TextLayout};
+use crate::{MAX_GLYPH_EXTENTS, TextSystem};
 
 /// How outline glyphs are drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -32,7 +32,9 @@ impl TextSystem {
     /// render mode. This is the union of its glyph outlines grown by a margin for antialiasing,
     /// subpixel snapping and distance field padding. `None` when the bounds are not finite.
     pub fn ink_bounds(&mut self, shaped: &ShapedText) -> Option<[f32; 4]> {
-        let mut outlines: HashMap<CacheKey, Option<[f32; 4]>> = HashMap::new();
+        if self.glyph_extents.len() > MAX_GLYPH_EXTENTS {
+            self.glyph_extents.clear();
+        }
         let mut ink: Option<[f32; 4]> = None;
         for shaped_glyph in &shaped.glyphs {
             let glyph = &shaped_glyph.glyph;
@@ -48,9 +50,14 @@ impl TextSystem {
                 glyph.font_weight,
                 glyph.cache_key_flags,
             );
-            let outline = *outlines
-                .entry(key)
-                .or_insert_with(|| self.glyph_extent(key));
+            let outline = match self.glyph_extents.get(&key) {
+                Some(outline) => *outline,
+                None => {
+                    let outline = self.glyph_extent(key);
+                    self.glyph_extents.insert(key, outline);
+                    outline
+                }
+            };
             let Some([min_x, min_y, max_x, max_y]) = outline else {
                 continue;
             };

@@ -84,6 +84,7 @@ pub struct Renderer {
     /// Indexed by pass.
     bind_groups: Vec<Option<CachedBindGroups>>,
     texture_generation: u64,
+    bind_group_rebuilds: u64,
 }
 
 #[derive(Clone)]
@@ -136,6 +137,13 @@ pub struct SubmittedExternalTexture {
 }
 
 impl SubmittedExternalTexture {
+    pub fn new(submission: wgpu::SubmissionIndex, texture: Arc<wgpu::Texture>) -> Self {
+        Self {
+            submission,
+            texture,
+        }
+    }
+
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
     }
@@ -223,7 +231,36 @@ impl Renderer {
             program_cache: ProgramCache::default(),
             bind_groups: Vec::new(),
             texture_generation: 0,
+            bind_group_rebuilds: 0,
         }
+    }
+
+    /// Number of passes whose bind groups have been built or rebuilt.
+    pub fn bind_group_rebuilds(&self) -> u64 {
+        self.bind_group_rebuilds
+    }
+
+    /// Makes texture id 0 stand for `texture`, for a renderer that holds no plan: a recorded
+    /// frame's output is read through it as a plan's output is.
+    pub fn set_recorded_output(&mut self, texture: Arc<wgpu::Texture>, desc: TextureDesc) {
+        self.prepared_plan = None;
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.texture_generation += 1;
+        let runtime = RuntimeTexture {
+            texture,
+            view,
+            desc,
+            generation: self.texture_generation,
+        };
+        match self.textures.first_mut() {
+            Some(slot) => *slot = runtime,
+            None => self.textures.push(runtime),
+        }
+    }
+
+    /// Lets go of the output from `set_recorded_output`.
+    pub fn clear_recorded_output(&mut self) {
+        self.textures.clear();
     }
 
     /// An empty renderer on the same device that reuses programs this renderer and its other
@@ -1040,6 +1077,7 @@ impl Renderer {
                 RuntimeProgram::Compute(program) => &program.bind_group_layouts,
             };
             let groups = self.create_pass_bind_groups(layouts, bindings)?;
+            self.bind_group_rebuilds += 1;
             self.bind_groups[index] = Some(CachedBindGroups {
                 program,
                 bindings: bindings.clone(),
@@ -1143,21 +1181,21 @@ impl Renderer {
 ///
 /// Browser WebGPU only resolves error scopes asynchronously, so there the scope is not pushed and the
 /// browser reports errors as uncaptured.
-struct ValidationScope {
+pub(crate) struct ValidationScope {
     #[cfg(not(target_arch = "wasm32"))]
     guard: wgpu::ErrorScopeGuard,
 }
 
 impl ValidationScope {
     #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
-    fn push(device: &wgpu::Device) -> Self {
+    pub(crate) fn push(device: &wgpu::Device) -> Self {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
             guard: device.push_error_scope(wgpu::ErrorFilter::Validation),
         }
     }
 
-    fn finish(self) -> Result<()> {
+    pub(crate) fn finish(self) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use std::{

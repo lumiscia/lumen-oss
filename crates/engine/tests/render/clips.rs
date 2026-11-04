@@ -286,6 +286,15 @@ fn a_hidden_clip_compiles_and_binds_nothing_upstream() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
     let media = TestMedia::default();
+    if renderer.frame_graph_enabled() {
+        let mut passes = |frame| {
+            renderer.bind_frame(&composition, frame, &media).unwrap();
+            renderer.recorded_pass_count()
+        };
+        let (hidden, shown) = (passes(2), passes(6));
+        assert!(hidden < shown, "{hidden} vs {shown}");
+        return;
+    }
     let mut stats = |frame| {
         let bound = renderer.bind_frame(&composition, frame, &media).unwrap();
         let compiled = renderer.compiled().unwrap();
@@ -365,6 +374,29 @@ fn a_clip_bounds_an_animated_source_over_its_own_frames() {
     // that one.
     let gpu = gpu();
     let mut renderer = gpu.renderer();
+    if renderer.frame_graph_enabled() {
+        // A recorded frame bounds the square to this frame alone, rounded out to a size class
+        // narrower than this canvas, and follows it.
+        let mut wide = mover_scene();
+        wide.0["render_settings"]["width"] = json!(64);
+        wide.0["compositions"]["mover"]["render_settings"] = json!({ "width": 64, "height": 4 });
+        let wide = Composition::from(wide);
+        for (frame, square) in [(10.0, 4..6), (13.0, 7..9)] {
+            render(&mut renderer, &wide, frame, &TestMedia::default());
+            let domain = renderer
+                .recorded_domain(&wide, NodeId::new(1))
+                .expect("the clip recorded");
+            let rect = domain.data_rect;
+            assert!(
+                !domain.is_full_frame()
+                    && rect.width <= 16
+                    && rect.x <= square.start
+                    && rect.x + rect.width as i32 >= square.end,
+                "frame {frame}: the clip is not bounded to the square at {square:?}: {rect:?}"
+            );
+        }
+        return;
+    }
     render(
         &mut renderer,
         &mover_scene().into(),
