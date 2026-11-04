@@ -405,3 +405,68 @@ fn poll(
     .map(|_| ())
     .map_err(|err| render_failed(format!("GPU poll failed at frame {frame}: {err}")))
 }
+
+#[cfg(all(test, target_os = "linux", feature = "cuda", feature = "vulkan"))]
+mod tests {
+    use super::*;
+
+    /// libx264 can't take CUDA frames, so its target always fails to open, after the renderer and
+    /// on NVIDIA the CUDA context are up.
+    #[test]
+    fn a_cuda_target_that_will_not_open_leaves_a_working_cpu_upload() {
+        if std::panic::catch_unwind(lumen_ffmpeg::CudaDriver::load).is_err() {
+            eprintln!("no CUDA library to load; skipping");
+            return;
+        }
+        let composition = super::super::parse_composition(&serde_json::json!({
+            "timeline": { "fps": 24, "duration_frames": 3 },
+            "render_settings": { "width": 16, "height": 16 },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255], "width": 16, "height": 16 } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+        }))
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output.mp4");
+        let (choice, _) = VideoEncoderChoice::resolve(Some("libx264"))
+            .look_up(|_| {})
+            .unwrap();
+        let mut media_store = LocalMediaStore::new(directory.path().to_path_buf(), None);
+
+        let OpenedTarget {
+            mut renderer,
+            mut target,
+            encoder,
+            path,
+            devices: _devices,
+        } = EncodeTarget::open(
+            &choice,
+            EncoderFamily::Nvenc,
+            &composition,
+            &mut media_store,
+            &output,
+            &EncoderQuality::default(),
+        )
+        .unwrap();
+
+        assert_eq!((encoder.as_str(), path), ("libx264", "cpu_upload"));
+        let mut timing = RenderTiming::default();
+        for frame in 0..3 {
+            target
+                .write_frame(
+                    &mut renderer,
+                    &composition,
+                    &media_store,
+                    frame,
+                    &mut timing,
+                )
+                .unwrap();
+        }
+        target
+            .finish(&renderer, &composition, &media_store, &mut timing)
+            .unwrap();
+        assert!(output.metadata().unwrap().len() > 0);
+    }
+}

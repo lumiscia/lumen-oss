@@ -1,6 +1,11 @@
 //! Frames recorded rather than bound to plans, whichever path the suite runs on: what fails before
 //! the first frame, and who owns a frame rendered into a texture of the caller's.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer};
 use lumen_gpu::{ExternalTexture, wgpu};
 use serde_json::{Value, json};
@@ -457,6 +462,86 @@ fn compiling_without_rendering_keeps_the_program_cache_bounded() {
     }
     let programs = renderer.frame_graph_stats().unwrap().programs;
     assert!(programs <= LIMIT + 8, "{programs} programs after compiling");
+}
+
+/// Zero copy paces each frame on the submission of the frame before, so a frame with nothing to
+/// record still needs its own, later than what the host submitted after the last frame.
+#[test]
+fn a_frame_with_nothing_to_record_still_returns_its_own_submission() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    recording(&mut renderer);
+    let nodes = json!([
+        { "id": 1, "type": "background", "params": {
+            "paint": [200, 30, 30, 255], "width": CANVAS.0, "height": CANVAS.1
+        } },
+        { "id": 2, "type": "shape", "params": {
+            "position": [4, 4], "width": 8, "height": 8, "fill_paint": "#2040dc"
+        } },
+        { "id": 3, "type": "merge", "in": { "base": 1, "overlay": 2 } }
+    ]);
+    let composition: Composition = scene(CANVAS, nodes).frames(5).into();
+    let media = TestMedia::default();
+    let mut previous: Option<wgpu::SubmissionIndex> = None;
+    let mut conversions: Vec<Arc<AtomicBool>> = Vec::new();
+    let mut expected = None;
+    for frame in 0..5 {
+        let bound = renderer.bind_frame(&composition, frame, &media).unwrap();
+        renderer.upload_bound_frame(&bound).unwrap();
+        let (raster, submission) = renderer.submit_render().unwrap();
+        assert_eq!(renderer.recorded_pass_count() == 0, frame > 0);
+        assert_ne!(
+            previous.as_ref().map(|index| format!("{index:?}")),
+            Some(format!("{submission:?}")),
+            "frame {frame} reused the last frame's submission"
+        );
+
+        // What a target submits after the frame, which is ahead of the next frame's submission.
+        let gpu_renderer = renderer.gpu_renderer();
+        let output = gpu_renderer.texture_arc(raster.texture).unwrap();
+        let converted = target(&renderer, renderer.output_desc().unwrap());
+        let mut encoder = gpu_renderer
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_texture(
+            output.as_image_copy(),
+            converted.as_image_copy(),
+            output.size(),
+        );
+        gpu_renderer.queue.submit([encoder.finish()]);
+        let done = Arc::new(AtomicBool::new(false));
+        let done_when_finished = Arc::clone(&done);
+        gpu_renderer
+            .queue
+            .on_submitted_work_done(move || done_when_finished.store(true, Ordering::SeqCst));
+        conversions.push(done);
+
+        gpu_renderer
+            .device
+            .poll(match previous.replace(submission) {
+                Some(submission) => wgpu::PollType::Wait {
+                    submission_index: Some(submission),
+                    timeout: None,
+                },
+                None => wgpu::PollType::Poll,
+            })
+            .unwrap();
+        if frame >= 2 {
+            assert!(
+                conversions[frame as usize - 2].load(Ordering::SeqCst),
+                "the wait at frame {frame} didn't reach the conversion of frame {}",
+                frame - 2
+            );
+        }
+
+        let shown = read_rgba8(
+            gpu_renderer,
+            &converted,
+            lumen_gpu::Size::new(CANVAS.0, CANVAS.1),
+        );
+        let expected = expected.get_or_insert_with(|| shown.clone());
+        assert!(shown == *expected, "frame {frame} differs");
+    }
 }
 
 #[test]
