@@ -53,14 +53,10 @@ pub struct Args {
     /// Minimum progress delta required before broadcasting another non-terminal progress update.
     #[arg(long, env = "LUMEN_SERVER_PROGRESS_MIN_DELTA", default_value_t = 0.02)]
     pub progress_min_delta: f32,
-
-    /// Emit verbose per-frame renderer diagnostics.
-    #[arg(long, env = "LUMEN_SERVER_VERBOSE_DEBUG", default_value_t = false)]
-    pub verbose_debug: bool,
 }
 
 pub async fn run(mut args: Args) -> anyhow::Result<()> {
-    init_tracing(args.verbose_debug);
+    init_tracing();
     args.token.take_if(|token| token.is_empty());
     if args.token.is_none() && !args.bind.ip().to_canonical().is_loopback() {
         bail!(
@@ -92,14 +88,11 @@ fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-fn init_tracing(verbose_debug: bool) {
-    let default_filter = if verbose_debug {
-        "lumen_server=debug,warn"
-    } else {
-        "lumen_server=info,warn"
-    };
+fn init_tracing() {
     tracing_subscriber::fmt()
-        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| default_filter.to_string()))
+        .with_env_filter(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "lumen_server=info,warn".to_string()),
+        )
         .with_writer(std::io::stderr)
         .init();
 }

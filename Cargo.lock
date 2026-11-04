@@ -1718,6 +1718,7 @@ dependencies = [
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",
  "lumen-engine-text",
+ "pollster",
  "reqwest",
  "serde",
  "serde_json",
