@@ -1,3 +1,5 @@
+mod device_budget;
+mod encode_target;
 mod encoder;
 mod fonts;
 mod gpu;
@@ -9,7 +11,8 @@ use lumen_engine::composition::Composition;
 use lumen_ffmpeg::EncoderQuality;
 
 pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir, font_dir_from_env};
-pub use gpu::render_project_mp4;
+pub use gpu::{Mp4Render, RenderReport, RenderTiming, create_gpu_renderer, render_project_mp4};
+pub use media::LocalMediaStore;
 
 #[derive(Debug, Clone)]
 pub struct RenderError {

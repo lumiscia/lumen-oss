@@ -1,235 +1,55 @@
-use std::{fs, sync::mpsc};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, media::MediaStore};
-use lumen_ffmpeg::{EncoderFamily, VideoEncoderChoice};
+use lumen_ffmpeg::{EncoderQuality, VideoEncoderChoice};
 
 use super::{
     RenderError, RenderOptions, RenderProgress,
-    encoder::{
-        ENCODER_FRAME_QUEUE_CAPACITY, EncoderFrame, LumenFfmpegEncoder, has_audio,
-        write_composited_audio,
-    },
+    device_budget::DeviceReservation,
+    encode_target::{EncodeTarget, OpenedTarget},
+    fonts::font_dir_from_env,
     media::{LocalMediaStore, media_root},
 };
 
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-mod linux_cuda;
-
-#[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-use linux_cuda::render_project_mp4_cuda;
-
 pub(super) const MEDIA_PREFETCH_LOOKAHEAD_FRAMES: u32 = 30;
 
+/// Renders `composition` to MP4 bytes.
 pub fn render_project_mp4(
     composition: &Composition,
     options: &RenderOptions,
     on_progress: &mut dyn FnMut(RenderProgress),
 ) -> Result<Vec<u8>, RenderError> {
-    let width = composition.render_settings().width;
-    let height = composition.render_settings().height;
-    let fps = composition.timeline().fps;
-    let total_frames = composition.timeline().duration_frames;
-
-    let (choice, encoder) = VideoEncoderChoice::resolve(options.video_encoder.as_deref())
-        .look_up(|warning| tracing::warn!("{warning}"))
-        .map_err(|err| RenderError {
-            code: "invalid_render_profile",
-            message: err.to_string(),
-            retryable: false,
-        })?;
-    let cuda_fast_path = cfg!(all(
-        target_os = "linux",
-        feature = "cuda",
-        feature = "vulkan"
-    )) && encoder.family == EncoderFamily::Nvenc;
-    tracing::info!(
-        encoder = choice.name,
-        codec = ?encoder.codec,
-        cuda_fast_path,
-        "selected video encoder"
-    );
-
     let media_root = media_root(options.media_root.as_deref()).map_err(|err| RenderError {
         code: "media_root_error",
         message: err.to_string(),
         retryable: false,
     })?;
-    let mut media_store = LocalMediaStore::new(media_root).map_err(|err| RenderError {
+    let font_dir = font_dir_from_env().map_err(|err| RenderError {
         code: "font_dir_error",
         message: err.to_string(),
         retryable: false,
     })?;
-    let mut renderer = create_gpu_renderer(&mut media_store).map_err(|err| RenderError {
-        code: "render_failed",
-        message: format!("failed to create GPU renderer: {err:#}"),
-        retryable: true,
-    })?;
-    if let Some(adapter) = renderer.gpu_renderer().adapter_info() {
-        tracing::info!(
-            adapter = %adapter.name,
-            backend = ?adapter.backend,
-            device_type = ?adapter.device_type,
-            vendor = adapter.vendor,
-            device = adapter.device,
-            driver = %adapter.driver,
-            driver_info = %adapter.driver_info,
-            "rendering with GPU adapter"
-        );
-    }
-    renderer
-        .compile_with_media(
-            composition,
-            &media_store,
-            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-        )
-        .map_err(|err| RenderError {
-            code: "render_failed",
-            message: format!("failed to compile composition: {err}"),
-            retryable: false,
-        })?;
-
-    #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-    if cuda_fast_path {
-        return render_project_mp4_cuda(
-            renderer,
-            composition,
-            &media_store,
-            width,
-            height,
-            fps,
-            total_frames,
-            &choice.name,
-            &options.quality,
-            on_progress,
-        );
-    }
-
+    let media_store = LocalMediaStore::new(media_root, font_dir.as_deref());
     let tmp = tempfile::tempdir().map_err(|err| RenderError {
         code: "encode_failed",
         message: format!("failed to create temp dir: {err}"),
         retryable: true,
     })?;
     let output_path = tmp.path().join("output.mp4");
-    let include_audio = has_audio(composition);
-    let (encoder, encoder_name) = choice
-        .open(
-            |name| {
-                LumenFfmpegEncoder::create(
-                    &output_path,
-                    width,
-                    height,
-                    fps,
-                    name,
-                    &options.quality,
-                    include_audio,
-                )
-            },
-            |warning| tracing::warn!("{warning}"),
-        )
-        .map_err(|err| RenderError {
-            code: "encode_failed",
-            message: err.to_string(),
-            retryable: false,
-        })?;
-    tracing::info!(
-        encoder = encoder_name,
-        path = "cpu_upload",
-        "opened video encoder"
-    );
-    let (pixel_recycle_tx, _pixel_recycle_rx) =
-        mpsc::sync_channel::<Vec<u8>>(ENCODER_FRAME_QUEUE_CAPACITY + 2);
 
-    for frame in 0..total_frames {
-        prefetch_media_frames(composition, &media_store, frame);
-        let (raster, _submission) = renderer
-            .render_frame_submitted(composition, frame, &media_store)
-            .map_err(|err| RenderError {
-                code: "render_failed",
-                message: format!("render failed at frame {frame}: {err}"),
-                retryable: true,
-            })?;
-        // Hold this frame's output so a later plan change cannot free it before readback.
-        let output = renderer
-            .gpu_renderer()
-            .texture_arc(raster.texture)
-            .ok_or_else(|| RenderError {
-                code: "render_failed",
-                message: format!(
-                    "render output texture {:?} is unavailable for frame {frame}",
-                    raster.texture
-                ),
-                retryable: true,
-            })?;
-        let _ = renderer.precompile_frame_window(
-            composition,
-            frame.saturating_add(1),
-            MEDIA_PREFETCH_LOOKAHEAD_FRAMES,
-            &media_store,
-        );
-        renderer
-            .gpu_renderer()
-            .device
-            .poll(lumen_gpu::wgpu::PollType::Poll)
-            .map_err(|err| RenderError {
-                code: "render_failed",
-                message: format!("GPU poll failed at frame {frame}: {err}"),
-                retryable: true,
-            })?;
-        let size = raster.domain.storage_size;
-        if size.width != width || size.height != height {
-            return Err(RenderError {
-                code: "render_failed",
-                message: format!(
-                    "frame {frame} dimensions {}x{} do not match composition {}x{}",
-                    size.width, size.height, width, height
-                ),
-                retryable: true,
-            });
-        }
-        let pixels = renderer
-            .gpu_renderer()
-            .read_texture_rgba8(&output, size)
-            .map_err(|err| RenderError {
-                code: "render_failed",
-                message: format!("failed reading rendered pixels for frame {frame}: {err}"),
-                retryable: true,
-            })?;
-        encoder
-            .send(EncoderFrame {
-                frame,
-                pixels,
-                recycle_tx: pixel_recycle_tx.clone(),
-            })
-            .map_err(|err| RenderError {
-                code: "encode_failed",
-                message: err.to_string(),
-                retryable: true,
-            })?;
-
-        let completed = frame.saturating_add(1);
-        let ratio = (completed as f32 / total_frames as f32).clamp(0.0, 1.0);
-        on_progress(RenderProgress {
-            stage: "rendering",
-            frame: completed,
-            total_frames,
-            ratio,
-        });
-    }
-
-    if include_audio {
-        write_composited_audio(composition, &media_store, &encoder).map_err(|err| RenderError {
-            code: "audio_render_failed",
-            message: err.to_string(),
-            retryable: true,
-        })?;
-    }
-
-    encoder.finish().map_err(|err| RenderError {
-        code: "encode_failed",
-        message: err.to_string(),
-        retryable: true,
-    })?;
+    let render = Mp4Render::open(
+        composition,
+        media_store,
+        options.video_encoder.as_deref(),
+        &options.quality,
+        &output_path,
+    )?;
+    render.run(on_progress)?;
 
     fs::read(&output_path).map_err(|err| RenderError {
         code: "encode_failed",
@@ -238,11 +58,170 @@ pub fn render_project_mp4(
     })
 }
 
-pub(super) fn prefetch_media_frames(
-    composition: &Composition,
-    media_store: &LocalMediaStore,
-    frame: u32,
-) {
+/// What a finished render did and where its time went.
+#[derive(Debug, Clone, Default)]
+pub struct RenderReport {
+    pub frames: u32,
+    pub plan_cache_bytes: u64,
+    pub submitted_passes: u64,
+    pub cached_passes: u64,
+    pub timing: RenderTiming,
+}
+
+/// Time spent per step, summed over the render.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RenderTiming {
+    pub bind: Duration,
+    pub upload: Duration,
+    pub render: Duration,
+    pub flush: Duration,
+    pub readback: Duration,
+    pub encode_send: Duration,
+    pub audio_mix: Duration,
+    pub encode_finish: Duration,
+    pub total: Duration,
+}
+
+/// A render with its encoder open and its composition compiled, ready to write frames to `output`.
+pub struct Mp4Render<'a> {
+    composition: &'a Composition,
+    target: EncodeTarget,
+    encoder: String,
+    path: &'static str,
+    media_store: LocalMediaStore,
+    renderer: GpuCompositionRenderer,
+    // Last, so everything holding a device closes before its room is given back.
+    _devices: DeviceReservation<'static>,
+}
+
+impl<'a> Mp4Render<'a> {
+    /// Opens `encoder`, or `LUMEN_VIDEO_ENCODER`, or the platform default, on the path that keeps
+    /// frames on the GPU when it has one.
+    pub fn open(
+        composition: &'a Composition,
+        mut media_store: LocalMediaStore,
+        encoder: Option<&str>,
+        quality: &EncoderQuality,
+        output: &Path,
+    ) -> Result<Self, RenderError> {
+        let (choice, info) = VideoEncoderChoice::resolve(encoder)
+            .look_up(|warning| tracing::warn!("{warning}"))
+            .map_err(invalid_render_profile)?;
+        tracing::info!(encoder = choice.name, codec = ?info.codec, "selected video encoder");
+
+        let OpenedTarget {
+            renderer,
+            target,
+            encoder,
+            path,
+            devices,
+        } = EncodeTarget::open(
+            &choice,
+            info.family,
+            composition,
+            &mut media_store,
+            output,
+            quality,
+        )?;
+        tracing::info!(encoder, path, "opened video encoder");
+        if let Some(adapter) = renderer.gpu_renderer().adapter_info() {
+            tracing::info!(
+                adapter = %adapter.name,
+                backend = ?adapter.backend,
+                device_type = ?adapter.device_type,
+                vendor = adapter.vendor,
+                device = adapter.device,
+                driver = %adapter.driver,
+                driver_info = %adapter.driver_info,
+                "rendering with GPU adapter"
+            );
+        }
+        let mut render = Self {
+            composition,
+            target,
+            encoder,
+            path,
+            media_store,
+            renderer,
+            _devices: devices,
+        };
+        render
+            .renderer
+            .compile_with_media(
+                composition,
+                &render.media_store,
+                render.target.output_format(),
+            )
+            .map_err(|err| RenderError {
+                code: "render_failed",
+                message: format!("failed to compile composition: {err}"),
+                retryable: false,
+            })?;
+        Ok(render)
+    }
+
+    /// The encoder that opened, which is the fallback if the automatic default wouldn't.
+    pub fn encoder(&self) -> &str {
+        &self.encoder
+    }
+
+    /// How frames reach the encoder: `cpu_upload`, `zero_copy` or `cuda`.
+    pub fn path(&self) -> &'static str {
+        self.path
+    }
+
+    /// Renders and encodes every frame, then the audio, and finishes the output.
+    pub fn run(
+        mut self,
+        on_progress: &mut dyn FnMut(RenderProgress),
+    ) -> Result<RenderReport, RenderError> {
+        let started = Instant::now();
+        let total_frames = self.composition.timeline().duration_frames;
+        let mut timing = RenderTiming::default();
+        for frame in 0..total_frames {
+            prefetch_media_frames(self.composition, &self.media_store, frame);
+            self.target.write_frame(
+                &mut self.renderer,
+                self.composition,
+                &self.media_store,
+                frame,
+                &mut timing,
+            )?;
+            let completed = frame.saturating_add(1);
+            let ratio = (completed as f32 / total_frames as f32).clamp(0.0, 1.0);
+            on_progress(RenderProgress {
+                stage: "rendering",
+                frame: completed,
+                total_frames,
+                ratio,
+            });
+        }
+        self.target.finish(
+            &self.renderer,
+            self.composition,
+            &self.media_store,
+            &mut timing,
+        )?;
+        timing.total = started.elapsed();
+        Ok(RenderReport {
+            frames: total_frames,
+            plan_cache_bytes: self.renderer.plan_cache_bytes(),
+            submitted_passes: self.renderer.submitted_pass_count(),
+            cached_passes: self.renderer.cached_pass_count(),
+            timing,
+        })
+    }
+}
+
+fn invalid_render_profile(err: lumen_ffmpeg::FfmpegError) -> RenderError {
+    RenderError {
+        code: "invalid_render_profile",
+        message: err.to_string(),
+        retryable: false,
+    }
+}
+
+fn prefetch_media_frames(composition: &Composition, media_store: &LocalMediaStore, frame: u32) {
     let Ok(requirements) =
         lumen_engine::media::collect_frame_requirements(composition, media_store, frame)
     else {
@@ -269,7 +248,7 @@ pub(super) fn prefetch_media_frames(
 
 /// Creates a renderer that hardware decode can share a device with, when decode is asked for and
 /// the hardware has it.
-fn create_gpu_renderer(
+pub fn create_gpu_renderer(
     media_store: &mut LocalMediaStore,
 ) -> anyhow::Result<GpuCompositionRenderer> {
     #[cfg(all(target_os = "linux", feature = "vulkan"))]

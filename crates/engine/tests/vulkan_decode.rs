@@ -153,6 +153,23 @@ fn decodes_on_hardware(store: &Store, path: &Path) -> bool {
     active
 }
 
+/// The first test clip whose frames arrive as GPU frames.
+fn hardware_clip(store: &Store, directory: &Path) -> Option<PathBuf> {
+    playback_clips(directory)
+        .into_iter()
+        .find(|clip| decodes_on_hardware(store, clip))
+}
+
+/// The first test clip that also decodes on the CPU, which an FFmpeg without an AV1 software decoder
+/// can't do for AV1.
+fn clip_for_both(store: &Store, directory: &Path) -> Option<PathBuf> {
+    let software = Store::new(FfmpegResolverOptions::default());
+    playback_clips(directory).into_iter().find(|clip| {
+        decodes_on_hardware(store, clip)
+            && software.resolver(&clip.to_string_lossy()).frame(0).is_ok()
+    })
+}
+
 fn composition(store: &Store, nodes: Value, sources: &[&str]) -> Composition {
     let metadata = store.resolver(sources[0]).metadata();
     let last = nodes.as_array().unwrap().last().unwrap()["id"].clone();
@@ -593,16 +610,13 @@ fn seeking_time_remap_and_two_sources_match_software() {
 #[test]
 fn a_frame_the_renderer_cannot_import_moves_its_source_to_the_cpu() {
     let directory = tempfile::tempdir().expect("temp dir");
-    let Some(clip) = playback_clips(directory.path()).into_iter().next() else {
-        return;
-    };
-    let source = clip.to_string_lossy();
     let Some((_decoding_renderer, store)) = hardware() else {
         return;
     };
-    if !decodes_on_hardware(&store, &clip) {
+    let Some(clip) = clip_for_both(&store, directory.path()) else {
         return;
-    }
+    };
+    let source = clip.to_string_lossy();
     // Frames decoded on the first device can't be imported by a renderer on another.
     let (mut other_renderer, _) = hardware().expect("second device");
     let (mut software_renderer, software_store) = software();
@@ -621,4 +635,62 @@ fn a_frame_the_renderer_cannot_import_moves_its_source_to_the_cpu() {
     }
     let resolver = store.resolver(&source);
     assert!(matches!(resolver.frame(5), Ok(MediaFrame::CpuRgba(_))));
+}
+
+/// Binding resolves both frames before either is imported, so the first failed import finds another
+/// frame resolved and none drawn.
+#[test]
+fn a_failed_first_import_moves_a_source_with_two_bound_frames_to_the_cpu() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let Some((_decoding_renderer, store)) = hardware() else {
+        return;
+    };
+    let Some(clip) = clip_for_both(&store, directory.path()) else {
+        return;
+    };
+    let source = clip.to_string_lossy();
+    // Frames decoded on the first device can't be imported by a renderer on another.
+    let (mut other_renderer, _) = hardware().expect("second device");
+    let (mut software_renderer, software_store) = software();
+    let nodes = json!([
+        { "id": 1, "type": "media_in", "params": { "kind": "video", "source": source, "range_start": 0 } },
+        { "id": 2, "type": "media_in", "params": { "kind": "video", "source": source, "range_start": 1 } },
+        { "id": 3, "type": "opacity", "in": { "source": 2 }, "params": { "opacity": 0.5 } },
+        { "id": 4, "type": "raster_multimerge", "in": { "layers": [1, 3] } },
+    ]);
+    let scene = composition(&store, nodes.clone(), &[&source]);
+    let software_scene = composition(&software_store, nodes, &[&source]);
+    for frame in [0, 1, 40] {
+        let fallback = render(&mut other_renderer, &scene, frame, &store);
+        let reference = render(
+            &mut software_renderer,
+            &software_scene,
+            frame,
+            &software_store,
+        );
+        assert_eq!(fallback, reference, "frame {frame}");
+    }
+}
+
+#[test]
+fn a_source_that_drew_from_the_gpu_fails_rather_than_moving_to_the_cpu() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let Some((mut renderer, store)) = hardware() else {
+        return;
+    };
+    let Some(clip) = hardware_clip(&store, directory.path()) else {
+        return;
+    };
+    let source = clip.to_string_lossy();
+    let resolver = store.resolver(&source);
+    let Ok(MediaFrame::GpuVideo(undrawn)) = resolver.frame(5) else {
+        panic!("frame 5 should decode on the GPU like frame 0");
+    };
+    let scene = composition(&store, json!([media(1, &source)]), &[&source]);
+    render(&mut renderer, &scene, 1, &store);
+
+    let error = undrawn.decode_on_cpu("test").unwrap_err().to_string();
+
+    assert!(error.contains("would change"), "{error}");
+    assert!(matches!(resolver.frame(2), Ok(MediaFrame::GpuVideo(_))));
 }

@@ -10,23 +10,21 @@ path = "src/main.rs"
 
 [features]
 default = []
-cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
-metal = ["lumen-engine/metal", "lumen-ffmpeg/metal", "lumen-gpu/metal"]
+cuda = ["lumen-server/cuda"]
+metal = ["lumen-server/metal"]
 
 [dependencies]
 anyhow = "1.0.101"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 image = { version = "0.25.9", default-features = false, features = ["png"] }
 tempfile = "3.23.0"
-lumen-engine = { workspace = true, features = ["ffmpeg", "image"] }
-lumen-gpu = { workspace = true }
+lumen-engine = { workspace = true }
 lumen-server = { workspace = true }
-lumen-ffmpeg = { workspace = true, features = ["vulkan"] }
-pollster = "1.0.1"
+lumen-ffmpeg = { workspace = true }
 tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-lumen-engine = { workspace = true, features = ["vulkan"] }
+lumen-server = { workspace = true, features = ["vulkan"] }
 
 [dev-dependencies]
 serde_json = "1.0.145"

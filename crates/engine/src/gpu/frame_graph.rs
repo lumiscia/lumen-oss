@@ -1265,7 +1265,8 @@ impl<'a> FrameCx<'a> {
     }
 
     /// The texture a video frame shows through. A GPU frame is imported now, ahead of this frame's
-    /// submission in queue order, and one the renderer can't use moves its source to the CPU.
+    /// submission in queue order, which settles its source on the GPU. One the renderer can't use
+    /// moves its source to the CPU, unless an earlier frame of the source already drew from the GPU.
     pub(crate) fn video_texture(
         &mut self,
         #[cfg_attr(not(feature = "ffmpeg"), allow(unused_variables))] node_id: NodeId,
@@ -1291,10 +1292,17 @@ impl<'a> FrameCx<'a> {
                     frame: MediaFrame::GpuVideo(Arc::clone(&frame)),
                     size,
                 };
-                match self
+                let imported = self
                     .importer
                     .import(self.renderer, self.imports, &upload, &frame)
-                {
+                    .and_then(|texture| {
+                        if frame.settle_on_gpu() {
+                            Ok(texture)
+                        } else {
+                            Err("its source moved to the CPU".to_string())
+                        }
+                    });
+                match imported {
                     Ok(texture) => Ok(self.adopted_media(texture)),
                     Err(reason) => {
                         let cpu = frame.decode_on_cpu(&reason).map_err(|error| RenderError::Gpu {

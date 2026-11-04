@@ -7,20 +7,22 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use lumen_engine::{
-    audio::{AudioBuffer, AudioResolver},
+    audio::AudioResolver,
     error::MediaError,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
-    media::{FontResolver, ImageResolver, MediaFrame, MediaStore, TextSession, VideoFrameResolver},
+    media::{FontResolver, ImageResolver, MediaStore, TextSession, VideoFrameResolver},
 };
 
-use super::fonts::{FontCatalog, ResolvedFont, font_dir_from_env};
+use super::fonts::{FontCatalog, ResolvedFont};
 
 pub const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
 pub const HARDWARE_DECODE_ENV: &str = "LUMEN_HARDWARE_DECODE";
 
-pub(super) struct LocalMediaStore {
+/// Serves one render's media from under `root`, with its fonts.
+pub struct LocalMediaStore {
     root: PathBuf,
+    explain_missing_sources: bool,
     pub(super) video_options: FfmpegResolverOptions,
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
@@ -30,46 +32,50 @@ pub(super) struct LocalMediaStore {
 }
 
 impl LocalMediaStore {
-    pub(super) fn new(root: PathBuf) -> anyhow::Result<Self> {
+    pub fn new(root: PathBuf, font_dir: Option<&Path>) -> Self {
         let video_options = video_resolver_options_from_env();
-        let fonts = FontCatalog::new(font_dir_from_env()?.as_deref(), &root);
+        let fonts = FontCatalog::new(font_dir, &root);
         tracing::info!(
             media_root = %root.display(),
             prefer_hardware_decode = video_options.prefer_hardware_decode,
             hardware_decode_env = env::var(HARDWARE_DECODE_ENV).ok().as_deref().unwrap_or("<unset>"),
             "created local media store"
         );
-        Ok(Self {
+        Self {
             root,
+            explain_missing_sources: false,
             video_options,
             audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
             videos: RwLock::new(HashMap::new()),
             fonts,
             text: TextSession::default(),
-        })
-    }
-
-    fn resolve_source(&self, source: &str) -> Option<String> {
-        if is_http_url(source) {
-            return None;
         }
-
-        resolve_local_path_with_root(source, &self.root)
-            .ok()
-            .map(|path| path.to_string_lossy().to_string())
     }
 
-    /// `source` under the media root. The failure doesn't say why, as telling a missing file from
-    /// one outside the root would let a composition probe the server's disk.
+    /// Makes a source that won't resolve say why. Only for a composition its own user runs, as
+    /// telling a missing file from one outside the root lets a composition probe the disk.
+    pub fn explaining_missing_sources(mut self) -> Self {
+        self.explain_missing_sources = true;
+        self
+    }
+
     fn stored_source(&self, source: &str) -> Result<String, MediaError> {
-        self.resolve_source(source)
-            .ok_or_else(|| MediaError::source_not_found(source, "no such file in the media root"))
+        resolve_local_path_with_root(source, &self.root)
+            .map(|path| path.to_string_lossy().to_string())
+            .map_err(|error| {
+                let reason = if self.explain_missing_sources {
+                    format!("{error:#}")
+                } else {
+                    "no such file in the media root".to_string()
+                };
+                MediaError::source_not_found(source, reason)
+            })
     }
 
     fn resolved_font(&self, font_family: &str) -> Option<ResolvedFont> {
         self.fonts.resolve(font_family, || {
-            self.resolve_source(font_family).map(PathBuf::from)
+            resolve_local_path_with_root(font_family, &self.root).ok()
         })
     }
 
@@ -164,66 +170,10 @@ fn matches_env_flag(value: &str) -> bool {
     )
 }
 
-#[derive(Debug, Clone)]
-struct SharedImageResolver(Arc<ImageFileResolver>);
-
-impl ImageResolver for SharedImageResolver {
-    fn id(&self) -> &str {
-        self.0.id()
-    }
-
-    fn metadata(&self) -> lumen_engine::media::ImageMetadata {
-        self.0.metadata()
-    }
-
-    fn frame(&self) -> Result<MediaFrame, MediaError> {
-        self.0.frame()
-    }
-}
-
-#[derive(Clone)]
-struct SharedVideoResolver(Arc<FfmpegVideoResolver>);
-
-impl VideoFrameResolver for SharedVideoResolver {
-    fn id(&self) -> &str {
-        self.0.id()
-    }
-
-    fn metadata(&self) -> lumen_engine::media::VideoMetadata {
-        self.0.metadata()
-    }
-
-    fn enqueue_frame(&self, frame: u32) -> Result<(), MediaError> {
-        self.0.enqueue_frame(frame)
-    }
-
-    fn frame(&self, frame: u32) -> Result<MediaFrame, MediaError> {
-        self.0.frame(frame)
-    }
-
-    fn retain_frames(&self, frames: &[u32]) {
-        self.0.retain_frames(frames);
-    }
-}
-
-#[derive(Clone)]
-struct SharedAudioResolver(Arc<FfmpegAudioResolver>);
-
-impl AudioResolver for SharedAudioResolver {
-    fn resolve_range(
-        &self,
-        start_sample: u64,
-        frames: usize,
-    ) -> Result<Arc<AudioBuffer>, MediaError> {
-        self.0.resolve_range(start_sample, frames)
-    }
-}
-
 impl MediaStore for LocalMediaStore {
     fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
         let resolved = self.stored_source(source)?;
-        let resolver = self.image_resolver(&resolved)?;
-        Ok(Box::new(SharedImageResolver(resolver)))
+        Ok(Box::new(self.image_resolver(&resolved)?))
     }
 
     fn get_video_resolver(
@@ -231,14 +181,12 @@ impl MediaStore for LocalMediaStore {
         stream_id: &str,
     ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
         let resolved = self.stored_source(stream_id)?;
-        let resolver = self.video_resolver(&resolved)?;
-        Ok(Box::new(SharedVideoResolver(resolver)))
+        Ok(Box::new(self.video_resolver(&resolved)?))
     }
 
     fn get_audio_resolver(&self, source_id: &str) -> Result<Box<dyn AudioResolver>, MediaError> {
         let resolved = self.stored_source(source_id)?;
-        let resolver = self.audio_resolver(&resolved)?;
-        Ok(Box::new(SharedAudioResolver(resolver)))
+        Ok(Box::new(self.audio_resolver(&resolved)?))
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {
@@ -276,6 +224,10 @@ fn resolve_local_path_with_root(source: &str, root: &Path) -> anyhow::Result<Pat
     let root = root
         .canonicalize()
         .with_context(|| format!("failed to canonicalize media root `{}`", root.display()))?;
+
+    if source.starts_with("http://") || source.starts_with("https://") {
+        return Err(anyhow!("remote media source `{source}` is not supported"));
+    }
 
     if source.contains("://") && !source.starts_with("file://") {
         return Err(anyhow!("unsupported asset URI scheme for `{source}`"));
@@ -319,10 +271,6 @@ fn resolve_local_path_with_root(source: &str, root: &Path) -> anyhow::Result<Pat
     Ok(candidate)
 }
 
-fn is_http_url(source: &str) -> bool {
-    source.starts_with("http://") || source.starts_with("https://")
-}
-
 #[cfg(test)]
 mod tests {
     use lumen_engine::expr::{Expression, ExpressionContext};
@@ -335,7 +283,7 @@ mod tests {
     fn a_source_outside_the_root_fails_like_a_missing_one() {
         let outside = tempfile::NamedTempFile::new().unwrap();
         let root = tempfile::tempdir().unwrap();
-        let store = LocalMediaStore::new(root.path().canonicalize().unwrap()).unwrap();
+        let store = LocalMediaStore::new(root.path().canonicalize().unwrap(), None);
         let outside = outside.path().display().to_string();
         let failure = |source: &str| match store.get_image_resolver(source) {
             Ok(_) => panic!("{source} should not open"),
@@ -352,12 +300,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_store_for_its_own_user_says_why_a_source_failed() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        std::fs::write(root.join("corrupt.png"), b"not a png").unwrap();
+        let store = LocalMediaStore::new(root.clone(), None).explaining_missing_sources();
+        let failure = |source: &str| match store.get_image_resolver(source) {
+            Ok(_) => panic!("{source} should not open"),
+            Err(error) => error.to_string(),
+        };
+
+        assert_eq!(
+            failure("missing.png"),
+            format!(
+                "media source `missing.png` not found: failed to canonicalize asset path `{}`: No such file or directory (os error 2)",
+                root.join("missing.png").display()
+            )
+        );
+        assert_eq!(
+            failure("corrupt.png"),
+            format!(
+                "media decoding failed for {}: failed decoding image source: The image format could not be determined",
+                root.join("corrupt.png").display()
+            )
+        );
+        assert!(failure("../secret.png").contains("parent traversal"));
+        assert!(failure("https://example.com/image.png").contains("remote media source"));
+    }
+
     /// A media root holding `font` as the job's `Roboto`.
     fn job_with_roboto(font: &[u8]) -> (tempfile::TempDir, LocalMediaStore) {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("assets/fonts")).unwrap();
         std::fs::write(root.path().join("assets/fonts/Roboto.ttf"), font).unwrap();
-        let store = LocalMediaStore::new(root.path().canonicalize().unwrap()).unwrap();
+        let store = LocalMediaStore::new(root.path().canonicalize().unwrap(), None);
         (root, store)
     }
 
@@ -413,7 +390,7 @@ mod tests {
         let changed = [ROBOTO, &[0]].concat();
         std::fs::write(root.path().join("assets/fonts/Roboto.ttf"), changed).unwrap();
 
-        let next_job = LocalMediaStore::new(root.path().canonicalize().unwrap()).unwrap();
+        let next_job = LocalMediaStore::new(root.path().canonicalize().unwrap(), None);
         assert_ne!(next_job.font_resolver_id("Roboto").unwrap(), before);
     }
 
@@ -421,7 +398,7 @@ mod tests {
     fn a_font_staged_under_its_alias_serves_the_family_of_that_name() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("brand"), ROBOTO).unwrap();
-        let store = LocalMediaStore::new(root.path().canonicalize().unwrap()).unwrap();
+        let store = LocalMediaStore::new(root.path().canonicalize().unwrap(), None);
 
         let resolver = store.get_font_resolver("brand").unwrap();
         assert_eq!(resolver.data().unwrap(), vec![ROBOTO.to_vec()]);

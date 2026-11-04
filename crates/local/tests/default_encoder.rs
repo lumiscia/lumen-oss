@@ -197,9 +197,7 @@ fn default_encoder_falls_back_to_libx264_with_one_warning_and_a_correct_video() 
     let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
     assert!(output.status.success(), "{stderr}");
     assert_eq!(
-        stderr
-            .matches("warning: h264_vulkan is unavailable")
-            .count(),
+        stderr.matches("h264_vulkan is unavailable").count(),
         1,
         "{stderr}"
     );

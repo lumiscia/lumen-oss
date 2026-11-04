@@ -377,7 +377,9 @@ fn animated_cases() -> Vec<Case> {
         motion(
             "blur radius through the sixteenth band",
             vec![
-                small(json!([500, 380])),
+                // Bright enough to survive 8-bit rounding at the largest radius: spread over this
+                // sigma, the small shape peaks at half a level, so rounding decides if it is drawn.
+                white(500.0, 380.0, 28, 22),
                 blur(by_frame(&[100.0, 124.0, 130.0, 152.0, 170.0])),
             ],
             (1100, 800),

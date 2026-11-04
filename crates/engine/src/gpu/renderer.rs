@@ -993,7 +993,14 @@ impl GpuCompositionRenderer {
             })?;
         let media_texture_cache = &mut self.media_texture_cache;
         #[cfg(feature = "ffmpeg")]
-        let gpu_media_importer = &mut self.gpu_media_importer;
+        let mut gpu_imports = self
+            .gpu_media_importer
+            .import_all(
+                &prepared.renderer,
+                &mut prepared.media_imports,
+                bound.media_textures(),
+            )
+            .into_iter();
         for upload in bound.media_textures() {
             tracing::trace!(
                 target: "lumen_render",
@@ -1009,12 +1016,17 @@ impl GpuCompositionRenderer {
                 MediaFrame::CpuRgba(frame) => frame,
                 #[cfg(feature = "ffmpeg")]
                 MediaFrame::GpuVideo(frame) => {
-                    match gpu_media_importer.import(
-                        &prepared.renderer,
-                        &mut prepared.media_imports,
-                        upload,
-                        frame,
-                    ) {
+                    let imported = gpu_imports
+                        .next()
+                        .unwrap_or_else(|| Err("the frame was not imported".to_string()))
+                        .and_then(|texture| {
+                            if frame.settle_on_gpu() {
+                                Ok(texture)
+                            } else {
+                                Err("its source moved to the CPU".to_string())
+                            }
+                        });
+                    match imported {
                         Ok(texture) => {
                             let bound = prepared.renderer.texture_arc(upload.texture);
                             if bound.is_none_or(|bound| !Arc::ptr_eq(&bound, &texture)) {

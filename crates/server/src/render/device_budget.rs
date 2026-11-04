@@ -1,0 +1,174 @@
+use std::sync::{Condvar, Mutex, PoisonError};
+
+use lumen_ffmpeg::EncoderFamily;
+
+/// NVIDIA's driver gives a process a fixed number of contexts across all of its Vulkan devices,
+/// 63 on the cards measured. Past that `vkCreateDevice` fails, FFmpeg's device can segfault, and a
+/// Blackwell card can hang, so renders wait for room and stop short of it.
+const CONTEXTS: u32 = 56;
+/// A device with only wgpu's render queue.
+const RENDERER_CONTEXTS: u32 = 1;
+/// A render device that also has the compute and video queues FFmpeg uses it through. NVENC renders
+/// count the same, whatever they decode with: running a Blackwell card out of memory with CUDA
+/// contexts hung it, so they're held to the number measured to work.
+const LARGE_RENDERER_CONTEXTS: u32 = 4;
+/// The device FFmpeg opens for an encoder taking uploaded frames, which holds every queue it finds.
+const UPLOAD_ENCODER_CONTEXTS: u32 = 5;
+
+static BUDGET: DeviceBudget = DeviceBudget::new(CONTEXTS);
+
+/// Waits until the devices a render is about to open fit in the driver's limit, and holds their
+/// room until dropped.
+pub(super) fn reserve_devices(
+    encoder: EncoderFamily,
+    hardware_decode: bool,
+) -> DeviceReservation<'static> {
+    let renderer = if hardware_decode || encoder == EncoderFamily::Nvenc {
+        LARGE_RENDERER_CONTEXTS
+    } else {
+        RENDERER_CONTEXTS
+    };
+    let upload_encoder = if encoder == EncoderFamily::Vulkan {
+        UPLOAD_ENCODER_CONTEXTS
+    } else {
+        0
+    };
+    BUDGET.reserve(renderer + upload_encoder)
+}
+
+/// Waits for room for one render device whose video queues the encoder and decoders share.
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+pub(super) fn reserve_shared_video_device() -> DeviceReservation<'static> {
+    BUDGET.reserve(LARGE_RENDERER_CONTEXTS)
+}
+
+struct DeviceBudget {
+    capacity: u32,
+    state: Mutex<BudgetState>,
+    freed: Condvar,
+}
+
+/// Renders start in the order they asked, so a stream of small ones can't hold back a large one.
+struct BudgetState {
+    used: u32,
+    next_ticket: u64,
+    serving: u64,
+}
+
+pub(super) struct DeviceReservation<'a> {
+    budget: &'a DeviceBudget,
+    contexts: u32,
+}
+
+impl DeviceBudget {
+    const fn new(capacity: u32) -> Self {
+        Self {
+            capacity,
+            state: Mutex::new(BudgetState {
+                used: 0,
+                next_ticket: 0,
+                serving: 0,
+            }),
+            freed: Condvar::new(),
+        }
+    }
+
+    fn reserve(&self, contexts: u32) -> DeviceReservation<'_> {
+        let contexts = contexts.min(self.capacity);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.serving != state.next_ticket || state.used + contexts > self.capacity {
+            tracing::info!(
+                contexts,
+                used = state.used,
+                "render waiting for room for its GPU devices"
+            );
+        }
+        // Nothing that can panic runs from here until the ticket is served, as a ticket never
+        // served would hold up every render behind it.
+        let ticket = state.next_ticket;
+        state.next_ticket += 1;
+        while state.serving != ticket || state.used + contexts > self.capacity {
+            state = self
+                .freed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        state.used += contexts;
+        state.serving += 1;
+        self.freed.notify_all();
+        DeviceReservation {
+            budget: self,
+            contexts,
+        }
+    }
+}
+
+impl Drop for DeviceReservation<'_> {
+    fn drop(&mut self) {
+        self.budget
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .used -= self.contexts;
+        self.budget.freed.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::mpsc, time::Duration};
+
+    use super::*;
+
+    #[test]
+    fn a_render_past_the_budget_waits_for_one_to_finish() {
+        let budget = DeviceBudget::new(10);
+        let first = budget.reserve(6);
+        std::thread::scope(|scope| {
+            let (started, waiting) = mpsc::channel();
+            let budget = &budget;
+            scope.spawn(move || {
+                let _second = budget.reserve(6);
+                started.send(()).unwrap();
+            });
+            assert!(waiting.recv_timeout(Duration::from_millis(100)).is_err());
+            drop(first);
+            waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+        });
+        assert_eq!(budget.state.lock().unwrap().used, 0);
+    }
+
+    #[test]
+    fn a_render_larger_than_the_budget_still_runs_alone() {
+        let budget = DeviceBudget::new(10);
+        let reservation = budget.reserve(12);
+        assert_eq!(budget.state.lock().unwrap().used, 10);
+        drop(reservation);
+    }
+
+    #[test]
+    fn a_small_render_does_not_pass_a_large_one_waiting() {
+        let budget = DeviceBudget::new(10);
+        let first = budget.reserve(6);
+        std::thread::scope(|scope| {
+            let (started, order) = mpsc::channel();
+            let budget = &budget;
+            let large_started = started.clone();
+            scope.spawn(move || {
+                let _large = budget.reserve(8);
+                large_started.send("large").unwrap();
+            });
+            while budget.state.lock().unwrap().next_ticket < 2 {
+                std::thread::yield_now();
+            }
+            scope.spawn(move || {
+                let _small = budget.reserve(4);
+                started.send("small").unwrap();
+            });
+            assert!(order.recv_timeout(Duration::from_millis(100)).is_err());
+            drop(first);
+            assert_eq!(order.recv_timeout(Duration::from_secs(10)), Ok("large"));
+            assert_eq!(order.recv_timeout(Duration::from_secs(10)), Ok("small"));
+        });
+    }
+}
