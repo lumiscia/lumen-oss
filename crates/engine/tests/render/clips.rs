@@ -376,16 +376,25 @@ fn a_clip_bounds_an_animated_source_over_its_own_frames() {
     let mut renderer = gpu.renderer();
     if renderer.frame_graph_enabled() {
         // A recorded frame bounds the square to this frame alone, rounded out to a size class
-        // narrower than this canvas.
+        // narrower than this canvas, and follows it.
         let mut wide = mover_scene();
         wide.0["render_settings"]["width"] = json!(64);
         wide.0["compositions"]["mover"]["render_settings"] = json!({ "width": 64, "height": 4 });
-        render(&mut renderer, &wide.into(), 10.0, &TestMedia::default());
-        let sizes = renderer.recorded_texture_sizes();
-        assert!(
-            sizes.iter().any(|size| size.width <= 16),
-            "no texture is bounded to the square at this frame: {sizes:?}"
-        );
+        let wide = Composition::from(wide);
+        for (frame, square) in [(10.0, 4..6), (13.0, 7..9)] {
+            render(&mut renderer, &wide, frame, &TestMedia::default());
+            let domain = renderer
+                .recorded_domain(&wide, NodeId::new(1))
+                .expect("the clip recorded");
+            let rect = domain.data_rect;
+            assert!(
+                !domain.is_full_frame()
+                    && rect.width <= 16
+                    && rect.x <= square.start
+                    && rect.x + rect.width as i32 >= square.end,
+                "frame {frame}: the clip is not bounded to the square at {square:?}: {rect:?}"
+            );
+        }
         return;
     }
     render(

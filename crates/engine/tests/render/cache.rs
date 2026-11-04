@@ -226,6 +226,13 @@ fn kept_output_survives_plan_switches_and_is_dropped_with_evicted_plans() {
             assert!(nonblank(&pixels));
         }
         assert!(renderer.cached_pass_count() > 0, "budget {budget:?}");
+        // A recorded frame has no plans to keep or evict; a release is what drops its kept outputs.
+        if renderer.frame_graph_enabled() {
+            assert!(renderer.frame_graph_stats().unwrap().retained_bytes > 0);
+            renderer.release_resources();
+            assert_eq!(renderer.frame_graph_stats().unwrap().retained_bytes, 0);
+            continue;
+        }
         assert_eq!(
             renderer.plan_compile_count() > compiled_before_revisit,
             budget.is_some(),
@@ -252,6 +259,12 @@ fn replacing_a_kept_texture_renders_it_again() {
         at(&mut renderer, &composition, f64::from(frame));
     }
     assert!(renderer.cached_pass_count() > 0, "the static layer is kept");
+    // A recorded frame's kept textures are the recorder's own, with no id to replace them through.
+    if renderer.frame_graph_enabled() {
+        let pixels = at(&mut renderer, &composition, 2.0);
+        assert!(pixels == uncached(&mut reference, &composition, 2.0));
+        return;
+    }
     let kept = renderer
         .compiled()
         .unwrap()

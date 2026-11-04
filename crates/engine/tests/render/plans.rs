@@ -300,6 +300,7 @@ fn shader_edits_replace_the_plan_and_keep_held_textures() {
     let media = TestMedia::default();
     for precompile_first in [false, true] {
         let mut renderer = gpu.renderer();
+        let plans = !renderer.frame_graph_enabled();
         let mut outputs = Vec::new();
         let mut held = None;
         for edit in 0..12u8 {
@@ -307,19 +308,23 @@ fn shader_edits_replace_the_plan_and_keep_held_textures() {
             let composition = red_shader(red);
             if precompile_first {
                 renderer.precompile_frame(&composition, 0, &media).unwrap();
-                assert_eq!(
-                    renderer.cached_plan_count(),
-                    if edit == 0 { 1 } else { 2 },
-                    "precompiling edit {edit} keeps the plan it supersedes"
-                );
+                if plans {
+                    assert_eq!(
+                        renderer.cached_plan_count(),
+                        if edit == 0 { 1 } else { 2 },
+                        "precompiling edit {edit} keeps the plan it supersedes"
+                    );
+                }
             }
             let (frame, texture) = render_held(&mut renderer, &composition, 0.0, &media);
             assert_uniform(&frame.rgba, [red, 0, 0, 255], &format!("edit {edit}"));
-            assert_eq!(
-                renderer.cached_plan_count(),
-                1,
-                "rendering edit {edit} (precompiled first: {precompile_first}) keeps a superseded plan"
-            );
+            if plans {
+                assert_eq!(
+                    renderer.cached_plan_count(),
+                    1,
+                    "rendering edit {edit} (precompiled first: {precompile_first}) keeps a superseded plan"
+                );
+            }
             held.get_or_insert_with(|| (texture.as_ref().clone(), frame.width, frame.height));
             outputs.push(Arc::downgrade(&texture));
         }
@@ -347,29 +352,40 @@ fn lookahead_compiles_every_switch_plan_ahead_and_keeps_them() {
     let mut renderer = gpu.renderer();
     let media = TestMedia::default();
     let composition = Composition::from(switch_scene(PLANS));
+    let plans = !renderer.frame_graph_enabled();
 
     render(&mut renderer, &composition, 0.0, &media);
     renderer
         .precompile_frame_window(&composition, 1, 30, &media)
         .unwrap();
-    assert_eq!(renderer.cached_plan_count(), PLANS as usize);
-    assert_eq!(renderer.plan_compile_count(), u64::from(PLANS));
+    let programs = renderer.created_program_count();
+    if plans {
+        assert_eq!(renderer.cached_plan_count(), PLANS as usize);
+        assert_eq!(renderer.plan_compile_count(), u64::from(PLANS));
+    }
 
     let mut plan_outputs = HashMap::new();
     for frame in 0..4 * PLANS {
         let (rendered, output) = render_held(&mut renderer, &composition, f64::from(frame), &media);
-        let first = plan_outputs
-            .entry(frame % PLANS)
-            .or_insert_with(|| Arc::clone(&output));
-        assert!(
-            Arc::ptr_eq(first, &output),
-            "frame {frame} recompiled a plan the lookahead had already built"
-        );
         assert_eq!(
-            renderer.plan_compile_count(),
-            u64::from(PLANS),
-            "frame {frame}"
+            renderer.created_program_count(),
+            programs,
+            "frame {frame} built a program"
         );
+        if plans {
+            let first = plan_outputs
+                .entry(frame % PLANS)
+                .or_insert_with(|| Arc::clone(&output));
+            assert!(
+                Arc::ptr_eq(first, &output),
+                "frame {frame} recompiled a plan the lookahead had already built"
+            );
+            assert_eq!(
+                renderer.plan_compile_count(),
+                u64::from(PLANS),
+                "frame {frame}"
+            );
+        }
         assert_uniform(
             &rendered.rgba,
             plan_color(frame % PLANS),
@@ -426,10 +442,20 @@ fn lookahead_compiles_a_rejected_plan_once() {
     renderer.set_plan_cache_budget(renderer.plan_cache_bytes());
 
     let compiles = renderer.plan_compile_count();
+    let (programs, bytes) = (
+        renderer.created_program_count(),
+        renderer.plan_cache_bytes(),
+    );
     for _ in 0..6 {
         renderer
             .precompile_frame_window(&composition, 1, 30, &media)
             .unwrap();
+    }
+    assert_eq!(renderer.created_program_count(), programs);
+    // Recording has nothing to build ahead, so it holds no more for looking ahead.
+    if renderer.frame_graph_enabled() {
+        assert_eq!(renderer.plan_cache_bytes(), bytes);
+        return;
     }
     assert_eq!(renderer.cached_plan_count(), 1);
     assert_eq!(renderer.plan_compile_count(), compiles + 1);
@@ -443,6 +469,23 @@ fn rejected_plan_memory_is_bounded_and_released() {
     let composition = Composition::from(animated_shader_scene(9));
     render(&mut renderer, &composition, 0.0, &media);
     renderer.set_plan_cache_budget(0);
+    // Recording rejects no plans. Its limit is that a frame's textures are all it keeps with no
+    // budget, however many shader combinations go by, and that a release frees them.
+    if renderer.frame_graph_enabled() {
+        let bytes = renderer.plan_cache_bytes();
+        for frame in 1..512_u32 {
+            let rendered = render(&mut renderer, &composition, f64::from(frame), &media);
+            assert_uniform(
+                &rendered.rgba,
+                [frame.min(255) as u8, 0, 0, 255],
+                &format!("frame {frame}"),
+            );
+            assert!(renderer.plan_cache_bytes() <= bytes, "frame {frame}");
+        }
+        renderer.release_resources();
+        assert_eq!(renderer.plan_cache_bytes(), 0);
+        return;
+    }
     for frame in 1..512 {
         renderer
             .precompile_frame(&composition, frame, &media)
@@ -468,6 +511,15 @@ fn shrinking_the_canvas_forgets_rejected_plan_estimates() {
     let large = with_canvas(128, 128);
     render(&mut renderer, &large, 0.0, &media);
     let plan_bytes = renderer.plan_cache_bytes();
+    // Recording keeps no estimates. With no budget its large textures go once the small frame runs.
+    if renderer.frame_graph_enabled() {
+        renderer.set_plan_cache_budget(0);
+        let small = with_canvas(8, 4);
+        let rendered = render(&mut renderer, &small, 1.0, &media);
+        assert_uniform(&rendered.rgba, plan_color(1), "the small canvas");
+        assert!(renderer.plan_cache_bytes() < plan_bytes);
+        return;
+    }
     renderer.set_plan_cache_budget(plan_bytes + plan_bytes / 4);
     renderer.precompile_frame(&large, 1, &media).unwrap();
     assert_eq!(renderer.cached_plan_count(), 1);
@@ -488,6 +540,10 @@ fn the_plan_budget_bounds_independently_animated_shaders() {
     let composition = Composition::from(animated_shader_scene(6));
 
     renderer.compile(&composition).unwrap();
+    // A recorded frame holds nothing until it renders; one frame's textures stand in for a plan.
+    if renderer.frame_graph_enabled() {
+        render(&mut renderer, &composition, 0.0, &media);
+    }
     let plan_bytes = renderer.plan_cache_bytes();
     assert!(plan_bytes > 0);
     // The second budget cannot fit even one lookahead plan beside the current one.
@@ -549,6 +605,20 @@ fn standalone_compile_keeps_animated_sources_full_frame_for_fractional_binds() {
 
     let gpu = gpu();
     let mut renderer = gpu.renderer();
+    // A recorded frame bounds what each bind draws, including fractional ones.
+    if renderer.frame_graph_enabled() {
+        let media = TestMedia::default();
+        for frame in [0.0, 0.25, 0.5, 1.5] {
+            let recorded = render(&mut renderer, &composition, frame, &media);
+            let reference = render(&mut gpu.reference(), &composition, frame, &media);
+            assert!(recorded.rgba == reference.rgba, "frame {frame}");
+            assert!(
+                !shape_is_full_frame(&renderer, &composition),
+                "frame {frame}"
+            );
+        }
+        return;
+    }
     renderer.compile(&composition).unwrap();
     assert!(!shape_domain(renderer.compiled().unwrap()).is_full_frame());
 }
@@ -605,4 +675,14 @@ fn static_output_reuse_skips_passes_and_changes_no_pixel() {
             assert_eq!(skipped, [0; 4]);
         }
     }
+}
+
+fn shape_is_full_frame(
+    renderer: &lumen_engine::gpu::GpuCompositionRenderer,
+    composition: &Composition,
+) -> bool {
+    renderer
+        .recorded_domain(composition, NodeId::new(1))
+        .expect("the shape recorded")
+        .is_full_frame()
 }

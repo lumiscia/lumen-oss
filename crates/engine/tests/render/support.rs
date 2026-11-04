@@ -522,6 +522,7 @@ pub struct Case {
     expect: Expect,
     tolerance: u8,
     bounded: Option<bool>,
+    recorded_bounded: Option<bool>,
     own_programs: bool,
 }
 
@@ -536,6 +537,7 @@ impl Case {
             expect,
             tolerance: 1,
             bounded: None,
+            recorded_bounded: None,
             own_programs: false,
         }
     }
@@ -562,6 +564,13 @@ impl Case {
         self
     }
 
+    /// What `bounded` asserts for a recorded frame where it differs from a plan's, which sizes what
+    /// a plan can't know ahead of the frame to the canvas.
+    pub fn recorded_bounded(mut self, bounded: bool) -> Self {
+        self.recorded_bounded = Some(bounded);
+        self
+    }
+
     /// Makes the reference compile its own programs, so a program built wrongly for this scene's
     /// plan can't make both renders wrong. Rows are slower for it, so few use it.
     pub fn own_programs(mut self) -> Self {
@@ -575,7 +584,12 @@ impl Case {
         // renderer normally lives on through the reference render, which then compiles none. They
         // share nothing else: the reference starts with empty plan caches.
         let mut renderer = gpu.renderer();
-        let frames = self.render_frames(&mut renderer, self.bounded);
+        let bounded = if renderer.frame_graph_enabled() {
+            self.recorded_bounded.or(self.bounded)
+        } else {
+            self.bounded
+        };
+        let frames = self.render_frames(&mut renderer, bounded);
         self.expect.assert(self, gpu, &frames);
         let kept = (!self.own_programs).then_some(renderer);
         let reference = self.render_frames(&mut gpu.reference(), self.bounded.map(|_| false));
@@ -596,7 +610,7 @@ impl Case {
             .iter()
             .map(|&at| {
                 let frame = render(renderer, &self.scene, at, &self.media);
-                if let Some(bounded) = bounded.filter(|_| !renderer.frame_graph_enabled()) {
+                if let Some(bounded) = bounded {
                     let domain = self.output_domain(renderer);
                     assert_eq!(
                         !domain.is_full_frame(),
@@ -620,6 +634,11 @@ impl Case {
                 _ => None,
             })
             .expect("scene has a media_output");
+        if renderer.frame_graph_enabled() {
+            return renderer
+                .recorded_domain(&self.scene, source)
+                .expect("the output source recorded");
+        }
         renderer
             .compiled()
             .expect("a frame rendered")

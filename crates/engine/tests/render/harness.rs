@@ -213,6 +213,7 @@ fn bounds_match_reference() {
         )
         .frames([1.5])
         .bounded(false)
+        .recorded_bounded(true)
         .own_programs(),
     ]);
 }

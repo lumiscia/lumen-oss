@@ -295,3 +295,138 @@ fn a_kept_output_is_copied_to_the_target_and_stays_kept() {
         "the first frame's passes alone"
     );
 }
+
+/// Writes only the left half of its output, which a later intermediate could otherwise inherit
+/// pixels for through a texture shared within the frame.
+const LEFT_HALF_SHADER: &str = "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x < 4u) {
+        textureStore(output, vec2<i32>(id.xy), vec4<f32>(0.0, 0.0, 1.0, 1.0));
+    }
+}
+";
+
+#[test]
+fn what_a_shader_leaves_unwritten_is_transparent() {
+    let composition = scene(
+        (8, 8),
+        json!([
+            { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255] } },
+            { "id": 2, "type": "opacity", "in": { "source": 1 }, "params": { "opacity": 0.8 } },
+            { "id": 3, "type": "opacity", "in": { "source": 2 }, "params": { "opacity": 0.5 } },
+            { "id": 4, "type": "wgsl_shader", "in": { "source": 3 },
+              "params": { "shader": LEFT_HALF_SHADER } }
+        ]),
+    )
+    .into();
+    let gpu = gpu();
+    for recorded in [false, true] {
+        let mut renderer = gpu.renderer();
+        renderer.set_frame_graph(recorded);
+        let frame = render(&mut renderer, &composition, 0.0, &TestMedia::default());
+        assert_eq!(frame.pixel(0, 0), [0, 0, 255, 255], "recorded: {recorded}");
+        assert_eq!(frame.pixel(7, 7), [0, 0, 0, 0], "recorded: {recorded}");
+    }
+}
+
+#[test]
+fn a_shader_writing_less_than_last_frame_leaves_no_old_pixels_when_recorded() {
+    let shader = "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (id.x < 8u - 4u * lumen.frame) {
+        textureStore(output, vec2<i32>(id.xy), vec4<f32>(0.0, 0.0, 1.0, 1.0));
+    }
+}
+";
+    let composition = scene(
+        (8, 8),
+        json!([
+            { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255] } },
+            { "id": 2, "type": "wgsl_shader", "in": { "source": 1 }, "params": { "shader": shader } }
+        ]),
+    )
+    .frames(2)
+    .into();
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    recording(&mut renderer);
+    let media = TestMedia::default();
+    assert_eq!(
+        render(&mut renderer, &composition, 0.0, &media).pixel(7, 7),
+        [0, 0, 255, 255]
+    );
+    assert_eq!(
+        render(&mut renderer, &composition, 1.0, &media).pixel(7, 7),
+        [0, 0, 0, 0]
+    );
+}
+
+#[test]
+fn a_frame_with_more_shaders_than_the_caches_hold_renders_and_settles() {
+    const SHADERS: u32 = 70;
+    let mut nodes =
+        vec![json!({ "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } })];
+    for index in 0..SHADERS {
+        let shader = format!(
+            "const NODE: u32 = {index}u;\n\
+             @compute @workgroup_size(8, 8, 1)\n\
+             fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {{\n\
+               let step = vec4<f32>(1.0 / 255.0, 0.0, 0.0, f32(NODE) * 0.0);\n\
+               textureStore(output, vec2<i32>(id.xy), textureLoad(input0, vec2<i32>(id.xy), 0) + step);\n\
+             }}"
+        );
+        nodes.push(json!({
+            "id": index + 2, "type": "wgsl_shader", "in": { "source": index + 1 },
+            "params": { "shader": shader }
+        }));
+    }
+    let composition = scene((8, 8), json!(nodes)).into();
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    recording(&mut renderer);
+    renderer.set_static_output_reuse(false);
+    let frame = render(&mut renderer, &composition, 0.0, &TestMedia::default());
+    assert_eq!(frame.pixel(4, 4), [SHADERS as u8, 0, 0, 255]);
+    let built = renderer
+        .frame_graph_stats()
+        .unwrap()
+        .recorder
+        .programs_created;
+    let frame = render(&mut renderer, &composition, 0.0, &TestMedia::default());
+    assert_eq!(frame.pixel(4, 4), [SHADERS as u8, 0, 0, 255]);
+    assert_eq!(
+        renderer
+            .frame_graph_stats()
+            .unwrap()
+            .recorder
+            .programs_created,
+        built,
+        "the second frame compiled again"
+    );
+}
+
+#[test]
+fn releasing_resources_frees_what_recording_held_and_it_renders_again() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    recording(&mut renderer);
+    let composition = every_program().into();
+    let media = TestMedia::default();
+    let first = render(&mut renderer, &composition, 31.0, &media);
+    assert!(renderer.frame_graph_stats().unwrap().held_bytes > 0);
+
+    renderer.release_resources();
+    let stats = renderer.frame_graph_stats().unwrap();
+    assert_eq!(stats.held_bytes, 0);
+    assert_eq!(stats.adopted_bytes, 0);
+    assert_eq!(stats.retained_bytes, 0);
+    assert_eq!(stats.programs, 0);
+    assert_eq!(stats.bind_groups, 0);
+
+    assert_eq!(
+        render(&mut renderer, &composition, 31.0, &media).rgba,
+        first.rgba
+    );
+}

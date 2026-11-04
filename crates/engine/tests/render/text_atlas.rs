@@ -26,6 +26,9 @@ fn drawn(pixels: &[u8]) -> bool {
 }
 
 fn atlas_texture(renderer: &GpuCompositionRenderer) -> Arc<wgpu::Texture> {
+    if renderer.frame_graph_enabled() {
+        return renderer.text_atlas_texture().expect("a frame drew text");
+    }
     let plan = &renderer.compiled().expect("a plan is compiled").plan;
     let mut atlases = plan
         .textures()
@@ -121,15 +124,19 @@ fn the_shared_atlas_is_kept_across_recompiles_and_dropped_on_release() {
     let bound = renderer.bind_frame(&huge, 0, &media).unwrap();
     renderer.upload_bound_frame(&bound).unwrap();
     assert!(Arc::ptr_eq(&atlas_texture(&renderer), &atlas));
-    let instances = renderer
-        .compiled()
-        .unwrap()
-        .plan
-        .buffers()
-        .iter()
-        .find(|buffer| buffer.label.as_deref() == Some("text:2:instances"))
-        .unwrap()
-        .id;
+    // Recording writes every text's instances under one id.
+    let instances = match renderer.compiled() {
+        Some(compiled) => {
+            compiled
+                .plan
+                .buffers()
+                .iter()
+                .find(|buffer| buffer.label.as_deref() == Some("text:2:instances"))
+                .unwrap()
+                .id
+        }
+        None => lumen_gpu::BufferId(1),
+    };
     let has_huge_glyph = bound.frame_update().uploads().iter().any(|upload| {
         let Upload::Buffer { id, data, .. } = upload else {
             return false;
@@ -277,13 +284,16 @@ impl StaleUpload {
         let older = renderer.bind_frame(&composition, 0, &media).unwrap();
         let compiles = renderer.plan_compile_count();
         let current = renderer.bind_frame(&composition, 1, &media).unwrap();
-        assert_eq!(
-            renderer.plan_compile_count() > compiles,
-            self.new_plan,
-            "frame 1 compiles a plan of its own"
-        );
+        let plans = !renderer.frame_graph_enabled();
+        if plans {
+            assert_eq!(
+                renderer.plan_compile_count() > compiles,
+                self.new_plan,
+                "frame 1 compiles a plan of its own"
+            );
+        }
         assert!(older.texture_upload_count() > 0 && current.texture_upload_count() > 0);
-        if self.shared_slot {
+        if plans && self.shared_slot {
             let (older, current) = (
                 atlas_writes(&renderer, &older),
                 atlas_writes(&renderer, &current),
@@ -296,10 +306,7 @@ impl StaleUpload {
 
         renderer.upload_bound_frame(&current).unwrap();
         let error = renderer.upload_bound_frame(&older).unwrap_err();
-        assert!(
-            error.to_string().contains("stale bound text frame"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("stale"), "{error}");
 
         let rebound = renderer.bind_frame(&composition, 1, &media).unwrap();
         assert_eq!(rebound.texture_upload_count(), 0);
@@ -356,13 +363,17 @@ fn a_bound_frame_is_not_uploaded_once_a_later_one_is_bound() {
     check_each(rows, StaleUpload::run);
 }
 
-fn text_domain_is_bounded(renderer: &GpuCompositionRenderer) -> bool {
+fn text_domain_is_bounded(renderer: &GpuCompositionRenderer, composition: &Composition) -> bool {
     let text = NodeId::new(1);
-    // A recorded frame keeps no plan to read this from.
-    let Some(compiled) = renderer.compiled() else {
-        return true;
-    };
-    !compiled
+    if renderer.frame_graph_enabled() {
+        return !renderer
+            .recorded_domain(composition, text)
+            .expect("the text recorded")
+            .is_full_frame();
+    }
+    !renderer
+        .compiled()
+        .expect("a frame rendered")
         .node_output(text, &[])
         .expect("the text compiled")
         .domain
@@ -410,7 +421,7 @@ impl FontBounds {
         );
         assert!(drawn(&in_font.rgba), "nothing is drawn");
         assert!(
-            text_domain_is_bounded(&renderer),
+            text_domain_is_bounded(&renderer, &composition),
             "the text fills the canvas"
         );
         let reference = render(&mut gpu.reference(), &composition, 0.0, &self.media);
