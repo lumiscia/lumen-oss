@@ -309,6 +309,14 @@ impl Arena {
         }
         grew
     }
+
+    fn release(&mut self) {
+        if let Some(buffer) = self.buffer.take() {
+            buffer.destroy();
+        }
+        self.cpu = Vec::new();
+        self.capacity = 0;
+    }
 }
 
 enum RuntimeProgram {
@@ -465,7 +473,8 @@ impl Recorder {
     }
 
     /// A texture of this size, format and usage for this frame's passes, valid in them until
-    /// `resolve`. Its contents are undefined: every pass writing it must write all it later reads.
+    /// `resolve`. Its contents are undefined, possibly another intermediate's pixels: whoever
+    /// writes it must write everything later read, or `clear` it first.
     pub fn acquire(
         &mut self,
         size: Size,
@@ -705,6 +714,27 @@ impl Recorder {
                 TexRef(self.entries.len() as u32 - 1)
             }
         }
+    }
+
+    /// Takes a pooled texture out of the pool without destroying it, so whoever holds it keeps its
+    /// pixels. Does nothing to an adopted texture.
+    pub fn disown(&mut self, tex: TexRef) {
+        let Some(entry) = &self.entries[tex.0 as usize] else {
+            return;
+        };
+        if entry.external {
+            return;
+        }
+        let (key, bytes) = (entry.key, entry.bytes);
+        if let Some(bucket) = self.buckets.get_mut(&key) {
+            bucket.textures.retain(|other| *other != tex);
+            bucket.released.retain(|other| *other != tex);
+            bucket.next = bucket.next.min(bucket.textures.len());
+        }
+        self.pool_bytes -= bytes;
+        self.entries[tex.0 as usize] = None;
+        self.free_slots.push(tex.0);
+        self.purge_groups(|res| matches!(res, KeyRes::Tex(other) if *other == tex));
     }
 
     /// Forgets a texture from `adopt`, along with the bind groups using it.
@@ -1028,7 +1058,7 @@ impl Recorder {
     ) -> ProgramRef {
         self.stats.programs_created += 1;
         if dynamic {
-            self.evict_dynamic_programs();
+            self.evict_dynamic_programs(MAX_DYNAMIC_PROGRAMS - 1);
         }
         let entry = ProgramEntry {
             program,
@@ -1049,27 +1079,35 @@ impl Recorder {
         id
     }
 
-    /// Keeps runtime programs to `MAX_DYNAMIC_PROGRAMS`, least recently used out first, so a
-    /// source that changes every frame cannot grow memory without limit.
-    fn evict_dynamic_programs(&mut self) {
-        let dynamic = self.programs.iter().flatten().filter(|p| p.dynamic).count();
-        if dynamic < MAX_DYNAMIC_PROGRAMS {
-            return;
+    /// Keeps runtime programs to `keep`, least recently used out first, so a source that changes
+    /// every frame cannot grow memory without limit. What the current frame has used is pinned:
+    /// a recorded pass names its program by slot, so a frame using more than the limit holds them
+    /// all, and the excess goes once later frames stop using it.
+    fn evict_dynamic_programs(&mut self, keep: usize) {
+        let mut dynamic = self.programs.iter().flatten().filter(|p| p.dynamic).count();
+        while dynamic > keep {
+            let oldest = self
+                .programs
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, program)| Some((slot, program.as_ref()?)))
+                .filter(|(_, program)| program.dynamic && program.last_used < self.frame)
+                .min_by_key(|(_, program)| program.last_used)
+                .map(|(slot, _)| ProgramRef(slot as u32));
+            let Some(oldest) = oldest else {
+                return;
+            };
+            self.programs[oldest.0 as usize] = None;
+            self.program_keys.retain(|_, program| *program != oldest);
+            self.purge_group_keys(|key| key.program == oldest);
+            dynamic -= 1;
         }
-        let oldest = self
-            .programs
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, program)| Some((slot, program.as_ref()?)))
-            .filter(|(_, program)| program.dynamic)
-            .min_by_key(|(_, program)| program.last_used)
-            .map(|(slot, _)| ProgramRef(slot as u32));
-        let Some(oldest) = oldest else {
-            return;
-        };
-        self.programs[oldest.0 as usize] = None;
-        self.program_keys.retain(|_, program| *program != oldest);
-        self.purge_group_keys(|key| key.program == oldest);
+    }
+
+    fn pin_program(&mut self, program: ProgramRef) {
+        if let Some(entry) = &mut self.programs[program.0 as usize] {
+            entry.last_used = self.frame;
+        }
     }
 
     /// A cached sampler, identified by `key`.
@@ -1121,6 +1159,7 @@ impl Recorder {
         bindings: &[(u32, Res)],
         dispatch: crate::Dispatch,
     ) {
+        self.pin_program(program);
         self.passes.push(RecordedPass::Compute {
             program,
             bindings: PassBindings::new(bindings),
@@ -1139,6 +1178,7 @@ impl Recorder {
         instances: u32,
         viewport: Option<[f32; 4]>,
     ) {
+        self.pin_program(program);
         self.passes.push(RecordedPass::Render {
             program,
             bindings: PassBindings::new(bindings),
@@ -1442,9 +1482,40 @@ impl Recorder {
         });
     }
 
+    /// Destroys every texture only this recorder holds and drops all programs, bind groups,
+    /// samplers and bump buffers. Refs taken before this are no longer valid, so nothing may
+    /// still be retained or recorded, and the next frame starts from nothing.
+    pub fn release_all(&mut self) {
+        for entry in self.entries.drain(..).flatten() {
+            if Arc::strong_count(&entry.texture) == 1 {
+                entry.texture.destroy();
+            }
+            if !entry.external {
+                self.stats.textures_destroyed += 1;
+            }
+        }
+        self.free_slots = Vec::new();
+        self.buckets = foldhash::HashMap::default();
+        self.pool_bytes = 0;
+        self.adopted_bytes = 0;
+        self.frame_textures = Vec::new();
+        self.programs = Vec::new();
+        self.program_keys = foldhash::HashMap::default();
+        self.program_contents = foldhash::HashMap::default();
+        self.samplers = Vec::new();
+        self.uniforms.release();
+        self.storage.release();
+        self.groups = Vec::new();
+        self.free_groups = Vec::new();
+        self.group_keys = foldhash::HashMap::default();
+        self.passes = Vec::new();
+        self.resolved = Vec::new();
+    }
+
     /// Ends the frame, dropping textures and bind groups idle past their limit and, when over
     /// budget, the unused textures in rotation that were used least recently.
     pub fn end_frame(&mut self) {
+        self.evict_dynamic_programs(MAX_DYNAMIC_PROGRAMS);
         let over_budget = self.pool_bytes > self.budget;
         if !over_budget && !self.frame.is_multiple_of(SWEEP_FRAMES) {
             return;
