@@ -16,26 +16,22 @@ use lumen_ffmpeg::{
 
 use super::media::LocalMediaStore;
 
-pub(super) const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
-
-pub(super) struct EncoderFrame {
-    pub frame: u32,
-    pub pixels: Vec<u8>,
-    pub recycle_tx: mpsc::SyncSender<Vec<u8>>,
-}
+const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
 
 enum EncoderMessage {
-    Video(EncoderFrame),
+    Video { frame: u32, pixels: Vec<u8> },
     Audio(AudioFrame),
     Finish,
 }
 
-pub(super) struct LumenFfmpegEncoder {
+/// Encodes CPU frames on a writer thread. Sending after the writer has failed returns the writer's
+/// own error, and dropping the sink without `finish` abandons the output.
+pub(super) struct EncoderSink {
     message_tx: Option<mpsc::SyncSender<EncoderMessage>>,
     writer_handle: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
-impl LumenFfmpegEncoder {
+impl EncoderSink {
     pub(super) fn create(
         output: &Path,
         width: u32,
@@ -62,17 +58,7 @@ impl LumenFfmpegEncoder {
         let writer_handle = thread::spawn(move || {
             let mut encoder = match MuxedEncoder::create_with_audio(output, config, audio) {
                 Ok(encoder) => {
-                    if let Some(crop) = encoder.container_crop() {
-                        tracing::warn!(
-                            coded_width = crop.coded_width,
-                            coded_height = crop.coded_height,
-                            width = crop.width,
-                            height = crop.height,
-                            "encoder padded the canvas and the container crops it back; players \
-                             that ignore the crop (including Chromium) show the padding, so render \
-                             at the coded size to avoid this"
-                        );
-                    }
+                    warn_if_container_cropped(&encoder);
                     let _ = startup_tx.send(Ok(()));
                     encoder
                 }
@@ -87,30 +73,28 @@ impl LumenFfmpegEncoder {
             // nothing will read.
             while let Ok(message) = message_rx.recv() {
                 match message {
-                    EncoderMessage::Finish => {
-                        return encoder.finish().map_err(|error| {
-                            anyhow!("lumen-ffmpeg encoder finish failed: {error}")
-                        });
-                    }
-                    EncoderMessage::Video(frame) => {
-                        let frame_index = frame.frame;
+                    EncoderMessage::Video { frame, pixels } => {
                         let cpu_frame = CpuVideoFrame {
                             width,
                             height,
                             stride: (width as usize) * 4,
                             pixel_format: PixelFormat::Rgba8,
-                            pts: Some(i64::from(frame_index)),
-                            data: frame.pixels,
+                            pts: Some(i64::from(frame)),
+                            data: pixels,
                         };
                         encoder.write_video_frame(&cpu_frame).map_err(|error| {
-                            anyhow!("lumen-ffmpeg encode failed at frame {frame_index}: {error}")
+                            anyhow!("lumen-ffmpeg encode failed at frame {frame}: {error}")
                         })?;
-                        let _ = frame.recycle_tx.try_send(cpu_frame.data);
                     }
                     EncoderMessage::Audio(frame) => {
                         encoder.write_audio_frame(&frame).map_err(|error| {
                             anyhow!("lumen-ffmpeg audio encode failed: {error}")
                         })?;
+                    }
+                    EncoderMessage::Finish => {
+                        return encoder.finish().map_err(|error| {
+                            anyhow!("lumen-ffmpeg encoder finish failed: {error}")
+                        });
                     }
                 }
             }
@@ -125,60 +109,71 @@ impl LumenFfmpegEncoder {
         })
     }
 
-    pub(super) fn send(&self, frame: EncoderFrame) -> anyhow::Result<()> {
-        self.message_tx
-            .as_ref()
-            .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer unavailable"))?
-            .send(EncoderMessage::Video(frame))
-            .map_err(|_| anyhow!("lumen-ffmpeg encoder writer stopped"))
+    pub(super) fn send_frame(&mut self, frame: u32, pixels: Vec<u8>) -> anyhow::Result<()> {
+        self.send(EncoderMessage::Video { frame, pixels })
     }
 
-    fn send_audio(&self, frame: AudioFrame) -> anyhow::Result<()> {
-        self.message_tx
-            .as_ref()
-            .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer unavailable"))?
-            .send(EncoderMessage::Audio(frame))
-            .map_err(|_| anyhow!("lumen-ffmpeg encoder writer stopped"))
+    pub(super) fn send_audio(&mut self, frame: AudioFrame) -> anyhow::Result<()> {
+        self.send(EncoderMessage::Audio(frame))
     }
 
     pub(super) fn finish(mut self) -> anyhow::Result<()> {
-        // The writer stops by itself if it already failed, and its join below reports why.
+        // A writer that already failed has stopped reading, and the join below reports why.
         if let Some(message_tx) = self.message_tx.take() {
             let _ = message_tx.send(EncoderMessage::Finish);
         }
-        self.writer_handle
-            .take()
-            .ok_or_else(|| anyhow!("lumen-ffmpeg encoder writer thread missing"))?
-            .join()
-            .map_err(|_| anyhow!("lumen-ffmpeg encoder writer thread panicked"))?
+        self.join()
+    }
+
+    fn send(&mut self, message: EncoderMessage) -> anyhow::Result<()> {
+        let sent = self
+            .message_tx
+            .as_ref()
+            .is_some_and(|message_tx| message_tx.send(message).is_ok());
+        if sent {
+            return Ok(());
+        }
+        self.message_tx.take();
+        self.join()?;
+        Err(anyhow!("lumen-ffmpeg encoder writer stopped"))
+    }
+
+    fn join(&mut self) -> anyhow::Result<()> {
+        match self.writer_handle.take() {
+            Some(writer) => writer
+                .join()
+                .map_err(|_| anyhow!("lumen-ffmpeg encoder writer thread panicked"))?,
+            None => Ok(()),
+        }
     }
 }
 
-/// A render abandoned on an error still waits for the writer, as its FFmpeg device holds room in
-/// the budget until it closes.
-impl Drop for LumenFfmpegEncoder {
+impl Drop for EncoderSink {
     fn drop(&mut self) {
         self.message_tx.take();
-        if let Some(writer) = self.writer_handle.take() {
-            let _ = writer.join();
-        }
+        let _ = self.join();
+    }
+}
+
+pub(super) fn warn_if_container_cropped(encoder: &MuxedEncoder) {
+    if let Some(crop) = encoder.container_crop() {
+        tracing::warn!(
+            coded_width = crop.coded_width,
+            coded_height = crop.coded_height,
+            width = crop.width,
+            height = crop.height,
+            "encoder padded the canvas and the container crops it back; players that ignore the \
+             crop (including Chromium) show the padding, so render at the coded size to avoid this"
+        );
     }
 }
 
 pub(super) fn write_composited_audio(
     composition: &Composition,
     media_store: &LocalMediaStore,
-    encoder: &LumenFfmpegEncoder,
-) -> anyhow::Result<()> {
-    write_composited_audio_with(composition, media_store, |frame| encoder.send_audio(frame))
-}
-
-pub(super) fn write_composited_audio_with(
-    composition: &Composition,
-    media_store: &LocalMediaStore,
     mut write_frame: impl FnMut(AudioFrame) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let Some(audio) = composition.audio() else {
+    let Some(audio) = composition.audio().filter(|_| has_audio(composition)) else {
         return Ok(());
     };
 
@@ -232,7 +227,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dropping_an_encoder_waits_for_its_writer_to_close() {
+    fn dropping_a_sink_waits_for_its_writer_to_close() {
         let (message_tx, message_rx) = mpsc::sync_channel::<EncoderMessage>(1);
         let closed = Arc::new(AtomicBool::new(false));
         let writer_closed = Arc::clone(&closed);
@@ -242,10 +237,33 @@ mod tests {
             writer_closed.store(true, Ordering::SeqCst);
             Ok(())
         });
-        drop(LumenFfmpegEncoder {
+        drop(EncoderSink {
             message_tx: Some(message_tx),
             writer_handle: Some(writer_handle),
         });
         assert!(closed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_failed_writer_reports_its_own_error_to_the_sender() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut sink = EncoderSink::create(
+            &directory.path().join("out.mp4"),
+            64,
+            64,
+            30.0,
+            "libx264",
+            &EncoderQuality::default(),
+            false,
+        )
+        .unwrap();
+
+        // The writer rejects a frame of the wrong size, then stops reading.
+        let error = (0..16)
+            .find_map(|frame| sink.send_frame(frame, Vec::new()).err())
+            .expect("the writer should fail")
+            .to_string();
+
+        assert!(error.contains("encode failed at frame 0"), "{error}");
     }
 }

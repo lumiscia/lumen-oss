@@ -8,7 +8,7 @@ use lumen_ffmpeg::EncoderFamily;
 const CONTEXTS: u32 = 56;
 /// A device with only wgpu's render queue.
 const RENDERER_CONTEXTS: u32 = 1;
-/// A render device that also has the compute and video queues hardware decode needs. NVENC renders
+/// A render device that also has the compute and video queues FFmpeg uses it through. NVENC renders
 /// count the same, whatever they decode with: running a Blackwell card out of memory with CUDA
 /// contexts hung it, so they're held to the number measured to work.
 const LARGE_RENDERER_CONTEXTS: u32 = 4;
@@ -34,6 +34,12 @@ pub(super) fn reserve_devices(
         0
     };
     BUDGET.reserve(renderer + upload_encoder)
+}
+
+/// Waits for room for one render device whose video queues the encoder and decoders share.
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+pub(super) fn reserve_shared_video_device() -> DeviceReservation<'static> {
+    BUDGET.reserve(LARGE_RENDERER_CONTEXTS)
 }
 
 struct DeviceBudget {

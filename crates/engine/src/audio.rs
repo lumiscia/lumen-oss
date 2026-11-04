@@ -166,6 +166,16 @@ pub trait AudioResolver: Send + Sync {
     ) -> Result<Arc<AudioBuffer>, MediaError>;
 }
 
+impl<T: AudioResolver + ?Sized> AudioResolver for Arc<T> {
+    fn resolve_range(
+        &self,
+        start_sample: u64,
+        frames: usize,
+    ) -> Result<Arc<AudioBuffer>, MediaError> {
+        (**self).resolve_range(start_sample, frames)
+    }
+}
+
 pub struct AudioMixer<'a, P: MediaStore> {
     timeline: &'a AudioTimeline,
     provider: &'a P,

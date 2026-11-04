@@ -37,18 +37,18 @@ Supported targets today are:
 - Linux with Vulkan.
 - macOS with Metal and VideoToolbox GPU texture encode paths when built with `metal`.
 
-VideoToolbox GPU texture encode is only available on macOS. `h264_nvenc` and `hevc_nvenc` work as ordinary encoders on Linux, with frames uploaded from the CPU.
+VideoToolbox GPU texture encode is only available on macOS. `h264_nvenc` and `hevc_nvenc` work on Linux, with frames uploaded from the CPU unless built with `cuda`.
 
 ## Encoders
 
-`--encoder` or `LUMEN_VIDEO_ENCODER` names the encoder, and a named encoder that won't open fails the render. With neither set, Linux uses `h264_vulkan` and falls back to `libx264` on the CPU with one warning, and macOS uses `h264_videotoolbox`. See the [support matrix](../../docs/support-matrix.md#encoding).
+`--encoder` or `LUMEN_VIDEO_ENCODER` names the encoder, and a named encoder that won't open fails the render. With neither set, Linux uses `h264_vulkan`, uploading frames to it if frames can't stay on the GPU, and falls back to `libx264` on the CPU with one warning, and macOS uses `h264_videotoolbox`. See the [support matrix](../../docs/support-matrix.md#encoding).
 
 ## Features
 
 Vulkan is always built on Linux, so it has no feature.
 
 - `metal`: enables macOS Metal and VideoToolbox GPU texture encode.
-- `cuda`: compiles the CUDA support in `lumen-engine` and `lumen-ffmpeg`. `lumen-local` does not use it.
+- `cuda`: renders `h264_nvenc` frames through CUDA instead of uploading them.
 
 ## Development
 
