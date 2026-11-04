@@ -9,16 +9,15 @@ use lumen_engine::{
     composition::Composition,
     error::MediaError,
     expr::{Expression, ExpressionContext},
-    gpu::{BoundFrame, CompileContext, FrameBindContext, GpuCompositionRenderer},
+    gpu::GpuCompositionRenderer,
     media::{FontResolver, MediaStore, TextSession},
     node::NodeId,
 };
-use lumen_gpu::{Upload, wgpu};
+use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
 use crate::support::{
-    Gpu, Scene, TestMedia, check_each, gpu, read_rgba8, render, roboto_scaled, scene,
-    within_rounding,
+    Gpu, Scene, TestMedia, check_each, gpu, render, roboto_scaled, scene, within_rounding,
 };
 
 fn drawn(pixels: &[u8]) -> bool {
@@ -26,20 +25,7 @@ fn drawn(pixels: &[u8]) -> bool {
 }
 
 fn atlas_texture(renderer: &GpuCompositionRenderer) -> Arc<wgpu::Texture> {
-    if renderer.frame_graph_enabled() {
-        return renderer.text_atlas_texture().expect("a frame drew text");
-    }
-    let plan = &renderer.compiled().expect("a plan is compiled").plan;
-    let mut atlases = plan
-        .textures()
-        .iter()
-        .filter(|texture| texture.label.as_deref() == Some("text:shared-atlas"));
-    let atlas = atlases.next().expect("the plan has a shared atlas").id;
-    assert!(atlases.next().is_none(), "the plan has one shared atlas");
-    renderer
-        .gpu_renderer()
-        .texture_arc(atlas)
-        .expect("the atlas exists")
+    renderer.text_atlas_texture().expect("a frame drew text")
 }
 
 fn text_node(id: u32, params: Value) -> Value {
@@ -65,38 +51,7 @@ fn two_texts(second: Value) -> Composition {
 }
 
 #[test]
-fn a_standalone_plan_draws_text_only_after_its_atlas_is_injected() {
-    let gpu = gpu();
-    let mut bare = gpu.bare();
-    for mode in ["raster", "msdf", "auto"] {
-        let validation = bare.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let params = json!({ "content": "Standalone text", "font_size": 72, "render_mode": mode });
-        let composition: Composition = one_text(params).into();
-        let compiled = CompileContext::new(&composition).compile().unwrap();
-        bare.prepare_plan(&compiled.plan).unwrap();
-        let bound = FrameBindContext::new(&composition, 0)
-            .bind(&compiled)
-            .unwrap();
-        let error = bare
-            .execute(&compiled.plan, &bound.frame_update())
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("replace placeholder textures"),
-            "{mode}: {error}"
-        );
-
-        compiled.prepare_text_atlas(&mut bare).unwrap();
-        bare.execute(&compiled.plan, &bound.frame_update()).unwrap();
-        bound.mark_uploaded().unwrap();
-        let texture = bare.texture(compiled.output.texture).unwrap();
-        let pixels = read_rgba8(&bare, texture, compiled.output.domain.storage_size);
-        assert!(drawn(&pixels), "{mode}: nothing is drawn");
-        assert!(pollster::block_on(validation.pop()).is_none(), "{mode}");
-    }
-}
-
-#[test]
-fn the_shared_atlas_is_kept_across_recompiles_and_dropped_on_release() {
+fn the_shared_atlas_outlives_a_release_of_resources_until_its_own() {
     let gpu = gpu();
     let media = TestMedia::default();
     let mut renderer = gpu.renderer();
@@ -108,14 +63,14 @@ fn the_shared_atlas_is_kept_across_recompiles_and_dropped_on_release() {
     renderer.release_resources();
     let rebound = renderer.bind_frame(&small, 0, &media).unwrap();
     assert_eq!(
-        rebound.texture_upload_count(),
+        rebound.atlas_region_count(),
         0,
-        "recompiling keeps the glyphs resident"
+        "releasing resources keeps the glyphs resident"
     );
     assert!(Arc::ptr_eq(&atlas_texture(&renderer), &atlas));
     assert!(
         render(&mut renderer, &small, 0.0, &media).rgba == initial.rgba,
-        "recompiling changes the frame"
+        "releasing resources changes the frame"
     );
 
     // A glyph far larger than the others is drawn from the same atlas texture.
@@ -124,31 +79,10 @@ fn the_shared_atlas_is_kept_across_recompiles_and_dropped_on_release() {
     let bound = renderer.bind_frame(&huge, 0, &media).unwrap();
     renderer.upload_bound_frame(&bound).unwrap();
     assert!(Arc::ptr_eq(&atlas_texture(&renderer), &atlas));
-    // Recording writes every text's instances under one id.
-    let instances = match renderer.compiled() {
-        Some(compiled) => {
-            compiled
-                .plan
-                .buffers()
-                .iter()
-                .find(|buffer| buffer.label.as_deref() == Some("text:2:instances"))
-                .unwrap()
-                .id
-        }
-        None => lumen_gpu::BufferId(1),
-    };
-    let has_huge_glyph = bound.frame_update().uploads().iter().any(|upload| {
-        let Upload::Buffer { id, data, .. } = upload else {
-            return false;
-        };
-        *id == instances
-            && data
-                .as_chunks::<{ std::mem::size_of::<lumen_text::GpuGlyphInstance>() }>()
-                .0
-                .iter()
-                .map(|bytes| bytemuck::pod_read_unaligned::<lumen_text::GpuGlyphInstance>(bytes))
-                .any(|glyph| glyph.rect[2] > 2500.0 && glyph.rect[3] > 2500.0)
-    });
+    let has_huge_glyph = bound
+        .glyph_instances()
+        .iter()
+        .any(|glyph| glyph.rect[2] > 2500.0 && glyph.rect[3] > 2500.0);
     assert!(has_huge_glyph, "the large glyph is bound at its own size");
     let enlarged = render(&mut renderer, &huge, 0.0, &media);
     assert!(drawn(&enlarged.rgba));
@@ -162,10 +96,9 @@ fn the_shared_atlas_is_kept_across_recompiles_and_dropped_on_release() {
     );
 
     renderer.release_text_atlas();
-    assert!(renderer.compiled().is_none());
     let rebound = renderer.bind_frame(&huge, 0, &media).unwrap();
     assert!(
-        rebound.texture_upload_count() > 0,
+        rebound.atlas_region_count() > 0,
         "the glyphs are uploaded again"
     );
     renderer.upload_bound_frame(&rebound).unwrap();
@@ -187,7 +120,7 @@ fn glyphs_beyond_the_atlas_are_not_uploaded_again_on_every_bind() {
 
     let overflowing = text(CONTENT, 1800);
     let first = renderer.bind_frame(&overflowing, 0, &media).unwrap();
-    let placed = first.texture_upload_count();
+    let placed = first.atlas_region_count();
     assert!(
         (1..CONTENT.len()).contains(&placed),
         "{placed} of {} glyphs fit, so the layout overflows",
@@ -196,7 +129,7 @@ fn glyphs_beyond_the_atlas_are_not_uploaded_again_on_every_bind() {
     renderer.upload_bound_frame(&first).unwrap();
     for frame in 1..4 {
         let repeated = renderer.bind_frame(&overflowing, frame, &media).unwrap();
-        assert_eq!(repeated.texture_upload_count(), 0, "frame {frame}");
+        assert_eq!(repeated.atlas_region_count(), 0, "frame {frame}");
         renderer.upload_bound_frame(&repeated).unwrap();
     }
 
@@ -206,7 +139,7 @@ fn glyphs_beyond_the_atlas_are_not_uploaded_again_on_every_bind() {
     for frame in 4..7 {
         let bound = renderer.bind_frame(&oversized, frame, &media).unwrap();
         assert_eq!(
-            bound.texture_upload_count(),
+            bound.atlas_region_count(),
             usize::from(frame == 4),
             "frame {frame}"
         );
@@ -216,7 +149,7 @@ fn glyphs_beyond_the_atlas_are_not_uploaded_again_on_every_bind() {
     let recovered = text("W", 72);
     renderer.release_resources();
     let bound = renderer.bind_frame(&recovered, 7, &media).unwrap();
-    assert!(bound.texture_upload_count() > 0);
+    assert!(bound.atlas_region_count() > 0);
     renderer.upload_bound_frame(&bound).unwrap();
     let pixels = render(&mut renderer, &recovered, 7.0, &media).rgba;
     assert!(drawn(&pixels), "the atlas draws again once glyphs fit");
@@ -224,32 +157,6 @@ fn glyphs_beyond_the_atlas_are_not_uploaded_again_on_every_bind() {
         pixels == render(&mut gpu.renderer(), &recovered, 7.0, &media).rgba,
         "the atlas draws what a new one does"
     );
-}
-
-fn atlas_writes(
-    renderer: &GpuCompositionRenderer,
-    bound: &BoundFrame,
-) -> Vec<([u32; 2], [u32; 2])> {
-    let atlas = renderer
-        .compiled()
-        .unwrap()
-        .plan
-        .textures()
-        .iter()
-        .find(|texture| texture.label.as_deref() == Some("text:shared-atlas"))
-        .unwrap()
-        .id;
-    bound
-        .frame_update()
-        .uploads()
-        .iter()
-        .filter_map(|upload| match upload {
-            Upload::TextureRgba8Region {
-                id, origin, size, ..
-            } if *id == atlas => Some(([origin[0], origin[1]], [size.width, size.height])),
-            _ => None,
-        })
-        .collect()
 }
 
 fn overlap(
@@ -264,8 +171,6 @@ fn overlap(
 /// Binds frame 0, then frame 1, uploads frame 1 and then tries frame 0's upload.
 struct StaleUpload {
     scene: Scene,
-    /// Whether frame 1 needs a plan frame 0 did not.
-    new_plan: bool,
     /// Whether the glyphs of the two frames are written over each other in the atlas.
     shared_slot: bool,
 }
@@ -282,22 +187,10 @@ impl StaleUpload {
 
         let mut renderer = gpu.renderer();
         let older = renderer.bind_frame(&composition, 0, &media).unwrap();
-        let compiles = renderer.plan_compile_count();
         let current = renderer.bind_frame(&composition, 1, &media).unwrap();
-        let plans = !renderer.frame_graph_enabled();
-        if plans {
-            assert_eq!(
-                renderer.plan_compile_count() > compiles,
-                self.new_plan,
-                "frame 1 compiles a plan of its own"
-            );
-        }
-        assert!(older.texture_upload_count() > 0 && current.texture_upload_count() > 0);
-        if plans && self.shared_slot {
-            let (older, current) = (
-                atlas_writes(&renderer, &older),
-                atlas_writes(&renderer, &current),
-            );
+        assert!(older.atlas_region_count() > 0 && current.atlas_region_count() > 0);
+        if self.shared_slot {
+            let (older, current) = (older.atlas_region_rects(), current.atlas_region_rects());
             assert!(
                 older.iter().any(|a| current.iter().any(|b| overlap(a, b))),
                 "frame 1 writes {current:?}, clear of frame 0's {older:?}"
@@ -309,7 +202,7 @@ impl StaleUpload {
         assert!(error.to_string().contains("stale"), "{error}");
 
         let rebound = renderer.bind_frame(&composition, 1, &media).unwrap();
-        assert_eq!(rebound.texture_upload_count(), 0);
+        assert_eq!(rebound.atlas_region_count(), 0);
         renderer.submit_bound_frame(&rebound).unwrap();
         assert!(
             render(&mut renderer, &composition, 1.0, &media).rgba == fresh,
@@ -324,7 +217,7 @@ fn a_bound_frame_is_not_uploaded_once_a_later_one_is_bound() {
     let blank = json!({ "paint": [0, 0, 0, 0], "width": 8, "height": 4 });
     let rows = vec![
         (
-            "same plan under atlas pressure",
+            "under atlas pressure",
             StaleUpload {
                 scene: scene(
                     (512, 512),
@@ -336,12 +229,11 @@ fn a_bound_frame_is_not_uploaded_once_a_later_one_is_bound() {
                     )]),
                 )
                 .frames(12),
-                new_plan: false,
                 shared_slot: true,
             },
         ),
         (
-            "frame 1 switches to another plan",
+            "frame 1 switches layers",
             StaleUpload {
                 scene: scene(
                     (64, 64),
@@ -355,7 +247,6 @@ fn a_bound_frame_is_not_uploaded_once_a_later_one_is_bound() {
                     ]),
                 )
                 .frames(12),
-                new_plan: true,
                 shared_slot: false,
             },
         ),
@@ -364,19 +255,9 @@ fn a_bound_frame_is_not_uploaded_once_a_later_one_is_bound() {
 }
 
 fn text_domain_is_bounded(renderer: &GpuCompositionRenderer, composition: &Composition) -> bool {
-    let text = NodeId::new(1);
-    if renderer.frame_graph_enabled() {
-        return !renderer
-            .recorded_domain(composition, text)
-            .expect("the text recorded")
-            .is_full_frame();
-    }
     !renderer
-        .compiled()
-        .expect("a frame rendered")
-        .node_output(text, &[])
-        .expect("the text compiled")
-        .domain
+        .recorded_domain(composition, NodeId::new(1))
+        .expect("the text recorded")
         .is_full_frame()
 }
 
@@ -448,7 +329,7 @@ fn text_bounds_hold_the_ink_of_a_font_loaded_after_they_were_measured() {
     };
     let rows = vec![
         (
-            "compiled without media",
+            "compiled before its media",
             FontBounds {
                 scene: scene(
                     (640, 360),
@@ -472,7 +353,7 @@ fn text_bounds_hold_the_ink_of_a_font_loaded_after_they_were_measured() {
                 before: |_, renderer, composition, media| {
                     let format = wgpu::TextureFormat::Rgba8Unorm;
                     renderer
-                        .compile_with_media(composition, media, format)
+                        .compile_with_output_format(composition, format)
                         .unwrap();
                     media.clone()
                 },
@@ -630,34 +511,11 @@ fn measuring_text_through_a_time_remap_loads_the_family_it_names_once_per_id() {
     let expected_width = reference.measure(&request).width;
     assert!(expected_width > fallback_width * 1.5);
 
-    let compile = |media: &TestMedia| {
-        CompileContext::with_media(&composition, media, wgpu::TextureFormat::Rgba8Unorm)
-            .compile()
-            .unwrap()
-    };
-    let compiled = compile(&media);
-    let instances = compiled
-        .plan
-        .buffers()
-        .iter()
-        .find(|buffer| buffer.label.as_deref() == Some("text:1:instances"))
-        .unwrap()
-        .id;
-    let first_rect = |media: &TestMedia| -> [f32; 4] {
-        let bound = FrameBindContext::with_media(&composition, 0, media)
-            .bind(&compiled)
-            .unwrap();
-        bound
-            .frame_update()
-            .uploads()
-            .iter()
-            .find_map(|upload| match upload {
-                Upload::Buffer { id, data, .. } if *id == instances => {
-                    Some(bytemuck::pod_read_unaligned(&data[..16]))
-                }
-                _ => None,
-            })
-            .unwrap()
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let mut first_rect = |media: &TestMedia| -> [f32; 4] {
+        let bound = renderer.bind_frame(&composition, 0, media).unwrap();
+        bound.glyph_instances()[0].rect
     };
     let rect = first_rect(&media);
     assert_eq!(first_rect(&media), rect);
@@ -768,7 +626,7 @@ fn jobs_draw_one_family_name_with_their_own_font_files() {
     assert_ne!(roboto, inter);
     let expected = [&roboto, &inter];
 
-    // In turns on one renderer, whose plans and atlas outlive each store's frame.
+    // In turns on one renderer, whose atlas outlives each store's frame.
     let turns = jobs();
     for job in [0, 1, 0, 1, 1, 0] {
         let pixels = render(&mut renderer, &shared_family, 0.0, &turns[job]).rgba;

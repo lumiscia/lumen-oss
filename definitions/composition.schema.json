@@ -2247,7 +2247,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Copies the compiled raster into the final composition output.",
+            "description": "Copies its source into the final composition output.",
             "properties": {
               "id": {
                 "minimum": 0,

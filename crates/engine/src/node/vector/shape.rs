@@ -1,9 +1,6 @@
 use super::drawable::{DrawableMotion, DrawablePlacement, DrawableStyle, DrawableTransform};
 use super::renderer::{ShapeUniforms, domain_origin, style_flags};
-use crate::gpu::{
-    BoundFrame, CompileContext, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
-};
+use crate::gpu::params;
 use crate::node::motion::Shutter;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
@@ -76,58 +73,6 @@ pub struct Shape {
     pub params: ShapeParamsDelegate,
 }
 
-impl GpuCompileNode for Shape {
-    fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<RasterHandle> {
-        let bounds = ctx.source_bounds(
-            compiler::SourceMotion::of(shape_is_animated(&self.params), &self.params),
-            |expr| {
-                shape_frame(&self.params, self.id, expr)
-                    .map(|uniforms| Some(uniforms.screen_bounds))
-            },
-        );
-        let domain = ctx.source_domain(bounds);
-        let source = ctx.compute_source(
-            self.id,
-            "shape",
-            "rasterize",
-            SHAPE_SHADER,
-            std::mem::size_of::<ShapeUniforms>() as u64,
-            None,
-            [],
-            domain,
-        );
-        ctx.register_compiled_node(CompiledShape {
-            node_id: self.id,
-            params: self.params.clone(),
-            buffer: source.params,
-            origin: domain_origin(domain),
-        });
-        Ok(source.output)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CompiledShape {
-    pub(crate) node_id: NodeId,
-    pub(crate) params: ShapeParamsDelegate,
-    pub(crate) buffer: lumen_gpu::BufferId,
-    /// Canvas pixel of the output's first texel.
-    pub(crate) origin: [i32; 2],
-}
-
-impl GpuCompiledNode for CompiledShape {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let mut params = shape_frame(&self.params, self.node_id, &ctx.expr_context())?;
-        params.origin = self.origin;
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&params));
-        Ok(())
-    }
-}
-
 /// Evaluates a rectangle or ellipse shape's uniforms at the frame of `expr`.
 fn shape_frame(
     params: &ShapeParamsDelegate,
@@ -139,15 +84,6 @@ fn shape_frame(
         .placement
         .shutter(&evaluated.placement, node_id, expr)?;
     Ok(shape_uniforms(&evaluated, shutter.as_ref()))
-}
-
-/// Whether a shape's canvas bounds may change between frames.
-fn shape_is_animated(params: &ShapeParamsDelegate) -> bool {
-    params.width.is_expr()
-        || params.height.is_expr()
-        || params.placement.transform_is_animated()
-        || params.placement.motion_blur.is_expr()
-        || params.style.reach_is_animated()
 }
 
 fn shape_uniforms(
@@ -242,7 +178,7 @@ fn record_shape_source(
     cx.dispatch(
         program,
         &[(0, uniform), (1, lumen_gpu::Res::Tex(tex))],
-        compiler::dispatch_for(size),
+        params::dispatch_for(size),
     );
     Ok(crate::gpu::frame_graph::Raster {
         tex,

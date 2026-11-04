@@ -8,7 +8,7 @@
 //!
 //! `start` and `duration` count frames of the composition the clip is in, and `offset` counts
 //! frames of the content, so a template keeps its timing at any parent frame rate. Outside the
-//! window the clip is transparent and nothing upstream of it is compiled or bound, except that
+//! window the clip is transparent and nothing upstream of it is recorded, except that
 //! `hold` and `loop` keep it showing after the window ends.
 //!
 //! A template is drawn at its own size from the top-left corner of the parent's canvas; place
@@ -18,7 +18,6 @@ use crate::{
     composition::CompositionTemplate,
     error::LumenError,
     expr::ExpressionContext,
-    gpu::{GpuCompileNode, RasterHandle},
     node::{ClipPropValue, ClipProps, Deferred, DelegateEvalContext, NodeId, NodeParams},
     scope::{FrameTime, PropValues, Routed, Scope},
 };
@@ -303,12 +302,6 @@ impl Clip {
 
     fn error(&self, field: &str, details: String) -> LumenError {
         LumenError::evaluate(details).located(self.id, field)
-    }
-}
-
-impl GpuCompileNode for Clip {
-    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        ctx.compile_clip(self)
     }
 }
 

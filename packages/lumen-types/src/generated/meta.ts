@@ -1175,7 +1175,7 @@ export interface MediaInNode extends CompositionNodeBase<"media_in"> {
   };
 }
 
-/** Copies the compiled raster into the final composition output. */
+/** Copies its source into the final composition output. */
 export interface MediaOutputNode extends CompositionNodeBase<"media_output"> {
   readonly params?: Readonly<Record<string, never>>;
 }

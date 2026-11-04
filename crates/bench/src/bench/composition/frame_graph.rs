@@ -1,4 +1,5 @@
-//! Compares recording a frame graph with binding compiled plans, one run per process.
+//! Measures rendering a composition: time per frame, allocations and held memory, one run per
+//! process.
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -51,26 +52,22 @@ unsafe impl GlobalAlloc for CountingAlloc {
 
 struct Args {
     workload: String,
-    frame_graph: bool,
     scrub: bool,
     frames: Option<u32>,
     passes: u32,
     launch_dir: PathBuf,
     full_render: bool,
-    compare: Option<u32>,
     out: Option<PathBuf>,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
     let mut args = Args {
         workload: String::new(),
-        frame_graph: false,
         scrub: false,
         frames: None,
         passes: 3,
         launch_dir: PathBuf::from("/data/projects/lumiscia/lumen-launch"),
         full_render: false,
-        compare: None,
         out: None,
     };
     let mut raw = std::env::args().skip(1);
@@ -78,13 +75,6 @@ fn parse_args() -> anyhow::Result<Args> {
         let mut value = || raw.next().ok_or_else(|| anyhow!("{arg} needs a value"));
         match arg.as_str() {
             "--workload" => args.workload = value()?,
-            "--mode" => {
-                args.frame_graph = match value()?.as_str() {
-                    "fg" => true,
-                    "plan" => false,
-                    other => bail!("unknown mode {other}"),
-                }
-            }
             "--seq" => {
                 args.scrub = match value()?.as_str() {
                     "scrub" => true,
@@ -96,7 +86,6 @@ fn parse_args() -> anyhow::Result<Args> {
             "--passes" => args.passes = value()?.parse()?,
             "--launch-dir" => args.launch_dir = value()?.into(),
             "--full-render" => args.full_render = true,
-            "--compare" => args.compare = Some(value()?.parse()?),
             "--out" => args.out = Some(value()?.into()),
             other => bail!("unknown argument {other}"),
         }
@@ -118,12 +107,7 @@ pub fn run() -> anyhow::Result<()> {
         return Ok(());
     }
     let (composition, media) = load(&args)?;
-    let result = pollster::block_on(async {
-        match args.compare {
-            Some(samples) => compare(&args, &composition, &media, samples).await,
-            None => measure(&args, &composition, &media).await,
-        }
-    })?;
+    let result = pollster::block_on(measure(&args, &composition, &media))?;
     let line = result.to_string();
     println!("{line}");
     if let Some(out) = &args.out {
@@ -138,13 +122,10 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 async fn new_renderer(
-    frame_graph: bool,
     full_render: bool,
     composition: &Composition,
-    media: &Fixture,
 ) -> anyhow::Result<GpuCompositionRenderer> {
     let mut renderer = GpuCompositionRenderer::new().await?;
-    renderer.set_frame_graph(frame_graph);
     renderer.set_static_output_reuse(!full_render);
     if let Some(mib) = std::env::var("LUMEN_BENCH_POOL_MIB")
         .ok()
@@ -152,11 +133,7 @@ async fn new_renderer(
     {
         renderer.set_frame_graph_pool_budget(mib << 20);
     }
-    renderer.compile_with_media(
-        composition,
-        media,
-        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-    )?;
+    renderer.compile(composition)?;
     Ok(renderer)
 }
 
@@ -205,7 +182,7 @@ impl Timings {
 
 async fn measure(args: &Args, composition: &Composition, media: &Fixture) -> anyhow::Result<Value> {
     let setup_started = Instant::now();
-    let mut renderer = new_renderer(args.frame_graph, args.full_render, composition, media).await?;
+    let mut renderer = new_renderer(args.full_render, composition).await?;
     let setup_ms = setup_started.elapsed().as_secs_f64() * 1e3;
     let duration = composition.timeline().duration_frames;
     let frames = args.frames.unwrap_or(duration).min(duration);
@@ -259,7 +236,7 @@ async fn measure(args: &Args, composition: &Composition, media: &Fixture) -> any
             timings.allocated_bytes.0.push(bytes as f64);
             rendered += 1;
             if rendered.is_multiple_of(120) {
-                let held = renderer.plan_cache_bytes();
+                let held = renderer.held_bytes();
                 let rss = rss_bytes();
                 let vram = vram_bytes();
                 peak_held = peak_held.max(held);
@@ -276,9 +253,9 @@ async fn measure(args: &Args, composition: &Composition, media: &Fixture) -> any
     let end = bind_stats(&renderer);
     let start = warm_start.unwrap_or_default();
     let last = |series: &Series| series.0.last().copied().unwrap_or(0.0);
+    let stats = renderer.frame_graph_stats();
     Ok(json!({
         "workload": args.workload,
-        "mode": if args.frame_graph { "fg" } else { "plan" },
         "seq": if args.scrub { "scrub" } else { "loop" },
         "full_render": args.full_render,
         "adapter": adapter_name(&renderer),
@@ -291,7 +268,7 @@ async fn measure(args: &Args, composition: &Composition, media: &Fixture) -> any
         "warm_bind_group_misses": end.misses - start.misses,
         "warm_bind_group_hits": end.hits - start.hits,
         "passes_recorded": end.passes,
-        "frame_graph": renderer.frame_graph_stats().map(|stats| json!({
+        "frame_graph": {
             "peak_frame_bytes": stats.recorder.peak_frame_bytes,
             "peak_unshared_bytes": stats.recorder.peak_unshared_bytes,
             "textures_created": stats.recorder.textures_created,
@@ -300,9 +277,8 @@ async fn measure(args: &Args, composition: &Composition, media: &Fixture) -> any
             "retained_bytes": stats.retained_bytes,
             "adopted_bytes": stats.adopted_bytes,
             "bind_groups": stats.bind_groups,
-        })),
+        },
         "programs": renderer.created_program_count(),
-        "plans_compiled": renderer.plan_compile_count(),
         "peak_held_bytes": peak_held,
         "end_held_bytes": last(&steady_held),
         "steady_held": steady_held.summary(),
@@ -323,17 +299,11 @@ struct BindStats {
 }
 
 fn bind_stats(renderer: &GpuCompositionRenderer) -> BindStats {
-    match renderer.frame_graph_stats() {
-        Some(stats) => BindStats {
-            hits: stats.recorder.bind_group_hits,
-            misses: stats.recorder.bind_group_misses,
-            passes: stats.recorder.passes,
-        },
-        None => BindStats {
-            hits: 0,
-            misses: renderer.plan_bind_group_rebuilds(),
-            passes: renderer.submitted_pass_count(),
-        },
+    let stats = renderer.frame_graph_stats().recorder;
+    BindStats {
+        hits: stats.bind_group_hits,
+        misses: stats.bind_group_misses,
+        passes: stats.passes,
     }
 }
 
@@ -342,132 +312,6 @@ fn adapter_name(renderer: &GpuCompositionRenderer) -> String {
         .gpu_renderer()
         .adapter_info()
         .map_or_else(|| "unknown".to_string(), |info| info.name.clone())
-}
-
-/// Renders sampled frames both ways on one device, comparing them texel by texel.
-async fn compare(
-    args: &Args,
-    composition: &Composition,
-    media: &Fixture,
-    samples: u32,
-) -> anyhow::Result<Value> {
-    let mut plan = new_renderer(false, args.full_render, composition, media).await?;
-    // Against a plan with full-frame sources, this shows what bounds alone change on the plan path.
-    let plan_against_full = std::env::var_os("LUMEN_BENCH_PLAN_VS_FULL").is_some();
-    let mut recorded =
-        new_renderer(!plan_against_full, args.full_render, composition, media).await?;
-    // Full-frame sources on both paths take bounds out of the comparison.
-    let full_sources = std::env::var_os("LUMEN_BENCH_FULL_SOURCES").is_some();
-    plan.set_full_frame_sources(full_sources);
-    recorded.set_full_frame_sources(full_sources || plan_against_full);
-    let mut differing_channels = 0u64;
-    let mut differing_frames_any = 0u32;
-    let mut differing_frame_list: Vec<u32> = Vec::new();
-    let mut sample_differences: Vec<Value> = Vec::new();
-    let duration = composition.timeline().duration_frames;
-    let frames = args.frames.unwrap_or(duration).min(duration);
-    let mut worst_channel = 0u8;
-    let mut worst_frame = 0;
-    let mut differing_frames = 0u32;
-    let mut most_pixels = 0usize;
-    let mut previous: Option<Vec<u8>> = None;
-    let mut changed_samples = 0u32;
-    let mut sampled = 0u32;
-    let mut most_colors = 0usize;
-    // Every frame is rendered, in order, so what each retains is what playback would retain.
-    let step = (frames / samples.max(1)).max(1);
-    for frame in 0..frames {
-        let read = |renderer: &mut GpuCompositionRenderer| -> anyhow::Result<Option<Vec<u8>>> {
-            let raster = renderer.render_frame(composition, frame, media)?;
-            if !frame.is_multiple_of(step) {
-                return Ok(None);
-            }
-            let gpu = renderer.gpu_renderer();
-            let texture = gpu
-                .texture_arc(raster.texture)
-                .ok_or_else(|| anyhow!("no output texture"))?;
-            Ok(Some(gpu.read_texture_rgba8(
-                &texture,
-                raster.domain.storage_size,
-            )?))
-        };
-        let (Some(a), Some(b)) = (read(&mut plan)?, read(&mut recorded)?) else {
-            continue;
-        };
-        if a.len() != b.len() {
-            bail!("frame {frame}: {} bytes against {}", a.len(), b.len());
-        }
-        let mut pixels = 0;
-        let mut any = false;
-        let width = raster_width(composition);
-        for (index, (a, b)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
-            let channel = a
-                .iter()
-                .zip(b)
-                .map(|(a, b)| a.abs_diff(*b))
-                .max()
-                .unwrap_or(0);
-            if channel > 0 {
-                any = true;
-                differing_channels += 1;
-                if sample_differences.len() < 12 {
-                    sample_differences.push(json!({
-                        "frame": frame,
-                        "x": index % width,
-                        "y": index / width,
-                        "plan": a,
-                        "fg": b,
-                    }));
-                }
-            }
-            if channel > worst_channel {
-                worst_channel = channel;
-                worst_frame = frame;
-            }
-            pixels += usize::from(channel > 1);
-        }
-        differing_frames += u32::from(pixels > 0);
-        differing_frames_any += u32::from(any);
-        if any {
-            differing_frame_list.push(frame);
-        }
-        most_pixels = most_pixels.max(pixels);
-        // Controls: identical frames mean nothing if the fixture is blank or does not animate.
-        sampled += 1;
-        changed_samples += u32::from(previous.as_ref().is_some_and(|previous| *previous != b));
-        let mut colors: Vec<&[u8]> = b.chunks_exact(4).collect();
-        colors.sort_unstable();
-        colors.dedup();
-        most_colors = most_colors.max(colors.len());
-        if let Ok(dir) = std::env::var("LUMEN_BENCH_DUMP") {
-            std::fs::write(format!("{dir}/{}_{frame}.rgba", args.workload), &b)?;
-        }
-        previous = Some(b);
-    }
-    Ok(json!({
-        "workload": args.workload,
-        "compare": true,
-        "full_sources": full_sources,
-        "plan_against_full": plan_against_full,
-        "differing_frame_list": differing_frame_list,
-        "frames_with_any_difference": differing_frames_any,
-        "pixels_differing": differing_channels,
-        "sample_differences": sample_differences,
-        "adapter": adapter_name(&recorded),
-        "frames": frames,
-        "step": step,
-        "full_render": args.full_render,
-        "sampled": sampled,
-        "samples_differing_from_the_last": changed_samples,
-        "most_distinct_colors": most_colors,
-        "plan_passes": plan.submitted_pass_count(),
-        "fg_passes": recorded.submitted_pass_count(),
-        "fg_skipped_passes": recorded.cached_pass_count(),
-        "worst_channel_difference": worst_channel,
-        "worst_frame": worst_frame,
-        "frames_with_pixels_off_by_more_than_1": differing_frames,
-        "most_pixels_off_by_more_than_1": most_pixels,
-    }))
 }
 
 /// The frames of one pass, in order or in a fixed shuffle of the timeline.
@@ -530,10 +374,6 @@ fn vram_bytes() -> u64 {
                 .ok()
         })
         .map_or(0, |mib| mib << 20)
-}
-
-fn raster_width(composition: &Composition) -> usize {
-    composition.render_settings().width.max(1) as usize
 }
 
 fn load(args: &Args) -> anyhow::Result<(Composition, Fixture)> {

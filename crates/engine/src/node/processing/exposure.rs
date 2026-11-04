@@ -1,7 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
-use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
+use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -42,23 +42,6 @@ pub struct Exposure {
     pub source: Option<NodeId>,
 }
 
-impl GpuCompileNode for Exposure {
-    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        ctx.unary_filter(
-            self.id,
-            self.source,
-            "exposure",
-            SHADER,
-            &self.params,
-            |params| compiler::ExposureParams {
-                exposure: params.exposure as f32,
-                contrast: params.contrast as f32,
-                offset: params.offset as f32,
-            },
-        )
-    }
-}
-
 impl crate::gpu::frame_graph::RecordNode for Exposure {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.spatial("exposure", SHADER)
@@ -73,7 +56,7 @@ impl crate::gpu::frame_graph::RecordNode for Exposure {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let gpu_params = compiler::ExposureParams {
+        let gpu_params = params::ExposureParams {
             exposure: params.exposure as f32,
             contrast: params.contrast as f32,
             offset: params.offset as f32,

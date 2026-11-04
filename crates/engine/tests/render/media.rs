@@ -1,9 +1,6 @@
 //! Images and video frames from a media store: their size, replacement, caching and release.
 
-use std::sync::Arc;
-
 use lumen_engine::gpu::GpuCompositionRenderer;
-use lumen_engine::media::{CpuMediaFrame, MediaFrame};
 use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
@@ -53,8 +50,8 @@ fn a_missing_source_only_fails_the_frames_that_reach_it() {
     let media = TestMedia::default();
     let mut renderer = gpu.renderer();
     renderer
-        .compile_with_media(&composition, &media, wgpu::TextureFormat::Rgba8Unorm)
-        .expect("frame 0 is only compiled ahead of time");
+        .compile_with_output_format(&composition, wgpu::TextureFormat::Rgba8Unorm)
+        .expect("a missing source only fails a frame that reaches it");
 
     assert_eq!(
         render(&mut renderer, &composition, 10.0, &media).pixel(0, 0),
@@ -133,7 +130,7 @@ fn unbound_images_within_the_budget_stay_cached() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
     let colors = [RED, GREEN, BLUE];
-    // The two images no plan binds fit exactly; the bound one doesn't count.
+    // The two images the frame doesn't show fit exactly; the shown one doesn't count.
     renderer.set_media_texture_cache_budget(2 * u64::from(CANVAS.0 * CANVAS.1 * 4));
     let composition = media_in(json!({ "source": "plate" })).into();
     for frame in 0..9 {
@@ -147,7 +144,7 @@ fn unbound_images_within_the_budget_stay_cached() {
 }
 
 #[test]
-fn images_past_the_budget_are_freed_once_no_plan_binds_them() {
+fn images_past_the_budget_are_freed_once_no_frame_shows_them() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
     renderer.set_media_texture_cache_budget(0);
@@ -156,35 +153,10 @@ fn images_past_the_budget_are_freed_once_no_plan_binds_them() {
         let media = plate(&format!("{color:?}"), CANVAS, color);
         render(&mut renderer, &composition, frame as f64, &media);
     }
-    // Only the image the plan shows is kept.
+    // Only the image the frame shows is kept.
     assert_eq!(renderer.cached_media_texture_count(), 1);
     renderer.set_static_output_reuse(false);
     assert_eq!(renderer.cached_media_texture_count(), 0);
-}
-
-#[test]
-fn images_replaced_before_a_failed_upload_are_still_freed() {
-    let gpu = gpu();
-    let mut renderer = gpu.renderer();
-    renderer.set_media_texture_cache_budget(0);
-    let composition = media_in(json!({ "source": "plate" })).into();
-    render(&mut renderer, &composition, 0.0, &plate("red", CANVAS, RED));
-    let media = plate("blue", CANVAS, BLUE);
-    let mut bound = renderer.bind_frame_at(&composition, 1.0, &media).unwrap();
-    // The valid image uploads, then this upload to a texture that doesn't exist fails.
-    bound.use_media_texture(
-        lumen_gpu::TextureId(u32::MAX),
-        None,
-        MediaFrame::CpuRgba(Arc::new(CpuMediaFrame {
-            rgba: Arc::new(solid((1, 1), RED)),
-            width: 1,
-            height: 1,
-            row_bytes: 4,
-        })),
-        lumen_gpu::Size::new(1, 1),
-    );
-    assert!(renderer.submit_bound_frame(&bound).is_err());
-    assert_eq!(renderer.cached_media_texture_count(), 1);
 }
 
 #[test]
@@ -230,7 +202,7 @@ fn render_external(
             composition,
             0,
             media,
-            lumen_gpu::ExternalTexture::from_texture(texture, desc.domain),
+            lumen_gpu::ExternalTexture::from_texture(texture),
         )
         .unwrap();
     submitted.wait(&renderer.gpu_renderer().device).unwrap();

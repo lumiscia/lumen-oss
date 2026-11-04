@@ -13,8 +13,8 @@ use lumen_ffmpeg::{
 use lumen_gpu::wgpu::SubmissionIndex;
 
 use super::{
-    RenderError, RenderTiming, checked_size, encode_failed, has_audio, missing_output, poll,
-    precompile_ahead, render_failed, render_raster, timed,
+    RenderError, RenderTiming, checked_size, encode_failed, has_audio, poll, render_failed,
+    render_raster, timed,
 };
 use crate::render::{encoder::warn_if_container_cropped, media::LocalMediaStore};
 
@@ -81,16 +81,14 @@ impl VulkanTarget {
         let (raster, submission) =
             render_raster(renderer, composition, media_store, frame, timing)?;
         checked_size(composition, &raster, frame)?;
-        let texture = renderer
-            .gpu_renderer()
-            .texture(raster.texture)
-            .ok_or_else(|| missing_output(&raster, frame))?;
         let video_frame = timed(&mut timing.render, || {
-            self.target
-                .convert(renderer.gpu_renderer(), texture, Some(i64::from(frame)))
+            self.target.convert(
+                renderer.gpu_renderer(),
+                &raster.texture,
+                Some(i64::from(frame)),
+            )
         })
         .map_err(|err| render_failed(format!("NV12 conversion failed at frame {frame}: {err}")))?;
-        precompile_ahead(renderer, composition, media_store, frame);
         // Holds the GPU to the frame before this one, so a frame waits for about one frame's work.
         // With the queue free to run ahead, that wait builds up in the encoder and lands on every
         // third frame, where B-frames make it take three at once.

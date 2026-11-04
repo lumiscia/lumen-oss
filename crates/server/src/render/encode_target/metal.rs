@@ -12,8 +12,7 @@ use lumen_ffmpeg::{
 };
 
 use super::{
-    RenderError, RenderTiming, encode_failed, has_audio, poll_failed, precompile_ahead,
-    render_failed, timed,
+    RenderError, RenderTiming, encode_failed, has_audio, poll_failed, render_failed, timed,
 };
 use crate::render::media::LocalMediaStore;
 
@@ -95,7 +94,6 @@ impl MetalTarget {
             target,
             submitted,
         });
-        precompile_ahead(renderer, composition, media_store, frame);
         if self.pending.len() >= FRAMES_IN_FLIGHT {
             self.encode_oldest(renderer, timing)?;
         }

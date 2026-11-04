@@ -71,7 +71,6 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   renderNow(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
   setFrame(frame: number): void;
   setFont(fontFamily: string, bytes: Uint8Array): void;
-  setLookaheadCount(lookaheadCount: number): void;
   setLogLevel(level: LumenLogLevel): void;
   targetFrameForTimeMs(timeMs: number): number;
   tick(nowMs: number, canvas: HTMLCanvasElement | OffscreenCanvas): Promise<boolean>;
@@ -121,6 +120,7 @@ export interface LumenPreviewController extends LumenPreviewControllerBinding {
   loadVideoFrame(streamId: string, frame: number): Promise<void>;
   loadFrameRequirements(requirementsJson: string): Promise<void>;
   renderNowAsync(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
+  setLookaheadCount(lookaheadCount: number): void;
   setLogLevel(level: LumenLogLevel): void;
   tickAsync(nowMs: number, canvas: HTMLCanvasElement | OffscreenCanvas): Promise<boolean>;
 }
@@ -229,7 +229,6 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
     }
 
     setLookaheadCount(lookaheadCount: number): void {
-      super.setLookaheadCount(lookaheadCount);
       this.requirements.setLookaheadCount(lookaheadCount);
     }
 

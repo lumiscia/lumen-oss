@@ -2,7 +2,7 @@
 //!
 //! In JSON a value is a number, an array of 2-4 numbers or `=expression`s, a whole-value
 //! `=expression`, or a `#rrggbb` / `#rrggbbaa` colour. Which shapes fit which field is checked
-//! against the shader's uniform struct when the node compiles.
+//! against the shader's uniform struct when the node's shader is parsed.
 
 use std::collections::BTreeMap;
 

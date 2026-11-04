@@ -17,7 +17,7 @@ impl lumen_gpu::wgpu::rwh::HasDisplayHandle for WebDisplayHandle {
 }
 
 /// Owns the GPU device and canvas surface for the lifetime of a preview. Composition and media
-/// changes only recompile render plans on the existing device.
+/// changes only drop what frames recorded and rebuild programs on the existing device.
 pub(crate) struct SurfaceCompositionRenderer {
     renderer: GpuCompositionRenderer,
     gpu: SurfaceGpu,
@@ -27,10 +27,7 @@ pub(crate) struct SurfaceCompositionRenderer {
 impl SurfaceCompositionRenderer {
     pub(crate) async fn new(canvas: &JsValue) -> Result<Self, JsValue> {
         let gpu = SurfaceGpu::new(canvas).await?;
-        let mut renderer =
-            GpuCompositionRenderer::from_device(gpu.device.clone(), gpu.queue.clone());
-        // The preview runs in a worker, so the frame graph flag is chosen when building it.
-        renderer.set_frame_graph(option_env!("LUMEN_FRAME_GRAPH") == Some("1"));
+        let renderer = GpuCompositionRenderer::from_device(gpu.device.clone(), gpu.queue.clone());
         Ok(Self {
             renderer,
             gpu,
@@ -38,7 +35,7 @@ impl SurfaceCompositionRenderer {
         })
     }
 
-    /// Recompiles render plans before the next frame, keeping the device and surface.
+    /// Compiles again before the next frame, keeping the device and surface.
     pub(crate) fn invalidate(&mut self) {
         self.needs_compile = true;
     }
@@ -48,7 +45,6 @@ impl SurfaceCompositionRenderer {
         canvas: &JsValue,
         composition: &Composition,
         frame: u32,
-        lookahead_count: u32,
         media: &M,
     ) -> Result<lumen_gpu::Size, JsValue> {
         let format = self.gpu.config.format;
@@ -61,7 +57,7 @@ impl SurfaceCompositionRenderer {
             tracing::debug!(target: "lumen_wasm", frame, "recompile on existing GPU device");
             self.renderer.release_resources();
             self.renderer
-                .compile_with_media(composition, media, self.gpu.config.format)
+                .compile_with_output_format(composition, self.gpu.config.format)
                 .map_err(|e| render_error(frame, e))?;
             self.needs_compile = false;
         }
@@ -72,15 +68,8 @@ impl SurfaceCompositionRenderer {
         let surface_texture = current_surface_texture(&self.gpu.surface)?;
         self.renderer
             .gpu_renderer()
-            .copy_texture_to_external(raster.texture, &surface_texture.texture)
-            .map_err(|error| JsValue::from_str(&format!("surface copy failed: {error}")))?;
+            .copy_texture_to_external(&raster.texture, &surface_texture.texture);
         self.renderer.gpu_renderer().queue.present(surface_texture);
-        let _ = self.renderer.precompile_frame_window(
-            composition,
-            frame.saturating_add(1),
-            lookahead_count,
-            media,
-        );
         Ok(raster.domain.storage_size)
     }
 }

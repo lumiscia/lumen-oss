@@ -215,7 +215,7 @@ fn render(
         .unwrap_or_else(|error| panic!("frame {frame} does not render: {error}"));
     let size = raster.domain.storage_size;
     let gpu = renderer.gpu_renderer();
-    read_rgba8(gpu, gpu.texture(raster.texture).unwrap(), size)
+    read_rgba8(gpu, &raster.texture, size)
 }
 
 fn read_rgba8(

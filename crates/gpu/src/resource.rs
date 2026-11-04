@@ -1,4 +1,4 @@
-use crate::{BufferId, SamplerId, Size, TextureDomain, TextureId};
+use crate::{Size, TextureDomain};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextureDesc {
@@ -28,12 +28,6 @@ impl TextureDesc {
         }
     }
 
-    /// This descriptor with storage sized to `domain`.
-    pub fn with_domain(mut self, domain: TextureDomain) -> Self {
-        self.domain = domain;
-        self
-    }
-
     pub fn storage(size: Size, format: wgpu::TextureFormat) -> Self {
         Self {
             domain: TextureDomain::full_frame(size),
@@ -44,47 +38,4 @@ impl TextureDesc {
                 | wgpu::TextureUsages::COPY_SRC,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BufferDesc {
-    pub size: u64,
-    pub usage: wgpu::BufferUsages,
-}
-
-impl BufferDesc {
-    pub fn uniform(size: u64) -> Self {
-        Self {
-            size,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        }
-    }
-
-    pub fn storage(size: u64) -> Self {
-        Self {
-            size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TextureResource {
-    pub id: TextureId,
-    pub label: Option<String>,
-    pub desc: TextureDesc,
-}
-
-#[derive(Debug, Clone)]
-pub struct BufferResource {
-    pub id: BufferId,
-    pub label: Option<String>,
-    pub desc: BufferDesc,
-}
-
-#[derive(Debug, Clone)]
-pub struct SamplerResource {
-    pub id: SamplerId,
-    pub label: Option<String>,
-    pub desc: wgpu::SamplerDescriptor<'static>,
 }

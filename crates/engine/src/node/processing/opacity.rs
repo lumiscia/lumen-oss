@@ -1,7 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
-use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
+use crate::gpu::params;
 
 pub(crate) const SHADER: &str = include_str!("opacity.wgsl");
 
@@ -30,21 +30,6 @@ pub struct Opacity {
     pub source: Option<NodeId>,
 }
 
-impl GpuCompileNode for Opacity {
-    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        ctx.unary_filter(
-            self.id,
-            self.source,
-            "opacity",
-            SHADER,
-            &self.params,
-            |params| compiler::OpacityParams {
-                opacity: params.opacity.clamp(0.0, 1.0) as f32,
-            },
-        )
-    }
-}
-
 impl crate::gpu::frame_graph::RecordNode for Opacity {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.spatial("opacity", SHADER)
@@ -59,7 +44,7 @@ impl crate::gpu::frame_graph::RecordNode for Opacity {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let params = compiler::OpacityParams {
+        let params = params::OpacityParams {
             opacity: evaluated.opacity.clamp(0.0, 1.0) as f32,
         };
         cx.filter("opacity", SHADER, source, &params)

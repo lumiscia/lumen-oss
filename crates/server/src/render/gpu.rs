@@ -62,9 +62,9 @@ pub fn render_project_mp4(
 #[derive(Debug, Clone, Default)]
 pub struct RenderReport {
     pub frames: u32,
-    pub plan_cache_bytes: u64,
+    pub held_bytes: u64,
     pub submitted_passes: u64,
-    pub cached_passes: u64,
+    pub skipped_passes: u64,
     pub timing: RenderTiming,
 }
 
@@ -147,11 +147,7 @@ impl<'a> Mp4Render<'a> {
         };
         render
             .renderer
-            .compile_with_media(
-                composition,
-                &render.media_store,
-                render.target.output_format(),
-            )
+            .compile_with_output_format(composition, render.target.output_format())
             .map_err(|err| RenderError {
                 code: "render_failed",
                 message: format!("failed to compile composition: {err}"),
@@ -205,9 +201,9 @@ impl<'a> Mp4Render<'a> {
         timing.total = started.elapsed();
         Ok(RenderReport {
             frames: total_frames,
-            plan_cache_bytes: self.renderer.plan_cache_bytes(),
+            held_bytes: self.renderer.held_bytes(),
             submitted_passes: self.renderer.submitted_pass_count(),
-            cached_passes: self.renderer.cached_pass_count(),
+            skipped_passes: self.renderer.skipped_pass_count(),
             timing,
         })
     }

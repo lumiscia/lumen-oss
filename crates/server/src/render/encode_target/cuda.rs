@@ -12,7 +12,7 @@ use lumen_ffmpeg::{
 
 use super::{
     RenderError, RenderTiming, create_gpu_renderer, encode_failed, has_audio, poll_failed,
-    precompile_ahead, render_failed, timed,
+    render_failed, timed,
 };
 use crate::render::media::LocalMediaStore;
 
@@ -107,7 +107,6 @@ impl CudaTarget {
             )
         })
         .map_err(|err| render_failed(format!("render failed at frame {frame}: {err}")))?;
-        precompile_ahead(renderer, composition, media_store, frame);
         timed(&mut timing.flush, || {
             submitted.wait(&renderer.gpu_renderer().device)
         })

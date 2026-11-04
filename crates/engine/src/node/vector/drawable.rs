@@ -231,12 +231,7 @@ impl Default for DrawableStyle {
     }
 }
 
-impl DrawableStyleDelegate {
-    /// Whether what the style draws may reach further on some frames than others.
-    pub(crate) fn reach_is_animated(&self) -> bool {
-        self.fill_enabled.is_expr() || self.stroke_enabled.is_expr() || self.stroke_width.is_expr()
-    }
-}
+impl DrawableStyleDelegate {}
 
 /// The largest absolute scale components that the transform has at the frame or at either
 /// end of its shutter, so also anywhere between them.

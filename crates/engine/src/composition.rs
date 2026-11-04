@@ -45,7 +45,7 @@ pub struct Scene {
 #[derive(Debug, lumen_macros::StructuralHash)]
 pub struct CompositionBuilder {
     pub scene: Scene,
-    #[structural_hash(skip)] // Audio is independent of compiled video plans and GPU caches.
+    #[structural_hash(skip)] // Audio is independent of what frames record and of GPU caches.
     pub audio: Option<AudioTimeline>,
     /// Templates that `clip` nodes instantiate, by name.
     pub compositions: BTreeMap<String, CompositionTemplate>,

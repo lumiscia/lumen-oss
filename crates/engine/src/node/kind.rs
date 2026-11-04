@@ -4,15 +4,10 @@ use super::{
     JsonNode, Node, PropertyEval, PropertyRead, compositing, ids::NodeId, media_output, processing,
     source, vector,
 };
-use crate::{
-    error::GraphValidationError,
-    expr::Expression,
-    gpu::{CompileContext, GpuCompileNode, RasterHandle},
-};
+use crate::{error::GraphValidationError, expr::Expression};
 
 /// Declares the node kinds. Each line names a variant and its type, which derives
-/// `lumen_macros::Node` and implements `GpuCompileNode`. The generated definitions list the
-/// kinds in this order.
+/// `lumen_macros::Node`. The generated definitions list the kinds in this order.
 macro_rules! node_kinds {
     ($($variant:ident($node:ty),)+) => {
         #[derive(Debug, lumen_macros::StructuralHash)]
@@ -81,14 +76,6 @@ macro_rules! node_kinds {
             fn get_property(&self, id: &str) -> Option<PropertyRead<'_>> {
                 match self {
                     $(Self::$variant(node) => node.get_property(id),)+
-                }
-            }
-        }
-
-        impl GpuCompileNode for NodeKind {
-            fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<RasterHandle> {
-                match self {
-                    $(Self::$variant(node) => node.compile_gpu(ctx),)+
                 }
             }
         }

@@ -1,5 +1,4 @@
-//! Frames recorded rather than bound to plans, whichever path the suite runs on: what fails before
-//! the first frame, and who owns a frame rendered into a texture of the caller's.
+//! What fails before the first frame, and who owns a frame rendered into a texture of the caller's.
 
 use std::sync::{
     Arc,
@@ -13,10 +12,6 @@ use serde_json::{Value, json};
 use crate::support::{Scene, TestMedia, gpu, read_rgba8, render, scene};
 
 const CANVAS: (u32, u32) = (64, 32);
-
-fn recording(renderer: &mut GpuCompositionRenderer) {
-    renderer.set_frame_graph(true);
-}
 
 /// Everything a frame may record once, some of it only from a later frame on: the feather and blur
 /// sweep across their levels, the text starts moving, and the clip comes into view.
@@ -94,11 +89,7 @@ fn every_program() -> Scene {
 
 fn compile(renderer: &mut GpuCompositionRenderer, composition: &Composition) -> Result<(), String> {
     renderer
-        .compile_with_media(
-            composition,
-            &TestMedia::default(),
-            wgpu::TextureFormat::Rgba8Unorm,
-        )
+        .compile_with_output_format(composition, wgpu::TextureFormat::Rgba8Unorm)
         .map_err(|error| error.to_string())
 }
 
@@ -106,10 +97,9 @@ fn compile(renderer: &mut GpuCompositionRenderer, composition: &Composition) -> 
 fn compiling_builds_every_program_a_frame_records_with() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    recording(&mut renderer);
     let composition = every_program().into();
     compile(&mut renderer, &composition).unwrap();
-    let programs = |renderer: &GpuCompositionRenderer| renderer.frame_graph_stats().unwrap();
+    let programs = |renderer: &GpuCompositionRenderer| renderer.frame_graph_stats();
     let built = programs(&renderer).recorder.programs_created;
     assert!(built > 0);
     for frame in [0.0, 1.0, 5.0, 20.0, 31.0, 59.0] {
@@ -132,7 +122,6 @@ fn a_shader_that_does_not_compile_fails_before_the_first_frame() {
     let composition = composition.into();
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    recording(&mut renderer);
     let error = compile(&mut renderer, &composition).unwrap_err();
     assert!(error.contains("NotAType"), "{error}");
 }
@@ -177,9 +166,7 @@ fn animated() -> Composition {
 fn a_held_external_target_keeps_its_frame_while_the_pool_turns_over() {
     let gpu = gpu();
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
-    recording(&mut renderer);
     renderer.set_frame_graph_pool_budget(0);
-    recording(&mut reference);
     let composition = animated();
     let media = TestMedia::default();
     render(&mut reference, &composition, 0.0, &media);
@@ -194,12 +181,12 @@ fn a_held_external_target_keeps_its_frame_while_the_pool_turns_over() {
                     &composition,
                     frame,
                     &media,
-                    ExternalTexture::from_texture(texture, desc.domain),
+                    ExternalTexture::from_texture(texture),
                 )
                 .unwrap(),
         );
     }
-    let stats = renderer.frame_graph_stats().unwrap();
+    let stats = renderer.frame_graph_stats();
     assert_eq!(
         stats.recorder.external_copies, 0,
         "the passes wrote directly"
@@ -216,7 +203,7 @@ fn a_held_external_target_keeps_its_frame_while_the_pool_turns_over() {
     render(&mut renderer, &composition, 9.0, &media);
     let target_bytes = u64::from(size.width) * u64::from(size.height) * 4;
     assert!(
-        renderer.frame_graph_stats().unwrap().adopted_bytes < target_bytes,
+        renderer.frame_graph_stats().adopted_bytes < target_bytes,
         "the graph lets go of targets once only it holds them"
     );
 }
@@ -226,9 +213,7 @@ fn a_held_external_target_keeps_its_frame_while_the_pool_turns_over() {
 fn a_target_used_again_shows_the_frame_rendered_into_it_last() {
     let gpu = gpu();
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
-    recording(&mut renderer);
     renderer.set_frame_graph_pool_budget(0);
-    recording(&mut reference);
     let composition = animated();
     let media = TestMedia::default();
     render(&mut reference, &composition, 0.0, &media);
@@ -242,7 +227,7 @@ fn a_target_used_again_shows_the_frame_rendered_into_it_last() {
                 &composition,
                 frame,
                 &media,
-                ExternalTexture::new(ring[frame as usize % 3].clone(), desc.domain),
+                ExternalTexture::new(ring[frame as usize % 3].clone()),
             )
             .unwrap();
         submitted.wait(&renderer.gpu_renderer().device).unwrap();
@@ -261,7 +246,6 @@ fn a_target_used_again_shows_the_frame_rendered_into_it_last() {
 fn a_kept_output_is_copied_to_the_target_and_stays_kept() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    recording(&mut renderer);
     let nodes = json!([
         { "id": 1, "type": "background", "params": {
             "paint": [200, 30, 30, 255], "width": CANVAS.0, "height": CANVAS.1
@@ -281,7 +265,7 @@ fn a_kept_output_is_copied_to_the_target_and_stays_kept() {
                 &composition,
                 frame,
                 &media,
-                ExternalTexture::from_texture(target(&renderer, desc), desc.domain),
+                ExternalTexture::from_texture(target(&renderer, desc)),
             )
             .unwrap();
         submitted.wait(&renderer.gpu_renderer().device).unwrap();
@@ -292,7 +276,7 @@ fn a_kept_output_is_copied_to_the_target_and_stays_kept() {
         );
         assert!(shown == expected, "frame {frame} differs");
     }
-    let stats = renderer.frame_graph_stats().unwrap();
+    let stats = renderer.frame_graph_stats();
     assert_eq!(stats.recorder.external_copies, 3);
     assert_eq!(
         stats.recorder.passes,
@@ -326,17 +310,14 @@ fn what_a_shader_leaves_unwritten_is_transparent() {
     )
     .into();
     let gpu = gpu();
-    for recorded in [false, true] {
-        let mut renderer = gpu.renderer();
-        renderer.set_frame_graph(recorded);
-        let frame = render(&mut renderer, &composition, 0.0, &TestMedia::default());
-        assert_eq!(frame.pixel(0, 0), [0, 0, 255, 255], "recorded: {recorded}");
-        assert_eq!(frame.pixel(7, 7), [0, 0, 0, 0], "recorded: {recorded}");
-    }
+    let mut renderer = gpu.renderer();
+    let frame = render(&mut renderer, &composition, 0.0, &TestMedia::default());
+    assert_eq!(frame.pixel(0, 0), [0, 0, 255, 255]);
+    assert_eq!(frame.pixel(7, 7), [0, 0, 0, 0]);
 }
 
 #[test]
-fn a_shader_writing_less_than_last_frame_leaves_no_old_pixels_when_recorded() {
+fn a_shader_writing_less_than_last_frame_leaves_no_old_pixels() {
     let shader = "
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -356,7 +337,6 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     .into();
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    recording(&mut renderer);
     let media = TestMedia::default();
     assert_eq!(
         render(&mut renderer, &composition, 0.0, &media).pixel(7, 7),
@@ -390,23 +370,14 @@ fn a_frame_with_more_shaders_than_the_caches_hold_renders_and_settles() {
     let composition = scene((8, 8), json!(nodes)).into();
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    recording(&mut renderer);
     renderer.set_static_output_reuse(false);
     let frame = render(&mut renderer, &composition, 0.0, &TestMedia::default());
     assert_eq!(frame.pixel(4, 4), [SHADERS as u8, 0, 0, 255]);
-    let built = renderer
-        .frame_graph_stats()
-        .unwrap()
-        .recorder
-        .programs_created;
+    let built = renderer.frame_graph_stats().recorder.programs_created;
     let frame = render(&mut renderer, &composition, 0.0, &TestMedia::default());
     assert_eq!(frame.pixel(4, 4), [SHADERS as u8, 0, 0, 255]);
     assert_eq!(
-        renderer
-            .frame_graph_stats()
-            .unwrap()
-            .recorder
-            .programs_created,
+        renderer.frame_graph_stats().recorder.programs_created,
         built,
         "the second frame compiled again"
     );
@@ -416,14 +387,13 @@ fn a_frame_with_more_shaders_than_the_caches_hold_renders_and_settles() {
 fn releasing_resources_frees_what_recording_held_and_it_renders_again() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    recording(&mut renderer);
     let composition = every_program().into();
     let media = TestMedia::default();
     let first = render(&mut renderer, &composition, 31.0, &media);
-    assert!(renderer.frame_graph_stats().unwrap().held_bytes > 0);
+    assert!(renderer.frame_graph_stats().held_bytes > 0);
 
     renderer.release_resources();
-    let stats = renderer.frame_graph_stats().unwrap();
+    let stats = renderer.frame_graph_stats();
     assert_eq!(stats.held_bytes, 0);
     assert_eq!(stats.adopted_bytes, 0);
     assert_eq!(stats.retained_bytes, 0);
@@ -441,7 +411,6 @@ fn compiling_without_rendering_keeps_the_program_cache_bounded() {
     const LIMIT: usize = 64;
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    recording(&mut renderer);
     for edit in 0..LIMIT as u32 * 2 {
         let shader = format!(
             "const EDIT: u32 = {edit}u;\n\
@@ -460,7 +429,7 @@ fn compiling_without_rendering_keeps_the_program_cache_bounded() {
         .into();
         compile(&mut renderer, &composition).unwrap();
     }
-    let programs = renderer.frame_graph_stats().unwrap().programs;
+    let programs = renderer.frame_graph_stats().programs;
     assert!(programs <= LIMIT + 8, "{programs} programs after compiling");
 }
 
@@ -470,7 +439,6 @@ fn compiling_without_rendering_keeps_the_program_cache_bounded() {
 fn a_frame_with_nothing_to_record_still_returns_its_own_submission() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    recording(&mut renderer);
     let nodes = json!([
         { "id": 1, "type": "background", "params": {
             "paint": [200, 30, 30, 255], "width": CANVAS.0, "height": CANVAS.1
@@ -498,15 +466,14 @@ fn a_frame_with_nothing_to_record_still_returns_its_own_submission() {
 
         // What a target submits after the frame, which is ahead of the next frame's submission.
         let gpu_renderer = renderer.gpu_renderer();
-        let output = gpu_renderer.texture_arc(raster.texture).unwrap();
         let converted = target(&renderer, renderer.output_desc().unwrap());
         let mut encoder = gpu_renderer
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         encoder.copy_texture_to_texture(
-            output.as_image_copy(),
+            raster.texture.as_image_copy(),
             converted.as_image_copy(),
-            output.size(),
+            raster.texture.size(),
         );
         gpu_renderer.queue.submit([encoder.finish()]);
         let done = Arc::new(AtomicBool::new(false));
@@ -542,30 +509,4 @@ fn a_frame_with_nothing_to_record_still_returns_its_own_submission() {
         let expected = expected.get_or_insert_with(|| shown.clone());
         assert!(shown == *expected, "frame {frame} differs");
     }
-}
-
-#[test]
-fn a_write_added_to_a_recorded_frame_is_refused() {
-    let gpu = gpu();
-    let mut renderer = gpu.renderer();
-    recording(&mut renderer);
-    let composition = every_program().into();
-    let media = TestMedia::default();
-
-    let mut bound = renderer.bind_frame_at(&composition, 1.0, &media).unwrap();
-    bound.write_buffer(lumen_gpu::BufferId(u32::MAX), 0, [0u8; 4]);
-    assert!(renderer.submit_bound_frame(&bound).is_err());
-
-    let mut bound = renderer.bind_frame_at(&composition, 2.0, &media).unwrap();
-    bound.write_texture_rgba8_region(
-        lumen_gpu::TextureId(u32::MAX),
-        [0u8; 4],
-        [0, 0, 0],
-        lumen_gpu::Size::new(1, 1),
-        4,
-        1,
-    );
-    assert!(renderer.submit_bound_frame(&bound).is_err());
-
-    render(&mut renderer, &composition, 3.0, &media);
 }

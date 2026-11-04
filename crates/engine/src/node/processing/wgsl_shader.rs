@@ -29,10 +29,7 @@ use crate::{
     },
 };
 
-use crate::gpu::compiler::Slot;
-use crate::gpu::{
-    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
-};
+use crate::gpu::params;
 
 /// WebGPU's default `maxSampledTexturesPerShaderStage`, guaranteed on every adapter.
 pub const MAX_INPUTS: usize = 16;
@@ -95,155 +92,9 @@ struct LumenGlobals {
     frame: u32,
 }
 
-impl GpuCompileNode for WgslShader {
-    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        let params = self.params.eval(&DelegateEvalContext {
-            node_id: self.id,
-            expr: &ctx.expr_context(),
-        })?;
-        let inputs = self
-            .sources
-            .iter()
-            .map(|&source| ctx.compile_port(source))
-            .collect::<crate::Result<Vec<_>>>()?;
-        let Some(first) = inputs.first().copied() else {
-            return Err(shader_error(self.id, "needs at least one input"));
-        };
-        if inputs.len() > MAX_INPUTS {
-            return Err(shader_error(
-                self.id,
-                format!(
-                    "has {} inputs; WebGPU allows at most {MAX_INPUTS}",
-                    inputs.len()
-                ),
-            ));
-        }
-
-        let user_source = if params.shader.trim().is_empty() {
-            DEFAULT_SHADER.to_string()
-        } else {
-            params.shader
-        };
-        let interface = ShaderInterface::parse(&user_source)
-            .map_err(|details| shader_error(self.id, format!("shader: {details}")))?;
-        interface.uniform_bytes(self.id, &params.uniforms, &ctx.expr_context())?;
-        let shader = interface.assemble(&user_source, inputs.len());
-
-        let size = first.domain.storage_size;
-        let builder = ctx.builder_mut();
-        let output = builder.texture(
-            Some(format!("wgsl-shader:{}:output", self.id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
-        );
-        let params_buffer = builder.buffer(
-            Some(format!("wgsl-shader:{}:params", self.id.0)),
-            lumen_gpu::BufferDesc::uniform(interface.uniform_size as u64),
-        );
-        let globals_buffer = builder.buffer(
-            Some(format!("wgsl-shader:{}:globals", self.id.0)),
-            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<LumenGlobals>() as u64),
-        );
-        let sampler = builder.sampler(
-            Some(format!("wgsl-shader:{}:sampler", self.id.0)),
-            lumen_gpu::wgpu::SamplerDescriptor {
-                address_mode_u: lumen_gpu::wgpu::AddressMode::ClampToEdge,
-                address_mode_v: lumen_gpu::wgpu::AddressMode::ClampToEdge,
-                address_mode_w: lumen_gpu::wgpu::AddressMode::ClampToEdge,
-                mag_filter: lumen_gpu::wgpu::FilterMode::Linear,
-                min_filter: lumen_gpu::wgpu::FilterMode::Linear,
-                ..Default::default()
-            },
-        );
-
-        let mut slots = vec![
-            (1, Slot::Uniform),
-            (OUTPUT_BINDING, Slot::Output),
-            (3, Slot::Uniform),
-            (4, Slot::Sampler),
-        ];
-        let mut bindings = vec![
-            lumen_gpu::Binding::uniform(0, 1, params_buffer),
-            lumen_gpu::Binding::storage_texture(0, OUTPUT_BINDING, output),
-            lumen_gpu::Binding::uniform(0, 3, globals_buffer),
-            lumen_gpu::Binding::sampler(0, 4, sampler),
-        ];
-        for (index, input) in inputs.iter().enumerate() {
-            let binding = input_binding(index);
-            slots.push((binding, Slot::Texture));
-            bindings.push(lumen_gpu::Binding::sampled_texture(
-                0,
-                binding,
-                input.texture,
-            ));
-        }
-        let program = compiler::compute_program_at(
-            builder,
-            &format!("wgsl-shader:{}", self.id.0),
-            &shader,
-            "cs_main",
-            &slots,
-        );
-        builder.compute_pass(lumen_gpu::ComputePassDesc {
-            label: Some(format!("wgsl-shader:{}:apply", self.id.0)),
-            program,
-            bindings,
-            dispatch: compiler::dispatch_for(size),
-        });
-
-        ctx.register_compiled_node(CompiledWgslShader {
-            node_id: self.id,
-            params: self.params.clone(),
-            interface,
-            params_buffer,
-            globals_buffer,
-            resolution: [size.width as f32, size.height as f32],
-        });
-        Ok(RasterHandle {
-            texture: output,
-            domain: first.domain,
-            bounds: None,
-        })
-    }
-}
-
 /// `input0` sits at binding 0; later inputs follow the prelude's sampler.
 fn input_binding(index: usize) -> u32 {
     if index == 0 { 0 } else { 4 + index as u32 }
-}
-
-#[derive(Debug, Clone)]
-struct CompiledWgslShader {
-    node_id: NodeId,
-    params: WgslShaderParamsDelegate,
-    interface: ShaderInterface,
-    params_buffer: lumen_gpu::BufferId,
-    globals_buffer: lumen_gpu::BufferId,
-    resolution: [f32; 2],
-}
-
-impl GpuCompiledNode for CompiledWgslShader {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&DelegateEvalContext {
-            node_id: self.node_id,
-            expr: &ctx.expr_context(),
-        })?;
-        let expr = ctx.expr_context();
-        let uniforms = self
-            .interface
-            .uniform_bytes(self.node_id, &params.uniforms, &expr)?;
-        bound.write_buffer(self.params_buffer, 0, uniforms);
-        let globals = LumenGlobals {
-            resolution: self.resolution,
-            time: expr.time_seconds() as f32,
-            frame: expr.frame as u32,
-        };
-        bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
-        Ok(())
-    }
 }
 
 fn shader_error(node_id: NodeId, details: impl Into<String>) -> crate::error::LumenError {
@@ -827,7 +678,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
         for (index, input) in inputs.iter().enumerate() {
             bindings.push((input_binding(index), Res::Tex(input.tex)));
         }
-        cx.dispatch(program, &bindings, compiler::dispatch_for(size));
+        cx.dispatch(program, &bindings, params::dispatch_for(size));
         Ok(crate::gpu::frame_graph::Raster {
             tex,
             domain: first.domain,

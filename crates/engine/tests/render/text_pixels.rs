@@ -99,31 +99,10 @@ impl Mode {
 }
 
 /// The glyph render mode of every glyph the text node 1 draws in a bound frame.
-fn glyph_modes(renderer: &GpuCompositionRenderer, bound: &BoundFrame) -> Vec<u32> {
-    // Recording writes every text's instances under one id.
-    let instances = match renderer.compiled() {
-        Some(compiled) => {
-            compiled
-                .plan
-                .buffers()
-                .iter()
-                .find(|buffer| buffer.label.as_deref() == Some("text:1:instances"))
-                .expect("a text node 1")
-                .id
-        }
-        None => lumen_gpu::BufferId(1),
-    };
-    let size = std::mem::size_of::<lumen_text::GpuGlyphInstance>();
+fn glyph_modes(bound: &BoundFrame) -> Vec<u32> {
     bound
-        .frame_update()
-        .uploads()
+        .glyph_instances()
         .iter()
-        .filter_map(|upload| match upload {
-            lumen_gpu::Upload::Buffer { id, data, .. } if *id == instances => Some(data),
-            _ => None,
-        })
-        .flat_map(|data| data.chunks_exact(size))
-        .map(bytemuck::pod_read_unaligned::<lumen_text::GpuGlyphInstance>)
         .map(|instance| instance.render_mode())
         .filter(|&mode| mode != lumen_text::GLYPH_MODE_RECT)
         .collect()
@@ -136,8 +115,8 @@ pub fn frame_checked(
     media: &TestMedia,
     check: impl FnOnce(&[u32]),
 ) -> Frame {
-    render_inspecting(renderer, &scene.into(), 0.0, media, |renderer, bound| {
-        check(&glyph_modes(renderer, bound));
+    render_inspecting(renderer, &scene.into(), 0.0, media, |_, bound| {
+        check(&glyph_modes(bound));
     })
 }
 
@@ -945,17 +924,8 @@ fn retained_style() {
         let media = media();
         let mut renderer = gpu.renderer();
         let composition = Composition::from(node(animated).frames(2));
-        // One renderer and its compiled plan draw the frames in turn, going back to the first.
-        let mut compiled = Vec::new();
-        let drawn = [0.0, 1.0, 0.0].map(|at| {
-            let frame = render(&mut renderer, &composition, at, &media);
-            compiled.push(renderer.plan_compile_count());
-            frame
-        });
-        assert!(
-            compiled.iter().all(|&count| count == compiled[0]),
-            "later frames recompiled the plan: compile counts {compiled:?}"
-        );
+        // One renderer draws the frames in turn, going back to the first.
+        let drawn = [0.0, 1.0, 0.0].map(|at| render(&mut renderer, &composition, at, &media));
         let [from, to] = [row.from, row.to].map(|value| {
             let literal = frame_of(gpu, node((row.with)(json!(value))), &media);
             assert!(mass(&literal) > 0, "blank control for {value}");
