@@ -472,7 +472,7 @@ impl FrameGraph {
         bound: &BoundFrame,
         atlas_texture: Option<&wgpu::Texture>,
     ) -> crate::Result<()> {
-        if bound.media_textures().first().is_some() {
+        if !bound.media_textures().is_empty() {
             self.forget_unbound_media();
             return Err(RenderError::Gpu {
                 details: "a recorded frame binds its media itself; it has no texture for an \

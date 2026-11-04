@@ -404,7 +404,7 @@ fn kept_text_keeps_its_glyphs_in_the_shared_atlas() {
     let recording = renderer.frame_graph_enabled();
     let split = |pixels: &[u8]| -> (Vec<u8>, Vec<u8>) {
         let (mut left, mut right) = (Vec::new(), Vec::new());
-        for row in pixels.chunks_exact(256 * 4) {
+        for row in pixels.as_chunks::<{ 256 * 4 }>().0 {
             let (start, end) = row.split_at(120 * 4);
             left.extend_from_slice(start);
             right.extend_from_slice(end);
