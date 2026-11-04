@@ -14,52 +14,40 @@ use lumen_engine::{
     media::{FontResolver, ImageResolver, MediaFrame, MediaStore, TextSession, VideoFrameResolver},
 };
 
+use super::fonts::{FontCatalog, ResolvedFont, font_dir_from_env};
+
 pub const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
 pub const HARDWARE_DECODE_ENV: &str = "LUMEN_HARDWARE_DECODE";
 
 pub(super) struct LocalMediaStore {
     root: PathBuf,
-    font_root: Option<PathBuf>,
     pub(super) video_options: FfmpegResolverOptions,
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
     videos: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
-    /// What each family asked for resolved to, so a job probes the filesystem once per family.
-    fonts: RwLock<HashMap<String, Option<Arc<ResolvedFont>>>>,
+    fonts: FontCatalog,
     text: TextSession,
 }
 
-/// The files a font family resolved to and the identity of their current contents.
-#[derive(Debug)]
-struct ResolvedFont {
-    id: String,
-    paths: Vec<String>,
-}
-
 impl LocalMediaStore {
-    pub(super) fn new(root: PathBuf) -> Self {
+    pub(super) fn new(root: PathBuf) -> anyhow::Result<Self> {
         let video_options = video_resolver_options_from_env();
-        let font_root = env::var(MEDIA_ROOT_ENV)
-            .ok()
-            .and_then(|raw| PathBuf::from(raw).canonicalize().ok())
-            .filter(|font_root| font_root != &root);
+        let fonts = FontCatalog::new(font_dir_from_env()?.as_deref(), &root);
         tracing::info!(
             media_root = %root.display(),
-            font_root = font_root.as_ref().map(|root| root.display().to_string()).as_deref().unwrap_or("<media-root>"),
             prefer_hardware_decode = video_options.prefer_hardware_decode,
             hardware_decode_env = env::var(HARDWARE_DECODE_ENV).ok().as_deref().unwrap_or("<unset>"),
             "created local media store"
         );
-        Self {
+        Ok(Self {
             root,
-            font_root,
             video_options,
             audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
             videos: RwLock::new(HashMap::new()),
-            fonts: RwLock::new(HashMap::new()),
+            fonts,
             text: TextSession::default(),
-        }
+        })
     }
 
     fn resolve_source(&self, source: &str) -> Option<String> {
@@ -79,100 +67,10 @@ impl LocalMediaStore {
             .ok_or_else(|| MediaError::source_not_found(source, "no such file in the media root"))
     }
 
-    fn resolved_font(&self, font_family: &str) -> Option<Arc<ResolvedFont>> {
-        if let Ok(cache) = self.fonts.read()
-            && let Some(resolved) = cache.get(font_family)
-        {
-            return resolved.clone();
-        }
-
-        let resolved = self.resolve_font_family(font_family).map(|paths| {
-            Arc::new(ResolvedFont {
-                id: font_file_identity(&paths),
-                paths,
-            })
-        });
-        if let Ok(mut cache) = self.fonts.write() {
-            cache
-                .entry(font_family.to_string())
-                .or_insert_with(|| resolved.clone());
-        }
-        resolved
-    }
-
-    fn resolve_font_family(&self, font_family: &str) -> Option<Vec<String>> {
-        if font_family.trim().is_empty() {
-            return None;
-        }
-
-        if let Some(direct) = self.resolve_font_source(font_family) {
-            return Some(vec![direct]);
-        }
-
-        let file_stem = font_family.replace(['/', '\\'], "");
-        let mut resolved = self.resolve_font_family_files(&file_stem);
-        for candidate in [
-            format!("fonts/{file_stem}.ttf"),
-            format!("fonts/{file_stem}.otf"),
-            format!("fonts/{file_stem}.ttc"),
-            format!("fonts/{file_stem}.otc"),
-            format!("fonts/{file_stem}-Regular.ttf"),
-            format!("fonts/{file_stem}-Regular.otf"),
-            format!("fonts/{file_stem}-Regular.ttc"),
-            format!("fonts/{file_stem}-Regular.otc"),
-        ] {
-            if let Some(path) = self.resolve_font_source(&candidate)
-                && !resolved.contains(&path)
-            {
-                resolved.push(path);
-            }
-        }
-        (!resolved.is_empty()).then_some(resolved)
-    }
-
-    fn resolve_font_source(&self, source: &str) -> Option<String> {
-        self.resolve_source(source).or_else(|| {
-            self.font_root
-                .as_ref()
-                .and_then(|root| resolve_local_path_with_root(source, root).ok())
-                .map(|path| path.to_string_lossy().to_string())
+    fn resolved_font(&self, font_family: &str) -> Option<ResolvedFont> {
+        self.fonts.resolve(font_family, || {
+            self.resolve_source(font_family).map(PathBuf::from)
         })
-    }
-
-    fn resolve_font_family_files(&self, file_stem: &str) -> Vec<String> {
-        let mut paths = [Some(&self.root), self.font_root.as_ref()]
-            .into_iter()
-            .flatten()
-            .flat_map(|root| {
-                let fonts_dir = root.join("fonts");
-                std::fs::read_dir(fonts_dir)
-                    .into_iter()
-                    .flat_map(|entries| entries.filter_map(Result::ok))
-                    .filter_map(|entry| {
-                        let path = entry.path();
-                        let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-                        if !matches!(extension.as_str(), "ttf" | "otf" | "ttc" | "otc") {
-                            return None;
-                        }
-                        let stem = path.file_stem()?.to_str()?;
-                        if stem == file_stem || stem.starts_with(&format!("{file_stem}-")) {
-                            path.canonicalize()
-                                .ok()
-                                .map(|path| path.to_string_lossy().to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .fold(Vec::new(), |mut paths, path| {
-                if !paths.contains(&path) {
-                    paths.push(path);
-                }
-                paths
-            });
-        paths.sort();
-        paths
     }
 
     fn image_resolver(&self, source: &str) -> Result<Arc<ImageFileResolver>, MediaError> {
@@ -344,64 +242,22 @@ impl MediaStore for LocalMediaStore {
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {
-        Some(self.resolved_font(font_family)?.id.clone())
+        Some(self.resolved_font(font_family)?.id().to_string())
     }
 
     fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
         let font = self.resolved_font(font_family)?;
         tracing::info!(
             font_family,
-            sources = font.paths.len(),
+            sources = font.files().len(),
             "opened font media resolver"
         );
-        Some(Box::new(LocalFontResolver {
-            family: font_family.to_string(),
-            font,
-        }))
+        Some(Box::new(font))
     }
 
     fn text_session(&self) -> Option<&TextSession> {
         Some(&self.text)
     }
-}
-
-#[derive(Debug)]
-struct LocalFontResolver {
-    family: String,
-    font: Arc<ResolvedFont>,
-}
-
-impl FontResolver for LocalFontResolver {
-    fn id(&self) -> &str {
-        &self.font.id
-    }
-
-    fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
-        self.font
-            .paths
-            .iter()
-            .map(|path| {
-                std::fs::read(path).map_err(|err| MediaError::Decode {
-                    media_source: self.family.clone(),
-                    details: format!("failed reading font data `{path}`: {err}"),
-                })
-            })
-            .collect()
-    }
-}
-
-/// Names the current contents of `paths`, so that an ID stops matching once a file changes.
-fn font_file_identity(paths: &[String]) -> String {
-    let files: Vec<String> = paths
-        .iter()
-        .map(|path| {
-            let metadata = std::fs::metadata(path).ok();
-            let len = metadata.as_ref().map(std::fs::Metadata::len);
-            let modified = metadata.and_then(|metadata| metadata.modified().ok());
-            format!("{path}:{len:?}:{modified:?}")
-        })
-        .collect();
-    format!("local-font:{}", files.join(";"))
 }
 
 pub(super) fn media_root(override_root: Option<&Path>) -> anyhow::Result<PathBuf> {
@@ -479,7 +335,7 @@ mod tests {
     fn a_source_outside_the_root_fails_like_a_missing_one() {
         let outside = tempfile::NamedTempFile::new().unwrap();
         let root = tempfile::tempdir().unwrap();
-        let store = LocalMediaStore::new(root.path().canonicalize().unwrap());
+        let store = LocalMediaStore::new(root.path().canonicalize().unwrap()).unwrap();
         let outside = outside.path().display().to_string();
         let failure = |source: &str| match store.get_image_resolver(source) {
             Ok(_) => panic!("{source} should not open"),
@@ -499,9 +355,9 @@ mod tests {
     /// A media root holding `font` as the job's `Roboto`.
     fn job_with_roboto(font: &[u8]) -> (tempfile::TempDir, LocalMediaStore) {
         let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join("fonts")).unwrap();
-        std::fs::write(root.path().join("fonts/Roboto.ttf"), font).unwrap();
-        let store = LocalMediaStore::new(root.path().canonicalize().unwrap());
+        std::fs::create_dir_all(root.path().join("assets/fonts")).unwrap();
+        std::fs::write(root.path().join("assets/fonts/Roboto.ttf"), font).unwrap();
+        let store = LocalMediaStore::new(root.path().canonicalize().unwrap()).unwrap();
         (root, store)
     }
 
@@ -551,23 +407,24 @@ mod tests {
     }
 
     #[test]
-    fn a_job_resolves_each_font_family_once() {
-        let (root, store) = job_with_roboto(ROBOTO);
-        assert_eq!(store.font_resolver_id("Late"), None);
-        std::fs::write(root.path().join("fonts/Late.ttf"), ROBOTO).unwrap();
-        assert_eq!(store.font_resolver_id("Late"), None);
-
-        let next_job = LocalMediaStore::new(root.path().canonicalize().unwrap());
-        assert!(next_job.font_resolver_id("Late").is_some());
-    }
-
-    #[test]
     fn a_changed_font_file_changes_the_resolver_id() {
         let (root, store) = job_with_roboto(ROBOTO);
         let before = store.font_resolver_id("Roboto").unwrap();
-        std::fs::write(root.path().join("fonts/Roboto.ttf"), &ROBOTO[..1024]).unwrap();
+        let changed = [ROBOTO, &[0]].concat();
+        std::fs::write(root.path().join("assets/fonts/Roboto.ttf"), changed).unwrap();
 
-        let next_job = LocalMediaStore::new(root.path().canonicalize().unwrap());
+        let next_job = LocalMediaStore::new(root.path().canonicalize().unwrap()).unwrap();
         assert_ne!(next_job.font_resolver_id("Roboto").unwrap(), before);
+    }
+
+    #[test]
+    fn a_font_staged_under_its_alias_serves_the_family_of_that_name() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("brand"), ROBOTO).unwrap();
+        let store = LocalMediaStore::new(root.path().canonicalize().unwrap()).unwrap();
+
+        let resolver = store.get_font_resolver("brand").unwrap();
+        assert_eq!(resolver.data().unwrap(), vec![ROBOTO.to_vec()]);
+        assert!(store.get_font_resolver("other").is_none());
     }
 }

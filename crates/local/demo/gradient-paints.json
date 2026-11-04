@@ -130,7 +130,6 @@
       "type": "text",
       "params": {
         "content": "Gradient paints",
-        "font_family": "Helvetica Neue",
         "font_size": 54,
         "font_weight": 700,
         "font_style": "normal",
@@ -146,7 +145,6 @@
       "type": "text",
       "params": {
         "content": "fill_paint and stroke_paint accept raw colors or gradient objects.",
-        "font_family": "Helvetica Neue",
         "font_size": 24,
         "font_weight": 400,
         "font_style": "normal",

@@ -55,7 +55,6 @@
       "type": "text",
       "params": {
         "content": "GPU-native previews.",
-        "font_family": "Helvetica Neue",
         "font_size": 42,
         "font_weight": 700,
         "font_style": "normal",
@@ -71,7 +70,6 @@
       "type": "text",
       "params": {
         "content": "Expressions update uniforms per frame.",
-        "font_family": "Helvetica Neue",
         "font_size": 21,
         "font_weight": 500,
         "font_style": "normal",
@@ -101,7 +99,6 @@
       "type": "text",
       "params": {
         "content": "Open editor",
-        "font_family": "Helvetica Neue",
         "font_size": 20,
         "font_weight": 700,
         "font_style": "normal",

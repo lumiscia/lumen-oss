@@ -110,7 +110,6 @@
       "type": "text",
       "params": {
         "content": "subpixel diagonals",
-        "font_family": "Helvetica Neue",
         "font_size": 68,
         "font_weight": 800,
         "max_width": 760,

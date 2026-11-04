@@ -29,4 +29,5 @@ lumen-engine = { path = "crates/engine", version = "0.3.1" }
 lumen-ffmpeg = { package = "lumen-engine-ffmpeg", path = "crates/ffmpeg", version = "0.3.1" }
 lumen-gpu = { package = "lumen-engine-gpu", path = "crates/gpu", version = "0.3.1" }
 lumen-macros = { package = "lumen-engine-macros", path = "crates/macros", version = "0.3.1" }
+lumen-server = { path = "crates/server", version = "0.3.1" }
 lumen-text = { package = "lumen-engine-text", path = "crates/text", version = "0.3.1" }

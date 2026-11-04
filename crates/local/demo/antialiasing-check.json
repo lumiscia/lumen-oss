@@ -109,7 +109,6 @@
       "type": "text",
       "params": {
         "content": "AA",
-        "font_family": "Helvetica Neue",
         "font_size": 142,
         "font_weight": 800,
         "max_width": 320,
@@ -134,7 +133,6 @@
       "type": "text",
       "params": {
         "content": "shape, path, gradient, text",
-        "font_family": "Helvetica Neue",
         "font_size": 28,
         "font_weight": 500,
         "max_width": 340,
