@@ -1693,6 +1693,7 @@ name = "lumen-local"
 version = "0.3.1"
 dependencies = [
  "anyhow",
+ "clap",
  "fontdb",
  "image",
  "lumen-engine",
