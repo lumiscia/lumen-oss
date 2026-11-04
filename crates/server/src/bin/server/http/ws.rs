@@ -1,136 +1,93 @@
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::SinkExt;
+use tokio::sync::watch;
 
-use crate::server::RenderNotification;
+use crate::server::RenderStatus;
 
-use super::state::AppState;
-
-pub(super) async fn render_socket_session(mut socket: WebSocket, state: AppState, id: String) {
-    let snapshot = state.renders.read().ok().and_then(|renders| {
-        renders
-            .records
-            .get(&id)
-            .and_then(|stored| stored.progress.clone())
-    });
-    let _ = send_notification(
-        &mut socket,
-        &RenderNotification {
-            state: snapshot,
-            kind: "snapshot",
-        },
-    )
-    .await;
-
-    let mut rx = state.progress_tx.subscribe();
+/// Sends the render's current status and then each change, and closes once it has ended.
+pub(super) async fn render_socket_session(
+    mut socket: WebSocket,
+    mut status: watch::Receiver<RenderStatus>,
+    id: String,
+) {
     loop {
-        tokio::select! {
-            message = socket.recv() => {
-                match message {
-                    Some(Ok(Message::Close(_))) => {
-                        let _ = socket.close().await;
-                        break;
-                    }
-                    None => break,
+        let current = status.borrow_and_update().clone();
+        let text = render_event(&id, &current).to_string();
+        if socket.send(Message::Text(text.into())).await.is_err() {
+            return;
+        }
+        if current.is_terminal() {
+            let _ = socket.close().await;
+            return;
+        }
+
+        loop {
+            tokio::select! {
+                message = socket.recv() => match message {
+                    Some(Ok(Message::Close(_)) | Err(_)) | None => return,
                     Some(Ok(_)) => {}
-                    Some(Err(_)) => break,
-                }
-            }
-            notification = rx.recv() => {
-                match notification {
-                    Ok(notification)
-                        if notification
-                            .state
-                            .as_ref()
-                            .is_some_and(|progress| progress.render_id == id) =>
-                    {
-                        if send_notification(&mut socket, &notification).await.is_err() {
-                            break;
-                        }
+                },
+                changed = status.changed() => {
+                    if changed.is_err() {
+                        return;
                     }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    break;
                 }
             }
         }
     }
 }
 
-async fn send_notification(
-    socket: &mut WebSocket,
-    notification: &RenderNotification,
-) -> Result<(), axum::Error> {
-    let Some(event) = render_event(notification) else {
-        return Ok(());
-    };
-    let Ok(text) = serde_json::to_string(&event) else {
-        return Ok(());
-    };
-    socket.send(Message::Text(text.into())).await
-}
-
-fn render_event(notification: &RenderNotification) -> Option<serde_json::Value> {
-    let Some(state) = notification.state.as_ref() else {
-        return None;
-    };
-
-    Some(match state.state {
-        "queued" => serde_json::json!({
+fn render_event(id: &str, status: &RenderStatus) -> serde_json::Value {
+    match status {
+        RenderStatus::Queued => serde_json::json!({
             "type": "render.queued",
-            "renderId": state.render_id,
+            "renderId": id,
         }),
-        "succeeded" => serde_json::json!({
+        RenderStatus::Staging => serde_json::json!({
+            "type": "render.started",
+            "renderId": id,
+        }),
+        RenderStatus::Rendering { .. } => serde_json::json!({
+            "type": "render.progress",
+            "renderId": id,
+            "progress": status.progress(),
+        }),
+        RenderStatus::Succeeded { artifact } => serde_json::json!({
             "type": "render.completed",
-            "renderId": state.render_id,
-            "url": state.artifact_url,
+            "renderId": id,
+            "url": artifact.url,
         }),
-        "failed" => serde_json::json!({
+        RenderStatus::Failed { error, .. } => serde_json::json!({
             "type": "render.failed",
-            "renderId": state.render_id,
+            "renderId": id,
             "error": {
-                "code": state.error_code.as_deref().unwrap_or("render_failed"),
-                "message": state.error.as_deref().unwrap_or("Render failed."),
-                "retryable": state.retryable.unwrap_or(false),
+                "code": error.code,
+                "message": error.message,
+                "retryable": error.retryable,
             },
         }),
-        "processing" if notification.kind == "started" => serde_json::json!({
-            "type": "render.started",
-            "renderId": state.render_id,
-        }),
-        _ => serde_json::json!({
-            "type": "render.progress",
-            "renderId": state.render_id,
-            "progress": state.progress,
-        }),
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::RenderQueueState;
+    use crate::server::RenderJobError;
 
     #[test]
     fn a_failed_render_event_carries_the_failure_code() {
-        let event = render_event(&RenderNotification {
-            kind: "completed",
-            state: Some(RenderQueueState {
-                artifact_url: None,
-                duration_ms: None,
-                error: Some("media 'hero': not found".to_string()),
-                error_code: Some("media_download_failed".to_string()),
-                organization_id: String::new(),
-                output_bytes: None,
-                progress: 1.0,
-                render_id: "r_1".to_string(),
-                resolution: None,
-                retryable: Some(true),
-                stage: None,
-                state: "failed",
-                updated_at: String::new(),
-            }),
-        })
-        .unwrap();
+        let event = render_event(
+            "r_1",
+            &RenderStatus::Failed {
+                error: RenderJobError {
+                    code: "media_download_failed".to_string(),
+                    message: "media 'hero': not found".to_string(),
+                    retryable: true,
+                },
+                progress: 0.01,
+            },
+        );
         assert_eq!(
             event["error"],
             serde_json::json!({

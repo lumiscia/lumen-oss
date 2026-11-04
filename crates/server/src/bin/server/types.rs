@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
+use axum::body::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::watch;
 
 #[derive(Debug, Deserialize)]
 pub struct RenderJobInput {
@@ -13,20 +15,6 @@ pub struct RenderJobInput {
     pub webhook_url: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ArtifactOutput {
-    pub download_url: String,
-    pub content_type: &'static str,
-    pub bytes: usize,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RenderJobMetrics {
-    pub stage_ms: u128,
-    pub render_ms: u128,
-    pub total_frames: u64,
-}
-
 /// Why a render failed, kept with the render and returned by every read of it.
 #[derive(Debug, Clone, Serialize)]
 pub struct RenderJobError {
@@ -35,20 +23,151 @@ pub struct RenderJobError {
     pub retryable: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// A render and its latest status. Sockets subscribe to the status and polling reads it, so every
+/// reader sees the same value.
+pub struct RenderRecord {
+    pub id: String,
+    pub created_at: String,
+    pub input_hash: String,
+    pub status: watch::Sender<RenderStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub enum RenderStatus {
+    Queued,
+    Staging,
+    Rendering {
+        frame: u32,
+        total: u32,
+    },
+    Succeeded {
+        artifact: Artifact,
+    },
+    Failed {
+        error: RenderJobError,
+        progress: f32,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct Artifact {
+    /// Where the client downloads it from, relative to the server.
+    pub url: String,
+    pub bytes: Bytes,
+    pub render_ms: u128,
+}
+
+impl RenderStatus {
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Succeeded { .. } | Self::Failed { .. })
+    }
+
+    /// `0` to `1`. Rendering fills `0.05` to `0.99`, and only success reaches `1`.
+    pub fn progress(&self) -> f32 {
+        match self {
+            Self::Queued => 0.0,
+            Self::Staging => 0.01,
+            Self::Rendering { frame, total } => {
+                let ratio = *frame as f32 / (*total).max(1) as f32;
+                (0.05 + 0.90 * ratio).clamp(0.0, 0.99)
+            }
+            Self::Succeeded { .. } => 1.0,
+            Self::Failed { progress, .. } => *progress,
+        }
+    }
+
+    fn state(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Staging | Self::Rendering { .. } => "processing",
+            Self::Succeeded { .. } => "succeeded",
+            Self::Failed { .. } => "failed",
+        }
+    }
+
+    fn stage(&self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Staging => "accepted",
+            Self::Rendering { .. } => "rendering",
+            Self::Succeeded { .. } => "completed",
+            Self::Failed { .. } => "failed",
+        }
+    }
+
+    fn error(&self) -> Option<&RenderJobError> {
+        match self {
+            Self::Failed { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+
+    fn artifact(&self) -> Option<&Artifact> {
+        match self {
+            Self::Succeeded { artifact } => Some(artifact),
+            _ => None,
+        }
+    }
+}
+
+impl RenderRecord {
+    pub fn new(id: String, created_at: String, input_hash: String) -> Self {
+        Self {
+            id,
+            created_at,
+            input_hash,
+            status: watch::Sender::new(RenderStatus::Queued),
+        }
+    }
+
+    /// Records a rendered frame. Subscribers are woken when the stage changes or the progress has
+    /// grown by `min_delta` since the last time they were; the stored status is always current.
+    pub fn set_frame(&self, frame: u32, total: u32, min_delta: f32, woken_at: &mut f32) {
+        let next = RenderStatus::Rendering { frame, total };
+        let progress = next.progress();
+        self.status.send_if_modified(|status| {
+            let wake = !matches!(status, RenderStatus::Rendering { .. })
+                || progress - *woken_at >= min_delta;
+            *status = next;
+            if wake {
+                *woken_at = progress;
+            }
+            wake
+        });
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub struct ApiRenderJob {
     #[serde(rename = "costMicros")]
-    pub cost_micros: u64,
+    cost_micros: u64,
     #[serde(rename = "createdAt")]
-    pub created_at: String,
+    created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<RenderJobError>,
-    pub id: String,
+    error: Option<RenderJobError>,
+    id: String,
     #[serde(rename = "inputHash")]
-    pub input_hash: String,
+    input_hash: String,
     #[serde(rename = "organizationId")]
-    pub organization_id: String,
-    pub status: &'static str,
+    organization_id: &'static str,
+    #[serde(rename = "outputUrl", skip_serializing_if = "Option::is_none")]
+    output_url: Option<String>,
+    status: &'static str,
+}
+
+impl ApiRenderJob {
+    pub fn new(record: &RenderRecord, status: &RenderStatus) -> Self {
+        Self {
+            cost_micros: 0,
+            created_at: record.created_at.clone(),
+            error: status.error().cloned(),
+            id: record.id.clone(),
+            input_hash: record.input_hash.clone(),
+            organization_id: "self-hosted",
+            output_url: status.artifact().map(|artifact| artifact.url.clone()),
+            status: status.state(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -62,43 +181,51 @@ pub struct GetRenderResponse {
     pub render: ApiRenderJob,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct RenderQueueState {
     #[serde(rename = "artifactUrl", skip_serializing_if = "Option::is_none")]
-    pub artifact_url: Option<String>,
+    artifact_url: Option<String>,
     #[serde(rename = "durationMs", skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u128>,
+    duration_ms: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    error: Option<String>,
     #[serde(rename = "errorCode", skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<String>,
+    error_code: Option<String>,
     #[serde(rename = "organizationId")]
-    pub organization_id: String,
+    organization_id: &'static str,
     #[serde(rename = "outputBytes", skip_serializing_if = "Option::is_none")]
-    pub output_bytes: Option<usize>,
-    pub progress: f32,
+    output_bytes: Option<usize>,
+    progress: f32,
     #[serde(rename = "renderId")]
-    pub render_id: String,
+    render_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub resolution: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retryable: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stage: Option<&'static str>,
-    pub state: &'static str,
-    #[serde(rename = "updatedAt")]
-    pub updated_at: String,
+    retryable: Option<bool>,
+    stage: &'static str,
+    state: &'static str,
+}
+
+impl RenderQueueState {
+    pub fn new(id: &str, status: &RenderStatus) -> Self {
+        let artifact = status.artifact();
+        let error = status.error();
+        Self {
+            artifact_url: artifact.map(|artifact| artifact.url.clone()),
+            duration_ms: artifact.map(|artifact| artifact.render_ms),
+            error: error.map(|error| error.message.clone()),
+            error_code: error.map(|error| error.code.clone()),
+            organization_id: "self-hosted",
+            output_bytes: artifact.map(|artifact| artifact.bytes.len()),
+            progress: status.progress(),
+            render_id: id.to_string(),
+            retryable: error.map(|error| error.retryable),
+            stage: status.stage(),
+            state: status.state(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
 pub struct RenderProgressResponse {
-    pub progress: Option<RenderQueueState>,
+    pub progress: RenderQueueState,
     pub render: ApiRenderJob,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RenderNotification {
-    pub state: Option<RenderQueueState>,
-    #[serde(rename = "type")]
-    pub kind: &'static str,
 }

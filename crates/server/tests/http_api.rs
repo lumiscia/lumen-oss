@@ -27,6 +27,9 @@ use reqwest::{
     blocking::{Client, Response},
 };
 use serde_json::{Value, json};
+use tungstenite::{
+    Message, WebSocket, client::IntoClientRequest, http::HeaderValue, stream::MaybeTlsStream,
+};
 
 const TOKEN: &str = "test-token";
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -426,6 +429,124 @@ fn a_failed_render_keeps_its_code_on_every_read() {
     assert_eq!(
         read(format!("/renders/{id}/progress"))["render"]["error"],
         expected
+    );
+
+    let artifact = server.get(&format!("/renders/{id}/artifact"));
+    assert_eq!(artifact.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        artifact.json::<Value>().expect("artifact error"),
+        json!({ "code": "media_download_forbidden_host", "error": progress["error"] })
+    );
+}
+
+#[test]
+fn a_render_has_no_artifact_before_it_succeeds() {
+    let media = MediaServer::start();
+    let server = Server::start(&["--allow-media-host", "localhost"]);
+    let held = server.submit(&json!({
+        "composition": solid_composition(),
+        "media": { "hero": media.url("localhost", "/held") },
+    }));
+    server.wait_for_state(&held, &["processing"]);
+    let waiting = server.submit(&json!({
+        "composition": solid_composition(),
+        "media": { "hero": "http://127.0.0.1/forbidden.png" },
+    }));
+
+    for (id, status) in [(&held, "processing"), (&waiting, "queued")] {
+        let artifact = server.get(&format!("/renders/{id}/artifact"));
+        assert_eq!(artifact.status(), StatusCode::CONFLICT, "{status}");
+        assert_eq!(error_code(artifact), "artifact_not_ready", "{status}");
+        let render: Value = server
+            .get(&format!("/renders/{id}"))
+            .json()
+            .expect("render body");
+        assert_eq!(render["render"]["status"], status);
+        assert_eq!(render["render"]["outputUrl"], Value::Null, "{status}");
+    }
+}
+
+fn open_socket(server: &Server, id: &str) -> WebSocket<MaybeTlsStream<TcpStream>> {
+    let url = server.base.replacen("http", "ws", 1);
+    let mut request = format!("{url}/renders/{id}/socket")
+        .into_client_request()
+        .expect("socket request");
+    request.headers_mut().insert(
+        "authorization",
+        HeaderValue::from_str(&format!("Bearer {TOKEN}")).unwrap(),
+    );
+    let (socket, _) = tungstenite::connect(request).expect("open render socket");
+    if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
+        stream
+            .set_read_timeout(Some(TIMEOUT))
+            .expect("socket read timeout");
+    }
+    socket
+}
+
+/// Reads events until the server closes the socket.
+fn socket_events(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> Vec<Value> {
+    let mut events = Vec::new();
+    loop {
+        match socket.read() {
+            Ok(Message::Text(text)) => events.push(serde_json::from_str(&text).expect("event")),
+            Ok(Message::Close(_))
+            | Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                return events;
+            }
+            Ok(_) => {}
+            Err(error) => panic!("socket failed after {events:?}: {error}"),
+        }
+    }
+}
+
+#[test]
+fn sockets_send_the_current_status_then_changes_and_close_when_the_render_ends() {
+    let media = MediaServer::start();
+    let server = Server::start(&["--allow-media-host", "localhost"]);
+    let id = server.submit(&json!({
+        "composition": solid_composition(),
+        "media": { "hero": media.url("localhost", "/held") },
+    }));
+    server.wait_for_state(&id, &["processing"]);
+
+    let mut socket = open_socket(&server, &id);
+    let Message::Text(first) = socket.read().expect("current status") else {
+        panic!("the current status should be a text frame");
+    };
+    let first: Value = serde_json::from_str(&first).expect("event");
+    assert_eq!(first["type"], "render.started", "{first}");
+    assert_eq!(first["renderId"], id.as_str());
+
+    media.release.send(()).expect("release held download");
+    let events = socket_events(&mut socket);
+
+    let last = events.last().unwrap();
+    assert!(
+        ["render.completed", "render.failed"].contains(&last["type"].as_str().unwrap()),
+        "{events:?}"
+    );
+    assert!(
+        events[..events.len() - 1]
+            .iter()
+            .all(|event| event["type"] == "render.progress"),
+        "{events:?}"
+    );
+    assert!(events.iter().all(|event| event["renderId"] == id.as_str()));
+
+    let progress = server.progress(&id);
+    if last["type"] == "render.completed" {
+        assert_eq!(last["url"], format!("/renders/{id}/artifact"));
+        assert_eq!(progress["artifactUrl"], last["url"]);
+    } else {
+        assert_eq!(last["error"]["code"], progress["errorCode"]);
+    }
+
+    let late = socket_events(&mut open_socket(&server, &id));
+    assert_eq!(
+        late.as_slice(),
+        std::slice::from_ref(last),
+        "a late subscriber gets the ended status"
     );
 }
 
@@ -830,7 +951,7 @@ fn staged_playlists_cannot_reach_files_outside_the_job_with_gpu() {
     assert_eq!(progress["state"], "failed", "{progress}");
     assert_eq!(
         server.get(&format!("/renders/{id}/artifact")).status(),
-        StatusCode::NOT_FOUND
+        StatusCode::CONFLICT
     );
 }
 
