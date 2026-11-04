@@ -678,7 +678,14 @@ impl AudioRangeReader {
                 num: 1,
                 den: rate as i32,
             },
-        ) - unsafe { sys::av_rescale_rnd(self.origin, rate, OUTPUT_RATE, AV_ROUND_UP) }
+        ) - unsafe {
+            sys::av_rescale_rnd(
+                self.origin,
+                rate,
+                OUTPUT_RATE,
+                AVRounding::AV_ROUND_NEAR_INF,
+            )
+        }
     }
 
     fn feed_decoder(&mut self) -> Result<()> {
