@@ -408,6 +408,8 @@ fn poll(
 
 #[cfg(all(test, target_os = "linux", feature = "cuda", feature = "vulkan"))]
 mod tests {
+    use lumen_engine::media::{FfmpegVideoResolver, MediaFrame, VideoFrameResolver};
+
     use super::*;
 
     /// libx264 can't take CUDA frames, so its target always fails to open, after the renderer and
@@ -467,6 +469,19 @@ mod tests {
         target
             .finish(&renderer, &composition, &media_store, &mut timing)
             .unwrap();
-        assert!(output.metadata().unwrap().len() > 0);
+        let video = FfmpegVideoResolver::open(output.to_string_lossy().to_string()).unwrap();
+        assert_eq!(video.metadata().frame_count, 3);
+        for frame in 0..3 {
+            let MediaFrame::CpuRgba(decoded) = video.frame(frame).unwrap() else {
+                panic!("expected a CPU frame");
+            };
+            assert!(
+                decoded
+                    .rgba
+                    .chunks_exact(4)
+                    .all(|pixel| pixel[0] >= 239 && pixel[1] <= 16 && pixel[2] <= 16),
+                "frame {frame} isn't the composition's red"
+            );
+        }
     }
 }
