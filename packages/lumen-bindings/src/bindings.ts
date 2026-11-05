@@ -8,6 +8,7 @@ let ready: Promise<void> | null = null;
  * A page has one wasm instance, and installing another invalidates every controller made from the
  * first. wasm-bindgen's async init checks for one only before it starts, so this compiles first and
  * installs with `initSync`, which keeps whichever instance got there first, including a caller's.
+ * The one exception is the async fallback below.
  */
 function initialize(wasmUrl: string | URL): Promise<void> {
   ready ??= install(wasmUrl).catch((error: unknown) => {
@@ -29,8 +30,9 @@ async function install(wasmUrl: string | URL): Promise<void> {
     if (!(error instanceof RangeError)) {
       throw error;
     }
-    // Chromium won't instantiate over 8 MB synchronously on the main thread. A caller's `initSync`
-    // would throw the same way, so nothing can install an instance while this one is on its way.
+    // Chromium won't instantiate over 8 MB synchronously on the main thread, so this module can only
+    // install asynchronously. A caller's `initSync` of the same module throws the same way, but one
+    // of a different module under 8 MB would succeed, and this would then replace its instance.
     await initPreview({ module_or_path: module });
   }
 }

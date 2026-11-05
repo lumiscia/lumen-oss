@@ -11,4 +11,4 @@
 - `/web`, `/nodejs` and `/no-modules` are gone. Use `/browser`, `/node`, or `initSync` from `/browser`.
 - `createLumenBindings` returns a plain object, and the `LumenBindings` class, its `target` field, `LumenBindingsLike` and `LumenPreviewBindingsModule` are gone. Non-URL wasm inputs go through `initSync`.
 - `createLumenPreviewWorkerHost` no longer takes `previewWasmUrl`, because the session sends the worker the URL from its bindings.
-- `preview()` shares one compile across overlapping calls, and an instance already installed stays, including one from `initSync`, so a late init can no longer invalidate live controllers.
+- `preview()` shares one compile across overlapping calls, and an instance already installed stays, including one from `initSync`, so a late init can no longer invalidate live controllers. The one exception: on Chromium's main thread, a wasm over 8 MB installs asynchronously, and it replaces an instance that `initSync` installed from a different, smaller wasm in the meantime.
