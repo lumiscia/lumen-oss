@@ -1,5 +1,5 @@
 export { Lumen, mediaReference } from "./node.js";
-export { LumenRenderError } from "./events.js";
+export { LumenError } from "./errors.js";
 export { LumenWebhookError, verifyWebhook } from "./webhooks.js";
 export type {
   LumenWebhookErrorCode,
@@ -10,21 +10,28 @@ export type {
 export { Composition } from "@lumiscia/lumen-shared";
 export type * from "@lumiscia/lumen-shared";
 export type {
-  LumenApiError,
+  CompleteMultipartUploadOptions,
+  CreateMediaUploadOptions,
+  CreateMediaUploadResult,
+  CreateMultipartUploadResult,
+  CreateUrlMediaOptions,
+  LumenMediaReference,
   LumenOptions,
+  LumenWebSocket,
+  LumenWebSocketFactory,
+  LumenWebSocketFactoryOptions,
+  MediaUploadPart,
+  MultipartUploadOptions,
+  Render,
   RenderEvent,
   RenderEventHandlers,
   RenderEventSubscription,
-  RenderJob,
+  RenderFailure,
   RenderMediaManifest,
   RenderOptions,
-  RenderResult,
-  WaitForRenderOptions,
-  LumenMediaReference,
-  CompleteMultipartUploadOptions,
-  CreateMediaUploadOptions,
-  CreateUrlMediaOptions,
-  MediaUploadPart,
+  RenderStatus,
   TemporaryMedia,
+  UploadMediaBody,
   UploadMediaOptions,
+  WaitForRenderOptions,
 } from "./types.js";

@@ -31,37 +31,37 @@ export interface RenderOptions {
   readonly webhookUrl?: string;
 }
 
-export interface RenderResult {
-  readonly cached?: boolean;
-  readonly id?: string;
-  readonly render?: RenderJob;
-  readonly error?: LumenApiError;
+export type RenderStatus = "queued" | "processing" | "succeeded" | "failed";
+
+export interface RenderFailure {
+  readonly code: string;
+  readonly message: string;
+  readonly retryable?: boolean;
 }
 
-export interface RenderJob {
-  readonly apiKeyId?: string;
-  readonly createdAt: string;
-  /** Why the render failed, when `status` is `failed` and the server reports it. */
-  readonly error?: LumenApiError & { readonly retryable?: boolean };
-  /** Render cost in millionths of a US dollar. */
-  readonly costMicros: number;
+/** A render as `render`, `getRender` and `waitForRender` return it. */
+export interface Render {
   readonly id: string;
-  readonly inputHash: string;
-  readonly organizationId: string;
-  readonly outputExpiresAt?: string | null;
-  readonly outputUrl?: string | null;
-  readonly status: "failed" | "processing" | "queued" | "succeeded";
+  readonly status: RenderStatus;
+  /** From 0 to 1. Set when the API reported it, which `GET /renders/:id` does not. */
+  readonly progress?: number;
+  /** Absolute URL of the output, once the render has succeeded. Pass the render to `download`. */
+  readonly url?: string;
+  /** Why the render failed, when `status` is `failed`. */
+  readonly error?: RenderFailure;
+  /** Whether an earlier render with the same input answered this request. */
+  readonly cached?: boolean;
+  /** Render cost in millionths of a US dollar. Self-hosted servers report 0. */
+  readonly costMicros?: number;
+  readonly createdAt?: string;
+  readonly inputHash?: string;
+  readonly organizationId?: string;
+  readonly outputExpiresAt?: string;
 }
 
 export type RenderMediaManifest = Record<string, string>;
 
 export type LumenMediaReference = `lumen:${string}`;
-
-export interface LumenApiError {
-  readonly code: string;
-  readonly message: string;
-  readonly details?: unknown;
-}
 
 export type RenderEvent =
   | {
@@ -89,7 +89,7 @@ export type RenderEvent =
   | {
       readonly type: "render.failed";
       readonly renderId: string;
-      readonly error: LumenApiError;
+      readonly error: RenderFailure;
     };
 
 export interface RenderEventHandlers {

@@ -1,53 +1,54 @@
-import type { LumenApiError } from "./types.js";
-
-export function normalizeApiError(error: unknown, response: Response): LumenApiError {
-  if (isApiError(error)) {
-    return error;
-  }
-
-  if (isApiErrorBody(error)) {
-    return {
-      code: error.code ?? `http_${response.status}`,
-      message: error.error,
-      ...(error.requestId !== undefined ? { details: { requestId: error.requestId } } : {}),
-    };
-  }
-
-  if (typeof error === "string") {
-    return {
-      code: `http_${response.status}`,
-      message: error,
-    };
-  }
-
-  return {
-    code: `http_${response.status}`,
-    message: response.statusText || "Lumen API request failed.",
-  };
+export interface LumenErrorFields {
+  readonly cause?: unknown;
+  readonly renderId?: string;
+  readonly requestId?: string;
+  readonly retryable?: boolean;
+  readonly status?: number;
 }
 
-function isApiError(value: unknown): value is LumenApiError {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "code" in value &&
-    "message" in value &&
-    typeof value.code === "string" &&
-    typeof value.message === "string"
+/**
+ * The error every `Lumen` method throws, apart from an aborted `signal`, which rejects with the
+ * abort reason. `code` is the server's error code, or one of `http_<status>`, `network_error`,
+ * `invalid_response`, `render_not_ready` and `socket_error` when the failure never reached the
+ * server's own error handling.
+ */
+export class LumenError extends Error {
+  readonly code: string;
+  /** The HTTP status, when the failure was a response. */
+  readonly status?: number;
+  readonly requestId?: string;
+  /** The render this error is about, when it is about one. */
+  readonly renderId?: string;
+  /** Whether the server expects retrying the same request to succeed. */
+  readonly retryable?: boolean;
+
+  constructor(code: string, message: string, fields: LumenErrorFields = {}) {
+    super(message, fields.cause === undefined ? undefined : { cause: fields.cause });
+    this.name = "LumenError";
+    this.code = code;
+    if (fields.status !== undefined) this.status = fields.status;
+    if (fields.requestId !== undefined) this.requestId = fields.requestId;
+    if (fields.renderId !== undefined) this.renderId = fields.renderId;
+    if (fields.retryable !== undefined) this.retryable = fields.retryable;
+  }
+}
+
+/** Reads an error response, whose body is `{ code?, error, requestId? }`. */
+export async function errorFromResponse(response: Response): Promise<LumenError> {
+  const body: unknown = await response.json().catch(() => undefined);
+  const fields = isRecord(body) ? body : {};
+  return new LumenError(
+    typeof fields.code === "string" ? fields.code : `http_${response.status}`,
+    typeof fields.error === "string"
+      ? fields.error
+      : response.statusText || "Lumen API request failed.",
+    {
+      status: response.status,
+      ...(typeof fields.requestId === "string" ? { requestId: fields.requestId } : {}),
+    },
   );
 }
 
-function isApiErrorBody(value: unknown): value is {
-  code?: string;
-  error: string;
-  requestId?: string;
-} {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "error" in value &&
-    typeof value.error === "string" &&
-    (!("code" in value) || typeof value.code === "string") &&
-    (!("requestId" in value) || typeof value.requestId === "string")
-  );
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

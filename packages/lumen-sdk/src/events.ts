@@ -1,4 +1,6 @@
-import type { LumenApiError, RenderEvent } from "./types.js";
+import { isRecord } from "./errors.js";
+import { parseFailure } from "./render.js";
+import type { RenderEvent, RenderFailure } from "./types.js";
 
 /**
  * Converts a render socket message into a `RenderEvent`. Accepts both the hosted API shape
@@ -49,42 +51,15 @@ export function normalizeRenderEvent(message: unknown): RenderEvent | undefined 
   }
 }
 
-/** The error `waitForRender` rejects with when the render fails. */
-export class LumenRenderError extends Error implements LumenApiError {
-  readonly code: string;
-  readonly details?: unknown;
-  readonly renderId: string;
-
-  constructor(renderId: string, error: LumenApiError) {
-    super(`Render ${renderId} failed: ${error.message}`);
-    this.name = "LumenRenderError";
-    this.code = error.code;
-    this.renderId = renderId;
-    if (error.details !== undefined) {
-      this.details = error.details;
+function renderFailure(error: unknown): RenderFailure {
+  return (
+    parseFailure(error) ?? {
+      code: "render_failed",
+      message: typeof error === "string" && error.length > 0 ? error : "Render failed.",
     }
-  }
-}
-
-function renderFailure(error: unknown): LumenApiError {
-  if (isRecord(error) && typeof error.message === "string") {
-    return {
-      code: typeof error.code === "string" ? error.code : "render_failed",
-      message: error.message,
-      ...(error.details !== undefined ? { details: error.details } : {}),
-    };
-  }
-
-  return {
-    code: "render_failed",
-    message: typeof error === "string" && error.length > 0 ? error : "Render failed.",
-  };
+  );
 }
 
 function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

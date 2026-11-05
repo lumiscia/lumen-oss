@@ -27,7 +27,7 @@ export class Lumen extends BaseLumen {
 }
 
 export { mediaReference };
-export { LumenRenderError } from "./events.js";
+export { LumenError } from "./errors.js";
 export { LumenWebhookError, verifyWebhook } from "./webhooks.js";
 export type {
   LumenWebhookErrorCode,
@@ -40,18 +40,26 @@ export type * from "@lumiscia/lumen-shared";
 export type {
   CompleteMultipartUploadOptions,
   CreateMediaUploadOptions,
+  CreateMediaUploadResult,
+  CreateMultipartUploadResult,
   CreateUrlMediaOptions,
-  LumenApiError,
   LumenMediaReference,
   LumenOptions,
+  LumenWebSocket,
+  LumenWebSocketFactory,
+  LumenWebSocketFactoryOptions,
   MediaUploadPart,
+  MultipartUploadOptions,
+  Render,
   RenderEvent,
   RenderEventHandlers,
   RenderEventSubscription,
-  RenderJob,
+  RenderFailure,
   RenderMediaManifest,
   RenderOptions,
-  RenderResult,
+  RenderStatus,
   TemporaryMedia,
+  UploadMediaBody,
   UploadMediaOptions,
+  WaitForRenderOptions,
 } from "./types.js";
