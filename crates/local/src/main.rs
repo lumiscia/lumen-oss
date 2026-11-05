@@ -293,15 +293,9 @@ fn render_single_png(
         .render_frame(composition, frame, &*media_store)
         .with_context(|| format!("render failed at frame {frame}"))?;
     let size = rendered.domain.storage_size;
-    let gpu = renderer.gpu_renderer();
-    let texture = gpu.texture(rendered.texture).ok_or_else(|| {
-        anyhow!(
-            "render output texture {:?} is unavailable",
-            rendered.texture
-        )
-    })?;
-    let mut pixels = gpu
-        .read_texture_rgba8(texture, size)
+    let mut pixels = renderer
+        .gpu_renderer()
+        .read_texture_rgba8(&rendered.texture, size)
         .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
     unpremultiply_rgba8(&mut pixels);
 
@@ -340,13 +334,13 @@ fn render_mp4(
 }
 
 /// The summary line, with passes per frame: those skipped because their output was kept from an
-/// earlier frame, out of those in the plans rendered.
+/// earlier frame, and those recorded.
 fn render_summary(report: &RenderReport) -> String {
     let millis = |duration: Duration| duration.as_millis();
     let timing = &report.timing;
     let frames = f64::from(report.frames.max(1));
     format!(
-        "render complete frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={} plan_bytes={} static_cached={:.1} passes={:.1}",
+        "render complete frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={} held_bytes={} skipped_passes={:.1} submitted_passes={:.1}",
         report.frames,
         millis(timing.audio_mix),
         millis(timing.bind),
@@ -357,8 +351,8 @@ fn render_summary(report: &RenderReport) -> String {
         millis(timing.encode_send),
         millis(timing.encode_finish),
         millis(timing.total),
-        report.plan_cache_bytes,
-        report.cached_passes as f64 / frames,
+        report.held_bytes,
+        report.skipped_passes as f64 / frames,
         report.submitted_passes as f64 / frames,
     )
 }

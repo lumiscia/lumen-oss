@@ -111,6 +111,41 @@ fn a_frame_using_more_programs_than_the_bound_renders_and_the_excess_goes_later(
 }
 
 #[test]
+fn a_copy_keeps_each_texel_where_it_was() {
+    let (renderer, mut recorder) = setup();
+    let size = Size::new(2, 2);
+    let source = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("copied"),
+        size: size.as_extent(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    renderer.queue.write_texture(
+        source.as_image_copy(),
+        &[10, 0, 0, 255, 20, 0, 0, 255, 30, 0, 0, 255, 40, 0, 0, 255],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(8),
+            rows_per_image: Some(2),
+        },
+        size.as_extent(),
+    );
+    recorder.begin_frame();
+    let source = recorder.adopt(std::sync::Arc::new(source));
+    let usage = TextureDesc::storage(size, FORMAT).usage | wgpu::TextureUsages::COPY_DST;
+    let target = recorder.acquire(size, FORMAT, usage);
+    recorder.copy(source, target, [0, 0], size);
+    assert_eq!(
+        submit_and_read(&renderer, &mut recorder, target, size),
+        [10, 20, 30, 40]
+    );
+}
+
+#[test]
 fn releasing_everything_frees_what_the_recorder_held_and_it_records_again() {
     let (renderer, mut recorder) = setup();
     let size = Size::new(1, 1);

@@ -1,6 +1,6 @@
 # lumen-engine-gpu
 
-`lumen-engine-gpu` contains the lower-level GPU rendering infrastructure used by `lumen-engine`: renderer setup, texture and buffer resources, render/compute program descriptions, pass planning, and backend-specific interop helpers.
+`lumen-engine-gpu` contains the lower-level GPU rendering infrastructure used by `lumen-engine`: renderer setup, the frame recorder with its pooled textures, bump buffers and cached programs, and backend-specific interop helpers.
 
 This crate is experimental and closely tracks the renderer internals.
 

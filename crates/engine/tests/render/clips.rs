@@ -277,50 +277,27 @@ fn clip_instances() {
 }
 
 #[test]
-fn a_hidden_clip_compiles_and_binds_nothing_upstream() {
-    let mut scene = probe_scene(10.0, json!({ "composition": "probe", "start": 5 }));
-    scene.0["nodes"][0]["id"] = json!(10);
-    scene.0["nodes"][1]["id"] = json!(11);
-    scene.0["connections"][0] = json!({ "from_node": 10, "to_node": 11, "to_port": "source" });
-    let composition = scene.into();
+fn a_hidden_clip_records_nothing_upstream() {
+    let composition = scene(
+        (4, 4),
+        json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "plate" } },
+            { "id": 2, "type": "clip", "in": { "source": 1 }, "params": { "start": 5 } },
+        ]),
+    )
+    .frames(12)
+    .into();
+    let media = TestMedia::default().image("plate", 4, 4, vec![255; 4 * 4 * 4]);
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    let media = TestMedia::default();
-    if renderer.frame_graph_enabled() {
-        let mut passes = |frame| {
-            renderer.bind_frame(&composition, frame, &media).unwrap();
-            renderer.recorded_pass_count()
-        };
-        let (hidden, shown) = (passes(2), passes(6));
-        assert!(hidden < shown, "{hidden} vs {shown}");
-        return;
-    }
-    let mut stats = |frame| {
-        let bound = renderer.bind_frame(&composition, frame, &media).unwrap();
-        let compiled = renderer.compiled().unwrap();
-        let background = compiled
-            .compiled_nodes
-            .get(&NodeId::new(1))
-            .map(|instances| instances.keys().cloned().collect::<Vec<_>>());
-        (
-            compiled.plan.passes().len(),
-            bound.buffer_upload_count(),
-            background,
-        )
-    };
-    let (hidden_passes, hidden_uploads, hidden_background) = stats(2);
-    let (shown_passes, shown_uploads, shown_background) = stats(6);
-    assert_eq!(hidden_background, None);
-    assert_eq!(shown_background, Some(vec![vec![NodeId::new(10)]]));
-    assert!(
-        hidden_passes < shown_passes,
-        "{hidden_passes} vs {shown_passes}"
+    renderer.bind_frame(&composition, 2, &media).unwrap();
+    assert_eq!(
+        media.image_requests(),
+        0,
+        "a hidden clip resolved its source"
     );
-    assert!(
-        hidden_uploads < shown_uploads,
-        "{hidden_uploads} vs {shown_uploads}"
-    );
-    assert_eq!(renderer.cached_plan_count(), 2);
+    renderer.bind_frame(&composition, 6, &media).unwrap();
+    assert!(media.image_requests() > 0);
 }
 
 /// A 16 × 4 root playing frames 4 to 7 of a 12-frame template whose 2 × 2 square is at x = frame.
@@ -369,54 +346,28 @@ fn a_clip_bounds_an_animated_source_over_its_own_frames() {
         .tolerance(0),
     ]);
 
-    // Over the template's whole timeline the square covers x 0 to 13. Over the clip's frames it
-    // covers x 4 to 9, so some texture of the plan is narrower than the whole path and still holds
-    // that one.
+    // A frame bounds the square to this frame alone, rounded out to a size class narrower than this
+    // canvas, and follows it.
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    if renderer.frame_graph_enabled() {
-        // A recorded frame bounds the square to this frame alone, rounded out to a size class
-        // narrower than this canvas, and follows it.
-        let mut wide = mover_scene();
-        wide.0["render_settings"]["width"] = json!(64);
-        wide.0["compositions"]["mover"]["render_settings"] = json!({ "width": 64, "height": 4 });
-        let wide = Composition::from(wide);
-        for (frame, square) in [(10.0, 4..6), (13.0, 7..9)] {
-            render(&mut renderer, &wide, frame, &TestMedia::default());
-            let domain = renderer
-                .recorded_domain(&wide, NodeId::new(1))
-                .expect("the clip recorded");
-            let rect = domain.data_rect;
-            assert!(
-                !domain.is_full_frame()
-                    && rect.width <= 16
-                    && rect.x <= square.start
-                    && rect.x + rect.width as i32 >= square.end,
-                "frame {frame}: the clip is not bounded to the square at {square:?}: {rect:?}"
-            );
-        }
-        return;
+    let mut wide = mover_scene();
+    wide.0["render_settings"]["width"] = json!(64);
+    wide.0["compositions"]["mover"]["render_settings"] = json!({ "width": 64, "height": 4 });
+    let wide = Composition::from(wide);
+    for (frame, square) in [(10.0, 4..6), (13.0, 7..9)] {
+        render(&mut renderer, &wide, frame, &TestMedia::default());
+        let domain = renderer
+            .recorded_domain(&wide, NodeId::new(1))
+            .expect("the clip recorded");
+        let rect = domain.data_rect;
+        assert!(
+            !domain.is_full_frame()
+                && rect.width <= 16
+                && rect.x <= square.start
+                && rect.x + rect.width as i32 >= square.end,
+            "frame {frame}: the clip is not bounded to the square at {square:?}: {rect:?}"
+        );
     }
-    render(
-        &mut renderer,
-        &mover_scene().into(),
-        10.0,
-        &TestMedia::default(),
-    );
-    let rects: Vec<_> = renderer
-        .compiled()
-        .unwrap()
-        .plan
-        .textures()
-        .iter()
-        .map(|texture| texture.desc.domain.data_rect)
-        .collect();
-    assert!(
-        rects
-            .iter()
-            .any(|rect| rect.width <= 12 && rect.x <= 4 && rect.x + rect.width as i32 >= 9),
-        "no texture is bounded to the square's path over the clip's frames: {rects:?}"
-    );
 }
 
 /// A root at `fps[0]` playing a template at `fps[1]`, and so on, where the last template shows the

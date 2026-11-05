@@ -144,7 +144,7 @@ async fn run_async() -> anyhow::Result<()> {
 
     summary.print();
     println!(
-        "setup creates the renderer, compiles the plan and opens any encoder. render-only and readback complete every frame: first frame includes one-off uploads and static work, and steady fps covers the remaining frames. Encoders buffer frames, so encoding modes have no first-frame time and steady covers every frame through the encoder's finish."
+        "setup creates the renderer, builds its programs and opens any encoder. render-only and readback complete every frame: first frame includes one-off uploads and static work, and steady fps covers the remaining frames. Encoders buffer frames, so encoding modes have no first-frame time and steady covers every frame through the encoder's finish."
     );
     Ok(())
 }

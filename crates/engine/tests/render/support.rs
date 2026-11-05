@@ -45,20 +45,18 @@ pub fn gpu() -> Gpu {
 }
 
 impl Gpu {
-    /// A production renderer with empty plan caches on the shared device.
+    /// A production renderer with nothing held yet, on the shared device.
     pub fn renderer(&self) -> GpuCompositionRenderer {
-        GpuCompositionRenderer::from_renderer(self.0.sibling())
-    }
-
-    /// A bare GPU renderer on the shared device, with no composition renderer around it.
-    pub fn bare(&self) -> lumen_gpu::Renderer {
-        self.0.sibling()
+        GpuCompositionRenderer::from_renderer(lumen_gpu::Renderer::from_device_with_adapter_info(
+            self.0.device.clone(),
+            self.0.queue.clone(),
+            self.0.adapter_info().cloned(),
+        ))
     }
 
     /// A renderer whose sources all fill the canvas and render on every frame.
     pub fn reference(&self) -> GpuCompositionRenderer {
         let mut renderer = self.renderer();
-        renderer.set_frame_graph(false);
         renderer.set_full_frame_sources(true);
         renderer.set_static_output_reuse(false);
         renderer
@@ -132,6 +130,8 @@ pub struct TestMedia {
     /// clones, and not the process-wide session.
     session: Option<Arc<TextSession>>,
     font_requests: Arc<AtomicUsize>,
+    /// How many image resolvers were asked for, shared with its clones.
+    image_requests: Arc<AtomicUsize>,
 }
 
 impl TestMedia {
@@ -189,6 +189,10 @@ impl TestMedia {
     /// How many times a font resolver was asked for, across this media and its clones.
     pub fn font_requests(&self) -> usize {
         self.font_requests.load(Ordering::Relaxed)
+    }
+
+    pub fn image_requests(&self) -> usize {
+        self.image_requests.load(Ordering::Relaxed)
     }
 }
 
@@ -259,6 +263,7 @@ impl MediaStore for TestMedia {
         &self,
         source: &str,
     ) -> Result<Box<dyn ImageResolver>, lumen_engine::error::MediaError> {
+        self.image_requests.fetch_add(1, Ordering::Relaxed);
         let (id, frame) = self.images.get(source).ok_or_else(|| {
             lumen_engine::error::MediaError::source_not_found(source, "not registered")
         })?;
@@ -428,7 +433,7 @@ pub fn render(
         at,
         width: size.width,
         height: size.height,
-        rgba: read_rgba8(gpu, gpu.texture(raster.texture).unwrap(), size),
+        rgba: read_rgba8(gpu, &raster.texture, size),
     }
 }
 
@@ -443,15 +448,13 @@ pub fn render_held(
         .render_frame_at(scene, at, media)
         .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
     let size = raster.domain.storage_size;
-    let gpu = renderer.gpu_renderer();
-    let texture = gpu.texture_arc(raster.texture).unwrap();
     let frame = Frame {
         at,
         width: size.width,
         height: size.height,
-        rgba: read_rgba8(gpu, &texture, size),
+        rgba: read_rgba8(renderer.gpu_renderer(), &raster.texture, size),
     };
-    (frame, texture)
+    (frame, raster.texture)
 }
 
 /// Like `render`, but hands the bound frame to `inspect` before it is drawn.
@@ -475,7 +478,7 @@ pub fn render_inspecting(
         at,
         width: size.width,
         height: size.height,
-        rgba: read_rgba8(gpu, gpu.texture(raster.texture).unwrap(), size),
+        rgba: read_rgba8(gpu, &raster.texture, size),
     }
 }
 
@@ -522,8 +525,6 @@ pub struct Case {
     expect: Expect,
     tolerance: u8,
     bounded: Option<bool>,
-    recorded_bounded: Option<bool>,
-    own_programs: bool,
 }
 
 impl Case {
@@ -537,8 +538,6 @@ impl Case {
             expect,
             tolerance: 1,
             bounded: None,
-            recorded_bounded: None,
-            own_programs: false,
         }
     }
 
@@ -564,36 +563,11 @@ impl Case {
         self
     }
 
-    /// What `bounded` asserts for a recorded frame where it differs from a plan's, which sizes what
-    /// a plan can't know ahead of the frame to the canvas.
-    pub fn recorded_bounded(mut self, bounded: bool) -> Self {
-        self.recorded_bounded = Some(bounded);
-        self
-    }
-
-    /// Makes the reference compile its own programs, so a program built wrongly for this scene's
-    /// plan can't make both renders wrong. Rows are slower for it, so few use it.
-    pub fn own_programs(mut self) -> Self {
-        self.own_programs = true;
-        self
-    }
-
     fn run(&self, gpu: &Gpu) {
         assert!(!self.frames.is_empty(), "a case needs at least one frame");
-        // Compiled programs are shared between renderers only while one still uses them, so this
-        // renderer normally lives on through the reference render, which then compiles none. They
-        // share nothing else: the reference starts with empty plan caches.
-        let mut renderer = gpu.renderer();
-        let bounded = if renderer.frame_graph_enabled() {
-            self.recorded_bounded.or(self.bounded)
-        } else {
-            self.bounded
-        };
-        let frames = self.render_frames(&mut renderer, bounded);
+        let frames = self.render_frames(&mut gpu.renderer(), self.bounded);
         self.expect.assert(self, gpu, &frames);
-        let kept = (!self.own_programs).then_some(renderer);
         let reference = self.render_frames(&mut gpu.reference(), self.bounded.map(|_| false));
-        drop(kept);
         for (frame, reference) in frames.iter().zip(&reference) {
             if let Err(error) = within_rounding(&frame.rgba, &reference.rgba) {
                 panic!("frame {} differs from the reference: {error}", frame.at);
@@ -634,17 +608,9 @@ impl Case {
                 _ => None,
             })
             .expect("scene has a media_output");
-        if renderer.frame_graph_enabled() {
-            return renderer
-                .recorded_domain(&self.scene, source)
-                .expect("the output source recorded");
-        }
         renderer
-            .compiled()
-            .expect("a frame rendered")
-            .node_output(source, &[])
-            .expect("the output source compiled")
-            .domain
+            .recorded_domain(&self.scene, source)
+            .expect("the output source recorded")
     }
 }
 

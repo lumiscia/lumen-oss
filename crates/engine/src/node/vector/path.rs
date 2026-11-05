@@ -1,18 +1,11 @@
-use std::borrow::Cow;
-
 use super::drawable::{
     DrawableMotion, DrawablePlacement, DrawableStyle, DrawableTransform, largest_scale, peak_scale,
 };
-use super::renderer::{
-    MAX_PATH_POINTS, PathBuffers, PathPoint, PathUniforms, domain_origin, style_flags,
-};
+use super::renderer::{MAX_PATH_POINTS, PathPoint, PathUniforms, domain_origin, style_flags};
 use crate::error::RenderError;
-use crate::gpu::{
-    BoundFrame, CompileContext, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle,
-    compiler,
-};
+use crate::gpu::params;
 use crate::node::motion::Shutter;
-use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
 const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -71,120 +64,28 @@ pub struct Path {
     pub params: PathParamsDelegate,
 }
 
-impl GpuCompileNode for Path {
-    fn compile_gpu(&self, ctx: &mut CompileContext<'_>) -> crate::Result<RasterHandle> {
-        let fixed_points = fixed_points(&self.params.data, &self.params.placement.scale);
-        // Opacity only hides what is drawn, so it is left out of the bounds.
-        let mut opaque = self.params.clone();
-        opaque.placement.opacity = Deferred::value(1.0);
-        let point_capacity = fixed_points
-            .as_ref()
-            .map_or(MAX_PATH_POINTS, Vec::len)
-            .max(1);
-        let band_capacity = super::path_bands::band_capacity(point_capacity);
-        let bounds = ctx.source_bounds(
-            compiler::SourceMotion::of(path_is_animated(&self.params), &self.params),
-            |expr| {
-                path_frame(
-                    &opaque,
-                    self.id,
-                    expr,
-                    fixed_points.as_deref(),
-                    band_capacity,
-                )
-                .map(|frame| Some(frame.uniforms.screen_bounds))
-            },
-        );
-        let domain = ctx.source_domain(bounds);
-        let source = ctx.compute_source(
-            self.id,
-            "path",
-            "rasterize",
-            PATH_SHADER,
-            std::mem::size_of::<PathUniforms>() as u64,
-            None,
-            [
-                (
-                    "points",
-                    (point_capacity * std::mem::size_of::<PathPoint>()) as u64,
-                ),
-                ("bands", (band_capacity * std::mem::size_of::<u32>()) as u64),
-            ],
-            domain,
-        );
-        let [points, bands] = source.storage;
-        ctx.register_compiled_node(CompiledPath {
-            node_id: self.id,
-            params: self.params.clone(),
-            fixed_points,
-            buffers: PathBuffers {
-                params: source.params,
-                points,
-                bands,
-                band_capacity,
-                origin: domain_origin(domain),
-            },
-        });
-        Ok(source.output)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct CompiledPath {
-    pub(crate) node_id: NodeId,
-    pub(crate) params: PathParamsDelegate,
-    /// The flattened data, when nothing can change it per frame.
-    pub(crate) fixed_points: Option<Vec<PathPoint>>,
-    pub(crate) buffers: PathBuffers,
-}
-
-impl GpuCompiledNode for CompiledPath {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let frame = path_frame(
-            &self.params,
-            self.node_id,
-            &ctx.expr_context(),
-            self.fixed_points.as_deref(),
-            self.buffers.band_capacity,
-        )?;
-        self.buffers.write(bound, &frame);
-        Ok(())
-    }
-}
-
-/// Evaluates a path node's uniforms, points and bands at the frame of `expr`. `fixed_points`
-/// stands in for flattening its data.
-fn path_frame<'a>(
+/// Evaluates a path node's uniforms, points and bands at the frame of `expr`.
+fn path_frame(
     params: &PathParamsDelegate,
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
-    fixed_points: Option<&'a [PathPoint]>,
     band_capacity: usize,
-) -> crate::Result<PathFrame<'a>> {
+) -> crate::Result<PathFrame> {
     let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
     let shutter = params
         .placement
         .shutter(&evaluated.placement, node_id, expr)?;
-    let points = match fixed_points {
-        Some(points) => Cow::Borrowed(points),
-        // Curves are flattened for the largest scale that the shutter draws them at.
-        None => Cow::Owned(
-            parse_path_points(
-                &evaluated.data,
-                flattening_tolerance(peak_scale(evaluated.placement.scale, shutter.as_ref())),
-                MAX_PATH_POINTS,
-            )
-            .map_err(|details| RenderError::NodeEvaluation {
-                node_id,
-                node_kind: "Path",
-                details: format!("`data` {details}"),
-            })?,
-        ),
-    };
+    // Curves are flattened for the largest scale that the shutter draws them at.
+    let points = parse_path_points(
+        &evaluated.data,
+        flattening_tolerance(peak_scale(evaluated.placement.scale, shutter.as_ref())),
+        MAX_PATH_POINTS,
+    )
+    .map_err(|details| RenderError::NodeEvaluation {
+        node_id,
+        node_kind: "Path",
+        details: format!("`data` {details}"),
+    })?;
     let (x, y) = evaluated.placement.position;
     let style = &evaluated.style;
     let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
@@ -212,26 +113,18 @@ fn path_frame<'a>(
     ))
 }
 
-/// Whether a path node's canvas bounds may change between frames.
-fn path_is_animated(params: &PathParamsDelegate) -> bool {
-    params.data.is_expr()
-        || params.placement.transform_is_animated()
-        || params.placement.motion_blur.is_expr()
-        || params.style.reach_is_animated()
-}
-
 /// A frame's uniforms, points and bands for the path shader.
-pub(super) struct PathFrame<'a> {
+pub(super) struct PathFrame {
     pub(super) uniforms: PathUniforms,
-    pub(super) points: Cow<'a, [PathPoint]>,
+    pub(super) points: Vec<PathPoint>,
     pub(super) bands: Vec<u32>,
 }
 
-impl<'a> PathFrame<'a> {
+impl PathFrame {
     /// Fills in the bounds, transform, culling and motion of `uniforms` and bins `points`.
     pub(super) fn new(
         mut uniforms: PathUniforms,
-        points: Cow<'a, [PathPoint]>,
+        points: Vec<PathPoint>,
         transform: &DrawableTransform,
         shutter: Option<&Shutter<DrawableTransform>>,
         band_capacity: usize,
@@ -267,20 +160,6 @@ impl<'a> PathFrame<'a> {
     }
 }
 
-impl PathBuffers {
-    pub(super) fn write(&self, bound: &mut BoundFrame, frame: &PathFrame) {
-        let mut uniforms = frame.uniforms;
-        uniforms.origin = self.origin;
-        bound.write_buffer(self.params, 0, bytemuck::bytes_of(&uniforms));
-        if !frame.points.is_empty() {
-            bound.write_buffer(self.points, 0, bytemuck::cast_slice(&frame.points));
-        }
-        if !frame.bands.is_empty() {
-            bound.write_buffer(self.bands, 0, bytemuck::cast_slice(&frame.bands));
-        }
-    }
-}
-
 /// Canvas-space flattening tolerance in pixels; curves are flattened untransformed, so
 /// the local tolerance shrinks as the path is scaled up.
 const PATH_FLATTENING_TOLERANCE: f32 = 0.25;
@@ -294,15 +173,6 @@ pub(super) const POINT_CLOSED: u32 = 2;
 
 fn flattening_tolerance(scale: (f64, f64)) -> f32 {
     (f64::from(PATH_FLATTENING_TOLERANCE) / largest_scale(scale)) as f32
-}
-
-/// The flattened points of path data whose data and scale are constant. Data that does not
-/// flatten has none, so that binding it reports why.
-fn fixed_points(data: &Deferred<String>, scale: &Deferred<(f64, f64)>) -> Option<Vec<PathPoint>> {
-    let (Deferred::Value(data), Deferred::Value(scale)) = (data, scale) else {
-        return None;
-    };
-    parse_path_points(data, flattening_tolerance(*scale), MAX_PATH_POINTS).ok()
 }
 
 /// Flattens path data, coarsening `tolerance` until it fits `max_points`, and measures its
@@ -617,7 +487,6 @@ impl crate::gpu::frame_graph::RecordNode for Path {
             &self.params,
             self.id,
             &cx.expr(),
-            None,
             super::path_bands::band_capacity(MAX_PATH_POINTS),
         )?;
         record_path_source(cx, frame)
@@ -634,7 +503,7 @@ const RECORD_PATH_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
 /// Records a vector path, sized to what it draws this frame.
 fn record_path_source(
     cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
-    frame: PathFrame<'_>,
+    frame: PathFrame,
 ) -> crate::Result<crate::gpu::frame_graph::Raster> {
     let mut uniforms = frame.uniforms;
     let bounds = cx.bounds_of(Some(uniforms.screen_bounds));
@@ -654,7 +523,7 @@ fn record_path_source(
             (2, bands),
             (3, lumen_gpu::Res::Tex(tex)),
         ],
-        compiler::dispatch_for(size),
+        params::dispatch_for(size),
     );
     Ok(crate::gpu::frame_graph::Raster {
         tex,
@@ -860,29 +729,6 @@ mod tests {
         assert!(
             scaled.abs_diff(direct) <= 2,
             "{scaled} points against {direct}"
-        );
-        let fixed = |data: Deferred<String>, scale: Deferred<(f64, f64)>| {
-            fixed_points(&data, &scale).map(|points| points.len())
-        };
-        assert_eq!(
-            fixed(Deferred::value(circle(10.0)), Deferred::value((8.0, -4.0))),
-            Some(scaled)
-        );
-        let frame = || crate::expr::Expression::parse("frame").unwrap();
-        assert_eq!(
-            fixed(Deferred::value(circle(10.0)), Deferred::Expr(frame())),
-            None
-        );
-        assert_eq!(
-            fixed(Deferred::Expr(frame()), Deferred::value((1.0, 1.0))),
-            None
-        );
-        assert_eq!(
-            fixed(
-                Deferred::value("M 0 0 C nope".to_string()),
-                Deferred::value((1.0, 1.0))
-            ),
-            None
         );
     }
 

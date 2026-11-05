@@ -8,7 +8,7 @@ use naga::{ArraySize, Expression, Literal, Module, TypeInner};
 
 use crate::node::{
     motion::MAX_MOTION_TAPS,
-    source::text_compile::{GpuTextPaint, TextStyleUniforms},
+    source::text_record::{GpuTextPaint, TextStyleUniforms},
     vector::{
         drawable::{DRAWABLE_SHADER, GpuDrawableMotion, GpuDrawableTransform},
         paint::GpuPaint,

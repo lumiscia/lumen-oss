@@ -6,7 +6,7 @@ use std::{
 
 use crate::error::{LumenError, MediaError, RenderError};
 use crate::expr::{ExpressionContext, GlyphScope};
-use crate::gpu::{BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle};
+use crate::gpu::BoundFrame;
 use crate::media::{FontResolver, MediaStore, TextSession};
 use crate::node::vector::{
     drawable::{DrawableMotion, DrawablePlacement, DrawablePlacementDelegate, DrawableTransform},
@@ -16,11 +16,11 @@ use crate::node::{
     Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override, ParamValue,
 };
 
-use super::text_compile::{GpuTextPaint, TextStyleUniforms};
 use super::text_content::{
     FontFeatures, SpanLayout, SpanStyle, SpanStyleDelegate, TextContent, TextContentDelegate,
     TextHighlight, TextLine, TextLineDelegate, TextStroke, TextStrokeAlign,
 };
+use super::text_record::{GpuTextPaint, MAX_TEXT_GLYPHS, TextStyleUniforms};
 
 /// A param enum and the conversion to its `lumen_text` twin, which has the same variants.
 macro_rules! text_enum {
@@ -352,14 +352,9 @@ pub struct Text {
     pub params: TextParamsDelegate,
 }
 
-impl GpuCompileNode for Text {
-    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        super::text_compile::compile_text(ctx, self)
-    }
-}
-
+/// A text node reached along one path, which keeps its shaping across frames.
 #[derive(Debug)]
-pub(crate) struct CompiledText {
+pub(crate) struct TextInstance {
     pub(crate) node_id: NodeId,
     pub(crate) draw: TextDrawParamsDelegate,
     pub(crate) placement: DrawablePlacementDelegate,
@@ -372,98 +367,72 @@ pub(crate) struct CompiledText {
     pub(crate) decorated: bool,
     /// Whether the node or any span has a stroke.
     pub(crate) stroked: bool,
-    pub(crate) atlas_texture: lumen_gpu::TextureId,
-    pub(crate) globals_buffer: lumen_gpu::BufferId,
-    pub(crate) instances_buffer: lumen_gpu::BufferId,
-    pub(crate) style_buffer: lumen_gpu::BufferId,
-    /// A paint for each span, or the one paint of string content, and then those of the
-    /// decorations with their own and of the strokes.
-    pub(crate) paints_buffer: lumen_gpu::BufferId,
-    /// The number of span paints.
+    /// The number of span paints: one for each span, or the one of string content.
     pub(crate) paint_count: usize,
-    /// The most glyph, stroke and decoration instances the text can draw, which sizes
-    /// `instances_buffer`.
-    pub(crate) capacity: usize,
     pub(crate) size: lumen_gpu::Size,
     /// The size of what the glyphs are drawn to: the layer of blurred text, else the output.
     pub(crate) layer_size: lumen_gpu::Size,
-    /// Whether binding measures where the text draws, for a recorded frame to size its output.
+    /// Whether binding measures where the text draws, to size its output.
     pub(crate) measure_ink: bool,
     pub(crate) state: Arc<Mutex<TextState>>,
 }
 
-/// What a bound text draws, for a recorded frame.
+/// What a bound text draws this frame.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct DrawnText {
+pub(crate) struct TextDraw {
+    pub(crate) globals: lumen_gpu::Res,
+    pub(crate) style: lumen_gpu::Res,
+    pub(crate) instances: lumen_gpu::Res,
+    /// A paint for each span, or the one paint of string content, and then those of the
+    /// decorations with their own and of the strokes.
+    pub(crate) paints: lumen_gpu::Res,
+    pub(crate) glyph_count: u32,
     pub(crate) opacity: f64,
     pub(crate) canvas_bounds: Option<[f32; 4]>,
 }
 
 impl crate::gpu::frame_graph::RecordNode for Text {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        super::text_compile::text_programs(programs)
+        super::text_record::text_programs(programs)
     }
 
     fn record(
         &self,
         cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
-        super::text_compile::record_text(self, cx)
+        super::text_record::record_text(self, cx)
     }
 }
 
-impl GpuCompiledNode for CompiledText {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        self.bind_text(ctx, bound, false).map(drop)
-    }
-
-    /// Places the glyphs in the shared atlas as `bind` would, so text bound later in the frame
-    /// finds the atlas as it would without kept output.
-    fn bind_kept(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<bool> {
-        self.bind_text(ctx, bound, true)
-    }
-}
-
-impl CompiledText {
+impl TextInstance {
     /// Fails when the text draws `drawn` glyph, stroke and decoration instances, more than it
     /// has room for.
     fn check_capacity(&self, drawn: usize) -> crate::Result<()> {
-        if drawn <= self.capacity {
+        if drawn <= MAX_TEXT_GLYPHS {
             return Ok(());
         }
         Err(RenderError::NodeEvaluation {
             node_id: self.node_id,
             node_kind: "Text",
             details: format!(
-                "text draws {drawn} glyphs, strokes and decorations, more than the {} a text node \
-                 can draw; split it across nodes or shorten it",
-                self.capacity
+                "text draws {drawn} glyphs, strokes and decorations, more than the \
+                 {MAX_TEXT_GLYPHS} a text node can draw; split it across nodes or shorten it"
             ),
         }
         .into())
     }
 
-    /// What the last bind drew.
-    pub(crate) fn drawn(&self) -> DrawnText {
-        self.state.lock().expect("text state").drawn
-    }
-
-    /// Binds the text, stopping once its glyphs are placed when `kept` and the output kept from
-    /// an earlier frame still matches: no glyph was dropped or placed again. Returns whether it
-    /// bound fully.
-    pub(crate) fn bind_text(
+    /// Evaluates the text with `expr`, placing its glyphs in the atlas and writing what it draws
+    /// to `rec`'s buffers.
+    pub(crate) fn bind(
         &self,
-        ctx: &FrameBindContext<'_>,
+        mut expr: ExpressionContext<'_>,
+        media: Option<&dyn MediaStore>,
         bound: &mut BoundFrame,
-        kept: bool,
-    ) -> crate::Result<bool> {
+        rec: &mut lumen_gpu::Recorder,
+    ) -> crate::Result<TextDraw> {
         let trace_started =
             tracing::enabled!(target: "lumen_text", tracing::Level::TRACE).then(trace_now_ms);
-        let mut expr = ctx.expr_context();
         let fields = DelegateEvalContext {
             node_id: self.node_id,
             expr: &expr,
@@ -480,8 +449,8 @@ impl CompiledText {
             .map_err(|error| error.in_field("content"))?;
         let decorations = self.decorations.get(&fields)?;
 
-        let mut text_system = text_system(ctx.media())?;
-        load_font_families(&mut text_system, ctx.media(), &layout)?;
+        let mut text_system = text_system(media)?;
+        load_font_families(&mut text_system, media, &layout)?;
         let mut state = self.state.lock().map_err(|_| {
             LumenError::Render(RenderError::Gpu {
                 details: format!("text node {} state lock was poisoned", self.node_id.0),
@@ -588,8 +557,7 @@ impl CompiledText {
             }
         }
         let mode = lumen_text::TextRenderMode::from(draw.render_mode);
-        let atlas_started = (trace_started.is_some() || mode != lumen_text::TextRenderMode::Raster)
-            .then(trace_now_ms);
+        let atlas_started = trace_started.map(|_| trace_now_ms());
         let mut atlas = bound
             .text_atlas
             .as_ref()
@@ -609,10 +577,6 @@ impl CompiledText {
         drop(atlas);
         drop(text_system);
         let atlas_ms = atlas_started.map_or(0.0, |started| trace_now_ms() - started);
-        if mode != lumen_text::TextRenderMode::Raster {
-            bound.text_generation_count += prepared.uploads.len();
-            bound.text_generation_ms += atlas_ms;
-        }
 
         // Glyphs the atlas dropped are still drawn text, so they count toward the limit.
         self.check_capacity(
@@ -644,9 +608,6 @@ impl CompiledText {
         }
 
         let upload_count = prepared.uploads.len();
-        if kept && !dropping && upload_count == 0 {
-            return Ok(false);
-        }
         state.paints.clear();
         for span in 0..self.paint_count {
             let own = spans.get(span).and_then(|span| span.color.as_ref());
@@ -661,13 +622,10 @@ impl CompiledText {
         }
         for upload in prepared.uploads {
             let [width, height] = upload.size;
-            bound.write_texture_rgba8_region(
-                self.atlas_texture,
+            bound.add_atlas_region(
                 upload.pixels,
-                [upload.origin[0], upload.origin[1], 0],
+                upload.origin,
                 lumen_gpu::Size::new(width, height),
-                width * 4,
-                height,
             );
         }
         if self.paint_count > 1 {
@@ -723,14 +681,13 @@ impl CompiledText {
             px_range: lumen_text::MSDF_PX_RANGE,
             glyph_count: (state.decorations.len() + prepared.instances.len() + stroke_count) as u32,
         };
-        bound.write_buffer(self.globals_buffer, 0, bytemuck::bytes_of(&globals));
-        bound.write_buffer(self.paints_buffer, 0, bytemuck::cast_slice(&state.paints));
         let (min, max) = draw_bounds(
             layout.bounds,
             ink_bounds,
             &state.decorations,
             &state.strokes,
         );
+        let mut canvas_bounds = None;
         if self.measure_ink {
             let stroke_reach = state
                 .strokes
@@ -739,7 +696,7 @@ impl CompiledText {
                 .map(|stroke| lumen_text::stroke_reach(stroke.half_width))
                 .fold(0.0, f32::max);
             let decorations = &state.decorations;
-            state.drawn.canvas_bounds = state.ink.map(|ink| {
+            canvas_bounds = state.ink.map(|ink| {
                 let (min, max) = decorations.iter().fold(
                     (
                         [
@@ -767,7 +724,6 @@ impl CompiledText {
                 [x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0]
             });
         }
-        state.drawn.opacity = drawable.opacity;
         let motion = DrawableMotion::new(shutter.as_ref(), min, max);
         let canvas = [self.size.width as f32, self.size.height as f32];
         let layer = [self.layer_size.width as f32, self.layer_size.height as f32];
@@ -775,21 +731,20 @@ impl CompiledText {
             transform: motion.layer_transform(&drawable, min, max, canvas, layer),
             motion: motion.to_gpu(),
         };
-        bound.write_buffer(self.style_buffer, 0, bytemuck::bytes_of(&style));
         // Highlights and underlines are drawn under the glyphs and their strokes, and
         // strikethroughs over them.
         let (under, over) = state.decorations.split_at(before_glyphs);
-        write_instances(
-            bound,
-            self.instances_buffer,
-            [
-                under,
-                &state.under_strokes,
-                &prepared.instances,
-                &state.over_strokes,
-                over,
-            ],
-        );
+        let lists = [
+            under,
+            &state.under_strokes,
+            &prepared.instances,
+            &state.over_strokes,
+            over,
+        ];
+        let instances = rec.storage_parts(&lists.map(bytemuck::cast_slice::<_, u8>));
+        lists
+            .into_iter()
+            .for_each(|list| bound.add_glyph_instances(list));
 
         if let Some(started) = trace_started {
             trace_text_bind(
@@ -801,7 +756,15 @@ impl CompiledText {
                 trace_now_ms() - started,
             );
         }
-        Ok(true)
+        Ok(TextDraw {
+            globals: rec.uniform(&globals),
+            style: rec.uniform(&style),
+            instances,
+            paints: rec.storage_parts(&[bytemuck::cast_slice(&state.paints)]),
+            glyph_count: globals.glyph_count,
+            opacity: drawable.opacity,
+            canvas_bounds,
+        })
     }
 }
 
@@ -876,25 +839,6 @@ fn draw_bounds(
         min.map(|bound| bound - reach),
         max.map(|bound| bound + reach),
     )
-}
-
-/// Writes `lists` of instances to `buffer` one after another, in draw order.
-fn write_instances<const N: usize>(
-    bound: &mut BoundFrame,
-    buffer: lumen_gpu::BufferId,
-    lists: [&[lumen_text::GpuGlyphInstance]; N],
-) {
-    let mut offset = 0;
-    for instances in lists {
-        if !instances.is_empty() {
-            bound.write_buffer(
-                buffer,
-                (offset * std::mem::size_of::<lumen_text::GpuGlyphInstance>()) as u64,
-                bytemuck::cast_slice(instances),
-            );
-        }
-        offset += instances.len();
-    }
 }
 
 impl TextGlyphParamsDelegate {
@@ -1089,7 +1033,6 @@ pub(crate) struct TextState {
     shaped: Option<(TextShapeKey, Arc<lumen_text::ShapedText>)>,
     /// The ink of `shaped`, relative to where it is placed, when the node measures it.
     ink: Option<[f32; 4]>,
-    drawn: DrawnText,
     paints: Vec<GpuTextPaint>,
     /// Rect instances of the decorations: those under the glyphs, then those over them.
     decorations: Vec<lumen_text::GpuGlyphInstance>,
@@ -1105,15 +1048,6 @@ pub(crate) struct TextState {
     /// Where each glyph's stroke is, if any: whether over the glyphs, and its place in that list.
     /// Empty when no glyph has a stroke.
     stroke_at: Vec<Option<(bool, usize)>>,
-}
-
-impl Default for DrawnText {
-    fn default() -> Self {
-        Self {
-            opacity: 1.0,
-            canvas_bounds: None,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -1142,7 +1076,7 @@ impl TextShapeKey {
     }
 }
 
-/// A value evaluated at compile when it has no expressions, or else on each bind.
+/// A value evaluated once when it has no expressions, or else on each bind.
 #[derive(Debug)]
 pub(crate) enum Stable<D: DelegateEvaluable> {
     Constant(D::Evaluated),

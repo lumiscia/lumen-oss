@@ -1,5 +1,4 @@
-//! Records each frame's passes directly from the graph, behind `LUMEN_FRAME_GRAPH=1`, instead of
-//! binding a compiled plan.
+//! Records each frame's passes directly from the graph.
 //!
 //! A frame walks from the media output, evaluating each node once and recording its passes into
 //! pooled textures, sized to what the node draws this frame. Outputs of static subtrees are
@@ -15,7 +14,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use foldhash::HashMap;
+use foldhash::{HashMap, HashSet};
 use lumen_gpu::{
     Dispatch, LayoutEntry, LayoutKind, ProgramRef, Recorder, Res, SamplerRef, Size, TexRef,
     TextureDesc, TextureDomain, wgpu,
@@ -27,7 +26,10 @@ use crate::{
     expr::ExpressionContext,
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{
-        Node, NodeId, NodeKind, compositing::clip::Clip, required_input, source::text::CompiledText,
+        Deferred, Node, NodeId, NodeKind,
+        compositing::clip::Clip,
+        required_input,
+        source::text::{TextDraw, TextInstance},
     },
     scope::{FrameTime, Routed, Scope},
 };
@@ -35,13 +37,33 @@ use crate::{
 #[cfg(feature = "ffmpeg")]
 use super::media::{GpuMediaFrameImporter, GpuMediaImports};
 use super::{
-    BoundFrame, FrameBindContext,
-    cache::is_static_candidate,
-    compiler::{self, CropParams, copyable_texture_desc, dispatch_for},
+    BoundFrame,
+    params::{CropParams, copyable_texture_desc, dispatch_for},
     renderer::{MediaTextureCache, fit_frame_to_rgba8},
 };
 
 const RGBA8: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// Copies the visible part of a clip's raster into a texture of the parent canvas.
+const CLIP_CROP_SHADER: &str = "
+struct Params {
+    offset: vec2<i32>,
+    _pad: vec2<i32>,
+}
+
+@group(0) @binding(0) var input_tex: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> params: Params;
+@group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = textureDimensions(output_tex);
+    if (id.x >= size.x || id.y >= size.y) {
+        return;
+    }
+    let texel = textureLoad(input_tex, vec2<i32>(id.xy) + params.offset, 0);
+    textureStore(output_tex, vec2<i32>(id.xy), texel);
+}
+";
 /// Frames a retained output stays without being read.
 const RETAINED_IDLE_FRAMES: u64 = 600;
 /// Bytes retained outputs may hold before the least recently used are dropped.
@@ -135,10 +157,10 @@ impl Programs<'_> {
         source: &str,
         inputs: usize,
         build: impl FnOnce() -> crate::Result<ShaderParts>,
-    ) -> crate::Result<()> {
+    ) -> crate::Result<CachedShader> {
         let shader = self.st.cached_shader(source, inputs, build)?;
         dynamic_program(self.rec, label, &shader)?;
-        Ok(())
+        Ok(shader)
     }
 }
 
@@ -212,7 +234,7 @@ struct RecordState {
     retained_bytes: u64,
     /// The textures of external targets, by the address of the texture.
     externals: HashMap<usize, TexRef>,
-    texts: HashMap<InstanceKey, Arc<CompiledText>>,
+    texts: HashMap<InstanceKey, Arc<TextInstance>>,
     shaders: HashMap<(Arc<str>, usize), ShaderEntry>,
     next_shader: u64,
     transparent: Option<TexRef>,
@@ -221,9 +243,9 @@ struct RecordState {
     /// Adopted images by their texture, and the tick that last bound each.
     media: HashMap<usize, (TexRef, u64)>,
     video_uploads: Vec<(TexRef, Arc<CpuMediaFrame>, Size)>,
-    /// The id each video source's GPU frames are imported under, and when it was last used.
+    /// The slot each video source's GPU frames are imported into, and when it was last used.
     #[cfg(feature = "ffmpeg")]
-    video_imports: HashMap<InstanceKey, (lumen_gpu::TextureId, u64)>,
+    video_imports: HashMap<InstanceKey, (u32, u64)>,
     #[cfg(feature = "ffmpeg")]
     next_video_import: u32,
     output: Option<Raster>,
@@ -236,7 +258,8 @@ struct RecordState {
 pub(crate) struct FrameGraph {
     pub(crate) recorder: Recorder,
     state: RecordState,
-    recorded_output: Option<Arc<wgpu::Texture>>,
+    /// Bytes of retained outputs kept once frames stop using them.
+    retained_budget: u64,
     /// The target of the next frame recorded, which holds its output until it is submitted.
     external: Option<lumen_gpu::ExternalTexture>,
     #[cfg(feature = "ffmpeg")]
@@ -311,7 +334,7 @@ impl FrameGraph {
         Self {
             recorder: Recorder::new(device, queue),
             state: RecordState::default(),
-            recorded_output: None,
+            retained_budget: RETAINED_BUDGET_BYTES,
             external: None,
             #[cfg(feature = "ffmpeg")]
             imports: GpuMediaImports::default(),
@@ -428,7 +451,32 @@ impl FrameGraph {
         Ok(())
     }
 
-    /// Builds every program `composition` may record with, in the root and in each template.
+    /// Drops what a frame that failed recorded, and lets go of the images and target it bound so
+    /// the media cache can free them.
+    pub(crate) fn abandon_frame(&mut self) {
+        self.drop_pending();
+        self.recorder.begin_frame();
+        self.state.video_uploads.clear();
+        self.state.output = None;
+        let tick = self.state.tick;
+        let recorder = &mut self.recorder;
+        self.state.media.retain(|_, (tex, last_used)| {
+            let kept = *last_used != tick;
+            if !kept {
+                recorder.forget(*tex);
+            }
+            kept
+        });
+        if let Some(external) = &self.external {
+            let key = Arc::as_ptr(&external.texture_arc()) as usize;
+            if let Some(tex) = self.state.externals.remove(&key) {
+                self.recorder.forget(tex);
+            }
+        }
+    }
+
+    /// Builds every program a frame of `composition` may record with, following the output through
+    /// its inputs and the templates of its clips.
     pub(crate) fn prepare(
         &mut self,
         composition: &Composition,
@@ -446,13 +494,42 @@ impl FrameGraph {
             st: &mut self.state,
             output_format,
         };
-        let templates = composition
-            .compositions()
-            .values()
-            .map(|template| &template.scene.graph);
-        for graph in std::iter::once(composition.graph()).chain(templates) {
-            for node in graph.nodes.values() {
-                node_programs(node, &mut programs)?;
+        let root = composition.graph();
+        let mut pending = vec![(root, root.output())];
+        let mut seen = HashSet::default();
+        while let Some((graph, id)) = pending.pop() {
+            if !seen.insert((std::ptr::from_ref(graph) as usize, id)) {
+                continue;
+            }
+            let Some(node) = graph.nodes.get(&id) else {
+                continue;
+            };
+            node_programs(node, &mut programs)?;
+            match node {
+                NodeKind::Clip(clip) if clip.template_name().is_some() => {
+                    let template = clip
+                        .template_name()
+                        .and_then(|name| composition.template(name));
+                    if let Some((template, output)) = template {
+                        pending.push((&template.scene.graph, output));
+                    }
+                }
+                NodeKind::Switch(switch) => {
+                    let layers = match &switch.params.selected_layer {
+                        Deferred::Value(layer) => usize::try_from(*layer)
+                            .ok()
+                            .and_then(|layer| switch.layers.get(layer..=layer))
+                            .unwrap_or_default(),
+                        Deferred::Expr(_) => &switch.layers,
+                    };
+                    pending.extend(layers.iter().map(|&layer| (graph, layer)));
+                }
+                _ => pending.extend(
+                    node.input_ports()
+                        .into_iter()
+                        .flatten()
+                        .map(|input| (graph, input)),
+                ),
             }
         }
         Ok(())
@@ -474,15 +551,6 @@ impl FrameGraph {
         bound: &BoundFrame,
         atlas_texture: Option<&wgpu::Texture>,
     ) -> crate::Result<()> {
-        if !bound.media_textures().is_empty() || bound.has_added_writes() {
-            self.forget_unbound_media();
-            return Err(RenderError::Gpu {
-                details: "a recorded frame writes its own buffers, textures and media; it has \
-                          no resource for an upload added to it"
-                    .to_string(),
-            }
-            .into());
-        }
         for (tex, frame, size) in self.state.video_uploads.drain(..) {
             let rgba = fit_frame_to_rgba8(&frame, size.width, size.height);
             self.recorder.queue().write_texture(
@@ -540,34 +608,14 @@ impl FrameGraph {
             let tick = self.state.tick;
             let idle_before = tick.saturating_sub(VIDEO_IMPORT_IDLE_FRAMES);
             let imports = &mut self.imports;
-            self.state.video_imports.retain(|_, (id, last_used)| {
+            self.state.video_imports.retain(|_, (slot, last_used)| {
                 let kept = *last_used > idle_before;
                 if !kept {
-                    imports.remove(*id);
+                    imports.remove(*slot);
                 }
                 kept
             });
         }
-    }
-
-    /// The frame's output, when it is not the one last read through the host renderer.
-    pub(crate) fn changed_output(&mut self) -> Option<(Arc<wgpu::Texture>, TextureDesc)> {
-        let raster = self.state.output?;
-        let texture = Arc::clone(self.recorder.texture(raster.tex));
-        if self
-            .recorded_output
-            .as_ref()
-            .is_some_and(|output| Arc::ptr_eq(output, &texture))
-        {
-            return None;
-        }
-        self.recorded_output = Some(Arc::clone(&texture));
-        let desc = TextureDesc {
-            domain: raster.domain,
-            format: texture.format(),
-            usage: texture.usage(),
-        };
-        Some((texture, desc))
     }
 
     pub(crate) fn output(&self) -> Option<Raster> {
@@ -624,7 +672,6 @@ impl FrameGraph {
         state.memo.clear();
         state.full_frames.clear();
         state.output = None;
-        self.recorded_output = None;
         if let Some(atlas) = state.atlas.take() {
             self.recorder.forget(atlas);
         }
@@ -652,6 +699,10 @@ impl FrameGraph {
             }
         }
         changed
+    }
+
+    pub(crate) fn set_retained_budget(&mut self, bytes: u64) {
+        self.retained_budget = bytes;
     }
 
     pub(crate) fn skipped_passes(&self) -> u64 {
@@ -685,7 +736,7 @@ impl FrameGraph {
     fn evict_slots(&mut self) {
         let tick = self.state.tick;
         let idle_before = tick.saturating_sub(RETAINED_IDLE_FRAMES);
-        let over_budget = self.state.retained_bytes > RETAINED_BUDGET_BYTES;
+        let over_budget = self.state.retained_bytes > self.retained_budget;
         if !over_budget && !tick.is_multiple_of(60) {
             return;
         }
@@ -698,7 +749,7 @@ impl FrameGraph {
             .collect();
         idle.sort_unstable_by_key(|(last_used, _)| *last_used);
         for (last_used, key) in idle {
-            if last_used > idle_before && self.state.retained_bytes <= RETAINED_BUDGET_BYTES {
+            if last_used > idle_before && self.state.retained_bytes <= self.retained_budget {
                 break;
             }
             Self::release_slot(&mut self.recorder, &mut self.state, key);
@@ -778,8 +829,11 @@ impl<'a> FrameCx<'a> {
         self.scope.expr_context(self.frame, self.media)
     }
 
-    pub(crate) fn bind_context(&self) -> FrameBindContext<'a> {
-        FrameBindContext::recording(self.scope.clone(), self.frame, self.media)
+    /// Evaluates `text` at this frame, placing its glyphs in the atlas and writing what it draws
+    /// to the frame's buffers.
+    pub(crate) fn bind_text(&mut self, text: &TextInstance) -> crate::Result<TextDraw> {
+        let expr = self.scope.expr_context(self.frame, self.media);
+        text.bind(expr, self.media, &mut self.bound, self.rec)
     }
 
     pub(crate) fn media(&self) -> Option<&'a dyn MediaStore> {
@@ -1175,8 +1229,8 @@ impl<'a> FrameCx<'a> {
     pub(crate) fn text_instance(
         &mut self,
         node_id: NodeId,
-        build: impl FnOnce(&Self) -> crate::Result<CompiledText>,
-    ) -> crate::Result<Arc<CompiledText>> {
+        build: impl FnOnce(&Self) -> crate::Result<TextInstance>,
+    ) -> crate::Result<Arc<TextInstance>> {
         let key = (self.graph_key(), self.path, node_id);
         if let Some(text) = self.st.texts.get(&key) {
             return Ok(Arc::clone(text));
@@ -1281,21 +1335,15 @@ impl<'a> FrameCx<'a> {
                 let key = (self.graph_key(), self.path, node_id);
                 let tick = self.st.tick;
                 let next = &mut self.st.next_video_import;
-                let id = self.st.video_imports.entry(key).or_insert_with(|| {
+                let slot = self.st.video_imports.entry(key).or_insert_with(|| {
                     *next += 1;
-                    (lumen_gpu::TextureId(*next), tick)
+                    (*next, tick)
                 });
-                id.1 = tick;
-                let id = id.0;
-                let upload = super::types::MediaTextureUpload {
-                    texture: id,
-                    key: None,
-                    frame: MediaFrame::GpuVideo(Arc::clone(&frame)),
-                    size,
-                };
+                slot.1 = tick;
+                let slot = slot.0;
                 let imported = self
                     .importer
-                    .import(self.renderer, self.imports, &upload, &frame)
+                    .import(self.renderer, self.imports, slot, &frame)
                     .and_then(|texture| {
                         if frame.settle_on_gpu() {
                             Ok(texture)
@@ -1402,7 +1450,7 @@ impl<'a> FrameCx<'a> {
         ];
         self.spatial_pass(
             "clip-crop",
-            compiler::clip_crop_shader(),
+            CLIP_CROP_SHADER,
             raster.tex,
             &offset,
             tex,
@@ -1413,6 +1461,16 @@ impl<'a> FrameCx<'a> {
             domain,
             bounds: None,
         })
+    }
+}
+
+/// Whether the node renders the same output on every frame as long as its inputs do.
+fn is_static_candidate(node: &NodeKind) -> bool {
+    match node {
+        // Media changes with the frame and the media store, shaders see the built-in time, and
+        // the output is written into external textures that replace its own.
+        NodeKind::MediaIn(_) | NodeKind::WgslShader(_) | NodeKind::MediaOutput(_) => false,
+        _ => !node.has_expressions(),
     }
 }
 
@@ -1439,7 +1497,7 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
         NodeKind::Shadow(node) => node.programs(programs),
         NodeKind::WgslShader(node) => node.programs(programs),
         NodeKind::Switch(node) => node.programs(programs),
-        NodeKind::Clip(_) => programs.spatial("clip-crop", compiler::clip_crop_shader()),
+        NodeKind::Clip(_) => programs.spatial("clip-crop", CLIP_CROP_SHADER),
         NodeKind::MediaOutput(node) => node.programs(programs),
     }
 }

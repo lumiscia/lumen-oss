@@ -1,7 +1,9 @@
 #[cfg(all(feature = "ffmpeg", feature = "image"))]
 mod alpha;
+mod binding;
 mod cache;
 mod clips;
+mod edits;
 mod effects;
 mod frame_graph;
 mod geometry;
@@ -10,7 +12,6 @@ mod media;
 mod motion;
 mod operators;
 mod paint;
-mod plans;
 mod shaders;
 mod support;
 mod text_atlas;

@@ -65,11 +65,6 @@ impl GpuVideoMediaFrame {
         *self.origin.get_or_init(|| PixelOrigin::Gpu) == PixelOrigin::Gpu
     }
 
-    /// Stops this frame's source from drawing any more GPU frames, unless it already has.
-    pub(crate) fn settle_on_cpu(&self) {
-        self.origin.get_or_init(|| PixelOrigin::Cpu);
-    }
-
     /// Moves this frame's source to the CPU for good and decodes the frame there, for when the
     /// renderer couldn't use the GPU frame because of `reason`. Fails once a GPU frame of the source
     /// has reached a texture, as a move would change its pixels partway through.

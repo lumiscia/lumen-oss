@@ -2,10 +2,7 @@ use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
 };
 
-use crate::gpu::compiler::Slot;
-use crate::gpu::{
-    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
-};
+use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -55,90 +52,6 @@ pub struct ColorGrade {
     pub source: Option<NodeId>,
 }
 
-impl GpuCompileNode for ColorGrade {
-    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        let source = ctx.compile_input(self.id, "source", self.source)?;
-        let size = source.domain.storage_size;
-        let texture = ctx.builder_mut().texture(
-            Some(format!("color-grade:{}:output", self.id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
-        );
-        let params =
-            ctx.builder_mut().buffer(
-                Some(format!("color-grade:{}:params", self.id.0)),
-                lumen_gpu::BufferDesc::uniform(
-                    std::mem::size_of::<compiler::ColorGradeParams>() as u64
-                ),
-            );
-        let lut = ctx.builder_mut().buffer(
-            Some(format!("color-grade:{}:lut", self.id.0)),
-            lumen_gpu::BufferDesc::storage(std::mem::size_of::<compiler::ColorGradeLut>() as u64),
-        );
-        let program = ctx.compute_program(
-            "color-grade",
-            SHADER,
-            &[
-                Slot::Texture,
-                Slot::Uniform,
-                Slot::StorageRead,
-                Slot::Output,
-            ],
-        );
-        ctx.builder_mut().compute_pass(lumen_gpu::ComputePassDesc {
-            label: Some(format!("color-grade:{}:apply", self.id.0)),
-            program,
-            bindings: vec![
-                lumen_gpu::Binding::sampled_texture(0, 0, source.texture),
-                lumen_gpu::Binding::uniform(0, 1, params),
-                lumen_gpu::Binding::storage_buffer(0, 2, lut),
-                lumen_gpu::Binding::storage_texture(0, 3, texture),
-            ],
-            dispatch: compiler::dispatch_for(size),
-        });
-        ctx.register_compiled_node(CompiledColorGrade {
-            node_id: self.id,
-            params: self.params.clone(),
-            params_buffer: params,
-            lut_buffer: lut,
-        });
-
-        Ok(RasterHandle {
-            texture,
-            domain: source.domain,
-            bounds: source.bounds,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-struct CompiledColorGrade {
-    node_id: NodeId,
-    params: ColorGradeParamsDelegate,
-    params_buffer: lumen_gpu::BufferId,
-    lut_buffer: lumen_gpu::BufferId,
-}
-
-impl GpuCompiledNode for CompiledColorGrade {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let evaluated = self.params.eval(&DelegateEvalContext {
-            node_id: self.node_id,
-            expr: &ctx.expr_context(),
-        })?;
-        let gpu_params = compiler::ColorGradeParams {
-            strength: evaluated.strength as f32,
-            interpolation: evaluated.interpolation as u32,
-        };
-        let lut = compiler::ColorGradeLut::parse(self.node_id, &evaluated.lut_source)?;
-        bound.write_buffer(self.params_buffer, 0, bytemuck::bytes_of(&gpu_params));
-        bound.write_buffer(self.lut_buffer, 0, bytemuck::bytes_of(&lut));
-        Ok(())
-    }
-}
-
 const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Uniform),
@@ -163,11 +76,11 @@ impl crate::gpu::frame_graph::RecordNode for ColorGrade {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let gpu_params = compiler::ColorGradeParams {
+        let gpu_params = params::ColorGradeParams {
             strength: evaluated.strength as f32,
             interpolation: evaluated.interpolation as u32,
         };
-        let lut = compiler::ColorGradeLut::parse(self.id, &evaluated.lut_source)?;
+        let lut = params::ColorGradeLut::parse(self.id, &evaluated.lut_source)?;
 
         let size = source.domain.storage_size;
         let tex = cx.storage_target(size);
@@ -182,7 +95,7 @@ impl crate::gpu::frame_graph::RecordNode for ColorGrade {
                 (2, storage),
                 (3, lumen_gpu::Res::Tex(tex)),
             ],
-            compiler::dispatch_for(size),
+            params::dispatch_for(size),
         );
         Ok(crate::gpu::frame_graph::Raster { tex, ..source })
     }

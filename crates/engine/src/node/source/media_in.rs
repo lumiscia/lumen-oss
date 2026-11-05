@@ -4,9 +4,7 @@ use crate::error::{MediaError, RenderError};
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 use crate::scope::FrameTime;
 
-use crate::gpu::{
-    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, MediaTextureKey, RasterHandle,
-};
+use crate::gpu::MediaTextureKey;
 
 /// What playback does once it leaves the source range.
 #[derive(
@@ -177,31 +175,8 @@ pub fn map_to_source_frame(
     u32::try_from(start + offset).ok()
 }
 
-impl GpuCompileNode for MediaIn {
-    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        let size = self
-            .native_size(&ctx.expr_context())?
-            .unwrap_or_else(|| ctx.canvas_size());
-        let texture = ctx.builder_mut().texture(
-            Some(format!("media-in:{}:frame", self.id.0)),
-            lumen_gpu::TextureDesc::sampled(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
-        );
-        ctx.register_compiled_node(CompiledMediaInput {
-            media_in: self.clone(),
-            texture,
-            size,
-        });
-
-        Ok(RasterHandle {
-            texture,
-            domain: lumen_gpu::TextureDomain::full_frame(size),
-            bounds: None,
-        })
-    }
-}
-
 impl MediaIn {
-    /// The size of the media the node shows at `ctx`'s frame, which its texture is compiled to.
+    /// The size of the media the node shows at `ctx`'s frame, which is the size of its texture.
     /// `None` without a media store.
     pub(crate) fn native_size(
         &self,
@@ -221,64 +196,6 @@ impl MediaIn {
             }
         };
         Ok(Some(lumen_gpu::Size::new(width.max(1), height.max(1))))
-    }
-}
-
-#[derive(Debug, Clone)]
-struct CompiledMediaInput {
-    media_in: MediaIn,
-    texture: lumen_gpu::TextureId,
-    size: lumen_gpu::Size,
-}
-
-impl GpuCompiledNode for CompiledMediaInput {
-    fn node_id(&self) -> NodeId {
-        self.media_in.id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let media = ctx.media().ok_or_else(|| RenderError::NodeEvaluation {
-            node_id: self.media_in.id,
-            node_kind: "MediaIn",
-            details: "media store is required for media input nodes".to_string(),
-        })?;
-        let (frame, key) = match self.media_in.resolve(&ctx.expr_context())? {
-            MediaInKind::Image { image_id } => {
-                let resolver = media.get_image_resolver(&image_id)?;
-                let key = MediaTextureKey {
-                    source: resolver.id().to_string(),
-                    width: self.size.width,
-                    height: self.size.height,
-                };
-                (resolver.frame()?, Some(key))
-            }
-            MediaInKind::Video {
-                stream_id,
-                range,
-                speed,
-                loop_mode,
-            } => {
-                let resolver = media.get_video_resolver(&stream_id)?;
-                let metadata = resolver.metadata();
-                let source_frame = map_to_source_frame(
-                    ctx.frame_time(),
-                    ctx.expr_context().fps,
-                    metadata.fps,
-                    metadata.frame_count,
-                    &range,
-                    speed,
-                    loop_mode,
-                )
-                .ok_or_else(|| MediaError::FrameOutOfRange {
-                    media_source: stream_id.clone(),
-                    frame: ctx.frame(),
-                    frame_count: metadata.frame_count,
-                })?;
-                (resolver.frame(source_frame)?, None)
-            }
-        };
-        bound.use_media_texture(self.texture, key, frame, self.size);
-        Ok(())
     }
 }
 

@@ -303,10 +303,7 @@ impl CudaNvencTargetPool {
         let cuda_frame = context
             .allocate_rgba_frame(self.size.width, self.size.height)
             .map_err(|details| RenderError::Gpu { details })?;
-        let external = lumen_gpu::ExternalTexture::new(
-            exportable.texture_arc(),
-            lumen_gpu::TextureDomain::full_frame(self.size),
-        );
+        let external = lumen_gpu::ExternalTexture::new(exportable.texture_arc());
         Ok(CudaNvencTarget {
             external,
             cuda_frame,
@@ -456,10 +453,7 @@ impl MetalVideoToolboxTargetPool {
         };
         Ok(MetalVideoToolboxTarget {
             pixel_frame,
-            external: lumen_gpu::ExternalTexture::from_texture(
-                texture,
-                lumen_gpu::TextureDomain::full_frame(self.size),
-            ),
+            external: lumen_gpu::ExternalTexture::from_texture(texture),
         })
     }
 

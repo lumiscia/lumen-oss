@@ -1,7 +1,7 @@
-//! Output kept between frames: what static layers keep, and how it survives plan switches,
-//! edits, external targets and the shared text atlas.
+//! Output kept between frames: what static layers keep, and how it survives switches between
+//! layers, edits, external targets and the shared text atlas.
 
-use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, node::NodeId};
+use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer};
 use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
@@ -55,7 +55,6 @@ fn uncached(
     composition: &Composition,
     frame: f64,
 ) -> Vec<u8> {
-    renderer.set_frame_graph(false);
     renderer.release_resources();
     at(renderer, composition, frame)
 }
@@ -64,12 +63,16 @@ fn read_raster(
     renderer: &GpuCompositionRenderer,
     raster: lumen_engine::gpu::RasterHandle,
 ) -> Vec<u8> {
-    let gpu = renderer.gpu_renderer();
     read_rgba8(
-        gpu,
-        gpu.texture(raster.texture).unwrap(),
+        renderer.gpu_renderer(),
+        &raster.texture,
         raster.domain.storage_size,
     )
+}
+
+fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+    let at = (y * CANVAS.0 + x) as usize * 4;
+    pixels[at..at + 4].try_into().unwrap()
 }
 
 fn nonblank(pixels: &[u8]) -> bool {
@@ -77,16 +80,20 @@ fn nonblank(pixels: &[u8]) -> bool {
 }
 
 #[test]
-fn zero_plan_cache_budget_keeps_the_plan_a_bound_frame_renders_with() {
+fn a_zero_budget_keeps_what_a_bound_frame_renders_with() {
     let gpu = gpu();
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
     let media = TestMedia::default();
     let composition: Composition = static_under_animated().into();
     assert!(nonblank(&at(&mut renderer, &composition, 0.0)));
     let bound = renderer.bind_frame_at(&composition, 1.0, &media).unwrap();
-    renderer.set_plan_cache_budget(0);
+    renderer.set_frame_graph_pool_budget(0);
     let (raster, _) = renderer.submit_bound_frame(&bound).unwrap();
-    assert!(read_raster(&renderer, raster) == uncached(&mut reference, &composition, 1.0));
+    let pixels = read_raster(&renderer, raster);
+    assert!(pixels == uncached(&mut reference, &composition, 1.0));
+    assert_eq!(pixel(&pixels, 20, 2), [200, 30, 30, 255]);
+    assert_eq!(pixel(&pixels, 8, 11), [20, 40, 220, 255]);
+    assert_eq!(pixel(&pixels, 3, 7), [30, 220, 60, 255]);
 }
 
 /// A `tile` template of two canvas-wide halves, whose node ids repeat the root's, and one or two
@@ -154,7 +161,7 @@ fn static_template_parts_are_kept_per_clip_instance() {
                 pixels == uncached(&mut reference, composition, f64::from(frame)),
                 "frame {frame} differs from an uncached render"
             );
-            cached.push(renderer.cached_pass_count());
+            cached.push(renderer.skipped_pass_count());
             frames.push(pixels);
         }
         let per_frame = cached[1] - cached[0];
@@ -167,7 +174,7 @@ fn static_template_parts_are_kept_per_clip_instance() {
                 start + 2 * per_frame,
                 start + 3 * per_frame
             ],
-            "one plan keeps the same passes every frame"
+            "the same passes are kept every frame"
         );
         assert!(frames[0] != frames[3], "the animated layer still moves");
         (per_frame, frames)
@@ -204,89 +211,61 @@ fn switching_static_layers() -> Composition {
     .into()
 }
 
+/// What `switching_static_layers` shows at `frame`, away from its moving square.
+fn assert_switched_layer(pixels: &[u8], frame: u32) {
+    let color =
+        [[200, 30, 30, 255], [30, 200, 30, 255], [30, 30, 200, 255]][frame as usize / 2 % 3];
+    assert_eq!(pixel(pixels, 28, 14), color, "frame {frame}");
+    assert_eq!(pixel(pixels, 8, 11), [255, 255, 255, 255], "frame {frame}");
+}
+
 #[test]
-fn kept_output_survives_plan_switches_and_is_dropped_with_evicted_plans() {
+fn kept_output_survives_switches_and_is_dropped_on_release() {
     let gpu = gpu();
     let mut reference = gpu.renderer();
     let composition = switching_static_layers();
-    // Each of the three selections is its own plan; frames 6 and 7 select the first again.
+    // Frames 6 and 7 select the first layer again.
     for budget in [None, Some(0)] {
         let mut renderer = gpu.renderer();
         if let Some(budget) = budget {
-            renderer.set_plan_cache_budget(budget);
+            renderer.set_frame_graph_pool_budget(budget);
         }
-        let mut compiled_before_revisit = 0;
         for frame in 0..8 {
-            if frame == 6 {
-                compiled_before_revisit = renderer.plan_compile_count();
-            }
             let pixels = at(&mut renderer, &composition, f64::from(frame));
             let expected = uncached(&mut reference, &composition, f64::from(frame));
             assert!(pixels == expected, "frame {frame} with budget {budget:?}");
-            assert!(nonblank(&pixels));
+            assert_switched_layer(&pixels, frame);
         }
-        assert!(renderer.cached_pass_count() > 0, "budget {budget:?}");
-        // A recorded frame has no plans to keep or evict; a release is what drops its kept outputs.
-        if renderer.frame_graph_enabled() {
-            assert!(renderer.frame_graph_stats().unwrap().retained_bytes > 0);
-            renderer.release_resources();
-            assert_eq!(renderer.frame_graph_stats().unwrap().retained_bytes, 0);
-            continue;
-        }
-        assert_eq!(
-            renderer.plan_compile_count() > compiled_before_revisit,
-            budget.is_some(),
-            "revisiting the first selection with budget {budget:?}"
-        );
-        let kept = renderer.cached_plan_count();
-        assert!(
-            if budget.is_some() {
-                kept <= 2
-            } else {
-                kept == 3
-            },
-            "{kept} plans kept with budget {budget:?}"
-        );
+        assert!(renderer.skipped_pass_count() > 0, "budget {budget:?}");
+        assert!(renderer.frame_graph_stats().retained_bytes > 0);
+        renderer.release_resources();
+        assert_eq!(renderer.frame_graph_stats().retained_bytes, 0);
     }
 }
 
 #[test]
-fn replacing_a_kept_texture_renders_it_again() {
+fn a_layer_past_the_retained_budget_renders_again_when_revisited() {
     let gpu = gpu();
-    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
-    let composition: Composition = static_under_animated().into();
-    for frame in 0..2 {
-        at(&mut renderer, &composition, f64::from(frame));
+    let mut renderer = gpu.renderer();
+    let composition = switching_static_layers();
+    at(&mut renderer, &composition, 0.0);
+    let budget = renderer.frame_graph_stats().retained_bytes;
+    assert!(budget > 0);
+    renderer.set_frame_graph_retained_budget(budget);
+    for frame in 1..6 {
+        let pixels = at(&mut renderer, &composition, f64::from(frame));
+        assert_switched_layer(&pixels, frame);
+        assert!(
+            renderer.frame_graph_stats().retained_bytes <= budget,
+            "frame {frame}"
+        );
     }
-    assert!(renderer.cached_pass_count() > 0, "the static layer is kept");
-    // A recorded frame's kept textures are the recorder's own, with no id to replace them through.
-    if renderer.frame_graph_enabled() {
-        let pixels = at(&mut renderer, &composition, 2.0);
-        assert!(pixels == uncached(&mut reference, &composition, 2.0));
-        return;
-    }
-    let kept = renderer
-        .compiled()
-        .unwrap()
-        .node_output(NodeId::new(3), &[])
-        .unwrap();
-    let gpu = renderer.gpu_renderer_mut();
-    let desc = gpu.texture_desc(kept.texture).unwrap();
-    let blank = gpu.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("blank"),
-        size: desc.domain.storage_size.as_extent(),
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: desc.format,
-        usage: desc.usage,
-        view_formats: &[],
-    });
-    gpu.replace_texture(kept.texture, blank, desc).unwrap();
-    let pixels = at(&mut renderer, &composition, 2.0);
-    let expected = uncached(&mut reference, &composition, 2.0);
-    assert!(nonblank(&expected));
-    assert!(pixels == expected, "the replaced texture is rendered again");
+
+    // Frames 6 and 7 select the first layer, which frame 6 has to draw again and frame 7 doesn't.
+    assert_switched_layer(&at(&mut renderer, &composition, 6.0), 6);
+    let redrawn = renderer.recorded_pass_count();
+    assert_switched_layer(&at(&mut renderer, &composition, 7.0), 7);
+    assert!(redrawn > renderer.recorded_pass_count());
 }
 
 #[test]
@@ -313,9 +292,9 @@ fn discarded_binds_keep_nothing_and_stale_uploads_are_still_rejected() {
             pixels == uncached(&mut reference, &composition, f64::from(submitted)),
             "frame {submitted} after discarding a bind of frame {discarded}"
         );
-        assert!(nonblank(&pixels));
+        assert_eq!(pixel(&pixels, 20, 2), [200, 30, 30, 255]);
     }
-    assert!(renderer.cached_pass_count() > 0);
+    assert!(renderer.skipped_pass_count() > 0);
 
     let older = renderer.bind_frame(&composition, 4, &media).unwrap();
     let current = renderer.bind_frame(&composition, 5, &media).unwrap();
@@ -358,7 +337,7 @@ fn kept_output_reaches_external_output_textures() {
                 &fully_static,
                 frame,
                 &TestMedia::default(),
-                lumen_gpu::ExternalTexture::from_texture(texture, desc.domain),
+                lumen_gpu::ExternalTexture::from_texture(texture),
             )
             .unwrap();
         submitted.wait(&renderer.gpu_renderer().device).unwrap();
@@ -373,8 +352,9 @@ fn kept_output_reaches_external_output_textures() {
         );
         shown.push(pixels);
     }
-    assert!(renderer.cached_pass_count() > 0);
-    assert!(nonblank(&shown[0]));
+    assert!(renderer.skipped_pass_count() > 0);
+    assert_eq!(pixel(&shown[0], 20, 2), [200, 30, 30, 255]);
+    assert_eq!(pixel(&shown[0], 8, 8), [20, 40, 220, 255]);
     assert!(shown[0] == shown[1] && shown[1] == shown[2]);
 }
 
@@ -389,8 +369,8 @@ fn kept_text_keeps_its_glyphs_in_the_shared_atlas() {
         } })
     };
     // Glyphs this large fill most of the atlas, so the static "W" and the "M" that grows on
-    // frame 1 cannot both fit; the "W" is drawn first, so it keeps its glyph. A recorded frame
-    // keeps the "W" it already drew without placing it again, so the "M" fits there too.
+    // frame 1 cannot both fit. A kept frame holds the "W" it already drew without placing it
+    // again, so the "M" fits there too.
     let composition: Composition = scene(
         (256, 128),
         json!([
@@ -401,7 +381,6 @@ fn kept_text_keeps_its_glyphs_in_the_shared_atlas() {
     )
     .frames(3)
     .into();
-    let recording = renderer.frame_graph_enabled();
     let split = |pixels: &[u8]| -> (Vec<u8>, Vec<u8>) {
         let (mut left, mut right) = (Vec::new(), Vec::new());
         for row in pixels.as_chunks::<{ 256 * 4 }>().0 {
@@ -415,16 +394,16 @@ fn kept_text_keeps_its_glyphs_in_the_shared_atlas() {
         let pixels = at(&mut renderer, &composition, f64::from(frame));
         assert!(nonblank(&pixels));
         let expected = uncached(&mut reference, &composition, f64::from(frame));
-        if recording && frame > 0 {
+        if frame == 0 {
+            assert!(
+                pixels == expected,
+                "frame 0 differs from an uncached render"
+            );
+        } else {
             let (left, right) = split(&pixels);
             assert!(left == split(&expected).0, "frame {frame} lost the W");
             assert!(nonblank(&right), "frame {frame} dropped the M");
-        } else {
-            assert!(
-                pixels == expected,
-                "frame {frame} differs from an uncached render"
-            );
         }
     }
-    assert!(renderer.cached_pass_count() > 0, "the static text is kept");
+    assert!(renderer.skipped_pass_count() > 0, "the static text is kept");
 }

@@ -1,7 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
-use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
+use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -52,25 +52,6 @@ pub struct Levels {
     pub source: Option<NodeId>,
 }
 
-impl GpuCompileNode for Levels {
-    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        ctx.unary_filter(
-            self.id,
-            self.source,
-            "levels",
-            SHADER,
-            &self.params,
-            |params| compiler::LevelsParams {
-                black_point: params.black_point as f32,
-                white_point: params.white_point as f32,
-                gamma: params.gamma as f32,
-                output_black: params.output_black as f32,
-                output_white: params.output_white as f32,
-            },
-        )
-    }
-}
-
 impl crate::gpu::frame_graph::RecordNode for Levels {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.spatial("levels", SHADER)
@@ -85,7 +66,7 @@ impl crate::gpu::frame_graph::RecordNode for Levels {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let gpu_params = compiler::LevelsParams {
+        let gpu_params = params::LevelsParams {
             black_point: params.black_point as f32,
             white_point: params.white_point as f32,
             gamma: params.gamma as f32,

@@ -30,7 +30,7 @@ name = "lumen-bench-composition"
 path = "src/bin/composition.rs"
 
 [[bin]]
-name = "lumen-bench-fg"
+name = "lumen-bench-frame-graph"
 path = "src/bin/frame_graph.rs"
 
 [[bin]]

@@ -1,7 +1,7 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable};
 use crate::node::{NodeId, NodeParams};
 
-use crate::gpu::{GpuCompileNode, RasterHandle, compiler};
+use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -48,23 +48,6 @@ pub struct HueSaturation {
     pub source: Option<NodeId>,
 }
 
-impl GpuCompileNode for HueSaturation {
-    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        ctx.unary_filter(
-            self.id,
-            self.source,
-            "hue-saturation",
-            SHADER,
-            &self.params,
-            |params| compiler::HueSaturationParams {
-                hue_offset: (params.hue_degrees / 360.0) as f32,
-                saturation: params.saturation as f32,
-                lightness: params.lightness as f32,
-            },
-        )
-    }
-}
-
 impl crate::gpu::frame_graph::RecordNode for HueSaturation {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.spatial("hue-saturation", SHADER)
@@ -79,7 +62,7 @@ impl crate::gpu::frame_graph::RecordNode for HueSaturation {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let gpu_params = compiler::HueSaturationParams {
+        let gpu_params = params::HueSaturationParams {
             hue_offset: (params.hue_degrees / 360.0) as f32,
             saturation: params.saturation as f32,
             lightness: params.lightness as f32,

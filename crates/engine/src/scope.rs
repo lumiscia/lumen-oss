@@ -1,15 +1,14 @@
 //! The composition a node is evaluated in, and how traversal moves between frames and
 //! compositions.
 //!
-//! Compiling, binding, plan keys and media prediction all read a node's inputs through
-//! [`route`], so time remaps, switches and clips route frames the same way everywhere.
+//! Recording and media prediction read a node's inputs through [`route`] and what it calls, so
+//! time remaps, switches and clips route frames the same way everywhere.
 
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     composition::{Composition, CompositionTemplate, Scene},
     expr::{ExpressionContext, ExpressionValue},
-    graph::Graph,
     media::MediaStore,
     node::{
         DelegateEvalContext, DelegateEvaluable, Node, NodeId, NodeKind,
@@ -125,23 +124,6 @@ impl<'a> Scope<'a> {
             props: self.props.as_deref(),
         }
     }
-
-    /// The graph the nodes reached through `path` from the root belong to, or `None` when the
-    /// path no longer names time remaps and clips.
-    pub fn graph_at(root: &'a Composition, path: &[NodeId]) -> Option<&'a Graph> {
-        path.iter()
-            .try_fold(root.graph(), |graph, id| match graph.nodes.get(id)? {
-                NodeKind::TimeRemap(_) => Some(graph),
-                NodeKind::Clip(clip) => match clip.template_name() {
-                    Some(name) => root
-                        .compositions()
-                        .get(name)
-                        .map(|template| &template.scene.graph),
-                    None => Some(graph),
-                },
-                _ => None,
-            })
-    }
 }
 
 /// An input a node reads, with the frame and scope it is read in.
@@ -150,7 +132,7 @@ pub struct Routed<'a> {
     pub node: NodeId,
     pub frame: FrameTime,
     pub scope: Scope<'a>,
-    /// The time remap or clip that instances the input, which then compiles once per path of
+    /// The time remap or clip that instances the input, which then records once per path of
     /// them from the root.
     pub instance: Option<NodeId>,
 }

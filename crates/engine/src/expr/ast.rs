@@ -140,8 +140,6 @@ pub struct Reads {
     pub word: bool,
     pub line: bool,
     pub span: bool,
-    /// Another node or measured text, whose values live outside of the node and its plan.
-    pub outside_node: bool,
 }
 
 impl Reads {
@@ -152,11 +150,6 @@ impl Reads {
             ExprNode::Global(GlobalVar::Word) => reads.word = true,
             ExprNode::Global(GlobalVar::Line) => reads.line = true,
             ExprNode::Global(GlobalVar::Span) => reads.span = true,
-            ExprNode::Node(_)
-            | ExprNode::PropertyValue(..)
-            | ExprNode::Builtin(BuiltinFn::TextWidth | BuiltinFn::TextHeight, _) => {
-                reads.outside_node = true;
-            }
             _ => {}
         });
         reads
@@ -291,13 +284,6 @@ mod tests {
             }
         );
         assert!(reads("word * 2").word);
-        for source in [
-            "node(3, 'opacity') + 1",
-            "text_width(node(3))",
-            "text_height('a') / 2",
-        ] {
-            assert!(reads(source).outside_node, "{source}");
-        }
     }
 
     #[test]

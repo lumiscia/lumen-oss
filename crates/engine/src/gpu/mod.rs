@@ -1,15 +1,12 @@
-//! GPU-native graph compiler and renderer.
+//! GPU-native graph renderer.
 //!
-//! Nodes compile into stable GPU resources and pass templates; frame-varying
-//! values bind through uniform/uploads without rebuilding the render graph.
+//! Each frame walks the graph from the media output and records what its nodes draw, against
+//! pooled textures, bump buffers and cached programs.
 
-mod binding;
-mod cache;
-pub(crate) mod compiler;
 pub(crate) mod frame_graph;
 #[cfg(feature = "ffmpeg")]
 mod media;
-mod params;
+pub(crate) mod params;
 mod renderer;
 #[cfg(test)]
 mod shader_layouts;
@@ -20,8 +17,6 @@ mod shader_layouts;
 mod target;
 mod types;
 
-pub use binding::FrameBindContext;
-pub use compiler::{CompileContext, GpuCompileNode};
 pub use renderer::{FrameGraphStats, GpuCompositionRenderer};
 #[cfg(all(target_os = "linux", feature = "ffmpeg", feature = "vulkan"))]
 pub use target::VulkanVideoTarget;
@@ -34,6 +29,4 @@ pub use target::VulkanVideoTarget;
 pub use target::{CudaNvencTarget, CudaNvencTargetPool};
 #[cfg(all(target_os = "macos", feature = "ffmpeg", feature = "metal"))]
 pub use target::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
-pub use types::{
-    BoundFrame, CompiledComposition, GpuCompiledNode, MediaTextureKey, RasterHandle, TimeRemapPath,
-};
+pub use types::{BoundFrame, MediaTextureKey, RasterHandle};

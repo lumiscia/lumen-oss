@@ -35,7 +35,6 @@ struct PreviewState {
     current_frame: u32,
     /// The frame playback is advancing to, set by `tick` and cleared when the playhead moves.
     next_frame: Option<u32>,
-    lookahead_count: u32,
     playing: bool,
     dirty: bool,
     last_tick_ms: Option<f64>,
@@ -55,7 +54,6 @@ impl Default for PreviewState {
             fps: 30.0,
             current_frame: 0,
             next_frame: None,
-            lookahead_count: 8,
             playing: false,
             dirty: false,
             last_tick_ms: None,
@@ -249,12 +247,6 @@ impl LumenPreviewController {
         serde_json::to_string(&payload)
             .map(Some)
             .map_err(|e| JsValue::from_str(&e.to_string()))
-    }
-
-    #[wasm_bindgen(js_name = "setLookaheadCount")]
-    pub fn set_lookahead_count(&self, lookahead_count: u32) -> Result<(), JsValue> {
-        self.state_mut()?.lookahead_count = lookahead_count;
-        Ok(())
     }
 
     #[wasm_bindgen(js_name = "setLogLevel")]
@@ -589,13 +581,7 @@ impl LumenPreviewController {
             .as_ref()
             .ok_or_else(|| JsValue::from_str("composition not loaded"))?;
         tracing::trace!(target: "lumen_wasm", frame, "render preview frame");
-        let size = renderer.render_frame(
-            &canvas,
-            composition,
-            frame,
-            state.lookahead_count,
-            &self.media,
-        )?;
+        let size = renderer.render_frame(&canvas, composition, frame, &self.media)?;
         state.width = size.width as usize;
         state.height = size.height as usize;
         state.dirty = false;

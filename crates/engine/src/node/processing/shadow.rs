@@ -3,10 +3,7 @@ use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
 
-use crate::gpu::compiler::Slot;
-use crate::gpu::{
-    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
-};
+use crate::gpu::params;
 
 use super::gaussian;
 
@@ -57,151 +54,6 @@ pub struct Shadow {
 
     #[input()]
     pub source: Option<NodeId>,
-}
-
-impl GpuCompileNode for Shadow {
-    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        let source = ctx.compile_bounded_input(self.id, "source", self.source)?;
-        // The shadow is the source's data shifted by the offset and spread by the radius,
-        // at their largest over the timeline.
-        let params = &self.params;
-        let bounds = ctx.source_bounds(
-            compiler::SourceMotion::of(
-                params.offset_x.is_expr() || params.offset_y.is_expr() || params.radius.is_expr(),
-                params,
-            ),
-            |expr| {
-                let evaluated = params.eval(&DelegateEvalContext {
-                    node_id: self.id,
-                    expr,
-                })?;
-                Ok(gaussian::blur_bounds(
-                    source.domain.data_rect,
-                    [evaluated.offset_x, evaluated.offset_y],
-                    evaluated.radius,
-                ))
-            },
-        );
-        let display = source.domain.display_size();
-        let shadow_domain = gaussian::domain_within(display, bounds);
-        // The source is composited over its shadow, so both are written.
-        let domain = lumen_gpu::TextureDomain::bounded(
-            display,
-            source.domain.data_rect.union(shadow_domain.data_rect),
-        );
-        let size = domain.storage_size;
-        let blurred = gaussian::compile_passes_with(
-            ctx,
-            self.id,
-            "shadow",
-            source,
-            shadow_domain,
-            gaussian::GaussianOptions { shifted: true },
-        );
-        let builder = ctx.builder_mut();
-        let output = builder.texture(
-            Some(format!("shadow:{}:output", self.id.0)),
-            lumen_gpu::TextureDesc::storage(size, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
-                .with_domain(domain),
-        );
-        let params = builder.buffer(
-            Some(format!("shadow:{}:params", self.id.0)),
-            lumen_gpu::BufferDesc::uniform(std::mem::size_of::<compiler::ShadowParams>() as u64),
-        );
-        let program = compiler::compute_program_at(
-            builder,
-            "shadow-composite",
-            COMPOSITE_SHADER,
-            "composite_main",
-            &[
-                (0, Slot::Texture),
-                (1, Slot::Texture),
-                (2, Slot::Uniform),
-                (3, Slot::Output),
-            ],
-        );
-        builder.compute_pass(lumen_gpu::ComputePassDesc {
-            label: Some(format!("shadow:{}:composite", self.id.0)),
-            program,
-            bindings: vec![
-                lumen_gpu::Binding::sampled_texture(0, 0, blurred.output),
-                lumen_gpu::Binding::sampled_texture(0, 1, source.texture),
-                lumen_gpu::Binding::uniform(0, 2, params),
-                lumen_gpu::Binding::storage_texture(0, 3, output),
-            ],
-            dispatch: compiler::dispatch_for(size),
-        });
-        ctx.register_compiled_node(CompiledShadow {
-            node_id: self.id,
-            params: self.params.clone(),
-            blurred,
-            buffer: params,
-            origins: [
-                domain.data_rect.x,
-                domain.data_rect.y,
-                shadow_domain.data_rect.x,
-                shadow_domain.data_rect.y,
-            ],
-            source_origin: [source.domain.data_rect.x, source.domain.data_rect.y],
-        });
-        Ok(RasterHandle {
-            texture: output,
-            domain,
-            bounds: None,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-struct CompiledShadow {
-    node_id: NodeId,
-    params: ShadowParamsDelegate,
-    blurred: gaussian::GaussianPasses,
-    buffer: lumen_gpu::BufferId,
-    /// Canvas pixel of the first texel of the output and of the blurred shadow.
-    origins: [i32; 4],
-    /// Canvas pixel of the source's first texel.
-    source_origin: [i32; 2],
-}
-
-impl GpuCompiledNode for CompiledShadow {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let evaluated = self.params.eval(&DelegateEvalContext {
-            node_id: self.node_id,
-            expr: &ctx.expr_context(),
-        })?;
-        let Paint::SolidColor(r, g, b, a) = evaluated.color else {
-            return Err(PropertyError::InvalidType {
-                node_id: self.node_id,
-                property_path: "color".to_string(),
-                expected: "a solid color",
-                actual: "a gradient",
-            }
-            .into());
-        };
-        let color = [r, g, b, a].map(|channel| f32::from(channel) / 255.0);
-        // The color alpha is folded into the opacity.
-        self.blurred.write(
-            bound,
-            &gaussian::GaussianSettings {
-                radius: evaluated.radius,
-                transparent_edge: true,
-                offset: [evaluated.offset_x, evaluated.offset_y],
-            },
-        );
-        let opacity = evaluated.opacity.clamp(0.0, 1.0) as f32 * color[3];
-        let gpu_params = compiler::ShadowParams {
-            color: [color[0], color[1], color[2], opacity],
-            origins: self.origins,
-            source_origin: [self.source_origin[0], self.source_origin[1], 0, 0],
-        };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
-        Ok(())
-    }
 }
 
 const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
@@ -268,7 +120,7 @@ impl crate::gpu::frame_graph::RecordNode for Shadow {
         };
         let color = [r, g, b, a].map(|channel| f32::from(channel) / 255.0);
         let opacity = evaluated.opacity.clamp(0.0, 1.0) as f32 * color[3];
-        let params = compiler::ShadowParams {
+        let params = params::ShadowParams {
             color: [color[0], color[1], color[2], opacity],
             origins: [
                 domain.data_rect.x,
@@ -295,7 +147,7 @@ impl crate::gpu::frame_graph::RecordNode for Shadow {
                 (2, uniform),
                 (3, lumen_gpu::Res::Tex(tex)),
             ],
-            compiler::dispatch_for(size),
+            params::dispatch_for(size),
         );
         Ok(crate::gpu::frame_graph::Raster {
             tex,

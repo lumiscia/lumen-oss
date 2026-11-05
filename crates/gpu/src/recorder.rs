@@ -1,5 +1,5 @@
 //! Frame-graph recording: passes are recorded from what a frame shows, against long-lived pooled
-//! textures, per-frame bump buffers and cached programs and bind groups, without a compiled plan.
+//! textures, per-frame bump buffers and cached programs and bind groups.
 //!
 //! `acquire` hands out a texture that exists only for this frame's recording. `resolve` then walks
 //! the recorded passes and gives each one a pooled texture for the passes from its first use to its
@@ -16,6 +16,14 @@ use std::{hash::Hash, sync::Arc};
 use anyhow::{Result, anyhow};
 
 use crate::{Size, renderer::ValidationScope};
+
+/// The workgroup counts of a compute pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dispatch {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
 
 /// Bytes of pooled textures kept before unused ones are dropped regardless of age.
 pub const DEFAULT_POOL_BUDGET_BYTES: u64 = 384 << 20;
@@ -557,6 +565,26 @@ impl Recorder {
         if let Some(external) = external {
             let target = self.entry(external);
             let (target_key, target_usage) = (target.key, target.key.usage);
+            let output_key = match output_frame {
+                Some(index) => self.frame_textures[index].key,
+                None => self.entry(output).key,
+            };
+            if (target_key.width, target_key.height) != (output_key.width, output_key.height) {
+                return Err(anyhow!(
+                    "the external texture has size {}x{}, expected {}x{}",
+                    target_key.width,
+                    target_key.height,
+                    output_key.width,
+                    output_key.height
+                ));
+            }
+            if target_key.format != output_key.format {
+                return Err(anyhow!(
+                    "the external texture has format {:?}, expected {:?}",
+                    target_key.format,
+                    output_key.format
+                ));
+            }
             let stands_in = output_frame.is_some_and(|index| {
                 let texture = &self.frame_textures[index];
                 texture.retains == 0
@@ -803,14 +831,6 @@ impl Recorder {
     /// A resolved texture.
     pub fn texture(&self, tex: TexRef) -> &Arc<wgpu::Texture> {
         &self.entry(self.physical(tex)).texture
-    }
-
-    /// The sizes of this frame's textures.
-    pub fn frame_texture_sizes(&self) -> Vec<Size> {
-        self.frame_textures
-            .iter()
-            .map(|texture| Size::new(texture.key.width, texture.key.height))
-            .collect()
     }
 
     pub fn adopted_bytes(&self) -> u64 {
@@ -1153,12 +1173,7 @@ impl Recorder {
         Res::Storage { offset, size }
     }
 
-    pub fn compute(
-        &mut self,
-        program: ProgramRef,
-        bindings: &[(u32, Res)],
-        dispatch: crate::Dispatch,
-    ) {
+    pub fn compute(&mut self, program: ProgramRef, bindings: &[(u32, Res)], dispatch: Dispatch) {
         self.pin_program(program);
         self.passes.push(RecordedPass::Compute {
             program,

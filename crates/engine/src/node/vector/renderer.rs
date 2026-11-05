@@ -2,8 +2,7 @@ use bytemuck::{Pod, Zeroable};
 
 use super::drawable::{GpuDrawableMotion, GpuDrawableTransform};
 
-/// Most points a path may flatten to. Points buffers are sized to the
-/// flattened point count when the geometry is constant, and to this when animated.
+/// Most points a path may flatten to.
 pub(crate) const MAX_PATH_POINTS: usize = 16384;
 
 // Bits of the `flags` field in both uniform structs; keep in sync with `vector_common.wgsl`.
@@ -28,17 +27,6 @@ pub(super) fn style_flags(fill: bool, stroke: bool, edge_antialias: bool) -> u32
 /// The canvas pixel of a domain's first texel.
 pub(crate) fn domain_origin(domain: lumen_gpu::TextureDomain) -> [i32; 2] {
     [domain.data_rect.x, domain.data_rect.y]
-}
-
-/// Buffers of a source rasterized by the path shader.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PathBuffers {
-    pub(crate) params: lumen_gpu::BufferId,
-    pub(crate) points: lumen_gpu::BufferId,
-    pub(crate) bands: lumen_gpu::BufferId,
-    pub(crate) band_capacity: usize,
-    /// Canvas pixel of the output's first texel.
-    pub(crate) origin: [i32; 2],
 }
 
 #[repr(C)]

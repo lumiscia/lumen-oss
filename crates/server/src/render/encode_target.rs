@@ -14,7 +14,7 @@ use super::{
     RenderError,
     device_budget::{DeviceReservation, reserve_devices},
     encoder::{EncoderSink, has_audio, write_composited_audio},
-    gpu::{MEDIA_PREFETCH_LOOKAHEAD_FRAMES, RenderTiming, create_gpu_renderer},
+    gpu::{RenderTiming, create_gpu_renderer},
     media::LocalMediaStore,
 };
 
@@ -197,16 +197,12 @@ impl EncodeTarget {
             Self::Cpu(sink) => {
                 let (raster, _submission) =
                     render_raster(renderer, composition, media_store, frame, timing)?;
-                // Hold this frame's output so a later plan change cannot free it before readback.
-                let output = renderer
-                    .gpu_renderer()
-                    .texture_arc(raster.texture)
-                    .ok_or_else(|| missing_output(&raster, frame))?;
-                precompile_ahead(renderer, composition, media_store, frame);
                 poll(renderer, frame, timing, None)?;
                 let size = checked_size(composition, &raster, frame)?;
                 let pixels = timed(&mut timing.readback, || {
-                    renderer.gpu_renderer().read_texture_rgba8(&output, size)
+                    renderer
+                        .gpu_renderer()
+                        .read_texture_rgba8(&raster.texture, size)
                 })
                 .map_err(|err| {
                     render_failed(format!(
@@ -321,13 +317,6 @@ fn audio_render_failed(err: anyhow::Error) -> RenderError {
     }
 }
 
-fn missing_output(raster: &RasterHandle, frame: u32) -> RenderError {
-    render_failed(format!(
-        "render output texture {:?} is unavailable for frame {frame}",
-        raster.texture
-    ))
-}
-
 /// Binds, uploads and submits one frame to the renderer's own output texture.
 fn render_raster(
     renderer: &mut GpuCompositionRenderer,
@@ -361,20 +350,6 @@ fn checked_size(
         )));
     }
     Ok(size)
-}
-
-fn precompile_ahead(
-    renderer: &mut GpuCompositionRenderer,
-    composition: &Composition,
-    media_store: &LocalMediaStore,
-    frame: u32,
-) {
-    let _ = renderer.precompile_frame_window(
-        composition,
-        frame.saturating_add(1),
-        MEDIA_PREFETCH_LOOKAHEAD_FRAMES,
-        media_store,
-    );
 }
 
 #[cfg(any(

@@ -28,6 +28,7 @@ Supported native targets today are:
 ## Binaries
 
 - `lumen-bench-composition`: benchmark composition render and encode modes: `render-only`, `readback`, `cpu-encode`, `metal-videotoolbox`, `vulkan-video` and `vk-cuda-nvenc`. `--profile` adds a per-phase breakdown to any of them.
+- `lumen-bench-frame-graph`: benchmark rendering a composition, one run per process: time per frame, allocations and held memory.
 - `lumen-bench-json-parse`: benchmark JSON composition parse and validate (uses demo JSON fixtures).
 - `lumen-bench-decode`: compare in-process decoding with the ffmpeg CLI. The CLI figure is wall clock for the whole process, including start-up and the rawvideo pipe, so the comparison is end-to-end. The run fails if the two paths decode different amounts of video.
 - `lumen-bench-expression`: time parsing and evaluating representative expressions, with no GPU or media.
@@ -39,7 +40,7 @@ Text measurement cases compare repeated `text_width` and `text_height` evaluatio
 
 Composition names: `simple_pipeline`, `small_media_transform`, `small_media_transform_exposure`, `animated_showcase`, `antialiasing_stress_aa`, `antialiasing_stress_noaa`, `many_elements`.
 
-`many_elements` is 300 labelled cards and 100 dots over a 1080p background, each card a shape and a text label merged into a group. `render-only` also reports `plan_texture_bytes`, the GPU memory the compiled plan's textures take.
+`many_elements` is 300 labelled cards and 100 dots over a 1080p background, each card a shape and a text label merged into a group. `render-only` also prints a `render_profile` line with the passes recorded, the programs built and the GPU memory held.
 
 The small-media fixtures use the same deterministic in-memory 320×180 checkerboard and 1920×1080 composition canvas, so they have no file or decoder dependency:
 
@@ -57,7 +58,7 @@ done
 
 Use `--profile` for the bind/upload/submit/poll breakdown.
 
-Each row reports `setup_ms` (renderer, plan compile and encoder open), and `elapsed_ms`, the first frame plus the steady frames. In `render-only` and `readback`, `first_frame_ms` is one-off uploads, static work and glyph population, `steady_ms` covers the remaining frames on the same renderer, and `fps` is their steady-state rate, `-` for a single frame. Encoders buffer frames, so no frame is complete until the encoder finishes: encoding modes report `first_frame_ms=-`, and `steady_ms` and `fps` cover every frame through finishing the encoder, including with a single frame. Plan diagnostics from `--profile` and the plan-memory line are printed outside every timer.
+Each row reports `setup_ms` (renderer, program builds and encoder open), and `elapsed_ms`, the first frame plus the steady frames. In `render-only` and `readback`, `first_frame_ms` is one-off uploads, static work and glyph population, `steady_ms` covers the remaining frames on the same renderer, and `fps` is their steady-state rate, `-` for a single frame. Encoders buffer frames, so no frame is complete until the encoder finishes: encoding modes report `first_frame_ms=-`, and `steady_ms` and `fps` cover every frame through finishing the encoder, including with a single frame. Diagnostics from `--profile` and the held-memory line are printed outside every timer.
 
 Nodes without expressions or media keep their output after the first frame, so `simple_pipeline` runs almost no passes after it. Add `--full-render` to disable that automatic reuse of static node output when measuring shader or pass cost. The antialiasing pair always renders in full, since it exists to compare edge shader cost, and every row prints the `full_render` policy it ran with. Compare `fps` on the same machine; short runs are noisy on GPUs that change clocks.
 

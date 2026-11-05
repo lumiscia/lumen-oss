@@ -28,7 +28,7 @@ use lumen_ffmpeg::{GpuVideoInput, VulkanDevice};
 
 use crate::bench::media::BenchmarkMediaStore;
 
-use super::profile::{PhaseTimes, print_plan_memory, print_plan_profile, timed};
+use super::profile::{PhaseTimes, print_render_profile, timed};
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
 const GPU_ENCODER_FRAMES_IN_FLIGHT: usize = 3;
@@ -226,12 +226,10 @@ fn read_frame(
     raster: &RasterHandle,
     phases: &mut Option<&mut PhaseTimes>,
 ) -> anyhow::Result<Vec<u8>> {
-    let gpu = renderer.gpu_renderer();
-    let texture = gpu
-        .texture(raster.texture)
-        .ok_or_else(|| anyhow!("unknown texture"))?;
     timed(phases, "readback", || {
-        gpu.read_texture_rgba8(texture, raster.domain.storage_size)
+        renderer
+            .gpu_renderer()
+            .read_texture_rgba8(&raster.texture, raster.domain.storage_size)
     })
 }
 
@@ -242,9 +240,6 @@ async fn render_only(
     let setup_started = Instant::now();
     let mut renderer = renderer(workload).await?;
     let setup = setup_started.elapsed();
-    if phases.is_some() {
-        print_plan_profile(renderer.compiled());
-    }
     let mut times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
         render_frame(&mut renderer, workload, frame, phases)?;
@@ -257,7 +252,7 @@ async fn render_only(
         times.frame_done(frame);
     }
     let times = times.finish();
-    print_plan_memory(renderer.compiled());
+    print_render_profile(&renderer);
     Ok(times)
 }
 
@@ -268,9 +263,6 @@ async fn readback(
     let setup_started = Instant::now();
     let mut renderer = renderer(workload).await?;
     let setup = setup_started.elapsed();
-    if phases.is_some() {
-        print_plan_profile(renderer.compiled());
-    }
     let mut times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
         let raster = render_frame(&mut renderer, workload, frame, phases)?;
@@ -294,9 +286,6 @@ async fn cpu_encode(
         video_config(workload.composition, "libx264")?,
     )?;
     let setup = setup_started.elapsed();
-    if phases.is_some() {
-        print_plan_profile(renderer.compiled());
-    }
     let times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
         let raster = render_frame(&mut renderer, workload, frame, phases)?;
@@ -332,9 +321,6 @@ async fn metal_videotoolbox(
     let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
     let mut pending = VecDeque::<PendingMetalEncodeFrame>::new();
     let setup = setup_started.elapsed();
-    if phases.is_some() {
-        print_plan_profile(renderer.compiled());
-    }
     let times = RunTimes::begin(setup);
 
     for frame in 0..workload.frames {
@@ -421,27 +407,20 @@ async fn vulkan_video(
     }
     let (mut renderer, device) = GpuCompositionRenderer::new_vulkan_video().await?;
     renderer.set_static_output_reuse(!workload.full_render);
-    renderer.compile_with_media(
-        workload.composition,
-        workload.media,
-        lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-    )?;
+    renderer.compile(workload.composition)?;
     let target = VulkanVideoTarget::nv12(renderer.gpu_renderer(), size);
     let (mut encoder, encoder_name) = open_vulkan_encoder(workload.composition, &device, output)?;
     let setup = setup_started.elapsed();
     println!("composition_bench vulkan_video encoder={encoder_name}");
-    if phases.is_some() {
-        print_plan_profile(renderer.compiled());
-    }
     let times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
         let raster = render_frame(&mut renderer, workload, frame, phases)?;
-        let texture = renderer
-            .gpu_renderer()
-            .texture(raster.texture)
-            .ok_or_else(|| anyhow!("render output texture {:?} is unavailable", raster.texture))?;
         let video_frame = timed(phases, "convert", || {
-            target.convert(renderer.gpu_renderer(), texture, Some(i64::from(frame)))
+            target.convert(
+                renderer.gpu_renderer(),
+                &raster.texture,
+                Some(i64::from(frame)),
+            )
         })?;
         timed(phases, "flush", || {
             renderer
@@ -506,9 +485,6 @@ async fn vk_cuda_nvenc(
     let mut encoder = MuxedEncoder::create(output.to_string_lossy().to_string(), config)?;
 
     let setup = setup_started.elapsed();
-    if phases.is_some() {
-        print_plan_profile(renderer.compiled());
-    }
     let times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
         let submitted = timed(phases, "render", || {
@@ -555,7 +531,7 @@ async fn renderer_with_format(
 ) -> anyhow::Result<GpuCompositionRenderer> {
     let mut renderer = GpuCompositionRenderer::new().await?;
     renderer.set_static_output_reuse(!workload.full_render);
-    renderer.compile_with_media(workload.composition, workload.media, format)?;
+    renderer.compile_with_output_format(workload.composition, format)?;
     Ok(renderer)
 }
 

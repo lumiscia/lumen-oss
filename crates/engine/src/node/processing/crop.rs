@@ -1,8 +1,6 @@
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
-use crate::gpu::{
-    BoundFrame, FrameBindContext, GpuCompileNode, GpuCompiledNode, RasterHandle, compiler,
-};
+use crate::gpu::params;
 
 pub(crate) const SHADER: &str = include_str!("crop.wgsl");
 
@@ -46,74 +44,6 @@ pub struct Crop {
     pub source: Option<NodeId>,
 }
 
-impl GpuCompileNode for Crop {
-    fn compile_gpu(&self, ctx: &mut crate::gpu::CompileContext<'_>) -> crate::Result<RasterHandle> {
-        let source = ctx.compile_input(self.id, "source", self.source)?;
-        let size = source.domain.storage_size;
-        let crop = ctx.compute_source(
-            self.id,
-            "crop",
-            "apply",
-            SHADER,
-            std::mem::size_of::<compiler::CropParams>() as u64,
-            Some(source.texture),
-            [],
-            lumen_gpu::TextureDomain::full_frame(size),
-        );
-        ctx.register_compiled_node(CompiledCrop {
-            node_id: self.id,
-            params: self.params.clone(),
-            buffer: crop.params,
-            source_size: size,
-        });
-
-        Ok(RasterHandle {
-            // The params buffer holds the region clamped to the source, which is the output's
-            // logical bounds.
-            bounds: Some(crop.params),
-            ..crop.output
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-struct CompiledCrop {
-    node_id: NodeId,
-    params: CropParamsDelegate,
-    buffer: lumen_gpu::BufferId,
-    source_size: lumen_gpu::Size,
-}
-
-impl GpuCompiledNode for CompiledCrop {
-    fn node_id(&self) -> NodeId {
-        self.node_id
-    }
-
-    fn bind(&self, ctx: &FrameBindContext<'_>, bound: &mut BoundFrame) -> crate::Result<()> {
-        let params = self.params.eval(&DelegateEvalContext {
-            node_id: self.node_id,
-            expr: &ctx.expr_context(),
-        })?;
-        let x = compiler::pixel_origin(self.node_id, "x", params.x)?;
-        let y = compiler::pixel_origin(self.node_id, "y", params.y)?;
-        let width = compiler::pixel_extent(self.node_id, "width", params.width, 0)?;
-        let height = compiler::pixel_extent(self.node_id, "height", params.height, 0)?;
-        // The region is clamped to the source so it doubles as the output's logical bounds.
-        let left = i64::from(x).clamp(0, i64::from(self.source_size.width));
-        let top = i64::from(y).clamp(0, i64::from(self.source_size.height));
-        let right =
-            (i64::from(x) + i64::from(width)).clamp(left, i64::from(self.source_size.width));
-        let bottom =
-            (i64::from(y) + i64::from(height)).clamp(top, i64::from(self.source_size.height));
-        let gpu_params = compiler::CropParams {
-            origin: [left as i32, top as i32],
-            size: [(right - left) as u32, (bottom - top) as u32],
-        };
-        bound.write_buffer(self.buffer, 0, bytemuck::bytes_of(&gpu_params));
-        Ok(())
-    }
-}
-
 impl crate::gpu::frame_graph::RecordNode for Crop {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.spatial("crop", SHADER)
@@ -128,16 +58,16 @@ impl crate::gpu::frame_graph::RecordNode for Crop {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let x = compiler::pixel_origin(self.id, "x", params.x)?;
-        let y = compiler::pixel_origin(self.id, "y", params.y)?;
-        let width = compiler::pixel_extent(self.id, "width", params.width, 0)?;
-        let height = compiler::pixel_extent(self.id, "height", params.height, 0)?;
+        let x = params::pixel_origin(self.id, "x", params.x)?;
+        let y = params::pixel_origin(self.id, "y", params.y)?;
+        let width = params::pixel_extent(self.id, "width", params.width, 0)?;
+        let height = params::pixel_extent(self.id, "height", params.height, 0)?;
         let size = source.domain.storage_size;
         let left = i64::from(x).clamp(0, i64::from(size.width));
         let top = i64::from(y).clamp(0, i64::from(size.height));
         let right = (i64::from(x) + i64::from(width)).clamp(left, i64::from(size.width));
         let bottom = (i64::from(y) + i64::from(height)).clamp(top, i64::from(size.height));
-        let gpu_params = compiler::CropParams {
+        let gpu_params = params::CropParams {
             origin: [left as i32, top as i32],
             size: [(right - left) as u32, (bottom - top) as u32],
         };

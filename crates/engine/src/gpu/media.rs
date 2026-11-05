@@ -3,22 +3,20 @@ use std::sync::Arc;
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 use std::collections::HashMap;
 
-use super::types::MediaTextureUpload;
-
-/// The textures a plan's imported frames are held in, by the plan's texture they stand in for.
+/// The textures imported frames are held in, by the slot of the video source they come from.
 #[derive(Default)]
 pub(super) struct GpuMediaImports {
     #[cfg(all(target_os = "linux", feature = "vulkan"))]
-    vulkan: HashMap<lumen_gpu::TextureId, VulkanMediaTexture>,
+    vulkan: HashMap<u32, VulkanMediaTexture>,
 }
 
 impl GpuMediaImports {
-    /// Frees the textures frames were imported into under `id`.
-    pub(super) fn remove(&mut self, id: lumen_gpu::TextureId) {
+    /// Frees the textures frames were imported into under `slot`.
+    pub(super) fn remove(&mut self, slot: u32) {
         #[cfg(all(target_os = "linux", feature = "vulkan"))]
-        self.vulkan.remove(&id);
+        self.vulkan.remove(&slot);
         #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
-        let _ = id;
+        let _ = slot;
     }
 }
 
@@ -31,39 +29,15 @@ pub(crate) struct GpuMediaFrameImporter {
 }
 
 impl GpuMediaFrameImporter {
-    /// Imports a bound frame's GPU frames, in upload order, before any reaches a texture. A failed
-    /// import settles its source on the CPU, so the source's other frames here go there with it
-    /// instead of mixing the two in one output frame.
-    pub(super) fn import_all(
-        &mut self,
-        renderer: &lumen_gpu::Renderer,
-        imports: &mut GpuMediaImports,
-        uploads: &[MediaTextureUpload],
-    ) -> Vec<Result<Arc<lumen_gpu::wgpu::Texture>, String>> {
-        uploads
-            .iter()
-            .filter_map(|upload| {
-                let crate::media::MediaFrame::GpuVideo(frame) = &upload.frame else {
-                    return None;
-                };
-                let imported = self.import(renderer, imports, upload, frame);
-                if imported.is_err() {
-                    frame.settle_on_cpu();
-                }
-                Some(imported)
-            })
-            .collect()
-    }
-
     pub(super) fn import(
         &mut self,
         renderer: &lumen_gpu::Renderer,
         imports: &mut GpuMediaImports,
-        upload: &MediaTextureUpload,
+        slot: u32,
         frame: &Arc<crate::media::GpuVideoMediaFrame>,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
         #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
-        let _ = (imports, upload);
+        let _ = (imports, slot);
         #[cfg(not(any(
             all(target_os = "linux", feature = "vulkan"),
             all(target_os = "macos", feature = "metal")
@@ -77,7 +51,7 @@ impl GpuMediaFrameImporter {
             lumen_ffmpeg::GpuBackend::Vulkan => self
                 .vulkan
                 .get_or_insert_with(|| VulkanMediaImporter::new(renderer))
-                .import_frame(renderer, &mut imports.vulkan, upload, frame),
+                .import_frame(renderer, &mut imports.vulkan, slot, frame),
             backend => Err(format!(
                 "GPU media backend {backend:?} is not supported by this renderer build"
             )),
@@ -214,14 +188,14 @@ impl VulkanMediaImporter {
         Self { pipeline }
     }
 
-    /// Copies `frame` out of FFmpeg's image and converts it into a texture that stays the plan's
+    /// Copies `frame` out of FFmpeg's image and converts it into a texture that stays `slot`'s
     /// until the frame size changes. Nothing else reads the image, so the frame only has to outlive
     /// the copy, and the copy's semaphore wait and layout change go through FFmpeg's frame lock.
     fn import_frame(
         &self,
         renderer: &lumen_gpu::Renderer,
-        textures: &mut HashMap<lumen_gpu::TextureId, VulkanMediaTexture>,
-        upload: &MediaTextureUpload,
+        textures: &mut HashMap<u32, VulkanMediaTexture>,
+        slot: u32,
         frame: &crate::media::GpuVideoMediaFrame,
     ) -> Result<Arc<lumen_gpu::wgpu::Texture>, String> {
         use lumen_gpu::wgpu;
@@ -240,14 +214,14 @@ impl VulkanMediaImporter {
         let (width, height) = decoded.dimensions();
         let size = lumen_gpu::Size::new(width, height);
         if textures
-            .get(&upload.texture)
+            .get(&slot)
             .is_none_or(|texture| texture.size != size)
         {
             let texture = self.create_texture(renderer, size)?;
-            textures.insert(upload.texture, texture);
+            textures.insert(slot, texture);
         }
         let texture = textures
-            .get_mut(&upload.texture)
+            .get_mut(&slot)
             .ok_or_else(|| "Vulkan media texture was not initialized".to_string())?;
 
         let yuv_to_rgb = decoded.yuv_to_rgb();
