@@ -1,96 +1,65 @@
-import { Composition, Lumen, mediaReference } from "@lumiscia/lumen-sdk";
+import { readFile, writeFile } from "node:fs/promises";
 
-const mediaUrl =
-  process.env.LUMEN_EXAMPLE_MEDIA_URL ??
-  "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=1280&h=720&fit=crop";
-const baseUrl = process.env.LUMISCIA_BASE_URL ?? "https://api.lumiscia.com/v1";
-const mode = process.env.LUMEN_EXAMPLE_MODE ?? (baseUrl.includes("localhost") ? "local" : "cloud");
-const textContent = process.env.LUMEN_EXAMPLE_TEXT ?? "Hello from Lumen";
-const fontFamily = process.env.LUMEN_EXAMPLE_FONT_FAMILY ?? "Inter";
+import { Composition, Lumen, LumenError } from "@lumiscia/lumen-sdk";
 
-const lumen = new Lumen({
-  apiKey: process.env.LUMISCIA_API_KEY ?? "dev-api-key",
-  baseUrl,
-});
-
-const plateAlias = "plate";
-let media = mediaUrl;
-if (mode !== "local") {
-  const plate = await lumen.createUrlMedia({
-    fileName: "plate.png",
-    url: mediaUrl,
-  });
-  console.log("Created media:", plate.id, plate.status);
-  media = mediaReference(plate);
+const apiKey = process.env.LUMISCIA_API_KEY;
+if (!apiKey) {
+  throw new Error("Set LUMISCIA_API_KEY to your Lumiscia API key.");
 }
+const lumen = new Lumen({
+  apiKey,
+  baseUrl: process.env.LUMISCIA_BASE_URL ?? "https://api.lumiscia.com/v1",
+});
 
 const composition = new Composition({
-  metadata: {
-    name: "SDK smoke test",
-  },
-  renderSettings: {
-    width: 1920,
-    height: 1080,
-  },
-  timeline: {
-    fps: 24,
-    durationSeconds: 5,
-  },
+  renderSettings: { width: 1280, height: 720 },
+  timeline: { fps: 30, durationSeconds: 4 },
 });
 
-const background = composition.addNode({
-  type: "background",
-  params: {
-    width: 1920,
-    height: 1080,
-    paint: [24, 28, 36, 255],
-  },
+const video = composition.addNode({
+  type: "media_in",
+  params: { kind: "video", source: "clip" },
 });
-
+const scaled = composition.addNode({
+  type: "resize",
+  params: { width: 1280, height: 720, mode: "fill" },
+  inputs: { source: video },
+});
 const title = composition.addNode({
   type: "text",
   params: {
-    content: textContent,
-    font_family: fontFamily,
+    content: "Hello from Lumen",
+    font_family: "Roboto",
     font_size: 96,
-    font_weight: 700,
     color: [255, 255, 255, 255],
-    max_width: 1280,
+    position: [64, 520],
   },
 });
-
-const image = composition.addNode({
-  type: "media_in",
-  params: {
-    kind: "image",
-    source: plateAlias,
-    range_start: 0,
-    range_end: 120,
-    loop_mode: "repeat",
-  },
+const merged = composition.addNode({
+  type: "merge",
+  inputs: { base: scaled, overlay: title },
 });
+composition.addNode({ type: "media_output", inputs: { source: merged } });
 
-const layers = composition.addNode({
-  type: "raster_multimerge",
-  params: {
-    blend_mode: "normal",
-  },
+composition
+  .addAudioTrack({ id: "clip-audio", name: "Clip audio" })
+  .addAudio({ source: "clip", start: 0, duration: 4, trackId: "clip-audio" });
+
+const clip = await lumen.uploadMedia({
+  body: await readFile(new URL("../../assets/clip.mp4", import.meta.url)),
+  fileName: "clip.mp4",
 });
-
-composition.connect(background, layers, { toPort: "layers" });
-composition.connect(image, layers, { toPort: "layers" });
-composition.connect(title, layers, { toPort: "layers" });
-const output = composition.addNode({ type: "media_output" });
-composition.connect(layers, output, { toPort: "source" });
-
-console.log(JSON.stringify(composition.toJSON(), null, 2));
-
-const render = await lumen.render(composition, {
-  media: {
-    [plateAlias]: media,
-  },
-});
-console.log("Created render:", render.id);
-const done = await lumen.waitForRender(render.id, { onProgress: console.log });
-const artifact = await (await lumen.download(done)).blob();
-console.log("Artifact:", artifact.type, artifact.size, "bytes");
+const render = await lumen.render(composition, { media: { clip } });
+try {
+  const done = await lumen.waitForRender(render, {
+    onProgress: ({ progress }) => console.log(`${Math.round(progress * 100)}%`),
+  });
+  const output = await lumen.download(done);
+  await writeFile("out.mp4", Buffer.from(await output.arrayBuffer()));
+  console.log("Wrote out.mp4");
+} catch (error) {
+  if (error instanceof LumenError && error.renderId) {
+    console.error(`Render ${error.renderId} failed: ${error.code}: ${error.message}`);
+  }
+  throw error;
+}

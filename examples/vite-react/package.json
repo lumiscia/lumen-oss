@@ -7,7 +7,8 @@
     "build": "vite build",
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo",
-    "dev": "pnpm --filter '@lumiscia/example-vite-react^...' build && vite"
+    "predev": "test -f ../../packages/lumen-bindings/wasm/lumen_wasm.js || { echo 'Generate the wasm bindings first: just wasm-bindings-debug (see examples/README.md)' >&2; exit 1; } && pnpm --filter '@lumiscia/example-vite-react^...' build",
+    "dev": "vite"
   },
   "dependencies": {
     "@lumiscia/lumen-bindings": "workspace:*",
