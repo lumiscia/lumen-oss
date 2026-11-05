@@ -151,6 +151,7 @@ export class LumenAudioEngine {
   #sources = new Map<string, AudioSourceEntry>();
   // Only the latest sync reports failures, because a newer one may have replaced those sources.
   #sourceSync = 0;
+  #audioAbandoned = false;
   #stallTimer: ReturnType<typeof setTimeout> | null = null;
   #timeline: AudioEngineTimeline | null = null;
   #timelineJson: string | null = null;
@@ -258,7 +259,7 @@ export class LumenAudioEngine {
   }
 
   #restartMix(): void {
-    if (this.#playback) {
+    if (this.#playback && !this.#audioAbandoned) {
       const holdUntil = Math.max(this.#playback.holdUntil, performance.now());
       this.#start(this.currentTimeMs(), holdUntil);
       this.#options.onClockChange?.();
@@ -362,6 +363,7 @@ export class LumenAudioEngine {
   }
 
   #halt(): void {
+    this.#audioAbandoned = false;
     this.#clearStallTimer();
     this.#generation += 1;
     this.#playback = null;
@@ -378,23 +380,28 @@ export class LumenAudioEngine {
     }
   }
 
-  // A suspended context isn't a stall, and resuming it brings a fresh worklet report.
-  #armStallTimer(): void {
+  // Only a reported underrun on a running context counts, so suspension restarts the timeout.
+  #syncStallTimer(): void {
+    const playback = this.#playback;
+    if (!playback?.workletReported || !playback.stalled || this.#context?.state !== "running") {
+      this.#clearStallTimer();
+      return;
+    }
     this.#stallTimer ??= setTimeout(() => {
       this.#stallTimer = null;
-      if (this.#context?.state === "running") {
-        this.#abandonAudio();
-      }
+      this.#abandonAudio();
     }, AUDIO_STALL_TIMEOUT_MS);
   }
 
   // Later worklet reports and chunks belong to the old generation, so audio stays off until the
-  // next play, seek or mix restart, and the position runs on the clock used before audio starts.
+  // next play, seek or composition load, and the position runs on the clock used before audio
+  // starts.
   #abandonAudio(): void {
     const playback = this.#playback;
     if (!playback) {
       return;
     }
+    this.#audioAbandoned = true;
     this.#generation += 1;
     this.#queuedChunkStarts.clear();
     if (this.#node) {
@@ -474,11 +481,7 @@ export class LumenAudioEngine {
           workletReported: true,
         };
         this.#queueChunks(message.currentSample);
-        if (message.stalled) {
-          this.#armStallTimer();
-        } else {
-          this.#clearStallTimer();
-        }
+        this.#syncStallTimer();
         if (this.isClockRunning() !== wasRunning) {
           this.#options.onClockChange?.();
         }
@@ -494,7 +497,10 @@ export class LumenAudioEngine {
         latencyHint: this.#options.latencyHint ?? "interactive",
         sampleRate: LUMEN_AUDIO_SAMPLE_RATE,
       });
-      this.#context.onstatechange = () => this.#options.onClockChange?.();
+      this.#context.onstatechange = () => {
+        this.#syncStallTimer();
+        this.#options.onClockChange?.();
+      };
     }
     return this.#context;
   }

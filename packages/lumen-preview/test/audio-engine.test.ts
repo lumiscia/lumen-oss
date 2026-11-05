@@ -656,10 +656,34 @@ describe("LumenAudioEngine", () => {
       report(true);
       const context = fakes.contexts[0];
       if (!context) throw new Error("no context");
+      vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS - 1);
       context.state = "suspended";
+      context.onstatechange?.();
       vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS * 2);
-
       expect(onError).not.toHaveBeenCalled();
+
+      context.state = "running";
+      context.onstatechange?.();
+      vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS - 1);
+      expect(onError).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps audio off when a source arrives after giving up, until the next play", async () => {
+      const onError = vi.fn();
+      const { engine, report } = await playStalled(onError);
+      const plays = () => postedOfType(fakes.nodes[0]?.posted, "play");
+      report(true);
+      vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS);
+      expect(plays()).toHaveLength(1);
+
+      await engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+      expect(plays()).toHaveLength(1);
+
+      engine.pause();
+      engine.play();
+      await vi.waitFor(() => expect(plays()).toHaveLength(2));
     });
   });
 
