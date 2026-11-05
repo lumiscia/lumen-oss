@@ -1,5 +1,7 @@
-export { Lumen, mediaReference } from "./node.js";
+export * from "@lumiscia/lumen-shared";
+export { Lumen, mediaReference } from "./client.js";
 export { LumenError } from "./errors.js";
+export type { LumenErrorFields } from "./errors.js";
 export { LumenWebhookError, verifyWebhook } from "./webhooks.js";
 export type {
   LumenWebhookErrorCode,
@@ -7,28 +9,15 @@ export type {
   VerifyWebhookOptions,
   WebhookHeaders,
 } from "./webhooks.js";
-export { Composition } from "@lumiscia/lumen-shared";
-export type * from "@lumiscia/lumen-shared";
 export type {
-  CompleteMultipartUploadOptions,
-  CreateMediaUploadOptions,
-  CreateMediaUploadResult,
-  CreateMultipartUploadResult,
   CreateUrlMediaOptions,
   LumenMediaReference,
   LumenOptions,
-  LumenWebSocket,
-  LumenWebSocketFactory,
-  LumenWebSocketFactoryOptions,
-  MediaUploadPart,
-  MultipartUploadOptions,
   Render,
-  RenderEvent,
-  RenderEventHandlers,
-  RenderEventSubscription,
   RenderFailure,
   RenderMediaManifest,
   RenderOptions,
+  RenderProgress,
   RenderStatus,
   TemporaryMedia,
   UploadMediaBody,

@@ -91,6 +91,6 @@ const render = await lumen.render(composition, {
   },
 });
 console.log("Created render:", render.id);
-const done = await lumen.waitForRender(render.id, { onEvent: console.log });
+const done = await lumen.waitForRender(render.id, { onProgress: console.log });
 const artifact = await (await lumen.download(done)).blob();
 console.log("Artifact:", artifact.type, artifact.size, "bytes");

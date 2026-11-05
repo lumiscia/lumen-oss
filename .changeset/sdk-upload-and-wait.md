@@ -1,0 +1,9 @@
+---
+"@lumiscia/lumen-sdk": minor
+---
+
+`waitForRender` now treats `GET /renders/:id/progress` as the truth and the socket as a wake-up. It reads the render, holds one socket open for up to a minute to hear about progress, then reads again, with sockets at least 5 s apart and the gap doubling to 30 s while they keep failing, so a wait costs about two requests a minute and still works where sockets don't. Rate limits (honouring `Retry-After`), server errors and network failures are retried with jittered backoff and give up after eight in a row; a 401 or 404 throws at once. `onEvent` is replaced by `onProgress`, which receives `{ id, status, progress }` from sockets and from reads and is cancellable with `signal`. The `websocket` option, `subscribeToRender`, the `ws` dependency, the `./cloudflare` export and the auth frame are gone: the SDK opens the socket itself, with the global `WebSocket` and an `Authorization` header on Node 22 and with a `fetch` upgrade on Cloudflare Workers. Browsers cannot set that header, so there the wait falls back to reading every 5 to 30 s. `engines.node` is now `>=22`.
+
+Six upload methods become one: `uploadMedia({ body, fileName?, contentType?, sizeBytes?, signal? })`. A Blob, `File` or buffer needs nothing else, and its size, name and type are taken from it; a stream needs `sizeBytes`. Streams and bodies over 64 MiB go up in 8 MiB parts and everything else in one request, so `multipart`, `partSizeBytes`, `createMediaUpload`, `createMediaMultipartUpload`, `uploadMediaMultipart`, `uploadMediaMultipartPart` and `completeMediaMultipartUpload` are removed. `media` in `render` accepts an upload directly: `media: { hero: await lumen.uploadMedia({ body: file }) }`, so `mediaReference` is optional.
+
+`@lumiscia/lumen-sdk` now re-exports everything in `@lumiscia/lumen-shared`, so `Composition`, the expression helpers and their types come from one import, and the package exports only `.`.
