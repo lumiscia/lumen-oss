@@ -1,6 +1,5 @@
 import { describe, expect, test } from "vitest";
 
-import { AudioTrack } from "../src/audio.js";
 import { Composition } from "../src/composition.js";
 import { frame, hex, progress, uppercase, vec2 } from "../src/expression.js";
 import { defineComposition } from "../src/template.js";
@@ -129,118 +128,56 @@ describe("Composition inputs", () => {
   });
 });
 
-describe("Composition audio helpers", () => {
-  test("adds audio tracks with their clips using canonical JSON fields", () => {
-    const composition = new Composition();
-    const track = new AudioTrack({
-      id: "music",
-      name: "Music",
-      volume: 0.5,
-    });
-    const clip = track.addClip({
-      durationSeconds: 2.5,
+describe("Composition audio", () => {
+  test("converts seconds to whole milliseconds whatever the fps, and keeps track settings", () => {
+    const composition = new Composition({ timeline: { fps: 24, durationSeconds: 5 } });
+
+    composition.addAudioTrack({ id: "music", name: "Music", gain: 0.5, solo: true }).addAudio({
+      source: "audio:intro",
+      start: 0.5,
+      duration: 2.5,
+      offset: 1.25,
+      trackId: "music",
+      gain: 0.8,
+      id: "intro",
       name: "Intro",
-      sourceId: "audio:intro",
-      sourceStartSeconds: 1.25,
-      startSeconds: 0.5,
-      volume: 0.8,
     });
 
-    composition.addAudioTrack(track);
-
-    expect(track.toJSON()).toEqual({
-      id: "music",
-      name: "Music",
-      volume: 0.5,
-    });
-    expect(clip).toEqual({
-      duration_ms: 2_500,
-      id: "music-clip-1",
-      name: "Intro",
-      source_id: "audio:intro",
-      source_start_ms: 1_250,
-      start_ms: 500,
-      track_id: "music",
-      volume: 0.8,
-    });
     expect(composition.toJSON().audio).toEqual({
-      clips: [clip],
-      tracks: [track.toJSON()],
+      clips: [
+        {
+          duration_ms: 2_500,
+          id: "intro",
+          name: "Intro",
+          source_id: "audio:intro",
+          source_start_ms: 1_250,
+          start_ms: 500,
+          track_id: "music",
+          volume: 0.8,
+        },
+      ],
+      tracks: [{ id: "music", name: "Music", solo: true, volume: 0.5 }],
     });
   });
 
-  test("gives clips on different tracks different default ids", () => {
-    const music = new AudioTrack({ id: "music" });
-    const voice = new AudioTrack({ id: "voice" });
-
-    const first = music.addClip({ durationMs: 100, sourceId: "audio:intro" });
-    const second = voice.addClip({ durationMs: 100, sourceId: "audio:line" });
-
-    expect(first.id).not.toBe(second.id);
-  });
-
-  test("keeps canonical clip input intact when it belongs to the track", () => {
+  test("declares the track a clip plays on, numbers default ids, and allows overlap", () => {
     const composition = new Composition();
-    const track = new AudioTrack({
-      id: "voice",
-      muted: true,
-      name: "Voice",
-    });
-    const clip = track.addClip({
-      duration_ms: 1_000,
-      id: "voice-over",
-      source_id: "audio:voice",
-      start_ms: 0,
-      track_id: track.id,
-    });
 
-    composition.addAudioTrack(track);
+    composition
+      .addAudio({ source: "audio:a", start: 0, duration: 2 })
+      .addAudio({ source: "audio:b", start: 1, duration: 2 })
+      .addAudio({ source: "audio:c", start: 0, duration: 1, trackId: "voice" });
 
-    expect(clip).toEqual({
-      duration_ms: 1_000,
-      id: "voice-over",
-      source_id: "audio:voice",
-      start_ms: 0,
-      track_id: "voice",
-    });
-    expect(composition.toJSON().audio?.clips).toEqual([clip]);
-  });
-
-  test("rejects overlapping clips on the same audio track", () => {
-    const track = new AudioTrack({ id: "music" });
-    track.addClip({
-      durationMs: 1_000,
-      id: "intro",
-      sourceId: "audio:intro",
-      startMs: 0,
-    });
-
-    expect(() =>
-      track.addClip({
-        durationMs: 500,
-        id: "overlap",
-        sourceId: "audio:overlap",
-        startMs: 999,
-      }),
-    ).toThrow("overlaps");
-  });
-
-  test("allows adjacent clips on the same audio track", () => {
-    const track = new AudioTrack({ id: "music" });
-    track.addClip({
-      durationMs: 1_000,
-      id: "intro",
-      sourceId: "audio:intro",
-      startMs: 0,
-    });
-    const next = track.addClip({
-      durationMs: 500,
-      id: "next",
-      sourceId: "audio:next",
-      startMs: 1_000,
-    });
-
-    expect(next.start_ms).toBe(1_000);
+    const audio = composition.toJSON().audio;
+    expect(audio?.tracks).toEqual([{ id: "main" }, { id: "voice" }]);
+    expect(audio?.clips.map((clip) => clip.id)).toEqual([
+      "main-clip-1",
+      "main-clip-2",
+      "voice-clip-1",
+    ]);
+    expect(() => composition.addAudioTrack({ id: "voice", muted: true })).toThrow(
+      "Audio track `voice` already exists.",
+    );
   });
 });
 

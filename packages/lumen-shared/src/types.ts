@@ -19,7 +19,7 @@ import type { Composition } from "./composition.js";
 import type { Expr } from "./expression.js";
 
 export interface CompositionOptions {
-  readonly audio?: AudioTimelineInput;
+  readonly audio?: LumenComposition["audio"];
   readonly metadata?: LumenComposition["metadata"];
   readonly renderSettings?: RenderSettingsInput;
   readonly timeline?: TimelineInput;
@@ -110,47 +110,29 @@ export type TimelineInput = Partial<LumenComposition["timeline"]> & {
   readonly durationSeconds?: number;
 };
 
-export interface AudioTimelineInput {
-  readonly clips: readonly AudioClipInput[];
-  readonly tracks: readonly AudioTrackInput[];
-  readonly [key: string]: unknown;
-}
-
-export type AudioTrackOptions = AudioTrackInput;
-
-export interface AudioTrackInput {
+/** A track declared with `addAudioTrack`. Gain scales every clip on the track. */
+export interface AudioTrackOptions {
   readonly id: string;
+  readonly name?: string;
   readonly muted?: boolean;
-  readonly name?: string;
   readonly solo?: boolean;
-  readonly volume?: number;
-  readonly [key: string]: unknown;
+  readonly gain?: number;
 }
 
-export type AudioClipOptions = Omit<
-  AudioClipInput,
-  "duration_ms" | "id" | "source_id" | "source_start_ms" | "start_ms" | "track_id"
-> & {
-  readonly durationMs?: number;
-  readonly durationSeconds?: number;
+/** A clip of an audio source, with every time in seconds. */
+export interface AudioClipOptions {
+  /** The audio source's id, as registered with the host. */
+  readonly source: string;
+  /** Where the clip starts on the timeline. */
+  readonly start: number;
+  readonly duration: number;
+  /** Where in the source the clip starts playing. */
+  readonly offset?: number;
+  /** The track to play on, declared as a plain track if it isn't one yet. Defaults to `main`. */
+  readonly trackId?: string;
+  readonly gain?: number;
   readonly id?: string;
-  readonly sourceId: string;
-  readonly sourceStartMs?: number;
-  readonly sourceStartSeconds?: number;
-  readonly startMs?: number;
-  readonly startSeconds?: number;
-};
-
-export interface AudioClipInput {
-  readonly duration_ms: number;
-  readonly id: string;
   readonly name?: string;
-  readonly source_id: string;
-  readonly source_start_ms?: number;
-  readonly start_ms: number;
-  readonly track_id: string;
-  readonly volume?: number;
-  readonly [key: string]: unknown;
 }
 
 export type WgslUniformType =
