@@ -6,10 +6,10 @@ import type {
   NodeKind,
 } from "@lumiscia/lumen-types";
 
-import { AudioTrack, audioTrackTimeline } from "./audio.js";
 import { Expr, type FunctionDefinition } from "./expression.js";
 import type {
-  AudioTimelineInput,
+  AudioClipOptions,
+  AudioTrackOptions,
   CompositionOptions,
   ConnectOptions,
   NodeInput,
@@ -22,6 +22,8 @@ const defaultRenderSettings = {
   height: 1080,
   width: 1920,
 } satisfies LumenComposition["render_settings"];
+
+const defaultAudioTrackId = "main";
 
 const defaultTimeline = {
   duration_frames: 1,
@@ -58,7 +60,7 @@ export class Composition {
   readonly #nodeIds = new Set<number>();
   readonly #nodes: CompositionNode[] = [];
   #nextNodeId = 0;
-  #audio: AudioTimelineInput | undefined;
+  #audio: LumenComposition["audio"];
   #lumenSchemaVersion: LumenComposition["lumenSchemaVersion"] | undefined;
   #metadata: LumenComposition["metadata"] | undefined;
   #renderSettings: LumenComposition["render_settings"];
@@ -72,7 +74,11 @@ export class Composition {
   }
 
   constructor(options: CompositionOptions = {}) {
-    this.#audio = audioTimeline(options.audio);
+    this.#audio = options.audio && {
+      ...options.audio,
+      clips: options.audio.clips.map((clip) => ({ ...clip })),
+      tracks: options.audio.tracks.map((track) => ({ ...track })),
+    };
     this.#metadata = options.metadata;
     this.#lumenSchemaVersion = options.lumenSchemaVersion;
     this.#renderSettings = renderSettings(options.renderSettings);
@@ -200,17 +206,61 @@ export class Composition {
     return this;
   }
 
-  addAudioTrack(track: AudioTrack): this {
-    const audio = this.#audio ?? emptyAudioTimeline();
-    const timeline = audioTrackTimeline(track);
-    if (audio.tracks.some((existingTrack) => existingTrack.id === timeline.track.id)) {
-      throw new Error(`Audio track \`${timeline.track.id}\` already exists.`);
+  /**
+   * Adds an audio clip, with times in seconds. A `trackId` that isn't declared becomes a plain
+   * track, so declare a track with `addAudioTrack` first to mute it or set its gain.
+   */
+  addAudio(options: AudioClipOptions): this {
+    const { source, start, duration, offset, gain, id, name } = options;
+    const trackId = options.trackId ?? defaultAudioTrackId;
+    const audio = this.#audio ?? { clips: [], tracks: [] };
+    const taken = new Set(audio.clips.map((clip) => clip.id));
+    let number = audio.clips.filter((clip) => clip.track_id === trackId).length + 1;
+    while (taken.has(`${trackId}-clip-${number}`)) {
+      number += 1;
+    }
+    this.#audio = {
+      ...audio,
+      clips: [
+        ...audio.clips,
+        {
+          duration_ms: milliseconds(duration),
+          id: id ?? `${trackId}-clip-${number}`,
+          ...(name === undefined ? {} : { name }),
+          source_id: source,
+          ...(offset === undefined ? {} : { source_start_ms: milliseconds(offset) }),
+          start_ms: milliseconds(start),
+          track_id: trackId,
+          ...(gain === undefined ? {} : { volume: gain }),
+        },
+      ],
+      tracks: audio.tracks.some((track) => track.id === trackId)
+        ? audio.tracks
+        : [...audio.tracks, { id: trackId }],
+    };
+    return this;
+  }
+
+  /** Declares an audio track with its name, mute, solo and gain. */
+  addAudioTrack(options: AudioTrackOptions): this {
+    const { id, name, muted, solo, gain } = options;
+    const audio = this.#audio ?? { clips: [], tracks: [] };
+    if (audio.tracks.some((track) => track.id === id)) {
+      throw new Error(`Audio track \`${id}\` already exists.`);
     }
 
     this.#audio = {
       ...audio,
-      clips: [...audio.clips, ...timeline.clips],
-      tracks: [...audio.tracks, timeline.track],
+      tracks: [
+        ...audio.tracks,
+        {
+          id,
+          ...(muted === undefined ? {} : { muted }),
+          ...(name === undefined ? {} : { name }),
+          ...(solo === undefined ? {} : { solo }),
+          ...(gain === undefined ? {} : { volume: gain }),
+        },
+      ],
     };
     return this;
   }
@@ -294,23 +344,9 @@ function timeline(input: TimelineInput = {}): LumenComposition["timeline"] {
   };
 }
 
-function audioTimeline(input: AudioTimelineInput | undefined): AudioTimelineInput | undefined {
-  if (input === undefined) {
-    return undefined;
-  }
-
-  return {
-    ...input,
-    clips: [...input.clips],
-    tracks: [...input.tracks],
-  };
-}
-
-function emptyAudioTimeline(): AudioTimelineInput {
-  return {
-    clips: [],
-    tracks: [],
-  };
+/** Audio times are whole milliseconds on the wire, whatever the composition's fps. */
+function milliseconds(seconds: number): number {
+  return Math.round(seconds * 1_000);
 }
 
 function functionName(definition: FunctionDefinition): string {

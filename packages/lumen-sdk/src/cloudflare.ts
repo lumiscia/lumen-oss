@@ -35,7 +35,7 @@ export type {
   VerifyWebhookOptions,
   WebhookHeaders,
 } from "./webhooks.js";
-export { AudioTrack, Composition } from "@lumiscia/lumen-shared";
+export { Composition } from "@lumiscia/lumen-shared";
 export type * from "@lumiscia/lumen-shared";
 export type {
   CompleteMultipartUploadOptions,
