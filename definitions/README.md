@@ -14,7 +14,7 @@ Reference the schemas directly from this repository, or vendor them into tooling
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/lumiscia/lumen/main/definitions/composition.schema.json"
+  "$schema": "https://raw.githubusercontent.com/lumiscia/lumen-oss/main/definitions/composition.schema.json"
 }
 ```
 

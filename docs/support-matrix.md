@@ -14,6 +14,7 @@ Lumen is still a heavy-beta renderer. This matrix describes what is supported to
 | Software Vulkan / lavapipe | CI-covered baseline    | CI selects lavapipe for SDK/server integration tests with `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json` and `WGPU_BACKEND=vulkan`. This validates baseline rendering behavior, not hardware performance. |
 | CPU encoding               | Supported baseline     | The portable path is CPU-backed FFmpeg encoding with `libx264`. It is what the Linux default falls back to when `h264_vulkan` won't open.                                                                          |
 | Hardware encoding          | Experimental           | `h264_vulkan` is the Linux default and VideoToolbox the macOS default. CUDA/NVENC is available by name. Availability depends on OS, driver, FFmpeg, and adapter support.                                           |
+| Vulkan Video encoding      | Experimental           | `h264_vulkan` is the Linux default; `hevc_vulkan` and `av1_vulkan` are available by name. CI has no hardware encoder, so none of them is tested there. See [Vulkan encoders](#vulkan-encoders).                    |
 
 ## Operating Systems
 
@@ -76,6 +77,21 @@ Software Vulkan through lavapipe is the deterministic CI baseline. It is useful 
 Encoder names are FFmpeg's own, such as `libx264` or `hevc_nvenc`, and are checked against your FFmpeg build before rendering starts. `*_vaapi` encoders aren't supported. Only the automatic default falls back. An encoder you name either opens or fails the render, and `av1_vulkan` needs FFmpeg 8.0 or newer. The fallback covers everything that stops the encoder opening: FFmpeg built without `h264_vulkan`, no Vulkan driver, a device without `VK_KHR_video_encode_queue`, no H.264 encode support, a canvas size the hardware rejects, and `--crf` or `--preset`, which `h264_vulkan` doesn't support. A failure after the encoder has opened stays an error.
 
 `lumen-local` and `lumen-server` render and encode `h264_vulkan` on one Vulkan device, so frames never leave the GPU. If that device can't open they warn and upload frames to the encoder instead. Each logs the encoder it opened and how frames reach it.
+
+### Vulkan encoders
+
+| Encoder       | Status                        | Notes                                                                                                                                                                                                           |
+| ------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `h264_vulkan` | Linux default, experimental   | Renders and encodes on one Vulkan device. Used on NVIDIA GPUs (RTX 4090, Blackwell); the NVIDIA stall below applies.                                                                                            |
+| `hevc_vulkan` | By name, untested             | Shares `h264_vulkan`'s code path. No one has run it on hardware for this project and no test renders with it.                                                                                                   |
+| `av1_vulkan`  | By name, unreliable on NVIDIA | Needs FFmpeg 8.0 or newer. On an RTX 4090 most frames of the output were wrong (24 dB mean PSNR against the source) with FFmpeg 9.0.2 and master. An AMD 780M encoded it with `RADV_PERFTEST=video_encode` set. |
+
+What they all need:
+
+- A Vulkan device with `VK_KHR_video_encode_queue` that supports the codec, and an FFmpeg built with Vulkan. Otherwise the encoder fails to open: the Linux default then falls back to `libx264`, and a named encoder fails the render. Distribution Mesa builds that leave out patent-encumbered codecs have no H.264 or HEVC encode. A Rocky Linux 10 box with Mesa 25.2 and an AMD 780M offered only AV1.
+- Bitrate or `--qp` rate control. `--crf` and `--preset` aren't supported.
+- On NVIDIA, `h264_vulkan` can stall forever at a GOP boundary when FFmpeg encodes on more than one queue. `n8.0` and `n9.0.2` do, and no other release was measured. `lumen-local` and `lumen-server` avoid it, with one encode queue when frames stay on the GPU and `async_depth=1` when they are uploaded, which is slower. FFmpeg `master` and `release/9.1` fix it.
+- NVIDIA's driver limits the Vulkan contexts one process can hold, which caps `lumen-server` at 9 concurrent `h264_vulkan` renders. See the [server README](../crates/server/README.md).
 
 ### Hardware decode
 

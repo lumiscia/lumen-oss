@@ -13,7 +13,7 @@ Supported native render targets today are:
 - Linux with Vulkan, plus optional CUDA/NVENC interop when built with `vulkan,cuda,ffmpeg`.
 - macOS with Metal, plus VideoToolbox-oriented media paths when built with `metal,ffmpeg`.
 
-Browser/WASM preview paths are separate and use WebGPU/WebGL-facing code.
+Browser/WASM preview paths are separate and use WebGPU-facing code.
 
 JSON composition parsing is always available. In JSON params, a string starting with `=` is an expression (`"=frame * 2"`); a leading `==` escapes a literal string starting with `=` (`"==wow"` is the text `=wow`).
 
