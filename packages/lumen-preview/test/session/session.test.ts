@@ -184,6 +184,60 @@ describe("LumenPreviewSession", () => {
     });
   });
 
+  it("stops a worker still starting as soon as it's disposed", async () => {
+    vi.useFakeTimers();
+    const { attached, preview, session, worker } = createSession();
+
+    session.dispose();
+    expect(worker.terminated).toBe(true);
+    await attached;
+    expect(vi.getTimerCount()).toBe(0);
+    expect(preview.getSnapshot().error).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it("stops the startup it replaces, when attached again", async () => {
+    const { attached, canvases, preview, session, worker } = createSession();
+    const replacement = session.attach({
+      append: (canvas: unknown) => canvases.push(canvas),
+    } as unknown as HTMLElement);
+    const nextWorker = FakeWorker.instances.at(-1) as FakeWorker;
+
+    expect(worker.terminated).toBe(true);
+    await attached;
+    expect(preview.getSnapshot().error).toBeNull();
+
+    nextWorker.emit({ type: "ready" });
+    await replacement;
+    expect(canvases).toHaveLength(1);
+    expect(nextWorker.terminated).toBe(false);
+  });
+
+  it("applies what changed while the worker was starting", async () => {
+    const { attached, session, worker } = createSession({ lookaheadCount: 8, logLevel: "off" });
+    expect(worker.ofType("start")[0]).toMatchObject({ logLevel: "off", lookaheadCount: 8 });
+
+    session.update({ composition: composition("second"), logLevel: "warn", lookaheadCount: 2 });
+    expect(worker.ofType("set-options")).toHaveLength(0);
+    worker.emit({ type: "ready" });
+    await attached;
+
+    expect(worker.ofType("set-options")).toMatchObject([{ logLevel: "warn", lookaheadCount: 2 }]);
+    expect(worker.ofType("load")).toHaveLength(1);
+    expect(worker.ofType("load")[0]?.compositionJson).toContain("second");
+    const types = worker.posted.map((message) => message.type);
+    expect(types.indexOf("set-options")).toBeLessThan(types.indexOf("load"));
+  });
+
+  it("sends options only when they really change", async () => {
+    const { session, worker } = await started({ lookaheadCount: 8 });
+    session.update({ composition: composition("first") });
+    expect(worker.ofType("set-options")).toHaveLength(0);
+
+    session.update({ composition: composition("first"), lookaheadCount: 2 });
+    expect(worker.ofType("set-options")).toMatchObject([{ lookaheadCount: 2 }]);
+  });
+
   it("reports a browser without WebGPU before it creates a worker", async () => {
     vi.stubGlobal("navigator", {});
     const preview = new LumenPreviewContext();
@@ -347,6 +401,31 @@ describe("LumenPreviewSession", () => {
     const replaced = preview.seek(40);
     session.update({ composition: composition("second") });
     await expect(replaced).resolves.toBe(false);
+  });
+
+  it("keeps following frames after a seek and a new attach", async () => {
+    const { preview, session, worker } = await playable();
+    void preview.seek(30);
+    expect(worker.ofType("seek").at(-1)?.seekId).toBe(1);
+
+    const attached = session.attach({ append: () => {} } as unknown as HTMLElement);
+    expect(preview.getSnapshot().isLoaded).toBe(false);
+    const nextWorker = FakeWorker.instances.at(-1) as FakeWorker;
+    nextWorker.emit({ type: "ready" });
+    await attached;
+    const loadId = nextWorker.ofType("load").at(-1)?.loadId as number;
+    nextWorker.emit({
+      audioTimelineJson: null,
+      fps: 10,
+      height: 720,
+      loadId,
+      totalFrames: 100,
+      type: "loaded",
+      width: 1280,
+    });
+
+    nextWorker.emit({ actualFps: 10, frame: 5, loadId, renderMs: 1, seekId: 0, type: "frame" });
+    expect(preview.getSnapshot().frame).toBe(5);
   });
 
   it("makes a render failure stop playback, and clears it when a frame arrives", async () => {

@@ -564,20 +564,58 @@ describe("LumenAudioEngine", () => {
     expect(onClockChange).toHaveBeenCalledTimes(4);
   });
 
-  it("runs the position on elapsed time when the audio never starts", async () => {
-    const now = vi.spyOn(performance, "now").mockReturnValue(1_000);
-    const engine = createEngine();
-    engine.loadAudioTimeline(timelineJson("a"));
-    engine.play(200);
+  describe("when no samples arrive", () => {
+    async function startedAt(fromMs: number) {
+      const now = vi.spyOn(performance, "now").mockReturnValue(1_000);
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+      engine.play(fromMs);
+      await settled(fakes);
+      const generation = () => postedOfType(fakes.nodes[0]?.posted, "play").at(-1)?.generation;
+      // The worklet answers every `play` like this, before it has anything to play.
+      const report = (ms: number, stalled: boolean) =>
+        fakes.nodes[0]?.onmessage({
+          contextTime: 0,
+          currentSample: (ms / 1_000) * LUMEN_AUDIO_SAMPLE_RATE,
+          generation: generation(),
+          stalled,
+          type: "position",
+        });
+      report(fromMs, true);
+      return { engine, now, report };
+    }
 
-    now.mockReturnValue(1_900);
-    expect(engine.currentTimeMs()).toBe(200);
-    expect(engine.isClockRunning()).toBe(false);
+    it("runs the position on elapsed time", async () => {
+      const { engine, now, report } = await startedAt(200);
 
-    now.mockReturnValue(2_500);
-    expect(engine.currentTimeMs()).toBe(700);
-    expect(engine.isClockRunning()).toBe(true);
-    now.mockRestore();
+      now.mockReturnValue(1_900);
+      expect(engine.currentTimeMs()).toBe(200);
+      expect(engine.isClockRunning()).toBe(false);
+
+      now.mockReturnValue(2_500);
+      report(200, true);
+      expect(engine.currentTimeMs()).toBe(700);
+      expect(engine.isClockRunning()).toBe(true);
+      now.mockRestore();
+    });
+
+    it("starts the mix again at the position once samples finally arrive", async () => {
+      const { engine, now, report } = await startedAt(200);
+      const plays = () => postedOfType(fakes.nodes[0]?.posted, "play");
+      expect(plays()).toHaveLength(1);
+
+      now.mockReturnValue(3_000);
+      report(200, false);
+      await settled(fakes);
+      await vi.waitFor(() => expect(plays()).toHaveLength(2));
+      expect(plays()[1]?.startSample).toBe((1_200 / 1_000) * LUMEN_AUDIO_SAMPLE_RATE);
+      expect(engine.currentTimeMs()).toBe(1_200);
+
+      report(1_200, false);
+      expect(engine.currentTimeMs()).toBe(1_200);
+      expect(engine.isClockRunning()).toBe(true);
+      now.mockRestore();
+    });
   });
 
   it("drops worker chunks and worklet reports from before a pause", async () => {

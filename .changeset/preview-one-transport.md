@@ -13,6 +13,8 @@ The preview now has one transport and one clock: a session always renders in a w
 - A session needs bindings that name a worker, so `bindings` is now `LumenWorkerBindings`. There is no main-thread driver and no fallback to one. `createLumenPreviewRuntime` stays for code that drives a controller directly.
 - `preview.seek` returns a promise: true once the frame is on screen or a newer seek's is, false if a load or failure got in first. `preview.controller` and `preview.reset()` are gone.
 - A failed load isn't retried until an input changes.
-- Audio always leads the clock and holds through an underrun, ramping back up when it returns. If audio hasn't started after about a second, as on a page with no user gesture, video runs on elapsed time and the audio joins on the next play.
+- A composition too slow for its frame rate drops frames and still answers pause and seek.
+- `dispose` stops a worker still starting and settles `attach` at once, and options changed during startup apply once the worker is ready.
+- Audio always leads the clock and holds through an underrun, ramping back up when it returns. If no samples have played after about a second, as on a page with no user gesture or with a mixer that sends nothing, video runs on elapsed time and the audio joins at that position once samples arrive.
 - The wasm `LumenPreviewController` loses `play`, `pause`, `isPlaying`, `tick`, `targetFrameDurationMs` and `targetFrameForTimeMs`, and the runtime controller loses `tickAsync`. `renderNowAsync` and `setFrame` remain, and `prepareFrame` and `renderPrepared` are new.
 - In Svelte, read state from `preview.state`, a single reactive snapshot. `preview.frame`, `preview.isPlaying` and the other mirrored fields are gone. `LumenCanvasProps` and `MediaRegistration` are exported from the root, and declarations are generated.

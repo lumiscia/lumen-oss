@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { PreviewClock } from "../src/clock.js";
 import { PreviewRunner } from "../src/runner.js";
@@ -47,9 +47,16 @@ function createRunner() {
     },
   );
 
+  // Runs everything due now: renders go through a zero-delay timer between each other.
   const settle = async () => {
-    for (let turn = 0; turn < 10; turn += 1) {
+    for (let turn = 0; turn < 50; turn += 1) {
       await Promise.resolve();
+      for (const [id, timer] of timers) {
+        if (timer.at <= now) {
+          timers.delete(id);
+          timer.callback();
+        }
+      }
     }
   };
 
@@ -212,6 +219,61 @@ describe("PreviewRunner", () => {
     fake.runner.seek(1, fake.clock(100, 0));
     await fake.settle();
     expect(fake.rendered).toEqual([0, 1]);
+  });
+
+  it("drops frames and still answers pause and seek when renders can't keep up", async () => {
+    const RENDER_MS = 40;
+    const FAST_FPS = 60;
+    // Without yielding, the loop never lets a timer fire. This ends it instead of hanging the test.
+    const MAX_RENDERS = 25;
+    const failures: unknown[] = [];
+    const answered: { frame: number; seekId: number }[] = [];
+    const rendered: number[] = [];
+    let playhead = 0;
+    const runner = new PreviewRunner<ReturnType<typeof setTimeout>>(
+      {
+        prepareFrame: () => Promise.resolve(),
+        renderFrame: () => {
+          if (rendered.length >= MAX_RENDERS) {
+            throw new Error("the render loop never yielded");
+          }
+          const until = performance.now() + RENDER_MS;
+          while (performance.now() < until);
+          rendered.push(playhead);
+          return Promise.resolve();
+        },
+        setFrame: (frame) => {
+          playhead = frame;
+        },
+      },
+      {
+        clearTimer: (timer) => clearTimeout(timer),
+        now: () => performance.now(),
+        onFailure: (error) => failures.push(error),
+        onFrame: (frame, seekId) => answered.push({ frame, seekId }),
+        setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      },
+    );
+    const clock = (originMs: number, rate: number): PreviewClock => ({
+      atEpochMs: performance.now(),
+      originMs,
+      rate,
+    });
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    runner.load(10_000, FAST_FPS);
+    runner.setClock(clock(0, 1));
+    await wait(300);
+    expect(failures).toEqual([]);
+    expect(rendered.at(-1)).toBeGreaterThan(rendered.length);
+
+    runner.seek(1, clock(5_000, 0));
+    await vi.waitFor(() => expect(answered.at(-1)).toEqual({ frame: 300, seekId: 1 }));
+
+    const renders = rendered.length;
+    await wait(RENDER_MS * 3);
+    expect(rendered).toHaveLength(renders);
+    expect(failures).toEqual([]);
   });
 
   it("drops what a replaced timeline was doing", async () => {

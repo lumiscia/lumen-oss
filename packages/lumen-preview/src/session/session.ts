@@ -26,6 +26,11 @@ type WorkerEvent<TType extends LumenPreviewWorkerEvent["type"]> = Extract<
   { type: TType }
 >;
 
+type PreviewWorkerOptions = Omit<
+  Extract<LumenPreviewWorkerCommand, { type: "set-options" }>,
+  "type"
+>;
+
 class PreviewStartupError extends Error {
   constructor(
     readonly code: LumenPreviewErrorCode,
@@ -58,10 +63,15 @@ export class LumenPreviewSession {
   #pendingSeeks = new Map<number, (presented: boolean) => void>();
   #playing = false;
   #seekId = 0;
+  #startup: AbortController | null = null;
   #sentFonts: ReadonlyMap<string, MediaSourceInput> = new Map();
   #sentMedia: ReadonlyMap<string, MediaRegistration> = new Map();
   #timeline: { fps: number; totalFrames: number } | null = null;
   #worker: Worker | null = null;
+  #workerOptions: PreviewWorkerOptions = {
+    logLevel: "off",
+    lookaheadCount: DEFAULT_LOOKAHEAD_COUNT,
+  };
 
   constructor({ audio, bindings, preview, ...inputs }: LumenPreviewSessionOptions) {
     this.#audioOptions = audio;
@@ -74,19 +84,24 @@ export class LumenPreviewSession {
   async attach(host: HTMLElement): Promise<void> {
     this.#teardown();
     const attachment = ++this.#attachment;
-    this.preview.update({ error: null, errorCode: null });
+    this.preview.update({ error: null, errorCode: null, isLoaded: false, isPlaying: false });
 
     let worker: Worker | null = null;
+    this.#startup = new AbortController();
     try {
       assertBrowserSupport();
       assertWorkerBindings(this.#bindings);
       worker = new Worker(String(this.#bindings.previewWorkerUrl()), { type: "module" });
-      await startWorker(worker, {
-        logLevel: this.#inputs.logLevel ?? "off",
-        lookaheadCount: this.#inputs.lookaheadCount ?? DEFAULT_LOOKAHEAD_COUNT,
-        type: "start",
-        wasmUrl: absoluteUrl(this.#bindings.previewWasmUrl()),
-      });
+      this.#workerOptions = this.#desiredOptions();
+      await startWorker(
+        worker,
+        {
+          ...this.#workerOptions,
+          type: "start",
+          wasmUrl: absoluteUrl(this.#bindings.previewWasmUrl()),
+        },
+        this.#startup.signal,
+      );
     } catch (error) {
       worker?.terminate();
       if (attachment === this.#attachment) {
@@ -115,6 +130,7 @@ export class LumenPreviewSession {
     worker.onerror = (event) => this.#workerCrashed(event.message);
     worker.onmessageerror = () => this.#workerCrashed("a message could not be read");
     this.#post({ canvas: offscreen, type: "attach-canvas" }, [offscreen]);
+    this.#syncOptions();
     this.preview.attach({
       pause: () => this.#pause(),
       play: () => this.#play(),
@@ -125,22 +141,12 @@ export class LumenPreviewSession {
 
   /** Replaces every input; one left out returns to its default. */
   update(inputs: LumenPreviewSessionInputs): void {
-    const previous = this.#inputs;
     this.#inputs = inputs;
-    if (!this.#worker) {
-      return;
+    // A session still starting applies these once its worker is ready.
+    if (this.#worker) {
+      this.#syncOptions();
+      this.#syncInputs();
     }
-    if (
-      previous.logLevel !== inputs.logLevel ||
-      previous.lookaheadCount !== inputs.lookaheadCount
-    ) {
-      this.#post({
-        logLevel: inputs.logLevel ?? "off",
-        lookaheadCount: inputs.lookaheadCount ?? DEFAULT_LOOKAHEAD_COUNT,
-        type: "set-options",
-      });
-    }
-    this.#syncInputs();
   }
 
   dispose(): void {
@@ -150,6 +156,8 @@ export class LumenPreviewSession {
   }
 
   #teardown(): void {
+    this.#startup?.abort();
+    this.#startup = null;
     this.#stopCorrections();
     this.#settleSeeks(false);
     this.#audio?.dispose();
@@ -161,9 +169,29 @@ export class LumenPreviewSession {
     this.#clock = PARKED_CLOCK;
     this.#loaded = null;
     this.#playing = false;
+    // The next worker counts its seeks from zero.
+    this.#seekId = 0;
     this.#sentFonts = new Map();
     this.#sentMedia = new Map();
     this.#timeline = null;
+  }
+
+  #desiredOptions(): PreviewWorkerOptions {
+    return {
+      logLevel: this.#inputs.logLevel ?? "off",
+      lookaheadCount: this.#inputs.lookaheadCount ?? DEFAULT_LOOKAHEAD_COUNT,
+    };
+  }
+
+  #syncOptions(): void {
+    const options = this.#desiredOptions();
+    if (
+      options.logLevel !== this.#workerOptions.logLevel ||
+      options.lookaheadCount !== this.#workerOptions.lookaheadCount
+    ) {
+      this.#workerOptions = options;
+      this.#post({ ...options, type: "set-options" });
+    }
   }
 
   /** Loads only when something the worker reads changed, so unchanged inputs can be passed freely. */
@@ -465,6 +493,7 @@ function assertWorkerBindings(bindings: LumenWorkerBindings): void {
 function startWorker(
   worker: Worker,
   start: Extract<LumenPreviewWorkerCommand, { type: "start" }>,
+  signal: AbortSignal,
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const failed = (detail: string) =>
@@ -478,6 +507,11 @@ function startWorker(
       () => failed(`no answer after ${WORKER_STARTUP_TIMEOUT_MS / 1_000} s`),
       WORKER_STARTUP_TIMEOUT_MS,
     );
+    signal.addEventListener("abort", () => {
+      clearTimeout(timeout);
+      worker.terminate();
+      reject(new DOMException("the preview stopped while starting", "AbortError"));
+    });
     worker.onmessage = (event: MessageEvent<LumenPreviewWorkerEvent>) => {
       if (event.data.type === "ready") {
         clearTimeout(timeout);

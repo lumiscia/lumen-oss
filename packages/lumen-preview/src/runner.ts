@@ -25,8 +25,8 @@ export interface PreviewRunnerHost<TTimer> {
 /**
  * Keeps the canvas on the frame its clock points at, looping over the timeline.
  *
- * One loop owns every render, so renders never overlap. Media that falls behind doesn't stall the
- * clock: the frame being loaded is shown, then the next render jumps to wherever the clock is.
+ * One loop owns every render, so renders never overlap. Whatever falls behind doesn't stall the
+ * clock: the frame in hand is shown, then the next render jumps to wherever the clock is.
  */
 export class PreviewRunner<TTimer> {
   #acknowledgedSeekId = 0;
@@ -92,20 +92,21 @@ export class PreviewRunner<TTimer> {
   }
 
   async #run(): Promise<void> {
-    if (this.#running) {
+    if (this.#running || this.#durationFrames === 0 || this.#failed) {
+      return;
+    }
+    const frame = this.#targetFrame();
+    if (frame === this.#rendered && !this.#dirty) {
+      this.#answerSeek(frame);
+      this.#scheduleNextFrame();
       return;
     }
     this.#running = true;
-    while (this.#durationFrames > 0 && !this.#failed) {
-      const frame = this.#targetFrame();
-      if (frame === this.#rendered && !this.#dirty) {
-        this.#answerSeek(frame);
-        this.#scheduleNextFrame();
-        break;
-      }
-      await this.#render(frame);
-    }
+    await this.#render(frame);
     this.#running = false;
+    // A render can resolve without leaving the task, so a composition that can't keep up would
+    // never let a pause or seek in. Going through a timer yields to them on every render.
+    this.#schedule(0);
   }
 
   async #render(frame: number): Promise<void> {
@@ -148,7 +149,10 @@ export class PreviewRunner<TTimer> {
     }
     const positionMs = clockPositionMs(this.#clock, this.#host.now());
     const nextFrameMs = ((this.#framePosition(positionMs) + 1) * 1_000) / this.#fps;
-    const delayMs = Math.max((nextFrameMs - positionMs) / this.#clock.rate, 1);
+    this.#schedule(Math.max((nextFrameMs - positionMs) / this.#clock.rate, 1));
+  }
+
+  #schedule(delayMs: number): void {
     this.#timer = this.#host.setTimer(() => {
       this.#timer = null;
       void this.#run();

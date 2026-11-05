@@ -43,11 +43,12 @@ export interface LumenAudioEngineOptions {
   workletModuleUrl?: string | URL;
 }
 
-// How long playback waits for audio that hasn't started, such as a page with no user gesture yet.
-// After that the position runs on elapsed time, and the audio joins there if it ever starts.
+// How long playback waits for audio that hasn't started, such as a page with no user gesture yet or
+// a mixer with nothing to send. After that the position runs on elapsed time, and the audio joins
+// there if it ever starts.
 const AUDIO_START_BUDGET_MS = 1_000;
 
-/** The last position the worklet played, or the requested start until the worklet has started. */
+/** The last position the worklet played, or the requested start until it has played a sample. */
 type PlaybackClock = {
   contextTime: number;
   ms: number;
@@ -55,6 +56,10 @@ type PlaybackClock = {
   startedAt: number;
   workletStarted: boolean;
 };
+
+function startLateMs(playback: PlaybackClock): number {
+  return Math.max(performance.now() - playback.startedAt - AUDIO_START_BUDGET_MS, 0);
+}
 
 // Async work holds on to its entry and publishes only while the map still holds that same object.
 type AudioSourceEntry = {
@@ -85,18 +90,20 @@ type WorkletMessage =
       type: "pause";
     };
 
+type WorkletPositionMessage = {
+  contextTime: number;
+  currentSample: number;
+  generation: number;
+  stalled: boolean;
+  type: "position";
+};
+
 type WorkletEventMessage =
   | {
       message?: string;
       type: "error";
     }
-  | {
-      contextTime: number;
-      currentSample: number;
-      generation: number;
-      stalled: boolean;
-      type: "position";
-    };
+  | WorkletPositionMessage;
 
 type AudioWorkerMessage =
   | {
@@ -281,6 +288,30 @@ export class LumenAudioEngine {
       });
   }
 
+  #receivePosition(playback: PlaybackClock, message: WorkletPositionMessage): void {
+    const samplesPlaying = !message.stalled;
+    if (!playback.workletStarted && samplesPlaying && startLateMs(playback) > 0) {
+      this.play(this.currentTimeMs());
+      this.#options.onClockChange?.();
+      return;
+    }
+
+    const wasRunning = this.isClockRunning();
+    if (playback.workletStarted || samplesPlaying) {
+      this.#playback = {
+        ...playback,
+        contextTime: message.contextTime,
+        ms: (message.currentSample / LUMEN_AUDIO_SAMPLE_RATE) * MS_PER_SECOND,
+        stalled: message.stalled,
+        workletStarted: true,
+      };
+    }
+    this.#queueChunks(message.currentSample);
+    if (this.isClockRunning() !== wasRunning) {
+      this.#options.onClockChange?.();
+    }
+  }
+
   pause(): void {
     this.#pausedMs = this.currentTimeMs();
     this.#halt();
@@ -301,8 +332,7 @@ export class LumenAudioEngine {
       return this.#pausedMs;
     }
     if (!playback.workletStarted) {
-      const lateMs = performance.now() - playback.startedAt - AUDIO_START_BUDGET_MS;
-      return this.#wrapMs(playback.ms + Math.max(lateMs, 0));
+      return this.#wrapMs(playback.ms + startLateMs(playback));
     }
     if (playback.stalled || !this.#context) {
       return this.#wrapMs(playback.ms);
@@ -323,7 +353,7 @@ export class LumenAudioEngine {
       return false;
     }
     if (!playback.workletStarted) {
-      return performance.now() - playback.startedAt > AUDIO_START_BUDGET_MS;
+      return startLateMs(playback) > 0;
     }
     return !playback.stalled && this.#context?.state === "running";
   }
@@ -408,18 +438,7 @@ export class LumenAudioEngine {
       if (message.type === "error") {
         console.error("[LumenAudioEngine]", message.message ?? "audio worklet failed");
       } else if (message.generation === this.#generation && this.#playback) {
-        const wasRunning = this.isClockRunning();
-        this.#playback = {
-          ...this.#playback,
-          contextTime: message.contextTime,
-          ms: (message.currentSample / LUMEN_AUDIO_SAMPLE_RATE) * MS_PER_SECOND,
-          stalled: message.stalled,
-          workletStarted: true,
-        };
-        this.#queueChunks(message.currentSample);
-        if (this.isClockRunning() !== wasRunning) {
-          this.#options.onClockChange?.();
-        }
+        this.#receivePosition(this.#playback, message);
       }
     };
     this.#node = node;

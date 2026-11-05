@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, StrictMode } from "react";
+import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,6 +28,8 @@ import { LumenCanvas } from "../src/LumenCanvas.js";
 
 const bindings = {} as LumenWorkerBindings;
 
+// These cover the wiring between props and a mocked session. LumenCanvas.lifecycle.test.tsx runs the
+// real one, for what actually gets cleaned up.
 describe("LumenCanvas", () => {
   beforeEach(() => {
     sessions.length = 0;
@@ -57,24 +59,6 @@ describe("LumenCanvas", () => {
 
     await act(async () => root.unmount());
     expect(sessions[1]?.dispose).toHaveBeenCalledOnce();
-  });
-
-  it("disposes the session StrictMode remounts", async () => {
-    const preview = createLumenPreview();
-    const root = createRoot(document.createElement("div"));
-
-    await act(async () => {
-      root.render(
-        <StrictMode>
-          <LumenCanvas preview={preview} bindings={bindings} />
-        </StrictMode>,
-      );
-    });
-    expect(sessions).toHaveLength(2);
-    expect(sessions[0]?.dispose).toHaveBeenCalledOnce();
-    expect(sessions[1]?.dispose).not.toHaveBeenCalled();
-
-    await act(async () => root.unmount());
   });
 
   it("sends a changed input to the current session only", async () => {
