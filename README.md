@@ -6,13 +6,72 @@ If you want to use Lumen for real work today, the easiest path is the hosted pla
 
 This repository is a heavy-beta, open-source extraction of the engine, runtime, schemas, TypeScript packages, and local tooling. APIs are still moving quickly. Most crates should be treated as experimental and may change as the renderer and hosted platform evolve.
 
+## Quickstart
+
+Build a composition, render it on the hosted API, and preview it in the browser. A self-hosted `lumen-server` takes the same payload; see [`crates/server`](crates/server/README.md).
+
+```bash
+pnpm add @lumiscia/lumen-sdk
+```
+
+`composition.ts`:
+
+```ts
+import { Composition } from "@lumiscia/lumen-sdk";
+
+export const composition = new Composition({ timeline: { durationSeconds: 3 } });
+const bg = composition.addNode({ type: "background", params: { paint: [24, 28, 36, 255] } });
+const title = composition.addNode({
+  type: "text",
+  params: { content: "Hello, Lumen", font_size: 120, position: [96, 480] },
+});
+const merged = composition.addNode({ type: "merge", inputs: { base: bg, overlay: title } });
+composition.addNode({ type: "media_output", inputs: { source: merged } });
+```
+
+Render it, wait for the result, and print the URL of the MP4:
+
+```ts
+import { Lumen } from "@lumiscia/lumen-sdk";
+import { composition } from "./composition.js";
+
+const lumen = new Lumen({ apiKey: process.env.LUMISCIA_API_KEY! });
+const render = await lumen.render(composition);
+console.log((await lumen.waitForRender(render)).url);
+```
+
+Preview it in a React page with `pnpm add @lumiscia/lumen-react @lumiscia/lumen-bindings`. The preview needs a browser with WebGPU. Svelte has the same `Player` in `@lumiscia/lumen-svelte`.
+
+```tsx
+import { Player, createLumenPreview } from "@lumiscia/lumen-react";
+import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
+import { composition } from "./composition.js";
+
+const preview = createLumenPreview();
+const bindings = createLumenBindings();
+
+export const App = () => (
+  <>
+    <Player
+      preview={preview}
+      bindings={bindings}
+      composition={composition}
+      style={{ width: 640 }}
+    />
+    <button onClick={() => preview.play()}>Play</button>
+  </>
+);
+```
+
+See the [documentation](https://github.com/lumiscia/docs) for nodes, media, audio and fonts, and [`examples/`](examples/README.md) for complete apps.
+
 ## Platform Support
 
 Lumen requires a GPU for the main renderer paths.
 
 The supported native targets today are:
 
-- Linux with Vulkan rendering and optional CUDA/NVENC interop for hardware video paths.
+- Linux with Vulkan rendering, Vulkan Video encoding (`h264_vulkan`, `hevc_vulkan`, `av1_vulkan`) and optional CUDA/NVENC interop for hardware video paths.
 - macOS with Metal rendering and VideoToolbox encoding paths.
 
 Other platforms may compile in pieces, especially schema/type generation or pure data crates, but they are not supported render targets yet. Windows is a basic development target for TypeScript packages and pure Rust crates, not a supported native renderer target; see [docs/windows.md](docs/windows.md) for the covered paths and known gaps.
@@ -52,12 +111,12 @@ See [`crates/server`](crates/server/README.md) for the current self-hosted HTTP 
 - `definitions`: generated node metadata and JSON schemas
 - `packages/lumen-types`: generated TypeScript types for schemas and metadata
 - `packages/lumen-shared`: dependency-light composition builder
-- `packages/lumen-sdk`: Node client for the hosted Lumiscia API, re-exporting the composition builder
+- `packages/lumen-sdk`: client for the hosted Lumiscia API (upload media, render, wait, download), re-exporting the composition builder
 - `packages/lumen-preview`: browser preview engine and media bridge
-- `packages/lumen-bindings`: generated WASM binding package with compiled WASM included
-- `packages/lumen-react` and `packages/lumen-svelte`: framework preview wrappers
-- `examples/vite-react` and `examples/vite-svelte`: local preview examples
-- `examples/node`: builds a composition and renders it through the hosted API (`LUMISCIA_API_KEY`)
+- `packages/lumen-bindings`: the preview renderer compiled to WebAssembly, with `/bundler`, `/browser` and `/node` entry points
+- `packages/lumen-react` and `packages/lumen-svelte`: the `Player` component for each framework
+- `examples/vite-react` and `examples/vite-svelte`: preview a video with sound and a title
+- `examples/node`: renders the same composition through the hosted API
 
 Product application code, hosted-service API code, billing/auth flows, and private frontend work live outside this open-source renderer repository. Project documentation lives in the public [lumiscia/docs](https://github.com/lumiscia/docs) repository.
 
@@ -88,12 +147,12 @@ cargo check -p lumen-server --features metal --lib
 Build generated bindings and metadata:
 
 ```bash
-just wasm-bindings-release
+just wasm-bindings-debug
 just generate-definitions
 just generate-types
 ```
 
-`just wasm-bindings-release` compiles Rust to WebAssembly and writes generated bindings directly into `packages/lumen-bindings/src`, so it can take a while. The package can then be published without a separate download step.
+`just wasm-bindings-debug` and `just wasm-bindings-release` compile Rust to WebAssembly and write the bindings into `packages/lumen-bindings/wasm`, which is not committed. A clean checkout needs one of them before `lumen-bindings` builds or an example runs, and it can take a while. Use `debug` while developing and `release` for a size-optimised build. They need the `wasm32-unknown-unknown` Rust target and `wasm-bindgen-cli` at the version pinned in `crates/wasm/Cargo.toml`.
 
 ## Status
 

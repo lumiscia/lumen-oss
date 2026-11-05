@@ -8,7 +8,7 @@ This crate is experimental. Binding names, payload shapes, and browser render be
 
 This crate targets `wasm32-unknown-unknown` and browser GPU APIs through `web-sys`, `wasm-bindgen`, `lumen`, and `lumen-gpu`.
 
-The native Linux/macOS GPU targets do not apply directly here, but the renderer model is shared with the native crates. Browser support depends on the browser's WebGPU/WebGL support.
+The native Linux/macOS GPU targets do not apply directly here, but the renderer model is shared with the native crates. Browser support depends on the browser's WebGPU support.
 
 ## Development
 

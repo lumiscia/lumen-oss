@@ -32,3 +32,5 @@ tmp
 generated
 
 packages/lumen-node-specs
+
+examples/node/out.mp4

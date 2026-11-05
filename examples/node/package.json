@@ -7,7 +7,8 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo",
-    "start": "pnpm --filter @lumiscia/lumen-shared build && pnpm --filter @lumiscia/lumen-sdk build && pnpm build && node dist/index.js"
+    "prestart": "pnpm --filter '@lumiscia/example-node^...' build && pnpm build",
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@lumiscia/lumen-sdk": "workspace:*"
