@@ -1,7 +1,8 @@
 import { Composition, type LumenComposition } from "@lumiscia/lumen-shared";
 
-import { LumenError, errorFromResponse, isRecord } from "./errors.js";
-import { isTerminal, parseProgress, parseRender, renderError } from "./render.js";
+import { LumenError, errorFromResponse, isRecord, readBody } from "./errors.js";
+import { parseMedia, parsePart, parseUploadId, parseUploadTarget } from "./media.js";
+import { isTerminal, parseProgress, parseRender, renderError, resolveUrl } from "./render.js";
 import { watchRender, type SocketUpdate } from "./socket.js";
 import type {
   CreateUrlMediaOptions,
@@ -10,12 +11,12 @@ import type {
   Render,
   RenderMediaManifest,
   RenderOptions,
-  RenderProgress,
+  RenderStatus,
   TemporaryMedia,
   UploadMediaOptions,
   WaitForRenderOptions,
 } from "./types.js";
-import { partsOf, singleRequestLimitBytes, sizeOf } from "./upload.js";
+import { contentTypeOf, partsOf, singleRequestLimitBytes, sizeOf } from "./upload.js";
 
 const defaultBaseUrl = "https://api.lumiscia.com/v1";
 
@@ -24,9 +25,19 @@ const socketSessionMs = 60_000;
 /** Sockets are opened at least this far apart, and the gap doubles up to the maximum while they end early. */
 const minSocketGapMs = 5_000;
 const maxSocketGapMs = 30_000;
-/** Consecutive transient failures reading a render before the wait gives up. */
-const maxReadFailures = 8;
-const maxReadBackoffMs = 30_000;
+/** A wait gives up when reads have failed with server or network errors for this long. */
+const giveUpAfterMs = 10 * 60_000;
+const maxBackoffMs = 30_000;
+const maxRateLimitBackoffMs = 60_000;
+/** Spreads waits that started together: a delay grows by up to this fraction. */
+const jitter = 0.25;
+
+const statusOrder: Record<RenderStatus, number> = {
+  queued: 0,
+  processing: 1,
+  succeeded: 2,
+  failed: 2,
+};
 
 type SendInit = Omit<RequestInit, "signal"> & {
   readonly signal?: AbortSignal | undefined;
@@ -42,6 +53,9 @@ export class Lumen {
   readonly #apiKey: string;
   readonly #baseUrl: URL;
   readonly #fetch: typeof fetch;
+  /** Waits on this client send no request before this time, after the API rate limited one. */
+  #cooldownUntil = 0;
+  #rateLimitStreak = 0;
 
   constructor(options: LumenOptions) {
     this.#apiKey = options.apiKey;
@@ -81,10 +95,16 @@ export class Lumen {
    *
    * The render is read from `GET /renders/:id/progress`, which is the source of truth. Between
    * reads a socket is held open for up to a minute to hear about progress, but is never relied on:
-   * if sockets fail, the wait reads the render every 5 to 30 seconds instead. Rate limits, server
-   * errors and network failures are retried with backoff; a `LumenError` with any other status
-   * ends the wait. An aborted `signal` rejects with its reason. Someone waiting on many renders at
-   * once should use `webhookUrl` instead.
+   * if sockets fail, the wait reads the render every 5 to 30 seconds instead, and the 5 second
+   * minimum between sockets holds even when a socket reports an end the next read doesn't show.
+   * `onProgress` never goes backwards.
+   *
+   * A rate limit never ends a wait: it makes every wait on this client hold off, for the API's
+   * `Retry-After` or else a growing delay. Server errors and network failures are retried with
+   * backoff and end the wait only after ten minutes without a successful read. Any other
+   * `LumenError`, such as a 401 or 404, ends it at once, and an aborted `signal` rejects with its
+   * reason from wherever the wait is. Someone waiting on many renders at once should use
+   * `webhookUrl` instead.
    */
   async waitForRender(
     render: string | Pick<Render, "id">,
@@ -92,28 +112,33 @@ export class Lumen {
   ): Promise<Render> {
     const id = typeof render === "string" ? render : render.id;
     const { signal } = options;
+    let status: RenderStatus = "queued";
+    let progress = 0;
     let lastReported = "";
-    let lastProgress = 0;
     const report = (update: SocketUpdate) => {
-      const progress: RenderProgress = {
-        id: update.id,
-        status: update.status,
-        progress: update.progress ?? lastProgress,
-      };
-      lastProgress = progress.progress;
-      const key = `${progress.status} ${progress.progress}`;
+      if (statusOrder[update.status] >= statusOrder[status]) {
+        status = update.status;
+      }
+      progress = Math.max(progress, update.progress ?? 0);
+      const key = `${status} ${progress}`;
       if (key !== lastReported) {
         lastReported = key;
-        options.onProgress?.(progress);
+        options.onProgress?.({ id, status, progress });
       }
     };
 
+    const reads = { lastSucceededAt: Date.now() };
     let gapMs = minSocketGapMs;
+    let nextReadAt = 0;
     let nextSessionAt = 0;
     for (;;) {
-      await sleep(nextSessionAt - Date.now(), signal);
-      const current = await this.#readProgress(id, signal);
-      report({ id, status: current.status, progress: current.progress ?? 0 });
+      await sleep(nextReadAt - Date.now(), signal);
+      const current = await this.#readProgress(id, signal, reads);
+      report({
+        id,
+        status: current.status,
+        ...(current.progress !== undefined ? { progress: current.progress } : {}),
+      });
       if (current.status === "succeeded") {
         return current;
       }
@@ -121,6 +146,8 @@ export class Lumen {
         throw renderError(current);
       }
 
+      await sleep(nextSessionAt - Date.now(), signal);
+      await this.#cooldown(signal);
       const startedAt = Date.now();
       const session = await watchRender({
         apiKey: this.#apiKey,
@@ -130,8 +157,12 @@ export class Lumen {
         timeoutMs: socketSessionMs,
         url: this.#apiUrl(`/renders/${encodeURIComponent(id)}/socket`),
       });
-      gapMs = session === "dropped" ? Math.min(gapMs * 2, maxSocketGapMs) : minSocketGapMs;
-      nextSessionAt = session === "ended" ? 0 : startedAt + gapMs;
+      if (session.rejection?.status === 429) {
+        this.#rateLimited(session.rejection);
+      }
+      gapMs = session.end === "dropped" ? Math.min(gapMs * 2, maxSocketGapMs) : minSocketGapMs;
+      nextSessionAt = startedAt + jittered(gapMs);
+      nextReadAt = session.end === "ended" ? 0 : nextSessionAt;
     }
   }
 
@@ -157,7 +188,7 @@ export class Lumen {
         renderId: id,
       });
     }
-    return this.#send(new URL(url, this.#baseUrl), { method: "GET", ...options });
+    return this.#send(new URL(resolveUrl(url, this.#baseUrl)), { method: "GET", ...options });
   }
 
   /**
@@ -171,25 +202,27 @@ export class Lumen {
       throw new LumenError("invalid_upload", "Uploading a stream requires sizeBytes.");
     }
 
-    const contentType =
-      options.contentType ?? (body instanceof Blob && body.type !== "" ? body.type : undefined);
     const fileName =
       options.fileName ??
       (body instanceof Blob && "name" in body && typeof body.name === "string"
         ? body.name
-        : "upload");
-    const upload = await this.#request<{ media: TemporaryMedia; uploadUrl: string }>(
-      "POST",
-      "/media",
-      {
-        body: {
-          contentType: contentType ?? "application/octet-stream",
-          fileName,
-          sizeBytes,
-        },
-        signal,
-      },
-    );
+        : undefined);
+    const contentType =
+      options.contentType ??
+      (body instanceof Blob && body.type !== "" ? body.type : undefined) ??
+      (fileName !== undefined ? contentTypeOf(fileName) : undefined);
+    if (contentType === undefined) {
+      throw new LumenError(
+        "invalid_upload",
+        `Could not tell the content type of ${fileName === undefined ? "the upload" : `"${fileName}"`}: pass contentType.`,
+      );
+    }
+
+    const created = await this.#request("POST", "/media", {
+      body: { contentType, fileName: fileName ?? "upload", sizeBytes },
+      signal,
+    });
+    const upload = parseUploadTarget(created);
 
     if (body instanceof ReadableStream || sizeBytes > singleRequestLimitBytes) {
       return this.#uploadParts(upload.media.id, body, sizeBytes, signal);
@@ -197,23 +230,23 @@ export class Lumen {
 
     const response = await this.#send(new URL(upload.uploadUrl, this.#baseUrl), {
       body: body as BodyInit,
-      headers: { "content-type": contentType ?? "application/octet-stream" },
+      headers: { "content-type": contentType },
       method: "PUT",
       signal,
     });
-    return (await readJson<{ media: TemporaryMedia }>(response)).media;
+    return parseMedia((await readJson(response, signal)).media);
   }
 
   /** Has the API fetch a file from a public URL, for renders to use. */
   async createUrlMedia(options: CreateUrlMediaOptions): Promise<TemporaryMedia> {
-    const body = await this.#request<{ media: TemporaryMedia }>("POST", "/media/url", {
+    const body = await this.#request("POST", "/media/url", {
       body: {
         ...(options.fileName !== undefined ? { fileName: options.fileName } : {}),
         url: String(options.url),
       },
       signal: options.signal,
     });
-    return body.media;
+    return parseMedia(body.media);
   }
 
   async #uploadParts(
@@ -223,42 +256,80 @@ export class Lumen {
     signal: AbortSignal | undefined,
   ): Promise<TemporaryMedia> {
     const base = `/media/${encodeURIComponent(id)}/multipart`;
-    const { uploadId } = await this.#request<{ uploadId: string }>("POST", base, { signal });
+    const uploadId = parseUploadId(await this.#request("POST", base, { signal }));
     const uploadPath = `${base}/${encodeURIComponent(uploadId)}`;
 
-    const parts: unknown[] = [];
-    for await (const part of partsOf(body, sizeBytes)) {
+    const parts: { etag: string; partNumber: number }[] = [];
+    for await (const part of partsOf(body, sizeBytes, signal)) {
       const response = await this.#send(this.#apiUrl(`${uploadPath}/parts/${parts.length + 1}`), {
         body: part,
         method: "PUT",
         signal,
       });
-      parts.push(await readJson(response));
+      parts.push(parsePart(await readJson(response, signal)));
     }
 
-    const done = await this.#request<{ media: TemporaryMedia }>("POST", `${uploadPath}/complete`, {
+    const done = await this.#request("POST", `${uploadPath}/complete`, {
       body: { parts },
       signal,
     });
-    return done.media;
+    return parseMedia(done.media);
   }
 
-  /** Reads a render and its progress, retrying transient failures. */
-  async #readProgress(id: string, signal: AbortSignal | undefined): Promise<Render> {
-    for (let failures = 1; ; failures += 1) {
+  /**
+   * Reads a render and its progress. Rate limits wait out the client's cooldown and server and
+   * network errors back off, until a read has not succeeded for ten minutes.
+   */
+  async #readProgress(
+    id: string,
+    signal: AbortSignal | undefined,
+    reads: { lastSucceededAt: number },
+  ): Promise<Render> {
+    for (let failures = 0; ;) {
+      await this.#cooldown(signal);
       try {
         const body = await this.#request("GET", `/renders/${encodeURIComponent(id)}/progress`, {
           signal,
         });
-        return parseProgress(body, this.#baseUrl);
+        const render = parseProgress(body, this.#baseUrl);
+        this.#rateLimitStreak = 0;
+        reads.lastSucceededAt = Date.now();
+        return render;
       } catch (error) {
-        if (!isTransient(error) || failures >= maxReadFailures) {
+        if (!(error instanceof LumenError)) {
           throw error;
         }
-        const backoffMs = error.retryAfterMs ?? Math.min(1000 * 2 ** failures, maxReadBackoffMs);
-        await sleep(backoffMs * (1 + Math.random() * 0.25), signal);
+        if (error.status === 429) {
+          this.#rateLimited(error);
+          reads.lastSucceededAt = Date.now();
+        } else if (isTransient(error) && Date.now() - reads.lastSucceededAt < giveUpAfterMs) {
+          failures += 1;
+          const backoffMs = error.retryAfterMs ?? Math.min(1000 * 2 ** failures, maxBackoffMs);
+          await sleep(jittered(backoffMs), signal);
+        } else {
+          throw error;
+        }
       }
     }
+  }
+
+  /** Waits out the cooldown a rate limit started. */
+  async #cooldown(signal: AbortSignal | undefined): Promise<void> {
+    const remainingMs = this.#cooldownUntil - Date.now();
+    if (remainingMs > 0) {
+      await sleep(jittered(remainingMs), signal);
+    }
+  }
+
+  /** Makes every wait on this client hold off, unless an earlier rate limit already did. */
+  #rateLimited(error: LumenError): void {
+    if (Date.now() < this.#cooldownUntil) {
+      return;
+    }
+    this.#rateLimitStreak += 1;
+    const delayMs =
+      error.retryAfterMs ?? Math.min(1000 * 2 ** this.#rateLimitStreak, maxRateLimitBackoffMs);
+    this.#cooldownUntil = Date.now() + jittered(delayMs);
   }
 
   /**
@@ -286,7 +357,7 @@ export class Lumen {
     }
 
     if (!response.ok) {
-      throw await errorFromResponse(response);
+      throw await errorFromResponse(response, init.signal);
     }
     return response;
   }
@@ -306,7 +377,7 @@ export class Lumen {
       },
       signal: options.signal,
     });
-    return readJson<T>(response);
+    return readJson<T>(response, options.signal);
   }
 
   #apiUrl(path: string): URL {
@@ -333,8 +404,11 @@ function mediaManifest(media: RenderMediaManifest): Record<string, string> {
   );
 }
 
-async function readJson<T extends object>(response: Response): Promise<T> {
-  const body: unknown = await response.json().catch(() => undefined);
+async function readJson<T extends object = Record<string, unknown>>(
+  response: Response,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  const body = await readBody(response, signal);
   if (!isRecord(body)) {
     throw new LumenError("invalid_response", "Lumen API returned a malformed response body.", {
       status: response.status,
@@ -350,6 +424,11 @@ function isTransient(error: unknown): error is LumenError {
       error.status === 429 ||
       (error.status !== undefined && error.status >= 500))
   );
+}
+
+/** `ms`, lengthened by up to 25% so that waits started together drift apart. */
+function jittered(ms: number): number {
+  return ms * (1 + Math.random() * jitter);
 }
 
 /** Resolves after `ms`, or rejects with the reason `signal` aborts with. */

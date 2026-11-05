@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { Lumen } from "../src/client.js";
 import { LumenError } from "../src/errors.js";
@@ -93,6 +93,26 @@ describe("Lumen errors", () => {
     ).rejects.toMatchObject({ name: "AbortError" });
   });
 
+  test("an abort while the body is read rejects with the signal's reason", async () => {
+    const controller = new AbortController();
+    const reason = new Error("stop");
+    const stalled = {
+      ok: true,
+      status: 200,
+      json: () =>
+        new Promise((_resolve, reject) => {
+          controller.signal.addEventListener("abort", () => reject(reason), { once: true });
+          queueMicrotask(() => controller.abort(reason));
+        }),
+    } as unknown as Response;
+    const lumen = new Lumen({
+      apiKey: "test-key",
+      fetch: (async () => stalled) as typeof fetch,
+    });
+
+    await expect(lumen.getRender("r", { signal: controller.signal })).rejects.toBe(reason);
+  });
+
   test("a success body that is not a render is rejected", async () => {
     const malformed = lumenWith(() => new Response("ok"));
     await expect(malformed.getRender("render-1")).rejects.toMatchObject({
@@ -107,20 +127,16 @@ describe("Lumen errors", () => {
 });
 
 describe("Lumen render and download", () => {
-  test("render returns the queued render with an absolute url", async () => {
+  test("render returns the queued render and sends its idempotency key", async () => {
     const { requests, stub } = recordingFetch(() => ({
       cached: true,
-      render: { id: "render-1", status: "succeeded", outputUrl: "/v1/renders/render-1/artifact" },
+      render: { id: "render-1", status: "queued" },
     }));
     const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
 
-    const { id, url, cached } = await lumen.render({} as never, { idempotencyKey: "key-1" });
+    const render = await lumen.render({} as never, { idempotencyKey: "key-1" });
 
-    expect({ id, url, cached }).toEqual({
-      id: "render-1",
-      url: "https://api.test/v1/renders/render-1/artifact",
-      cached: true,
-    });
+    expect(render).toEqual({ id: "render-1", status: "queued", cached: true });
     expect(new Headers(requests[0]?.init.headers).get("idempotency-key")).toBe("key-1");
   });
 
@@ -136,6 +152,37 @@ describe("Lumen render and download", () => {
     await lumen.download({ id: "b", url: "https://cdn.example/b.mp4" });
 
     expect(seen).toEqual(["Bearer test-key", null]);
+  });
+
+  test("a relative output url is resolved under the API base, with or without a trailing slash", async () => {
+    for (const baseUrl of ["https://host/lumen", "https://host/lumen/", "https://host"]) {
+      const seen: string[] = [];
+      const stub = (async (url: URL) => {
+        seen.push(String(url));
+        return String(url).endsWith("/renders/r")
+          ? Response.json({
+              render: { id: "r", status: "succeeded", outputUrl: "/renders/r/artifact" },
+            })
+          : new Response("bytes");
+      }) as unknown as typeof fetch;
+      const lumen = new Lumen({ apiKey: "test-key", baseUrl, fetch: stub });
+
+      const render = await lumen.getRender("r");
+      await lumen.download(render);
+
+      const prefix = baseUrl.replace(/\/$/, "");
+      expect(render.url).toBe(`${prefix}/renders/r/artifact`);
+      expect(seen).toEqual([`${prefix}/renders/r`, `${prefix}/renders/r/artifact`]);
+    }
+  });
+
+  test("an absolute output url is left alone", async () => {
+    const { stub } = recordingFetch(() => ({
+      render: { id: "r", status: "succeeded", outputUrl: "https://cdn.example/r.mp4" },
+    }));
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await expect(lumen.getRender("r")).resolves.toMatchObject({ url: "https://cdn.example/r.mp4" });
   });
 
   test("download looks the render up by id, and fails when it has no output", async () => {
@@ -158,7 +205,10 @@ describe("Lumen media uploads", () => {
     const path = new URL(request.url).pathname;
     if (path === "/v1/media") return { media, uploadUrl: "/v1/media/media%201/content" };
     if (path.endsWith("/multipart")) return { uploadId: "up/1" };
-    if (path.includes("/parts/")) return { etag: "e", partNumber: 1 };
+    if (path.includes("/parts/")) {
+      const partNumber = Number(path.split("/").at(-1));
+      return { etag: `etag-${partNumber}`, partNumber };
+    }
     return { media };
   };
 
@@ -182,8 +232,11 @@ describe("Lumen media uploads", () => {
 
   test("a stream goes up in multipart parts with the upload id in the path", async () => {
     const sizes: number[] = [];
+    let completed: unknown;
     const { requests, stub } = recordingFetch((request) => {
       if (request.url.includes("/parts/")) sizes.push((request.init.body as Uint8Array).byteLength);
+      if (request.url.endsWith("/complete"))
+        completed = JSON.parse(String(request.init.body)).parts;
       return upload(request);
     });
     const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
@@ -203,6 +256,10 @@ describe("Lumen media uploads", () => {
       "https://api.test/v1/media/media%201/multipart/up%2F1/complete",
     ]);
     expect(sizes).toEqual([8 * 1024 * 1024, 5]);
+    expect(completed).toEqual([
+      { etag: "etag-1", partNumber: 1 },
+      { etag: "etag-2", partNumber: 2 },
+    ]);
   });
 
   test("a stream needs its size, and must match it", async () => {
@@ -227,11 +284,104 @@ describe("Lumen media uploads", () => {
         url.endsWith("/media") ? { media, uploadUrl } : { media },
       );
       const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
-      await lumen.uploadMedia({ body: new Uint8Array(3) });
+      await lumen.uploadMedia({ body: new Uint8Array(3), contentType: "video/mp4" });
       authorization.push(new Headers(requests[1]?.init.headers).get("authorization"));
     }
 
     expect(authorization).toEqual(["Bearer test-key", null]);
+  });
+
+  test("the content type is the given one, the blob's, or the file name's", async () => {
+    const sent: string[] = [];
+    const { stub } = recordingFetch((request) => {
+      if (new URL(request.url).pathname === "/v1/media") {
+        sent.push(JSON.parse(String(request.init.body)).contentType);
+      }
+      return upload(request);
+    });
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await lumen.uploadMedia({
+      body: new Uint8Array(3),
+      contentType: "audio/ogg",
+      fileName: "a.mp4",
+    });
+    await lumen.uploadMedia({ body: new Blob(["abc"], { type: "image/png" }), fileName: "a.mp4" });
+    await lumen.uploadMedia({ body: new Uint8Array(3), fileName: "Clip.MOV" });
+
+    expect(sent).toEqual(["audio/ogg", "image/png", "video/quicktime"]);
+  });
+
+  test("an unknown content type fails before any request", async () => {
+    const { requests, stub } = recordingFetch(upload);
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await expect(lumen.uploadMedia({ body: new Uint8Array(3) })).rejects.toMatchObject({
+      code: "invalid_upload",
+      message: expect.stringContaining("contentType"),
+    });
+    await expect(
+      lumen.uploadMedia({ body: new Uint8Array(3), fileName: "notes.txt" }),
+    ).rejects.toMatchObject({ code: "invalid_upload" });
+    expect(requests).toHaveLength(0);
+  });
+
+  test("aborting a stalled stream rejects at once and cancels the producer", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    const { stub } = recordingFetch(upload);
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+    const controller = new AbortController();
+    const reason = new Error("stop");
+
+    const uploading = lumen.uploadMedia({
+      body,
+      contentType: "video/mp4",
+      sizeBytes: 1,
+      signal: controller.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    controller.abort(reason);
+
+    await expect(uploading).rejects.toBe(reason);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(body.locked).toBe(false);
+  });
+
+  test("a stream that exceeds its size is rejected without being read to the end", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(4));
+      },
+      cancel,
+    });
+    const { requests, stub } = recordingFetch(upload);
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await expect(
+      lumen.uploadMedia({ body, contentType: "video/mp4", sizeBytes: 6 }),
+    ).rejects.toMatchObject({ code: "invalid_upload" });
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(requests.some((request) => request.url.endsWith("/complete"))).toBe(false);
+  });
+
+  test("a media response without a media is invalid_response, not undefined", async () => {
+    const lumen = new Lumen({
+      apiKey: "test-key",
+      baseUrl: "https://api.test/v1",
+      fetch: (async () => Response.json({})) as typeof fetch,
+    });
+
+    await expect(lumen.createUrlMedia({ url: "https://example.test/a.mp4" })).rejects.toMatchObject(
+      {
+        code: "invalid_response",
+      },
+    );
+    await expect(
+      lumen.uploadMedia({ body: new Uint8Array(3), contentType: "video/mp4" }),
+    ).rejects.toMatchObject({ code: "invalid_response" });
   });
 
   test("an upload can be passed where a render takes media", async () => {

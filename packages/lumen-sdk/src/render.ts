@@ -52,20 +52,20 @@ export function parseRender(
 
 /**
  * Reads a `GET /renders/:id/progress` body, `{ progress, render }`. The status and the output URL
- * come from `render`, the progress and the failure message from `progress`.
+ * come from `render`, so a finished render is understood even when hosted has no `progress` (it
+ * sends `null`). A failed render's message and code come from `progress`: lumen-server puts the
+ * code in `errorCode`, hosted in `stage`.
  */
 export function parseProgress(body: Record<string, unknown>, baseUrl: URL): Render {
-  const { progress } = body;
-  if (!isRecord(progress) || typeof progress.progress !== "number") {
-    throw new LumenError("invalid_response", "Lumen API returned a malformed render progress.");
-  }
-
+  const progress = isRecord(body.progress) ? body.progress : {};
+  const failed = isRecord(body.render) && body.render.status === "failed";
+  const code = progress.errorCode ?? progress.stage;
   return parseRender(body.render, baseUrl, {
-    progress: progress.progress,
-    ...(typeof progress.error === "string"
+    ...(typeof progress.progress === "number" ? { progress: progress.progress } : {}),
+    ...(failed && typeof progress.error === "string"
       ? {
           error: {
-            code: typeof progress.errorCode === "string" ? progress.errorCode : "render_failed",
+            code: typeof code === "string" ? code : "render_failed",
             message: progress.error,
             ...(typeof progress.retryable === "boolean" ? { retryable: progress.retryable } : {}),
           },

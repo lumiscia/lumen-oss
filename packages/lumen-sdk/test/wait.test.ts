@@ -27,7 +27,11 @@ function progressBody(
 
 class FakeSocket {
   static instances: FakeSocket[] = [];
-  static failToOpen = false;
+  static startedAt: number[] = [];
+  /** Whether each socket opens, in order. Sockets past the end of the plan open. */
+  static plan: boolean[] = [];
+  /** A message every socket delivers as soon as it is listened to. */
+  static greeting: unknown;
   readonly listeners = new Map<string, ((event: unknown) => void)[]>();
   closed = false;
 
@@ -35,7 +39,8 @@ class FakeSocket {
     readonly url: URL,
     readonly init: { headers: Record<string, string> },
   ) {
-    if (FakeSocket.failToOpen) {
+    FakeSocket.startedAt.push(Date.now());
+    if (FakeSocket.plan.shift() === false) {
       throw new SyntaxError("headers are not supported");
     }
     FakeSocket.instances.push(this);
@@ -43,6 +48,9 @@ class FakeSocket {
 
   addEventListener(type: string, listener: (event: unknown) => void) {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+    if (type === "message" && FakeSocket.greeting !== undefined) {
+      queueMicrotask(() => listener({ data: JSON.stringify(FakeSocket.greeting) }));
+    }
   }
 
   close() {
@@ -58,24 +66,29 @@ class FakeSocket {
   }
 }
 
-/** Answers `GET /renders/r1/progress` from a script, and records when each read happened. */
-function scriptedApi(script: (read: number) => Response) {
+/** Answers `GET /renders/:id/progress` from a script, and records when each read happened. */
+function scriptedApi(script: (read: number, id: string) => Response) {
   const reads: number[] = [];
   const fetchStub = (async (url: URL) => {
-    expect(new URL(url).pathname).toBe("/v1/renders/r1/progress");
+    const match = /^\/v1\/renders\/(\w+)\/progress$/.exec(new URL(url).pathname);
+    expect(match).not.toBeNull();
     reads.push(Date.now());
-    return script(reads.length);
+    return script(reads.length, match![1]!);
   }) as typeof fetch;
   const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: fetchStub });
   return { lumen, reads };
 }
+
+const seconds = (times: number[]) => times.map((at) => (at - times[0]!) / 1000);
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.spyOn(Math, "random").mockReturnValue(0);
   vi.stubGlobal("WebSocket", FakeSocket);
   FakeSocket.instances = [];
-  FakeSocket.failToOpen = false;
+  FakeSocket.startedAt = [];
+  FakeSocket.plan = [];
+  FakeSocket.greeting = undefined;
 });
 
 afterEach(() => {
@@ -104,7 +117,7 @@ describe("Lumen.waitForRender", () => {
     await expect(waiting).resolves.toMatchObject({
       id: "r1",
       status: "succeeded",
-      url: "https://api.test/renders/r1/artifact",
+      url: "https://api.test/v1/renders/r1/artifact",
     });
     expect(seen.map((progress) => [progress.status, progress.progress])).toEqual([
       ["queued", 0],
@@ -115,23 +128,31 @@ describe("Lumen.waitForRender", () => {
     expect(socket.closed).toBe(true);
   });
 
-  test("reads the hosted event shape too", async () => {
+  test("hosted events: the state wins over the type, and progress never goes back", async () => {
     const { lumen } = scriptedApi((read) =>
-      Response.json(read === 1 ? progressBody("queued", 0) : progressBody("succeeded", 1)),
+      Response.json(read === 1 ? progressBody("processing", 0.5) : progressBody("succeeded", 1)),
     );
     const seen: RenderProgress[] = [];
 
     const waiting = lumen.waitForRender("r1", { onProgress: (progress) => seen.push(progress) });
     await vi.advanceTimersByTimeAsync(0);
-    FakeSocket.instances[0]!.say({
-      type: "render.progress",
-      state: { renderId: "r1", state: "processing", progress: 0.25 },
-    });
+    const say = (state: string, progress: number) =>
+      FakeSocket.instances[0]!.say({
+        type: "render.progress",
+        state: { renderId: "r1", state, progress },
+      });
+    say("queued", 0.1);
+    say("processing", 0.25);
+    say("processing", 0.75);
     FakeSocket.instances[0]!.emit("close");
     await vi.advanceTimersByTimeAsync(10_000);
     await waiting;
 
-    expect(seen[1]).toEqual({ id: "r1", status: "processing", progress: 0.25 });
+    expect(seen.map((progress) => [progress.status, progress.progress])).toEqual([
+      ["processing", 0.5],
+      ["processing", 0.75],
+      ["succeeded", 1],
+    ]);
   });
 
   test("a failed render throws its code and message from progress", async () => {
@@ -157,8 +178,41 @@ describe("Lumen.waitForRender", () => {
     expect(FakeSocket.instances).toHaveLength(0);
   });
 
+  test("a failed render's code is hosted's stage when there is no errorCode", async () => {
+    FakeSocket.plan = [false];
+    const { lumen } = scriptedApi((read) =>
+      Response.json(
+        read === 1
+          ? progressBody("processing", 0.2, { stage: "rendering" })
+          : progressBody("failed", 1, {
+              error: "media hero download failed",
+              stage: "media_download_failed",
+            }),
+      ),
+    );
+
+    const waiting = lumen.waitForRender("r1").catch((caught: unknown) => caught);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(await waiting).toMatchObject({
+      code: "media_download_failed",
+      message: "media hero download failed",
+    });
+  });
+
+  test("a finished render is understood when hosted has no progress for it", async () => {
+    const { lumen } = scriptedApi(() =>
+      Response.json({ ...progressBody("succeeded", 1), progress: null }),
+    );
+
+    await expect(lumen.waitForRender("r1")).resolves.toMatchObject({
+      status: "succeeded",
+      url: "https://api.test/v1/renders/r1/artifact",
+    });
+  });
+
   test("without working sockets it reads every 10, 20, then 30 seconds", async () => {
-    FakeSocket.failToOpen = true;
+    FakeSocket.plan = Array(100).fill(false);
     const { lumen, reads } = scriptedApi((read) =>
       Response.json(
         read < 5 ? progressBody("processing", 0.1 * read) : progressBody("succeeded", 1),
@@ -172,21 +226,39 @@ describe("Lumen.waitForRender", () => {
     expect(reads.map((at) => (at - reads[0]!) / 1000)).toEqual([0, 10, 30, 60, 90]);
   });
 
-  test("a session that lasts resets the gap", async () => {
+  test("a session that lasts resets a gap that had grown", async () => {
+    FakeSocket.plan = [false, false, true, false, true];
     const { lumen, reads } = scriptedApi((read) =>
-      Response.json(read < 3 ? progressBody("processing", 0.1) : progressBody("succeeded", 1)),
+      Response.json(read < 5 ? progressBody("processing", 0.1) : progressBody("succeeded", 1)),
     );
 
     const waiting = lumen.waitForRender("r1");
-    await vi.advanceTimersByTimeAsync(60_000);
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     await waiting;
 
-    expect(reads.map((at) => (at - reads[0]!) / 1000)).toEqual([0, 60, 120]);
-    expect(FakeSocket.instances).toHaveLength(2);
+    // Two dropped sockets grow the gap to 10 s, then 20 s. The third runs its 60 s, so the fourth
+    // dropping starts from 5 s again and the next read is 10 s later, not 30.
+    expect(seconds(reads)).toEqual([0, 10, 30, 90, 100]);
   });
 
-  test("rate limits and server errors are retried, after Retry-After", async () => {
+  test("a socket that reports the end before the read does not skip the 5 second gap", async () => {
+    FakeSocket.greeting = {
+      type: "render.completed",
+      state: { renderId: "r1", state: "succeeded", progress: 1 },
+    };
+    const { lumen, reads } = scriptedApi((read) =>
+      Response.json(read < 5 ? progressBody("processing", 0.9) : progressBody("succeeded", 1)),
+    );
+
+    const waiting = lumen.waitForRender("r1");
+    await vi.advanceTimersByTimeAsync(30_000);
+    await waiting;
+
+    expect(seconds(FakeSocket.startedAt)).toEqual([0, 5, 10, 15]);
+    expect(reads).toHaveLength(5);
+  });
+
+  test("rate limits wait out Retry-After and server errors back off", async () => {
     const { lumen, reads } = scriptedApi((read) => {
       if (read === 1) {
         return Response.json(
@@ -201,32 +273,80 @@ describe("Lumen.waitForRender", () => {
     });
 
     const waiting = lumen.waitForRender("r1");
-    await vi.advanceTimersByTimeAsync(7_000 + 4_000);
+    await vi.advanceTimersByTimeAsync(7_000 + 2_000);
     await waiting;
 
-    expect(reads.map((at) => (at - reads[0]!) / 1000)).toEqual([0, 7, 11]);
+    expect(seconds(reads)).toEqual([0, 7, 9]);
+  });
+
+  test("a rate limit never ends a wait", async () => {
+    const { lumen, reads } = scriptedApi((read) =>
+      read <= 40
+        ? Response.json({ error: "API key rate limit exceeded" }, { status: 429 })
+        : Response.json(progressBody("succeeded", 1)),
+    );
+
+    const waiting = lumen.waitForRender("r1");
+    await vi.advanceTimersByTimeAsync(40 * 60_000);
+
+    await expect(waiting).resolves.toMatchObject({ status: "succeeded" });
+    expect(reads).toHaveLength(41);
+  });
+
+  test("a rate limit makes every wait on the client hold off, without Retry-After too", async () => {
+    const { lumen, reads } = scriptedApi((read, id) =>
+      id === "r1" && read === 1
+        ? Response.json({ error: "API key rate limit exceeded" }, { status: 429 })
+        : Response.json(progressBody("succeeded", 1)),
+    );
+
+    const first = lumen.waitForRender("r1");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const second = lumen.waitForRender("r2");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await Promise.all([first, second]);
+    expect(seconds(reads)).toEqual([0, 2, 2]);
   });
 
   test("an unknown render and a bad key end the wait", async () => {
-    const { lumen, reads } = scriptedApi(() =>
-      Response.json({ code: "render_not_found", error: "render was not found" }, { status: 404 }),
-    );
+    for (const [status, code] of [
+      [404, "render_not_found"],
+      [401, "unauthorized"],
+    ] as const) {
+      const { lumen, reads } = scriptedApi(() => Response.json({ code, error: "no" }, { status }));
 
-    await expect(lumen.waitForRender("r1")).rejects.toMatchObject({
-      code: "render_not_found",
-      status: 404,
-    });
-    expect(reads).toHaveLength(1);
+      await expect(lumen.waitForRender("r1")).rejects.toMatchObject({ code, status });
+      expect(reads).toHaveLength(1);
+    }
   });
 
-  test("persistent server errors give up", async () => {
+  test("server errors are retried for ten minutes, then the last one is thrown", async () => {
     const { lumen, reads } = scriptedApi(() => Response.json({ error: "down" }, { status: 503 }));
 
     const waiting = lumen.waitForRender("r1").catch((caught: unknown) => caught);
-    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    await vi.advanceTimersByTimeAsync(11 * 60_000);
 
     expect(await waiting).toMatchObject({ status: 503 });
-    expect(reads).toHaveLength(8);
+    expect(seconds(reads).at(-1)).toBeGreaterThanOrEqual(600);
+    expect(seconds(reads).at(-1)).toBeLessThan(660);
+  });
+
+  test("25 waits whose sockets work cost two requests each a minute", async () => {
+    const controller = new AbortController();
+    const { lumen, reads } = scriptedApi(() => Response.json(progressBody("processing", 0.1)));
+
+    const waits = Array.from({ length: 25 }, () =>
+      lumen.waitForRender("r1", { signal: controller.signal }).catch(() => undefined),
+    );
+    await vi.advanceTimersByTimeAsync(119_999);
+    const requests = reads.length + FakeSocket.startedAt.length;
+    controller.abort();
+    await Promise.all(waits);
+
+    expect(requests).toBe(25 * 2 * 2);
   });
 
   test("aborting stops the wait with the signal's reason, and closes the socket", async () => {
@@ -242,6 +362,88 @@ describe("Lumen.waitForRender", () => {
     expect(FakeSocket.instances[0]!.closed).toBe(true);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(reads).toHaveLength(1);
+  });
+});
+
+describe("Workers socket upgrade", () => {
+  const url = new URL("https://api.test/v1/renders/r1/socket");
+
+  function pendingUpgrade() {
+    let release!: (response: unknown) => void;
+    let signal: AbortSignal | null | undefined;
+    const stub = ((_url: unknown, init: RequestInit) => {
+      signal = init.signal;
+      return new Promise((resolve) => (release = resolve));
+    }) as typeof fetch;
+    const socket = { accept: vi.fn(), addEventListener: vi.fn(), close: vi.fn() };
+    return { release: () => release({ webSocket: socket }), signal: () => signal, socket, stub };
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("WebSocketPair", class {});
+  });
+
+  test("aborting a pending upgrade ends the session, and a late socket is closed", async () => {
+    const upgrade = pendingUpgrade();
+    const controller = new AbortController();
+
+    const session = watchRender({
+      apiKey: "test-key",
+      fetch: upgrade.stub,
+      onProgress: () => {},
+      signal: controller.signal,
+      timeoutMs: 60_000,
+      url,
+    });
+    controller.abort();
+
+    await expect(session).resolves.toEqual({ end: "dropped" });
+    expect(upgrade.signal()?.aborted).toBe(true);
+    upgrade.release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(upgrade.socket.close).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("the session timeout covers the upgrade", async () => {
+    const upgrade = pendingUpgrade();
+
+    const session = watchRender({
+      apiKey: "test-key",
+      fetch: upgrade.stub,
+      onProgress: () => {},
+      signal: undefined,
+      timeoutMs: 60_000,
+      url,
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    await expect(session).resolves.toEqual({ end: "timeout" });
+    expect(upgrade.signal()?.aborted).toBe(true);
+  });
+
+  test("a rejected upgrade makes every wait hold off for Retry-After", async () => {
+    const reads: number[] = [];
+    const stub = (async (requested: URL) => {
+      if (new URL(requested).pathname.endsWith("/socket")) {
+        return Response.json(
+          { error: "rate limited" },
+          { status: 429, headers: { "retry-after": "20" } },
+        );
+      }
+      reads.push(Date.now());
+      return Response.json(
+        reads.length < 2 ? progressBody("processing", 0.1) : progressBody("succeeded", 1),
+      );
+    }) as typeof fetch;
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    const waiting = lumen.waitForRender("r1");
+    await vi.advanceTimersByTimeAsync(20_000);
+    await waiting;
+
+    // Without the cooldown the dropped session's 10 s gap would bring the second read at 10 s.
+    expect(seconds(reads)).toEqual([0, 20]);
   });
 });
 
