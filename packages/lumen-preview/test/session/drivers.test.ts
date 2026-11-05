@@ -333,12 +333,14 @@ async function startMainDriver(browser: Browser, compositionJson = "first") {
 }
 
 async function startWorkerDriver(browser: Browser) {
+  vi.stubGlobal("document", { baseURI: "https://preview.test/" });
   const preview = new LumenPreviewContext();
   const session = new LumenPreviewSession({
     audio: AUDIO,
     audioSources: SOURCES,
     bindings: {
       preview: async () => ({}),
+      previewWasmUrl: () => "preview.wasm",
       previewWorkerUrl: () => "preview-worker.js",
     } as never,
     compositionJson: "first",

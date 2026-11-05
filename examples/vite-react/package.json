@@ -7,7 +7,7 @@
     "build": "vite build",
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo",
-    "dev": "pnpm --filter @lumiscia/lumen-shared build && pnpm --filter @lumiscia/lumen-react build && vite"
+    "dev": "pnpm --filter '@lumiscia/example-vite-react^...' build && vite"
   },
   "dependencies": {
     "@lumiscia/lumen-bindings": "workspace:*",
@@ -21,8 +21,6 @@
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "^6.1.2",
-    "vite": "catalog:",
-    "vite-plugin-top-level-await": "catalog:",
-    "vite-plugin-wasm": "catalog:"
+    "vite": "catalog:"
   }
 }

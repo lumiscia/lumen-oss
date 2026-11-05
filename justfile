@@ -1,5 +1,5 @@
 definitions_out := justfile_directory() / "definitions"
-wasm_bindings_out := justfile_directory() / "packages/lumen-bindings/src"
+wasm_bindings_out := justfile_directory() / "packages/lumen-bindings/wasm"
 generated_types_out := justfile_directory() / "packages/lumen-types/src/generated"
 
 # The TypeScript half of CI's Check job. CI also runs Rust formatting, checks and tests, and the
@@ -22,7 +22,7 @@ generate-types: generate-definitions
 verify-typescript-artifacts: generate-types wasm-bindings-debug
     #!/usr/bin/env bash
     set -euo pipefail
-    paths=({{ definitions_out }}/composition.schema.json {{ generated_types_out }} {{ wasm_bindings_out }})
+    paths=({{ definitions_out }}/composition.schema.json {{ generated_types_out }})
     # `generated/` is gitignored, so new type files only show up with --ignored.
     changes="$(git status --porcelain -- "${paths[@]}")$(git status --porcelain --ignored -- {{ generated_types_out }})"
     if [ -n "$changes" ]; then

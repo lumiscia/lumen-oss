@@ -24,13 +24,14 @@ Windows development has basic CI coverage for TypeScript package builds and pure
 
 Generated definitions and migrations should not be edited by hand. Use the generator commands in the `justfile`. CI runs `just verify-definitions` to make sure committed files in `definitions/` match the Rust node definitions.
 
-WASM bindings are generated into `packages/lumen-bindings/src` with:
+WASM bindings are generated into `packages/lumen-bindings/wasm` with:
 
 ```bash
 just wasm-bindings-debug
+pnpm --filter @lumiscia/lumen-bindings build
 ```
 
-This command compiles the Rust WASM crate for local development and can take a long time on a clean checkout. Run it when working on WASM-facing code, binding exports, or preview examples. Do not add handwritten binding stubs to make local TypeScript checks pass.
+The second command bundles the generated JavaScript into the pre-built preview worker, so it has to follow every regeneration. The first compiles the Rust WASM crate for local development and can take a long time on a clean checkout. Run it when working on WASM-facing code, binding exports, or preview examples. Do not add handwritten binding stubs to make local TypeScript checks pass.
 
 ## Scope
 

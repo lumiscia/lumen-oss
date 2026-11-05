@@ -10,7 +10,7 @@
   - `pnpm lint` to run Oxlint
 - Run `just ready` before publishing substantial changes.
 - Generated TypeScript definition files must be regenerated with `just generate-types`; do not hand-edit generated outputs.
-- WASM bindings are generated into `packages/lumen-bindings/src` with `just wasm-bindings-release`. This compiles the Rust WASM crate and can take a long time, especially on a clean checkout, so run it only when binding output or WASM-facing code needs to be validated.
+- WASM bindings are generated into `packages/lumen-bindings/wasm` with `just wasm-bindings-release`. This compiles the Rust WASM crate and can take a long time, especially on a clean checkout, so run it only when binding output or WASM-facing code needs to be validated.
 
 ## Definitions
 

@@ -17,4 +17,4 @@ cargo check -p lumen-wasm --target wasm32-unknown-unknown
 just wasm-bindings-release
 ```
 
-`just wasm-bindings-release` compiles this crate and writes generated WASM, JavaScript, and declaration files into `packages/lumen-bindings/src`.
+`just wasm-bindings-release` compiles this crate and writes generated WASM, JavaScript, and declaration files into `packages/lumen-bindings/wasm`.
