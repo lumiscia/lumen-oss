@@ -37,25 +37,23 @@ export interface AudioSourceRegistration {
 
 export interface LumenAudioEngineOptions {
   latencyHint?: AudioContextLatencyCategory | number;
+  /** Called when the position starts or stops moving, or jumps because the mix restarted. */
+  onClockChange?: () => void;
   workerModuleUrl?: string | URL;
   workletModuleUrl?: string | URL;
 }
 
-/**
- * What the playback position follows.
- *
- * `audio` is for video that follows this engine: the position holds through an underrun, and the
- * video waits with it. `elapsed` is for video on its own clock: the position follows time since
- * `play`, and audio that isn't ready is skipped.
- */
-type AudioEngineClock = "audio" | "elapsed";
+// How long playback waits for audio that hasn't started, such as a page with no user gesture yet.
+// After that the position runs on elapsed time, and the audio joins there if it ever starts.
+const AUDIO_START_BUDGET_MS = 1_000;
 
-/** The last position the worklet played, or the requested start until it plays anything. */
+/** The last position the worklet played, or the requested start until the worklet has started. */
 type PlaybackClock = {
   contextTime: number;
   ms: number;
   stalled: boolean;
   startedAt: number;
+  workletStarted: boolean;
 };
 
 // Async work holds on to its entry and publishes only while the map still holds that same object.
@@ -80,7 +78,6 @@ type WorkletMessage =
     }
   | {
       generation: number;
-      holdOnUnderrun: boolean;
       startSample: number;
       type: "play";
     }
@@ -143,11 +140,9 @@ export class LumenAudioEngine {
   #timeline: AudioEngineTimeline | null = null;
   #timelineJson: string | null = null;
   #worker: Worker | null = null;
-  readonly #clock: AudioEngineClock;
   readonly #options: LumenAudioEngineOptions;
 
-  constructor(options: LumenAudioEngineOptions = {}, clock: AudioEngineClock = "audio") {
-    this.#clock = clock;
+  constructor(options: LumenAudioEngineOptions = {}) {
     this.#options = options;
   }
 
@@ -250,6 +245,7 @@ export class LumenAudioEngine {
   #restartMix(): void {
     if (this.isPlaying()) {
       this.play(this.currentTimeMs());
+      this.#options.onClockChange?.();
     }
   }
 
@@ -266,6 +262,7 @@ export class LumenAudioEngine {
       ms: this.#pausedMs,
       stalled: true,
       startedAt: performance.now(),
+      workletStarted: false,
     };
     void Promise.all([this.#ensureWorklet(), this.#getContext().resume()])
       .then(([node]) => {
@@ -273,8 +270,7 @@ export class LumenAudioEngine {
           return;
         }
         const startSample = msToLumenAudioSample(this.currentTimeMs());
-        const holdOnUnderrun = this.#clock === "audio";
-        this.#post(node, { type: "play", generation, holdOnUnderrun, startSample });
+        this.#post(node, { type: "play", generation, startSample });
         this.#queueChunks(startSample);
       })
       .catch((error: unknown) => {
@@ -304,8 +300,9 @@ export class LumenAudioEngine {
     if (!playback) {
       return this.#pausedMs;
     }
-    if (this.#clock === "elapsed") {
-      return this.#wrapMs(playback.ms + performance.now() - playback.startedAt);
+    if (!playback.workletStarted) {
+      const lateMs = performance.now() - playback.startedAt - AUDIO_START_BUDGET_MS;
+      return this.#wrapMs(playback.ms + Math.max(lateMs, 0));
     }
     if (playback.stalled || !this.#context) {
       return this.#wrapMs(playback.ms);
@@ -317,6 +314,18 @@ export class LumenAudioEngine {
 
   isPlaying(): boolean {
     return this.#playback !== null;
+  }
+
+  /** Whether the position is moving. It holds through an underrun or a suspended context. */
+  isClockRunning(): boolean {
+    const playback = this.#playback;
+    if (!playback) {
+      return false;
+    }
+    if (!playback.workletStarted) {
+      return performance.now() - playback.startedAt > AUDIO_START_BUDGET_MS;
+    }
+    return !playback.stalled && this.#context?.state === "running";
   }
 
   dispose(): void {
@@ -399,15 +408,18 @@ export class LumenAudioEngine {
       if (message.type === "error") {
         console.error("[LumenAudioEngine]", message.message ?? "audio worklet failed");
       } else if (message.generation === this.#generation && this.#playback) {
-        if (this.#clock === "audio") {
-          this.#playback = {
-            ...this.#playback,
-            contextTime: message.contextTime,
-            ms: (message.currentSample / LUMEN_AUDIO_SAMPLE_RATE) * MS_PER_SECOND,
-            stalled: message.stalled,
-          };
-        }
+        const wasRunning = this.isClockRunning();
+        this.#playback = {
+          ...this.#playback,
+          contextTime: message.contextTime,
+          ms: (message.currentSample / LUMEN_AUDIO_SAMPLE_RATE) * MS_PER_SECOND,
+          stalled: message.stalled,
+          workletStarted: true,
+        };
         this.#queueChunks(message.currentSample);
+        if (this.isClockRunning() !== wasRunning) {
+          this.#options.onClockChange?.();
+        }
       }
     };
     this.#node = node;
@@ -415,10 +427,13 @@ export class LumenAudioEngine {
   }
 
   #getContext(): AudioContext {
-    this.#context ??= new AudioContext({
-      latencyHint: this.#options.latencyHint ?? "interactive",
-      sampleRate: LUMEN_AUDIO_SAMPLE_RATE,
-    });
+    if (!this.#context) {
+      this.#context = new AudioContext({
+        latencyHint: this.#options.latencyHint ?? "interactive",
+        sampleRate: LUMEN_AUDIO_SAMPLE_RATE,
+      });
+      this.#context.onstatechange = () => this.#options.onClockChange?.();
+    }
     return this.#context;
   }
 
@@ -440,14 +455,15 @@ export class LumenAudioEngine {
       }
       this.#post(node, event.data, [event.data.samples.buffer as ArrayBuffer]);
     };
-    // Without a mixer no chunk ever arrives, so stop holding the video on an audio clock. The next
-    // sync decodes into a new worker.
+    // Without a mixer no chunk ever arrives, so stop holding the video. The next sync decodes into a
+    // new worker.
     worker.onerror = (event) => {
       console.error("[LumenAudioEngine]", event.message);
       this.#halt();
       worker.terminate();
       this.#worker = null;
       this.#clearSources();
+      this.#options.onClockChange?.();
     };
     worker.postMessage({ type: "set-timeline", timeline: this.#timeline });
     this.#worker = worker;

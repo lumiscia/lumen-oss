@@ -63,6 +63,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@lumiscia/lumen-types": "workspace:*",
     "mediabunny": "^1.62.1"
   }
 }

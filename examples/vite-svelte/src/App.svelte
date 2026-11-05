@@ -62,25 +62,24 @@
 
     const preview = createLumenPreview();
     const lumenBindings = createLumenBindings();
-    const compositionJson = JSON.stringify(composition.toJSON());
     let stats = $state(EMPTY_STATS);
 </script>
 
 <main>
-    <LumenCanvas {preview} bindings={lumenBindings} {compositionJson} onStats={(next) => (stats = next)} />
+    <LumenCanvas {preview} bindings={lumenBindings} {composition} class="stage" onStats={(next) => (stats = next)} />
     <div class="controls">
         <button
             type="button"
-            disabled={!preview.isLoaded}
-            onclick={() => (preview.isPlaying ? preview.pause() : preview.play())}
+            disabled={!preview.state.isLoaded}
+            onclick={() => (preview.state.isPlaying ? preview.pause() : preview.play())}
         >
-            {!preview.isLoaded ? "Loading" : preview.isPlaying ? "Pause" : "Play"}
+            {!preview.state.isLoaded ? "Loading" : preview.state.isPlaying ? "Pause" : "Play"}
         </button>
-        <span>Frame {preview.frame} / {preview.totalFrames}</span>
+        <span>Frame {preview.state.frame} / {preview.state.totalFrames}</span>
         <span>Timeline {stats.timelineFps} fps · target {stats.targetFrameDurationMs.toFixed(2)} ms</span>
         <span>Render {stats.renderMs.toFixed(2)} ms · actual {stats.actualFps.toFixed(1)} fps</span>
-        {#if preview.error}
-            <pre>{preview.error}</pre>
+        {#if preview.state.error}
+            <pre>{preview.state.error}</pre>
         {/if}
     </div>
 </main>

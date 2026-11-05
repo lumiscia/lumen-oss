@@ -1,13 +1,17 @@
+import { epochNow, type PreviewClock } from "./clock.js";
 import {
   createLumenPreviewRuntime,
   type LumenLogLevel,
   type LumenPreviewBindings,
   type LumenPreviewController,
   type MediaRegistration,
+  type MediaSourceInput,
 } from "./index.js";
-import type { LumenPreviewPatch } from "./preview.js";
-import { describeError, reportConsoleError } from "./session/errors.js";
-import { EMPTY_PREVIEW_STATS, PlaybackFpsMeter, type LumenPreviewStats } from "./session/stats.js";
+import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
+import type { LumenPreviewErrorCode } from "./preview.js";
+import { PreviewRunner } from "./runner.js";
+import { describeError } from "./session/errors.js";
+import { PlaybackFpsMeter } from "./session/stats.js";
 
 type InitPreview = (options: { module_or_path: string }) => Promise<object>;
 
@@ -18,63 +22,82 @@ export interface LumenPreviewWorkerHostOptions {
 
 export type LumenPreviewWorkerCommand =
   | {
-      canvas: OffscreenCanvas;
-      compositionJson: string | null;
-      loadId: number;
-      lookaheadCount: number;
       logLevel: LumenLogLevel;
-      mediaSources: readonly MediaRegistration[];
-      type: "initialize";
+      lookaheadCount: number;
+      type: "start";
       wasmUrl: string;
     }
   | {
-      compositionJson: string | null;
+      canvas: OffscreenCanvas;
+      type: "attach-canvas";
+    }
+  | {
+      compositionJson: string;
+      /** New or changed fonts. A source can be large, so one the worker has isn't sent again. */
+      fonts: readonly (readonly [family: string, source: MediaSourceInput])[];
+      /** Every family and id this load uses, including those sent by earlier loads. */
+      keepFonts: readonly string[];
+      keepMedia: readonly string[];
       loadId: number;
-      mediaSources: readonly MediaRegistration[];
-      type: "set-composition";
+      /** New or changed media, as with `fonts`. */
+      media: readonly MediaRegistration[];
+      type: "load";
     }
   | {
-      logLevel: LumenLogLevel;
-      type: "set-log-level";
+      loadId: number;
+      type: "unload";
     }
   | {
-      lookaheadCount: number;
-      type: "set-lookahead-count";
+      clock: PreviewClock;
+      type: "clock";
     }
   | {
-      fromMs: number;
-      type: "play";
-    }
-  | {
-      type: "pause";
-    }
-  | {
-      frame: number;
+      clock: PreviewClock;
+      seekId: number;
       type: "seek";
     }
   | {
-      type: "dispose";
+      logLevel: LumenLogLevel;
+      lookaheadCount: number;
+      type: "set-options";
     };
 
 export type LumenPreviewWorkerEvent =
   | {
-      /** Answers the command with this `loadId`, and the driver ignores any older answer. */
-      loadId: number;
-      timelineJson: string | null;
-      type: "audio-timeline";
+      type: "ready";
     }
   | {
-      patch: LumenPreviewPatch;
-      type: "state";
-    }
-  | {
-      stats: LumenPreviewStats;
-      type: "stats";
-    }
-  | {
+      code: LumenPreviewErrorCode;
       message: string;
-      scope: string;
-      type: "error";
+      type: "startup-failed";
+    }
+  | {
+      audioTimelineJson: string | null;
+      fps: number;
+      height: number;
+      loadId: number;
+      totalFrames: number;
+      type: "loaded";
+      width: number;
+    }
+  | {
+      loadId: number;
+      message: string;
+      type: "load-failed";
+    }
+  | {
+      actualFps: number;
+      frame: number;
+      loadId: number;
+      renderMs: number;
+      /** The newest seek this frame answers. */
+      seekId: number;
+      type: "frame";
+    }
+  | {
+      loadId: number;
+      message: string;
+      type: "render-failed";
     };
 
 type PreviewWorkerScope = typeof globalThis & {
@@ -85,294 +108,231 @@ type PreviewWorkerScope = typeof globalThis & {
   postMessage(message: LumenPreviewWorkerEvent): void;
 };
 
+type WorkerNavigator = Navigator & { gpu?: { requestAdapter(): Promise<unknown> } };
+
+/** Runs inside the preview worker: it holds the wasm controller and renders what the page asks. */
 export function createLumenPreviewWorkerHost({
   initPreview,
   previewBindings,
 }: LumenPreviewWorkerHostOptions): void {
   const scope = globalThis as PreviewWorkerScope;
+  const fonts = new Map<string, MediaSourceInput>();
+  const loadedFonts = new Map<string, MediaSourceInput>();
+  const media = new Map<string, MediaRegistration>();
+  const playbackFps = new PlaybackFpsMeter();
   let canvas: OffscreenCanvas | null = null;
-  let compositionJson: string | null = null;
   let controller: LumenPreviewController | null = null;
-  let lookaheadCount = 8;
   let lastRenderMs = 0;
-  let loadGeneration = 0;
   let loadId = 0;
-  let mediaSources: readonly MediaRegistration[] = [];
-  let playbackFps = new PlaybackFpsMeter();
   let playing = false;
-  let queuedRender = false;
-  let renderInFlight = false;
-  let timerId: ReturnType<typeof setTimeout> | null = null;
+
+  const runner = new PreviewRunner<ReturnType<typeof setTimeout>>(
+    {
+      prepareFrame: () => requireController().prepareFrame(),
+      renderFrame: () => {
+        if (!canvas) {
+          throw new Error("the preview worker has no canvas");
+        }
+        return requireController().renderPrepared(canvas);
+      },
+      setFrame: (frame) => requireController().setFrame(frame),
+    },
+    {
+      clearTimer: (timer) => clearTimeout(timer),
+      now: epochNow,
+      onFailure: (error) => {
+        scope.postMessage({ loadId, message: describeError(error), type: "render-failed" });
+      },
+      onFrame: (frame, seekId, renderMs) => {
+        lastRenderMs = renderMs ?? lastRenderMs;
+        scope.postMessage({
+          actualFps: playbackFps.sample(frame, playing),
+          frame,
+          loadId,
+          renderMs: lastRenderMs,
+          seekId,
+          type: "frame",
+        });
+      },
+      setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    },
+  );
 
   scope.addEventListener("message", (event) => {
-    void handleMessage(event.data).catch((error) => reportError("worker message", error));
+    void handleMessage(event.data);
   });
 
   async function handleMessage(message: LumenPreviewWorkerCommand): Promise<void> {
     switch (message.type) {
-      case "initialize":
-        await initialize(message);
+      case "start":
+        await start(message);
         break;
-      case "set-log-level":
-        controller?.setLogLevel(message.logLevel);
+      case "attach-canvas":
+        canvas = message.canvas;
         break;
-      case "set-lookahead-count":
-        lookaheadCount = message.lookaheadCount;
-        controller?.setLookaheadCount(lookaheadCount);
+      case "load":
+        await load(message);
         break;
-      case "set-composition":
-        compositionJson = message.compositionJson;
+      case "unload":
         loadId = message.loadId;
-        mediaSources = message.mediaSources;
-        await loadComposition();
+        runner.unload();
+        loadedFonts.clear();
+        requireController().clear();
         break;
-      case "play":
-        play(message.fromMs);
-        break;
-      case "pause":
-        pause();
+      case "clock":
+        setClock(message.clock);
         break;
       case "seek":
-        seek(message.frame);
+        runner.seek(message.seekId, message.clock);
         break;
-      case "dispose":
-        dispose();
+      case "set-options":
+        requireController().setLogLevel(message.logLevel);
+        requireController().setLookaheadCount(message.lookaheadCount);
         break;
     }
   }
 
-  async function initialize(
-    message: Extract<LumenPreviewWorkerCommand, { type: "initialize" }>,
+  function requireController(): LumenPreviewController {
+    if (!controller) {
+      throw new Error("the preview worker has not started");
+    }
+    return controller;
+  }
+
+  async function start(
+    message: Extract<LumenPreviewWorkerCommand, { type: "start" }>,
   ): Promise<void> {
-    dispose();
-    canvas = message.canvas;
-    compositionJson = message.compositionJson;
-    loadId = message.loadId;
-    lookaheadCount = message.lookaheadCount;
-    mediaSources = message.mediaSources;
-
-    await initPreview({ module_or_path: message.wasmUrl });
-    const { LumenPreviewController: PreviewController } =
-      createLumenPreviewRuntime(previewBindings);
-    controller = new PreviewController();
-    controller.setLogLevel(message.logLevel);
-    controller.setLookaheadCount(lookaheadCount);
-
-    await loadComposition();
-  }
-
-  async function loadComposition(): Promise<void> {
-    const activeController = controller;
-    if (!activeController || !canvas) {
-      return;
-    }
-
-    const generation = ++loadGeneration;
-    playing = false;
-    stopLoop();
-    activeController.pause();
-
-    if (!compositionJson) {
-      activeController.clear();
-      lastRenderMs = 0;
-      postAudioTimeline(null);
-      postState({
-        frame: 0,
-        totalFrames: 0,
-        width: 0,
-        height: 0,
-        isLoaded: false,
+    const { gpu } = navigator as WorkerNavigator;
+    if (!gpu || !(await gpu.requestAdapter().catch(() => null))) {
+      scope.postMessage({
+        code: "webgpu_unavailable",
+        message:
+          "Lumen preview needs WebGPU, and the preview worker couldn't get a GPU adapter. Check that this browser has WebGPU enabled for this device.",
+        type: "startup-failed",
       });
-      playbackFps.reset();
-      postStats(EMPTY_PREVIEW_STATS);
       return;
     }
 
     try {
-      await activeController.syncMediaSources(mediaSources);
-      if (generation !== loadGeneration) {
+      await initPreview({ module_or_path: message.wasmUrl });
+      const { LumenPreviewController: PreviewController } =
+        createLumenPreviewRuntime(previewBindings);
+      controller = new PreviewController();
+      controller.setLogLevel(message.logLevel);
+      controller.setLookaheadCount(message.lookaheadCount);
+    } catch (error) {
+      scope.postMessage({
+        code: "worker_failed",
+        message: `The Lumen preview worker couldn't load its wasm from ${message.wasmUrl}: ${describeError(error)}`,
+        type: "startup-failed",
+      });
+      return;
+    }
+    scope.postMessage({ type: "ready" });
+  }
+
+  async function load(
+    message: Extract<LumenPreviewWorkerCommand, { type: "load" }>,
+  ): Promise<void> {
+    const activeController = requireController();
+    const isCurrent = () => message.loadId === loadId;
+    loadId = message.loadId;
+    runner.unload();
+    playing = false;
+    lastRenderMs = 0;
+    playbackFps.reset();
+    replaceEntries(fonts, message.keepFonts, message.fonts);
+    replaceEntries(
+      media,
+      message.keepMedia,
+      message.media.map((registration) => [registration.id, registration]),
+    );
+
+    try {
+      await syncFonts(activeController, isCurrent);
+      await activeController.syncMediaSources([...media.values()]);
+      if (!isCurrent()) {
         return;
       }
-      activeController.loadComposition(compositionJson);
-      activeController.setLookaheadCount(lookaheadCount);
-      canvas.width = activeController.width() || 1;
-      canvas.height = activeController.height() || 1;
-      postAudioTimeline(activeController.audioTimeline() ?? null);
-      postState({
-        error: null,
-        frame: activeController.currentFrame(),
+      activeController.loadComposition(message.compositionJson);
+      if (canvas) {
+        canvas.width = activeController.width() || 1;
+        canvas.height = activeController.height() || 1;
+      }
+      scope.postMessage({
+        audioTimelineJson: activeController.audioTimeline() ?? null,
+        fps: activeController.fps(),
         height: activeController.height(),
-        isLoaded: true,
-        isPlaying: false,
+        loadId,
         totalFrames: activeController.durationFrames(),
+        type: "loaded",
         width: activeController.width(),
       });
-      postStats(statsFromController(activeController, 0));
-      queueRender();
+      runner.load(activeController.durationFrames(), activeController.fps());
     } catch (error) {
-      if (generation !== loadGeneration) {
-        return;
-      }
-      lastRenderMs = 0;
-      playbackFps.reset();
-      postAudioTimeline(null);
-      reportConsoleError("load", error);
-      postState({
-        error: describeError(error),
-        isLoaded: false,
-      });
-      postStats(EMPTY_PREVIEW_STATS);
-    }
-  }
-
-  function play(fromMs: number): void {
-    const activeController = controller;
-    if (!activeController) {
-      return;
-    }
-    playing = true;
-    playbackFps.reset();
-    activeController.setFrame(activeController.targetFrameForTimeMs(fromMs));
-    activeController.play();
-    postState({ isPlaying: true });
-    startLoop();
-  }
-
-  function pause(): void {
-    playing = false;
-    controller?.pause();
-    stopLoop();
-    postState({ frame: controller?.currentFrame() ?? 0, isPlaying: false });
-    postStats(controller ? statsFromController(controller) : EMPTY_PREVIEW_STATS);
-  }
-
-  function seek(frame: number): void {
-    if (!controller) {
-      return;
-    }
-    controller.setFrame(frame);
-    postState({ frame: controller.currentFrame() });
-    queueRender();
-  }
-
-  function startLoop(): void {
-    if (timerId) {
-      return;
-    }
-
-    const tick = () => {
-      timerId = null;
-      if (!playing || !controller || !canvas) {
-        return;
-      }
-      queueRender();
-      timerId = setTimeout(tick, 0);
-    };
-    timerId = setTimeout(tick, 0);
-  }
-
-  function stopLoop(): void {
-    if (timerId) {
-      clearTimeout(timerId);
-      timerId = null;
-    }
-  }
-
-  function queueRender(): void {
-    queuedRender = true;
-    if (!renderInFlight) {
-      void drainRenderQueue();
-    }
-  }
-
-  async function drainRenderQueue(): Promise<void> {
-    renderInFlight = true;
-    try {
-      while (queuedRender) {
-        queuedRender = false;
-        await renderOnce();
-      }
-    } finally {
-      renderInFlight = false;
-      if (queuedRender) {
-        void drainRenderQueue();
+      if (isCurrent()) {
+        scope.postMessage({ loadId, message: describeError(error), type: "load-failed" });
       }
     }
   }
 
-  async function renderOnce(): Promise<void> {
-    const activeController = controller;
-    if (!activeController || !canvas || activeController.durationFrames() <= 0) {
-      return;
-    }
-
-    try {
-      const startedAt = performance.now();
-      let changed = true;
-      if (playing) {
-        changed = await activeController.tickAsync(performance.now(), canvas);
-      } else {
-        await activeController.renderNowAsync(canvas);
-      }
-
-      if (changed || !playing) {
-        lastRenderMs = performance.now() - startedAt;
-        postState({
-          error: null,
-          frame: activeController.currentFrame(),
-          isPlaying: playing,
-        });
-        postStats(statsFromController(activeController));
-      }
-    } catch (error) {
-      reportError("render", error);
-    }
-  }
-
-  function dispose(): void {
-    stopLoop();
-    playing = false;
-    controller?.clear();
-    controller = null;
-    canvas = null;
-    renderInFlight = false;
-    queuedRender = false;
-    playbackFps.reset();
-    lastRenderMs = 0;
-  }
-
-  function postAudioTimeline(timelineJson: string | null): void {
-    scope.postMessage({ loadId, timelineJson, type: "audio-timeline" });
-  }
-
-  function postState(patch: LumenPreviewPatch): void {
-    scope.postMessage({ patch, type: "state" });
-  }
-
-  function postStats(stats: LumenPreviewStats): void {
-    scope.postMessage({ stats, type: "stats" });
-  }
-
-  function statsFromController(
+  async function syncFonts(
     activeController: LumenPreviewController,
-    renderMs = lastRenderMs,
-  ): LumenPreviewStats {
-    const frame = activeController.currentFrame();
-    return {
-      frame,
-      timelineFps: activeController.fps(),
-      targetFrameDurationMs: activeController.targetFrameDurationMs(),
-      renderMs,
-      actualFps: playbackFps.sample(frame, playing),
-    };
+    isCurrent: () => boolean,
+  ): Promise<void> {
+    for (const family of loadedFonts.keys()) {
+      if (!fonts.has(family)) {
+        loadedFonts.delete(family);
+        activeController.removeFontFamily(family);
+      }
+    }
+    await Promise.all(
+      [...fonts].map(async ([family, source]) => {
+        const loaded = loadedFonts.get(family);
+        if (loaded && sameMediaInput(loaded, source)) {
+          return;
+        }
+        const bytes = await readFont(family, source);
+        if (isCurrent()) {
+          activeController.registerFontFamily(family, bytes);
+          loadedFonts.set(family, source);
+        }
+      }),
+    );
   }
 
-  function reportError(scopeName: string, error: unknown): void {
-    reportConsoleError(scopeName, error);
-    scope.postMessage({
-      message: describeError(error),
-      scope: scopeName,
-      type: "error",
+  function setClock(clock: PreviewClock): void {
+    if (clock.rate > 0 && !playing) {
+      playbackFps.reset();
+    }
+    playing = clock.rate > 0;
+    runner.setClock(clock);
+  }
+}
+
+function replaceEntries<T>(
+  current: Map<string, T>,
+  keep: readonly string[],
+  changed: readonly (readonly [string, T])[],
+): void {
+  const kept = new Set(keep);
+  for (const key of current.keys()) {
+    if (!kept.has(key)) {
+      current.delete(key);
+    }
+  }
+  for (const [key, value] of changed) {
+    current.set(key, value);
+  }
+}
+
+async function readFont(family: string, source: MediaSourceInput): Promise<ArrayBuffer> {
+  try {
+    const blob = await sourceInputToBlob(source);
+    return await blob.arrayBuffer();
+  } catch (error) {
+    throw new Error(`font "${family}" could not be loaded: ${describeError(error)}`, {
+      cause: error,
     });
   }
 }

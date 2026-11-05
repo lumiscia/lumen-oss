@@ -1,29 +1,15 @@
 import { useEffect, useRef } from "react";
 
 import type { CSSProperties } from "react";
-import { LumenPreviewSession } from "@lumiscia/lumen-preview";
-import type {
-  AudioSourceRegistration,
-  LumenLogLevel,
-  LumenPreviewBindingSource,
-  LumenPreviewStatsCallback,
-  MediaRegistration,
-} from "@lumiscia/lumen-preview";
+import { mountPreview, type LumenPreviewSession } from "@lumiscia/lumen-preview";
+import type { LumenPreviewSessionInputs, LumenWorkerBindings } from "@lumiscia/lumen-preview";
 
-import { useLumenPreview, type LumenPreviewContext } from "./preview.js";
+import type { LumenPreviewContext } from "./preview.js";
 
-const EMPTY_AUDIO_SOURCES: AudioSourceRegistration[] = [];
-const EMPTY_MEDIA_SOURCES: MediaRegistration[] = [];
-
-export interface LumenCanvasProps {
+export interface LumenCanvasProps extends LumenPreviewSessionInputs {
   preview: LumenPreviewContext;
-  bindings: LumenPreviewBindingSource;
-  audioSources?: AudioSourceRegistration[];
-  compositionJson?: string | null;
-  mediaSources?: MediaRegistration[];
-  lookaheadCount?: number;
-  logLevel?: LumenLogLevel;
-  onStats?: LumenPreviewStatsCallback;
+  bindings: LumenWorkerBindings;
+  /** Applied to the element that holds the canvas, which fills it and keeps its aspect ratio. */
   className?: string;
   style?: CSSProperties;
 }
@@ -31,69 +17,32 @@ export interface LumenCanvasProps {
 export function LumenCanvas({
   preview,
   bindings,
-  audioSources = EMPTY_AUDIO_SOURCES,
-  compositionJson = null,
-  mediaSources = EMPTY_MEDIA_SOURCES,
+  composition,
+  fonts,
   lookaheadCount,
-  logLevel = "off",
+  logLevel,
+  media,
   onStats,
   className,
   style,
 }: LumenCanvasProps) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<LumenPreviewSession | null>(null);
-  const snapshot = useLumenPreview(preview);
+  const inputs = { composition, fonts, lookaheadCount, logLevel, media, onStats };
 
   useEffect(() => {
-    let active = true;
-    const session = new LumenPreviewSession({
-      preview,
+    const session = mountPreview(hostRef.current as HTMLDivElement, {
+      ...inputs,
       bindings,
-      audioSources,
-      compositionJson,
-      mediaSources,
-      ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
-      logLevel,
-      onStats: onStats ?? null,
+      preview,
     });
     sessionRef.current = session;
-    void session.attach(canvasRef.current).catch((error: unknown) => {
-      if (!active) {
-        return;
-      }
-      console.error("[LumenCanvas] attach", error);
-      preview.update({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-
-    return () => {
-      active = false;
-      session.dispose();
-      if (sessionRef.current === session) {
-        sessionRef.current = null;
-      }
-    };
+    return () => session.dispose();
   }, [preview, bindings]);
 
   useEffect(() => {
-    sessionRef.current?.update({
-      audioSources,
-      compositionJson,
-      mediaSources,
-      ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
-      logLevel,
-      onStats: onStats ?? null,
-    });
-  }, [audioSources, compositionJson, mediaSources, lookaheadCount, logLevel, onStats]);
+    sessionRef.current?.update(inputs);
+  }, [composition, fonts, lookaheadCount, logLevel, media, onStats]);
 
-  return (
-    <canvas
-      ref={canvasRef}
-      width={snapshot.width || 1}
-      height={snapshot.height || 1}
-      className={className}
-      style={style}
-    />
-  );
+  return <div ref={hostRef} className={className} style={style} />;
 }

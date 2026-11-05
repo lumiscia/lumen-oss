@@ -18,10 +18,10 @@ main {
   padding: 24px;
 }
 
-canvas {
-  width: min(100%, 960px);
-  height: auto;
+.stage {
+  aspect-ratio: 16 / 9;
   background: #181c24;
+  width: min(100%, 960px);
 }
 
 .controls {

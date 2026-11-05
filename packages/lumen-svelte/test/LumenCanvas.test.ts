@@ -1,147 +1,77 @@
 // @vitest-environment jsdom
 
-import { flushSync, mount, tick, unmount } from "svelte";
+import { flushSync, mount, unmount } from "svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { LumenPreviewBindingSource } from "@lumiscia/lumen-preview";
+import type { LumenPreviewComposition, LumenWorkerBindings } from "@lumiscia/lumen-preview";
 
 import { createLumenPreview } from "../src/lib/preview.svelte.js";
 import Harness from "./LumenCanvasHarness.svelte";
 
-interface PreviewTarget {
-  update(patch: { error: string }): void;
-}
-
-interface SessionOptions {
-  preview: PreviewTarget;
-  bindings: LumenPreviewBindingSource;
-  compositionJson?: string | null;
-}
-
-interface DeferredAttach {
-  promise: Promise<void>;
-  reject(error: unknown): void;
-}
-
 interface MockSession {
-  readonly options: SessionOptions;
-  readonly attachResult: DeferredAttach;
-  readonly updates: object[];
-  disposed: boolean;
-  attach: ReturnType<typeof vi.fn>;
-  update: ReturnType<typeof vi.fn>;
+  host: HTMLElement;
+  options: { preview: unknown };
   dispose: ReturnType<typeof vi.fn>;
+  update: ReturnType<typeof vi.fn>;
 }
 
 const sessions = vi.hoisted(() => [] as MockSession[]);
 
-vi.mock("@lumiscia/lumen-preview", () => {
-  function deferredAttach(): DeferredAttach {
-    let reject!: (error: unknown) => void;
-    const promise = new Promise<void>((_resolve, rejectPromise) => {
-      reject = rejectPromise;
-    });
-    return { promise, reject };
-  }
+vi.mock("@lumiscia/lumen-preview", () => ({
+  mountPreview: (host: HTMLElement, options: MockSession["options"]) => {
+    const session = { dispose: vi.fn(), host, options, update: vi.fn() };
+    sessions.push(session);
+    return session;
+  },
+}));
 
-  return {
-    LumenPreviewSession: class implements MockSession {
-      readonly attachResult = deferredAttach();
-      readonly updates: object[] = [];
-      disposed = false;
-      readonly attach = vi.fn(() => this.attachResult.promise);
-      readonly update = vi.fn((options: object) => this.updates.push(options));
-      readonly dispose = vi.fn(() => {
-        this.disposed = true;
-      });
+const bindings = {} as LumenWorkerBindings;
 
-      constructor(readonly options: SessionOptions) {
-        sessions.push(this);
-      }
-    },
-  };
-});
-
-const bindings = {} as LumenPreviewBindingSource;
-
-describe("LumenCanvas lifecycle", () => {
+describe("LumenCanvas", () => {
   beforeEach(() => {
     sessions.length = 0;
     document.body.replaceChildren();
   });
 
-  it("replaces the session and ignores a stale attach failure", async () => {
+  it("mounts into its host and replaces the session with a new preview", async () => {
     const firstPreview = createLumenPreview();
     const nextPreview = createLumenPreview();
     const component = mount(Harness, {
       target: document.body,
-      props: { initialPreview: firstPreview, initialBindings: bindings },
+      props: { initialPreview: firstPreview, bindings },
     });
     flushSync();
-    const firstSession = sessions[0];
+    expect(sessions[0]?.host.className).toBe("stage");
 
-    component.replace(nextPreview, bindings, "next composition");
+    component.setPreview(nextPreview);
     flushSync();
-    const nextSession = sessions[1];
+    expect(sessions[0]?.dispose).toHaveBeenCalledOnce();
+    expect(sessions[1]?.options.preview).toBe(nextPreview);
 
-    expect(firstSession.disposed).toBe(true);
-    expect(nextSession.options.preview).toBe(nextPreview.core);
-    expect(nextSession.options.compositionJson).toBe("next composition");
+    await unmount(component);
+    expect(sessions[1]?.dispose).toHaveBeenCalledOnce();
+  });
 
-    firstSession.attachResult.reject(new Error("stale failure"));
-    await tick();
+  it("sends a changed input to the current session", async () => {
+    const component = mount(Harness, {
+      target: document.body,
+      props: { initialPreview: createLumenPreview(), bindings },
+    });
+    flushSync();
+    const composition = { toJSON: () => ({}) } as unknown as LumenPreviewComposition;
 
-    expect(firstPreview.error).toBeNull();
-    expect(nextPreview.error).toBeNull();
+    component.setComposition(composition);
+    flushSync();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.update).toHaveBeenLastCalledWith(expect.objectContaining({ composition }));
 
     await unmount(component);
   });
 
-  it("reports the active attach failure but ignores one after unmount", async () => {
+  it("exposes the core state through one reactive snapshot", () => {
     const preview = createLumenPreview();
-    const component = mount(Harness, {
-      target: document.body,
-      props: { initialPreview: preview, initialBindings: bindings },
-    });
-    flushSync();
-    const session = sessions[0];
-
-    session.attachResult.reject(new Error("attach failed"));
-    await tick();
-    expect(preview.error).toContain("attach failed");
-
-    const unmountedPreview = createLumenPreview();
-    component.replace(unmountedPreview, bindings, "replacement");
-    flushSync();
-    const unmountedSession = sessions[1];
-    await unmount(component);
-
-    unmountedSession.attachResult.reject(new Error("late failure"));
-    await tick();
-
-    expect(unmountedSession.disposed).toBe(true);
-    expect(unmountedPreview.error).toBeNull();
-  });
-
-  it("routes prop updates only to the current session", async () => {
-    const firstPreview = createLumenPreview();
-    const nextPreview = createLumenPreview();
-    const component = mount(Harness, {
-      target: document.body,
-      props: { initialPreview: firstPreview, initialBindings: bindings },
-    });
-    flushSync();
-    const firstSession = sessions[0];
-
-    component.replace(nextPreview, bindings, "replacement");
-    flushSync();
-    const nextSession = sessions[1];
-
-    expect(firstSession.update).toHaveBeenCalledTimes(1);
-    expect(nextSession.update).toHaveBeenLastCalledWith(
-      expect.objectContaining({ compositionJson: "replacement" }),
-    );
-
-    await unmount(component);
+    preview.update({ frame: 12, totalFrames: 90 });
+    expect(preview.state.frame).toBe(12);
+    expect(preview.state.totalFrames).toBe(90);
   });
 });

@@ -3,6 +3,7 @@ import { useSyncExternalStore } from "react";
 export {
   LumenPreviewContext,
   createLumenPreview,
+  type LumenPreviewErrorCode,
   type LumenPreviewListener,
   type LumenPreviewPatch,
   type LumenPreviewState,

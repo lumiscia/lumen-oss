@@ -14,7 +14,12 @@ type Fakes = ReturnType<typeof installFakes>;
 function installFakes() {
   const fakes = {
     addModule: (): Promise<void> => Promise.resolve(),
-    contexts: [] as { closed: boolean; currentTime: number }[],
+    contexts: [] as {
+      closed: boolean;
+      currentTime: number;
+      onstatechange: (() => void) | null;
+      state: string;
+    }[],
     decoded: [] as number[],
     decodeError: null as Error | null,
     decodeGates: new Map<number, Promise<void>>(),
@@ -33,6 +38,8 @@ function installFakes() {
       closed = false;
       currentTime = 0;
       destination = {};
+      onstatechange: (() => void) | null = null;
+      state = "running";
       constructor() {
         fakes.contexts.push(this);
       }
@@ -517,6 +524,60 @@ describe("LumenAudioEngine", () => {
     report(7, 0.75, false);
     context.currentTime = 7.1;
     expect(engine.currentTimeMs()).toBeCloseTo(850);
+  });
+
+  it("reports whether the position is moving, and calls out when that changes", async () => {
+    const onClockChange = vi.fn();
+    const engine = new LumenAudioEngine({
+      onClockChange,
+      workerModuleUrl: "worker.js",
+      workletModuleUrl: "worklet.js",
+    });
+    engine.loadAudioTimeline(timelineJson("a"));
+    engine.play(0);
+    await settled(fakes);
+    const context = fakes.contexts[0];
+    if (!context) throw new Error("no context");
+    const generation = postedOfType(fakes.nodes[0]?.posted, "play")[0]?.generation;
+    const report = (stalled: boolean) =>
+      fakes.nodes[0]?.onmessage({
+        contextTime: context.currentTime,
+        currentSample: 0,
+        generation,
+        stalled,
+        type: "position",
+      });
+    expect(engine.isClockRunning()).toBe(false);
+
+    report(false);
+    expect(engine.isClockRunning()).toBe(true);
+    expect(onClockChange).toHaveBeenCalledTimes(1);
+
+    report(true);
+    expect(engine.isClockRunning()).toBe(false);
+    expect(onClockChange).toHaveBeenCalledTimes(2);
+
+    report(false);
+    context.state = "suspended";
+    context.onstatechange?.();
+    expect(engine.isClockRunning()).toBe(false);
+    expect(onClockChange).toHaveBeenCalledTimes(4);
+  });
+
+  it("runs the position on elapsed time when the audio never starts", async () => {
+    const now = vi.spyOn(performance, "now").mockReturnValue(1_000);
+    const engine = createEngine();
+    engine.loadAudioTimeline(timelineJson("a"));
+    engine.play(200);
+
+    now.mockReturnValue(1_900);
+    expect(engine.currentTimeMs()).toBe(200);
+    expect(engine.isClockRunning()).toBe(false);
+
+    now.mockReturnValue(2_500);
+    expect(engine.currentTimeMs()).toBe(700);
+    expect(engine.isClockRunning()).toBe(true);
+    now.mockRestore();
   });
 
   it("drops worker chunks and worklet reports from before a pause", async () => {

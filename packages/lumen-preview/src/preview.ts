@@ -1,4 +1,13 @@
-import type { LumenPreviewController } from "./index.js";
+export type LumenPreviewErrorCode =
+  /** A source named in the composition's audio couldn't be decoded. The video keeps playing. */
+  | "audio_failed"
+  /** The composition, or a media source or font it needs, failed to load. */
+  | "load_failed"
+  | "render_failed"
+  /** This browser or page has no WebGPU, which the preview needs. */
+  | "webgpu_unavailable"
+  /** The worker or its wasm couldn't start, or the worker later crashed. */
+  | "worker_failed";
 
 export interface LumenPreviewState {
   frame: number;
@@ -8,16 +17,16 @@ export interface LumenPreviewState {
   isLoaded: boolean;
   isPlaying: boolean;
   error: string | null;
-  controller: LumenPreviewController | null;
+  errorCode: LumenPreviewErrorCode | null;
 }
 
 export type LumenPreviewPatch = Partial<LumenPreviewState>;
 export type LumenPreviewListener = () => void;
 
 export interface LumenPreviewTransport {
-  pause?: () => void;
-  play?: () => void;
-  seek?: (frame: number) => void;
+  pause(): void;
+  play(): void;
+  seek(frame: number): Promise<boolean>;
 }
 
 const INITIAL_STATE: LumenPreviewState = {
@@ -28,13 +37,12 @@ const INITIAL_STATE: LumenPreviewState = {
   isLoaded: false,
   isPlaying: false,
   error: null,
-  controller: null,
+  errorCode: null,
 };
 
 export class LumenPreviewContext {
   #state: LumenPreviewState = INITIAL_STATE;
   #listeners = new Set<LumenPreviewListener>();
-  #seekFn: ((frame: number) => void) | null = null;
   #transport: LumenPreviewTransport | null = null;
 
   subscribe = (listener: LumenPreviewListener): (() => void) => {
@@ -50,79 +58,45 @@ export class LumenPreviewContext {
     this.#setState({ ...this.#state, ...patch });
   }
 
-  reset(): void {
-    this.#setState({
-      ...INITIAL_STATE,
-      isPlaying: this.#state.isPlaying,
-    });
-  }
-
-  attach(
-    controller: LumenPreviewController | null,
-    seekFn: (frame: number) => void,
-    transport: LumenPreviewTransport | null = null,
-  ): void {
-    this.#seekFn = seekFn;
+  attach(transport: LumenPreviewTransport): void {
     this.#transport = transport;
-    this.update({ controller });
-
-    if (this.#state.isPlaying && controller) {
-      controller.play();
-      this.#transport?.play?.();
-    }
   }
 
   detach(): void {
-    this.#seekFn = null;
     this.#transport = null;
     this.#setState({
       ...INITIAL_STATE,
-      isPlaying: false,
       error: this.#state.error,
+      errorCode: this.#state.errorCode,
     });
   }
 
-  /** @internal Compatibility alias for framework canvas components. */
-  _attach(
-    controller: LumenPreviewController | null,
-    seekFn: (frame: number) => void,
-    transport: LumenPreviewTransport | null = null,
-  ): void {
-    this.attach(controller, seekFn, transport);
-  }
-
-  /** @internal Compatibility alias for framework canvas components. */
-  _detach(): void {
-    this.detach();
-  }
-
+  /** Does nothing until a composition has loaded. */
   play(): void {
-    this.#state.controller?.play();
-    this.#transport?.play?.();
-    this.update({ isPlaying: true });
+    this.#transport?.play();
   }
 
   pause(): void {
-    this.#state.controller?.pause();
-    this.#transport?.pause?.();
-    this.update({ isPlaying: false });
+    this.#transport?.pause();
   }
 
-  seek(frame: number): void {
-    this.#seekFn?.(frame);
-    this.#transport?.seek?.(frame);
-    this.update({ frame });
-  }
-
-  #emit(): void {
-    for (const listener of this.#listeners) {
-      listener();
+  /**
+   * Resolves once the frame has been submitted for display, or a newer seek's frame has, and to
+   * false if a load, failure or dispose got in first. It never rejects; failures reach the state.
+   */
+  seek(frame: number): Promise<boolean> {
+    if (this.#transport) {
+      return this.#transport.seek(frame);
     }
+    this.update({ frame });
+    return Promise.resolve(false);
   }
 
   #setState(nextState: LumenPreviewState): void {
     this.#state = nextState;
-    this.#emit();
+    for (const listener of this.#listeners) {
+      listener();
+    }
   }
 }
 
