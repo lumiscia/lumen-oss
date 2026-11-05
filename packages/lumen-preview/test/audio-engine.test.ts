@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  AUDIO_STALL_TIMEOUT_MS,
   LUMEN_AUDIO_SAMPLE_RATE,
   LumenAudioEngine,
   type AudioEngineTimeline,
@@ -568,6 +569,98 @@ describe("LumenAudioEngine", () => {
     context.onstatechange?.();
     expect(engine.isClockRunning()).toBe(false);
     expect(onClockChange).toHaveBeenCalledTimes(4);
+  });
+
+  describe("when audio stops arriving", () => {
+    async function playStalled(onError: () => void, onClockChange = vi.fn()) {
+      const engine = new LumenAudioEngine({
+        onClockChange,
+        onError,
+        workerModuleUrl: "worker.js",
+        workletModuleUrl: "worklet.js",
+      });
+      engine.loadAudioTimeline(timelineJson("a"));
+      engine.play(0);
+      await settled(fakes);
+      const generation = postedOfType(fakes.nodes[0]?.posted, "play")[0]?.generation;
+      const report = (stalled: boolean) =>
+        fakes.nodes[0]?.onmessage({
+          contextTime: 0,
+          currentSample: 0,
+          generation,
+          stalled,
+          type: "position",
+        });
+      return { engine, onClockChange, report };
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("reports once after the timeout and moves the position without audio", async () => {
+      const onError = vi.fn();
+      const { engine, onClockChange, report } = await playStalled(onError);
+      report(false);
+      report(true);
+      report(true);
+      expect(engine.isClockRunning()).toBe(false);
+
+      vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS - 1);
+      expect(onError).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onClockChange).toHaveBeenCalledTimes(3);
+      expect(engine.isPlaying()).toBe(true);
+      expect(engine.isClockRunning()).toBe(true);
+
+      const before = engine.currentTimeMs();
+      vi.advanceTimersByTime(500);
+      expect(engine.currentTimeMs()).toBeCloseTo(before + 500);
+
+      report(false);
+      vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS * 2);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(engine.isClockRunning()).toBe(true);
+    });
+
+    it("reports nothing when the underrun recovers inside the timeout", async () => {
+      const onError = vi.fn();
+      const { engine, report } = await playStalled(onError);
+      report(true);
+      vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS - 1);
+      report(false);
+      vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS * 2);
+
+      expect(onError).not.toHaveBeenCalled();
+      expect(engine.isClockRunning()).toBe(true);
+    });
+
+    it("reports nothing when playback pauses during the stall", async () => {
+      const onError = vi.fn();
+      const { engine, report } = await playStalled(onError);
+      report(true);
+      engine.pause();
+      vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS * 2);
+
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("does not count a suspended context as a stall", async () => {
+      const onError = vi.fn();
+      const { report } = await playStalled(onError);
+      report(true);
+      const context = fakes.contexts[0];
+      if (!context) throw new Error("no context");
+      context.state = "suspended";
+      vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS * 2);
+
+      expect(onError).not.toHaveBeenCalled();
+    });
   });
 
   it("keeps a spent budget when a source change restarts the mix", async () => {

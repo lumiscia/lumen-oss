@@ -39,6 +39,8 @@ export interface LumenAudioEngineOptions {
   latencyHint?: AudioContextLatencyCategory | number;
   /** Called when the position starts or stops moving, or jumps because the mix restarted. */
   onClockChange?: () => void;
+  /** Called once when audio stops arriving mid-playback. The position keeps moving without it. */
+  onError?: (message: string) => void;
   workerModuleUrl?: string | URL;
   workletModuleUrl?: string | URL;
 }
@@ -47,6 +49,11 @@ export interface LumenAudioEngineOptions {
 // yet or with a mixer that has nothing to send. After that the position runs without it for the rest
 // of the playback, and audio joins at that position if it ever arrives.
 const AUDIO_START_BUDGET_MS = 1_000;
+
+// How long the worklet may report an underrun before the audio is given up on. A mix restarted by a
+// source that is still arriving over a slow connection can take several seconds to refill, so this
+// is well past that while still surfacing a dead mixer within one breath of the user noticing.
+export const AUDIO_STALL_TIMEOUT_MS = 10_000;
 
 /** The last position the worklet reported, or the requested start until it has reported one. */
 type PlaybackClock = {
@@ -144,6 +151,7 @@ export class LumenAudioEngine {
   #sources = new Map<string, AudioSourceEntry>();
   // Only the latest sync reports failures, because a newer one may have replaced those sources.
   #sourceSync = 0;
+  #stallTimer: ReturnType<typeof setTimeout> | null = null;
   #timeline: AudioEngineTimeline | null = null;
   #timelineJson: string | null = null;
   #worker: Worker | null = null;
@@ -354,12 +362,49 @@ export class LumenAudioEngine {
   }
 
   #halt(): void {
+    this.#clearStallTimer();
     this.#generation += 1;
     this.#playback = null;
     this.#queuedChunkStarts.clear();
     if (this.#node) {
       this.#post(this.#node, { type: "pause" });
     }
+  }
+
+  #clearStallTimer(): void {
+    if (this.#stallTimer !== null) {
+      clearTimeout(this.#stallTimer);
+      this.#stallTimer = null;
+    }
+  }
+
+  // A suspended context isn't a stall, and resuming it brings a fresh worklet report.
+  #armStallTimer(): void {
+    this.#stallTimer ??= setTimeout(() => {
+      this.#stallTimer = null;
+      if (this.#context?.state === "running") {
+        this.#abandonAudio();
+      }
+    }, AUDIO_STALL_TIMEOUT_MS);
+  }
+
+  // Later worklet reports and chunks belong to the old generation, so audio stays off until the
+  // next play, seek or mix restart, and the position runs on the clock used before audio starts.
+  #abandonAudio(): void {
+    const playback = this.#playback;
+    if (!playback) {
+      return;
+    }
+    this.#generation += 1;
+    this.#queuedChunkStarts.clear();
+    if (this.#node) {
+      this.#post(this.#node, { type: "pause" });
+    }
+    this.#playback = { ...playback, holdUntil: performance.now(), workletReported: false };
+    this.#options.onError?.(
+      "audio stopped arriving during playback; the video continues without it",
+    );
+    this.#options.onClockChange?.();
   }
 
   #hasClips(): boolean {
@@ -429,6 +474,11 @@ export class LumenAudioEngine {
           workletReported: true,
         };
         this.#queueChunks(message.currentSample);
+        if (message.stalled) {
+          this.#armStallTimer();
+        } else {
+          this.#clearStallTimer();
+        }
         if (this.isClockRunning() !== wasRunning) {
           this.#options.onClockChange?.();
         }
