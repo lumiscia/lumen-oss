@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const QUANTUM = 128;
+const HOLD = 48_000;
 
 type Position = {
   contextTime: number;
@@ -52,7 +53,7 @@ describe("LumenAudioWorkletProcessor", () => {
 
   it("holds the position until the first chunk arrives", async () => {
     const { chunk, render, reports, worklet } = await createWorklet();
-    worklet.handleMessage({ generation: 1, startSample: 500, type: "play" });
+    worklet.handleMessage({ generation: 1, holdFrames: HOLD, startSample: 500, type: "play" });
 
     render();
     render();
@@ -68,7 +69,7 @@ describe("LumenAudioWorkletProcessor", () => {
 
   it("stops at the last available sample during an underrun and resumes from it", async () => {
     const { chunk, render, reports, worklet } = await createWorklet();
-    worklet.handleMessage({ generation: 1, startSample: 0, type: "play" });
+    worklet.handleMessage({ generation: 1, holdFrames: HOLD, startSample: 0, type: "play" });
     chunk(0, QUANTUM + 10, 0.25);
     render();
     reports.length = 0;
@@ -92,7 +93,7 @@ describe("LumenAudioWorkletProcessor", () => {
 
   it("ramps up over the samples that recover an underrun, keeping its position", async () => {
     const { chunk, render, worklet } = await createWorklet();
-    worklet.handleMessage({ generation: 1, startSample: 0, type: "play" });
+    worklet.handleMessage({ generation: 1, holdFrames: HOLD, startSample: 0, type: "play" });
     chunk(0, QUANTUM, 0.25);
     render();
     render();
@@ -115,7 +116,7 @@ describe("LumenAudioWorkletProcessor", () => {
 
   it("starts the ramp again when the audio drops out during it", async () => {
     const { chunk, render, worklet } = await createWorklet();
-    worklet.handleMessage({ generation: 1, startSample: 0, type: "play" });
+    worklet.handleMessage({ generation: 1, holdFrames: HOLD, startSample: 0, type: "play" });
     chunk(0, QUANTUM, 0.5);
     render();
     render();
@@ -131,12 +132,7 @@ describe("LumenAudioWorkletProcessor", () => {
 
   it("doesn't fade a first play that starts late, wherever it starts", async () => {
     const { chunk, render, worklet } = await createWorklet();
-    worklet.handleMessage({
-      generation: 1,
-
-      startSample: 24_000,
-      type: "play",
-    });
+    worklet.handleMessage({ generation: 1, holdFrames: HOLD, startSample: 24_000, type: "play" });
     render();
     render();
 
@@ -148,17 +144,67 @@ describe("LumenAudioWorkletProcessor", () => {
 
   it("doesn't fade a restart after an underrun", async () => {
     const { chunk, render, worklet } = await createWorklet();
-    worklet.handleMessage({ generation: 1, startSample: 0, type: "play" });
+    worklet.handleMessage({ generation: 1, holdFrames: HOLD, startSample: 0, type: "play" });
     chunk(0, QUANTUM, 0.5);
     render();
     render();
 
-    worklet.handleMessage({ generation: 1, startSample: 0, type: "play" });
+    worklet.handleMessage({ generation: 1, holdFrames: HOLD, startSample: 0, type: "play" });
     render();
     chunk(0, 12_000, 0.5);
     const [left] = render();
 
     expect(left?.every((sample) => sample === 0.5)).toBe(true);
+  });
+
+  it("stops holding when its budget runs out, and moves on in silence", async () => {
+    const { chunk, render, reports, worklet } = await createWorklet();
+    worklet.handleMessage({
+      generation: 1,
+      holdFrames: QUANTUM * 2,
+      startSample: 1_000,
+      type: "play",
+    });
+    expect(reports.at(-1)).toMatchObject({ currentSample: 1_000, stalled: true });
+
+    render();
+    render();
+    expect(worklet.currentSample).toBe(1_000);
+
+    render();
+    expect(worklet.currentSample).toBe(1_000 + QUANTUM);
+    expect(reports.at(-1)).toMatchObject({ stalled: false });
+
+    chunk(1_000, QUANTUM, 0.9);
+    const [behind] = render();
+    expect(behind?.every((sample) => sample === 0)).toBe(true);
+    expect(worklet.currentSample).toBe(1_000 + QUANTUM * 2);
+  });
+
+  it("never holds again after its budget has run out, even once it has heard audio", async () => {
+    const { chunk, render, reports, worklet } = await createWorklet();
+    worklet.handleMessage({ generation: 1, holdFrames: 0, startSample: 0, type: "play" });
+    expect(reports.at(-1)).toMatchObject({ stalled: false });
+
+    chunk(0, QUANTUM, 0.5);
+    render();
+    const before = worklet.currentSample;
+    render();
+    render();
+    expect(worklet.currentSample).toBe(before + QUANTUM * 2);
+    expect(reports.at(-1)).toMatchObject({ stalled: false });
+  });
+
+  it("keeps holding through an underrun when audio started within its budget", async () => {
+    const { chunk, render, worklet } = await createWorklet();
+    worklet.handleMessage({ generation: 1, holdFrames: QUANTUM, startSample: 0, type: "play" });
+    chunk(0, QUANTUM, 0.5);
+    render();
+
+    for (let quantum = 0; quantum < 10; quantum += 1) {
+      render();
+    }
+    expect(worklet.currentSample).toBe(QUANTUM);
   });
 
   it("plays the mixer's samples untouched across chunks, silence and a loop", async () => {
@@ -217,7 +263,7 @@ describe("LumenAudioWorkletProcessor", () => {
 
   it("drops chunks from an older generation", async () => {
     const { chunk, render, worklet } = await createWorklet();
-    worklet.handleMessage({ generation: 2, startSample: 0, type: "play" });
+    worklet.handleMessage({ generation: 2, holdFrames: HOLD, startSample: 0, type: "play" });
     chunk(0, 12_000, 0.5);
 
     const [left] = render();
