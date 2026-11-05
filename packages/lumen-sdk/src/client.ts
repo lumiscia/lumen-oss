@@ -315,21 +315,24 @@ export class Lumen {
 
   /** Waits out the cooldown a rate limit started. */
   async #cooldown(signal: AbortSignal | undefined): Promise<void> {
-    const remainingMs = this.#cooldownUntil - Date.now();
-    if (remainingMs > 0) {
+    // Another wait can extend the cooldown during the sleep.
+    for (;;) {
+      const remainingMs = this.#cooldownUntil - Date.now();
+      if (remainingMs <= 0) {
+        return;
+      }
       await sleep(jittered(remainingMs), signal);
     }
   }
 
-  /** Makes every wait on this client hold off, unless an earlier rate limit already did. */
+  /** Makes every wait on this client hold off, until the latest deadline any rate limit gave. */
   #rateLimited(error: LumenError): void {
-    if (Date.now() < this.#cooldownUntil) {
-      return;
+    if (Date.now() >= this.#cooldownUntil) {
+      this.#rateLimitStreak += 1;
     }
-    this.#rateLimitStreak += 1;
     const delayMs =
       error.retryAfterMs ?? Math.min(1000 * 2 ** this.#rateLimitStreak, maxRateLimitBackoffMs);
-    this.#cooldownUntil = Date.now() + jittered(delayMs);
+    this.#cooldownUntil = Math.max(this.#cooldownUntil, Date.now() + jittered(delayMs));
   }
 
   /**

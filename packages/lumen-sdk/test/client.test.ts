@@ -266,12 +266,16 @@ describe("Lumen media uploads", () => {
     const { stub } = recordingFetch(upload);
     const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
     const stream = () => new Blob(["abc"]).stream();
+    const contentType = "video/mp4";
 
-    await expect(lumen.uploadMedia({ body: stream() })).rejects.toMatchObject({
+    await expect(lumen.uploadMedia({ body: stream(), contentType })).rejects.toMatchObject({
       code: "invalid_upload",
     });
-    await expect(lumen.uploadMedia({ body: stream(), sizeBytes: 9 })).rejects.toMatchObject({
+    await expect(
+      lumen.uploadMedia({ body: stream(), contentType, sizeBytes: 9 }),
+    ).rejects.toMatchObject({
       code: "invalid_upload",
+      message: expect.stringContaining("produced 3 bytes"),
     });
   });
 

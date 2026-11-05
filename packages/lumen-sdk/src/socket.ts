@@ -83,7 +83,7 @@ export function watchRender(options: {
         }
         socket = opened;
         opened.addEventListener("message", (message) => {
-          const update = parseEvent(message.data);
+          const update = finished ? undefined : parseEvent(message.data);
           if (update === undefined) {
             return;
           }

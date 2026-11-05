@@ -136,15 +136,14 @@ describe("Lumen.waitForRender", () => {
 
     const waiting = lumen.waitForRender("r1", { onProgress: (progress) => seen.push(progress) });
     await vi.advanceTimersByTimeAsync(0);
-    const say = (state: string, progress: number) =>
-      FakeSocket.instances[0]!.say({
-        type: "render.progress",
-        state: { renderId: "r1", state, progress },
-      });
-    say("queued", 0.1);
-    say("processing", 0.25);
-    say("processing", 0.75);
-    FakeSocket.instances[0]!.emit("close");
+    const socket = FakeSocket.instances[0]!;
+    const say = (type: string, state: string, progress: number) =>
+      socket.say({ type, state: { renderId: "r1", state, progress } });
+    say("render.progress", "queued", 0.1);
+    say("render.progress", "processing", 0.25);
+    say("render.completed", "processing", 0.75);
+    expect(socket.closed).toBe(false);
+    socket.emit("close");
     await vi.advanceTimersByTimeAsync(10_000);
     await waiting;
 
@@ -309,6 +308,42 @@ describe("Lumen.waitForRender", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await Promise.all([first, second]);
     expect(seconds(reads)).toEqual([0, 2, 2]);
+  });
+
+  test("the longest rate limit wins, and a wait that wakes early holds off again", async () => {
+    const { lumen, reads } = scriptedApi((read) =>
+      read === 1
+        ? Response.json({ error: "API key rate limit exceeded" }, { status: 429 })
+        : read === 2
+          ? Response.json(
+              { error: "API key rate limit exceeded" },
+              { status: 429, headers: { "retry-after": "20" } },
+            )
+          : Response.json(progressBody("succeeded", 1)),
+    );
+
+    const waits = Promise.all([lumen.waitForRender("r1"), lumen.waitForRender("r2")]);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await waits;
+    expect(seconds(reads)).toEqual([0, 0, 20, 20]);
+  });
+
+  test("a socket session that has ended reports nothing more", async () => {
+    const seen: string[] = [];
+    const session = watchRender({
+      apiKey: "test-key",
+      fetch,
+      onProgress: (update) => seen.push(update.status),
+      signal: undefined,
+      timeoutMs: 60_000,
+      url: new URL("https://api.test/v1/renders/r1/socket"),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = FakeSocket.instances[0]!;
+    socket.say({ type: "render.completed", renderId: "r1" });
+    await session;
+    socket.say({ type: "render.progress", renderId: "r1", progress: 0.5 });
+    expect(seen).toEqual(["succeeded"]);
   });
 
   test("an unknown render and a bad key end the wait", async () => {

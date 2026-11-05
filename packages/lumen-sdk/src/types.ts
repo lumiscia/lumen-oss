@@ -80,7 +80,7 @@ export interface UploadMediaOptions {
   readonly body: UploadMediaBody;
   /** Defaults to the file's name, or `upload`. */
   readonly fileName?: string;
-  /** Defaults to the blob's type, or `application/octet-stream`. */
+  /** Defaults to the blob's type, then the file name's extension. A body with neither needs it. */
   readonly contentType?: string;
   /** Required for a stream. Taken from any other body. */
   readonly sizeBytes?: number;
