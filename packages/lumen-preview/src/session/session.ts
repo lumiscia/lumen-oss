@@ -1,7 +1,7 @@
 import { describeError, reportConsoleError } from "./errors.js";
 import { MainPreviewDriver } from "./main-driver.js";
 import { WorkerPreviewDriver } from "./worker-driver.js";
-import type { LumenBindings, LumenPreviewBindingSource } from "../index.js";
+import type { LumenPreviewBindingSource, LumenWorkerBindings } from "../index.js";
 import type {
   LumenPreviewDriverHost,
   LumenPreviewRuntimeDriver,
@@ -98,8 +98,6 @@ function missingBindings(): never {
   throw new Error("LumenPreviewSession requires `bindings`");
 }
 
-function hasPreviewWorker(
-  bindings: LumenPreviewBindingSource,
-): bindings is LumenBindings & { previewWorkerUrl: () => string | URL } {
-  return "preview" in bindings && typeof bindings.previewWorkerUrl === "function";
+function hasPreviewWorker(bindings: LumenPreviewBindingSource): bindings is LumenWorkerBindings {
+  return "previewWorkerUrl" in bindings && typeof bindings.previewWorkerUrl === "function";
 }

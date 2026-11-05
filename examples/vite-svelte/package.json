@@ -7,7 +7,7 @@
     "build": "vite build",
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist .svelte-kit *.tsbuildinfo",
-    "dev": "pnpm --filter @lumiscia/lumen-shared build && vite"
+    "dev": "pnpm --filter '@lumiscia/example-vite-svelte^...' build && vite"
   },
   "dependencies": {
     "@lumiscia/lumen-bindings": "workspace:*",
@@ -17,8 +17,6 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "catalog:",
-    "vite": "catalog:",
-    "vite-plugin-top-level-await": "catalog:",
-    "vite-plugin-wasm": "catalog:"
+    "vite": "catalog:"
   }
 }

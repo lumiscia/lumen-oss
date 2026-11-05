@@ -1,7 +1,7 @@
 {
   "name": "@lumiscia/lumen-bindings",
   "version": "0.3.1",
-  "description": "Generated WebAssembly bindings for Lumen browser and Node preview runtimes.",
+  "description": "WebAssembly bindings for the Lumen browser preview, with a Node adapter.",
   "keywords": [
     "gpu",
     "lumen",
@@ -21,56 +21,46 @@
     "directory": "packages/lumen-bindings"
   },
   "files": [
-    "src"
+    "dist",
+    "wasm"
   ],
   "type": "module",
   "sideEffects": [
-    "./src/bundler/index.js",
-    "./src/bundler/preview-worker.js",
-    "./src/bundler/lumen_wasm.js",
-    "./src/browser/index.js",
-    "./src/browser/lumen_wasm.js",
-    "./src/node/index.js",
-    "./src/node/lumen_wasm.js",
-    "./src/no-modules/lumen_wasm.js"
+    "./dist/browser/worker.js",
+    "./dist/node/index.js"
   ],
-  "main": "./src/bundler/index.js",
-  "types": "./src/bundler/index.d.ts",
+  "main": "./dist/browser/index.js",
+  "types": "./dist/browser/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/bundler/index.d.ts",
-      "default": "./src/bundler/index.js"
-    },
-    "./bundler": {
-      "types": "./src/bundler/index.d.ts",
-      "default": "./src/bundler/index.js"
+      "types": "./dist/browser/index.d.ts",
+      "default": "./dist/browser/index.js"
     },
     "./browser": {
-      "types": "./src/browser/index.d.ts",
-      "default": "./src/browser/index.js"
+      "types": "./dist/browser/index.d.ts",
+      "default": "./dist/browser/index.js"
     },
-    "./web": {
-      "types": "./src/browser/index.d.ts",
-      "default": "./src/browser/index.js"
+    "./browser/worker.js": "./dist/browser/worker.js",
+    "./bundler": {
+      "types": "./dist/bundler/index.d.ts",
+      "default": "./dist/bundler/index.js"
     },
     "./node": {
-      "types": "./src/node/index.d.ts",
-      "default": "./src/node/index.js"
-    },
-    "./nodejs": {
-      "types": "./src/node/index.d.ts",
-      "default": "./src/node/index.js"
-    },
-    "./no-modules": {
-      "default": "./src/no-modules/lumen_wasm.js"
+      "types": "./dist/node/index.d.ts",
+      "default": "./dist/node/index.js"
     }
   },
   "scripts": {
-    "build": "just wasm-bindings-release",
-    "check": "test ! -f src/bundler/lumen_wasm.d.ts || tsc -p tsconfig.json --noEmit",
-    "clean": "find src -type f -name 'lumen_wasm*' -delete && rm -rf src/.cache *.tsbuildinfo"
+    "build": "test ! -f wasm/lumen_wasm.d.ts || (tsc -p tsconfig.json && esbuild dist/browser/worker.js --bundle --minify --format=esm --platform=browser --allow-overwrite --outfile=dist/browser/worker.js)",
+    "check": "test ! -f wasm/lumen_wasm.d.ts || tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist wasm wasm.tmp-* *.tsbuildinfo",
+    "test:node": "node test/node-load.mjs && node test/init-overlap.mjs"
   },
   "dependencies": {
     "@lumiscia/lumen-preview": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "esbuild": "catalog:"
   }
 }

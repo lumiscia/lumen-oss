@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -9,21 +8,11 @@ const repoRoot = resolve(dirnamePath, "../../..");
 const wasmCrate = "lumen-wasm";
 const wasmName = "lumen_wasm";
 const wasmTarget = "wasm32-unknown-unknown";
-const initialMemory = "134217728";
-const maxMemory = "2147483648";
 
-const targets = [
-  { bindgenTarget: "bundler", out: "bundler" },
-  { bindgenTarget: "web", out: "browser" },
-  { bindgenTarget: "nodejs", out: "node" },
-  { bindgenTarget: "no-modules", out: "no-modules" },
-] as const;
-
-const options = parseArgs();
-const mode = options.mode;
-const bindingsDir = options.outDir;
+const { mode, outDir } = parseArgs();
 const profile = mode === "release" ? "release" : "debug";
-const wasmPath = join(repoRoot, "target", wasmTarget, profile, `${wasmName}.wasm`);
+const targetDir = resolve(repoRoot, process.env.CARGO_TARGET_DIR || "target");
+const wasmPath = join(targetDir, wasmTarget, profile, `${wasmName}.wasm`);
 
 await run("cargo", [
   "build",
@@ -34,22 +23,34 @@ await run("cargo", [
   wasmTarget,
 ]);
 
-await Promise.all(
-  targets.map((target) => rm(join(bindingsDir, target.out), { recursive: true, force: true })),
-);
-
-for (const target of targets) {
+// Everything is written beside the output and swapped in last, so a failed build leaves it intact.
+const tmpDir = `${outDir}.tmp-${process.pid}`;
+await mkdir(tmpDir);
+try {
   await run("wasm-bindgen", [
-    ...bindgenArgs(mode),
+    ...(mode === "debug" ? ["--debug", "--keep-debug"] : []),
     "--target",
-    target.bindgenTarget,
+    "web",
     "--out-dir",
-    join(bindingsDir, target.out),
+    tmpDir,
     "--out-name",
     wasmName,
     wasmPath,
   ]);
+
+  if (mode === "release") {
+    const wasm = join(tmpDir, `${wasmName}_bg.wasm`);
+    await run("pnpm", ["exec", "wasm-opt", "-Oz", "-o", wasm, wasm]);
+  }
+
+  await rm(outDir, { recursive: true, force: true });
+  await rename(tmpDir, outDir);
+} finally {
+  await rm(tmpDir, { recursive: true, force: true });
 }
+console.log(
+  `Generated ${mode} bindings in ${outDir}. Run \`pnpm --filter @lumiscia/lumen-bindings build\` to bundle them into the preview worker.`,
+);
 
 function parseArgs() {
   let mode: "debug" | "release" | undefined;
@@ -102,212 +103,9 @@ function requiredValue(args: string[], index: number) {
   return value;
 }
 
-function bindgenArgs(nextMode: "debug" | "release") {
-  return nextMode === "debug" ? ["--debug", "--keep-debug"] : [];
-}
-
-async function verifySharedWasm() {
-  const hashes = new Map<string, string>();
-  for (const target of targets) {
-    const wasm = join(bindingsDir, target.out, `${wasmName}_bg.wasm`);
-    const digest = await hashFile(wasm);
-    hashes.set(target.out, digest);
-  }
-
-  const uniqueHashes = new Set(hashes.values());
-  if (uniqueHashes.size === 1) {
-    console.log(`Generated ${mode} bindings. Shared WASM SHA-256: ${[...uniqueHashes][0]}`);
-    return;
-  }
-
-  const lines = [...hashes].map(([target, digest]) => `- ${target}: ${digest}`).join("\n");
-  throw new Error(`Generated target wasm files differ:\n${lines}`);
-}
-
-async function writePackageEntrypoints() {
-  await Promise.all([
-    writeTargetFiles("bundler", {
-      "index.js": bundlerIndexJs,
-      "index.d.ts": bundlerIndexDts,
-      "preview-worker.js": previewWorkerJs,
-    }),
-    writeTargetFiles("browser", {
-      "index.js": browserIndexJs,
-      "index.d.ts": browserIndexDts,
-    }),
-    writeTargetFiles("node", {
-      "index.js": nodeIndexJs,
-      "index.d.ts": nodeIndexDts,
-    }),
-  ]);
-}
-
-async function writeTargetFiles(target: string, files: Record<string, string>) {
-  await Promise.all(
-    Object.entries(files).map(([file, contents]) =>
-      writeFile(join(bindingsDir, target, file), contents),
-    ),
-  );
-}
-
-async function hashFile(path: string) {
-  const bytes = await readFile(path);
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-const wasmExportsJs = 'export { LumenPreviewController } from "./lumen_wasm.js";\n';
-
-const bundlerIndexJs = `import previewWorkerModuleUrl from "./preview-worker.js?worker&url";
-import * as previewBindings from "./lumen_wasm.js";
-
-${wasmExportsJs}
-export class LumenBindings {
-  target = "bundler";
-
-  preview() {
-    return Promise.resolve(previewBindings);
-  }
-
-  previewWorkerUrl() {
-    return previewWorkerModuleUrl;
-  }
-}
-
-export function createLumenBindings() {
-  return new LumenBindings();
-}
-`;
-
-const browserIndexJs = `import initPreview, * as previewBindings from "./lumen_wasm.js";
-
-export { initSync, LumenPreviewController } from "./lumen_wasm.js";
-
-export class LumenBindings {
-  target = "browser";
-
-  constructor(options = {}) {
-    this.previewWasmUrl =
-      options.previewWasmUrl ?? new URL("./lumen_wasm_bg.wasm", import.meta.url);
-    this.previewWorkerModuleUrl = options.previewWorkerUrl;
-  }
-
-  async preview() {
-    await initPreview({ module_or_path: this.previewWasmUrl });
-    return previewBindings;
-  }
-
-  previewWorkerUrl() {
-    return this.previewWorkerModuleUrl;
-  }
-}
-
-export function createLumenBindings(options = {}) {
-  return new LumenBindings(options);
-}
-`;
-
-const nodeIndexJs = `import * as previewBindings from "./lumen_wasm.js";
-
-${wasmExportsJs}
-export class LumenBindings {
-  target = "node";
-
-  preview() {
-    return Promise.resolve(previewBindings);
-  }
-}
-
-export function createLumenBindings() {
-  return new LumenBindings();
-}
-`;
-
-const previewWorkerJs = `import { createLumenPreviewWorkerHost } from "@lumiscia/lumen-preview/worker-host";
-
-import initPreview, * as previewBindings from "../browser/lumen_wasm.js";
-import previewWasmUrl from "../browser/lumen_wasm_bg.wasm?url";
-
-createLumenPreviewWorkerHost({ initPreview, previewBindings, previewWasmUrl });
-`;
-
-const bindingsLikeDts = `export type LumenPreviewBindingsModule = typeof previewBindings;
-
-export interface LumenBindingsLike {
-  readonly target: "bundler" | "browser" | "node";
-  preview(): Promise<LumenPreviewBindingsModule>;
-  previewWorkerUrl?(): string | URL;
-}
-`;
-
-const bundlerIndexDts = `import type * as previewBindings from "./lumen_wasm.js";
-export { LumenPreviewController } from "./lumen_wasm.js";
-
-${bindingsLikeDts}
-export class LumenBindings implements LumenBindingsLike {
-  readonly target: "bundler";
-  preview(): Promise<LumenPreviewBindingsModule>;
-  previewWorkerUrl(): string;
-}
-
-export function createLumenBindings(): LumenBindings;
-`;
-
-const browserIndexDts = `import type * as previewBindings from "./lumen_wasm.js";
-export type { InitInput, InitOutput, SyncInitInput } from "./lumen_wasm.js";
-export { initSync, LumenPreviewController } from "./lumen_wasm.js";
-
-export interface LumenBrowserBindingsOptions {
-  previewWasmUrl?: string | URL | Request | Response | BufferSource | WebAssembly.Module;
-  previewWorkerUrl?: string | URL;
-}
-
-${bindingsLikeDts}
-export class LumenBindings implements LumenBindingsLike {
-  readonly target: "browser";
-  constructor(options?: LumenBrowserBindingsOptions);
-  preview(): Promise<LumenPreviewBindingsModule>;
-  previewWorkerUrl(): string | URL | undefined;
-}
-
-export function createLumenBindings(options?: LumenBrowserBindingsOptions): LumenBindings;
-`;
-
-const nodeIndexDts = `import type * as previewBindings from "./lumen_wasm.js";
-export { LumenPreviewController } from "./lumen_wasm.js";
-
-${bindingsLikeDts}
-export class LumenBindings implements LumenBindingsLike {
-  readonly target: "node";
-  preview(): Promise<LumenPreviewBindingsModule>;
-}
-
-export function createLumenBindings(): LumenBindings;
-`;
-
-await writePackageEntrypoints();
-
-if (mode === "release") {
-  console.log("Running wasm-opt for generated WASM targets...");
-  await Promise.all(
-    targets.map(async (target) => {
-      const wasm = join(bindingsDir, target.out, `${wasmName}_bg.wasm`);
-      await run("pnpm", ["exec", "wasm-opt", "-Oz", "-o", wasm, wasm]);
-    }),
-  );
-}
-
-await verifySharedWasm();
-
 function run(command: string, args: string[]) {
   return new Promise<void>((resolvePromise, reject) => {
-    const child = spawn(command, args, {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        RUSTFLAGS: `-C link-arg=--initial-memory=${initialMemory} -C link-arg=--max-memory=${maxMemory}`,
-      },
-      stdio: "inherit",
-    });
+    const child = spawn(command, args, { cwd: repoRoot, stdio: "inherit" });
 
     child.on("error", reject);
     child.on("exit", (code, signal) => {

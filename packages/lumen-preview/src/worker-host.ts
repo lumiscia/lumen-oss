@@ -9,16 +9,11 @@ import type { LumenPreviewPatch } from "./preview.js";
 import { describeError, reportConsoleError } from "./session/errors.js";
 import { EMPTY_PREVIEW_STATS, PlaybackFpsMeter, type LumenPreviewStats } from "./session/stats.js";
 
-type PreviewWasmInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
-
-type InitPreview = (options: {
-  module_or_path: PreviewWasmInput | Promise<PreviewWasmInput>;
-}) => Promise<object>;
+type InitPreview = (options: { module_or_path: string }) => Promise<object>;
 
 export interface LumenPreviewWorkerHostOptions {
   initPreview: InitPreview;
   previewBindings: LumenPreviewBindings;
-  previewWasmUrl: PreviewWasmInput | Promise<PreviewWasmInput>;
 }
 
 export type LumenPreviewWorkerCommand =
@@ -30,6 +25,7 @@ export type LumenPreviewWorkerCommand =
       logLevel: LumenLogLevel;
       mediaSources: readonly MediaRegistration[];
       type: "initialize";
+      wasmUrl: string;
     }
   | {
       compositionJson: string | null;
@@ -92,7 +88,6 @@ type PreviewWorkerScope = typeof globalThis & {
 export function createLumenPreviewWorkerHost({
   initPreview,
   previewBindings,
-  previewWasmUrl,
 }: LumenPreviewWorkerHostOptions): void {
   const scope = globalThis as PreviewWorkerScope;
   let canvas: OffscreenCanvas | null = null;
@@ -156,7 +151,7 @@ export function createLumenPreviewWorkerHost({
     lookaheadCount = message.lookaheadCount;
     mediaSources = message.mediaSources;
 
-    await initPreview({ module_or_path: previewWasmUrl });
+    await initPreview({ module_or_path: message.wasmUrl });
     const { LumenPreviewController: PreviewController } =
       createLumenPreviewRuntime(previewBindings);
     controller = new PreviewController();

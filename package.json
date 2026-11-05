@@ -28,15 +28,15 @@
     "publish:packages": "changeset publish",
     "sync:cargo-version": "pnpm --filter @lumiscia/release-tools sync-cargo-version",
     "release:version": "pnpm version:packages && pnpm sync:cargo-version && pnpm install --lockfile-only && cargo update --workspace",
-    "release:build": "just wasm-bindings-release && pnpm -r --filter './packages/*' --filter '!@lumiscia/lumen-bindings' build",
-    "release:dry-run": "just wasm-bindings-release && pnpm -r --filter './packages/*' --filter '!@lumiscia/lumen-bindings' build && cargo publish --workspace --dry-run --allow-dirty",
+    "release:build": "just wasm-bindings-release && pnpm -r --filter './packages/*' build",
+    "release:dry-run": "just wasm-bindings-release && pnpm -r --filter './packages/*' build && cargo publish --workspace --dry-run --allow-dirty",
     "check": "pnpm format:check && pnpm lint && pnpm -r check",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint .",
     "test": "vitest run",
     "test:integration": "LUMEN_SDK_INTEGRATION=1 vitest run packages/lumen-sdk/test/integration.test.ts",
-    "build": "pnpm -r --filter '!lumen' --filter '!@lumiscia/lumen-bindings' build && pnpm --filter @lumiscia/lumen-bindings check"
+    "build": "pnpm -r --filter '!lumen' build"
   },
   "devDependencies": {
     "@changesets/cli": "catalog:",

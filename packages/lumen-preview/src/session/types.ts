@@ -1,10 +1,5 @@
 import type { AudioSourceRegistration, LumenAudioEngineOptions } from "../audio-engine.js";
-import type {
-  LumenBindings,
-  LumenLogLevel,
-  LumenPreviewBindingSource,
-  LumenPreviewController,
-} from "../index.js";
+import type { LumenLogLevel, LumenPreviewBindingSource, LumenPreviewController } from "../index.js";
 import type { MediaRegistration } from "../media/index.js";
 import type { LumenPreviewContext, LumenPreviewPatch } from "../preview.js";
 import type { LumenPreviewStats, LumenPreviewStatsCallback } from "./stats.js";
@@ -46,7 +41,3 @@ export interface LumenPreviewDriverHost {
   reportStats(stats: LumenPreviewStats): void;
   updateState(patch: LumenPreviewPatch): void;
 }
-
-export type LumenWorkerBindings = LumenBindings & {
-  previewWorkerUrl: () => string | URL;
-};

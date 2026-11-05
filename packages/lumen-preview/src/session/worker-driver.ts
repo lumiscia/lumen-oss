@@ -1,11 +1,11 @@
 import { LumenAudioEngine } from "../audio-engine.js";
+import type { LumenWorkerBindings } from "../index.js";
 import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../worker-host.js";
 import type {
   LumenPreviewDriverHost,
   LumenPreviewRuntimeDriver,
   LumenPreviewSessionInputs,
   LumenPreviewSessionOptions,
-  LumenWorkerBindings,
 } from "./types.js";
 
 export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
@@ -69,6 +69,8 @@ export class WorkerPreviewDriver implements LumenPreviewRuntimeDriver {
         lookaheadCount: this.#inputs.lookaheadCount,
         logLevel: this.#inputs.logLevel,
         mediaSources: this.#inputs.mediaSources,
+        // The worker's own location says nothing about the page's assets.
+        wasmUrl: new URL(this.#bindings.previewWasmUrl(), document.baseURI).href,
       },
       [offscreen],
     );
