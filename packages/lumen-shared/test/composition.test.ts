@@ -160,6 +160,18 @@ describe("Composition audio", () => {
     });
   });
 
+  test("rounds seconds to the nearest millisecond", () => {
+    const composition = new Composition();
+
+    composition.addAudio({ source: "audio:a", start: 0.7006, duration: 1.2344, offset: 0.0004 });
+
+    expect(composition.toJSON().audio?.clips[0]).toMatchObject({
+      start_ms: 701,
+      duration_ms: 1_234,
+      source_start_ms: 0,
+    });
+  });
+
   test("declares the track a clip plays on, numbers default ids, and allows overlap", () => {
     const composition = new Composition();
 
@@ -178,6 +190,55 @@ describe("Composition audio", () => {
     expect(() => composition.addAudioTrack({ id: "voice", muted: true })).toThrow(
       "Audio track `voice` already exists.",
     );
+  });
+
+  test("default clip ids skip ids the constructor's audio already uses", () => {
+    const composition = new Composition({
+      audio: {
+        tracks: [{ id: "main" }],
+        clips: [
+          {
+            id: "main-clip-2",
+            source_id: "a.wav",
+            track_id: "main",
+            start_ms: 0,
+            duration_ms: 500,
+          },
+        ],
+      },
+    });
+
+    composition.addAudio({ source: "b.wav", start: 1, duration: 1 });
+
+    expect(composition.toJSON().audio?.clips.map((clip) => clip.id)).toEqual([
+      "main-clip-2",
+      "main-clip-3",
+    ]);
+  });
+
+  test("copies the audio it is constructed with", () => {
+    const audio = {
+      tracks: [{ id: "main" }],
+      clips: [] as {
+        id: string;
+        source_id: string;
+        track_id: string;
+        start_ms: number;
+        duration_ms: number;
+      }[],
+    };
+    const composition = new Composition({ audio });
+
+    audio.clips.push({
+      id: "late",
+      source_id: "a.wav",
+      track_id: "main",
+      start_ms: 0,
+      duration_ms: 1,
+    });
+    composition.addAudio({ source: "b.wav", start: 0, duration: 1 });
+
+    expect(composition.toJSON().audio?.clips.map((clip) => clip.id)).toEqual(["main-clip-1"]);
   });
 });
 

@@ -74,7 +74,11 @@ export class Composition {
   }
 
   constructor(options: CompositionOptions = {}) {
-    this.#audio = options.audio;
+    this.#audio = options.audio && {
+      ...options.audio,
+      clips: [...options.audio.clips],
+      tracks: [...options.audio.tracks],
+    };
     this.#metadata = options.metadata;
     this.#lumenSchemaVersion = options.lumenSchemaVersion;
     this.#renderSettings = renderSettings(options.renderSettings);
@@ -210,14 +214,18 @@ export class Composition {
     const { source, start, duration, offset, gain, id, name } = options;
     const trackId = options.trackId ?? defaultAudioTrackId;
     const audio = this.#audio ?? { clips: [], tracks: [] };
-    const clipCount = audio.clips.filter((clip) => clip.track_id === trackId).length;
+    const taken = new Set(audio.clips.map((clip) => clip.id));
+    let number = audio.clips.filter((clip) => clip.track_id === trackId).length + 1;
+    while (taken.has(`${trackId}-clip-${number}`)) {
+      number += 1;
+    }
     this.#audio = {
       ...audio,
       clips: [
         ...audio.clips,
         {
           duration_ms: milliseconds(duration),
-          id: id ?? `${trackId}-clip-${clipCount + 1}`,
+          id: id ?? `${trackId}-clip-${number}`,
           ...(name === undefined ? {} : { name }),
           source_id: source,
           ...(offset === undefined ? {} : { source_start_ms: milliseconds(offset) }),
