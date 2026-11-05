@@ -1,4 +1,4 @@
-export { LumenCanvas, type LumenCanvasProps } from "./LumenCanvas.js";
+export { Player, type PlayerProps } from "./Player.js";
 export {
   LumenPreviewContext,
   createLumenPreview,

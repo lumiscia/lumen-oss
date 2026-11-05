@@ -1,5 +1,5 @@
 import { Composition } from "@lumiscia/lumen-shared";
-import { LumenCanvas, createLumenPreview, useLumenPreview } from "@lumiscia/lumen-react";
+import { Player, createLumenPreview, useLumenPreview } from "@lumiscia/lumen-react";
 import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
 import type { LumenPreviewMedia, LumenPreviewStats } from "@lumiscia/lumen-react";
 import { useState } from "react";
@@ -88,7 +88,7 @@ function App() {
 
   return (
     <main>
-      <LumenCanvas
+      <Player
         preview={preview}
         bindings={lumenBindings}
         composition={composition}

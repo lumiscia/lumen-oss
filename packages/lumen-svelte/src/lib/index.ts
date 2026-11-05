@@ -1,6 +1,6 @@
 export { LumenPreviewContext, createLumenPreview } from "./preview.svelte.js";
-export { default as LumenCanvas } from "./LumenCanvas.svelte";
-export type { LumenCanvasProps } from "./types.js";
+export { default as Player } from "./Player.svelte";
+export type { PlayerProps } from "./types.js";
 export type {
   LumenLogLevel,
   LumenPreviewComposition,

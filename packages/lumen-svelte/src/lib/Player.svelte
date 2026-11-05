@@ -1,7 +1,7 @@
 <script lang="ts">
     import { untrack } from "svelte";
     import { mountPreview, type LumenPreviewSession } from "@lumiscia/lumen-preview";
-    import type { LumenCanvasProps } from "./types.js";
+    import type { PlayerProps } from "./types.js";
 
     let {
         preview,
@@ -14,7 +14,7 @@
         onStats,
         class: className,
         style,
-    }: LumenCanvasProps = $props();
+    }: PlayerProps = $props();
 
     const inputs = () => ({ composition, fonts, lookaheadCount, logLevel, media, onStats });
 

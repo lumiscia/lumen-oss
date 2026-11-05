@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { LumenPreviewComposition, LumenWorkerBindings } from "@lumiscia/lumen-preview";
 
-    import LumenCanvas from "../src/lib/LumenCanvas.svelte";
+    import Player from "../src/lib/Player.svelte";
     import type { LumenPreviewContext } from "../src/lib/preview.svelte.js";
 
     type Props = {
@@ -23,4 +23,4 @@
     }
 </script>
 
-<LumenCanvas {preview} {bindings} {composition} class="stage" />
+<Player {preview} {bindings} {composition} class="stage" />

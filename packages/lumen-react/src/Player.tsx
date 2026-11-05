@@ -6,7 +6,7 @@ import type { LumenPreviewSessionInputs, LumenWorkerBindings } from "@lumiscia/l
 
 import type { LumenPreviewContext } from "./preview.js";
 
-export interface LumenCanvasProps extends LumenPreviewSessionInputs {
+export interface PlayerProps extends LumenPreviewSessionInputs {
   preview: LumenPreviewContext;
   bindings: LumenWorkerBindings;
   /** Applied to the element that holds the canvas, which fills it and keeps its aspect ratio. */
@@ -14,7 +14,7 @@ export interface LumenCanvasProps extends LumenPreviewSessionInputs {
   style?: CSSProperties;
 }
 
-export function LumenCanvas({
+export function Player({
   preview,
   bindings,
   composition,
@@ -25,7 +25,7 @@ export function LumenCanvas({
   onStats,
   className,
   style,
-}: LumenCanvasProps) {
+}: PlayerProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<LumenPreviewSession | null>(null);
   const inputs = { composition, fonts, lookaheadCount, logLevel, media, onStats };

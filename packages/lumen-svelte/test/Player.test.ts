@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LumenPreviewComposition, LumenWorkerBindings } from "@lumiscia/lumen-preview";
 
 import { createLumenPreview } from "../src/lib/preview.svelte.js";
-import Harness from "./LumenCanvasHarness.svelte";
+import Harness from "./PlayerHarness.svelte";
 
 interface MockSession {
   host: HTMLElement;
@@ -27,7 +27,7 @@ vi.mock("@lumiscia/lumen-preview", () => ({
 
 const bindings = {} as LumenWorkerBindings;
 
-describe("LumenCanvas", () => {
+describe("Player", () => {
   beforeEach(() => {
     sessions.length = 0;
     document.body.replaceChildren();
