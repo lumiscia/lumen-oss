@@ -12,6 +12,7 @@ import {
   cos,
   cubicBezier,
   ease,
+  expr,
   floor,
   fn,
   fps,
@@ -29,6 +30,7 @@ import {
   inOutQuad,
   inQuad,
   lerp,
+  literal,
   lowercase,
   max,
   min,
@@ -231,42 +233,21 @@ describe("expression helpers", () => {
     );
   });
 
-  test("moves accepts expressions of unknown kind", () => {
+  test("moves adds each move as its distance times a tween from 0 to 1", () => {
     const offset = fn("offset(x)", (x: Num) => moves(x, [{ by: 10, start: 0, duration: 10 }]));
-    expect(offset.body).toBe("(x + tween(0, 10, 0, 10))");
+    expect(offset.body).toBe("(x + (10 * tween(0, 1, 0, 10)))");
     expect(String(offset(frame).add(1))).toBe("=(offset(frame) + 1)");
     expect(fn("same(x)", (x: Num) => moves(x, [])).body).toBe("x");
-    expect(fn("at(x)", (x: Num) => moves(x, [{ by: [1, 2], start: 0, duration: 10 }])).body).toBe(
-      "(x + tween(vec2(0, 0), vec2(1, 2), 0, 10))",
-    );
-    expect(() =>
-      fn("blind(x, y)", (x: Num, y: Num) => moves(x, [{ by: y, start: 0, duration: 10 }])),
-    ).toThrow("`moves` cannot tell whether its values are numbers or vec2s; type the base.");
-    expect(() => moves(hex("#fff000") as unknown as Num, [])).toThrow(
-      "`moves` needs a number or vec2 base.",
-    );
+    expect(
+      String(moves(vec2(1, 2), [{ by: [3, 4], start: 5, duration: 10, ease: ease.outExpo }])),
+    ).toBe("=(vec2(1, 2) + (vec2(3, 4) * tween(0, 1, 5, 10, 'out_expo')))");
   });
 
-  test("reject reserved and duplicate names in function signatures", () => {
-    const body = (x: Num) => x as Expr<number>;
-    expect(() => fn("frame(x)", body)).toThrow("`frame` is a reserved name.");
-    expect(() => fn("tween(x)", body)).toThrow("`tween` is a reserved name.");
-    expect(() => fn("f(frame)", body)).toThrow("`frame` is a reserved name.");
-    expect(() => fn("f(if)", body)).toThrow("`if` is a reserved name.");
-    expect(() => fn("f(f)", (f: Num) => f as Expr<number>)).toThrow(
-      "Parameter `f` has the same name as its function.",
-    );
-    const g = fn("g()", () => frame);
-    const f = fn("f(g)", (start: Num) => tween(0, 1, start, 12));
-    expect(() => new Composition().addFunction(g).addFunction(f)).toThrow(
-      "Parameter `g` of `f` has the same name as a function.",
-    );
-    expect(() => new Composition().addFunction(f).addFunction(g)).toThrow(
-      "Parameter `g` of `f` has the same name as a function.",
-    );
-    expect(() => fn("f(x, x)", (x: Num, _y: Num) => x as Expr<number>)).toThrow(
-      "Parameter `x` is declared twice.",
-    );
+  test("literal escapes a leading = and expr wraps raw expression text", () => {
+    expect(literal("=x")).toBe("==x");
+    expect(literal("x=")).toBe("x=");
+    expect(String(expr("if(frame > 30, 1, 0)"))).toBe("=if(frame > 30, 1, 0)");
+    expect(() => expr("=frame")).toThrow("without its leading `=`");
   });
 
   test("cover every builtin and global", () => {

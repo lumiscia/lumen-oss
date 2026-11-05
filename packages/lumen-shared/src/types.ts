@@ -1,27 +1,22 @@
 import type {
-  ClipEnd,
   Color,
   CompositionNode,
   CompositionNodeInput,
+  CompositionPropDeclaration,
   CompositionTemplate,
   ExpressionString,
   HexColor,
   LumenComposition,
   NodeInputPortName,
   NodeKind,
+  NodeVariadicInputPortName,
+  RenderSettings,
   TextContent,
   Vec2,
 } from "@lumiscia/lumen-types";
 
 import type { Composition } from "./composition.js";
-import type { Expr, Num } from "./expression.js";
-
-export interface LumenOptions {
-  readonly apiKey: string;
-  readonly baseUrl?: string;
-  readonly fetch?: typeof fetch;
-  readonly websocket?: typeof WebSocket;
-}
+import type { Expr } from "./expression.js";
 
 export interface CompositionOptions {
   readonly audio?: AudioTimelineInput;
@@ -34,8 +29,20 @@ export interface CompositionOptions {
 export type NodeInput<TKind extends NodeKind = NodeKind> = NodeInputByKind[TKind];
 
 type NodeInputByKind = {
-  readonly [TKind in NodeKind]: WithExpressionParams<CompositionNodeInput<TKind>>;
+  readonly [TKind in NodeKind]: WithExpressionParams<CompositionNodeInput<TKind>> & {
+    /** Nodes of the composition that feed the ports, connected in order. */
+    readonly inputs?: NodeInputs<TKind>;
+  };
 };
+
+/** A port takes one node; a variadic port such as `layers` takes an array. */
+type NodeInputs<TKind extends NodeKind> = [NodeInputPortName<TKind>] extends [never]
+  ? undefined
+  : {
+      readonly [TPort in NodeInputPortName<TKind>]?: TPort extends NodeVariadicInputPortName<TKind>
+        ? NodeReference | readonly NodeReference[]
+        : NodeReference;
+    };
 
 /** Lets each param that takes `=...` strings take an `Expr` of the matching type too. */
 type WithExpressionParams<TNode extends { readonly params?: object }> = Omit<TNode, "params"> & {
@@ -92,14 +99,10 @@ export type NodeReference = number | Pick<CompositionNode, "id">;
 
 /** `toPort` is checked against the target's input ports when `connect` is given the node itself. */
 export interface ConnectOptions<TKind extends NodeKind = NodeKind> {
-  readonly fromPort?: string;
   readonly toPort: NodeInputPortName<TKind>;
 }
 
-export interface Size {
-  readonly width: number;
-  readonly height: number;
-}
+export type Size = RenderSettings;
 
 export type RenderSettingsInput = Partial<LumenComposition["render_settings"]>;
 
@@ -203,20 +206,17 @@ export interface WgslShader<TUniforms extends WgslUniforms> {
 }
 
 /** The value types a template prop can declare. */
-export type PropType = "string" | "number" | "color" | "vec2";
-
-interface PropValueByType {
-  readonly string: string;
-  readonly number: number;
-  readonly color: Color;
-  readonly vec2: Vec2;
-}
+export type PropType = CompositionPropDeclaration["type"];
 
 /** A template prop, declared with `prop.string(..)`, `prop.number(..)`, `prop.color(..)` or `prop.vec2(..)`. */
-export interface PropDeclaration<TType extends PropType = PropType> {
-  readonly type: TType;
-  readonly default?: PropValueByType[TType];
-}
+export type PropDeclaration<TType extends PropType = PropType> = Extract<
+  CompositionPropDeclaration,
+  { readonly type: TType }
+>;
+
+type PropValueByType = {
+  readonly [TType in PropType]: NonNullable<PropDeclaration<TType>["default"]>;
+};
 
 export type PropDeclarations = Readonly<
   Record<string, { [TType in PropType]: PropDeclaration<TType> }[PropType]>
@@ -251,78 +251,17 @@ export interface CompositionDefinitionOptions<TProps extends PropDeclarations> {
 }
 
 /** Where a clip plays its template. `start` and `duration` count the parent's frames. */
-export interface ClipOptions<TProps extends PropDeclarations> {
+export type ClipOptions<TProps extends PropDeclarations> = Omit<
+  NonNullable<NodeInput<"clip">["params"]>,
+  "composition" | "props"
+> & {
   readonly id?: number;
-  readonly start?: Num;
-  /** Defaults to the rest of the template. */
-  readonly duration?: Num;
-  /** Template frames skipped at the start. */
-  readonly offset?: Num;
-  readonly speed?: Num;
-  readonly end?: ClipEnd;
   readonly props?: ClipPropInputs<TProps>;
-}
+};
 
 export interface CompositionDefinition<TProps extends PropDeclarations = PropDeclarations> {
   readonly name: string;
   readonly template: CompositionTemplate;
-  /** The built template. Compositions that add its clips also take its functions and nested templates. */
-  readonly composition: Composition;
   /** A `clip` node playing the template; adding it registers the template. */
   readonly clip: (options?: ClipOptions<TProps>) => NodeInput<"clip">;
-}
-
-export interface RenderOptions {
-  readonly signal?: AbortSignal;
-  readonly idempotencyKey?: string;
-}
-
-export interface RenderResult {
-  readonly id?: string;
-  readonly error?: LumenApiError;
-}
-
-export interface LumenApiError {
-  readonly code: string;
-  readonly message: string;
-  readonly details?: unknown;
-}
-
-export type RenderEvent =
-  | {
-      readonly type: "render.queued";
-      readonly renderId: string;
-      readonly position?: number;
-    }
-  | {
-      readonly type: "render.started";
-      readonly renderId: string;
-    }
-  | {
-      readonly type: "render.progress";
-      readonly renderId: string;
-      readonly progress: number;
-      readonly frame?: number;
-      readonly totalFrames?: number;
-    }
-  | {
-      readonly type: "render.completed";
-      readonly renderId: string;
-      readonly url?: string;
-      readonly artifactId?: string;
-    }
-  | {
-      readonly type: "render.failed";
-      readonly renderId: string;
-      readonly error: LumenApiError;
-    };
-
-export interface RenderEventHandlers {
-  readonly onEvent?: (event: RenderEvent) => void;
-  readonly onError?: (error: unknown) => void;
-  readonly onClose?: (event: CloseEvent) => void;
-}
-
-export interface RenderEventSubscription {
-  readonly close: () => void;
 }

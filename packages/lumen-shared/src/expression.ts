@@ -2,7 +2,6 @@ import {
   easingNames,
   expressionBuiltins,
   expressionGlobals,
-  expressionReservedNames,
   type Color,
   type EasingName,
   type ExpressionGlobalName,
@@ -10,12 +9,12 @@ import {
   type Vec2,
 } from "@lumiscia/lumen-types";
 
+import { quote } from "./quote.js";
+
 declare const valueType: unique symbol;
 
 /** A type an expression can evaluate to. */
 export type Value = number | Vec2 | Color | string;
-
-export type Kind = "number" | "vec2" | "color" | "string";
 
 export type Num = number | Expr<number>;
 
@@ -34,8 +33,6 @@ export type Arg<T extends Value> =
 
 export type AnyArg = Expr | Arg<number> | Arg<Vec2> | Arg<Color> | Arg<string>;
 
-let exprKind: (expr: Expr) => Kind | undefined;
-
 /**
  * An expression that evaluates to `T`. Arithmetic follows the evaluator: numbers combine freely,
  * vec2 values add and subtract with each other and scale by numbers or vec2 values, and colours
@@ -44,15 +41,9 @@ let exprKind: (expr: Expr) => Kind | undefined;
 export class Expr<T extends Value = Value> {
   declare readonly [valueType]: T;
   readonly #source: string;
-  readonly #kind: Kind | undefined;
 
-  static {
-    exprKind = (expr) => expr.#kind;
-  }
-
-  constructor(source: string, kind?: Kind) {
+  constructor(source: string) {
     this.#source = source;
-    this.#kind = kind;
   }
 
   add(this: Expr<number>, other: Num): Expr<number>;
@@ -99,26 +90,7 @@ export class Expr<T extends Value = Value> {
 }
 
 function binary<T extends Value>(lhs: AnyArg, operator: string, rhs: AnyArg): Expr<T> {
-  const kinds = [kindOf(lhs), kindOf(rhs)];
-  const kind = kinds.includes("vec2")
-    ? "vec2"
-    : kinds.every((kind) => kind === "number")
-      ? "number"
-      : undefined;
-  return new Expr<T>(`(${lower(lhs)} ${operator} ${lower(rhs)})`, kind);
-}
-
-function kindOf(value: AnyArg): Kind | undefined {
-  if (value instanceof Expr) {
-    return exprKind(value);
-  }
-  if (typeof value === "number") {
-    return "number";
-  }
-  if (typeof value === "string") {
-    return "string";
-  }
-  return value.length === 2 ? "vec2" : "color";
+  return new Expr<T>(`(${lower(lhs)} ${operator} ${lower(rhs)})`);
 }
 
 const tupleBuiltins: Readonly<Record<number, string>> = { 2: "vec2", 3: "rgb", 4: "rgba" };
@@ -146,18 +118,6 @@ function formatNumber(value: number): string {
     throw new RangeError(`Expressions cannot contain \`${value}\`.`);
   }
   return String(value);
-}
-
-const escapes: Readonly<Record<string, string>> = {
-  "\\": "\\\\",
-  "'": "\\'",
-  "\n": "\\n",
-  "\r": "\\r",
-  "\t": "\\t",
-};
-
-function quote(text: string): string {
-  return `'${text.replace(/[\\'\n\r\t]/g, (char) => escapes[char] ?? char)}'`;
 }
 
 export type CamelCase<S extends string> = S extends `${infer Head}_${infer Tail}`
@@ -254,10 +214,7 @@ function call(spec: BuiltinSpec, given: readonly (AnyArg | undefined)[]): Expr {
           : `${minArgs} to ${maxArgs}`;
     throw new TypeError(`\`${name}\` expects ${expected} arguments, got ${args.length}.`);
   }
-  const [first] = args as readonly AnyArg[];
-  const kind =
-    spec.returns !== "any" ? spec.returns : first === undefined ? undefined : kindOf(first);
-  return new Expr(`${name}(${(args as readonly AnyArg[]).map(lower).join(", ")})`, kind);
+  return new Expr(`${name}(${(args as readonly AnyArg[]).map(lower).join(", ")})`);
 }
 
 const builtins = Object.fromEntries(
@@ -340,7 +297,7 @@ export const {
   word,
   wordCount,
 } = Object.fromEntries(
-  expressionGlobals.map((global) => [camelCase(global.name), new Expr(global.name, "number")]),
+  expressionGlobals.map((global) => [camelCase(global.name), new Expr(global.name)]),
 ) as { readonly [N in ExpressionGlobalName as CamelCase<N>]: Expr<number> };
 
 /** Easing names for `tween`, such as `ease.outExpo` for `'out_expo'`. */
@@ -350,12 +307,12 @@ export const ease = Object.fromEntries(easingNames.map((name) => [camelCase(name
 
 /** `seconds` as a `1.5s` literal, which the evaluator converts to frames. */
 export function sec(seconds: number): Expr<number> {
-  return new Expr(`${formatNumber(seconds)}s`, "number");
+  return new Expr(`${formatNumber(seconds)}s`);
 }
 
 /** `milliseconds` as a `300ms` literal, which the evaluator converts to frames. */
 export function ms(milliseconds: number): Expr<number> {
-  return new Expr(`${formatNumber(milliseconds)}ms`, "number");
+  return new Expr(`${formatNumber(milliseconds)}ms`);
 }
 
 /** A `#rrggbb` or `#rrggbbaa` colour literal. */
@@ -363,12 +320,26 @@ export function hex(color: `#${string}`): Expr<Color> {
   if (!/^#(?:[\da-f]{6}|[\da-f]{8})$/i.test(color)) {
     throw new TypeError(`Invalid colour \`${color}\`; use #rrggbb or #rrggbbaa.`);
   }
-  return new Expr(color, "color");
+  return new Expr(color);
 }
 
-/** Reads a template prop. Inside `defineComposition`, `build` gets typed reads of its props. */
-export function readProp<T extends Value = Value>(name: string, kind?: Kind): Expr<T> {
-  return new Expr(`prop(${quote(name)})`, kind);
+/**
+ * Text an expression reads as itself. A string starting with `=` is an expression, so it is
+ * escaped as `==`.
+ */
+export function literal(text: string): string {
+  return text.startsWith("=") ? `=${text}` : text;
+}
+
+/**
+ * A raw expression, such as `expr("if(frame > 30, 1, 0)")` or `expr("node(3, 'opacity')")`, for
+ * forms the helpers don't cover. `source` has no leading `=`.
+ */
+export function expr<T extends Value = Value>(source: string): Expr<T> {
+  if (source.startsWith("=")) {
+    throw new TypeError("`expr` takes the expression without its leading `=`.");
+  }
+  return new Expr<T>(source);
 }
 
 export type FunctionSignature = `${string}(${string})`;
@@ -393,9 +364,6 @@ type CheckedSignature<A extends readonly unknown[]> = false extends {
   ? "fn parameters must accept expressions, such as `Num`"
   : FunctionSignature;
 
-const identifier = /^[A-Za-z_]\w*$/;
-const reservedNames: ReadonlySet<string> = new Set(expressionReservedNames);
-
 /**
  * Defines a composition function such as `rise(start)`. The implementation runs once, with each
  * parameter bound to its name, to build the body. Register it with `Composition.addFunction`.
@@ -405,30 +373,18 @@ export function fn<A extends readonly AnyArg[], R extends Value>(
   impl: (...params: A) => Expr<R>,
 ): ExprFunction<A, R> {
   const match = /^\s*(\w+)\s*\((.*)\)\s*$/.exec(signature);
-  const [, name = "", list = ""] = match ?? [];
-  const params = list.trim() === "" ? [] : list.split(",").map((param) => param.trim());
-  if (!identifier.test(name) || !params.every((param) => identifier.test(param))) {
+  if (match === null) {
     throw new TypeError(`Invalid function signature \`${signature}\`; expected \`name(a, b)\`.`);
   }
-  const reserved = [name, ...params].find((identifier) => reservedNames.has(identifier));
-  if (reserved !== undefined) {
-    throw new TypeError(`\`${reserved}\` is a reserved name.`);
-  }
-  if (params.includes(name)) {
-    throw new TypeError(`Parameter \`${name}\` has the same name as its function.`);
-  }
-  const repeated = params.find((param, index) => params.indexOf(param) !== index);
-  if (repeated !== undefined) {
-    throw new TypeError(`Parameter \`${repeated}\` is declared twice.`);
-  }
+  const [, name = "", list = ""] = match;
+  const params = list.trim() === "" ? [] : list.split(",").map((param) => param.trim());
   if (impl.length !== params.length) {
     throw new TypeError(
       `\`${name}\` declares ${params.length} parameters, but its implementation takes ${impl.length}.`,
     );
   }
   const body = impl(...(params.map((param) => new Expr(param)) as unknown as A));
-  const kind = exprKind(body);
-  const callable = (...args: A) => new Expr<R>(`${name}(${args.map(lower).join(", ")})`, kind);
+  const callable = (...args: A) => new Expr<R>(`${name}(${args.map(lower).join(", ")})`);
   return Object.assign(callable, {
     signature: `${name}(${params.join(", ")})` as const,
     body: body.toString().slice(1),
@@ -442,37 +398,17 @@ export interface Move<T extends number | Vec2> {
   readonly ease?: EasingName;
 }
 
-function zeroOf(kind: Kind | undefined): Num | Arg<Vec2> {
-  if (kind === "number") {
-    return 0;
-  }
-  if (kind === "vec2") {
-    return vec2(0, 0);
-  }
-  throw new TypeError(
-    "`moves` cannot tell whether its values are numbers or vec2s; type the base.",
-  );
-}
-
-/** `base` plus one `tween` from zero to `by` per move, so moves can overlap. */
+/** `base` plus `by * tween(0, 1, ..)` per move, so moves can overlap. */
 export function moves(base: Num, steps: readonly Move<number>[]): Expr<number>;
 export function moves(base: Arg<Vec2>, steps: readonly Move<Vec2>[]): Expr<Vec2>;
 export function moves(
   base: Num | Arg<Vec2>,
   steps: readonly Move<number>[] | readonly Move<Vec2>[],
 ): Expr {
-  const kind = kindOf(base);
-  if (kind === "color" || kind === "string") {
-    throw new TypeError("`moves` needs a number or vec2 base.");
-  }
-  const initial = base instanceof Expr ? base : new Expr(lower(base), kind);
-  if (steps.length === 0) {
-    return initial;
-  }
-  const zero = zeroOf(kind ?? steps.map(({ by }) => kindOf(by)).find((kind) => kind !== undefined));
+  const initial = base instanceof Expr ? base : new Expr(lower(base));
   const untypedTween = tween as (...args: readonly AnyArg[]) => Expr;
   return steps.reduce<Expr>((sum, { by, start, duration, ease }) => {
-    const args = [zero, by, start, duration, ...(ease === undefined ? [] : [ease])];
-    return binary(sum, "+", untypedTween(...args));
+    const eased = untypedTween(0, 1, start, duration, ...(ease === undefined ? [] : [ease]));
+    return binary(sum, "+", binary(by, "*", eased));
   }, initial);
 }

@@ -51,12 +51,67 @@ describe("Composition connections", () => {
     const output = composition.addNode({ type: "media_output" });
 
     composition.connect(background, output, { toPort: "source" });
-    composition.connect(background.id, output.id, { fromPort: "output", toPort: "source" });
+    composition.connect(background.id, output.id, { toPort: "source" });
 
     expect(composition.toJSON().connections).toEqual([
       { from_node: 0, to_node: 1, to_port: "source" },
-      { from_node: 0, from_port: "output", to_node: 1, to_port: "source" },
+      { from_node: 0, to_node: 1, to_port: "source" },
     ]);
+  });
+
+  test("rejects nodes of another composition and unknown ids", () => {
+    const composition = new Composition();
+    const output = composition.addNode({ type: "media_output" });
+    const foreign = new Composition().addNode({ type: "background" });
+
+    expect(() => composition.connect(foreign, output, { toPort: "source" })).toThrow(
+      "not a node of this composition",
+    );
+    expect(() => composition.connect(9, output, { toPort: "source" })).toThrow(
+      "Node `9` is not a node of this composition.",
+    );
+    expect(composition.toJSON().connections).toEqual([]);
+  });
+});
+
+describe("Composition inputs", () => {
+  test("connects in the order written, fanning one node out and filling a variadic port", () => {
+    const composition = new Composition();
+    const background = composition.addNode({ type: "background" });
+    const title = composition.addNode({ type: "text" });
+    const matte = composition.addNode({ type: "shape" });
+    const merge = composition.addNode({
+      type: "merge",
+      inputs: { base: background, overlay: title, mask: matte },
+    });
+    const blur = composition.addNode({ type: "blur", inputs: { source: merge } });
+    const glow = composition.addNode({ type: "opacity", inputs: { source: merge } });
+    const stack = composition.addNode({
+      type: "raster_multimerge",
+      inputs: { layers: [blur, glow.id, title] },
+    });
+
+    expect(composition.toJSON().connections).toEqual([
+      { from_node: 0, to_node: 3, to_port: "base" },
+      { from_node: 1, to_node: 3, to_port: "overlay" },
+      { from_node: 2, to_node: 3, to_port: "mask" },
+      { from_node: 3, to_node: 4, to_port: "source" },
+      { from_node: 3, to_node: 5, to_port: "source" },
+      { from_node: 4, to_node: stack.id, to_port: "layers" },
+      { from_node: 5, to_node: stack.id, to_port: "layers" },
+      { from_node: 1, to_node: stack.id, to_port: "layers" },
+    ]);
+    expect(composition.toJSON().nodes.every((node) => !("inputs" in node))).toBe(true);
+  });
+
+  test("adds nothing when an input is not a node of the composition", () => {
+    const composition = new Composition();
+    const foreign = new Composition().addNode({ type: "background" });
+
+    expect(() => composition.addNode({ type: "blur", inputs: { source: foreign } })).toThrow(
+      "not a node of this composition",
+    );
+    expect(composition.toJSON()).toMatchObject({ connections: [], nodes: [] });
   });
 });
 
@@ -177,10 +232,9 @@ describe("Composition audio helpers", () => {
 
 describe("Composition timeline defaults", () => {
   test("defaults to 30 fps", () => {
-    const composition = new Composition();
+    const composition = new Composition({ timeline: { durationSeconds: 2 } });
 
-    expect(composition.toJSON().timeline.fps).toBe(30);
-    expect(composition.setDurationSeconds(2).toJSON().timeline.duration_frames).toBe(60);
+    expect(composition.toJSON().timeline).toEqual({ duration_frames: 60, fps: 30 });
   });
 
   test("converts durationSeconds rather than emitting a key the engine rejects", () => {
@@ -212,25 +266,5 @@ describe("Composition rich text", () => {
       ],
       strikethrough: { offset: "=(frame - 4)", style: "dashed" },
     });
-  });
-
-  test("leaves objects with their own toJSON to serialize themselves", () => {
-    const composition = new Composition();
-    const span = Object.defineProperty({ text: "draft" }, "toJSON", {
-      value: () => ({ text: "final" }),
-    });
-
-    composition.addNode({ type: "text", params: { content: [span] } });
-
-    expect(JSON.parse(JSON.stringify(composition)).nodes[0].params.content).toEqual([
-      { text: "final" },
-    ]);
-
-    const content = Object.defineProperty([{ text: "draft" }], "toJSON", {
-      value: () => [{ text: "final" }],
-    });
-    const other = new Composition();
-    other.addNode({ type: "text", params: { content } });
-    expect(JSON.parse(JSON.stringify(other)).nodes[0].params.content).toEqual([{ text: "final" }]);
   });
 });

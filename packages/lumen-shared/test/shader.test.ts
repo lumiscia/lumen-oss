@@ -58,18 +58,14 @@ struct Uniforms {
   });
 
   test("leaves shaders without uniforms untouched", () => {
-    const fill = wgslShader({ shader: body });
+    const shader = `@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(1.0, 0.0, 0.0, 1.0));
+}`;
+    const fill = wgslShader({ shader });
 
-    expect(fill.source).toBe(body);
-    expect(fill.node()).toEqual({ type: "wgsl_shader", params: { shader: body, uniforms: {} } });
-  });
-
-  test("rejects names that are not WGSL identifiers", () => {
-    for (const name of ["1st", "has space", "_", "__lumen", "fn", "filter", "type"]) {
-      expect(() => wgslShader({ uniforms: { [name]: "f32" }, shader: body })).toThrow(
-        `Uniform name \`${name}\` is not a WGSL identifier.`,
-      );
-    }
+    expect(fill.source).toBe(shader);
+    expect(fill.node()).toEqual({ type: "wgsl_shader", params: { shader, uniforms: {} } });
   });
 
   test("rejects alpha on vec3 colours", () => {

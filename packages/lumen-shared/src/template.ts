@@ -1,7 +1,9 @@
 import type { ClipProps, Color, CompositionTemplate, Vec2 } from "@lumiscia/lumen-types";
 
-import { Composition, clipTemplate } from "./composition.js";
-import { Expr, readProp } from "./expression.js";
+import { Composition, captureClipTemplate, clipTemplate } from "./composition.js";
+import { Expr, literal } from "./expression.js";
+import { quote } from "./quote.js";
+import type { Value } from "./expression.js";
 import type {
   CompositionDefinition,
   CompositionDefinitionOptions,
@@ -24,11 +26,17 @@ export const prop = Object.assign((name: string): Expr => readProp(name), {
   vec2: (defaultValue?: Vec2) => declaration("vec2", defaultValue),
 });
 
+function readProp<T extends Value = Value>(name: string): Expr<T> {
+  return new Expr<T>(`prop(${quote(name)})`);
+}
+
 function declaration<TType extends PropType>(
   type: TType,
   defaultValue: PropDeclaration<TType>["default"],
 ): PropDeclaration<TType> {
-  return defaultValue === undefined ? { type } : { type, default: defaultValue };
+  return (
+    defaultValue === undefined ? { type } : { type, default: defaultValue }
+  ) as PropDeclaration<TType>;
 }
 
 /**
@@ -46,13 +54,11 @@ export function defineComposition<TProps extends PropDeclarations = Record<never
 
   const props: PropDeclarations = options.props ?? {};
   const reads = Object.fromEntries(
-    Object.entries(props).map(([prop, { type }]) => [prop, readProp(prop, type)]),
+    Object.keys(props).map((prop) => [prop, readProp(prop)]),
   ) as PropReads<TProps>;
   const composition = new Composition();
   const source = options.build(composition, reads);
-  composition.connect(source, composition.addNode({ type: "media_output" }), {
-    toPort: "source",
-  });
+  composition.addNode({ type: "media_output", inputs: { source } });
 
   const { connections, nodes } = composition.toJSON();
   const template: CompositionTemplate = {
@@ -64,10 +70,10 @@ export function defineComposition<TProps extends PropDeclarations = Record<never
     nodes,
     connections,
   };
-  const definition: CompositionDefinition<TProps> = {
+  const captured = captureClipTemplate(name, template, composition);
+  return {
     name,
     template,
-    composition,
     clip: ({ id, props: values, ...timing } = {}) => {
       const node: NodeInput<"clip"> = {
         ...(id === undefined ? {} : { id }),
@@ -75,25 +81,20 @@ export function defineComposition<TProps extends PropDeclarations = Record<never
         params: {
           composition: name,
           ...timing,
-          ...(values === undefined ? {} : { props: lowerProps(values) }),
+          ...(values === undefined ? {} : { props: literalProps(values) }),
         },
       };
-      return Object.assign(node, { [clipTemplate]: definition });
+      return Object.assign(node, { [clipTemplate]: captured });
     },
   };
-  return definition;
 }
 
-/** Expressions become `=...` strings, and literal text starting with `=` is escaped as `==`. */
-function lowerProps(values: object): ClipProps {
+/** Text starting with `=` is escaped as `==`. `addNode` lowers the expressions. */
+function literalProps(values: object): ClipProps {
   return Object.fromEntries(
     Object.entries(values).map(([name, value]: [string, unknown]) => [
       name,
-      value instanceof Expr
-        ? value.toString()
-        : typeof value === "string" && value.startsWith("=")
-          ? `=${value}`
-          : value,
+      typeof value === "string" ? literal(value) : value,
     ]),
   ) as ClipProps;
 }

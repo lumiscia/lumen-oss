@@ -1650,7 +1650,35 @@ export interface NodeInputPortNameByKind {
   readonly "wgsl_shader": "source";
 }
 
+export interface NodeVariadicInputPortNameByKind {
+  readonly "background": never;
+  readonly "blur": never;
+  readonly "boolean": never;
+  readonly "clip": never;
+  readonly "color_grade": never;
+  readonly "crop": never;
+  readonly "exposure": never;
+  readonly "hue_saturation": never;
+  readonly "levels": never;
+  readonly "media_in": never;
+  readonly "media_output": never;
+  readonly "merge": never;
+  readonly "opacity": never;
+  readonly "path": never;
+  readonly "raster_multimerge": "layers";
+  readonly "resize": never;
+  readonly "shadow": never;
+  readonly "shape": never;
+  readonly "switch": "layers";
+  readonly "text": never;
+  readonly "time_remap": never;
+  readonly "transform": never;
+  readonly "wgsl_shader": "source";
+}
+
 export type CompositionNode<TKind extends NodeKind = NodeKind> = CompositionNodeByKind[TKind];
 export type CompositionNodeInput<TKind extends NodeKind = NodeKind> = CompositionNodeInputByKind[TKind];
 /** The input port names of a node kind, which a connection's `to_port` names. */
 export type NodeInputPortName<TKind extends NodeKind = NodeKind> = NodeInputPortNameByKind[TKind];
+/** The input ports of a node kind that take any number of connections. */
+export type NodeVariadicInputPortName<TKind extends NodeKind = NodeKind> = NodeVariadicInputPortNameByKind[TKind];

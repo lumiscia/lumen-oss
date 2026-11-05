@@ -117,10 +117,10 @@
     "units": { "expression": "=((1.5s + 300ms) - -0.5s)", "expected": 69 },
     "globals": { "expression": "=((((frame + time) + fps) + width) + height)", "expected": 3076.5 },
     "moves_vec2": {
-      "expression": "=((vec2(960, 1200) + tween(vec2(0, 0), vec2(0, -660), 0, 18, 'out_expo')) + tween(vec2(0, 0), vec2(-1360, 0), 90, 14, 'in_back'))",
+      "expression": "=((vec2(960, 1200) + (vec2(0, -660) * tween(0, 1, 0, 18, 'out_expo'))) + (vec2(-1360, 0) * tween(0, 1, 90, 14, 'in_back')))",
       "expected": [960, 540]
     },
-    "moves_number": { "expression": "=(100 + tween(0, 50, 30, 30))", "expected": 125 },
+    "moves_number": { "expression": "=(100 + (50 * tween(0, 1, 30, 30)))", "expected": 125 },
     "number_formatting": {
       "expression": "=(vec2(1e-7, 1e+21) + vec2(0, 0.30000000000000004))",
       "expected": [1e-7, 1e21]
