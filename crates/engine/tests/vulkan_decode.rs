@@ -532,11 +532,12 @@ fn compare_playback(
             frame,
             &hardware_store,
         );
+        // A new decoder per frame, as software decode on one CPU can share a seek bug with hardware.
         let on_software = render(
             &mut software_renderer,
             &software_scene,
             frame,
-            &software_store,
+            &Store::new(FfmpegResolverOptions::default()),
         );
         let written = software_row_pixels(width) * 4;
         for (a, b) in on_hardware
