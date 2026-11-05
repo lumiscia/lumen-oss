@@ -91,7 +91,7 @@ What they all need:
 - A Vulkan device with `VK_KHR_video_encode_queue` that supports the codec, and an FFmpeg built with Vulkan. Otherwise the encoder fails to open: the Linux default then falls back to `libx264`, and a named encoder fails the render. Distribution Mesa builds that leave out patent-encumbered codecs have no H.264 or HEVC encode. A Rocky Linux 10 box with Mesa 25.2 and an AMD 780M offered only AV1.
 - Bitrate or `--qp` rate control. `--crf` and `--preset` aren't supported.
 - On NVIDIA, `h264_vulkan` can stall forever at a GOP boundary when FFmpeg encodes on more than one queue. `n8.0` and `n9.0.2` do, and no other release was measured. `lumen-local` and `lumen-server` avoid it, with one encode queue when frames stay on the GPU and `async_depth=1` when they are uploaded, which is slower. FFmpeg `master` and `release/9.1` fix it.
-- NVIDIA's driver limits the Vulkan contexts one process can hold, which caps `lumen-server` at 9 concurrent `h264_vulkan` renders. See the [server README](../crates/server/README.md).
+- NVIDIA's driver limits the Vulkan contexts one process can hold, 63 on the cards measured, so `lumen-server` makes `h264_vulkan` renders wait: at most 14 when frames stay on the GPU, 9 when they are uploaded, or 6 uploaded with hardware decode. See the [server README](../crates/server/README.md).
 
 ### Hardware decode
 
