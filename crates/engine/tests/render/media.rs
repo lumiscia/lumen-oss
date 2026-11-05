@@ -160,6 +160,28 @@ fn images_past_the_budget_are_freed_once_no_frame_shows_them() {
 }
 
 #[test]
+fn images_a_failed_recording_bound_are_freed() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    renderer.set_media_texture_cache_budget(0);
+    let composition = scene(
+        CANVAS,
+        json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "plate" } },
+            { "id": 2, "type": "opacity", "in": { "source": 1 }, "params": { "opacity": "=word" } },
+        ]),
+    )
+    .frames(12)
+    .into();
+    for attempt in 0..5 {
+        let media = plate(&format!("plate:{attempt}"), CANVAS, RED);
+        assert!(renderer.bind_frame(&composition, attempt, &media).is_err());
+        assert_eq!(renderer.cached_media_texture_count(), 0, "{attempt}");
+        assert_eq!(renderer.frame_graph_stats().adopted_bytes, 0, "{attempt}");
+    }
+}
+
+#[test]
 fn video_frames_do_not_overwrite_cached_images() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();

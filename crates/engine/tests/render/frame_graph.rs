@@ -124,6 +124,64 @@ fn a_shader_that_does_not_compile_fails_before_the_first_frame() {
     let mut renderer = gpu.renderer();
     let error = compile(&mut renderer, &composition).unwrap_err();
     assert!(error.contains("NotAType"), "{error}");
+    assert!(error.contains("wgsl-shader:2"), "{error}");
+}
+
+const BAD_SHADER: &str = "@compute @workgroup_size(8, 8, 1)\n\
+    fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) { let x: NotAType = 1.0; }";
+
+#[test]
+fn a_bad_shader_the_output_never_reaches_still_compiles() {
+    let background =
+        json!({ "id": 1, "type": "background", "params": { "paint": [40, 40, 200, 255] } });
+    let bad = json!({ "id": 2, "type": "wgsl_shader", "in": { "source": 1 }, "params": { "shader": BAD_SHADER } });
+    let mut composition = scene(
+        CANVAS,
+        json!([
+            background,
+            bad,
+            { "id": 3, "type": "switch", "in": { "layers": [2, 1] }, "params": { "selected_layer": 1 } },
+        ]),
+    );
+    composition.0["compositions"]["unplayed"] = scene(CANVAS, json!([background, bad])).0;
+    let composition = composition.into();
+    let gpu = gpu();
+    compile(&mut gpu.renderer(), &composition).unwrap();
+}
+
+#[test]
+fn compiling_checks_a_shaders_literal_uniforms() {
+    let shader = "struct Params { tint: vec3<f32> }\n\
+        @group(0) @binding(1) var<uniform> params: Params;\n\
+        @compute @workgroup_size(8, 8, 1)\n\
+        fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {\n\
+          textureStore(output, vec2<i32>(id.xy), vec4<f32>(params.tint, 1.0));\n\
+        }";
+    let gpu = gpu();
+    for (uniforms, expected) in [
+        (json!({ "missing": 1 }), Some("uniforms.missing")),
+        (json!({ "tint": [1, 1] }), Some("needs 3 components")),
+        (json!({ "tint": [1, "=frame"] }), Some("needs 3 components")),
+        (json!({ "tint": "=frame" }), None),
+    ] {
+        let composition = scene(
+            CANVAS,
+            json!([
+                { "id": 1, "type": "background", "params": { "paint": [40, 40, 200, 255] } },
+                { "id": 2, "type": "wgsl_shader", "in": { "source": 1 },
+                  "params": { "shader": shader, "uniforms": uniforms } },
+            ]),
+        )
+        .into();
+        let result = compile(&mut gpu.renderer(), &composition);
+        match expected {
+            Some(expected) => {
+                let error = result.unwrap_err();
+                assert!(error.contains(expected), "{uniforms}: {error}");
+            }
+            None => result.unwrap(),
+        }
+    }
 }
 
 fn target(renderer: &GpuCompositionRenderer, like: lumen_gpu::TextureDesc) -> wgpu::Texture {
@@ -205,6 +263,52 @@ fn a_held_external_target_keeps_its_frame_while_the_pool_turns_over() {
     assert!(
         renderer.frame_graph_stats().adopted_bytes < target_bytes,
         "the graph lets go of targets once only it holds them"
+    );
+}
+
+#[test]
+fn a_target_of_another_size_or_format_is_refused() {
+    let composition: Composition = scene(
+        (8, 8),
+        json!([{ "id": 1, "type": "background", "params": { "paint": [200, 30, 30, 255] } }]),
+    )
+    .into();
+    let media = TestMedia::default();
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    for (size, format, expected) in [
+        (4, wgpu::TextureFormat::Rgba8Unorm, "size 4x4, expected 8x8"),
+        (8, wgpu::TextureFormat::Rgba16Float, "format Rgba16Float"),
+    ] {
+        let texture = renderer
+            .gpu_renderer()
+            .device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("wrong target"),
+                size: lumen_gpu::Size::new(size, size).as_extent(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+        let error = renderer
+            .render_frame_into_external(
+                &composition,
+                0,
+                &media,
+                ExternalTexture::from_texture(texture),
+            )
+            .map(drop)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{error}");
+        assert_eq!(renderer.frame_graph_stats().adopted_bytes, 0);
+    }
+    assert_eq!(
+        render(&mut renderer, &composition, 0.0, &media).pixel(7, 7),
+        [200, 30, 30, 255]
     );
 }
 

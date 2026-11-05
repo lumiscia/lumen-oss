@@ -4,7 +4,7 @@ use lumen_engine::{composition::Composition, node::NodeId};
 use lumen_gpu::{RectI, Size};
 use serde_json::{Value, json};
 
-use crate::support::{TestMedia, gpu, render, scene};
+use crate::support::{Case, Expect, TestMedia, check, gpu, render, scene};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
 const GREEN: [u8; 4] = [0, 255, 0, 255];
@@ -230,81 +230,64 @@ fn bind_errors() {
     }
 }
 
-/// An animated parameter draws each frame as the same value written as a literal does.
+/// Two frames on one renderer, so the second has to replace what the first wrote.
 #[test]
-fn animated_values_draw_as_their_literals() {
-    let translucent = solid(1, [64, 128, 255, 128]);
-    let exposure = |exposure: Value| {
-        json!({ "id": 2, "type": "exposure", "in": { "source": 1 }, "params": {
-            "exposure": exposure, "contrast": 1.5, "offset": 0.25
-        } })
+fn animated_values_update_each_frame() {
+    let color = [200, 100, 50, 255];
+    let fading = json!({ "id": 2, "type": "opacity", "in": { "source": 1 },
+        "params": { "opacity": "=frame / 10" } });
+    let half = |id: u32, source: u32, x: u32| {
+        json!({ "id": id, "type": "crop", "in": { "source": source },
+            "params": { "x": x, "y": 0, "width": 4, "height": 4 } })
     };
-    let opacity = |opacity: Value| json!({ "id": 2, "type": "opacity", "in": { "source": 1 }, "params": { "opacity": opacity } });
-    let remap = |frame: f64, source: u64| {
-        json!({ "id": 3, "type": "time_remap", "in": { "source": source }, "params": {
-            "frame": frame, "loop_enabled": false, "loop_start": 0, "loop_end": 0
-        } })
+    let halves =
+        |left, right| Expect::PerFrame(vec![Expect::Probes(vec![(0, 0, left), (7, 3, right)])]);
+    let row = |name, nodes, frames: [Expect; 2]| {
+        Case::new(
+            name,
+            scene((8, 4), nodes).frames(12),
+            Expect::PerFrame(frames.into()),
+        )
+        .frames([5.0, 10.0])
+        .tolerance(1)
     };
-    let rows = [
-        (
+    check(vec![
+        row(
             "exposure",
-            json!([translucent, exposure(json!("=frame / 10"))]),
-            json!([translucent, exposure(json!(0.1))]),
-            1.0,
+            json!([
+                solid(1, [50, 25, 10, 255]),
+                { "id": 2, "type": "exposure", "in": { "source": 1 },
+                  "params": { "exposure": "=frame / 5 - 1" } },
+            ]),
+            [
+                Expect::Uniform([50, 25, 10, 255]),
+                Expect::Uniform([100, 50, 20, 255]),
+            ],
         ),
-        (
+        row(
             "opacity",
-            json!([translucent, opacity(json!("=frame / 10"))]),
-            json!([translucent, opacity(json!(0.5))]),
-            5.0,
+            json!([solid(1, color), fading]),
+            [Expect::Uniform([100, 50, 25, 128]), Expect::Uniform(color)],
         ),
-        (
-            "a remap binds its source at the remapped frame",
-            json!([translucent, exposure(json!("=frame / 10")), remap(8.0, 2)]),
-            json!([translucent, exposure(json!(0.8))]),
-            2.0,
-        ),
-        (
-            "a source also read directly binds at both frames",
+        // The source is drawn at the frame on the left, and at the remapped frame 8 on the right.
+        row(
+            "a source read directly and through a remap",
             json!([
-                translucent,
-                exposure(json!("=frame / 10")),
-                remap(8.0, 2),
-                { "id": 4, "type": "merge", "in": { "base": 2, "overlay": 3 } },
-            ]),
-            json!([
-                translucent,
-                exposure(json!(0.3)),
-                { "id": 3, "type": "exposure", "in": { "source": 1 }, "params": {
-                    "exposure": 0.8, "contrast": 1.5, "offset": 0.25
+                solid(1, color),
+                fading,
+                half(3, 2, 0),
+                { "id": 4, "type": "time_remap", "in": { "source": 2 }, "params": {
+                    "frame": 8.0, "loop_enabled": false, "loop_start": 0, "loop_end": 0
                 } },
-                { "id": 4, "type": "merge", "in": { "base": 2, "overlay": 3 } },
+                half(5, 4, 4),
+                { "id": 6, "type": "merge", "in": { "base": 3, "overlay": 5 } },
             ]),
-            3.0,
+            [
+                halves([100, 50, 25, 128], [160, 80, 40, 204]),
+                halves(color, [160, 80, 40, 204]),
+            ],
         ),
-    ];
-    let gpu = gpu();
-    let media = TestMedia::default();
-    for (name, animated, literal, frame) in rows {
-        let drawn = render(
-            &mut gpu.renderer(),
-            &composition((8, 4), animated),
-            frame,
-            &media,
-        );
-        let expected = render(
-            &mut gpu.renderer(),
-            &composition((8, 4), literal),
-            0.0,
-            &media,
-        );
-        assert!(
-            drawn.rgba == expected.rgba,
-            "{name}: {:?} vs {:?}",
-            drawn.pixel(0, 0),
-            expected.pixel(0, 0)
-        );
-    }
+    ]);
 }
 
 /// Only the selected branch is drawn, so a frame records one pass for its one solid.
@@ -474,9 +457,7 @@ fn crop_clamps_extreme_values_to_its_source() {
             0.0,
             &TestMedia::default(),
         );
-        for (x, y) in [(0, 0), (7, 3)] {
-            assert_eq!(drawn.pixel(x, y), expected, "{name} at ({x}, {y})");
-        }
+        assert_eq!(drawn.rgba, expected.repeat(32), "{name}");
     }
 }
 

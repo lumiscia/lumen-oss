@@ -179,6 +179,12 @@ impl GpuCompositionRenderer {
         self.graph.recorder.set_pool_budget(bytes);
     }
 
+    /// Bounds what recorded frames keep of static outputs once frames stop using them.
+    #[doc(hidden)]
+    pub fn set_frame_graph_retained_budget(&mut self, bytes: u64) {
+        self.graph.set_retained_budget(bytes);
+    }
+
     /// The size, format and usage of the output of the frame last rendered.
     pub fn output_desc(&self) -> Option<lumen_gpu::TextureDesc> {
         self.graph.output_desc()
@@ -420,7 +426,7 @@ impl GpuCompositionRenderer {
             .into());
         }
         self.bind_sequence += 1;
-        let mut bound = self.graph.record(super::frame_graph::RecordInput {
+        let bound = self.graph.record(super::frame_graph::RecordInput {
             composition,
             frame,
             media: Some(media),
@@ -435,6 +441,10 @@ impl GpuCompositionRenderer {
             renderer: &self.renderer,
             #[cfg(feature = "ffmpeg")]
             importer: &mut self.gpu_media_importer,
+        });
+        let mut bound = bound.inspect_err(|_| {
+            self.graph.abandon_frame();
+            self.media_texture_cache.evict();
         })?;
         bound.sequence = self.bind_sequence;
         Ok(bound)

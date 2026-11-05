@@ -270,21 +270,8 @@ impl ShaderInterface {
     ) -> crate::Result<Vec<u8>> {
         let mut bytes = vec![0; self.uniform_size];
         for (name, value) in &uniforms.0 {
-            let Some(field) = self.fields.iter().find(|field| &field.name == name) else {
-                let details = match &self.struct_name {
-                    Some(struct_name) => format!(
-                        "`{struct_name}` has no such field; it declares: {}",
-                        self.fields
-                            .iter()
-                            .map(|field| field.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                    None => "the shader declares no `var<uniform>`".to_string(),
-                };
-                return Err(shader_error(node_id, format!("uniforms.{name}: {details}")));
-            };
-            for (lane, value) in uniform_components(node_id, field, value, ctx)?
+            let field = self.field(node_id, name)?;
+            for (lane, value) in uniform_components(node_id, field, value, Some(ctx))?
                 .into_iter()
                 .enumerate()
             {
@@ -299,14 +286,45 @@ impl ShaderInterface {
         }
         Ok(bytes)
     }
+
+    /// Checks what `uniforms` fixes whatever the frame: that each names a field, and that what isn't
+    /// an expression fits it.
+    fn check_uniforms(&self, node_id: NodeId, uniforms: &ShaderUniforms) -> crate::Result<()> {
+        for (name, value) in &uniforms.0 {
+            uniform_components(node_id, self.field(node_id, name)?, value, None)?;
+        }
+        Ok(())
+    }
+
+    fn field(&self, node_id: NodeId, name: &str) -> crate::Result<&UniformField> {
+        self.fields
+            .iter()
+            .find(|field| field.name == name)
+            .ok_or_else(|| {
+                let details = match &self.struct_name {
+                    Some(struct_name) => format!(
+                        "`{struct_name}` has no such field; it declares: {}",
+                        self.fields
+                            .iter()
+                            .map(|field| field.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    None => "the shader declares no `var<uniform>`".to_string(),
+                };
+                shader_error(node_id, format!("uniforms.{name}: {details}"))
+            })
+    }
 }
 
 /// Resolves one uniform value into exactly `field.lanes` components that fit `field.scalar`.
+/// Without `ctx` no expression is evaluated: a whole-value expression is left unchecked and has no
+/// components, and a vector's expression components count as zero, which fits every field.
 fn uniform_components(
     node_id: NodeId,
     field: &UniformField,
     value: &ShaderUniformValue,
-    ctx: &ExpressionContext<'_>,
+    ctx: Option<&ExpressionContext<'_>>,
 ) -> crate::Result<Vec<f64>> {
     let invalid =
         |details: String| shader_error(node_id, format!("uniforms.{}: {details}", field.name));
@@ -333,22 +351,30 @@ fn uniform_components(
 
     let values = match value {
         ShaderUniformValue::Number(value) => vec![*value],
-        ShaderUniformValue::Expr(expr) => match expr.evaluate(ctx).map_err(located)? {
-            ExpressionValue::Vec2((x, y)) => vec![x, y],
-            ExpressionValue::Color(rgba) => {
-                color_field()?;
-                if field.lanes == 3 && rgba[3] != 1.0 {
-                    return Err(invalid("vec3<f32> colours must be opaque".to_string()));
+        ShaderUniformValue::Expr(expr) => {
+            let Some(ctx) = ctx else {
+                return Ok(Vec::new());
+            };
+            match expr.evaluate(ctx).map_err(located)? {
+                ExpressionValue::Vec2((x, y)) => vec![x, y],
+                ExpressionValue::Color(rgba) => {
+                    color_field()?;
+                    if field.lanes == 3 && rgba[3] != 1.0 {
+                        return Err(invalid("vec3<f32> colours must be opaque".to_string()));
+                    }
+                    rgba[..field.lanes].to_vec()
                 }
-                rgba[..field.lanes].to_vec()
+                value => vec![number(value)?],
             }
-            value => vec![number(value)?],
-        },
+        }
         ShaderUniformValue::Vector(components) => components
             .iter()
             .map(|component| match component {
                 Deferred::Value(value) => Ok(*value),
-                Deferred::Expr(expr) => number(expr.evaluate(ctx).map_err(located)?),
+                Deferred::Expr(expr) => match ctx {
+                    Some(ctx) => number(expr.evaluate(ctx).map_err(located)?),
+                    None => Ok(0.0),
+                },
             })
             .collect::<crate::Result<_>>()?,
         ShaderUniformValue::Color { rgb, alpha } => {
@@ -582,24 +608,53 @@ fn record_parts(
     Ok((std::sync::Arc::new(interface) as _, assembled, layout))
 }
 
+impl WgslShader {
+    fn label(&self) -> String {
+        format!("wgsl-shader:{}", self.id.0)
+    }
+
+    fn check_input_count(&self) -> crate::Result<()> {
+        if self.sources.is_empty() {
+            return Err(shader_error(self.id, "needs at least one input"));
+        }
+        if self.sources.len() > MAX_INPUTS {
+            return Err(shader_error(
+                self.id,
+                format!(
+                    "has {} inputs; WebGPU allows at most {MAX_INPUTS}",
+                    self.sources.len()
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl crate::gpu::frame_graph::RecordNode for WgslShader {
-    /// A source that an expression picks builds when a frame first picks it.
+    /// A source that an expression picks builds, and checks its uniforms, when a frame first
+    /// picks it.
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         let inputs = self.sources.len();
+        self.check_input_count()?;
         let Deferred::Value(source) = &self.params.shader else {
             return Ok(());
         };
-        if inputs == 0 || inputs > MAX_INPUTS {
-            return Ok(());
-        }
         let source = if source.trim().is_empty() {
             DEFAULT_SHADER
         } else {
             source.as_str()
         };
-        programs.dynamic("wgsl-shader", source, inputs, || {
+        let shader = programs.dynamic(&self.label(), source, inputs, || {
             record_parts(self.id, source, inputs)
-        })
+        })?;
+        let Deferred::Value(uniforms) = &self.params.uniforms else {
+            return Ok(());
+        };
+        shader
+            .interface
+            .downcast_ref::<ShaderInterface>()
+            .expect("shader interface")
+            .check_uniforms(self.id, uniforms)
     }
 
     fn record(
@@ -617,18 +672,8 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
             .iter()
             .map(|&source| cx.input_full(source))
             .collect::<crate::Result<Vec<_>>>()?;
-        let Some(first) = inputs.first().copied() else {
-            return Err(shader_error(self.id, "needs at least one input"));
-        };
-        if inputs.len() > MAX_INPUTS {
-            return Err(shader_error(
-                self.id,
-                format!(
-                    "has {} inputs; WebGPU allows at most {MAX_INPUTS}",
-                    inputs.len()
-                ),
-            ));
-        }
+        self.check_input_count()?;
+        let first = inputs[0];
         let user_source = if params.shader.trim().is_empty() {
             DEFAULT_SHADER
         } else {
@@ -658,7 +703,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
         };
         // A shader need not write every pixel, and what it leaves must not be another node's.
         let tex = cx.cleared_storage_target(size);
-        let program = cx.dynamic_program("wgsl-shader", &shader)?;
+        let program = cx.dynamic_program(&self.label(), &shader)?;
         let uniform = cx.rec.uniform_bytes(&uniforms);
         let globals = cx.rec.uniform(&globals);
         let sampler = cx.sampler(4, || lumen_gpu::wgpu::SamplerDescriptor {

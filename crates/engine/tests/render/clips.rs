@@ -277,21 +277,27 @@ fn clip_instances() {
 }
 
 #[test]
-fn a_hidden_clip_compiles_and_binds_nothing_upstream() {
-    let mut scene = probe_scene(10.0, json!({ "composition": "probe", "start": 5 }));
-    scene.0["nodes"][0]["id"] = json!(10);
-    scene.0["nodes"][1]["id"] = json!(11);
-    scene.0["connections"][0] = json!({ "from_node": 10, "to_node": 11, "to_port": "source" });
-    let composition = scene.into();
+fn a_hidden_clip_records_nothing_upstream() {
+    let composition = scene(
+        (4, 4),
+        json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "plate" } },
+            { "id": 2, "type": "clip", "in": { "source": 1 }, "params": { "start": 5 } },
+        ]),
+    )
+    .frames(12)
+    .into();
+    let media = TestMedia::default().image("plate", 4, 4, vec![255; 4 * 4 * 4]);
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    let media = TestMedia::default();
-    let mut passes = |frame| {
-        renderer.bind_frame(&composition, frame, &media).unwrap();
-        renderer.recorded_pass_count()
-    };
-    let (hidden, shown) = (passes(2), passes(6));
-    assert!(hidden < shown, "{hidden} vs {shown}");
+    renderer.bind_frame(&composition, 2, &media).unwrap();
+    assert_eq!(
+        media.image_requests(),
+        0,
+        "a hidden clip resolved its source"
+    );
+    renderer.bind_frame(&composition, 6, &media).unwrap();
+    assert!(media.image_requests() > 0);
 }
 
 /// A 16 × 4 root playing frames 4 to 7 of a 12-frame template whose 2 × 2 square is at x = frame.

@@ -70,6 +70,11 @@ fn read_raster(
     )
 }
 
+fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
+    let at = (y * CANVAS.0 + x) as usize * 4;
+    pixels[at..at + 4].try_into().unwrap()
+}
+
 fn nonblank(pixels: &[u8]) -> bool {
     pixels.iter().any(|&byte| byte > 0)
 }
@@ -84,7 +89,11 @@ fn a_zero_budget_keeps_what_a_bound_frame_renders_with() {
     let bound = renderer.bind_frame_at(&composition, 1.0, &media).unwrap();
     renderer.set_frame_graph_pool_budget(0);
     let (raster, _) = renderer.submit_bound_frame(&bound).unwrap();
-    assert!(read_raster(&renderer, raster) == uncached(&mut reference, &composition, 1.0));
+    let pixels = read_raster(&renderer, raster);
+    assert!(pixels == uncached(&mut reference, &composition, 1.0));
+    assert_eq!(pixel(&pixels, 20, 2), [200, 30, 30, 255]);
+    assert_eq!(pixel(&pixels, 8, 11), [20, 40, 220, 255]);
+    assert_eq!(pixel(&pixels, 3, 7), [30, 220, 60, 255]);
 }
 
 /// A `tile` template of two canvas-wide halves, whose node ids repeat the root's, and one or two
@@ -202,6 +211,14 @@ fn switching_static_layers() -> Composition {
     .into()
 }
 
+/// What `switching_static_layers` shows at `frame`, away from its moving square.
+fn assert_switched_layer(pixels: &[u8], frame: u32) {
+    let color =
+        [[200, 30, 30, 255], [30, 200, 30, 255], [30, 30, 200, 255]][frame as usize / 2 % 3];
+    assert_eq!(pixel(pixels, 28, 14), color, "frame {frame}");
+    assert_eq!(pixel(pixels, 8, 11), [255, 255, 255, 255], "frame {frame}");
+}
+
 #[test]
 fn kept_output_survives_switches_and_is_dropped_on_release() {
     let gpu = gpu();
@@ -217,13 +234,38 @@ fn kept_output_survives_switches_and_is_dropped_on_release() {
             let pixels = at(&mut renderer, &composition, f64::from(frame));
             let expected = uncached(&mut reference, &composition, f64::from(frame));
             assert!(pixels == expected, "frame {frame} with budget {budget:?}");
-            assert!(nonblank(&pixels));
+            assert_switched_layer(&pixels, frame);
         }
         assert!(renderer.skipped_pass_count() > 0, "budget {budget:?}");
         assert!(renderer.frame_graph_stats().retained_bytes > 0);
         renderer.release_resources();
         assert_eq!(renderer.frame_graph_stats().retained_bytes, 0);
     }
+}
+
+#[test]
+fn a_layer_past_the_retained_budget_renders_again_when_revisited() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let composition = switching_static_layers();
+    at(&mut renderer, &composition, 0.0);
+    let budget = renderer.frame_graph_stats().retained_bytes;
+    assert!(budget > 0);
+    renderer.set_frame_graph_retained_budget(budget);
+    for frame in 1..6 {
+        let pixels = at(&mut renderer, &composition, f64::from(frame));
+        assert_switched_layer(&pixels, frame);
+        assert!(
+            renderer.frame_graph_stats().retained_bytes <= budget,
+            "frame {frame}"
+        );
+    }
+
+    // Frames 6 and 7 select the first layer, which frame 6 has to draw again and frame 7 doesn't.
+    assert_switched_layer(&at(&mut renderer, &composition, 6.0), 6);
+    let redrawn = renderer.recorded_pass_count();
+    assert_switched_layer(&at(&mut renderer, &composition, 7.0), 7);
+    assert!(redrawn > renderer.recorded_pass_count());
 }
 
 #[test]
@@ -250,7 +292,7 @@ fn discarded_binds_keep_nothing_and_stale_uploads_are_still_rejected() {
             pixels == uncached(&mut reference, &composition, f64::from(submitted)),
             "frame {submitted} after discarding a bind of frame {discarded}"
         );
-        assert!(nonblank(&pixels));
+        assert_eq!(pixel(&pixels, 20, 2), [200, 30, 30, 255]);
     }
     assert!(renderer.skipped_pass_count() > 0);
 
@@ -311,7 +353,8 @@ fn kept_output_reaches_external_output_textures() {
         shown.push(pixels);
     }
     assert!(renderer.skipped_pass_count() > 0);
-    assert!(nonblank(&shown[0]));
+    assert_eq!(pixel(&shown[0], 20, 2), [200, 30, 30, 255]);
+    assert_eq!(pixel(&shown[0], 8, 8), [20, 40, 220, 255]);
     assert!(shown[0] == shown[1] && shown[1] == shown[2]);
 }
 

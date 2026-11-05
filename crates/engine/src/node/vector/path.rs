@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use super::drawable::{
     DrawableMotion, DrawablePlacement, DrawableStyle, DrawableTransform, largest_scale, peak_scale,
 };
@@ -66,35 +64,28 @@ pub struct Path {
     pub params: PathParamsDelegate,
 }
 
-/// Evaluates a path node's uniforms, points and bands at the frame of `expr`. `fixed_points`
-/// stands in for flattening its data.
-fn path_frame<'a>(
+/// Evaluates a path node's uniforms, points and bands at the frame of `expr`.
+fn path_frame(
     params: &PathParamsDelegate,
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
-    fixed_points: Option<&'a [PathPoint]>,
     band_capacity: usize,
-) -> crate::Result<PathFrame<'a>> {
+) -> crate::Result<PathFrame> {
     let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
     let shutter = params
         .placement
         .shutter(&evaluated.placement, node_id, expr)?;
-    let points = match fixed_points {
-        Some(points) => Cow::Borrowed(points),
-        // Curves are flattened for the largest scale that the shutter draws them at.
-        None => Cow::Owned(
-            parse_path_points(
-                &evaluated.data,
-                flattening_tolerance(peak_scale(evaluated.placement.scale, shutter.as_ref())),
-                MAX_PATH_POINTS,
-            )
-            .map_err(|details| RenderError::NodeEvaluation {
-                node_id,
-                node_kind: "Path",
-                details: format!("`data` {details}"),
-            })?,
-        ),
-    };
+    // Curves are flattened for the largest scale that the shutter draws them at.
+    let points = parse_path_points(
+        &evaluated.data,
+        flattening_tolerance(peak_scale(evaluated.placement.scale, shutter.as_ref())),
+        MAX_PATH_POINTS,
+    )
+    .map_err(|details| RenderError::NodeEvaluation {
+        node_id,
+        node_kind: "Path",
+        details: format!("`data` {details}"),
+    })?;
     let (x, y) = evaluated.placement.position;
     let style = &evaluated.style;
     let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
@@ -123,17 +114,17 @@ fn path_frame<'a>(
 }
 
 /// A frame's uniforms, points and bands for the path shader.
-pub(super) struct PathFrame<'a> {
+pub(super) struct PathFrame {
     pub(super) uniforms: PathUniforms,
-    pub(super) points: Cow<'a, [PathPoint]>,
+    pub(super) points: Vec<PathPoint>,
     pub(super) bands: Vec<u32>,
 }
 
-impl<'a> PathFrame<'a> {
+impl PathFrame {
     /// Fills in the bounds, transform, culling and motion of `uniforms` and bins `points`.
     pub(super) fn new(
         mut uniforms: PathUniforms,
-        points: Cow<'a, [PathPoint]>,
+        points: Vec<PathPoint>,
         transform: &DrawableTransform,
         shutter: Option<&Shutter<DrawableTransform>>,
         band_capacity: usize,
@@ -496,7 +487,6 @@ impl crate::gpu::frame_graph::RecordNode for Path {
             &self.params,
             self.id,
             &cx.expr(),
-            None,
             super::path_bands::band_capacity(MAX_PATH_POINTS),
         )?;
         record_path_source(cx, frame)
@@ -513,7 +503,7 @@ const RECORD_PATH_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
 /// Records a vector path, sized to what it draws this frame.
 fn record_path_source(
     cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
-    frame: PathFrame<'_>,
+    frame: PathFrame,
 ) -> crate::Result<crate::gpu::frame_graph::Raster> {
     let mut uniforms = frame.uniforms;
     let bounds = cx.bounds_of(Some(uniforms.screen_bounds));

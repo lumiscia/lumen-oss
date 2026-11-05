@@ -130,6 +130,8 @@ pub struct TestMedia {
     /// clones, and not the process-wide session.
     session: Option<Arc<TextSession>>,
     font_requests: Arc<AtomicUsize>,
+    /// How many image resolvers were asked for, shared with its clones.
+    image_requests: Arc<AtomicUsize>,
 }
 
 impl TestMedia {
@@ -187,6 +189,10 @@ impl TestMedia {
     /// How many times a font resolver was asked for, across this media and its clones.
     pub fn font_requests(&self) -> usize {
         self.font_requests.load(Ordering::Relaxed)
+    }
+
+    pub fn image_requests(&self) -> usize {
+        self.image_requests.load(Ordering::Relaxed)
     }
 }
 
@@ -257,6 +263,7 @@ impl MediaStore for TestMedia {
         &self,
         source: &str,
     ) -> Result<Box<dyn ImageResolver>, lumen_engine::error::MediaError> {
+        self.image_requests.fetch_add(1, Ordering::Relaxed);
         let (id, frame) = self.images.get(source).ok_or_else(|| {
             lumen_engine::error::MediaError::source_not_found(source, "not registered")
         })?;

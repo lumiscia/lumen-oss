@@ -565,6 +565,26 @@ impl Recorder {
         if let Some(external) = external {
             let target = self.entry(external);
             let (target_key, target_usage) = (target.key, target.key.usage);
+            let output_key = match output_frame {
+                Some(index) => self.frame_textures[index].key,
+                None => self.entry(output).key,
+            };
+            if (target_key.width, target_key.height) != (output_key.width, output_key.height) {
+                return Err(anyhow!(
+                    "the external texture has size {}x{}, expected {}x{}",
+                    target_key.width,
+                    target_key.height,
+                    output_key.width,
+                    output_key.height
+                ));
+            }
+            if target_key.format.remove_srgb_suffix() != output_key.format.remove_srgb_suffix() {
+                return Err(anyhow!(
+                    "the external texture has format {:?}, expected {:?}",
+                    target_key.format,
+                    output_key.format
+                ));
+            }
             let stands_in = output_frame.is_some_and(|index| {
                 let texture = &self.frame_textures[index];
                 texture.retains == 0

@@ -14,7 +14,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use foldhash::HashMap;
+use foldhash::{HashMap, HashSet};
 use lumen_gpu::{
     Dispatch, LayoutEntry, LayoutKind, ProgramRef, Recorder, Res, SamplerRef, Size, TexRef,
     TextureDesc, TextureDomain, wgpu,
@@ -26,7 +26,7 @@ use crate::{
     expr::ExpressionContext,
     media::{CpuMediaFrame, MediaFrame, MediaStore},
     node::{
-        Node, NodeId, NodeKind,
+        Deferred, Node, NodeId, NodeKind,
         compositing::clip::Clip,
         required_input,
         source::text::{TextDraw, TextInstance},
@@ -157,10 +157,10 @@ impl Programs<'_> {
         source: &str,
         inputs: usize,
         build: impl FnOnce() -> crate::Result<ShaderParts>,
-    ) -> crate::Result<()> {
+    ) -> crate::Result<CachedShader> {
         let shader = self.st.cached_shader(source, inputs, build)?;
         dynamic_program(self.rec, label, &shader)?;
-        Ok(())
+        Ok(shader)
     }
 }
 
@@ -258,6 +258,8 @@ struct RecordState {
 pub(crate) struct FrameGraph {
     pub(crate) recorder: Recorder,
     state: RecordState,
+    /// Bytes of retained outputs kept once frames stop using them.
+    retained_budget: u64,
     /// The target of the next frame recorded, which holds its output until it is submitted.
     external: Option<lumen_gpu::ExternalTexture>,
     #[cfg(feature = "ffmpeg")]
@@ -332,6 +334,7 @@ impl FrameGraph {
         Self {
             recorder: Recorder::new(device, queue),
             state: RecordState::default(),
+            retained_budget: RETAINED_BUDGET_BYTES,
             external: None,
             #[cfg(feature = "ffmpeg")]
             imports: GpuMediaImports::default(),
@@ -448,7 +451,32 @@ impl FrameGraph {
         Ok(())
     }
 
-    /// Builds every program `composition` may record with, in the root and in each template.
+    /// Drops what a frame that failed recorded, and lets go of the images and target it bound so
+    /// the media cache can free them.
+    pub(crate) fn abandon_frame(&mut self) {
+        self.drop_pending();
+        self.recorder.begin_frame();
+        self.state.video_uploads.clear();
+        self.state.output = None;
+        let tick = self.state.tick;
+        let recorder = &mut self.recorder;
+        self.state.media.retain(|_, (tex, last_used)| {
+            let kept = *last_used != tick;
+            if !kept {
+                recorder.forget(*tex);
+            }
+            kept
+        });
+        if let Some(external) = &self.external {
+            let key = Arc::as_ptr(&external.texture_arc()) as usize;
+            if let Some(tex) = self.state.externals.remove(&key) {
+                self.recorder.forget(tex);
+            }
+        }
+    }
+
+    /// Builds every program a frame of `composition` may record with, following the output through
+    /// its inputs and the templates of its clips.
     pub(crate) fn prepare(
         &mut self,
         composition: &Composition,
@@ -466,13 +494,42 @@ impl FrameGraph {
             st: &mut self.state,
             output_format,
         };
-        let templates = composition
-            .compositions()
-            .values()
-            .map(|template| &template.scene.graph);
-        for graph in std::iter::once(composition.graph()).chain(templates) {
-            for node in graph.nodes.values() {
-                node_programs(node, &mut programs)?;
+        let root = composition.graph();
+        let mut pending = vec![(root, root.output())];
+        let mut seen = HashSet::default();
+        while let Some((graph, id)) = pending.pop() {
+            if !seen.insert((std::ptr::from_ref(graph) as usize, id)) {
+                continue;
+            }
+            let Some(node) = graph.nodes.get(&id) else {
+                continue;
+            };
+            node_programs(node, &mut programs)?;
+            match node {
+                NodeKind::Clip(clip) if clip.template_name().is_some() => {
+                    let template = clip
+                        .template_name()
+                        .and_then(|name| composition.template(name));
+                    if let Some((template, output)) = template {
+                        pending.push((&template.scene.graph, output));
+                    }
+                }
+                NodeKind::Switch(switch) => {
+                    let layers = match &switch.params.selected_layer {
+                        Deferred::Value(layer) => usize::try_from(*layer)
+                            .ok()
+                            .and_then(|layer| switch.layers.get(layer..=layer))
+                            .unwrap_or_default(),
+                        Deferred::Expr(_) => &switch.layers,
+                    };
+                    pending.extend(layers.iter().map(|&layer| (graph, layer)));
+                }
+                _ => pending.extend(
+                    node.input_ports()
+                        .into_iter()
+                        .flatten()
+                        .map(|input| (graph, input)),
+                ),
             }
         }
         Ok(())
@@ -644,6 +701,10 @@ impl FrameGraph {
         changed
     }
 
+    pub(crate) fn set_retained_budget(&mut self, bytes: u64) {
+        self.retained_budget = bytes;
+    }
+
     pub(crate) fn skipped_passes(&self) -> u64 {
         self.state.skipped_passes
     }
@@ -675,7 +736,7 @@ impl FrameGraph {
     fn evict_slots(&mut self) {
         let tick = self.state.tick;
         let idle_before = tick.saturating_sub(RETAINED_IDLE_FRAMES);
-        let over_budget = self.state.retained_bytes > RETAINED_BUDGET_BYTES;
+        let over_budget = self.state.retained_bytes > self.retained_budget;
         if !over_budget && !tick.is_multiple_of(60) {
             return;
         }
@@ -688,7 +749,7 @@ impl FrameGraph {
             .collect();
         idle.sort_unstable_by_key(|(last_used, _)| *last_used);
         for (last_used, key) in idle {
-            if last_used > idle_before && self.state.retained_bytes <= RETAINED_BUDGET_BYTES {
+            if last_used > idle_before && self.state.retained_bytes <= self.retained_budget {
                 break;
             }
             Self::release_slot(&mut self.recorder, &mut self.state, key);
