@@ -1,7 +1,9 @@
 import { Composition, type LumenComposition } from "@lumiscia/lumen-shared";
 
-import { normalizeApiError } from "./errors.js";
-import { LumenRenderError, normalizeRenderEvent } from "./events.js";
+import { LumenError, errorFromResponse, isRecord, readBody } from "./errors.js";
+import { parseMedia, parsePart, parseUploadId, parseUploadTarget } from "./media.js";
+import { normalizeRenderEvent } from "./events.js";
+import { parseRender, renderError, resolveUrl } from "./render.js";
 import type {
   CompleteMultipartUploadOptions,
   CreateMediaUploadOptions,
@@ -9,13 +11,12 @@ import type {
   CreateMultipartUploadResult,
   CreateUrlMediaOptions,
   LumenOptions,
+  LumenWebSocketFactory,
   MediaUploadPart,
-  RenderEvent,
+  Render,
   RenderEventHandlers,
   RenderEventSubscription,
-  LumenWebSocketFactory,
   RenderOptions,
-  RenderResult,
   TemporaryMedia,
   UploadMediaOptions,
   WaitForRenderOptions,
@@ -23,6 +24,17 @@ import type {
 
 const defaultMultipartPartSizeBytes = 8 * 1024 * 1024;
 const defaultBaseUrl = "https://api.lumiscia.com/v1";
+
+type SendInit = Omit<RequestInit, "signal"> & {
+  readonly duplex?: "half";
+  readonly signal?: AbortSignal | undefined;
+};
+
+interface RequestOptions {
+  readonly body?: unknown;
+  readonly idempotencyKey?: string | undefined;
+  readonly signal?: AbortSignal | undefined;
+}
 
 export class Lumen {
   readonly #apiKey: string;
@@ -38,94 +50,67 @@ export class Lumen {
     this.#websocket = options.websocket;
   }
 
+  /** Submits a render and returns it queued. Pass it to `waitForRender`, then to `download`. */
   async render(
     composition: Composition | LumenComposition,
     options: RenderOptions = {},
-  ): Promise<RenderResult> {
-    const response = await this.#fetch(
-      this.#apiUrl("/renders"),
-      this.#jsonRequest(
-        "POST",
-        {
-          composition: composition instanceof Composition ? composition.toJSON() : composition,
-          media: options.media ?? {},
-          ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
-        },
-        {
-          ...(options.idempotencyKey !== undefined
-            ? { idempotencyKey: options.idempotencyKey }
-            : {}),
-          ...(options.signal !== undefined ? { signal: options.signal } : {}),
-        },
-      ),
-    );
-    const body = (await response.json().catch(() => undefined)) as
-      | Partial<RenderResult>
-      | undefined;
-
-    if (!response.ok) {
-      return {
-        error: normalizeApiError(body, response),
-      };
-    }
-
-    return renderResult(body);
-  }
-
-  async getRender(id: string, options: { signal?: AbortSignal } = {}): Promise<RenderResult> {
-    const response = await this.#fetch(this.#apiUrl(`/renders/${encodeURIComponent(id)}`), {
-      headers: this.#headers(),
-      method: "GET",
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
-    });
-    const body = (await response.json().catch(() => undefined)) as
-      | Partial<RenderResult>
-      | undefined;
-
-    if (!response.ok) {
-      return {
-        error: normalizeApiError(body, response),
-      };
-    }
-
-    return renderResult(body);
-  }
-
-  async getRenderArtifact(id: string, options: { signal?: AbortSignal } = {}): Promise<Blob> {
-    const response = await this.#fetch(
-      this.#apiUrl(`/renders/${encodeURIComponent(id)}/artifact`),
-      {
-        headers: this.#headers(),
-        method: "GET",
-        ...(options.signal !== undefined ? { signal: options.signal } : {}),
+  ): Promise<Render> {
+    const body = await this.#request("POST", "/renders", {
+      body: {
+        composition: composition instanceof Composition ? composition.toJSON() : composition,
+        media: options.media ?? {},
+        ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
       },
+      idempotencyKey: options.idempotencyKey,
+      signal: options.signal,
+    });
+    return parseRender(
+      body.render,
+      this.#baseUrl,
+      typeof body.cached === "boolean" ? { cached: body.cached } : {},
     );
+  }
 
-    if (!response.ok) {
-      const body = (await response.json().catch(() => undefined)) as
-        | Partial<RenderResult>
-        | undefined;
-      throw normalizeApiError(body, response);
+  async getRender(id: string, options: { signal?: AbortSignal } = {}): Promise<Render> {
+    const body = await this.#request("GET", `/renders/${encodeURIComponent(id)}`, options);
+    return parseRender(body.render, this.#baseUrl);
+  }
+
+  /**
+   * Fetches a succeeded render's output. The API key is only sent when the output is on the API's
+   * own origin. Rejects with a `LumenError` when the render has no output.
+   */
+  async download(
+    render: string | Pick<Render, "id" | "url">,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<Response> {
+    const id = typeof render === "string" ? render : render.id;
+    let url = typeof render === "string" ? undefined : render.url;
+    if (url === undefined) {
+      const current = await this.getRender(id, options);
+      if (current.status === "failed") {
+        throw renderError(current);
+      }
+      url = current.url;
     }
-
-    return response.blob();
+    if (url === undefined) {
+      throw new LumenError("render_not_ready", `Render ${id} has no output yet.`, {
+        renderId: id,
+      });
+    }
+    return this.#send(new URL(resolveUrl(url, this.#baseUrl)), { method: "GET", ...options });
   }
 
   async createMediaUpload(options: CreateMediaUploadOptions): Promise<CreateMediaUploadResult> {
-    const response = await this.#fetch(
-      this.#apiUrl("/media"),
-      this.#jsonRequest(
-        "POST",
-        {
-          contentType: options.contentType,
-          fileName: options.fileName,
-          sizeBytes: options.sizeBytes,
-        },
-        optionalSignal(options.signal),
-      ),
-    );
-
-    return this.#expectJson<CreateMediaUploadResult>(response);
+    const body = await this.#request("POST", "/media", {
+      body: {
+        contentType: options.contentType,
+        fileName: options.fileName,
+        sizeBytes: options.sizeBytes,
+      },
+      signal: options.signal,
+    });
+    return parseUploadTarget(body);
   }
 
   async uploadMedia(options: UploadMediaOptions): Promise<TemporaryMedia> {
@@ -134,50 +119,36 @@ export class Lumen {
     }
 
     const upload = await this.createMediaUpload(options);
-    const uploadUrl = this.#url(upload.uploadUrl);
-    const response = await this.#fetch(uploadUrl, {
+    const response = await this.#send(new URL(upload.uploadUrl, this.#baseUrl), {
       body: bodyAsRequestBody(options.body),
       ...(options.body instanceof ReadableStream ? { duplex: "half" } : {}),
-      headers: this.#headers(
-        {
-          "content-length": options.sizeBytes.toString(),
-          "content-type": options.contentType,
-        },
-        uploadUrl,
-      ),
+      headers: {
+        "content-length": options.sizeBytes.toString(),
+        "content-type": options.contentType,
+      },
       method: "PUT",
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      signal: options.signal,
     });
-    const body = await this.#expectJson<{ media: TemporaryMedia }>(response);
-    return body.media;
+    return parseMedia((await readJson(response, options.signal)).media);
   }
 
   async createUrlMedia(options: CreateUrlMediaOptions): Promise<TemporaryMedia> {
-    const response = await this.#fetch(
-      this.#apiUrl("/media/url"),
-      this.#jsonRequest(
-        "POST",
-        {
-          ...(options.fileName !== undefined ? { fileName: options.fileName } : {}),
-          url: String(options.url),
-        },
-        optionalSignal(options.signal),
-      ),
-    );
-    const body = await this.#expectJson<{ media: TemporaryMedia }>(response);
-    return body.media;
+    const body = await this.#request("POST", "/media/url", {
+      body: {
+        ...(options.fileName !== undefined ? { fileName: options.fileName } : {}),
+        url: String(options.url),
+      },
+      signal: options.signal,
+    });
+    return parseMedia(body.media);
   }
 
   async createMediaMultipartUpload(
     id: string,
     options: { signal?: AbortSignal } = {},
   ): Promise<CreateMultipartUploadResult> {
-    const response = await this.#fetch(this.#apiUrl(`/media/${encodeURIComponent(id)}/multipart`), {
-      headers: this.#headers(),
-      method: "POST",
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
-    });
-    return this.#expectJson<CreateMultipartUploadResult>(response);
+    const body = await this.#request("POST", `/media/${encodeURIComponent(id)}/multipart`, options);
+    return { ...(body as unknown as CreateMultipartUploadResult), uploadId: parseUploadId(body) };
   }
 
   async uploadMediaMultipartPart(options: {
@@ -187,35 +158,28 @@ export class Lumen {
     readonly signal?: AbortSignal;
     readonly uploadId: string;
   }): Promise<MediaUploadPart> {
-    const response = await this.#fetch(
-      this.#apiUrl(
-        `/media/${encodeURIComponent(options.id)}/multipart/${encodeURIComponent(
-          options.uploadId,
-        )}/parts/${options.partNumber}`,
-      ),
-      {
-        body: options.body,
-        headers: this.#headers(),
-        method: "PUT",
-        ...(options.signal !== undefined ? { signal: options.signal } : {}),
-      },
-    );
-    return this.#expectJson<MediaUploadPart>(response);
+    const path = `/media/${encodeURIComponent(options.id)}/multipart/${encodeURIComponent(
+      options.uploadId,
+    )}/parts/${options.partNumber}`;
+    const response = await this.#send(this.#apiUrl(path), {
+      body: options.body,
+      method: "PUT",
+      signal: options.signal,
+    });
+    return parsePart(await readJson(response, options.signal));
   }
 
   async completeMediaMultipartUpload(
     options: CompleteMultipartUploadOptions,
   ): Promise<TemporaryMedia> {
-    const response = await this.#fetch(
-      this.#apiUrl(
-        `/media/${encodeURIComponent(options.id)}/multipart/${encodeURIComponent(
-          options.uploadId,
-        )}/complete`,
-      ),
-      this.#jsonRequest("POST", { parts: options.parts }, optionalSignal(options.signal)),
+    const body = await this.#request(
+      "POST",
+      `/media/${encodeURIComponent(options.id)}/multipart/${encodeURIComponent(
+        options.uploadId,
+      )}/complete`,
+      { body: { parts: options.parts }, signal: options.signal },
     );
-    const body = await this.#expectJson<{ media: TemporaryMedia }>(response);
-    return body.media;
+    return parseMedia(body.media);
   }
 
   async uploadMediaMultipart(options: UploadMediaOptions): Promise<TemporaryMedia> {
@@ -253,7 +217,7 @@ export class Lumen {
     }
 
     const socket = await this.#websocket(this.#websocketApiUrl(`/renders/${renderId}/socket`), {
-      headers: this.#headers(),
+      headers: this.#authHeaders(),
     });
 
     socket.addEventListener("open", () => {
@@ -289,54 +253,62 @@ export class Lumen {
     };
   }
 
-  async waitForRender(
-    renderId: string,
-    options: WaitForRenderOptions = {},
-  ): Promise<Extract<RenderEvent, { type: "render.completed" }>> {
+  /** Resolves with the render once it has succeeded, and rejects with a `LumenError` if it fails. */
+  async waitForRender(renderId: string, options: WaitForRenderOptions = {}): Promise<Render> {
     if (options.signal?.aborted) {
       throw abortError();
     }
 
-    return new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       let settled = false;
       let subscription: RenderEventSubscription | undefined;
 
       const cleanup = () => {
         options.signal?.removeEventListener("abort", onAbort);
       };
-      const fail = (error: unknown) => {
+      const settle = (error?: unknown) => {
         if (settled) {
           return;
         }
         settled = true;
         cleanup();
         subscription?.close();
-        reject(error);
+        if (error === undefined) {
+          resolve();
+        } else {
+          reject(error);
+        }
       };
-      const onAbort = () => fail(abortError());
+      const onAbort = () => settle(abortError());
       options.signal?.addEventListener("abort", onAbort, { once: true });
 
       void this.subscribeToRender(renderId, {
         onEvent: (event) => {
           options.onEvent?.(event);
           if (event.type === "render.completed") {
-            if (settled) {
-              return;
-            }
-            settled = true;
-            cleanup();
-            subscription?.close();
-            resolve(event);
+            settle();
           }
           if (event.type === "render.failed") {
-            fail(new LumenRenderError(event.renderId, event.error));
+            settle(
+              new LumenError(event.error.code, event.error.message, {
+                renderId: event.renderId,
+                ...(event.error.retryable !== undefined
+                  ? { retryable: event.error.retryable }
+                  : {}),
+              }),
+            );
           }
         },
-        onError: fail,
+        onError: settle,
         onClose: (event) => {
           if (!settled) {
             const reason = event.reason ? ` ${event.reason}` : "";
-            fail(new Error(`Render subscription closed before completion: ${event.code}${reason}`));
+            settle(
+              new LumenError(
+                "socket_error",
+                `Render subscription closed before completion: ${event.code}${reason}`,
+              ),
+            );
           }
         },
       })
@@ -346,20 +318,58 @@ export class Lumen {
             subscription.close();
           }
         })
-        .catch(fail);
+        .catch(settle);
     });
+
+    return this.getRender(renderId, options.signal ? { signal: options.signal } : {});
   }
 
-  #headers(headers: Record<string, string> = {}, target: URL = this.#baseUrl): Headers {
-    const nextHeaders = new Headers(headers);
-    if (target.origin === this.#baseUrl.origin) {
-      nextHeaders.set("authorization", `Bearer ${this.#apiKey}`);
+  /**
+   * The one place a request is built and checked: adds the key for the API's own origin, and turns
+   * network and HTTP failures into `LumenError`.
+   */
+  async #send(url: URL, init: SendInit): Promise<Response> {
+    const headers = new Headers(init.headers);
+    if (url.origin === this.#baseUrl.origin) {
+      headers.set("authorization", `Bearer ${this.#apiKey}`);
     }
-    return nextHeaders;
+
+    let response: Response;
+    try {
+      response = await this.#fetch(url, { ...init, headers, signal: init.signal ?? null });
+    } catch (cause) {
+      if (init.signal?.aborted) {
+        throw cause;
+      }
+      throw new LumenError(
+        "network_error",
+        cause instanceof Error ? cause.message : "Lumen API request failed.",
+        { cause },
+      );
+    }
+
+    if (!response.ok) {
+      throw await errorFromResponse(response, init.signal);
+    }
+    return response;
   }
 
-  #url(path: string): URL {
-    return new URL(path, this.#baseUrl);
+  /** Calls an authenticated JSON route of the API and returns its success body. */
+  async #request<T extends object = Record<string, unknown>>(
+    method: string,
+    path: string,
+    options: RequestOptions = {},
+  ): Promise<T> {
+    const response = await this.#send(this.#apiUrl(path), {
+      method,
+      ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+      headers: {
+        ...(options.body !== undefined ? { "content-type": "application/json" } : {}),
+        ...(options.idempotencyKey ? { "idempotency-key": options.idempotencyKey } : {}),
+      },
+      signal: options.signal,
+    });
+    return readJson<T>(response, options.signal);
   }
 
   #apiUrl(path: string): URL {
@@ -377,32 +387,8 @@ export class Lumen {
     return url;
   }
 
-  #jsonRequest(
-    method: string,
-    body: unknown,
-    options: { idempotencyKey?: string | undefined; signal?: AbortSignal | undefined } = {},
-  ): RequestInit {
-    return {
-      body: JSON.stringify(body),
-      headers: this.#headers({
-        "content-type": "application/json",
-        ...(options.idempotencyKey ? { "idempotency-key": options.idempotencyKey } : {}),
-      }),
-      method,
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
-    };
-  }
-
-  async #expectJson<T>(response: Response): Promise<T> {
-    const body = (await response.json().catch(() => undefined)) as
-      | (T & { error?: unknown })
-      | undefined;
-
-    if (!response.ok) {
-      throw normalizeApiError(body, response);
-    }
-
-    return body as T;
+  #authHeaders(): Headers {
+    return new Headers({ authorization: `Bearer ${this.#apiKey}` });
   }
 
   async #uploadMultipartBody(options: {
@@ -442,26 +428,14 @@ export function mediaReference(media: TemporaryMedia | string): `lumen:${string}
   return id.startsWith("lumen:") ? (id as `lumen:${string}`) : `lumen:${id}`;
 }
 
-function renderResult(body: Partial<RenderResult> | undefined): RenderResult {
-  const render = body?.render;
-  const renderId = render?.id ?? body?.id;
-
-  return {
-    ...(body?.cached !== undefined ? { cached: body.cached } : {}),
-    ...(renderId !== undefined ? { id: renderId } : {}),
-    ...(render !== undefined ? { render } : {}),
-    ...(body?.error !== undefined ? { error: body.error } : {}),
-  };
-}
-
-function webSocketError(event: unknown): Error {
+function webSocketError(event: unknown): LumenError {
   if (
     typeof event === "object" &&
     event !== null &&
     "error" in event &&
     event.error instanceof Error
   ) {
-    return event.error;
+    return new LumenError("socket_error", event.error.message, { cause: event.error });
   }
 
   if (
@@ -471,10 +445,10 @@ function webSocketError(event: unknown): Error {
     typeof event.message === "string" &&
     event.message.length > 0
   ) {
-    return new Error(event.message);
+    return new LumenError("socket_error", event.message);
   }
 
-  return new Error("Lumen render WebSocket connection failed.");
+  return new LumenError("socket_error", "Lumen render WebSocket connection failed.");
 }
 
 function abortError(): Error {
@@ -569,4 +543,17 @@ function bytesToBody(bytes: Uint8Array): BodyInit {
 
 function optionalSignal(signal: AbortSignal | undefined): { signal?: AbortSignal } {
   return signal === undefined ? {} : { signal };
+}
+
+async function readJson<T extends object = Record<string, unknown>>(
+  response: Response,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  const body = await readBody(response, signal);
+  if (!isRecord(body)) {
+    throw new LumenError("invalid_response", "Lumen API returned a malformed response body.", {
+      status: response.status,
+    });
+  }
+  return body as T;
 }

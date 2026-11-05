@@ -85,16 +85,12 @@ composition.connect(layers, output, { toPort: "source" });
 
 console.log(JSON.stringify(composition.toJSON(), null, 2));
 
-const { id, error } = await lumen.render(composition, {
+const render = await lumen.render(composition, {
   media: {
     [plateAlias]: media,
   },
 });
-if (error) {
-  console.error(error);
-} else if (id) {
-  console.log("Created render:", id);
-  await lumen.waitForRender(id, { onEvent: console.log });
-  const artifact = await lumen.getRenderArtifact(id);
-  console.log("Artifact:", artifact.type, artifact.size, "bytes");
-}
+console.log("Created render:", render.id);
+const done = await lumen.waitForRender(render.id, { onEvent: console.log });
+const artifact = await (await lumen.download(done)).blob();
+console.log("Artifact:", artifact.type, artifact.size, "bytes");

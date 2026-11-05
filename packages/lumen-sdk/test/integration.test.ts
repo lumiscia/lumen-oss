@@ -63,7 +63,7 @@ describeIntegration("Lumen SDK with lumen-server", () => {
   });
 
   test(
-    "submits a render, receives WebSocket completion, and downloads the artifact",
+    "submits a render, waits for it over the WebSocket, and downloads the artifact",
     async () => {
       const lumen = new Lumen({
         apiKey: serverToken,
@@ -75,29 +75,17 @@ describeIntegration("Lumen SDK with lumen-server", () => {
       const created = await lumen.render(composition, {
         idempotencyKey: "sdk-integration-solid-color",
       });
+      expect(created.status).toBe("queued");
 
-      if (created.error !== undefined) {
-        throw new Error(`${created.error}\n\nlumen-server output:\n${serverOutput}`);
-      }
-      expect(created.id).toBeDefined();
-      expect(created.render?.status).toBe("queued");
-
-      const completed = await lumen.waitForRender(created.id!, {
+      const done = await lumen.waitForRender(created.id, {
         onEvent: (event) => events.push(event),
       });
 
-      expect(completed.type).toBe("render.completed");
-      expect(completed.renderId).toBe(created.id);
-      expect(completed.url).toBe(`/renders/${created.id}/artifact`);
-      expect(events.at(-1)).toEqual(completed);
+      expect(done.status).toBe("succeeded");
+      expect(done.url).toBe(`${baseUrl}/renders/${created.id}/artifact`);
+      expect(events.at(-1)).toMatchObject({ type: "render.completed", renderId: created.id });
 
-      const fetched = await lumen.getRender(created.id!);
-      if (fetched.error !== undefined) {
-        throw new Error(`${fetched.error}\n\nlumen-server output:\n${serverOutput}`);
-      }
-      expect(fetched.render?.status).toBe("succeeded");
-
-      const artifact = await lumen.getRenderArtifact(created.id!);
+      const artifact = await (await lumen.download(done)).blob();
       expect(artifact.type).toBe("video/mp4");
       expect(artifact.size).toBeGreaterThan(0);
     },
