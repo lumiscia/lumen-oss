@@ -405,7 +405,14 @@ fn decodes_rgba_frames_across_resolution_change() {
         while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
             assert_eq!(frame.stride, frame.width as usize * 4);
             assert_eq!(frame.data.len(), frame.stride * frame.height as usize);
-            assert!(frame.data.chunks_exact(4).all(|pixel| pixel[3] == 255));
+            assert!(
+                frame
+                    .data
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|pixel| pixel[3] == 255)
+            );
             sizes.push((frame.width as usize, frame.height as usize));
         }
     };
@@ -1016,7 +1023,7 @@ fn decodes_every_column_when_the_width_is_not_a_multiple_of_eight() {
                 assert_eq!(frame.width as usize, width, "{name}");
                 let expected = &frame.data[..4];
                 assert_eq!(expected[3], 255, "{name}");
-                for (index, pixel) in frame.data.chunks_exact(4).enumerate() {
+                for (index, pixel) in frame.data.as_chunks::<4>().0.iter().enumerate() {
                     assert_eq!(
                         pixel,
                         expected,

@@ -1003,7 +1003,14 @@ mod tests {
         assert_eq!(render.instances.len(), 1);
         let instance = render.instances[0];
         assert!(instance.rect[2] > 0.0 && instance.uv_rect[2] > instance.uv_rect[0]);
-        assert!(render.pixels.chunks_exact(4).any(|pixel| pixel[3] > 0));
+        assert!(
+            render
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|pixel| pixel[3] > 0)
+        );
     }
 
     #[test]

@@ -107,7 +107,6 @@ impl CompositionFixture for ManyElements {
                             stroke_width: Deferred::value(1.5),
                             ..Default::default()
                         },
-                        ..Default::default()
                     },
                 }),
             );

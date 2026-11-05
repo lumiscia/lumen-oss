@@ -39,6 +39,8 @@ export interface LumenAudioEngineOptions {
   latencyHint?: AudioContextLatencyCategory | number;
   /** Called when the position starts or stops moving, or jumps because the mix restarted. */
   onClockChange?: () => void;
+  /** Called once when audio stops arriving mid-playback. The position keeps moving without it. */
+  onError?: (message: string) => void;
   workerModuleUrl?: string | URL;
   workletModuleUrl?: string | URL;
 }
@@ -47,6 +49,11 @@ export interface LumenAudioEngineOptions {
 // yet or with a mixer that has nothing to send. After that the position runs without it for the rest
 // of the playback, and audio joins at that position if it ever arrives.
 const AUDIO_START_BUDGET_MS = 1_000;
+
+// How long the worklet may report an underrun before the audio is given up on. A mix restarted by a
+// source that is still arriving over a slow connection can take several seconds to refill, so this
+// is well past that while still surfacing a dead mixer within one breath of the user noticing.
+export const AUDIO_STALL_TIMEOUT_MS = 10_000;
 
 /** The last position the worklet reported, or the requested start until it has reported one. */
 type PlaybackClock = {
@@ -144,6 +151,8 @@ export class LumenAudioEngine {
   #sources = new Map<string, AudioSourceEntry>();
   // Only the latest sync reports failures, because a newer one may have replaced those sources.
   #sourceSync = 0;
+  #audioAbandoned = false;
+  #stallTimer: ReturnType<typeof setTimeout> | null = null;
   #timeline: AudioEngineTimeline | null = null;
   #timelineJson: string | null = null;
   #worker: Worker | null = null;
@@ -250,7 +259,7 @@ export class LumenAudioEngine {
   }
 
   #restartMix(): void {
-    if (this.#playback) {
+    if (this.#playback && !this.#audioAbandoned) {
       const holdUntil = Math.max(this.#playback.holdUntil, performance.now());
       this.#start(this.currentTimeMs(), holdUntil);
       this.#options.onClockChange?.();
@@ -354,12 +363,55 @@ export class LumenAudioEngine {
   }
 
   #halt(): void {
+    this.#audioAbandoned = false;
+    this.#clearStallTimer();
     this.#generation += 1;
     this.#playback = null;
     this.#queuedChunkStarts.clear();
     if (this.#node) {
       this.#post(this.#node, { type: "pause" });
     }
+  }
+
+  #clearStallTimer(): void {
+    if (this.#stallTimer !== null) {
+      clearTimeout(this.#stallTimer);
+      this.#stallTimer = null;
+    }
+  }
+
+  // Only a reported underrun on a running context counts, so suspension restarts the timeout.
+  #syncStallTimer(): void {
+    const playback = this.#playback;
+    if (!playback?.workletReported || !playback.stalled || this.#context?.state !== "running") {
+      this.#clearStallTimer();
+      return;
+    }
+    this.#stallTimer ??= setTimeout(() => {
+      this.#stallTimer = null;
+      this.#abandonAudio();
+    }, AUDIO_STALL_TIMEOUT_MS);
+  }
+
+  // Later worklet reports and chunks belong to the old generation, so audio stays off until the
+  // next play, seek or composition load, and the position runs on the clock used before audio
+  // starts.
+  #abandonAudio(): void {
+    const playback = this.#playback;
+    if (!playback) {
+      return;
+    }
+    this.#audioAbandoned = true;
+    this.#generation += 1;
+    this.#queuedChunkStarts.clear();
+    if (this.#node) {
+      this.#post(this.#node, { type: "pause" });
+    }
+    this.#playback = { ...playback, holdUntil: performance.now(), workletReported: false };
+    this.#options.onError?.(
+      "audio stopped arriving during playback; the video continues without it",
+    );
+    this.#options.onClockChange?.();
   }
 
   #hasClips(): boolean {
@@ -429,6 +481,7 @@ export class LumenAudioEngine {
           workletReported: true,
         };
         this.#queueChunks(message.currentSample);
+        this.#syncStallTimer();
         if (this.isClockRunning() !== wasRunning) {
           this.#options.onClockChange?.();
         }
@@ -444,7 +497,10 @@ export class LumenAudioEngine {
         latencyHint: this.#options.latencyHint ?? "interactive",
         sampleRate: LUMEN_AUDIO_SAMPLE_RATE,
       });
-      this.#context.onstatechange = () => this.#options.onClockChange?.();
+      this.#context.onstatechange = () => {
+        this.#syncStallTimer();
+        this.#options.onClockChange?.();
+      };
     }
     return this.#context;
   }

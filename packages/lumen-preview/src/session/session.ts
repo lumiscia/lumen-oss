@@ -125,6 +125,7 @@ export class LumenPreviewSession {
     this.#audio = new LumenAudioEngine({
       ...this.#audioOptions,
       onClockChange: () => this.#correctClock(),
+      onError: (message) => this.#reportError("audio_failed", "audio", message),
     });
     worker.onmessage = (event: MessageEvent<LumenPreviewWorkerEvent>) => this.#receive(event.data);
     worker.onerror = (event) => this.#workerCrashed(event.message);

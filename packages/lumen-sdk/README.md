@@ -1,0 +1,28 @@
+# @lumiscia/lumen-sdk
+
+TypeScript client for the hosted [Lumiscia](https://lumiscia.com) API. Build a composition, upload media, render it, wait for the result and download it. It re-exports the `Composition` builder.
+
+```bash
+pnpm add @lumiscia/lumen-sdk
+```
+
+```ts
+import { Composition, Lumen } from "@lumiscia/lumen-sdk";
+
+const composition = new Composition({ timeline: { durationSeconds: 3 } });
+const bg = composition.addNode({ type: "background", params: { paint: [24, 28, 36, 255] } });
+const title = composition.addNode({
+  type: "text",
+  params: { content: "Hello, Lumen", font_size: 120, position: [96, 480] },
+});
+const merged = composition.addNode({ type: "merge", inputs: { base: bg, overlay: title } });
+composition.addNode({ type: "media_output", inputs: { source: merged } });
+
+const lumen = new Lumen({ apiKey: process.env.LUMISCIA_API_KEY! });
+const render = await lumen.render(composition);
+console.log((await lumen.waitForRender(render)).url);
+```
+
+`examples/node` also uploads a clip with `lumen.uploadMedia` and passes it to `render` as `media`.
+
+See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.
