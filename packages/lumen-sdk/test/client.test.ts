@@ -1,163 +1,7 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { Lumen } from "../src/client.js";
 import { LumenError } from "../src/errors.js";
-import { normalizeRenderEvent } from "../src/events.js";
-import type { LumenWebSocket } from "../src/types.js";
-
-describe("Lumen.waitForRender", () => {
-  test("rejects when the server closes gracefully before a terminal event", async () => {
-    const harness = webSocketHarness();
-    const lumen = new Lumen({
-      apiKey: "test-key",
-      baseUrl: "http://localhost:8787",
-      websocket: () => harness.socket,
-    });
-
-    const waiting = lumen.waitForRender("render-1");
-    await Promise.resolve();
-    await Promise.resolve();
-    harness.closeFromServer(1000, "normal closure");
-
-    await expect(waiting).rejects.toThrow(
-      "Render subscription closed before completion: 1000 normal closure",
-    );
-    expect(harness.clientCloseCount()).toBe(1);
-  });
-
-  test("rejects with a LumenError when the hosted API reports a failure", async () => {
-    const harness = webSocketHarness();
-    const lumen = new Lumen({
-      apiKey: "test-key",
-      baseUrl: "http://localhost:8787",
-      websocket: () => harness.socket,
-    });
-
-    const waiting = lumen.waitForRender("render-1");
-    await Promise.resolve();
-    await Promise.resolve();
-    harness.messageFromServer({
-      type: "render.failed",
-      state: { renderId: "render-1", state: "failed", progress: 1, error: "Out of GPU memory" },
-    });
-
-    const error = await waiting.catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(LumenError);
-    expect(error).toMatchObject({
-      code: "render_failed",
-      message: "Out of GPU memory",
-      renderId: "render-1",
-    });
-    expect(harness.clientCloseCount()).toBe(1);
-  });
-
-  test("resolves with the render read after the completed event", async () => {
-    const harness = webSocketHarness();
-    const { stub } = recordingFetch(() => ({
-      render: { id: "render-1", status: "succeeded", outputUrl: "/renders/render-1/artifact" },
-    }));
-    const lumen = new Lumen({
-      apiKey: "test-key",
-      baseUrl: "http://localhost:8787",
-      fetch: stub,
-      websocket: () => harness.socket,
-    });
-
-    const waiting = lumen.waitForRender("render-1");
-    await Promise.resolve();
-    await Promise.resolve();
-    harness.messageFromServer({ type: "render.completed", renderId: "render-1", url: "/x" });
-
-    await expect(waiting).resolves.toMatchObject({
-      id: "render-1",
-      status: "succeeded",
-      url: "http://localhost:8787/renders/render-1/artifact",
-    });
-  });
-});
-
-describe("normalizeRenderEvent", () => {
-  test("flattens hosted API events", () => {
-    const state = { organizationId: "org-1", renderId: "render-1", updatedAt: "now" };
-
-    expect(
-      normalizeRenderEvent({
-        type: "render.progress",
-        state: { ...state, state: "processing", progress: 0.5 },
-      }),
-    ).toEqual({ type: "render.progress", renderId: "render-1", progress: 0.5 });
-    expect(
-      normalizeRenderEvent({
-        type: "render.completed",
-        state: { ...state, state: "succeeded", progress: 1, artifactUrl: "https://a/b.mp4" },
-      }),
-    ).toEqual({ type: "render.completed", renderId: "render-1", url: "https://a/b.mp4" });
-    expect(
-      normalizeRenderEvent({ type: "render.failed", state: { ...state, state: "failed" } }),
-    ).toEqual({
-      type: "render.failed",
-      renderId: "render-1",
-      error: { code: "render_failed", message: "Render failed." },
-    });
-  });
-
-  test("passes through lumen-server events", () => {
-    expect(
-      normalizeRenderEvent({ type: "render.completed", renderId: "render-1", url: "https://a" }),
-    ).toEqual({ type: "render.completed", renderId: "render-1", url: "https://a" });
-    expect(
-      normalizeRenderEvent({
-        type: "render.failed",
-        renderId: "render-1",
-        error: { code: "render_failed", message: "Decoder crashed" },
-      }),
-    ).toEqual({
-      type: "render.failed",
-      renderId: "render-1",
-      error: { code: "render_failed", message: "Decoder crashed" },
-    });
-  });
-
-  test("ignores messages that are not render events", () => {
-    expect(normalizeRenderEvent({ type: "pong" })).toBeUndefined();
-  });
-});
-
-function webSocketHarness(): {
-  socket: LumenWebSocket;
-  closeFromServer: (code: number, reason: string) => void;
-  messageFromServer: (data: unknown) => void;
-  clientCloseCount: () => number;
-} {
-  const listeners = new Map<string, Array<(event: unknown) => void>>();
-  let closeCount = 0;
-  const socket = {
-    addEventListener(type: string, listener: (event: unknown) => void) {
-      const registered = listeners.get(type) ?? [];
-      registered.push(listener);
-      listeners.set(type, registered);
-    },
-    close() {
-      closeCount += 1;
-    },
-    send() {},
-  } as LumenWebSocket;
-
-  return {
-    socket,
-    closeFromServer(code, reason) {
-      for (const listener of listeners.get("close") ?? []) {
-        listener({ code, reason } satisfies Partial<CloseEvent>);
-      }
-    },
-    messageFromServer(data) {
-      for (const listener of listeners.get("message") ?? []) {
-        listener({ data: JSON.stringify(data) } satisfies Partial<MessageEvent>);
-      }
-    },
-    clientCloseCount: () => closeCount,
-  };
-}
 
 interface RecordedRequest {
   readonly init: RequestInit & { duplex?: string };
@@ -357,45 +201,174 @@ describe("Lumen render and download", () => {
 
 describe("Lumen media uploads", () => {
   const media = { id: "media 1" };
-
-  test("multipart parts and completion carry the upload id and real part numbers", async () => {
-    const completed: unknown[] = [];
-    const { requests, stub } = recordingFetch(({ url, init }) => {
-      if (url.endsWith("/media")) {
-        return { media, uploadUrl: "/v1/media/media%201/content" };
-      }
-      if (url.endsWith("/multipart")) {
-        return { uploadId: "up/1" };
-      }
-      if (url.endsWith("/complete")) {
-        completed.push(...JSON.parse(String(init.body)).parts);
-        return { media };
-      }
-      const partNumber = Number(url.split("/").at(-1));
+  const upload = (request: RecordedRequest) => {
+    const path = new URL(request.url).pathname;
+    if (path === "/v1/media") return { media, uploadUrl: "/v1/media/media%201/content" };
+    if (path.endsWith("/multipart")) return { uploadId: "up/1" };
+    if (path.includes("/parts/")) {
+      const partNumber = Number(path.split("/").at(-1));
       return { etag: `etag-${partNumber}`, partNumber };
-    });
+    }
+    return { media };
+  };
+
+  test("a small body goes up in one request without an explicit length", async () => {
+    const { requests, stub } = recordingFetch(upload);
     const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
 
-    await lumen.uploadMedia({
-      body: new Uint8Array(5),
+    await lumen.uploadMedia({ body: new Blob(["abc"], { type: "video/mp4" }), fileName: "a.mp4" });
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://api.test/v1/media",
+      "https://api.test/v1/media/media%201/content",
+    ]);
+    expect(JSON.parse(String(requests[0]?.init.body))).toEqual({
       contentType: "video/mp4",
       fileName: "a.mp4",
-      multipart: { partSizeBytes: 2 },
-      sizeBytes: 5,
+      sizeBytes: 3,
+    });
+    expect(requests[1]?.init.body).toBeInstanceOf(Blob);
+  });
+
+  test("a stream goes up in multipart parts with the upload id in the path", async () => {
+    const sizes: number[] = [];
+    let completed: unknown;
+    const { requests, stub } = recordingFetch((request) => {
+      if (request.url.includes("/parts/")) sizes.push((request.init.body as Uint8Array).byteLength);
+      if (request.url.endsWith("/complete"))
+        completed = JSON.parse(String(request.init.body)).parts;
+      return upload(request);
+    });
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+    const size = 8 * 1024 * 1024 + 5;
+
+    await lumen.uploadMedia({
+      body: new Blob([new Uint8Array(size)]).stream(),
+      contentType: "video/mp4",
+      fileName: "a.mp4",
+      sizeBytes: size,
     });
 
     expect(requests.map((request) => request.url).slice(1)).toEqual([
       "https://api.test/v1/media/media%201/multipart",
       "https://api.test/v1/media/media%201/multipart/up%2F1/parts/1",
       "https://api.test/v1/media/media%201/multipart/up%2F1/parts/2",
-      "https://api.test/v1/media/media%201/multipart/up%2F1/parts/3",
       "https://api.test/v1/media/media%201/multipart/up%2F1/complete",
     ]);
+    expect(sizes).toEqual([8 * 1024 * 1024, 5]);
     expect(completed).toEqual([
       { etag: "etag-1", partNumber: 1 },
       { etag: "etag-2", partNumber: 2 },
-      { etag: "etag-3", partNumber: 3 },
     ]);
+  });
+
+  test("a stream needs its size, and must match it", async () => {
+    const { stub } = recordingFetch(upload);
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+    const stream = () => new Blob(["abc"]).stream();
+    const contentType = "video/mp4";
+
+    await expect(lumen.uploadMedia({ body: stream(), contentType })).rejects.toMatchObject({
+      code: "invalid_upload",
+    });
+    await expect(
+      lumen.uploadMedia({ body: stream(), contentType, sizeBytes: 9 }),
+    ).rejects.toMatchObject({
+      code: "invalid_upload",
+      message: expect.stringContaining("produced 3 bytes"),
+    });
+  });
+
+  test("the API key is only sent to the API origin", async () => {
+    const uploadUrls = ["/v1/media/media1/content", "https://storage.example/put"];
+    const authorization: (string | null)[] = [];
+
+    for (const uploadUrl of uploadUrls) {
+      const { requests, stub } = recordingFetch(({ url }) =>
+        url.endsWith("/media") ? { media, uploadUrl } : { media },
+      );
+      const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+      await lumen.uploadMedia({ body: new Uint8Array(3), contentType: "video/mp4" });
+      authorization.push(new Headers(requests[1]?.init.headers).get("authorization"));
+    }
+
+    expect(authorization).toEqual(["Bearer test-key", null]);
+  });
+
+  test("the content type is the given one, the blob's, or the file name's", async () => {
+    const sent: string[] = [];
+    const { stub } = recordingFetch((request) => {
+      if (new URL(request.url).pathname === "/v1/media") {
+        sent.push(JSON.parse(String(request.init.body)).contentType);
+      }
+      return upload(request);
+    });
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await lumen.uploadMedia({
+      body: new Uint8Array(3),
+      contentType: "audio/ogg",
+      fileName: "a.mp4",
+    });
+    await lumen.uploadMedia({ body: new Blob(["abc"], { type: "image/png" }), fileName: "a.mp4" });
+    await lumen.uploadMedia({ body: new Uint8Array(3), fileName: "Clip.MOV" });
+
+    expect(sent).toEqual(["audio/ogg", "image/png", "video/quicktime"]);
+  });
+
+  test("an unknown content type fails before any request", async () => {
+    const { requests, stub } = recordingFetch(upload);
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await expect(lumen.uploadMedia({ body: new Uint8Array(3) })).rejects.toMatchObject({
+      code: "invalid_upload",
+      message: expect.stringContaining("contentType"),
+    });
+    await expect(
+      lumen.uploadMedia({ body: new Uint8Array(3), fileName: "notes.txt" }),
+    ).rejects.toMatchObject({ code: "invalid_upload" });
+    expect(requests).toHaveLength(0);
+  });
+
+  test("aborting a stalled stream rejects at once and cancels the producer", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    const { stub } = recordingFetch(upload);
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+    const controller = new AbortController();
+    const reason = new Error("stop");
+
+    const uploading = lumen.uploadMedia({
+      body,
+      contentType: "video/mp4",
+      sizeBytes: 1,
+      signal: controller.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    controller.abort(reason);
+
+    await expect(uploading).rejects.toBe(reason);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(body.locked).toBe(false);
+  });
+
+  test("a stream that exceeds its size is rejected without being read to the end", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(4));
+      },
+      cancel,
+    });
+    const { requests, stub } = recordingFetch(upload);
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await expect(
+      lumen.uploadMedia({ body, contentType: "video/mp4", sizeBytes: 6 }),
+    ).rejects.toMatchObject({ code: "invalid_upload" });
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(requests.some((request) => request.url.endsWith("/complete"))).toBe(false);
   });
 
   test("a media response without a media is invalid_response, not undefined", async () => {
@@ -411,49 +384,21 @@ describe("Lumen media uploads", () => {
       },
     );
     await expect(
-      lumen.uploadMedia({
-        body: new Uint8Array(3),
-        contentType: "video/mp4",
-        fileName: "a.mp4",
-        sizeBytes: 3,
-      }),
+      lumen.uploadMedia({ body: new Uint8Array(3), contentType: "video/mp4" }),
     ).rejects.toMatchObject({ code: "invalid_response" });
   });
 
-  test("stream bodies are sent half-duplex", async () => {
-    const { requests, stub } = recordingFetch(({ url }) =>
-      url.endsWith("/media") ? { media, uploadUrl: "/v1/media/media1/content" } : { media },
-    );
+  test("an upload can be passed where a render takes media", async () => {
+    const { requests, stub } = recordingFetch(() => ({ render: { id: "r", status: "queued" } }));
     const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
 
-    await lumen.uploadMedia({
-      body: new Blob(["abc"]).stream(),
-      contentType: "video/mp4",
-      fileName: "a.mp4",
-      sizeBytes: 3,
+    await lumen.render({} as never, {
+      media: { hero: media as never, logo: "https://example.com/logo.png" },
     });
 
-    expect(requests[1]?.init.duplex).toBe("half");
-  });
-
-  test("the API key is only sent to the API origin", async () => {
-    const uploadUrls = ["/v1/media/media1/content", "https://storage.example/put"];
-    const authorization: (string | null)[] = [];
-
-    for (const uploadUrl of uploadUrls) {
-      const { requests, stub } = recordingFetch(({ url }) =>
-        url.endsWith("/media") ? { media, uploadUrl } : { media },
-      );
-      const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
-      await lumen.uploadMedia({
-        body: new Uint8Array(3),
-        contentType: "video/mp4",
-        fileName: "a.mp4",
-        sizeBytes: 3,
-      });
-      authorization.push(new Headers(requests[1]?.init.headers).get("authorization"));
-    }
-
-    expect(authorization).toEqual(["Bearer test-key", null]);
+    expect(JSON.parse(String(requests[0]?.init.body)).media).toEqual({
+      hero: "lumen:media 1",
+      logo: "https://example.com/logo.png",
+    });
   });
 });

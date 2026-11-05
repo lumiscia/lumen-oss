@@ -2,31 +2,44 @@ import { Composition, type LumenComposition } from "@lumiscia/lumen-shared";
 
 import { LumenError, errorFromResponse, isRecord, readBody } from "./errors.js";
 import { parseMedia, parsePart, parseUploadId, parseUploadTarget } from "./media.js";
-import { normalizeRenderEvent } from "./events.js";
-import { parseRender, renderError, resolveUrl } from "./render.js";
+import { isTerminal, parseProgress, parseRender, renderError, resolveUrl } from "./render.js";
+import { watchRender, type SocketUpdate } from "./socket.js";
 import type {
-  CompleteMultipartUploadOptions,
-  CreateMediaUploadOptions,
-  CreateMediaUploadResult,
-  CreateMultipartUploadResult,
   CreateUrlMediaOptions,
+  LumenMediaReference,
   LumenOptions,
-  LumenWebSocketFactory,
-  MediaUploadPart,
   Render,
-  RenderEventHandlers,
-  RenderEventSubscription,
+  RenderMediaManifest,
   RenderOptions,
+  RenderStatus,
   TemporaryMedia,
   UploadMediaOptions,
   WaitForRenderOptions,
 } from "./types.js";
+import { contentTypeOf, partsOf, singleRequestLimitBytes, sizeOf } from "./upload.js";
 
-const defaultMultipartPartSizeBytes = 8 * 1024 * 1024;
 const defaultBaseUrl = "https://api.lumiscia.com/v1";
 
+/** The longest one socket is held open before the render is read again. */
+const socketSessionMs = 60_000;
+/** Sockets are opened at least this far apart, and the gap doubles up to the maximum while they end early. */
+const minSocketGapMs = 5_000;
+const maxSocketGapMs = 30_000;
+/** A wait gives up when reads have failed with server or network errors for this long. */
+const giveUpAfterMs = 10 * 60_000;
+const maxBackoffMs = 30_000;
+const maxRateLimitBackoffMs = 60_000;
+/** Spreads waits that started together: a delay grows by up to this fraction. */
+const jitter = 0.25;
+
+const statusOrder: Record<RenderStatus, number> = {
+  queued: 0,
+  processing: 1,
+  succeeded: 2,
+  failed: 2,
+};
+
 type SendInit = Omit<RequestInit, "signal"> & {
-  readonly duplex?: "half";
   readonly signal?: AbortSignal | undefined;
 };
 
@@ -40,14 +53,15 @@ export class Lumen {
   readonly #apiKey: string;
   readonly #baseUrl: URL;
   readonly #fetch: typeof fetch;
-  readonly #websocket: LumenWebSocketFactory | undefined;
+  /** Waits on this client send no request before this time, after the API rate limited one. */
+  #cooldownUntil = 0;
+  #rateLimitStreak = 0;
 
   constructor(options: LumenOptions) {
     this.#apiKey = options.apiKey;
     this.#baseUrl = new URL(options.baseUrl ?? defaultBaseUrl);
     const fetchImpl = options.fetch;
     this.#fetch = (...args) => (fetchImpl ?? globalThis.fetch)(...args);
-    this.#websocket = options.websocket;
   }
 
   /** Submits a render and returns it queued. Pass it to `waitForRender`, then to `download`. */
@@ -58,7 +72,7 @@ export class Lumen {
     const body = await this.#request("POST", "/renders", {
       body: {
         composition: composition instanceof Composition ? composition.toJSON() : composition,
-        media: options.media ?? {},
+        media: mediaManifest(options.media ?? {}),
         ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
       },
       idempotencyKey: options.idempotencyKey,
@@ -74,6 +88,82 @@ export class Lumen {
   async getRender(id: string, options: { signal?: AbortSignal } = {}): Promise<Render> {
     const body = await this.#request("GET", `/renders/${encodeURIComponent(id)}`, options);
     return parseRender(body.render, this.#baseUrl);
+  }
+
+  /**
+   * Waits for a render to finish and returns it, or rejects with a `LumenError` if it failed.
+   *
+   * The render is read from `GET /renders/:id/progress`, which is the source of truth. Between
+   * reads a socket is held open for up to a minute to hear about progress, but is never relied on:
+   * if sockets fail, the wait reads the render every 5 to 30 seconds instead, and the 5 second
+   * minimum between sockets holds even when a socket reports an end the next read doesn't show.
+   * `onProgress` never goes backwards.
+   *
+   * A rate limit never ends a wait: it makes every wait on this client hold off, for the API's
+   * `Retry-After` or else a growing delay. Server errors and network failures are retried with
+   * backoff and end the wait only after ten minutes without a successful read. Any other
+   * `LumenError`, such as a 401 or 404, ends it at once, and an aborted `signal` rejects with its
+   * reason from wherever the wait is. Someone waiting on many renders at once should use
+   * `webhookUrl` instead.
+   */
+  async waitForRender(
+    render: string | Pick<Render, "id">,
+    options: WaitForRenderOptions = {},
+  ): Promise<Render> {
+    const id = typeof render === "string" ? render : render.id;
+    const { signal } = options;
+    let status: RenderStatus = "queued";
+    let progress = 0;
+    let lastReported = "";
+    const report = (update: SocketUpdate) => {
+      if (statusOrder[update.status] >= statusOrder[status]) {
+        status = update.status;
+      }
+      progress = Math.max(progress, update.progress ?? 0);
+      const key = `${status} ${progress}`;
+      if (key !== lastReported) {
+        lastReported = key;
+        options.onProgress?.({ id, status, progress });
+      }
+    };
+
+    const reads = { lastSucceededAt: Date.now() };
+    let gapMs = minSocketGapMs;
+    let nextReadAt = 0;
+    let nextSessionAt = 0;
+    for (;;) {
+      await sleep(nextReadAt - Date.now(), signal);
+      const current = await this.#readProgress(id, signal, reads);
+      report({
+        id,
+        status: current.status,
+        ...(current.progress !== undefined ? { progress: current.progress } : {}),
+      });
+      if (current.status === "succeeded") {
+        return current;
+      }
+      if (isTerminal(current.status)) {
+        throw renderError(current);
+      }
+
+      await sleep(nextSessionAt - Date.now(), signal);
+      await this.#cooldown(signal);
+      const startedAt = Date.now();
+      const session = await watchRender({
+        apiKey: this.#apiKey,
+        fetch: this.#fetch,
+        onProgress: report,
+        signal,
+        timeoutMs: socketSessionMs,
+        url: this.#apiUrl(`/renders/${encodeURIComponent(id)}/socket`),
+      });
+      if (session.rejection?.status === 429) {
+        this.#rateLimited(session.rejection);
+      }
+      gapMs = session.end === "dropped" ? Math.min(gapMs * 2, maxSocketGapMs) : minSocketGapMs;
+      nextSessionAt = startedAt + jittered(gapMs);
+      nextReadAt = session.end === "ended" ? 0 : nextSessionAt;
+    }
   }
 
   /**
@@ -101,37 +191,53 @@ export class Lumen {
     return this.#send(new URL(resolveUrl(url, this.#baseUrl)), { method: "GET", ...options });
   }
 
-  async createMediaUpload(options: CreateMediaUploadOptions): Promise<CreateMediaUploadResult> {
-    const body = await this.#request("POST", "/media", {
-      body: {
-        contentType: options.contentType,
-        fileName: options.fileName,
-        sizeBytes: options.sizeBytes,
-      },
-      signal: options.signal,
-    });
-    return parseUploadTarget(body);
-  }
-
+  /**
+   * Uploads a file for renders to use. A body over 64 MiB, and any stream, goes up in 8 MiB parts;
+   * anything smaller in one request. Pass the result as a `media` value, or to `mediaReference`.
+   */
   async uploadMedia(options: UploadMediaOptions): Promise<TemporaryMedia> {
-    if (options.multipart) {
-      return this.uploadMediaMultipart(options);
+    const { body, signal } = options;
+    const sizeBytes = body instanceof ReadableStream ? options.sizeBytes : sizeOf(body);
+    if (sizeBytes === undefined) {
+      throw new LumenError("invalid_upload", "Uploading a stream requires sizeBytes.");
     }
 
-    const upload = await this.createMediaUpload(options);
-    const response = await this.#send(new URL(upload.uploadUrl, this.#baseUrl), {
-      body: bodyAsRequestBody(options.body),
-      ...(options.body instanceof ReadableStream ? { duplex: "half" } : {}),
-      headers: {
-        "content-length": options.sizeBytes.toString(),
-        "content-type": options.contentType,
-      },
-      method: "PUT",
-      signal: options.signal,
+    const fileName =
+      options.fileName ??
+      (body instanceof Blob && "name" in body && typeof body.name === "string"
+        ? body.name
+        : undefined);
+    const contentType =
+      options.contentType ??
+      (body instanceof Blob && body.type !== "" ? body.type : undefined) ??
+      (fileName !== undefined ? contentTypeOf(fileName) : undefined);
+    if (contentType === undefined) {
+      throw new LumenError(
+        "invalid_upload",
+        `Could not tell the content type of ${fileName === undefined ? "the upload" : `"${fileName}"`}: pass contentType.`,
+      );
+    }
+
+    const created = await this.#request("POST", "/media", {
+      body: { contentType, fileName: fileName ?? "upload", sizeBytes },
+      signal,
     });
-    return parseMedia((await readJson(response, options.signal)).media);
+    const upload = parseUploadTarget(created);
+
+    if (body instanceof ReadableStream || sizeBytes > singleRequestLimitBytes) {
+      return this.#uploadParts(upload.media.id, body, sizeBytes, signal);
+    }
+
+    const response = await this.#send(new URL(upload.uploadUrl, this.#baseUrl), {
+      body: body as BodyInit,
+      headers: { "content-type": contentType },
+      method: "PUT",
+      signal,
+    });
+    return parseMedia((await readJson(response, signal)).media);
   }
 
+  /** Has the API fetch a file from a public URL, for renders to use. */
   async createUrlMedia(options: CreateUrlMediaOptions): Promise<TemporaryMedia> {
     const body = await this.#request("POST", "/media/url", {
       body: {
@@ -143,185 +249,90 @@ export class Lumen {
     return parseMedia(body.media);
   }
 
-  async createMediaMultipartUpload(
+  async #uploadParts(
     id: string,
-    options: { signal?: AbortSignal } = {},
-  ): Promise<CreateMultipartUploadResult> {
-    const body = await this.#request("POST", `/media/${encodeURIComponent(id)}/multipart`, options);
-    return { ...(body as unknown as CreateMultipartUploadResult), uploadId: parseUploadId(body) };
-  }
-
-  async uploadMediaMultipartPart(options: {
-    readonly body: BodyInit;
-    readonly id: string;
-    readonly partNumber: number;
-    readonly signal?: AbortSignal;
-    readonly uploadId: string;
-  }): Promise<MediaUploadPart> {
-    const path = `/media/${encodeURIComponent(options.id)}/multipart/${encodeURIComponent(
-      options.uploadId,
-    )}/parts/${options.partNumber}`;
-    const response = await this.#send(this.#apiUrl(path), {
-      body: options.body,
-      method: "PUT",
-      signal: options.signal,
-    });
-    return parsePart(await readJson(response, options.signal));
-  }
-
-  async completeMediaMultipartUpload(
-    options: CompleteMultipartUploadOptions,
+    body: UploadMediaOptions["body"],
+    sizeBytes: number,
+    signal: AbortSignal | undefined,
   ): Promise<TemporaryMedia> {
-    const body = await this.#request(
-      "POST",
-      `/media/${encodeURIComponent(options.id)}/multipart/${encodeURIComponent(
-        options.uploadId,
-      )}/complete`,
-      { body: { parts: options.parts }, signal: options.signal },
-    );
-    return parseMedia(body.media);
-  }
+    const base = `/media/${encodeURIComponent(id)}/multipart`;
+    const uploadId = parseUploadId(await this.#request("POST", base, { signal }));
+    const uploadPath = `${base}/${encodeURIComponent(uploadId)}`;
 
-  async uploadMediaMultipart(options: UploadMediaOptions): Promise<TemporaryMedia> {
-    const upload = await this.createMediaUpload(options);
-    const multipart = await this.createMediaMultipartUpload(upload.media.id, {
-      ...optionalSignal(options.signal),
-    });
-    const partSizeBytes =
-      typeof options.multipart === "object"
-        ? (options.multipart.partSizeBytes ?? defaultMultipartPartSizeBytes)
-        : defaultMultipartPartSizeBytes;
-    const parts = await this.#uploadMultipartBody({
-      body: options.body,
-      id: upload.media.id,
-      partSizeBytes,
-      ...optionalSignal(options.signal),
-      sizeBytes: options.sizeBytes,
-      uploadId: multipart.uploadId,
-    });
-
-    return this.completeMediaMultipartUpload({
-      id: upload.media.id,
-      parts,
-      ...optionalSignal(options.signal),
-      uploadId: multipart.uploadId,
-    });
-  }
-
-  async subscribeToRender(
-    renderId: string,
-    handlers: RenderEventHandlers,
-  ): Promise<RenderEventSubscription> {
-    if (!this.#websocket) {
-      throw new Error("WebSocket is not available. Pass a WebSocket implementation to Lumen.");
+    const parts: { etag: string; partNumber: number }[] = [];
+    for await (const part of partsOf(body, sizeBytes, signal)) {
+      const response = await this.#send(this.#apiUrl(`${uploadPath}/parts/${parts.length + 1}`), {
+        body: part,
+        method: "PUT",
+        signal,
+      });
+      parts.push(parsePart(await readJson(response, signal)));
     }
 
-    const socket = await this.#websocket(this.#websocketApiUrl(`/renders/${renderId}/socket`), {
-      headers: this.#authHeaders(),
+    const done = await this.#request("POST", `${uploadPath}/complete`, {
+      body: { parts },
+      signal,
     });
+    return parseMedia(done.media);
+  }
 
-    socket.addEventListener("open", () => {
-      socket.send(
-        JSON.stringify({
-          type: "auth",
-          apiKey: this.#apiKey,
-        }),
-      );
-    });
-
-    socket.addEventListener("message", (message) => {
+  /**
+   * Reads a render and its progress. Rate limits wait out the client's cooldown and server and
+   * network errors back off, until a read has not succeeded for ten minutes.
+   */
+  async #readProgress(
+    id: string,
+    signal: AbortSignal | undefined,
+    reads: { lastSucceededAt: number },
+  ): Promise<Render> {
+    for (let failures = 0; ;) {
+      await this.#cooldown(signal);
       try {
-        const event = normalizeRenderEvent(JSON.parse(String(message.data)));
-        if (event !== undefined) {
-          handlers.onEvent?.(event);
-        }
+        const body = await this.#request("GET", `/renders/${encodeURIComponent(id)}/progress`, {
+          signal,
+        });
+        const render = parseProgress(body, this.#baseUrl);
+        this.#rateLimitStreak = 0;
+        reads.lastSucceededAt = Date.now();
+        return render;
       } catch (error) {
-        handlers.onError?.(error);
+        if (!(error instanceof LumenError)) {
+          throw error;
+        }
+        if (error.status === 429) {
+          this.#rateLimited(error);
+          reads.lastSucceededAt = Date.now();
+        } else if (isTransient(error) && Date.now() - reads.lastSucceededAt < giveUpAfterMs) {
+          failures += 1;
+          const backoffMs = error.retryAfterMs ?? Math.min(1000 * 2 ** failures, maxBackoffMs);
+          await sleep(jittered(backoffMs), signal);
+        } else {
+          throw error;
+        }
       }
-    });
-
-    socket.addEventListener("error", (event) => {
-      handlers.onError?.(webSocketError(event));
-    });
-
-    socket.addEventListener("close", (event) => {
-      handlers.onClose?.(event);
-    });
-
-    return {
-      close: () => socket.close(),
-    };
+    }
   }
 
-  /** Resolves with the render once it has succeeded, and rejects with a `LumenError` if it fails. */
-  async waitForRender(renderId: string, options: WaitForRenderOptions = {}): Promise<Render> {
-    if (options.signal?.aborted) {
-      throw abortError();
+  /** Waits out the cooldown a rate limit started. */
+  async #cooldown(signal: AbortSignal | undefined): Promise<void> {
+    // Another wait can extend the cooldown during the sleep.
+    for (;;) {
+      const remainingMs = this.#cooldownUntil - Date.now();
+      if (remainingMs <= 0) {
+        return;
+      }
+      await sleep(jittered(remainingMs), signal);
     }
+  }
 
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      let subscription: RenderEventSubscription | undefined;
-
-      const cleanup = () => {
-        options.signal?.removeEventListener("abort", onAbort);
-      };
-      const settle = (error?: unknown) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        subscription?.close();
-        if (error === undefined) {
-          resolve();
-        } else {
-          reject(error);
-        }
-      };
-      const onAbort = () => settle(abortError());
-      options.signal?.addEventListener("abort", onAbort, { once: true });
-
-      void this.subscribeToRender(renderId, {
-        onEvent: (event) => {
-          options.onEvent?.(event);
-          if (event.type === "render.completed") {
-            settle();
-          }
-          if (event.type === "render.failed") {
-            settle(
-              new LumenError(event.error.code, event.error.message, {
-                renderId: event.renderId,
-                ...(event.error.retryable !== undefined
-                  ? { retryable: event.error.retryable }
-                  : {}),
-              }),
-            );
-          }
-        },
-        onError: settle,
-        onClose: (event) => {
-          if (!settled) {
-            const reason = event.reason ? ` ${event.reason}` : "";
-            settle(
-              new LumenError(
-                "socket_error",
-                `Render subscription closed before completion: ${event.code}${reason}`,
-              ),
-            );
-          }
-        },
-      })
-        .then((nextSubscription) => {
-          subscription = nextSubscription;
-          if (settled) {
-            subscription.close();
-          }
-        })
-        .catch(settle);
-    });
-
-    return this.getRender(renderId, options.signal ? { signal: options.signal } : {});
+  /** Makes every wait on this client hold off, until the latest deadline any rate limit gave. */
+  #rateLimited(error: LumenError): void {
+    if (Date.now() >= this.#cooldownUntil) {
+      this.#rateLimitStreak += 1;
+    }
+    const delayMs =
+      error.retryAfterMs ?? Math.min(1000 * 2 ** this.#rateLimitStreak, maxRateLimitBackoffMs);
+    this.#cooldownUntil = Math.max(this.#cooldownUntil, Date.now() + jittered(delayMs));
   }
 
   /**
@@ -380,169 +391,20 @@ export class Lumen {
     url.pathname = `${basePath}${path.replace(/^\/+/, "")}`;
     return url;
   }
-
-  #websocketApiUrl(path: string): URL {
-    const url = this.#apiUrl(path);
-    url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
-    return url;
-  }
-
-  #authHeaders(): Headers {
-    return new Headers({ authorization: `Bearer ${this.#apiKey}` });
-  }
-
-  async #uploadMultipartBody(options: {
-    readonly body: UploadMediaOptions["body"];
-    readonly id: string;
-    readonly partSizeBytes: number;
-    readonly signal?: AbortSignal;
-    readonly sizeBytes: number;
-    readonly uploadId: string;
-  }): Promise<MediaUploadPart[]> {
-    const parts: MediaUploadPart[] = [];
-    let partNumber = 1;
-
-    for await (const part of multipartChunks(options.body, options.partSizeBytes)) {
-      parts.push(
-        await this.uploadMediaMultipartPart({
-          body: part,
-          id: options.id,
-          partNumber,
-          ...optionalSignal(options.signal),
-          uploadId: options.uploadId,
-        }),
-      );
-      partNumber += 1;
-    }
-
-    if (parts.length === 0 && options.sizeBytes > 0) {
-      throw new Error("Multipart upload body did not yield any parts.");
-    }
-
-    return parts;
-  }
 }
 
-export function mediaReference(media: TemporaryMedia | string): `lumen:${string}` {
+export function mediaReference(media: TemporaryMedia | string): LumenMediaReference {
   const id = typeof media === "string" ? media : media.id;
-  return id.startsWith("lumen:") ? (id as `lumen:${string}`) : `lumen:${id}`;
+  return id.startsWith("lumen:") ? (id as LumenMediaReference) : `lumen:${id}`;
 }
 
-function webSocketError(event: unknown): LumenError {
-  if (
-    typeof event === "object" &&
-    event !== null &&
-    "error" in event &&
-    event.error instanceof Error
-  ) {
-    return new LumenError("socket_error", event.error.message, { cause: event.error });
-  }
-
-  if (
-    typeof event === "object" &&
-    event !== null &&
-    "message" in event &&
-    typeof event.message === "string" &&
-    event.message.length > 0
-  ) {
-    return new LumenError("socket_error", event.message);
-  }
-
-  return new LumenError("socket_error", "Lumen render WebSocket connection failed.");
-}
-
-function abortError(): Error {
-  return new DOMException("The operation was aborted.", "AbortError");
-}
-
-function bodyAsRequestBody(body: UploadMediaOptions["body"]): BodyInit {
-  if (body instanceof Blob || body instanceof ReadableStream) {
-    return body;
-  }
-
-  return bytesToBody(toUint8Array(body));
-}
-
-async function* multipartChunks(
-  body: UploadMediaOptions["body"],
-  partSizeBytes: number,
-): AsyncGenerator<BodyInit> {
-  if (!Number.isInteger(partSizeBytes) || partSizeBytes <= 0) {
-    throw new Error("partSizeBytes must be a positive integer.");
-  }
-
-  if (body instanceof Blob) {
-    for (let offset = 0; offset < body.size; offset += partSizeBytes) {
-      yield body.slice(offset, Math.min(offset + partSizeBytes, body.size));
-    }
-    return;
-  }
-
-  if (body instanceof ReadableStream) {
-    for await (const chunk of streamMultipartChunks(body, partSizeBytes)) {
-      yield bytesToBody(chunk);
-    }
-    return;
-  }
-
-  const bytes = toUint8Array(body);
-  for (let offset = 0; offset < bytes.byteLength; offset += partSizeBytes) {
-    yield bytesToBody(bytes.slice(offset, Math.min(offset + partSizeBytes, bytes.byteLength)));
-  }
-}
-
-async function* streamMultipartChunks(
-  stream: ReadableStream<Uint8Array>,
-  partSizeBytes: number,
-): AsyncGenerator<Uint8Array> {
-  const reader = stream.getReader();
-  let buffer = new Uint8Array(0);
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-
-      buffer = concatBytes(buffer, value);
-      while (buffer.byteLength >= partSizeBytes) {
-        yield buffer.slice(0, partSizeBytes);
-        buffer = buffer.slice(partSizeBytes);
-      }
-    }
-
-    if (buffer.byteLength > 0) {
-      yield buffer;
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array<ArrayBuffer> {
-  const result = new Uint8Array(left.byteLength + right.byteLength);
-  result.set(left, 0);
-  result.set(right, left.byteLength);
-  return result;
-}
-
-function toUint8Array(body: BufferSource): Uint8Array {
-  if (ArrayBuffer.isView(body)) {
-    return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
-  }
-
-  return new Uint8Array(body);
-}
-
-function bytesToBody(bytes: Uint8Array): BodyInit {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return new Blob([copy]);
-}
-
-function optionalSignal(signal: AbortSignal | undefined): { signal?: AbortSignal } {
-  return signal === undefined ? {} : { signal };
+function mediaManifest(media: RenderMediaManifest): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(media).map(([alias, value]) => [
+      alias,
+      typeof value === "string" ? value : mediaReference(value),
+    ]),
+  );
 }
 
 async function readJson<T extends object = Record<string, unknown>>(
@@ -556,4 +418,41 @@ async function readJson<T extends object = Record<string, unknown>>(
     });
   }
   return body as T;
+}
+
+function isTransient(error: unknown): error is LumenError {
+  return (
+    error instanceof LumenError &&
+    (error.code === "network_error" ||
+      error.status === 429 ||
+      (error.status !== undefined && error.status >= 500))
+  );
+}
+
+/** `ms`, lengthened by up to 25% so that waits started together drift apart. */
+function jittered(ms: number): number {
+  return ms * (1 + Math.random() * jitter);
+}
+
+/** Resolves after `ms`, or rejects with the reason `signal` aborts with. */
+function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    if (ms <= 0) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(
+      () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      },
+      Math.max(0, ms),
+    );
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

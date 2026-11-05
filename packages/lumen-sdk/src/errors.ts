@@ -2,6 +2,7 @@ export interface LumenErrorFields {
   readonly cause?: unknown;
   readonly renderId?: string;
   readonly requestId?: string;
+  readonly retryAfterMs?: number;
   readonly retryable?: boolean;
   readonly status?: number;
 }
@@ -21,6 +22,8 @@ export class LumenError extends Error {
   readonly renderId?: string;
   /** Whether the server expects retrying the same request to succeed. */
   readonly retryable?: boolean;
+  /** How long the server asked to wait before retrying, from a `Retry-After` header. */
+  readonly retryAfterMs?: number;
 
   constructor(code: string, message: string, fields: LumenErrorFields = {}) {
     super(message, fields.cause === undefined ? undefined : { cause: fields.cause });
@@ -30,6 +33,7 @@ export class LumenError extends Error {
     if (fields.requestId !== undefined) this.requestId = fields.requestId;
     if (fields.renderId !== undefined) this.renderId = fields.renderId;
     if (fields.retryable !== undefined) this.retryable = fields.retryable;
+    if (fields.retryAfterMs !== undefined) this.retryAfterMs = fields.retryAfterMs;
   }
 }
 
@@ -55,6 +59,7 @@ export async function errorFromResponse(
 ): Promise<LumenError> {
   const body = await readBody(response, signal);
   const fields = isRecord(body) ? body : {};
+  const retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
   return new LumenError(
     typeof fields.code === "string" ? fields.code : `http_${response.status}`,
     typeof fields.error === "string"
@@ -63,8 +68,21 @@ export async function errorFromResponse(
     {
       status: response.status,
       ...(typeof fields.requestId === "string" ? { requestId: fields.requestId } : {}),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     },
   );
+}
+
+function parseRetryAfter(header: string | null): number | undefined {
+  if (header === null) {
+    return undefined;
+  }
+  const seconds = Number(header);
+  if (header.trim() !== "" && Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+  const date = Date.parse(header);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

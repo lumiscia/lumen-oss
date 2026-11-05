@@ -1,5 +1,5 @@
 import { LumenError, isRecord } from "./errors.js";
-import type { CreateMediaUploadResult, MediaUploadPart, TemporaryMedia } from "./types.js";
+import type { TemporaryMedia } from "./types.js";
 
 function malformed(what: string): LumenError {
   return new LumenError("invalid_response", `Lumen API returned a malformed ${what}.`);
@@ -12,11 +12,15 @@ export function parseMedia(value: unknown): TemporaryMedia {
   return value as unknown as TemporaryMedia;
 }
 
-export function parseUploadTarget(body: Record<string, unknown>): CreateMediaUploadResult {
+/** Reads the response to creating an upload: the media and where to PUT it. */
+export function parseUploadTarget(body: Record<string, unknown>): {
+  readonly media: TemporaryMedia;
+  readonly uploadUrl: string;
+} {
   if (typeof body.uploadUrl !== "string") {
     throw malformed("media upload");
   }
-  return { ...(body as unknown as CreateMediaUploadResult), media: parseMedia(body.media) };
+  return { media: parseMedia(body.media), uploadUrl: body.uploadUrl };
 }
 
 export function parseUploadId(body: Record<string, unknown>): string {
@@ -26,7 +30,10 @@ export function parseUploadId(body: Record<string, unknown>): string {
   return body.uploadId;
 }
 
-export function parsePart(body: Record<string, unknown>): MediaUploadPart {
+export function parsePart(body: Record<string, unknown>): {
+  readonly etag: string;
+  readonly partNumber: number;
+} {
   if (typeof body.etag !== "string" || typeof body.partNumber !== "number") {
     throw malformed("upload part");
   }

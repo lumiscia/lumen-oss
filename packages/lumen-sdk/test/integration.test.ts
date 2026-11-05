@@ -5,7 +5,7 @@ import net from "node:net";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 import { Composition, Lumen } from "../src/index.js";
-import type { RenderEvent } from "../src/types.js";
+import type { RenderProgress } from "../src/types.js";
 
 const shouldRun = process.env.LUMEN_SDK_INTEGRATION === "1";
 const describeIntegration = shouldRun ? describe : describe.skip;
@@ -69,7 +69,7 @@ describeIntegration("Lumen SDK with lumen-server", () => {
         apiKey: serverToken,
         baseUrl,
       });
-      const events: RenderEvent[] = [];
+      const progress: RenderProgress[] = [];
       const composition = tinyComposition();
 
       const created = await lumen.render(composition, {
@@ -78,12 +78,12 @@ describeIntegration("Lumen SDK with lumen-server", () => {
       expect(created.status).toBe("queued");
 
       const done = await lumen.waitForRender(created.id, {
-        onEvent: (event) => events.push(event),
+        onProgress: (update) => progress.push(update),
       });
 
       expect(done.status).toBe("succeeded");
       expect(done.url).toBe(`${baseUrl}/renders/${created.id}/artifact`);
-      expect(events.at(-1)).toMatchObject({ type: "render.completed", renderId: created.id });
+      expect(progress.at(-1)).toEqual({ id: created.id, status: "succeeded", progress: 1 });
 
       const artifact = await (await lumen.download(done)).blob();
       expect(artifact.type).toBe("video/mp4");

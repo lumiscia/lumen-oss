@@ -50,6 +50,30 @@ export function parseRender(
   };
 }
 
+/**
+ * Reads a `GET /renders/:id/progress` body, `{ progress, render }`. The status and the output URL
+ * come from `render`, so a finished render is understood even when hosted has no `progress` (it
+ * sends `null`). A failed render's message and code come from `progress`: lumen-server puts the
+ * code in `errorCode`, hosted in `stage`.
+ */
+export function parseProgress(body: Record<string, unknown>, baseUrl: URL): Render {
+  const progress = isRecord(body.progress) ? body.progress : {};
+  const failed = isRecord(body.render) && body.render.status === "failed";
+  const code = progress.errorCode ?? progress.stage;
+  return parseRender(body.render, baseUrl, {
+    ...(typeof progress.progress === "number" ? { progress: progress.progress } : {}),
+    ...(failed && typeof progress.error === "string"
+      ? {
+          error: {
+            code: typeof code === "string" ? code : "render_failed",
+            message: progress.error,
+            ...(typeof progress.retryable === "boolean" ? { retryable: progress.retryable } : {}),
+          },
+        }
+      : {}),
+  });
+}
+
 /** The error a failed render raises where a result was expected. */
 export function renderError(render: Render): LumenError {
   const failure = render.error;
