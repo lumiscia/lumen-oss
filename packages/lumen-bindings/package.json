@@ -51,8 +51,8 @@
     }
   },
   "scripts": {
-    "build": "test ! -f wasm/lumen_wasm.d.ts || (tsc -p tsconfig.json && esbuild dist/browser/worker.js --bundle --minify --format=esm --platform=browser --allow-overwrite --outfile=dist/browser/worker.js)",
-    "check": "test ! -f wasm/lumen_wasm.d.ts || tsc -p tsconfig.json --noEmit",
+    "build": "test -f wasm/lumen_wasm.d.ts || { echo 'packages/lumen-bindings: wasm/ is missing. Generate it with: just wasm-bindings-debug' >&2; exit 1; } && (tsc -p tsconfig.json && esbuild dist/browser/worker.js --bundle --minify --format=esm --platform=browser --allow-overwrite --outfile=dist/browser/worker.js)",
+    "check": "test -f wasm/lumen_wasm.d.ts || { echo 'packages/lumen-bindings: wasm/ is missing. Generate it with: just wasm-bindings-debug' >&2; exit 1; } && tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist wasm wasm.tmp-* *.tsbuildinfo",
     "test:node": "node test/node-load.mjs && node test/init-overlap.mjs"
   },
