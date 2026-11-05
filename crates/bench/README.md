@@ -28,6 +28,7 @@ Supported native targets today are:
 ## Binaries
 
 - `lumen-bench-composition`: benchmark composition render and encode modes: `render-only`, `readback`, `cpu-encode`, `metal-videotoolbox`, `vulkan-video` and `vk-cuda-nvenc`. `--profile` adds a per-phase breakdown to any of them.
+- `lumen-bench-frame-graph`: benchmark rendering a composition, one run per process: time per frame, allocations and held memory.
 - `lumen-bench-json-parse`: benchmark JSON composition parse and validate (uses demo JSON fixtures).
 - `lumen-bench-decode`: compare in-process decoding with the ffmpeg CLI. The CLI figure is wall clock for the whole process, including start-up and the rawvideo pipe, so the comparison is end-to-end. The run fails if the two paths decode different amounts of video.
 - `lumen-bench-expression`: time parsing and evaluating representative expressions, with no GPU or media.
