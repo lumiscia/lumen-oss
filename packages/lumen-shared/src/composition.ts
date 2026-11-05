@@ -122,7 +122,9 @@ export class Composition {
     }
     this.#nodes.push(nextNode);
     this.#handles.add(nextNode);
-    this.#connections.push(...connections);
+    for (const connection of connections) {
+      this.#connections.push(connection);
+    }
     return nextNode;
   }
 

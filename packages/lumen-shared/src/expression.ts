@@ -334,7 +334,8 @@ export function literal(text: string): string {
 /**
  * A raw expression, such as `expr("if(frame > 30, 1, 0)")` or `expr("node(3, 'opacity')")`, for
  * forms the helpers don't cover. `source` has no leading `=`. It takes the type of the param it
- * is in, or the one you give, as in `expr<number>(..)`.
+ * is in, or the one you give, as in `expr<number>(..)`. Given neither, as in
+ * `const x = expr("frame")`, it fits any param, and only the engine checks its type.
  */
 export function expr<T extends Value = never>(source: string): Expr<T> {
   if (source.startsWith("=")) {
