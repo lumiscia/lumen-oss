@@ -1,5 +1,49 @@
 # @lumiscia/lumen-sdk
 
+## 0.4.0
+
+### Minor Changes
+
+- 9dff5b4: The SDK now works against the hosted Lumiscia API out of the box. The default `baseUrl` is `https://api.lumiscia.com/v1`, the public API that accepts API keys. The old default, `https://lumiscia.com/api/v1`, is the dashboard proxy, which only accepts sessions. `RenderJob.costCents` is now `costMicros` (millionths of a US dollar), which is what the API returns. Render events from the hosted socket's `{ type, state }` messages and from `lumen-server`'s flat messages are now normalized into the same `RenderEvent`. `waitForRender` rejects with a `LumenRenderError` (an `Error` with `code`, `renderId`, and the server's message) when a render fails, instead of `undefined`.
+- f7e7b30: Every SDK method now throws one `LumenError` (`code`, `status?`, `requestId?`, `renderId?`, `retryable?`) instead of returning `{ error }` or throwing `LumenRenderError`, and `render`, `getRender` and `waitForRender` all return one `Render`. `render` and `getRender` used to return `{ id, render, error, cached }` with an `id` that could be undefined; now `const { id } = await lumen.render(composition)` needs no `!`, and `await lumen.render(composition)` throws on a rejected composition. `Render.url` is absolute (a relative output URL from lumen-server is resolved under `baseUrl`, so a server behind a path prefix such as `https://host/lumen` keeps its prefix), and `waitForRender` resolves with the finished `Render` instead of the completed event (the event still reaches `onEvent`).
+
+  `lumen.download(renderOrId)` returns the `Response` for the output, sending the API key only when the output is on the API's own origin, and replaces `getRenderArtifact`, which always requested `/renders/:id/artifact` and returned a `Blob`, instead of following the render's own `url`. Network failures become `LumenError` with code `network_error`, a malformed success body becomes `invalid_response`, and a media or upload response without the fields the SDK needs becomes `invalid_response` instead of resolving `undefined`, and an aborted `signal` still rejects with the abort reason, including while a response body is being read. The error body read is lumen-server's and the hosted API's `{ code, error, requestId }`; the older `{ code, message }` body is no longer recognised.
+
+  `RenderJob`, `RenderResult` and `LumenApiError` are replaced by `Render`, `RenderFailure` and `LumenError`, and every type the methods mention is now exported.
+
+- 302f50c: `waitForRender` now treats `GET /renders/:id/progress` as the truth and the socket as a wake-up. It reads the render, holds one socket open for up to a minute to hear about progress, then reads again, with sockets at least 5 s apart (plus up to 25% jitter) and the gap doubling to 30 s while they keep failing, so a wait costs about two requests a minute and still works where sockets don't. A rate limit never ends a wait: it makes every wait on the same `Lumen` hold off for the API's `Retry-After`, or a growing delay without one, for reads and socket upgrades alike. Server errors and network failures are retried with backoff, and end the wait only after ten minutes without a successful read; a 401 or 404 throws at once, and `signal` cancels from any point in the wait. `onEvent` is replaced by `onProgress`, which receives `{ id, status, progress }` from sockets and from reads and never goes backwards. The `websocket` option, `subscribeToRender`, the `ws` dependency, the `./cloudflare` export and the auth frame are gone: the SDK opens the socket itself, with the global `WebSocket` and an `Authorization` header on Node 22 and with a `fetch` upgrade on Cloudflare Workers. Browsers cannot set that header, so there the wait falls back to reading every 5 to 30 s. `engines.node` is now `>=22`. A render that finished is understood even when the API has no progress record for it, and a failed render's code is read from `errorCode` (lumen-server) or `stage` (hosted).
+
+  Six upload methods become one: `uploadMedia({ body, fileName?, contentType?, sizeBytes?, signal? })`. A `File` or typed Blob needs nothing else, and its size, name and type are taken from it; a buffer also needs a `contentType` or a `fileName` with a known extension, and a stream needs `sizeBytes` too. Streams and bodies over 64 MiB go up in 8 MiB parts and everything else in one request, so `multipart`, `partSizeBytes`, `createMediaUpload`, `createMediaMultipartUpload`, `uploadMediaMultipart`, `uploadMediaMultipartPart` and `completeMediaMultipartUpload` are removed. A file's content type comes from `contentType`, the blob's type, or its file name's extension (`mp4`, `mov`, `webm`, `mp3`, `wav`, `png`, `jpg` and similar); if none gives one, `uploadMedia` throws `invalid_upload` before any request, because the API accepts only audio, image and video types. A stream that is aborted, or produces more than `sizeBytes`, is cancelled and unlocked. `media` in `render` accepts an upload directly: `media: { hero: await lumen.uploadMedia({ body: file }) }`, so `mediaReference` is optional.
+
+  The exported types `CreateMediaUploadOptions`, `CreateMediaUploadResult`, `CreateMultipartUploadResult`, `CompleteMultipartUploadOptions`, `MediaUploadPart`, `MultipartUploadOptions`, `LumenWebSocket`, `LumenWebSocketFactory`, `LumenWebSocketFactoryOptions`, `RenderEvent`, `RenderEventHandlers` and `RenderEventSubscription` are removed; `RenderProgress` is added. A multipart upload that fails leaves its uploaded parts on the server, because the API has no route to abort one.
+
+  `@lumiscia/lumen-sdk` now re-exports everything in `@lumiscia/lumen-shared`, so `Composition`, the expression helpers and their types come from one import, and the package exports only `.`.
+
+- f850ce9: Add `verifyWebhook({ body, headers, secret, toleranceSeconds? })`, exported from both the Node and Cloudflare entry points. It verifies a render webhook signed with the [Standard Webhooks](https://www.standardwebhooks.com) scheme (`webhook-id`, `webhook-timestamp`, and `webhook-signature` headers, signed with a `whsec_` secret) using Web Crypto, then returns the typed `RenderWebhookEvent`. If the webhook can't be verified or parsed, it throws a `LumenWebhookError` with a `code`: `missing_headers`, `invalid_secret`, `invalid_signature`, `timestamp_out_of_range`, or `invalid_payload`.
+
+### Patch Changes
+
+- 7f838da: Fix SDK requests in browsers and Workers, where `fetch` no longer fails with "Illegal invocation". Multipart uploads now send the upload ID in the path the hosted API expects, stream uploads work on Node, and the API key is only sent to the API's own origin, not to an `uploadUrl` on another host.
+- Updated dependencies [c1c57b2]
+- Updated dependencies [b6ece6b]
+- Updated dependencies [6b3a821]
+- Updated dependencies [0003560]
+- Updated dependencies [75572c3]
+- Updated dependencies [8eac30a]
+- Updated dependencies [7c5ccae]
+- Updated dependencies [fb4c25b]
+- Updated dependencies [eb354e6]
+- Updated dependencies [4f3894f]
+- Updated dependencies [93fb454]
+- Updated dependencies [5a0939c]
+- Updated dependencies [37500c3]
+- Updated dependencies [f35c132]
+- Updated dependencies [0d47151]
+- Updated dependencies [e3d02e6]
+- Updated dependencies [ca87eaa]
+  - @lumiscia/lumen-shared@0.4.0
+  - @lumiscia/lumen-types@0.4.0
+
 ## 0.3.1
 
 ### Patch Changes
