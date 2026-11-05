@@ -10,6 +10,7 @@ mod pixels;
 mod prediction;
 mod resolver;
 mod store;
+mod yuv;
 
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver};
@@ -25,3 +26,4 @@ pub use resolver::{
     VideoMetadata,
 };
 pub use store::{MediaStore, TextSession};
+pub use yuv::{YuvLayout, YuvMatrix, YuvPlane, yuv_to_rgba};

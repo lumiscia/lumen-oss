@@ -74,6 +74,8 @@ export interface VideoFramePayload {
   width: number;
   height: number;
   videoFrame: VideoFrame;
+  /** The colour space the source is tagged with, which can leave out the matrix and range. */
+  sourceColorSpace?: VideoColorSpaceInit;
 }
 
 export interface VideoFramePixels extends DecodedImageFrame {
@@ -119,6 +121,19 @@ export interface LumenMediaTarget {
     width: number,
     height: number,
     rgba: Uint8Array,
+  ): void;
+  /** Takes `NV12`, `I420` or `I420A` planes and converts them with the engine's matrix rule. */
+  setVideoFrameYuv?(
+    streamId: string,
+    frame: number,
+    width: number,
+    height: number,
+    format: string,
+    data: Uint8Array,
+    offsets: Uint32Array,
+    strides: Uint32Array,
+    matrix: string | undefined,
+    fullRange: boolean,
   ): void;
 }
 

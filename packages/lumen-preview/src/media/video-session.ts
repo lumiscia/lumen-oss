@@ -25,6 +25,7 @@ const SEQUENTIAL_FRAME_GAP_SECONDS = 2;
 const VIDEO_SAMPLE_TIMESTAMP_EPSILON_SECONDS = 1e-10;
 
 type VideoSetup = {
+  colorSpace: VideoColorSpaceInit;
   input: Input;
   track: InputVideoTrack;
   sink: VideoSampleSink;
@@ -166,6 +167,7 @@ export class VideoSession {
       });
 
       return {
+        colorSpace: await track.getColorSpace(),
         input,
         track,
         sink: new VideoSampleSink(track),
@@ -208,10 +210,8 @@ export class VideoSession {
     return track;
   }
 
-  private createPayloadFromSample(
-    sample: VideoSample,
-    metadata: VideoFrameMetadata,
-  ): VideoFramePayload {
+  private createPayloadFromSample(sample: VideoSample, setup: VideoSetup): VideoFramePayload {
+    const { metadata } = setup.timeline;
     const width = Math.max(1, Math.round(sample.displayWidth ?? metadata.width));
     const height = Math.max(1, Math.round(sample.displayHeight ?? metadata.height));
     if (sample.rotation !== 0) {
@@ -220,7 +220,12 @@ export class VideoSession {
 
     const retainedSample = sample.clone();
     try {
-      return createVideoFramePayload(retainedSample.toVideoFrame(), width, height);
+      return createVideoFramePayload(
+        retainedSample.toVideoFrame(),
+        width,
+        height,
+        setup.colorSpace,
+      );
     } finally {
       retainedSample.close();
     }
@@ -255,7 +260,7 @@ export class VideoSession {
         }
 
         try {
-          results.set(request.frame, this.createPayloadFromSample(sample, setup.timeline.metadata));
+          results.set(request.frame, this.createPayloadFromSample(sample, setup));
         } finally {
           sample.close();
           activeFrame = undefined;
@@ -303,7 +308,7 @@ export class VideoSession {
           );
         }
 
-        results.set(request.frame, this.createPayloadFromSample(sample, setup.timeline.metadata));
+        results.set(request.frame, this.createPayloadFromSample(sample, setup));
         state.lastFrame = request.frame;
         state.lastTimestamp = request.timestamp;
         activeFrame = undefined;

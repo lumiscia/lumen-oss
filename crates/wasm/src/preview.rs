@@ -2,7 +2,9 @@ use std::cell::{Ref, RefCell, RefMut};
 
 use lumen_engine::{
     composition::Composition,
-    media::{VideoMetadata, collect_frame_requirements},
+    media::{
+        VideoMetadata, YuvLayout, YuvMatrix, YuvPlane, collect_frame_requirements, yuv_to_rgba,
+    },
 };
 use wasm_bindgen::prelude::*;
 
@@ -323,6 +325,44 @@ impl LumenPreviewController {
         self.change_media(|media| media.set_video_frame(stream_id.to_string(), frame, image))
     }
 
+    /// Stores a frame copied from a `VideoFrame` in its native `NV12`, `I420` or `I420A` format, with
+    /// the plane offsets and strides `copyTo` returned. `matrix` is the source's tagged WebCodecs
+    /// matrix; without one, the engine's rule for untagged video picks it from the height.
+    /// `full_range` describes the copied samples.
+    #[wasm_bindgen(js_name = "setVideoFrameYuv")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_video_frame_yuv(
+        &self,
+        stream_id: &str,
+        frame: u32,
+        width: u32,
+        height: u32,
+        format: &str,
+        data: Vec<u8>,
+        offsets: Vec<u32>,
+        strides: Vec<u32>,
+        matrix: Option<String>,
+        full_range: bool,
+    ) -> Result<(), JsValue> {
+        if width == 0 || height == 0 {
+            return Err(JsValue::from_str("video frame dimensions must be > 0"));
+        }
+        let layout = yuv_layout(format, &offsets, &strides).ok_or_else(|| {
+            JsValue::from_str(&format!("unsupported video frame layout {format}"))
+        })?;
+        let matrix = match matrix.as_deref() {
+            Some("bt709") => YuvMatrix::Bt709,
+            Some("bt470bg" | "smpte170m") => YuvMatrix::Bt601,
+            Some("bt2020-ncl") => YuvMatrix::Bt2020,
+            _ => YuvMatrix::untagged(height),
+        };
+        let rgba = yuv_to_rgba(&data, width, height, layout, matrix, full_range)
+            .map_err(|e| JsValue::from_str(&e))?;
+        let image =
+            image_frame_from_rgba(width, height, rgba).map_err(|e| JsValue::from_str(&e))?;
+        self.change_media(|media| media.set_video_frame(stream_id.to_string(), frame, image))
+    }
+
     #[wasm_bindgen(js_name = "setVideoMetadata")]
     pub fn set_video_metadata(
         &self,
@@ -466,6 +506,32 @@ fn validate_frame(state: &PreviewState, frame: u32) -> Result<(), JsValue> {
         return Err(JsValue::from_str("frame index out of range"));
     }
     Ok(())
+}
+
+fn yuv_layout(format: &str, offsets: &[u32], strides: &[u32]) -> Option<YuvLayout> {
+    let plane = |index: usize| {
+        Some(YuvPlane {
+            offset: *offsets.get(index)? as usize,
+            stride: *strides.get(index)? as usize,
+        })
+    };
+    match (format, offsets.len().min(strides.len())) {
+        ("NV12", 2) => Some(YuvLayout::Nv12 {
+            y: plane(0)?,
+            uv: plane(1)?,
+        }),
+        ("I420", 3) | ("I420A", 4) => Some(YuvLayout::I420 {
+            y: plane(0)?,
+            u: plane(1)?,
+            v: plane(2)?,
+            a: if format == "I420A" {
+                Some(plane(3)?)
+            } else {
+                None
+            },
+        }),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

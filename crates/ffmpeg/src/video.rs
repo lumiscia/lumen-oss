@@ -681,7 +681,7 @@ fn source_matrix(frame: &AvFrame) -> i32 {
         | AVCOL_SPC_SMPTE240M | AVCOL_SPC_BT2020_NCL) => colorspace as i32,
         AVCOL_SPC_BT2020_CL => AVCOL_SPC_BT2020_NCL as i32,
         // Heuristic for untagged video, not a fact about the source: HD is usually BT.709 and SD
-        // usually BT.601.
+        // usually BT.601. The preview applies the same rule in `lumen_engine::media::YuvMatrix`.
         _ if frame.height() >= 720 => AVCOL_SPC_BT709 as i32,
         _ => AVCOL_SPC_BT470BG as i32,
     }
@@ -1038,6 +1038,20 @@ mod hardware_tests {
             );
         }
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod colorspace_tests {
+    use super::*;
+
+    #[test]
+    fn untagged_video_is_bt709_from_720_rows() {
+        let mut frame = AvFrame::new().expect("frame");
+        for (height, expected) in [(719, AVCOL_SPC_BT470BG), (720, AVCOL_SPC_BT709)] {
+            unsafe { (*frame.as_mut_ptr()).height = height };
+            assert_eq!(source_matrix(&frame), expected as i32);
+        }
     }
 }
 
