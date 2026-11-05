@@ -3,17 +3,9 @@ import { describe, expect, test } from "vitest";
 import { AudioTrack } from "../src/audio.js";
 import { Composition } from "../src/composition.js";
 import { frame, hex, progress, uppercase, vec2 } from "../src/expression.js";
+import { defineComposition } from "../src/template.js";
 
 describe("Composition node IDs", () => {
-  test("assigns sequential IDs when none are provided", () => {
-    const composition = new Composition();
-
-    const first = composition.addNode({ type: "media_output" });
-    const second = composition.addNode({ type: "media_output" });
-
-    expect([first.id, second.id]).toEqual([0, 1]);
-  });
-
   test("skips explicit IDs when allocating automatic IDs", () => {
     const composition = new Composition();
 
@@ -24,42 +16,43 @@ describe("Composition node IDs", () => {
     expect([explicit.id, firstAutomatic.id, secondAutomatic.id]).toEqual([1, 0, 2]);
   });
 
-  test("rejects duplicate explicit IDs", () => {
+  test.each([
+    [
+      "an explicit ID",
+      (composition: Composition) => composition.addNode({ id: 4, type: "media_output" }).id,
+    ],
+    [
+      "an automatic ID",
+      (composition: Composition) => composition.addNode({ type: "media_output" }).id,
+    ],
+  ])("rejects an explicit ID already taken by %s", (_taken, addFirst) => {
     const composition = new Composition();
-    composition.addNode({ id: 4, type: "media_output" });
+    const id = addFirst(composition);
 
-    expect(() => composition.addNode({ id: 4, type: "media_output" })).toThrow(
-      "Node `4` already exists.",
+    expect(() => composition.addNode({ id, type: "media_output" })).toThrow(
+      `Node \`${id}\` already exists.`,
     );
     expect(composition.toJSON().nodes).toHaveLength(1);
-  });
-
-  test("rejects an explicit ID already assigned automatically", () => {
-    const composition = new Composition();
-    const automatic = composition.addNode({ type: "media_output" });
-
-    expect(() => composition.addNode({ id: automatic.id, type: "media_output" })).toThrow(
-      "already exists",
-    );
   });
 });
 
 describe("Composition connections", () => {
-  test("connects to the named target port", () => {
+  test("connects to the named target port, by node or by id", () => {
     const composition = new Composition();
     const background = composition.addNode({ type: "background" });
-    const output = composition.addNode({ type: "media_output" });
+    const title = composition.addNode({ type: "text" });
+    const merge = composition.addNode({ type: "merge" });
 
-    composition.connect(background, output, { toPort: "source" });
-    composition.connect(background.id, output.id, { toPort: "source" });
+    composition.connect(background, merge, { toPort: "base" });
+    composition.connect(title.id, merge.id, { toPort: "overlay" });
 
     expect(composition.toJSON().connections).toEqual([
-      { from_node: 0, to_node: 1, to_port: "source" },
-      { from_node: 0, to_node: 1, to_port: "source" },
+      { from_node: 0, to_node: 2, to_port: "base" },
+      { from_node: 1, to_node: 2, to_port: "overlay" },
     ]);
   });
 
-  test("rejects nodes of another composition and unknown ids", () => {
+  test("rejects handles of another composition but leaves ids to the engine", () => {
     const composition = new Composition();
     const output = composition.addNode({ type: "media_output" });
     const foreign = new Composition().addNode({ type: "background" });
@@ -67,10 +60,12 @@ describe("Composition connections", () => {
     expect(() => composition.connect(foreign, output, { toPort: "source" })).toThrow(
       "not a node of this composition",
     );
-    expect(() => composition.connect(9, output, { toPort: "source" })).toThrow(
-      "Node `9` is not a node of this composition.",
-    );
     expect(composition.toJSON().connections).toEqual([]);
+
+    composition.connect(4, 5, { toPort: "source" });
+    expect(composition.toJSON().connections).toEqual([
+      { from_node: 4, to_node: 5, to_port: "source" },
+    ]);
   });
 });
 
@@ -104,14 +99,33 @@ describe("Composition inputs", () => {
     expect(composition.toJSON().nodes.every((node) => !("inputs" in node))).toBe(true);
   });
 
-  test("adds nothing when an input is not a node of the composition", () => {
+  test("a failed addNode leaves the composition and the next automatic ID as they were", () => {
     const composition = new Composition();
     const foreign = new Composition().addNode({ type: "background" });
+    const card = defineComposition({
+      name: "atomic",
+      build: (c) => c.addNode({ type: "background" }),
+    });
+    const throwing = Object.defineProperty({}, "title", {
+      enumerable: true,
+      get: () => {
+        throw new Error("boom");
+      },
+    });
+    const before = JSON.stringify(composition);
 
     expect(() => composition.addNode({ type: "blur", inputs: { source: foreign } })).toThrow(
       "not a node of this composition",
     );
-    expect(composition.toJSON()).toMatchObject({ connections: [], nodes: [] });
+    expect(() =>
+      composition.addNode({
+        ...card.clip(),
+        params: { composition: "atomic", props: throwing },
+      }),
+    ).toThrow("boom");
+
+    expect(JSON.stringify(composition)).toBe(before);
+    expect(composition.addNode({ type: "media_output" }).id).toBe(0);
   });
 });
 

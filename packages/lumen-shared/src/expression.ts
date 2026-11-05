@@ -333,9 +333,10 @@ export function literal(text: string): string {
 
 /**
  * A raw expression, such as `expr("if(frame > 30, 1, 0)")` or `expr("node(3, 'opacity')")`, for
- * forms the helpers don't cover. `source` has no leading `=`.
+ * forms the helpers don't cover. `source` has no leading `=`. It takes the type of the param it
+ * is in, or the one you give, as in `expr<number>(..)`.
  */
-export function expr<T extends Value = Value>(source: string): Expr<T> {
+export function expr<T extends Value = never>(source: string): Expr<T> {
   if (source.startsWith("=")) {
     throw new TypeError("`expr` takes the expression without its leading `=`.");
   }

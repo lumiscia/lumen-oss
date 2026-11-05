@@ -94,7 +94,7 @@ export class Composition {
       readonly [clipTemplate]?: ClipTemplate;
     };
     const input = rest as unknown as NodeInput<TKind>;
-    const id = input.id ?? this.#allocateNodeId();
+    const id = input.id ?? this.#nextFreeNodeId();
     if (this.#nodeIds.has(id)) {
       throw new Error(`Node \`${id}\` already exists.`);
     }
@@ -102,29 +102,32 @@ export class Composition {
       (inputs ?? {}) as Readonly<Record<string, NodeReference | readonly NodeReference[]>>,
     ).flatMap(([toPort, from]) =>
       [from].flat().map((reference): Connection => ({
-        from_node: this.#knownNodeId(reference),
+        from_node: this.#ownedNodeId(reference),
         to_node: id,
         to_port: toPort,
       })),
     );
-    if (template !== undefined) {
-      this.#addTemplate(template);
-    }
-
+    const addTemplate = template === undefined ? undefined : this.#planTemplate(template);
     const nextNode = {
       ...input,
       id,
       ...(input.params === undefined ? {} : { params: lower(input.params) }),
     } as CompositionNode<TKind>;
 
+    // Everything that can throw is above, so a failed addition leaves the composition as it was.
+    addTemplate?.();
     this.#nodeIds.add(id);
+    if (input.id === undefined) {
+      this.#nextNodeId = id + 1;
+    }
     this.#nodes.push(nextNode);
     this.#handles.add(nextNode);
     this.#connections.push(...connections);
     return nextNode;
   }
 
-  #addTemplate(template: ClipTemplate): void {
+  /** Checks that `template` fits and returns the function that registers it. */
+  #planTemplate(template: ClipTemplate): () => void {
     const added = new Map<string, ClipTemplate>();
     for (const next of [template, ...template.compositions]) {
       const existing = this.#compositions.get(next.name) ?? added.get(next.name);
@@ -138,28 +141,28 @@ export class Composition {
     }
     const functions = template.functions.filter((definition) => this.#isNewFunction(definition));
 
-    for (const [name, next] of added) {
-      this.#compositions.set(name, next);
-    }
-    for (const definition of functions) {
-      this.#functions.set(functionName(definition), definition);
-    }
+    return () => {
+      for (const [name, next] of added) {
+        this.#compositions.set(name, next);
+      }
+      for (const definition of functions) {
+        this.#functions.set(functionName(definition), definition);
+      }
+    };
   }
 
-  #allocateNodeId(): number {
-    while (this.#nodeIds.has(this.#nextNodeId)) {
-      this.#nextNodeId += 1;
+  #nextFreeNodeId(): number {
+    let id = this.#nextNodeId;
+    while (this.#nodeIds.has(id)) {
+      id += 1;
     }
-
-    const id = this.#nextNodeId;
-    this.#nextNodeId += 1;
     return id;
   }
 
-  #knownNodeId(node: NodeReference): number {
-    const known = typeof node === "number" ? this.#nodeIds.has(node) : this.#handles.has(node);
-    if (!known) {
-      throw new Error(`Node \`${nodeId(node)}\` is not a node of this composition.`);
+  /** A node handle must come from this composition. Ids are the engine's to check. */
+  #ownedNodeId(node: NodeReference): number {
+    if (typeof node !== "number" && !this.#handles.has(node)) {
+      throw new Error(`Node \`${node.id}\` is not a node of this composition.`);
     }
     return nodeId(node);
   }
@@ -188,8 +191,8 @@ export class Composition {
     options: ConnectOptions<TKind>,
   ): this {
     this.#connections.push({
-      from_node: this.#knownNodeId(from),
-      to_node: this.#knownNodeId(to),
+      from_node: this.#ownedNodeId(from),
+      to_node: this.#ownedNodeId(to),
       to_port: options.toPort,
     });
     return this;
