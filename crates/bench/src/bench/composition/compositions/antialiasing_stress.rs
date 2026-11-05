@@ -111,9 +111,7 @@ impl CompositionFixture for AntialiasingStress {
                             stroke_paint: Paint::solid([255, 255, 255, 210]).into(),
                             stroke_width: Deferred::value(2.0),
                             edge_antialias: Deferred::value(self.edge_antialias),
-                            ..Default::default()
                         },
-                        ..Default::default()
                     },
                 })
             };
@@ -205,7 +203,6 @@ impl CompositionFixture for AntialiasingStress {
                         stroke_paint: Paint::solid([255, 255, 255, 220]).into(),
                         stroke_width: Deferred::value(3.0),
                         edge_antialias: Deferred::value(self.edge_antialias),
-                        ..Default::default()
                     },
                     ..Default::default()
                 },

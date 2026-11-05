@@ -121,7 +121,10 @@ impl ClipWindow {
         let den = frame.den();
         let elapsed = frame.num() - self.start * den;
         let duration = self.duration * den;
-        if !(elapsed >= 0.0) || !(self.duration > 0.0) {
+        // NaN fails both comparisons, so a non-finite window or frame hides the clip.
+        let started = elapsed >= 0.0;
+        let has_duration = self.duration > 0.0;
+        if !started || !has_duration {
             return None;
         }
         let elapsed = if elapsed < duration {
