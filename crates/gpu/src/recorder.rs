@@ -578,7 +578,7 @@ impl Recorder {
                     output_key.height
                 ));
             }
-            if target_key.format.remove_srgb_suffix() != output_key.format.remove_srgb_suffix() {
+            if target_key.format != output_key.format {
                 return Err(anyhow!(
                     "the external texture has format {:?}, expected {:?}",
                     target_key.format,

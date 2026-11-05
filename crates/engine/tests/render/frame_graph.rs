@@ -279,6 +279,11 @@ fn a_target_of_another_size_or_format_is_refused() {
     for (size, format, expected) in [
         (4, wgpu::TextureFormat::Rgba8Unorm, "size 4x4, expected 8x8"),
         (8, wgpu::TextureFormat::Rgba16Float, "format Rgba16Float"),
+        (
+            8,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            "format Rgba8UnormSrgb",
+        ),
     ] {
         let texture = renderer
             .gpu_renderer()

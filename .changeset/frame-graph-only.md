@@ -11,9 +11,9 @@ Behaviour changes:
 - If a source's first output frame shows it twice and only the second import fails, the render fails with the "would change" error instead of moving both uses to CPU decoding.
 - Video jobs can hold more VRAM.
 - Shaders chosen by an expression build at first use. A bad literal shader still fails at compile time when the output can reach it.
-- `compile()` now checks every branch a later frame can reach, not only what frame 0 shows. A bad literal shader or uniform under a clip that hasn't started, or on an expression switch's other layer, fails at compile instead of at the frame that reaches it. Disconnected nodes, unplayed templates and the unselected layers of a literal switch still aren't checked.
+- `compile()` now checks every branch connected to the output, not only what frame 0 shows, even if no frame ever reaches it. A bad literal shader or uniform under a clip that hasn't started, a zero-duration clip, or any layer of an expression switch, including one like `selected_layer: "=0"`, fails at compile. Disconnected nodes, unplayed templates and the unselected layers of a literal switch still aren't checked.
 - `compile()` no longer evaluates uniform expressions, so one giving the wrong component count fails at the frame that uses it. Literal uniforms are still checked at compile, including the length of a vector with expression components.
-- `render_frame_into_external` accepts more targets: a `COPY_DST` texture of the right size no longer needs the other usages, and a format differing only by its sRGB suffix is accepted, with the bytes copied unchanged. A wrong size or any other format is still refused, with a reworded error.
+- `render_frame_into_external` accepts more targets: a `COPY_DST` texture of the right size and format no longer needs the other usages. A wrong size or format is still refused, with a reworded error.
 
 For the preview: the WASM `LumenPreviewController` no longer has `setLookaheadCount`, because there is nothing to build ahead. `setLookaheadCount` on the `@lumiscia/lumen-preview` controller and the `lookaheadCount` prop still set how far ahead media loads.
 
