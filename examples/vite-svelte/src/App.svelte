@@ -1,6 +1,6 @@
 <script lang="ts">
     import { Composition } from "@lumiscia/lumen-shared";
-    import { LumenCanvas, createLumenPreview } from "@lumiscia/lumen-svelte";
+    import { Player, createLumenPreview } from "@lumiscia/lumen-svelte";
     import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
     import type { LumenPreviewStats } from "@lumiscia/lumen-svelte";
 
@@ -66,7 +66,7 @@
 </script>
 
 <main>
-    <LumenCanvas {preview} bindings={lumenBindings} {composition} class="stage" onStats={(next) => (stats = next)} />
+    <Player {preview} bindings={lumenBindings} {composition} class="stage" onStats={(next) => (stats = next)} />
     <div class="controls">
         <button
             type="button"

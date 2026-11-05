@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createLumenPreview, type LumenWorkerBindings } from "@lumiscia/lumen-preview";
 
-import { LumenCanvas } from "../src/LumenCanvas.js";
+import { Player } from "../src/Player.js";
 
 class FakeWorker {
   static instances: FakeWorker[] = [];
@@ -28,7 +28,7 @@ const bindings: LumenWorkerBindings = {
 };
 
 // The real session, with only the browser's Worker, canvas transfer and WebGPU faked.
-describe("LumenCanvas with a real session", () => {
+describe("Player with a real session", () => {
   beforeEach(() => {
     FakeWorker.instances = [];
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -51,7 +51,7 @@ describe("LumenCanvas with a real session", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <LumenCanvas preview={preview} bindings={bindings} />
+          <Player preview={preview} bindings={bindings} />
         </StrictMode>,
       );
     });

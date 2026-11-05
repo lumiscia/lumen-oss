@@ -24,13 +24,13 @@ vi.mock("@lumiscia/lumen-preview", () => ({
   },
 }));
 
-import { LumenCanvas } from "../src/LumenCanvas.js";
+import { Player } from "../src/Player.js";
 
 const bindings = {} as LumenWorkerBindings;
 
-// These cover the wiring between props and a mocked session. LumenCanvas.lifecycle.test.tsx runs the
+// These cover the wiring between props and a mocked session. Player.lifecycle.test.tsx runs the
 // real one, for what actually gets cleaned up.
-describe("LumenCanvas", () => {
+describe("Player", () => {
   beforeEach(() => {
     sessions.length = 0;
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -47,12 +47,12 @@ describe("LumenCanvas", () => {
     const root = createRoot(container);
 
     await act(async () => {
-      root.render(<LumenCanvas preview={firstPreview} bindings={bindings} className="stage" />);
+      root.render(<Player preview={firstPreview} bindings={bindings} className="stage" />);
     });
     expect(sessions[0]?.host.className).toBe("stage");
 
     await act(async () => {
-      root.render(<LumenCanvas preview={nextPreview} bindings={bindings} composition={null} />);
+      root.render(<Player preview={nextPreview} bindings={bindings} composition={null} />);
     });
     expect(sessions[0]?.dispose).toHaveBeenCalledOnce();
     expect(sessions[1]?.options.preview).toBe(nextPreview);
@@ -67,10 +67,10 @@ describe("LumenCanvas", () => {
     const composition = { toJSON: () => ({}) } as never;
 
     await act(async () => {
-      root.render(<LumenCanvas preview={preview} bindings={bindings} />);
+      root.render(<Player preview={preview} bindings={bindings} />);
     });
     await act(async () => {
-      root.render(<LumenCanvas preview={preview} bindings={bindings} composition={composition} />);
+      root.render(<Player preview={preview} bindings={bindings} composition={composition} />);
     });
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.update).toHaveBeenLastCalledWith(expect.objectContaining({ composition }));
