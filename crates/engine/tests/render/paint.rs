@@ -135,3 +135,43 @@ fn a_gradient_uses_all_eight_stops_and_refuses_a_ninth() {
         "{error}"
     );
 }
+
+#[test]
+fn linear_srgb_interpolation_blends_in_linear_light() {
+    let paint = |interpolation: &str| {
+        json!({
+            "type": "linear_gradient", "start": [0, 0], "end": [1, 0],
+            "interpolation": interpolation
+        })
+    };
+    let translucent = json!({
+        "type": "linear_gradient", "start": [0, 0], "end": [1, 0],
+        "interpolation": "linear_srgb",
+        "stops": [
+            { "offset": 0, "color": [255, 255, 255, 255] },
+            { "offset": 1, "color": [0, 0, 0, 0] },
+        ]
+    });
+    let midpoint = |scene| Expect::Probes(vec![(8, 0, scene)]);
+    check(vec![
+        Case::new(
+            "srgb",
+            ramp(17, 1, paint("srgb")),
+            midpoint([128, 128, 128, 255]),
+        )
+        .tolerance(2),
+        Case::new(
+            "linear_srgb",
+            ramp(17, 1, paint("linear_srgb")),
+            midpoint([188, 188, 188, 255]),
+        )
+        .tolerance(2),
+        // Premultiplied linear white at half alpha is still white, so no dark fringe appears.
+        Case::new(
+            "linear_srgb to a transparent stop",
+            background(17, 1, translucent),
+            midpoint([128, 128, 128, 128]),
+        )
+        .tolerance(2),
+    ]);
+}

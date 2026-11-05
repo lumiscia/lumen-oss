@@ -1,6 +1,7 @@
 // Shared paint sampling for background, shape and path shaders. Requires the
 // alpha chunk. Paint colours arrive as straight sRGB and are sampled as
-// premultiplied colour, with gradient stops interpolated in premultiplied space.
+// premultiplied colour, with gradient stops interpolated in premultiplied space, in sRGB or in
+// linear light as the paint asks.
 
 struct Paint {
     colors: array<vec4<f32>, 8>,
@@ -32,20 +33,41 @@ fn spread_t(paint: Paint, value: f32) -> f32 {
     return clamp(value, 0.0, 1.0);
 }
 
-// TODO: support interpolation modes beyond the current sRGB mix path.
+fn srgb_to_linear(color: vec3<f32>) -> vec3<f32> {
+    return select(pow((color + 0.055) / 1.055, vec3<f32>(2.4)), color / 12.92, color <= vec3<f32>(0.04045));
+}
+
+fn linear_to_srgb(color: vec3<f32>) -> vec3<f32> {
+    return select(1.055 * pow(color, vec3<f32>(1.0 / 2.4)) - 0.055, color * 12.92, color <= vec3<f32>(0.0031308));
+}
+
+// Stop `index` premultiplied, with its colour in linear light when the paint interpolates there.
+fn gradient_stop(paint: Paint, index: u32) -> vec4<f32> {
+    let stop = paint.colors[index];
+    if (paint.interpolation == 1u) {
+        return premultiply(vec4<f32>(srgb_to_linear(stop.rgb), stop.a));
+    }
+    return premultiply(stop);
+}
+
 fn interpolate_color(paint: Paint, t_raw: f32) -> vec4<f32> {
     let t = spread_t(paint, t_raw);
     let count = max(paint.stop_count, 1u);
-    var color = premultiply(paint.colors[0]);
+    var color = gradient_stop(paint, 0u);
     for (var i = 1u; i < 8u; i = i + 1u) {
         if (i < count) {
             let left = paint.offsets[i - 1u].x;
             let right = paint.offsets[i].x;
             let span = max(right - left, 0.00001);
             let amount = clamp((t - left) / span, 0.0, 1.0);
-            let blended = mix(premultiply(paint.colors[i - 1u]), premultiply(paint.colors[i]), amount);
+            let blended = mix(gradient_stop(paint, i - 1u), gradient_stop(paint, i), amount);
             color = select(color, blended, t >= left);
         }
+    }
+    if (paint.interpolation == 1u) {
+        // Encoding needs straight colour, and unpremultiply maps alpha 0 to transparent black.
+        let straight = unpremultiply(color);
+        return premultiply(vec4<f32>(linear_to_srgb(straight.rgb), straight.a));
     }
     return color;
 }
