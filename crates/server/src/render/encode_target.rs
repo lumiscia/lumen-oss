@@ -391,10 +391,6 @@ mod tests {
     /// on NVIDIA the CUDA context are up.
     #[test]
     fn a_cuda_target_that_will_not_open_leaves_a_working_cpu_upload() {
-        if std::panic::catch_unwind(lumen_ffmpeg::CudaDriver::load).is_err() {
-            eprintln!("no CUDA library to load; skipping");
-            return;
-        }
         let composition = super::super::parse_composition(&serde_json::json!({
             "timeline": { "fps": 24, "duration_frames": 3 },
             "render_settings": { "width": 16, "height": 16 },

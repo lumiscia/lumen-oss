@@ -20,6 +20,10 @@ pub struct CudaDriver;
 
 impl CudaDriver {
     pub fn load() -> Result<Self, String> {
+        // cudarc panics on its first call into a library that isn't there.
+        if !unsafe { sys::is_culib_present() } {
+            return Err("the CUDA library isn't installed".to_string());
+        }
         result::init().map_err(|error| error.to_string())?;
         Ok(Self)
     }
