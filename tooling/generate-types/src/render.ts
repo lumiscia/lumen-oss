@@ -24,6 +24,7 @@ const valueTypes = ["Color", "ExpressionString", "ExpressionValue", "HexColor", 
 interface PortSchema {
   readonly name: string;
   readonly kind: string;
+  readonly variadic: boolean;
 }
 
 interface NodeVariant {
@@ -68,6 +69,7 @@ const portSchemas = (value: unknown, what: string): PortSchema[] =>
   array(value).map((port) => ({
     name: requireString(object(port).name, `${what} name`),
     kind: requireString(object(port).kind, `${what} kind`),
+    variadic: object(port).variadic === true,
   }));
 
 function nodeVariants(schema: JsonSchema): NodeVariant[] {
@@ -130,6 +132,9 @@ const renderNodeInputMapMember = (node: NodeVariant): string =>
 
 const renderNodeInputPortMapMember = (node: NodeVariant): string =>
   `  readonly ${quote(node.kind)}: ${union(uniqueSorted(node.inputs.map((port) => port.name)))};`;
+
+const renderNodeVariadicPortMapMember = (node: NodeVariant): string =>
+  `  readonly ${quote(node.kind)}: ${union(uniqueSorted(node.inputs.filter((port) => port.variadic).map((port) => port.name)))};`;
 
 const renderConst = (name: string, value: unknown): string =>
   `export const ${name} = ${JSON.stringify(value, null, 2)} as const;`;
@@ -213,10 +218,16 @@ export interface NodeInputPortNameByKind {
 ${nodes.map(renderNodeInputPortMapMember).join("\n")}
 }
 
+export interface NodeVariadicInputPortNameByKind {
+${nodes.map(renderNodeVariadicPortMapMember).join("\n")}
+}
+
 export type CompositionNode<TKind extends NodeKind = NodeKind> = CompositionNodeByKind[TKind];
 export type CompositionNodeInput<TKind extends NodeKind = NodeKind> = CompositionNodeInputByKind[TKind];
 /** The input port names of a node kind, which a connection's \`to_port\` names. */
 export type NodeInputPortName<TKind extends NodeKind = NodeKind> = NodeInputPortNameByKind[TKind];
+/** The input ports of a node kind that take any number of connections. */
+export type NodeVariadicInputPortName<TKind extends NodeKind = NodeKind> = NodeVariadicInputPortNameByKind[TKind];
 `;
 }
 

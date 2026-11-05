@@ -15,7 +15,6 @@ import type {
   NodeInput,
   NodeReference,
   RenderSettingsInput,
-  Size,
   TimelineInput,
 } from "./types.js";
 
@@ -29,19 +28,33 @@ const defaultTimeline = {
   fps: 30,
 } satisfies LumenComposition["timeline"];
 
-interface ClipTemplate {
+/** A template with the nested templates and functions its `build` needed, as of its definition. */
+export interface ClipTemplate {
   readonly name: string;
   readonly template: CompositionTemplate;
-  readonly composition: Composition;
+  readonly compositions: readonly ClipTemplate[];
+  readonly functions: readonly FunctionDefinition[];
 }
 
 /** The template a clip node input plays, which `addNode` registers. Spreading the input keeps it. */
 export const clipTemplate = Symbol("clipTemplate");
 
+let dependenciesOf: (composition: Composition) => Pick<ClipTemplate, "compositions" | "functions">;
+
+/** Captures what `composition`, a template's built nodes, has registered so far. */
+export function captureClipTemplate(
+  name: string,
+  template: CompositionTemplate,
+  composition: Composition,
+): ClipTemplate {
+  return { name, template, ...dependenciesOf(composition) };
+}
+
 export class Composition {
   readonly #compositions = new Map<string, ClipTemplate>();
   readonly #connections: Connection[] = [];
   readonly #functions = new Map<string, FunctionDefinition>();
+  readonly #handles = new WeakSet<object>();
   readonly #nodeIds = new Set<number>();
   readonly #nodes: CompositionNode[] = [];
   #nextNodeId = 0;
@@ -51,6 +64,13 @@ export class Composition {
   #renderSettings: LumenComposition["render_settings"];
   #timeline: LumenComposition["timeline"];
 
+  static {
+    dependenciesOf = (composition) => ({
+      compositions: [...composition.#compositions.values()],
+      functions: [...composition.#functions.values()],
+    });
+  }
+
   constructor(options: CompositionOptions = {}) {
     this.#audio = audioTimeline(options.audio);
     this.#metadata = options.metadata;
@@ -59,81 +79,112 @@ export class Composition {
     this.#timeline = timeline(options.timeline);
   }
 
+  /**
+   * Adds a node. `inputs` connects other nodes of this composition to its ports in order, as
+   * `connect` would after it; a variadic port such as `layers` takes an array.
+   */
   addNode<TKind extends NodeKind>(
     node: NodeInput<TKind> & { readonly type: TKind },
   ): CompositionNode<TKind> {
-    const { [clipTemplate]: template, ...rest } = node as NodeInput<TKind> & {
+    const {
+      [clipTemplate]: template,
+      inputs,
+      ...rest
+    } = node as NodeInput<TKind> & {
       readonly [clipTemplate]?: ClipTemplate;
     };
-    const input = rest as NodeInput<TKind>;
-    const id = input.id ?? this.#allocateNodeId();
+    const input = rest as unknown as NodeInput<TKind>;
+    const id = input.id ?? this.#nextFreeNodeId();
     if (this.#nodeIds.has(id)) {
       throw new Error(`Node \`${id}\` already exists.`);
     }
-    if (template !== undefined) {
-      this.#addComposition(template);
-    }
-
+    const connections = Object.entries(
+      (inputs ?? {}) as Readonly<Record<string, NodeReference | readonly NodeReference[]>>,
+    ).flatMap(([toPort, from]) =>
+      [from].flat().map((reference): Connection => ({
+        from_node: this.#ownedNodeId(reference),
+        to_node: id,
+        to_port: toPort,
+      })),
+    );
+    const addTemplate = template === undefined ? undefined : this.#planTemplate(template);
     const nextNode = {
       ...input,
       id,
       ...(input.params === undefined ? {} : { params: lower(input.params) }),
     } as CompositionNode<TKind>;
 
+    // Everything that can throw is above, so a failed addition leaves the composition as it was.
+    addTemplate?.();
     this.#nodeIds.add(id);
+    if (input.id === undefined) {
+      this.#nextNodeId = id + 1;
+    }
     this.#nodes.push(nextNode);
+    this.#handles.add(nextNode);
+    for (const connection of connections) {
+      this.#connections.push(connection);
+    }
     return nextNode;
   }
 
-  #addComposition(template: ClipTemplate): void {
-    const existing = this.#compositions.get(template.name);
-    if (existing === template) {
-      return;
+  /** Checks that `template` fits and returns the function that registers it. */
+  #planTemplate(template: ClipTemplate): () => void {
+    const added = new Map<string, ClipTemplate>();
+    for (const next of [template, ...template.compositions]) {
+      const existing = this.#compositions.get(next.name) ?? added.get(next.name);
+      if (existing === next) {
+        continue;
+      }
+      if (existing !== undefined) {
+        throw new Error(`Composition \`${next.name}\` already exists.`);
+      }
+      added.set(next.name, next);
     }
-    if (existing !== undefined) {
-      throw new Error(`Composition \`${template.name}\` already exists.`);
-    }
+    const functions = template.functions.filter((definition) => this.#isNewFunction(definition));
 
-    this.#compositions.set(template.name, template);
-    for (const nested of template.composition.#compositions.values()) {
-      this.#addComposition(nested);
-    }
-    for (const definition of template.composition.#functions.values()) {
-      this.addFunction(definition);
-    }
+    return () => {
+      for (const [name, next] of added) {
+        this.#compositions.set(name, next);
+      }
+      for (const definition of functions) {
+        this.#functions.set(functionName(definition), definition);
+      }
+    };
   }
 
-  #allocateNodeId(): number {
-    while (this.#nodeIds.has(this.#nextNodeId)) {
-      this.#nextNodeId += 1;
+  #nextFreeNodeId(): number {
+    let id = this.#nextNodeId;
+    while (this.#nodeIds.has(id)) {
+      id += 1;
     }
-
-    const id = this.#nextNodeId;
-    this.#nextNodeId += 1;
     return id;
+  }
+
+  /** A node handle must come from this composition. Ids are the engine's to check. */
+  #ownedNodeId(node: NodeReference): number {
+    if (typeof node !== "number" && !this.#handles.has(node)) {
+      throw new Error(`Node \`${node.id}\` is not a node of this composition.`);
+    }
+    return nodeId(node);
   }
 
   /** Adds a function from `fn` to the composition's `functions`. */
   addFunction(definition: FunctionDefinition): this {
+    if (this.#isNewFunction(definition)) {
+      this.#functions.set(functionName(definition), definition);
+    }
+    return this;
+  }
+
+  /** Whether `definition` is yet to be added. A different function by the same name throws. */
+  #isNewFunction(definition: FunctionDefinition): boolean {
     const name = functionName(definition);
     const existing = this.#functions.get(name);
     if (existing !== undefined && existing !== definition) {
       throw new Error(`Function \`${name}\` already exists.`);
     }
-
-    for (const other of [...this.#functions.values(), definition]) {
-      const clash = functionParams(other).find(
-        (param) => param === name || this.#functions.has(param),
-      );
-      if (clash !== undefined) {
-        throw new Error(
-          `Parameter \`${clash}\` of \`${functionName(other)}\` has the same name as a function.`,
-        );
-      }
-    }
-
-    this.#functions.set(name, definition);
-    return this;
+    return existing === undefined;
   }
 
   connect<TKind extends NodeKind>(
@@ -141,62 +192,11 @@ export class Composition {
     to: number | { readonly id: number; readonly type?: TKind },
     options: ConnectOptions<TKind>,
   ): this {
-    const connection: Connection = {
-      from_node: nodeId(from),
-      to_node: nodeId(to),
+    this.#connections.push({
+      from_node: this.#ownedNodeId(from),
+      to_node: this.#ownedNodeId(to),
       to_port: options.toPort,
-    };
-
-    this.#connections.push(
-      options.fromPort === undefined
-        ? connection
-        : {
-            ...connection,
-            from_port: options.fromPort,
-          },
-    );
-
-    return this;
-  }
-
-  setSize(size: Size): this {
-    this.#renderSettings = {
-      ...this.#renderSettings,
-      height: size.height,
-      width: size.width,
-    };
-    return this;
-  }
-
-  setFps(fps: number): this {
-    this.#timeline = {
-      ...this.#timeline,
-      fps,
-    };
-    return this;
-  }
-
-  setDurationFrames(durationFrames: number): this {
-    this.#timeline = {
-      ...this.#timeline,
-      duration_frames: durationFrames,
-    };
-    return this;
-  }
-
-  setDurationSeconds(durationSeconds: number): this {
-    return this.setDurationFrames(
-      Math.ceil(durationSeconds * (this.#timeline.fps ?? defaultTimeline.fps)),
-    );
-  }
-
-  setMetadata(metadata: LumenComposition["metadata"]): this {
-    this.#metadata = metadata;
-    return this;
-  }
-
-  setAudio(audio: AudioTimelineInput | undefined): this {
-    this.#audio = audioTimeline(audio);
+    });
     return this;
   }
 
@@ -244,16 +244,10 @@ export class Composition {
   }
 }
 
-/**
- * Turns every `Expr` in plain objects and arrays into its `=...` string. Objects with their own
- * `toJSON` are left for it to serialize.
- */
+/** Turns every `Expr` in plain objects and arrays into its `=...` string. */
 function lower(value: unknown): unknown {
   if (value instanceof Expr) {
     return value.toString();
-  }
-  if (typeof (value as { toJSON?: unknown } | null)?.toJSON === "function") {
-    return value;
   }
   if (Array.isArray(value)) {
     return value.map(lower);
@@ -285,13 +279,17 @@ function renderSettings(
   };
 }
 
-function timeline(input: TimelineInput | undefined): LumenComposition["timeline"] {
-  const fps = input?.fps ?? defaultTimeline.fps;
+function timeline(input: TimelineInput = {}): LumenComposition["timeline"] {
+  const {
+    duration_frames: durationFrames = defaultTimeline.duration_frames,
+    durationSeconds,
+    fps = defaultTimeline.fps,
+    ...rest
+  } = input;
   return {
+    ...rest,
     duration_frames:
-      input?.durationSeconds === undefined
-        ? (input?.duration_frames ?? defaultTimeline.duration_frames)
-        : Math.ceil(input.durationSeconds * fps),
+      durationSeconds === undefined ? durationFrames : Math.ceil(durationSeconds * fps),
     fps,
   };
 }
@@ -317,13 +315,4 @@ function emptyAudioTimeline(): AudioTimelineInput {
 
 function functionName(definition: FunctionDefinition): string {
   return definition.signature.slice(0, definition.signature.indexOf("("));
-}
-
-function functionParams(definition: FunctionDefinition): string[] {
-  const { signature } = definition;
-  return signature
-    .slice(signature.indexOf("(") + 1, signature.lastIndexOf(")"))
-    .split(",")
-    .map((param) => param.trim())
-    .filter((param) => param !== "");
 }

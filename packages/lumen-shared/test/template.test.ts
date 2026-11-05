@@ -102,4 +102,13 @@ describe("defineComposition", () => {
       "Composition `x` sets `fps` without a `duration`.",
     );
   });
+
+  test("registers nothing when a template's function clashes with the composition's", () => {
+    const root = new Composition().addFunction(
+      fn("fade_in(start)", (start: Num) => start as never),
+    );
+
+    expect(() => root.addNode(titleCard.clip())).toThrow("Function `fade_in` already exists.");
+    expect(root.toJSON().compositions).toBeUndefined();
+  });
 });
