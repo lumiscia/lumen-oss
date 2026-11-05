@@ -345,9 +345,18 @@ impl VideoDecoder {
         }
     }
 
-    pub fn flush(&mut self) {
+    /// Forgets all input and output, so the next frame received comes from the next packet sent.
+    ///
+    /// FFmpeg's HEVC decoder doesn't empty its output queue on a flush. An IDR frame releases every
+    /// earlier frame into that queue at once, and only frame threads, which hardware decoders and
+    /// single-CPU hosts don't use, move them somewhere the flush clears.
+    pub fn flush(&mut self) -> Result<()> {
         unsafe { sys::avcodec_flush_buffers(self.context) };
         self.discarded_pts.clear();
+        let mut frame = AvFrame::new()?;
+        // These frames are being thrown away, so an error about them doesn't matter either.
+        while matches!(self.receive_frame(&mut frame), Ok(ReceiveStatus::Frame)) {}
+        Ok(())
     }
 
     /// FFmpeg's native AV1 decoder keeps a packet's discard flag on every frame that packet
@@ -978,7 +987,7 @@ mod hardware_tests {
     /// The frames context of the first frame decoded after the input is read from the start.
     fn first_frame_context(input: &mut InputContext, decoder: &mut VideoDecoder) -> Option<usize> {
         input.seek_stream(0, 0).expect("seek to the start");
-        decoder.flush();
+        decoder.flush().unwrap();
         let mut frame = AvFrame::new().expect("frame");
         while let Some(packet) = input.read_packet().expect("read packet") {
             decoder.send_packet(&packet).ok()?;
