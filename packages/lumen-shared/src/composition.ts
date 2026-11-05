@@ -76,8 +76,8 @@ export class Composition {
   constructor(options: CompositionOptions = {}) {
     this.#audio = options.audio && {
       ...options.audio,
-      clips: [...options.audio.clips],
-      tracks: [...options.audio.tracks],
+      clips: options.audio.clips.map((clip) => ({ ...clip })),
+      tracks: options.audio.tracks.map((track) => ({ ...track })),
     };
     this.#metadata = options.metadata;
     this.#lumenSchemaVersion = options.lumenSchemaVersion;
