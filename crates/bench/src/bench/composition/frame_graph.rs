@@ -55,7 +55,7 @@ struct Args {
     scrub: bool,
     frames: Option<u32>,
     passes: u32,
-    launch_dir: PathBuf,
+    launch_dir: Option<PathBuf>,
     full_render: bool,
     out: Option<PathBuf>,
 }
@@ -66,7 +66,7 @@ fn parse_args() -> anyhow::Result<Args> {
         scrub: false,
         frames: None,
         passes: 3,
-        launch_dir: PathBuf::from("/data/projects/lumiscia/lumen-launch"),
+        launch_dir: None,
         full_render: false,
         out: None,
     };
@@ -84,7 +84,7 @@ fn parse_args() -> anyhow::Result<Args> {
             }
             "--frames" => args.frames = Some(value()?.parse()?),
             "--passes" => args.passes = value()?.parse()?,
-            "--launch-dir" => args.launch_dir = value()?.into(),
+            "--launch-dir" => args.launch_dir = Some(value()?.into()),
             "--full-render" => args.full_render = true,
             "--out" => args.out = Some(value()?.into()),
             other => bail!("unknown argument {other}"),
@@ -377,13 +377,18 @@ fn vram_bytes() -> u64 {
 }
 
 fn load(args: &Args) -> anyhow::Result<(Composition, Fixture)> {
-    let fonts = || FontDir::open(&args.launch_dir.join("fonts"));
+    let launch_dir = || {
+        args.launch_dir
+            .as_deref()
+            .ok_or_else(|| anyhow!("--launch-dir is required for this workload"))
+    };
+    let fonts = || FontDir::open(&launch_dir()?.join("fonts"));
     let parse = |value: Value| -> anyhow::Result<Composition> {
         lumen_engine::json::parse_value(&value).context("fixture does not parse")
     };
     Ok(match args.workload.as_str() {
         "launch" => {
-            let source = std::fs::read_to_string(args.launch_dir.join("launch-video.json"))?;
+            let source = std::fs::read_to_string(launch_dir()?.join("launch-video.json"))?;
             let composition = lumen_engine::json::parse(&source).context("launch json")?;
             (composition, Fixture::fonts(fonts()?))
         }

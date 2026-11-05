@@ -128,9 +128,11 @@ Install JavaScript dependencies:
 pnpm install
 ```
 
-Run checks and tests:
+Run checks and tests. On a clean checkout, generate the WebAssembly bindings first (see below). Packages resolve each other through their built output, so build before checking:
 
 ```bash
+just wasm-bindings-debug
+pnpm build
 pnpm check
 pnpm test
 cargo check
