@@ -4,7 +4,8 @@
 //!
 //! `LUMEN_VULKAN_DECODE_FIXTURES=<dir>` checks every patch clip in the directory instead of
 //! generating a few. `LUMEN_VULKAN_DECODE_FILES=<a.mp4>:<b.mkv>` adds real footage to the playback
-//! checks and prints how close each file came.
+//! checks and prints how close each file came. `LUMEN_VULKAN_DECODE_REQUIRED=1` fails the IDR seek
+//! test instead of skipping it, for runs on hardware that should be able to run it.
 #![cfg(all(target_os = "linux", feature = "ffmpeg", feature = "vulkan"))]
 
 use std::{
@@ -502,21 +503,22 @@ fn playback_clips(directory: &Path) -> Vec<PathBuf> {
 }
 
 /// Compares frames decoded on hardware and software in one scene, allowing one sample in a thousand
-/// more than `MAX_CHANNEL_ERROR` off, for the edges swscale's SIMD rounds differently.
+/// more than `MAX_CHANNEL_ERROR` off, for the edges swscale's SIMD rounds differently. Returns whether
+/// the hardware could decode the sources, as nothing is compared when it can't.
 fn compare_playback(
     label: &str,
     nodes: Value,
     sources: &[&str],
     frames: impl IntoIterator<Item = u32>,
-) {
+) -> bool {
     let Some((mut hardware_renderer, hardware_store)) = hardware() else {
-        return;
+        return false;
     };
     if !sources
         .iter()
         .all(|source| decodes_on_hardware(&hardware_store, Path::new(source)))
     {
-        return;
+        return false;
     }
     let (mut software_renderer, software_store) = software();
     let hardware_scene = composition(&hardware_store, nodes.clone(), sources);
@@ -565,6 +567,7 @@ fn compare_playback(
             "{source}"
         );
     }
+    true
 }
 
 #[test]
@@ -604,6 +607,68 @@ fn seeking_time_remap_and_two_sources_match_software() {
             &[first, second],
             0..30,
         );
+    }
+}
+
+/// Reports a test that checked nothing, which `cargo test` still prints as `ok`.
+fn skip_unless_required(reason: &str) {
+    assert!(
+        std::env::var_os("LUMEN_VULKAN_DECODE_REQUIRED").is_none(),
+        "required, but could not run: {reason}"
+    );
+    eprintln!("SKIPPED, nothing was checked: {reason}");
+}
+
+/// HEVC with B-frames and an IDR frame every 12 frames, from `hevc_nvenc`. Without NVENC the test
+/// that uses it skips.
+fn hevc_b_frame_clip(directory: &Path) -> Result<PathBuf, String> {
+    let path = directory.join("hevc_b_frames.mp4");
+    let output = Command::new("ffmpeg")
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+        .args(["-i", "testsrc2=s=642x362:r=30:d=4", "-c:v", "hevc_nvenc"])
+        .args([
+            "-g", "12", "-bf", "3", "-tag:v", "hvc1", "-pix_fmt", "yuv420p",
+        ])
+        .arg(&path)
+        .output()
+        .map_err(|error| format!("ffmpeg CLI unavailable ({error})"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("hevc_nvenc failed: {}", stderr.trim()));
+    }
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v"])
+        .args(["-show_entries", "stream=has_b_frames", "-of", "csv=p=0"])
+        .arg(&path)
+        .output()
+        .map_err(|error| format!("ffprobe CLI unavailable ({error})"))?;
+    let reorder = String::from_utf8_lossy(&probe.stdout);
+    if reorder.trim().parse::<u32>().unwrap_or(0) == 0 {
+        return Err(format!("hevc_nvenc made no B-frames ({})", reorder.trim()));
+    }
+    Ok(path)
+}
+
+/// An IDR frame releases every frame before it from the decoder at once. Stopping among those and
+/// seeking back must not find the rest still queued.
+#[test]
+fn seeking_back_from_frames_an_idr_frame_released_matches_software() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let clip = match hevc_b_frame_clip(directory.path()) {
+        Ok(clip) => clip,
+        Err(reason) => return skip_unless_required(&reason),
+    };
+    let source = clip.to_string_lossy();
+    let compared = compare_playback(
+        &format!("{source} seeks back before IDR frames"),
+        json!([media(1, &source)]),
+        &[&source],
+        [12, 24, 36, 48, 60]
+            .into_iter()
+            .flat_map(|idr| [idr - 2, idr - 3]),
+    );
+    if !compared {
+        skip_unless_required("Vulkan Video can't decode HEVC here");
     }
 }
 

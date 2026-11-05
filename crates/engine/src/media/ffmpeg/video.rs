@@ -489,7 +489,10 @@ impl LibavStreamDecoder {
                 })?;
         }
         if let Some(decoder) = &mut self.decoder {
-            decoder.flush();
+            decoder.flush().map_err(|err| MediaError::Decode {
+                media_source: self.source.clone(),
+                details: format!("failed flushing decoder: {err}"),
+            })?;
         }
         self.sent_eof = false;
         self.next_frame_hint = target_frame;
