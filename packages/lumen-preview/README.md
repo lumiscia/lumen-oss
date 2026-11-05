@@ -26,7 +26,11 @@ mountPreview(document.body, {
   bindings: createLumenBindings(),
   composition,
 });
-preview.play();
+
+// Loading is asynchronous, and play() before it finishes is ignored.
+document.querySelector("button")?.addEventListener("click", () => {
+  if (preview.getSnapshot().isLoaded) preview.play();
+});
 ```
 
 Pass `media` and `fonts` (name to URL) when the composition uses them.

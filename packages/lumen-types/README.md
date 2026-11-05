@@ -9,10 +9,11 @@ pnpm add @lumiscia/lumen-types
 ```ts
 import type { LumenComposition, NodeKind } from "@lumiscia/lumen-types";
 
-declare const composition: LumenComposition;
+const outputs: NodeKind = "media_output";
 
-const kinds: NodeKind[] = ["background", "text", "merge", "media_output"];
-console.log(composition.nodes.length, kinds);
+function countOutputs(composition: LumenComposition): number {
+  return composition.nodes.filter((node) => node.type === outputs).length;
+}
 ```
 
 To build a composition, use [`@lumiscia/lumen-shared`](https://www.npmjs.com/package/@lumiscia/lumen-shared).

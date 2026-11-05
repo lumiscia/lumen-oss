@@ -3,7 +3,7 @@
 The Lumen preview renderer compiled to WebAssembly. The preview packages take it as their `bindings`. Previewing needs a browser with WebGPU.
 
 ```bash
-pnpm add @lumiscia/lumen-bindings
+pnpm add @lumiscia/lumen-bindings @lumiscia/lumen-preview @lumiscia/lumen-shared
 ```
 
 Entry points: `/bundler` for Vite and other bundlers, `/browser` (also the default) when you serve the files yourself, and `/node`, which parses compositions but can't render.
@@ -28,7 +28,11 @@ mountPreview(document.body, {
   bindings: createLumenBindings(),
   composition,
 });
-preview.play();
+
+// Loading is asynchronous, and play() before it finishes is ignored.
+document.querySelector("button")?.addEventListener("click", () => {
+  if (preview.getSnapshot().isLoaded) preview.play();
+});
 ```
 
 Under Vite, `/bundler` works without extra plugins; `examples/vite-react` and `examples/vite-svelte` use it with a plain Vite config. In React or Svelte, use `Player` from `@lumiscia/lumen-react` or `@lumiscia/lumen-svelte` instead of `mountPreview`.
