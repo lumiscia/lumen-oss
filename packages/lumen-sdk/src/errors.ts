@@ -33,9 +33,27 @@ export class LumenError extends Error {
   }
 }
 
+/** Reads a JSON body, or `undefined` when it isn't JSON. An abort rejects with the signal's reason. */
+export async function readBody(
+  response: Response,
+  signal: AbortSignal | undefined,
+): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    if (signal?.aborted) {
+      throw signal.reason;
+    }
+    return undefined;
+  }
+}
+
 /** Reads an error response, whose body is `{ code?, error, requestId? }`. */
-export async function errorFromResponse(response: Response): Promise<LumenError> {
-  const body: unknown = await response.json().catch(() => undefined);
+export async function errorFromResponse(
+  response: Response,
+  signal: AbortSignal | undefined,
+): Promise<LumenError> {
+  const body = await readBody(response, signal);
   const fields = isRecord(body) ? body : {};
   return new LumenError(
     typeof fields.code === "string" ? fields.code : `http_${response.status}`,

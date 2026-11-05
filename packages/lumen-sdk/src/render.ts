@@ -7,6 +7,21 @@ export function isTerminal(status: RenderStatus): boolean {
   return status === "succeeded" || status === "failed";
 }
 
+/**
+ * An absolute URL as it is. A relative one, such as lumen-server's `/renders/:id/artifact`, is
+ * taken to be under the API base, whether or not the base's path ends in `/`.
+ */
+export function resolveUrl(url: string, baseUrl: URL): string {
+  if (URL.canParse(url)) {
+    return new URL(url).href;
+  }
+  const root = new URL(baseUrl);
+  root.pathname = root.pathname.replace(/\/?$/, "/");
+  root.search = "";
+  root.hash = "";
+  return new URL(url.replace(/^\/+/, ""), root).href;
+}
+
 /** Reads the `render` object of an API response, resolving a relative output URL against the API. */
 export function parseRender(
   job: unknown,
@@ -23,7 +38,7 @@ export function parseRender(
     status: job.status,
     ...(extra.progress !== undefined ? { progress: extra.progress } : {}),
     ...(typeof job.outputUrl === "string" && job.outputUrl !== ""
-      ? { url: new URL(job.outputUrl, baseUrl).href }
+      ? { url: resolveUrl(job.outputUrl, baseUrl) }
       : {}),
     ...(error !== undefined ? { error } : {}),
     ...(extra.cached !== undefined ? { cached: extra.cached } : {}),

@@ -1,8 +1,9 @@
 import { Composition, type LumenComposition } from "@lumiscia/lumen-shared";
 
-import { LumenError, errorFromResponse, isRecord } from "./errors.js";
+import { LumenError, errorFromResponse, isRecord, readBody } from "./errors.js";
+import { parseMedia, parsePart, parseUploadId, parseUploadTarget } from "./media.js";
 import { normalizeRenderEvent } from "./events.js";
-import { parseRender, renderError } from "./render.js";
+import { parseRender, renderError, resolveUrl } from "./render.js";
 import type {
   CompleteMultipartUploadOptions,
   CreateMediaUploadOptions,
@@ -97,11 +98,11 @@ export class Lumen {
         renderId: id,
       });
     }
-    return this.#send(new URL(url, this.#baseUrl), { method: "GET", ...options });
+    return this.#send(new URL(resolveUrl(url, this.#baseUrl)), { method: "GET", ...options });
   }
 
   async createMediaUpload(options: CreateMediaUploadOptions): Promise<CreateMediaUploadResult> {
-    return this.#request<CreateMediaUploadResult>("POST", "/media", {
+    const body = await this.#request("POST", "/media", {
       body: {
         contentType: options.contentType,
         fileName: options.fileName,
@@ -109,6 +110,7 @@ export class Lumen {
       },
       signal: options.signal,
     });
+    return parseUploadTarget(body);
   }
 
   async uploadMedia(options: UploadMediaOptions): Promise<TemporaryMedia> {
@@ -127,29 +129,26 @@ export class Lumen {
       method: "PUT",
       signal: options.signal,
     });
-    return (await readJson<{ media: TemporaryMedia }>(response)).media;
+    return parseMedia((await readJson(response, options.signal)).media);
   }
 
   async createUrlMedia(options: CreateUrlMediaOptions): Promise<TemporaryMedia> {
-    const body = await this.#request<{ media: TemporaryMedia }>("POST", "/media/url", {
+    const body = await this.#request("POST", "/media/url", {
       body: {
         ...(options.fileName !== undefined ? { fileName: options.fileName } : {}),
         url: String(options.url),
       },
       signal: options.signal,
     });
-    return body.media;
+    return parseMedia(body.media);
   }
 
   async createMediaMultipartUpload(
     id: string,
     options: { signal?: AbortSignal } = {},
   ): Promise<CreateMultipartUploadResult> {
-    return this.#request<CreateMultipartUploadResult>(
-      "POST",
-      `/media/${encodeURIComponent(id)}/multipart`,
-      options,
-    );
+    const body = await this.#request("POST", `/media/${encodeURIComponent(id)}/multipart`, options);
+    return { ...(body as unknown as CreateMultipartUploadResult), uploadId: parseUploadId(body) };
   }
 
   async uploadMediaMultipartPart(options: {
@@ -167,20 +166,20 @@ export class Lumen {
       method: "PUT",
       signal: options.signal,
     });
-    return readJson<MediaUploadPart>(response);
+    return parsePart(await readJson(response, options.signal));
   }
 
   async completeMediaMultipartUpload(
     options: CompleteMultipartUploadOptions,
   ): Promise<TemporaryMedia> {
-    const body = await this.#request<{ media: TemporaryMedia }>(
+    const body = await this.#request(
       "POST",
       `/media/${encodeURIComponent(options.id)}/multipart/${encodeURIComponent(
         options.uploadId,
       )}/complete`,
       { body: { parts: options.parts }, signal: options.signal },
     );
-    return body.media;
+    return parseMedia(body.media);
   }
 
   async uploadMediaMultipart(options: UploadMediaOptions): Promise<TemporaryMedia> {
@@ -350,7 +349,7 @@ export class Lumen {
     }
 
     if (!response.ok) {
-      throw await errorFromResponse(response);
+      throw await errorFromResponse(response, init.signal);
     }
     return response;
   }
@@ -370,7 +369,7 @@ export class Lumen {
       },
       signal: options.signal,
     });
-    return readJson<T>(response);
+    return readJson<T>(response, options.signal);
   }
 
   #apiUrl(path: string): URL {
@@ -546,8 +545,11 @@ function optionalSignal(signal: AbortSignal | undefined): { signal?: AbortSignal
   return signal === undefined ? {} : { signal };
 }
 
-async function readJson<T extends object>(response: Response): Promise<T> {
-  const body: unknown = await response.json().catch(() => undefined);
+async function readJson<T extends object = Record<string, unknown>>(
+  response: Response,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  const body = await readBody(response, signal);
   if (!isRecord(body)) {
     throw new LumenError("invalid_response", "Lumen API returned a malformed response body.", {
       status: response.status,
