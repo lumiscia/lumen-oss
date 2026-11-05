@@ -1,7 +1,7 @@
 import { Composition } from "@lumiscia/lumen-shared";
 import { LumenCanvas, createLumenPreview, useLumenPreview } from "@lumiscia/lumen-react";
 import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
-import type { AudioSourceRegistration, LumenPreviewStats } from "@lumiscia/lumen-react";
+import type { LumenPreviewMedia, LumenPreviewStats } from "@lumiscia/lumen-react";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
@@ -78,14 +78,9 @@ composition.addAudioTrack({ id: AUDIO_TRACK_ID, name: "Generated tone", gain: 0.
   id: "intro-chord",
   name: "Generated tone",
 });
-const audioSources: AudioSourceRegistration[] = [
-  {
-    id: AUDIO_SOURCE_ID,
-    kind: "audio",
-    source: createDemoWavBlob(4),
-  },
-];
-const compositionJson = JSON.stringify(composition.toJSON());
+const media: LumenPreviewMedia = {
+  [AUDIO_SOURCE_ID]: createDemoWavBlob(4),
+};
 
 function App() {
   const state = useLumenPreview(preview);
@@ -96,8 +91,9 @@ function App() {
       <LumenCanvas
         preview={preview}
         bindings={lumenBindings}
-        compositionJson={compositionJson}
-        audioSources={audioSources}
+        composition={composition}
+        media={media}
+        className="stage"
         onStats={setStats}
       />
       <div className="controls">

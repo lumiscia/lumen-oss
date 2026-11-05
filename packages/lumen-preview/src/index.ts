@@ -3,13 +3,19 @@ export { defaultAudioWorkerUrl, defaultAudioWorkletUrl, LumenAudioEngine } from 
 export {
   LumenPreviewContext,
   createLumenPreview,
+  type LumenPreviewErrorCode,
   type LumenPreviewListener,
   type LumenPreviewPatch,
   type LumenPreviewState,
   type LumenPreviewTransport,
 } from "./preview.js";
-export { LumenPreviewSession } from "./session/index.js";
+export { LumenPreviewSession, mountPreview } from "./session/index.js";
 export type {
+  LumenPreviewComposition,
+  LumenPreviewFonts,
+  LumenPreviewMedia,
+  LumenPreviewMediaEntry,
+  LumenPreviewMediaKind,
   LumenPreviewSessionInputs,
   LumenPreviewSessionOptions,
   LumenPreviewStats,
@@ -58,13 +64,9 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   durationFrames(): number;
   frameRequirements(frame: number): string;
   fps(): number;
-  targetFrameDurationMs(): number;
   height(): number;
   hasFont(fontFamily: string): boolean;
-  isPlaying(): boolean;
   loadComposition(compositionJson: string): void;
-  pause(): void;
-  play(): void;
   removeFontFamily(fontFamily: string): void;
   removeImageSource(imageId: string): void;
   removeVideoSource(streamId: string): void;
@@ -72,8 +74,6 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   setFrame(frame: number): void;
   setFont(fontFamily: string, bytes: Uint8Array): void;
   setLogLevel(level: LumenLogLevel): void;
-  targetFrameForTimeMs(timeMs: number): number;
-  tick(nowMs: number, canvas: HTMLCanvasElement | OffscreenCanvas): Promise<boolean>;
   width(): number;
 }
 
@@ -123,10 +123,14 @@ export interface LumenPreviewController extends LumenPreviewControllerBinding {
   syncMediaSources(registrations: Iterable<MediaRegistration>): Promise<void>;
   loadVideoFrame(streamId: string, frame: number): Promise<void>;
   loadFrameRequirements(requirementsJson: string): Promise<void>;
+  /** Loads what the playhead's frame needs, then starts decoding the frames after it. */
+  prepareFrame(): Promise<void>;
+  /** Renders a frame `prepareFrame` loaded. */
+  renderPrepared(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
+  /** `prepareFrame`, then `renderPrepared`. */
   renderNowAsync(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
   setLookaheadCount(lookaheadCount: number): void;
   setLogLevel(level: LumenLogLevel): void;
-  tickAsync(nowMs: number, canvas: HTMLCanvasElement | OffscreenCanvas): Promise<boolean>;
 }
 
 export interface LumenPreviewRuntime {
@@ -236,37 +240,27 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       this.requirements.setLookaheadCount(lookaheadCount);
     }
 
-    async renderNowAsync(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void> {
-      await this.requirements.loadFrame(super.currentFrame());
-      try {
-        await super.renderNow(canvas);
-      } catch (error) {
-        if (!this.isRecoverableFrameMiss(error)) {
-          throw error;
-        }
-        await this.requirements.loadFrame(super.currentFrame());
-        await super.renderNow(canvas);
-      }
-      this.requirements.prefetchWindow(super.currentFrame() + 1);
+    async prepareFrame(): Promise<void> {
+      const frame = super.currentFrame();
+      await this.requirements.loadFrame(frame);
+      this.requirements.prefetchWindow(frame + 1);
     }
 
-    async tickAsync(nowMs: number, canvas: HTMLCanvasElement | OffscreenCanvas): Promise<boolean> {
-      const frame = super.currentFrame();
-      this.requirements.prefetchWindow(frame + 1);
-      await this.requirements.loadFrame(frame);
-      let changed: boolean;
+    async renderPrepared(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void> {
       try {
-        changed = await super.tick(nowMs, canvas);
+        await super.renderNow(canvas);
       } catch (error) {
         if (!this.isRecoverableFrameMiss(error)) {
           throw error;
         }
         await this.requirements.loadFrame(super.currentFrame());
         await super.renderNow(canvas);
-        changed = true;
       }
-      this.requirements.prefetchWindow(super.currentFrame() + 1);
-      return changed;
+    }
+
+    async renderNowAsync(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void> {
+      await this.prepareFrame();
+      await this.renderPrepared(canvas);
     }
 
     private isRecoverableFrameMiss(error: unknown): boolean {

@@ -1,30 +1,26 @@
 <script lang="ts">
-    import type { LumenPreviewBindingSource } from "@lumiscia/lumen-preview";
+    import type { LumenPreviewComposition, LumenWorkerBindings } from "@lumiscia/lumen-preview";
 
     import LumenCanvas from "../src/lib/LumenCanvas.svelte";
     import type { LumenPreviewContext } from "../src/lib/preview.svelte.js";
 
     type Props = {
         initialPreview: LumenPreviewContext;
-        initialBindings: LumenPreviewBindingSource;
+        bindings: LumenWorkerBindings;
     };
 
-    let { initialPreview, initialBindings }: Props = $props();
+    let { initialPreview, bindings }: Props = $props();
     const getInitialPreview = () => initialPreview;
-    const getInitialBindings = () => initialBindings;
     let preview = $state.raw(getInitialPreview());
-    let bindings = $state.raw(getInitialBindings());
-    let compositionJson = $state<string | null>(null);
+    let composition = $state.raw<LumenPreviewComposition | null>(null);
 
-    export function replace(
-        nextPreview: LumenPreviewContext,
-        nextBindings: LumenPreviewBindingSource,
-        nextCompositionJson: string,
-    ): void {
-        preview = nextPreview;
-        bindings = nextBindings;
-        compositionJson = nextCompositionJson;
+    export function setPreview(next: LumenPreviewContext): void {
+        preview = next;
+    }
+
+    export function setComposition(next: LumenPreviewComposition): void {
+        composition = next;
     }
 </script>
 
-<LumenCanvas {preview} {bindings} {compositionJson} />
+<LumenCanvas {preview} {bindings} {composition} class="stage" />

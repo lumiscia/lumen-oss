@@ -3,14 +3,18 @@ export {
   LumenPreviewContext,
   createLumenPreview,
   useLumenPreview,
+  type LumenPreviewErrorCode,
   type LumenPreviewState,
 } from "./preview.js";
 export type {
-  AudioSourceRegistration,
-  LumenBindings,
   LumenLogLevel,
-  LumenPreviewBindingSource,
+  LumenPreviewComposition,
+  LumenPreviewFonts,
+  LumenPreviewMedia,
+  LumenPreviewMediaEntry,
   LumenPreviewStats,
   LumenPreviewStatsCallback,
+  LumenWorkerBindings,
   MediaRegistration,
+  MediaSourceInput,
 } from "@lumiscia/lumen-preview";

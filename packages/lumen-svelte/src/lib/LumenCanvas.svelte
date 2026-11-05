@@ -1,100 +1,38 @@
 <script lang="ts">
     import { untrack } from "svelte";
-    import { LumenPreviewSession } from "@lumiscia/lumen-preview";
-    import type {
-        AudioSourceRegistration,
-        LumenLogLevel,
-        LumenPreviewBindingSource,
-        LumenPreviewStatsCallback,
-        MediaRegistration,
-    } from "@lumiscia/lumen-preview";
-    import type { LumenPreviewContext } from "./preview.svelte.js";
-
-    type Props = {
-        preview: LumenPreviewContext;
-        bindings: LumenPreviewBindingSource;
-        audioSources?: AudioSourceRegistration[];
-        compositionJson?: string | null;
-        mediaSources?: MediaRegistration[];
-        lookaheadCount?: number;
-        logLevel?: LumenLogLevel;
-        onStats?: LumenPreviewStatsCallback;
-        class?: string;
-        style?: string;
-    };
+    import { mountPreview, type LumenPreviewSession } from "@lumiscia/lumen-preview";
+    import type { LumenCanvasProps } from "./types.js";
 
     let {
         preview,
         bindings,
-        audioSources = [],
-        compositionJson = null,
-        mediaSources = [],
+        composition,
+        fonts,
         lookaheadCount,
-        logLevel = "off",
+        logLevel,
+        media,
         onStats,
         class: className,
-        style: styleName,
-    }: Props = $props();
+        style,
+    }: LumenCanvasProps = $props();
 
-    let canvas = $state<HTMLCanvasElement | null>(null);
-    let session: LumenPreviewSession | null = null;
+    const inputs = () => ({ composition, fonts, lookaheadCount, logLevel, media, onStats });
+
+    let host = $state<HTMLDivElement>();
+    let session = $state.raw<LumenPreviewSession>();
 
     $effect(() => {
-        const activeCanvas = canvas;
-        const activePreview = preview;
-        const activeBindings = bindings;
-        if (!activeCanvas) {
+        if (!host) {
             return;
         }
-
-        const nextSession = untrack(() =>
-            new LumenPreviewSession({
-                preview: activePreview.core,
-                bindings: activeBindings,
-                audioSources,
-                compositionJson,
-                mediaSources,
-                ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
-                logLevel,
-                onStats: onStats ?? null,
-            }),
-        );
-        session = nextSession;
-        void nextSession.attach(activeCanvas).catch((error: unknown) => {
-            if (session !== nextSession) {
-                return;
-            }
-            console.error("[LumenCanvas] attach", error);
-            activePreview.update({
-                error: error instanceof Error ? error.message : String(error),
-            });
-        });
-
-        return () => {
-            nextSession.dispose();
-            if (session === nextSession) {
-                session = null;
-            }
-        };
+        const mounted = mountPreview(host, { ...untrack(inputs), bindings, preview });
+        session = mounted;
+        return () => mounted.dispose();
     });
 
     $effect(() => {
-        session?.update({
-            audioSources,
-            compositionJson,
-            mediaSources,
-            ...(lookaheadCount === undefined ? {} : { lookaheadCount }),
-            logLevel,
-            onStats: onStats ?? null,
-        });
+        session?.update(inputs());
     });
 </script>
 
-<canvas
-    bind:this={canvas}
-    width={preview.width || 1}
-    height={preview.height || 1}
-    style={styleName}
-    style:visibility={preview.width > 0 ? null : "hidden"}
-    class={className}
-></canvas>
+<div bind:this={host} class={className} {style}></div>

@@ -7,14 +7,25 @@ import {
   type AudioSourceRegistration,
 } from "../src/audio-engine.js";
 
-type Posted = { generation?: number; id?: string; startSample?: number; type: string };
+type Posted = {
+  generation?: number;
+  holdFrames?: number;
+  id?: string;
+  startSample?: number;
+  type: string;
+};
 
 type Fakes = ReturnType<typeof installFakes>;
 
 function installFakes() {
   const fakes = {
     addModule: (): Promise<void> => Promise.resolve(),
-    contexts: [] as { closed: boolean; currentTime: number }[],
+    contexts: [] as {
+      closed: boolean;
+      currentTime: number;
+      onstatechange: (() => void) | null;
+      state: string;
+    }[],
     decoded: [] as number[],
     decodeError: null as Error | null,
     decodeGates: new Map<number, Promise<void>>(),
@@ -33,6 +44,8 @@ function installFakes() {
       closed = false;
       currentTime = 0;
       destination = {};
+      onstatechange: (() => void) | null = null;
+      state = "running";
       constructor() {
         fakes.contexts.push(this);
       }
@@ -517,6 +530,67 @@ describe("LumenAudioEngine", () => {
     report(7, 0.75, false);
     context.currentTime = 7.1;
     expect(engine.currentTimeMs()).toBeCloseTo(850);
+  });
+
+  it("reports whether the position is moving, and calls out when that changes", async () => {
+    const onClockChange = vi.fn();
+    const engine = new LumenAudioEngine({
+      onClockChange,
+      workerModuleUrl: "worker.js",
+      workletModuleUrl: "worklet.js",
+    });
+    engine.loadAudioTimeline(timelineJson("a"));
+    engine.play(0);
+    await settled(fakes);
+    const context = fakes.contexts[0];
+    if (!context) throw new Error("no context");
+    const generation = postedOfType(fakes.nodes[0]?.posted, "play")[0]?.generation;
+    const report = (stalled: boolean) =>
+      fakes.nodes[0]?.onmessage({
+        contextTime: context.currentTime,
+        currentSample: 0,
+        generation,
+        stalled,
+        type: "position",
+      });
+    expect(engine.isClockRunning()).toBe(false);
+
+    report(false);
+    expect(engine.isClockRunning()).toBe(true);
+    expect(onClockChange).toHaveBeenCalledTimes(1);
+
+    report(true);
+    expect(engine.isClockRunning()).toBe(false);
+    expect(onClockChange).toHaveBeenCalledTimes(2);
+
+    report(false);
+    context.state = "suspended";
+    context.onstatechange?.();
+    expect(engine.isClockRunning()).toBe(false);
+    expect(onClockChange).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps a spent budget when a source change restarts the mix", async () => {
+    const now = vi.spyOn(performance, "now").mockReturnValue(1_000);
+    const onClockChange = vi.fn();
+    const engine = new LumenAudioEngine({
+      onClockChange,
+      workerModuleUrl: "worker.js",
+      workletModuleUrl: "worklet.js",
+    });
+    engine.loadAudioTimeline(timelineJson("a"));
+    await engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+    engine.play(0);
+    await settled(fakes);
+    const plays = () => postedOfType(fakes.nodes[0]?.posted, "play");
+    expect(plays()[0]?.holdFrames).toBe(LUMEN_AUDIO_SAMPLE_RATE);
+
+    now.mockReturnValue(5_000);
+    await engine.syncAudioSources([source("a", new Uint8Array([2]))]);
+    await vi.waitFor(() => expect(plays()).toHaveLength(2));
+    expect(plays()[1]?.holdFrames).toBe(0);
+    expect(engine.isClockRunning()).toBe(true);
+    now.mockRestore();
   });
 
   it("drops worker chunks and worklet reports from before a pause", async () => {

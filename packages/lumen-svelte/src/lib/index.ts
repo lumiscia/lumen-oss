@@ -1,3 +1,17 @@
 export { LumenPreviewContext, createLumenPreview } from "./preview.svelte.js";
 export { default as LumenCanvas } from "./LumenCanvas.svelte";
-export type { LumenPreviewStats, LumenPreviewStatsCallback } from "@lumiscia/lumen-preview";
+export type { LumenCanvasProps } from "./types.js";
+export type {
+  LumenLogLevel,
+  LumenPreviewComposition,
+  LumenPreviewErrorCode,
+  LumenPreviewFonts,
+  LumenPreviewMedia,
+  LumenPreviewMediaEntry,
+  LumenPreviewState,
+  LumenPreviewStats,
+  LumenPreviewStatsCallback,
+  LumenWorkerBindings,
+  MediaRegistration,
+  MediaSourceInput,
+} from "@lumiscia/lumen-preview";

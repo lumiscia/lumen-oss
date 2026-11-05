@@ -10,7 +10,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
     this.generation = 0;
     this.chunks = new Map();
     this.heardAudio = false;
-    this.holdOnUnderrun = true;
+    this.holdFrames = 0;
     this.playing = false;
     this.recoveryFrames = 0;
     this.stalled = true;
@@ -30,10 +30,10 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
           this.currentSample = Number(message.startSample);
           this.chunks.clear();
           this.heardAudio = false;
-          this.holdOnUnderrun = message.holdOnUnderrun;
+          this.holdFrames = Number(message.holdFrames);
           this.recoveryFrames = 0;
           this.playing = true;
-          this.stalled = true;
+          this.stalled = this.holdFrames > 0;
           this.reportPosition(0);
           break;
         case "pause":
@@ -72,9 +72,10 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
       return true;
     }
 
-    // When holding, the position only covers samples that were heard. Otherwise it follows elapsed
-    // time, missing samples play as silence, and audio returning from an underrun ramps up. The gap
-    // before the first chunk after `play` isn't an underrun.
+    // The position covers samples that were heard, until `holdFrames` runs out waiting for the first
+    // of them. From then on it moves through missing samples in silence, so anything arriving late
+    // is either behind it and never plays, or joins at the right place. Audio returning from a gap
+    // ramps up, but the wait for the first chunk within `holdFrames` isn't a gap.
     const frames = left.length;
     let written = 0;
     for (; written < frames; written += 1) {
@@ -90,14 +91,20 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
         }
         this.heardAudio = true;
         this.recoveryFrames = Math.max(0, this.recoveryFrames - 1);
-      } else if (this.holdOnUnderrun) {
-        break;
-      } else if (this.heardAudio) {
-        this.recoveryFrames = RECOVERY_RAMP_FRAMES;
+      } else {
+        if (this.heardAudio || this.holdFrames === 0) {
+          this.recoveryFrames = RECOVERY_RAMP_FRAMES;
+        }
+        if (this.holdFrames > 0) {
+          break;
+        }
       }
     }
 
     this.currentSample += written;
+    if (!this.heardAudio) {
+      this.holdFrames = Math.max(this.holdFrames - frames, 0);
+    }
     this.pruneChunks();
     this.reportCountdown -= frames;
     const stalled = written < frames;
