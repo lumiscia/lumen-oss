@@ -87,6 +87,14 @@ export function createVideoFramePayload(
   };
 }
 
+/** Whether `target` takes YUV planes, which the engine rotates itself. */
+export function takesYuvPlanes(target: NativeVideoFrameTarget): boolean {
+  return (
+    typeof target.setVideoFrameYuv === "function" &&
+    typeof target.setVideoFrameObject !== "function"
+  );
+}
+
 /** Whether the frame's native planes are a YUV layout the engine converts. */
 export function isYuvVideoFrame(videoFrame: VideoFrame): boolean {
   return !!videoFrame.format && YUV_FORMATS.has(videoFrame.format);
@@ -124,7 +132,7 @@ export async function syncVideoFrameToTarget(
       return;
     }
 
-    if (target.setVideoFrameYuv && isYuvVideoFrame(payload.videoFrame)) {
+    if (takesYuvPlanes(target) && isYuvVideoFrame(payload.videoFrame)) {
       await copyYuvToTarget(target, streamId, frame, payload, isCurrent);
       return;
     }
@@ -156,7 +164,13 @@ async function copyYuvToTarget(
   target: NativeVideoFrameTarget,
   streamId: string,
   frame: number,
-  { videoFrame, sourceColorSpace, rotation }: VideoFramePayload,
+  {
+    videoFrame,
+    sourceColorSpace,
+    rotation,
+    width: displayWidth,
+    height: displayHeight,
+  }: VideoFramePayload,
   isCurrent: () => boolean,
 ): Promise<void> {
   const data = new Uint8Array(videoFrame.allocationSize());
@@ -180,6 +194,8 @@ async function copyYuvToTarget(
     sourceColorSpace?.matrix ?? undefined,
     videoFrame.colorSpace.fullRange ?? sourceColorSpace?.fullRange ?? false,
     rotation ?? 0,
+    displayWidth,
+    displayHeight,
   );
 }
 

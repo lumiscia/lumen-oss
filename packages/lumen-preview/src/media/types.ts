@@ -129,7 +129,8 @@ export interface LumenMediaTarget {
 export interface NativeVideoFrameTarget extends LumenMediaTarget {
   /**
    * Takes a frame's native YUV planes, as `VideoFrame.copyTo` lays them out, for the engine to
-   * convert. `width` and `height` are the copied size before `rotation`.
+   * convert. `width` and `height` are the copied size before `rotation`; `displayWidth` and
+   * `displayHeight` are the size it shows at, after rotation and pixel aspect ratio.
    */
   setVideoFrameYuv?(
     streamId: string,
@@ -143,6 +144,8 @@ export interface NativeVideoFrameTarget extends LumenMediaTarget {
     matrix: string | undefined,
     fullRange: boolean,
     rotation: number,
+    displayWidth: number,
+    displayHeight: number,
   ): void;
   setVideoFrameObject?(
     streamId: string,

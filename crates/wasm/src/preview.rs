@@ -331,6 +331,8 @@ impl LumenPreviewController {
     /// `rotation`, in degrees clockwise. `offsets` and `strides` are what `copyTo` returned.
     /// `matrix` is the source's tagged WebCodecs matrix; without a known one, the engine's rule for
     /// untagged video picks it from the height. `full_range` describes the copied samples.
+    /// `display_width` and `display_height` are the size the frame shows at, after rotation and
+    /// the source's pixel aspect ratio.
     #[wasm_bindgen(js_name = "setVideoFrameYuv")]
     #[allow(clippy::too_many_arguments)]
     pub fn set_video_frame_yuv(
@@ -346,7 +348,12 @@ impl LumenPreviewController {
         matrix: Option<String>,
         full_range: bool,
         rotation: u32,
+        display_width: u32,
+        display_height: u32,
     ) -> Result<(), JsValue> {
+        if display_width == 0 || display_height == 0 {
+            return Err(JsValue::from_str("video dimensions must be > 0"));
+        }
         let yuv = yuv_frame(
             YuvInput {
                 width,
@@ -361,7 +368,14 @@ impl LumenPreviewController {
             data,
         )
         .map_err(|e| JsValue::from_str(&e))?;
-        self.change_media(|media| media.set_video_frame_yuv(stream_id.to_string(), frame, yuv))
+        self.change_media(|media| {
+            media.set_video_frame_yuv(
+                stream_id.to_string(),
+                frame,
+                yuv,
+                (display_width, display_height),
+            )
+        })
     }
 
     #[wasm_bindgen(js_name = "setVideoMetadata")]

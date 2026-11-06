@@ -22,14 +22,15 @@ pub(crate) const DEFAULT_VIDEO_FRAME_CACHE_BYTES: usize = 512 * 1024 * 1024;
 #[derive(Debug, Clone)]
 pub(crate) enum VideoFrameData {
     Rgba(Arc<CpuMediaFrame>),
-    Yuv(Arc<YuvFrame>),
+    /// Planes, and the size the frame shows at, which carries the source's pixel aspect ratio.
+    Yuv(Arc<YuvFrame>, (u32, u32)),
 }
 
 impl VideoFrameData {
     fn bytes(&self) -> usize {
         match self {
             Self::Rgba(frame) => frame.rgba.len(),
-            Self::Yuv(frame) => frame.data.len(),
+            Self::Yuv(frame, _) => frame.data.len(),
         }
     }
 
@@ -37,14 +38,14 @@ impl VideoFrameData {
     fn display_size(&self) -> (u32, u32) {
         match self {
             Self::Rgba(frame) => (frame.width, frame.height),
-            Self::Yuv(frame) => frame.format.display_size(),
+            Self::Yuv(_, size) => *size,
         }
     }
 
     fn into_media_frame(self) -> MediaFrame {
         match self {
             Self::Rgba(frame) => MediaFrame::CpuRgba(frame),
-            Self::Yuv(frame) => MediaFrame::Yuv(frame),
+            Self::Yuv(frame, _) => MediaFrame::Yuv(frame),
         }
     }
 }
@@ -431,8 +432,13 @@ impl WasmMediaStore {
         stream_id: String,
         frame: u32,
         yuv: YuvFrame,
+        display_size: (u32, u32),
     ) -> Result<(), &'static str> {
-        self.set_video_frame_data(stream_id, frame, VideoFrameData::Yuv(Arc::new(yuv)))
+        self.set_video_frame_data(
+            stream_id,
+            frame,
+            VideoFrameData::Yuv(Arc::new(yuv), display_size),
+        )
     }
 
     fn set_video_frame_data(
@@ -713,7 +719,7 @@ mod tests {
             .expect("set budget");
         for frame in 0..3 {
             store
-                .set_video_frame_yuv("a".to_string(), frame, yuv())
+                .set_video_frame_yuv("a".to_string(), frame, yuv(), (3, 4))
                 .expect("set frame");
         }
 
@@ -724,7 +730,7 @@ mod tests {
         assert!(matches!(resolver.frame(2), Ok(MediaFrame::Yuv(_))));
         assert_eq!(
             (resolver.metadata().width, resolver.metadata().height),
-            (2, 4)
+            (3, 4)
         );
     }
 

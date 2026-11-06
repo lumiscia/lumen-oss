@@ -52,6 +52,8 @@ describe("syncVideoFrameToTarget", () => {
       "smpte170m",
       true,
       90,
+      2,
+      4,
     );
     expect(target.setVideoFrame).not.toHaveBeenCalled();
     expect(frame.close).toHaveBeenCalled();
@@ -66,7 +68,7 @@ describe("syncVideoFrameToTarget", () => {
     await syncVideoFrameToTarget(target, "clip", 0, payload);
 
     expect(target.setVideoFrameYuv.mock.calls[0]?.slice(4, 5)).toEqual(["I420P10"]);
-    expect(target.setVideoFrameYuv.mock.calls[0]?.slice(8)).toEqual([undefined, true, 0]);
+    expect(target.setVideoFrameYuv.mock.calls[0]?.slice(8)).toEqual([undefined, true, 0, 4, 2]);
   });
 
   it("copies RGB frames natively and swizzles them to RGBA", async () => {

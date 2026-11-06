@@ -61,6 +61,8 @@ export class VideoSession {
     private readonly streamId: string,
     private readonly registration: VideoSourceRegistration,
     private readonly options: Required<LumenMediaBridgeOptions>,
+    /** Whether the target takes YUV planes, so frames are sent unrotated. */
+    private readonly yuvPlanes = false,
   ) {}
 
   /**
@@ -222,14 +224,15 @@ export class VideoSession {
     const retainedSample = sample.clone();
     try {
       const videoFrame = retainedSample.toVideoFrame();
-      // The engine rotates YUV planes itself; other formats are turned upright here.
-      if (isYuvVideoFrame(videoFrame)) {
+      // The engine rotates YUV planes itself; anything else, and flipped frames, are turned
+      // upright here.
+      if (this.yuvPlanes && isYuvVideoFrame(videoFrame) && !sample.flip) {
         return createVideoFramePayload(videoFrame, width, height, {
           sourceColorSpace: setup.colorSpace,
           rotation: sample.rotation,
         });
       }
-      if (sample.rotation !== 0) {
+      if (sample.rotation !== 0 || sample.flip) {
         closeVideoFrame(videoFrame);
         return createVideoFramePayload(
           createUprightVideoFrame(sample, width, height),
