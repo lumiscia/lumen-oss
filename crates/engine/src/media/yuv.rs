@@ -257,7 +257,9 @@ impl YuvFrame {
             .layout
             .map_with_shape(format, |plane, shape| (*plane, shape));
         for (plane, shape) in shapes.iter() {
-            let row = shape.width as usize * shape.channels as usize * sample;
+            let row = (shape.width as usize)
+                .checked_mul(shape.channels as usize * sample)
+                .ok_or_else(|| format!("a plane {} samples wide is too large", shape.width))?;
             if u32::try_from(plane.stride).is_err() {
                 return Err(format!("a plane's stride of {} is too large", plane.stride));
             }
@@ -432,9 +434,11 @@ mod tests {
         };
         assert_eq!(frame(bytes).validate(), Ok(()));
         assert!(frame(bytes - 1).validate().is_err());
-        let mut wide = frame(bytes);
-        wide.layout.luma.stride = u32::MAX as usize + 1;
-        wide.format.height = 1;
-        assert!(wide.validate().is_err());
+        if let Ok(stride) = usize::try_from(1_u64 << 32) {
+            let mut wide = frame(bytes);
+            wide.layout.luma.stride = stride;
+            wide.format.height = 1;
+            assert!(wide.validate().is_err());
+        }
     }
 }
