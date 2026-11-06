@@ -258,6 +258,9 @@ impl YuvFrame {
             .map_with_shape(format, |plane, shape| (*plane, shape));
         for (plane, shape) in shapes.iter() {
             let row = shape.width as usize * shape.channels as usize * sample;
+            if u32::try_from(plane.stride).is_err() {
+                return Err(format!("a plane's stride of {} is too large", plane.stride));
+            }
             if plane.stride < row {
                 return Err(format!(
                     "a plane's stride of {} is under its row of {row} bytes",
@@ -429,5 +432,9 @@ mod tests {
         };
         assert_eq!(frame(bytes).validate(), Ok(()));
         assert!(frame(bytes - 1).validate().is_err());
+        let mut wide = frame(bytes);
+        wide.layout.luma.stride = u32::MAX as usize + 1;
+        wide.format.height = 1;
+        assert!(wide.validate().is_err());
     }
 }

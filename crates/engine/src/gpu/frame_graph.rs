@@ -246,7 +246,7 @@ struct YuvUpload {
     tex: TexRef,
     frame: Arc<YuvFrame>,
     offset: usize,
-    stride: usize,
+    stride: u32,
     shape: PlaneShape,
 }
 
@@ -605,7 +605,7 @@ impl FrameGraph {
                 &upload.frame.data,
                 wgpu::TexelCopyBufferLayout {
                     offset: upload.offset as u64,
-                    bytes_per_row: Some(upload.stride as u32),
+                    bytes_per_row: Some(upload.stride),
                     rows_per_image: Some(shape.height),
                 },
                 Size::new(shape.width, shape.height).as_extent(),
@@ -1391,6 +1391,16 @@ impl<'a> FrameCx<'a> {
         frame.validate().map_err(|details| RenderError::Gpu {
             details: format!("a YUV frame can't be read: {details}"),
         })?;
+        let max = self.rec.device().limits().max_texture_dimension_2d;
+        if frame.format.width > max || frame.format.height > max {
+            return Err(RenderError::Gpu {
+                details: format!(
+                    "a {}x{} YUV frame is larger than this device's {max}-pixel texture limit",
+                    frame.format.width, frame.format.height
+                ),
+            }
+            .into());
+        }
         let wide = frame.format.bytes_per_sample() == 2;
         let rec = &mut *self.rec;
         let uploads = &mut self.st.yuv_uploads;
@@ -1411,7 +1421,8 @@ impl<'a> FrameCx<'a> {
                 tex,
                 frame: Arc::clone(&frame),
                 offset: plane.offset,
-                stride: plane.stride,
+                // `validate` rejects strides that don't fit.
+                stride: plane.stride as u32,
                 shape,
             });
             tex
