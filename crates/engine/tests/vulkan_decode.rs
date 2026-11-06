@@ -628,6 +628,14 @@ fn rotated_sources_decode_upright_and_match_software() {
     ) {
         return;
     }
+    if !compare_playback(
+        "the unrotated clip",
+        json!([media(1, &coded_path)]),
+        &[&coded_path],
+        0..1,
+    ) {
+        return;
+    }
     for degrees in ["90", "270"] {
         let rotated = directory.path().join(format!("rotated_{degrees}.mp4"));
         let source = rotated.to_string_lossy();
@@ -643,11 +651,14 @@ fn rotated_sources_decode_upright_and_match_software() {
             ],
             None,
         );
-        compare_playback(
-            &format!("{source} with display rotation {degrees}"),
-            json!([media(1, &source)]),
-            &[&source],
-            0..10,
+        assert!(
+            compare_playback(
+                &format!("{source} with display rotation {degrees}"),
+                json!([media(1, &source)]),
+                &[&source],
+                0..10,
+            ),
+            "the rotated clip didn't decode on hardware, though its unrotated stream did"
         );
     }
 }

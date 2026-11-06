@@ -3,7 +3,12 @@
 //! clip is missing.
 #![cfg(all(target_os = "macos", feature = "ffmpeg", feature = "metal"))]
 
-use std::{path::Path, process::Command};
+use std::{
+    collections::HashMap,
+    path::Path,
+    process::Command,
+    sync::{Arc, Mutex},
+};
 
 use lumen_engine::{
     composition::Composition,
@@ -18,18 +23,47 @@ use serde_json::json;
 /// swscale's chroma rounds differently.
 const MAX_CHANNEL_ERROR: u8 = 3;
 
-#[derive(Debug)]
-struct Store(FfmpegResolverOptions);
+/// Opens each source once, so a test can ask the resolver the renderer used where its frames came
+/// from.
+struct Store {
+    options: FfmpegResolverOptions,
+    resolvers: Mutex<HashMap<String, Arc<FfmpegVideoResolver>>>,
+}
+
+impl Store {
+    fn new(options: FfmpegResolverOptions) -> Self {
+        Self {
+            options,
+            resolvers: Mutex::default(),
+        }
+    }
+
+    fn resolver(&self, stream_id: &str) -> Result<Arc<FfmpegVideoResolver>, MediaError> {
+        let mut resolvers = self.resolvers.lock().expect("resolvers");
+        if let Some(resolver) = resolvers.get(stream_id) {
+            return Ok(Arc::clone(resolver));
+        }
+        let resolver = Arc::new(FfmpegVideoResolver::open_with_options(
+            stream_id,
+            self.options.clone(),
+        )?);
+        resolvers.insert(stream_id.to_string(), Arc::clone(&resolver));
+        Ok(resolver)
+    }
+}
+
+impl std::fmt::Debug for Store {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Store")
+    }
+}
 
 impl MediaStore for Store {
     fn get_video_resolver(
         &self,
         stream_id: &str,
     ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
-        Ok(Box::new(FfmpegVideoResolver::open_with_options(
-            stream_id,
-            self.0.clone(),
-        )?))
+        Ok(Box::new(self.resolver(stream_id)?))
     }
 }
 
@@ -89,9 +123,10 @@ fn render(
 /// whether VideoToolbox decoded the clip.
 fn compare(label: &str, path: &Path) -> bool {
     let source = path.to_string_lossy();
-    let hardware = Store(FfmpegResolverOptions::with_hardware_decode(true));
-    let software = Store(FfmpegResolverOptions::default());
-    let resolver = FfmpegVideoResolver::open_with_options(&*source, hardware.0.clone())
+    let hardware = Store::new(FfmpegResolverOptions::with_hardware_decode(true));
+    let software = Store::new(FfmpegResolverOptions::default());
+    let resolver = hardware
+        .resolver(&source)
         .unwrap_or_else(|error| panic!("{label}: {error}"));
     if !matches!(resolver.frame(0), Ok(MediaFrame::GpuVideo(_))) {
         eprintln!("{label}: VideoToolbox doesn't decode this clip; skipping");
@@ -114,6 +149,11 @@ fn compare(label: &str, path: &Path) -> bool {
             samples += 1;
         }
     }
+    // A frame the renderer couldn't import moves the source to the CPU for good.
+    assert!(
+        matches!(resolver.frame(29), Ok(MediaFrame::GpuVideo(_))),
+        "{label}: the renderer moved the source to the CPU"
+    );
     println!(
         "{label}: max {largest}/255, mean {:.3}, over {MAX_CHANNEL_ERROR}/255 {:.4}%",
         total as f64 / samples as f64,
