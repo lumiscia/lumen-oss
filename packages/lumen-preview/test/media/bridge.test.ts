@@ -48,6 +48,7 @@ vi.mock("mediabunny", () => {
         }
         return {
           canDecode: async () => true,
+          getColorSpace: async () => ({}),
           computeDuration: async () => 10,
           displayHeight: 1,
           displayWidth: 1,

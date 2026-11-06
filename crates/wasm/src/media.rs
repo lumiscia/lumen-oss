@@ -10,7 +10,7 @@ use lumen_engine::{
     error::MediaError,
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
-        TextSession, VideoFrameRequirement, VideoFrameResolver, VideoMetadata,
+        TextSession, VideoFrameRequirement, VideoFrameResolver, VideoMetadata, YuvFrame,
     },
 };
 /// Total bytes of decoded video frames kept across all streams of one media store.
@@ -18,9 +18,40 @@ pub(crate) const DEFAULT_VIDEO_FRAME_CACHE_BYTES: usize = 512 * 1024 * 1024;
 
 // ── VideoFrameCache ───────────────────────────────────────────────────────────
 
+/// A decoded video frame, as RGBA pixels or as YUV planes the renderer converts.
+#[derive(Debug, Clone)]
+pub(crate) enum VideoFrameData {
+    Rgba(Arc<CpuMediaFrame>),
+    Yuv(Arc<YuvFrame>),
+}
+
+impl VideoFrameData {
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Rgba(frame) => frame.rgba.len(),
+            Self::Yuv(frame) => frame.data.len(),
+        }
+    }
+
+    /// The size the frame shows at.
+    fn display_size(&self) -> (u32, u32) {
+        match self {
+            Self::Rgba(frame) => (frame.width, frame.height),
+            Self::Yuv(frame) => frame.format.display_size(),
+        }
+    }
+
+    fn into_media_frame(self) -> MediaFrame {
+        match self {
+            Self::Rgba(frame) => MediaFrame::CpuRgba(frame),
+            Self::Yuv(frame) => MediaFrame::Yuv(frame),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CachedFrame {
-    image: Arc<CpuMediaFrame>,
+    image: VideoFrameData,
     inserted: u64,
 }
 
@@ -40,22 +71,20 @@ impl VideoFrameCache {
         self.entries.contains_key(&frame)
     }
 
-    pub fn get(&self, frame: u32) -> Option<Arc<CpuMediaFrame>> {
-        self.entries
-            .get(&frame)
-            .map(|entry| Arc::clone(&entry.image))
+    pub fn get(&self, frame: u32) -> Option<VideoFrameData> {
+        self.entries.get(&frame).map(|entry| entry.image.clone())
     }
 
-    fn insert(&mut self, frame: u32, image: Arc<CpuMediaFrame>, inserted: u64) {
-        self.bytes += image.rgba.len();
+    fn insert(&mut self, frame: u32, image: VideoFrameData, inserted: u64) {
+        self.bytes += image.bytes();
         if let Some(previous) = self.entries.insert(frame, CachedFrame { image, inserted }) {
-            self.bytes -= previous.image.rgba.len();
+            self.bytes -= previous.image.bytes();
         }
     }
 
     fn remove(&mut self, frame: u32) {
         if let Some(previous) = self.entries.remove(&frame) {
-            self.bytes -= previous.image.rgba.len();
+            self.bytes -= previous.image.bytes();
         }
     }
 
@@ -107,15 +136,12 @@ impl Default for VideoStore {
 }
 
 impl VideoStore {
-    fn insert_frame(&mut self, stream_id: String, frame: u32, image: CpuMediaFrame) {
+    fn insert_frame(&mut self, stream_id: String, frame: u32, image: VideoFrameData) {
         self.insert_clock += 1;
         let entry = self.streams.entry(stream_id.clone()).or_default();
-        entry.metadata.width = image.width;
-        entry.metadata.height = image.height;
+        (entry.metadata.width, entry.metadata.height) = image.display_size();
         entry.metadata.frame_count = entry.metadata.frame_count.max(frame.saturating_add(1));
-        entry
-            .frames
-            .insert(frame, Arc::new(image), self.insert_clock);
+        entry.frames.insert(frame, image, self.insert_clock);
         self.evict_to_budget(Some((&stream_id, frame)));
     }
 
@@ -397,6 +423,24 @@ impl WasmMediaStore {
         frame: u32,
         image: CpuMediaFrame,
     ) -> Result<(), &'static str> {
+        self.set_video_frame_data(stream_id, frame, VideoFrameData::Rgba(Arc::new(image)))
+    }
+
+    pub fn set_video_frame_yuv(
+        &self,
+        stream_id: String,
+        frame: u32,
+        yuv: YuvFrame,
+    ) -> Result<(), &'static str> {
+        self.set_video_frame_data(stream_id, frame, VideoFrameData::Yuv(Arc::new(yuv)))
+    }
+
+    fn set_video_frame_data(
+        &self,
+        stream_id: String,
+        frame: u32,
+        image: VideoFrameData,
+    ) -> Result<(), &'static str> {
         self.inner
             .videos
             .write()
@@ -533,7 +577,7 @@ impl VideoFrameResolver for WasmVideoResolver {
                 frame,
                 frame_count: entry.metadata.frame_count,
             })
-            .map(MediaFrame::CpuRgba)
+            .map(VideoFrameData::into_media_frame)
     }
 
     fn retain_frames(&self, frames: &[u32]) {
@@ -636,6 +680,52 @@ mod tests {
         assert!(store.has_video_frame("b", 1));
         assert!(!store.has_video_frame("a", 0));
         assert!(!store.has_video_frame("b", 0));
+    }
+
+    #[test]
+    fn yuv_frames_count_their_bytes_and_resolve_as_yuv() {
+        use lumen_engine::media::{
+            ChromaSubsampling, Rotation, YuvChroma, YuvColor, YuvFormat, YuvLayout, YuvMatrix,
+        };
+        let format = YuvFormat {
+            width: 4,
+            height: 2,
+            subsampling: ChromaSubsampling::Yuv420,
+            depth: 8,
+            msb_aligned: false,
+            color: YuvColor {
+                matrix: YuvMatrix::Bt709,
+                full_range: false,
+            },
+            rotation: Rotation::Cw90,
+        };
+        let (layout, bytes) = YuvLayout::packed(&format, true, false);
+        let yuv = || YuvFrame {
+            format,
+            layout,
+            data: Arc::new(vec![0; bytes]),
+        };
+        assert!(matches!(layout.chroma, YuvChroma::Interleaved(_)));
+
+        let store = WasmMediaStore::default();
+        store
+            .set_video_frame_cache_bytes(2 * bytes)
+            .expect("set budget");
+        for frame in 0..3 {
+            store
+                .set_video_frame_yuv("a".to_string(), frame, yuv())
+                .expect("set frame");
+        }
+
+        assert!(!store.has_video_frame("a", 0), "two frames fit the budget");
+        assert!(store.has_video_frame("a", 1));
+        assert!(store.has_video_frame("a", 2));
+        let resolver = store.get_video_resolver("a").unwrap();
+        assert!(matches!(resolver.frame(2), Ok(MediaFrame::Yuv(_))));
+        assert_eq!(
+            (resolver.metadata().width, resolver.metadata().height),
+            (2, 4)
+        );
     }
 
     #[test]

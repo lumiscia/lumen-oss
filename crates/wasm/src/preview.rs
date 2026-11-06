@@ -2,7 +2,10 @@ use std::cell::{Ref, RefCell, RefMut};
 
 use lumen_engine::{
     composition::Composition,
-    media::{VideoMetadata, collect_frame_requirements},
+    media::{
+        ChromaSubsampling, Rotation, VideoMetadata, YuvChroma, YuvColor, YuvFormat, YuvFrame,
+        YuvLayout, YuvMatrix, YuvPlane, collect_frame_requirements,
+    },
 };
 use wasm_bindgen::prelude::*;
 
@@ -323,6 +326,44 @@ impl LumenPreviewController {
         self.change_media(|media| media.set_video_frame(stream_id.to_string(), frame, image))
     }
 
+    /// Stores a frame copied from a `VideoFrame` in its native YUV `format` (a WebCodecs pixel
+    /// format name), for the renderer to convert. `width` and `height` are the copied size before
+    /// `rotation`, in degrees clockwise. `offsets` and `strides` are what `copyTo` returned.
+    /// `matrix` is the source's tagged WebCodecs matrix; without a known one, the engine's rule for
+    /// untagged video picks it from the height. `full_range` describes the copied samples.
+    #[wasm_bindgen(js_name = "setVideoFrameYuv")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_video_frame_yuv(
+        &self,
+        stream_id: &str,
+        frame: u32,
+        width: u32,
+        height: u32,
+        format: &str,
+        data: Vec<u8>,
+        offsets: Vec<u32>,
+        strides: Vec<u32>,
+        matrix: Option<String>,
+        full_range: bool,
+        rotation: u32,
+    ) -> Result<(), JsValue> {
+        let yuv = yuv_frame(
+            YuvInput {
+                width,
+                height,
+                format,
+                offsets: &offsets,
+                strides: &strides,
+                matrix: matrix.as_deref(),
+                full_range,
+                rotation,
+            },
+            data,
+        )
+        .map_err(|e| JsValue::from_str(&e))?;
+        self.change_media(|media| media.set_video_frame_yuv(stream_id.to_string(), frame, yuv))
+    }
+
     #[wasm_bindgen(js_name = "setVideoMetadata")]
     pub fn set_video_metadata(
         &self,
@@ -466,6 +507,136 @@ fn validate_frame(state: &PreviewState, frame: u32) -> Result<(), JsValue> {
         return Err(JsValue::from_str("frame index out of range"));
     }
     Ok(())
+}
+
+struct YuvInput<'a> {
+    width: u32,
+    height: u32,
+    format: &'a str,
+    offsets: &'a [u32],
+    strides: &'a [u32],
+    matrix: Option<&'a str>,
+    full_range: bool,
+    rotation: u32,
+}
+
+/// How a WebCodecs YUV pixel format lays out its planes.
+struct YuvKind {
+    subsampling: ChromaSubsampling,
+    depth: u8,
+    interleaved: bool,
+    alpha: bool,
+}
+
+/// The layout of a WebCodecs YUV pixel format. Samples deeper than 8 bits are 16-bit little-endian
+/// with the value in the low bits.
+fn yuv_kind(format: &str) -> Option<YuvKind> {
+    if format == "NV12" {
+        return Some(YuvKind {
+            subsampling: ChromaSubsampling::Yuv420,
+            depth: 8,
+            interleaved: true,
+            alpha: false,
+        });
+    }
+    let rest = format.strip_prefix('I')?;
+    let subsampling = match rest.get(..3)? {
+        "420" => ChromaSubsampling::Yuv420,
+        "422" => ChromaSubsampling::Yuv422,
+        "444" => ChromaSubsampling::Yuv444,
+        _ => return None,
+    };
+    let (alpha, depth) = match &rest[3..] {
+        "" => (false, 8),
+        "A" => (true, 8),
+        "P10" => (false, 10),
+        "P12" => (false, 12),
+        "AP10" => (true, 10),
+        "AP12" => (true, 12),
+        _ => return None,
+    };
+    Some(YuvKind {
+        subsampling,
+        depth,
+        interleaved: false,
+        alpha,
+    })
+}
+
+/// The matrix a WebCodecs `VideoMatrixCoefficients` tag names, or the engine's untagged rule when the
+/// tag is missing or not one the engine converts with.
+fn yuv_matrix(tag: Option<&str>, height: u32) -> YuvMatrix {
+    match tag {
+        Some("bt709") => YuvMatrix::Bt709,
+        Some("bt470bg" | "smpte170m") => YuvMatrix::Bt601,
+        Some("bt2020-ncl") => YuvMatrix::Bt2020,
+        _ => YuvMatrix::untagged(height),
+    }
+}
+
+fn yuv_frame(input: YuvInput<'_>, data: Vec<u8>) -> Result<YuvFrame, String> {
+    let YuvInput {
+        width,
+        height,
+        format,
+        offsets,
+        strides,
+        matrix,
+        full_range,
+        rotation,
+    } = input;
+    let kind =
+        yuv_kind(format).ok_or_else(|| format!("unsupported video frame format {format}"))?;
+    let rotation = Rotation::from_degrees(rotation)
+        .ok_or_else(|| format!("unsupported video frame rotation {rotation}"))?;
+    let planes = 2 + usize::from(!kind.interleaved) + usize::from(kind.alpha);
+    if offsets.len() != planes || strides.len() != planes {
+        return Err(format!(
+            "{format} has {planes} planes, got {} offsets and {} strides",
+            offsets.len(),
+            strides.len()
+        ));
+    }
+    let mut places = offsets
+        .iter()
+        .zip(strides)
+        .map(|(offset, stride)| YuvPlane {
+            offset: *offset as usize,
+            stride: *stride as usize,
+        });
+    let mut next = || places.next().expect("plane count is checked");
+    let luma = next();
+    let chroma = if kind.interleaved {
+        YuvChroma::Interleaved(next())
+    } else {
+        YuvChroma::Planar {
+            u: next(),
+            v: next(),
+        }
+    };
+    let alpha = kind.alpha.then(&mut next);
+    let frame = YuvFrame {
+        format: YuvFormat {
+            width,
+            height,
+            subsampling: kind.subsampling,
+            depth: kind.depth,
+            msb_aligned: false,
+            color: YuvColor {
+                matrix: yuv_matrix(matrix, height),
+                full_range,
+            },
+            rotation,
+        },
+        layout: YuvLayout {
+            luma,
+            chroma,
+            alpha,
+        },
+        data: std::sync::Arc::new(data),
+    };
+    frame.validate()?;
+    Ok(frame)
 }
 
 #[cfg(test)]
@@ -613,6 +784,78 @@ mod tests {
         controller
             .set_video_metadata(stream_id, 1, 1, 200, fps)
             .expect("set metadata");
+    }
+
+    fn yuv_input<'a>(format: &'a str, offsets: &'a [u32], strides: &'a [u32]) -> YuvInput<'a> {
+        YuvInput {
+            width: 4,
+            height: 2,
+            format,
+            offsets,
+            strides,
+            matrix: None,
+            full_range: false,
+            rotation: 0,
+        }
+    }
+
+    #[test]
+    fn webcodecs_formats_map_to_their_planes() {
+        let nv12 = yuv_frame(yuv_input("NV12", &[0, 8], &[4, 4]), vec![0; 12]).unwrap();
+        assert!(matches!(nv12.layout.chroma, YuvChroma::Interleaved(_)));
+        assert_eq!(nv12.format.depth, 8);
+
+        let i422_10a = yuv_frame(
+            yuv_input("I422AP10", &[0, 16, 24, 32], &[8, 4, 4, 8]),
+            vec![0; 48],
+        )
+        .unwrap();
+        assert!(matches!(i422_10a.layout.chroma, YuvChroma::Planar { .. }));
+        assert!(i422_10a.layout.alpha.is_some());
+        assert_eq!(i422_10a.format.depth, 10);
+        assert_eq!(i422_10a.format.subsampling, ChromaSubsampling::Yuv422);
+
+        for format in [
+            "I420", "I420A", "I420P10", "I420P12", "I420AP10", "I420AP12", "I422", "I422A",
+            "I422P10", "I422P12", "I422AP12", "I444", "I444A", "I444P10", "I444P12", "I444AP10",
+        ] {
+            assert!(yuv_kind(format).is_some(), "{format}");
+        }
+        for format in ["RGBA", "NV21", "I410", "I420P8", "I420AP", ""] {
+            assert!(yuv_kind(format).is_none(), "{format}");
+        }
+    }
+
+    #[test]
+    fn untagged_or_unknown_matrix_follows_the_engine_rule() {
+        assert_eq!(yuv_matrix(Some("bt709"), 100), YuvMatrix::Bt709);
+        assert_eq!(yuv_matrix(Some("smpte170m"), 1080), YuvMatrix::Bt601);
+        assert_eq!(yuv_matrix(Some("rgb"), 720), YuvMatrix::Bt709);
+        assert_eq!(yuv_matrix(None, 576), YuvMatrix::Bt601);
+    }
+
+    #[test]
+    fn malformed_yuv_frames_are_errors() {
+        let bad = |input: YuvInput<'_>, bytes: usize| yuv_frame(input, vec![0; bytes]).is_err();
+        assert!(bad(yuv_input("YV12", &[0, 8], &[4, 4]), 12));
+        assert!(bad(yuv_input("NV12", &[0], &[4]), 12), "missing plane");
+        assert!(bad(yuv_input("NV12", &[0, 8], &[4, 4]), 11), "short data");
+        assert!(bad(yuv_input("NV12", &[0, 8], &[3, 4]), 12), "short stride");
+        assert!(bad(yuv_input("NV12", &[0, u32::MAX], &[4, 4]), 12));
+        assert!(bad(
+            YuvInput {
+                rotation: 45,
+                ..yuv_input("NV12", &[0, 8], &[4, 4])
+            },
+            12
+        ));
+        assert!(bad(
+            YuvInput {
+                width: 0,
+                ..yuv_input("NV12", &[0, 8], &[4, 4])
+            },
+            12
+        ));
     }
 
     fn upload_one(controller: &LumenPreviewController, stream_id: &str, frame: u32) {
