@@ -37,11 +37,10 @@ pub use gpu::{
 #[cfg(feature = "vulkan")]
 pub use gpu::{
     VulkanDecodedFrame, VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame,
-    YuvToRgb,
 };
 pub use video::{
-    CpuVideoFrame, DecodeMode, DecodedVideoFrame, EncodeMode, PixelFormat, VideoCodec,
-    VideoColorspace, VideoDecoder, VideoDecoderConfig, YuvSubsampling, YuvVideoFrame,
+    ColorMatrix, ColorTags, CpuVideoFrame, DecodeMode, DecodedVideoFrame, EncodeMode, PixelFormat,
+    VideoCodec, VideoDecoder, VideoDecoderConfig, YuvSubsampling, YuvVideoFrame,
 };
 
 pub type Result<T> = std::result::Result<T, FfmpegError>;

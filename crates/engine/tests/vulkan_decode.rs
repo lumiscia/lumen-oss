@@ -611,6 +611,47 @@ fn seeking_time_remap_and_two_sources_match_software() {
     }
 }
 
+#[test]
+fn rotated_sources_decode_upright_and_match_software() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    // Coded rows of a multiple of 8 pixels, which software decode writes whole before rotating.
+    let coded = directory.path().join("coded.mp4");
+    let coded_path = coded.to_string_lossy();
+    if !run_ffmpeg(
+        &[
+            &["-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=1"][..],
+            ENCODERS[0],
+            &["-pix_fmt", "yuv420p", &coded_path],
+        ]
+        .concat(),
+        None,
+    ) {
+        return;
+    }
+    for degrees in ["90", "270"] {
+        let rotated = directory.path().join(format!("rotated_{degrees}.mp4"));
+        let source = rotated.to_string_lossy();
+        run_ffmpeg(
+            &[
+                "-display_rotation",
+                degrees,
+                "-i",
+                &coded_path,
+                "-c",
+                "copy",
+                &source,
+            ],
+            None,
+        );
+        compare_playback(
+            &format!("{source} with display rotation {degrees}"),
+            json!([media(1, &source)]),
+            &[&source],
+            0..10,
+        );
+    }
+}
+
 /// Reports a test that checked nothing, which `cargo test` still prints as `ok`.
 fn skip_unless_required(reason: &str) {
     assert!(
