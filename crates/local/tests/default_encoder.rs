@@ -8,14 +8,12 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::Arc,
 };
 
-use lumen_engine::{
-    ffmpeg::FfmpegVideoResolver,
-    media::{CpuMediaFrame, MediaFrame, VideoFrameResolver},
+use lumen_ffmpeg::{
+    CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, VideoDecoder,
+    VideoDecoderConfig, VideoEncoderConfig,
 };
-use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoEncoderConfig};
 use serde_json::{Value, json};
 
 const WIDTH: u32 = 320;
@@ -140,28 +138,46 @@ fn write_solid_video(path: &Path, colour: [u8; 3]) {
     encoder.finish().expect("finish encode");
 }
 
-fn decoded_frames(path: &Path) -> Vec<Arc<CpuMediaFrame>> {
-    let video = FfmpegVideoResolver::open(path.to_string_lossy().to_string()).expect("open output");
-    let metadata = video.metadata();
-    assert_eq!(
-        (metadata.width, metadata.height, metadata.frame_count),
-        (WIDTH, HEIGHT, FRAMES)
-    );
-    (0..FRAMES)
-        .map(|frame| match video.frame(frame).expect("decode frame") {
-            MediaFrame::CpuRgba(decoded) => decoded,
-            _ => panic!("expected a CPU frame"),
-        })
-        .collect()
+/// Decodes the first video stream of `path` to RGBA with FFmpeg's own conversion, which is
+/// independent of the renderer's.
+fn decoded_frames(path: &Path) -> Vec<CpuVideoFrame> {
+    let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open video");
+    let stream_index = input
+        .best_video_stream()
+        .expect("video stream")
+        .stream_index;
+    let mut decoder = VideoDecoder::open(
+        &input,
+        VideoDecoderConfig {
+            stream_index,
+            mode: DecodeMode::Cpu,
+        },
+    )
+    .expect("open decoder");
+    let mut frames = Vec::new();
+    while let Some(packet) = input.read_packet().expect("read packet") {
+        decoder.send_packet(&packet).expect("send packet");
+        while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
+            frames.push(frame);
+        }
+    }
+    decoder.send_eof().expect("send eof");
+    while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
+        frames.push(frame);
+    }
+    frames
 }
 
 /// Checks the frame count and that frame `n` shows `expected(n)` at its centre and corners.
 fn assert_frames(path: &Path, expected: impl Fn(u32) -> [u8; 3]) {
-    for (frame, decoded) in decoded_frames(path).iter().enumerate() {
+    let frames = decoded_frames(path);
+    assert_eq!(frames.len() as u32, FRAMES);
+    for (frame, decoded) in frames.iter().enumerate() {
+        assert_eq!((decoded.width, decoded.height), (WIDTH, HEIGHT));
         let want = expected(frame as u32);
         for (x, y) in [(WIDTH / 2, HEIGHT / 2), (4, 4), (WIDTH - 5, HEIGHT - 5)] {
-            let offset = decoded.row_bytes * y as usize + x as usize * 4;
-            let pixel = &decoded.rgba[offset..offset + 3];
+            let offset = decoded.stride * y as usize + x as usize * 4;
+            let pixel = &decoded.data[offset..offset + 3];
             for (channel, want) in pixel.iter().zip(want) {
                 assert!(
                     (i32::from(*channel) - i32::from(want)).abs() <= MAX_CHANNEL_ERROR,
@@ -283,6 +299,6 @@ fn hardware_decode_that_cannot_run_falls_back_to_the_cpu_with_one_warning() {
 
     let (cpu, fallback) = (decoded_frames(&cpu_video), decoded_frames(&fallback_video));
     for (frame, (cpu, fallback)) in cpu.iter().zip(&fallback).enumerate() {
-        assert_eq!(cpu.rgba, fallback.rgba, "frame {frame}");
+        assert_eq!(cpu.data, fallback.data, "frame {frame}");
     }
 }

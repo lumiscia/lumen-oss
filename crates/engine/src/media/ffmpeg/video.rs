@@ -5,20 +5,21 @@ use std::{
 };
 
 use lumen_ffmpeg::{
-    CpuVideoFrame, DecodeMode, GpuBackend, InputContext, VideoDecoder, VideoDecoderConfig,
-    VideoStreamInfo,
+    CpuVideoFrame, DecodeMode, DecodedVideoFrame, GpuBackend, InputContext, VideoColorspace,
+    VideoDecoder, VideoDecoderConfig, VideoStreamInfo, YuvSubsampling, YuvVideoFrame,
 };
 
 use crate::{
     error::MediaError,
     media::{
-        CpuMediaFrame, GpuVideoMediaFrame, MediaFrame, VideoFrameResolver, VideoMetadata,
+        ChromaSubsampling, CpuMediaFrame, GpuVideoMediaFrame, MediaFrame, Rotation,
+        VideoFrameResolver, VideoMetadata, YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix,
         premultiply_rgba_in_place_if_needed,
         resolver::{CpuRetry, PixelOrigin, SettledOrigin},
     },
 };
 
-use super::image::FrameLruCache;
+use super::image::{FrameLruCache, media_frame_bytes};
 
 const SEEK_REOPEN_THRESHOLD: u32 = 120;
 
@@ -110,6 +111,9 @@ struct LibavStreamDecoder {
     stream_index: usize,
     width: u32,
     height: u32,
+    /// The size of the last frame decoded on the CPU, which sets how many the cache has room to
+    /// prefetch.
+    last_frame_bytes: usize,
     frame_count: u32,
     fps: f64,
     time_base_seconds: f64,
@@ -219,6 +223,7 @@ impl LibavStreamDecoder {
             stream_index,
             width: stream.width,
             height: stream.height,
+            last_frame_bytes: stream.width as usize * stream.height as usize * 4,
             frame_count,
             fps,
             time_base_seconds,
@@ -386,17 +391,16 @@ impl LibavStreamDecoder {
                     }
                 }
             } else {
-                match self.open_decoder()?.receive_rgba_frame() {
+                match self.open_decoder()?.receive_video_frame() {
                     Ok(Some(decoded)) => {
-                        let decoded_frame = self.frame_for_pts(decoded.pts);
+                        let decoded_frame = self.frame_for_pts(decoded.pts());
                         self.next_frame_hint = decoded_frame.saturating_add(1);
                         if decoded_frame < target_frame {
                             continue;
                         }
-                        return self
-                            .cpu_media_frame(decoded)
-                            .map(MediaFrame::CpuRgba)
-                            .map(Some);
+                        let frame = self.cpu_media_frame(decoded)?;
+                        self.last_frame_bytes = media_frame_bytes(&frame);
+                        return Ok(Some(frame));
                     }
                     Ok(None) => return Ok(None),
                     Err(err) => {
@@ -437,8 +441,21 @@ impl LibavStreamDecoder {
             .unwrap_or(self.next_frame_hint)
     }
 
+    fn cpu_media_frame(&self, decoded: DecodedVideoFrame) -> Result<MediaFrame, MediaError> {
+        match decoded {
+            DecodedVideoFrame::Rgba { frame, has_alpha } => self
+                .rgba_media_frame(frame, has_alpha)
+                .map(MediaFrame::CpuRgba),
+            DecodedVideoFrame::Yuv(frame) => self.yuv_media_frame(frame).map(MediaFrame::Yuv),
+        }
+    }
+
     /// Premultiplies a frame that carries alpha, so opaque video skips the per-pixel loop.
-    fn cpu_media_frame(&self, decoded: CpuVideoFrame) -> Result<Arc<CpuMediaFrame>, MediaError> {
+    fn rgba_media_frame(
+        &self,
+        decoded: CpuVideoFrame,
+        has_alpha: bool,
+    ) -> Result<Arc<CpuMediaFrame>, MediaError> {
         let row_bytes = (decoded.width as usize).saturating_mul(4);
         let expected = row_bytes.saturating_mul(decoded.height as usize);
         if decoded.stride != row_bytes || decoded.data.len() < expected {
@@ -453,11 +470,7 @@ impl LibavStreamDecoder {
         }
 
         let mut rgba = decoded.data;
-        if self
-            .decoder
-            .as_ref()
-            .is_some_and(VideoDecoder::last_frame_had_alpha)
-        {
+        if has_alpha {
             premultiply_rgba_in_place_if_needed(&mut rgba);
         }
         Ok(Arc::new(CpuMediaFrame {
@@ -466,6 +479,36 @@ impl LibavStreamDecoder {
             height: decoded.height,
             row_bytes,
         }))
+    }
+
+    fn yuv_media_frame(&self, decoded: YuvVideoFrame) -> Result<Arc<YuvFrame>, MediaError> {
+        let format = YuvFormat {
+            width: decoded.width,
+            height: decoded.height,
+            subsampling: match decoded.subsampling {
+                YuvSubsampling::Yuv420 => ChromaSubsampling::Yuv420,
+                YuvSubsampling::Yuv422 => ChromaSubsampling::Yuv422,
+                YuvSubsampling::Yuv444 => ChromaSubsampling::Yuv444,
+            },
+            depth: decoded.depth,
+            msb_aligned: decoded.msb_aligned,
+            color: YuvColor {
+                matrix: yuv_matrix(decoded.colorspace, decoded.height),
+                full_range: decoded.full_range,
+            },
+            rotation: Rotation::from_degrees(decoded.rotation).unwrap_or_default(),
+        };
+        let (layout, _) = YuvLayout::packed(&format, decoded.interleaved_chroma, decoded.has_alpha);
+        let frame = YuvFrame {
+            format,
+            layout,
+            data: Arc::new(decoded.data),
+        };
+        frame.validate().map_err(|details| MediaError::Decode {
+            media_source: self.source.clone(),
+            details: format!("decoded frame can't be read as YUV: {details}"),
+        })?;
+        Ok(Arc::new(frame))
     }
 
     fn should_seek(&self, target_frame: u32) -> bool {
@@ -514,7 +557,7 @@ impl LibavStreamDecoder {
     }
 
     fn frame_bytes(&self) -> usize {
-        self.width as usize * self.height as usize * 4
+        self.last_frame_bytes
     }
 
     fn open_decoder(&mut self) -> Result<&mut VideoDecoder, MediaError> {
@@ -796,6 +839,19 @@ impl VideoFrameResolver for FfmpegVideoResolver {
     }
 }
 
+/// The matrix a stream's colour tag names. FCC and SMPTE 240M have no matrix of their own, so they
+/// read as the nearest one, and a stream with no usable tag reads by its height.
+fn yuv_matrix(colorspace: VideoColorspace, height: u32) -> YuvMatrix {
+    match colorspace {
+        VideoColorspace::Bt709 | VideoColorspace::Smpte240m => YuvMatrix::Bt709,
+        VideoColorspace::Bt470bg | VideoColorspace::Smpte170m | VideoColorspace::Fcc => {
+            YuvMatrix::Bt601
+        }
+        VideoColorspace::Bt2020Ncl | VideoColorspace::Bt2020Cl => YuvMatrix::Bt2020,
+        VideoColorspace::Other => YuvMatrix::untagged(height),
+    }
+}
+
 fn resolve_stream_fps(stream: &VideoStreamInfo, source: &str) -> Result<f64, MediaError> {
     stream
         .frame_rate
@@ -863,7 +919,7 @@ fn open_video_decoder(
         Err("rotated sources need the CPU path's rotation".to_string())
     } else if stream.has_alpha {
         // GPU frames carry no alpha.
-        Err("sources with alpha need the CPU path's RGBA conversion".to_string())
+        Err("sources with alpha need the CPU path, which decodes the alpha layer".to_string())
     } else {
         open_hardware_decoder(input, stream_index, backend, options)
     };
@@ -947,6 +1003,7 @@ mod tests {
     use std::{fs, path::PathBuf, process::Command};
 
     use super::*;
+    use crate::media::YuvChroma;
 
     const NTSC_RATE: &str = "30000/1001";
 
@@ -1012,13 +1069,31 @@ mod tests {
         frame_index(&resolver.frame(frame).expect("decode frame"))
     }
 
-    fn frame_index(frame: &MediaFrame) -> u32 {
-        let MediaFrame::CpuRgba(decoded) = frame else {
-            panic!("expected a CPU frame");
+    fn yuv_frame(frame: MediaFrame) -> Arc<YuvFrame> {
+        let MediaFrame::Yuv(frame) = frame else {
+            panic!("expected a YUV frame");
         };
-        // Limited-range luma back to full-range grey, then to the index it encodes.
-        let luma = f64::from(decoded.rgba[0]) * 219.0 / 255.0 + 16.0;
-        ((luma - 16.0) / 3.0).round() as u32
+        frame
+    }
+
+    fn frame_index(frame: &MediaFrame) -> u32 {
+        let MediaFrame::Yuv(decoded) = frame else {
+            panic!("expected a YUV frame");
+        };
+        // The first luma sample is `16 + 3 * index`.
+        (f64::from(decoded.data[0] - 16) / 3.0).round() as u32
+    }
+
+    /// The alpha at a frame's first pixel, from 0 to 1, or `None` if it has no alpha plane.
+    fn first_alpha(frame: &YuvFrame) -> Option<f32> {
+        let plane = frame.layout.alpha?;
+        let depth = frame.format.depth;
+        let sample = if depth > 8 {
+            u16::from_le_bytes([frame.data[plane.offset], frame.data[plane.offset + 1]])
+        } else {
+            u16::from(frame.data[plane.offset])
+        };
+        Some(f32::from(sample) / ((1u32 << depth) - 1) as f32)
     }
 
     #[test]
@@ -1395,20 +1470,15 @@ mod tests {
         .expect("open clip");
         let reason = resolver.decode_unavailable_reason().expect("a warning");
         assert!(reason.contains("alpha"), "{reason}");
-        let MediaFrame::CpuRgba(decoded) = resolver.frame(0).expect("decode frame") else {
-            panic!("expected a CPU frame");
-        };
-        assert!(
-            (i32::from(decoded.rgba[3]) - 128).abs() <= 2,
-            "{:?}",
-            &decoded.rgba[..4]
-        );
+        let decoded = yuv_frame(resolver.frame(0).expect("decode frame"));
+        assert_eq!(decoded.format.depth, 12);
+        let alpha = first_alpha(&decoded).expect("an alpha plane");
+        assert!((alpha - 0.5).abs() <= 0.01, "{alpha}");
         let _ = fs::remove_file(path);
     }
 
-    /// 0x2080ff at half alpha, whose blue channel is 255 straight and 128 premultiplied.
     #[test]
-    fn vp9_alpha_layers_are_detected_and_decoded_premultiplied() {
+    fn vp9_alpha_layers_are_detected_and_decoded_into_an_alpha_plane() {
         let path =
             std::env::temp_dir().join(format!("lumen_engine_{}_alpha.webm", std::process::id()));
         let Ok(output) = Command::new("ffmpeg")
@@ -1437,23 +1507,15 @@ mod tests {
         let resolver =
             FfmpegVideoResolver::open_with_options(source, FfmpegResolverOptions::default())
                 .expect("open clip");
-        let MediaFrame::CpuRgba(decoded) = resolver.frame(0).expect("decode frame") else {
-            panic!("expected a CPU frame");
-        };
-        let [_, _, blue, alpha] = decoded.rgba[..4] else {
-            panic!("expected a pixel");
-        };
-        assert!(
-            alpha.abs_diff(128) <= 2 && blue.abs_diff(128) <= 4,
-            "{:?}",
-            &decoded.rgba[..4]
-        );
+        let decoded = yuv_frame(resolver.frame(0).expect("decode frame"));
+        let alpha = first_alpha(&decoded).expect("an alpha plane");
+        assert!((alpha - 0.5).abs() <= 0.01, "{alpha}");
         let _ = fs::remove_file(path);
     }
 
     /// The stream's parameters come from its opaque start, so only the frames show the alpha.
     #[test]
-    fn frames_that_gain_alpha_mid_stream_are_premultiplied() {
+    fn frames_that_gain_alpha_mid_stream_carry_an_alpha_plane() {
         let directory =
             std::env::temp_dir().join(format!("lumen_engine_{}_gains_alpha", std::process::id()));
         fs::create_dir_all(&directory).expect("create directory");
@@ -1517,18 +1579,189 @@ mod tests {
         let resolver =
             FfmpegVideoResolver::open_with_options(source, FfmpegResolverOptions::default())
                 .expect("open clip");
-        let MediaFrame::CpuRgba(decoded) = resolver.frame(4).expect("decode frame") else {
-            panic!("expected a CPU frame");
-        };
-        let [_, _, blue, alpha] = decoded.rgba[..4] else {
-            panic!("expected a pixel");
-        };
-        assert!(
-            alpha.abs_diff(128) <= 2 && blue.abs_diff(128) <= 4,
-            "{:?}",
-            &decoded.rgba[..4]
-        );
+        let opaque = yuv_frame(resolver.frame(0).expect("decode frame"));
+        assert!(first_alpha(&opaque).is_none());
+        let translucent = yuv_frame(resolver.frame(4).expect("decode frame"));
+        let alpha = first_alpha(&translucent).expect("an alpha plane");
+        assert!((alpha - 0.5).abs() <= 0.01, "{alpha}");
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn yuv_frames_carry_the_stream_tags_and_the_untagged_rule() {
+        struct Clip {
+            name: &'static str,
+            source: &'static str,
+            args: &'static [&'static str],
+            /// Clockwise degrees to rotate the file's display by, through a remux.
+            display_rotation: Option<&'static str>,
+            matrix: YuvMatrix,
+            full_range: bool,
+            rotation: Rotation,
+        }
+        const SD: &str = "testsrc2=s=64x48:r=30:d=0.2";
+        let clips = [
+            Clip {
+                name: "tagged_709.mp4",
+                source: SD,
+                args: &[
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-colorspace",
+                    "bt709",
+                    "-color_range",
+                    "tv",
+                ],
+                display_rotation: None,
+                matrix: YuvMatrix::Bt709,
+                full_range: false,
+                rotation: Rotation::None,
+            },
+            Clip {
+                name: "tagged_2020_full.mp4",
+                source: SD,
+                args: &[
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-colorspace",
+                    "bt2020nc",
+                    "-color_range",
+                    "pc",
+                ],
+                display_rotation: None,
+                matrix: YuvMatrix::Bt2020,
+                full_range: true,
+                rotation: Rotation::None,
+            },
+            Clip {
+                name: "tagged_601_hd.mp4",
+                source: "testsrc2=s=1280x720:r=30:d=0.1",
+                args: &["-pix_fmt", "yuv420p", "-colorspace", "smpte170m"],
+                display_rotation: None,
+                matrix: YuvMatrix::Bt601,
+                full_range: false,
+                rotation: Rotation::None,
+            },
+            Clip {
+                name: "untagged_sd.mp4",
+                source: SD,
+                args: &["-pix_fmt", "yuv420p"],
+                display_rotation: None,
+                matrix: YuvMatrix::Bt601,
+                full_range: false,
+                rotation: Rotation::None,
+            },
+            Clip {
+                name: "untagged_hd.mp4",
+                source: "testsrc2=s=1280x720:r=30:d=0.1",
+                args: &["-pix_fmt", "yuv420p"],
+                display_rotation: None,
+                matrix: YuvMatrix::Bt709,
+                full_range: false,
+                rotation: Rotation::None,
+            },
+            Clip {
+                name: "jpeg_range.mp4",
+                source: SD,
+                args: &["-pix_fmt", "yuvj420p"],
+                display_rotation: None,
+                matrix: YuvMatrix::Bt601,
+                full_range: true,
+                rotation: Rotation::None,
+            },
+            Clip {
+                name: "rotated.mp4",
+                source: SD,
+                args: &["-pix_fmt", "yuv420p"],
+                // FFmpeg's `display_rotation` is counterclockwise.
+                display_rotation: Some("90"),
+                matrix: YuvMatrix::Bt601,
+                full_range: false,
+                rotation: Rotation::Cw270,
+            },
+        ];
+        for clip in clips {
+            let Some(mut path) = encode_clip(clip.name, clip.source, clip.args) else {
+                return;
+            };
+            if let Some(degrees) = clip.display_rotation {
+                let rotated = path.with_extension("rotated.mp4");
+                let status = Command::new("ffmpeg")
+                    .args(["-y", "-hide_banner", "-loglevel", "error"])
+                    .args(["-display_rotation", degrees, "-i"])
+                    .arg(&path)
+                    .args(["-c", "copy"])
+                    .arg(&rotated)
+                    .status()
+                    .expect("run ffmpeg");
+                assert!(status.success(), "{}: remux", clip.name);
+                let _ = fs::remove_file(&path);
+                path = rotated;
+            }
+            let resolver = open_cpu(&path).expect("open clip");
+            let decoded = yuv_frame(resolver.frame(0).expect("decode frame"));
+            let format = decoded.format;
+            let name = clip.name;
+            assert_eq!(format.color.matrix, clip.matrix, "{name}");
+            assert_eq!(format.color.full_range, clip.full_range, "{name}");
+            assert_eq!(format.rotation, clip.rotation, "{name}");
+            assert_eq!(format.subsampling, ChromaSubsampling::Yuv420, "{name}");
+            assert_eq!((format.depth, format.msb_aligned), (8, false), "{name}");
+            assert!(matches!(decoded.layout.chroma, YuvChroma::Planar { .. }));
+            assert!(decoded.layout.alpha.is_none(), "{name}");
+            // The frame keeps its coded size and the stream's size is the upright one.
+            let metadata = resolver.metadata();
+            assert_eq!(
+                format.display_size(),
+                (metadata.width, metadata.height),
+                "{name}"
+            );
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn unusual_yuv_sources_reshape_without_changing_luma_and_rgb_sources_stay_rgba() {
+        let encode = |name: &str, pixel_format: &str| {
+            let path =
+                std::env::temp_dir().join(format!("lumen_engine_{}_{name}", std::process::id()));
+            let output = Command::new("ffmpeg")
+                .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+                .args([
+                    "-i",
+                    "nullsrc=s=32x32:r=30:d=0.5,geq=lum='16+3*N':cb=128:cr=128,format=yuv420p",
+                ])
+                .args(["-pix_fmt", pixel_format, "-c:v", "ffv1"])
+                .arg(&path)
+                .output();
+            match output {
+                Ok(output) if output.status.success() => Some(path),
+                _ => {
+                    eprintln!("ffmpeg CLI with ffv1 unavailable; skipping {name}");
+                    None
+                }
+            }
+        };
+        let (Some(yuv411), Some(rgb)) =
+            (encode("yuv411.mkv", "yuv411p"), encode("rgb.mkv", "bgr0"))
+        else {
+            return;
+        };
+
+        let reshaped = open_cpu(&yuv411)
+            .expect("open clip")
+            .frame(5)
+            .expect("decode");
+        assert_eq!(frame_index(&reshaped), 5);
+        let reshaped = yuv_frame(reshaped);
+        assert_eq!(reshaped.format.subsampling, ChromaSubsampling::Yuv422);
+        assert_eq!(reshaped.data.len(), 32 * 32 * 2);
+        reshaped.validate().expect("planes fit the buffer");
+
+        let rgb_frame = open_cpu(&rgb).expect("open clip").frame(5).expect("decode");
+        assert!(matches!(rgb_frame, MediaFrame::CpuRgba(_)));
+        let _ = fs::remove_file(yuv411);
+        let _ = fs::remove_file(rgb);
     }
 
     #[test]
