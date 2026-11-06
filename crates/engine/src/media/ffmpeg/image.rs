@@ -46,6 +46,7 @@ impl FrameLruCache {
     pub fn insert(&mut self, frame: u32, data: MediaFrame, speculative: bool) {
         let bytes = match &data {
             MediaFrame::CpuRgba(cpu) => cpu.rgba.len(),
+            MediaFrame::Yuv(yuv) => yuv.data.len(),
             MediaFrame::GpuVideo(gpu) => gpu.frame.estimated_rgba_bytes() as usize,
         };
         self.order.retain(|cached| *cached != frame);

@@ -57,6 +57,8 @@ pub struct SamplerRef(u32);
 #[derive(Debug, Clone, Copy)]
 pub enum LayoutKind {
     Texture,
+    /// An unsigned-integer texture, read with `textureLoad`.
+    UintTexture,
     StorageTexture(wgpu::TextureFormat),
     /// Bound with a dynamic offset into the uniform bump buffer.
     Uniform,
@@ -1038,6 +1040,11 @@ impl Recorder {
                 ty: match entry.kind {
                     LayoutKind::Texture => wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    LayoutKind::UintTexture => wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },

@@ -10,6 +10,7 @@ mod pixels;
 mod prediction;
 mod resolver;
 mod store;
+mod yuv;
 
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver};
@@ -25,3 +26,8 @@ pub use resolver::{
     VideoMetadata,
 };
 pub use store::{MediaStore, TextSession};
+pub use yuv::{
+    ChromaSubsampling, Rotation, YuvChroma, YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix,
+    YuvPlane, YuvPlanes,
+};
+pub(crate) use yuv::{PlaneShape, YuvUniform};

@@ -17,3 +17,4 @@ mod support;
 mod text_atlas;
 mod text_pixels;
 mod text_style;
+mod yuv;
