@@ -18,8 +18,8 @@ use std::{
 };
 
 use lumen_ffmpeg::{
-    CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, VideoDecoder,
-    VideoDecoderConfig, VideoEncoderConfig,
+    CpuVideoFrame, DecodeMode, DecodedVideoFrame, InputContext, MuxedEncoder, PixelFormat,
+    VideoDecoder, VideoDecoderConfig, VideoEncoderConfig, YuvVideoFrame,
 };
 use reqwest::{
     StatusCode,
@@ -891,22 +891,23 @@ fn the_default_encoder_falls_back_to_a_correct_video_with_gpu() {
     let directory = tempfile::tempdir().expect("temp directory");
     let path = directory.path().join("output.mp4");
     std::fs::write(&path, artifact.bytes().expect("artifact bytes")).expect("write artifact");
-    let frames = decode_rgba(&path);
+    let frames = decode_yuv(&path);
     assert_eq!(frames.len(), 1);
-    let decoded = &frames[0];
-    let offset = decoded.stride * 8 + 8 * 4;
-    for (channel, want) in decoded.data[offset..offset + 3].iter().zip([255, 0, 0]) {
-        assert!(
-            (i32::from(*channel) - want).abs() <= 3,
-            "{:?}",
-            &decoded.data[offset..offset + 3]
-        );
-    }
+    // The encoder writes red (255, 0, 0) as BT.709 limited-range Y'CbCr.
+    const RED: [u16; 3] = [63, 102, 240];
+    let sample = frames[0].sample(8, 8);
+    assert!(
+        sample
+            .iter()
+            .zip(RED)
+            .all(|(got, want)| got.abs_diff(want) <= 3),
+        "{sample:?}"
+    );
 }
 
-/// Decodes the first video stream of `path` to RGBA with FFmpeg's own conversion, which is
-/// independent of the renderer's.
-fn decode_rgba(path: &Path) -> Vec<CpuVideoFrame> {
+/// Decodes the first video stream of `path` to the YUV planes it stores, which sidesteps any colour
+/// conversion.
+fn decode_yuv(path: &Path) -> Vec<YuvVideoFrame> {
     let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open video");
     let stream_index = input
         .best_video_stream()
@@ -921,16 +922,20 @@ fn decode_rgba(path: &Path) -> Vec<CpuVideoFrame> {
     )
     .expect("open decoder");
     let mut frames = Vec::new();
+    let mut take = |decoder: &mut VideoDecoder| {
+        while let Some(frame) = decoder.receive_video_frame().expect("receive frame") {
+            match frame {
+                DecodedVideoFrame::Yuv(frame) => frames.push(frame),
+                DecodedVideoFrame::Rgba { .. } => panic!("the encoder writes a YUV stream"),
+            }
+        }
+    };
     while let Some(packet) = input.read_packet().expect("read packet") {
         decoder.send_packet(&packet).expect("send packet");
-        while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
-            frames.push(frame);
-        }
+        take(&mut decoder);
     }
     decoder.send_eof().expect("send eof");
-    while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
-        frames.push(frame);
-    }
+    take(&mut decoder);
     frames
 }
 

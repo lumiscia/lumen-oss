@@ -1,8 +1,8 @@
 use std::{env, path::PathBuf, time::Instant};
 
 use lumen_ffmpeg::{
-    DecodeMode, InputContext, MuxedEncoder, Rational, VideoDecoder, VideoDecoderConfig,
-    VideoEncoderConfig,
+    DecodeMode, DecodedVideoFrame, InputContext, MuxedEncoder, Rational, VideoDecoder,
+    VideoDecoderConfig, VideoEncoderConfig,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,10 +37,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut frames = 0_usize;
     'decode: while let Some(packet) = input.read_packet()? {
         decoder.send_packet(&packet)?;
-        while let Some(mut frame) = decoder.receive_cpu_frame()? {
-            // Decoder timestamps are in the input time base, so number frames for the encoder.
-            frame.pts = Some(frames as i64);
-            encoder.write_video_frame(&frame)?;
+        while let Some(frame) = decoder.receive_video_frame()? {
+            write_frame(&mut encoder, frame, frames)?;
             frames = frames.saturating_add(1);
             if max_frames.is_some_and(|limit| frames >= limit) {
                 break 'decode;
@@ -50,9 +48,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if max_frames.is_none_or(|limit| frames < limit) {
         decoder.send_eof()?;
-        while let Some(mut frame) = decoder.receive_cpu_frame()? {
-            frame.pts = Some(frames as i64);
-            encoder.write_video_frame(&frame)?;
+        while let Some(frame) = decoder.receive_video_frame()? {
+            write_frame(&mut encoder, frame, frames)?;
             frames = frames.saturating_add(1);
             if max_frames.is_some_and(|limit| frames >= limit) {
                 break;
@@ -69,5 +66,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "fps={:.2}",
         frames as f64 / started.elapsed().as_secs_f64().max(1e-9)
     );
+    Ok(())
+}
+
+/// The encoder takes RGBA, and only the renderer converts YUV, so this handles sources that decode
+/// as RGBA.
+fn write_frame(
+    encoder: &mut MuxedEncoder,
+    frame: DecodedVideoFrame,
+    index: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let DecodedVideoFrame::Rgba { mut frame, .. } = frame else {
+        return Err("the source decodes as YUV, which this example can't convert to RGBA".into());
+    };
+    // Decoder timestamps are in the input time base, so number frames for the encoder.
+    frame.pts = Some(index as i64);
+    encoder.write_video_frame(&frame)?;
     Ok(())
 }

@@ -11,8 +11,8 @@ use std::{
 };
 
 use lumen_ffmpeg::{
-    CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, VideoDecoder,
-    VideoDecoderConfig, VideoEncoderConfig,
+    CpuVideoFrame, DecodeMode, DecodedVideoFrame, InputContext, MuxedEncoder, PixelFormat,
+    VideoDecoder, VideoDecoderConfig, VideoEncoderConfig, YuvVideoFrame,
 };
 use serde_json::{Value, json};
 
@@ -21,7 +21,7 @@ const HEIGHT: u32 = 240;
 const FRAMES: u32 = 30;
 const ORANGE: [u8; 3] = [255, 128, 32];
 const BLUE: [u8; 3] = [32, 128, 255];
-const MAX_CHANNEL_ERROR: i32 = 3;
+const MAX_SAMPLE_ERROR: i32 = 3;
 
 fn lavapipe_icd() -> Option<PathBuf> {
     let icd = fs::read_dir("/usr/share/vulkan/icd.d")
@@ -138,9 +138,9 @@ fn write_solid_video(path: &Path, colour: [u8; 3]) {
     encoder.finish().expect("finish encode");
 }
 
-/// Decodes the first video stream of `path` to RGBA with FFmpeg's own conversion, which is
-/// independent of the renderer's.
-fn decoded_frames(path: &Path) -> Vec<CpuVideoFrame> {
+/// Decodes the first video stream of `path` to the YUV planes it stores, which sidesteps any colour
+/// conversion.
+fn decoded_frames(path: &Path) -> Vec<YuvVideoFrame> {
     let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open video");
     let stream_index = input
         .best_video_stream()
@@ -155,17 +155,34 @@ fn decoded_frames(path: &Path) -> Vec<CpuVideoFrame> {
     )
     .expect("open decoder");
     let mut frames = Vec::new();
+    let mut take = |decoder: &mut VideoDecoder| {
+        while let Some(frame) = decoder.receive_video_frame().expect("receive frame") {
+            match frame {
+                DecodedVideoFrame::Yuv(frame) => frames.push(frame),
+                DecodedVideoFrame::Rgba { .. } => panic!("the encoder writes a YUV stream"),
+            }
+        }
+    };
     while let Some(packet) = input.read_packet().expect("read packet") {
         decoder.send_packet(&packet).expect("send packet");
-        while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
-            frames.push(frame);
-        }
+        take(&mut decoder);
     }
     decoder.send_eof().expect("send eof");
-    while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
-        frames.push(frame);
-    }
+    take(&mut decoder);
     frames
+}
+
+/// The BT.709 limited-range Y'CbCr the encoder writes for an RGB colour.
+fn encoded_ycbcr(rgb: [u8; 3]) -> [f64; 3] {
+    const KR: f64 = 0.2126;
+    const KB: f64 = 0.0722;
+    let [r, g, b] = rgb.map(|channel| f64::from(channel) / 255.0);
+    let y = KR * r + (1.0 - KR - KB) * g + KB * b;
+    [
+        16.0 + 219.0 * y,
+        128.0 + 224.0 * (b - y) / (2.0 * (1.0 - KB)),
+        128.0 + 224.0 * (r - y) / (2.0 * (1.0 - KR)),
+    ]
 }
 
 /// Checks the frame count and that frame `n` shows `expected(n)` at its centre and corners.
@@ -174,14 +191,13 @@ fn assert_frames(path: &Path, expected: impl Fn(u32) -> [u8; 3]) {
     assert_eq!(frames.len() as u32, FRAMES);
     for (frame, decoded) in frames.iter().enumerate() {
         assert_eq!((decoded.width, decoded.height), (WIDTH, HEIGHT));
-        let want = expected(frame as u32);
+        let want = encoded_ycbcr(expected(frame as u32));
         for (x, y) in [(WIDTH / 2, HEIGHT / 2), (4, 4), (WIDTH - 5, HEIGHT - 5)] {
-            let offset = decoded.stride * y as usize + x as usize * 4;
-            let pixel = &decoded.data[offset..offset + 3];
-            for (channel, want) in pixel.iter().zip(want) {
+            let sample = decoded.sample(x, y);
+            for (got, channel) in sample.iter().zip(want) {
                 assert!(
-                    (i32::from(*channel) - i32::from(want)).abs() <= MAX_CHANNEL_ERROR,
-                    "frame {frame} at {x},{y}: got {pixel:?}, want {want:?}",
+                    (f64::from(*got) - channel).abs() <= f64::from(MAX_SAMPLE_ERROR),
+                    "frame {frame} at {x},{y}: got {sample:?}, want {want:?}",
                 );
             }
         }
