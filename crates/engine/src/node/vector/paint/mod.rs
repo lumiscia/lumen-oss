@@ -39,7 +39,7 @@ mod tests {
     #[test]
     fn gpu_paint_size_matches_wgsl_uniform_stride() {
         let size = std::mem::size_of::<GpuPaint>();
-        assert_eq!(size, 320);
+        assert_eq!(size, 336);
     }
 
     #[test]
@@ -53,6 +53,7 @@ mod tests {
             end: [100.0, 200.0],
             center: [50.0, 60.0],
             radius: [30.0, 40.0],
+            focal: None,
             angle: 45.0,
             stops: vec![
                 GradientStop {
@@ -142,6 +143,7 @@ mod tests {
                     end: [0.8, 0.9],
                     center: [0.4, 0.5],
                     radius: [0.25, 0.5],
+                    focal: None,
                     angle: 90.0,
                     stops: red_to_blue,
                 }),
@@ -241,6 +243,36 @@ mod tests {
         assert!((gpu.colors[0][0] - 0.0).abs() < 0.01);
         let last_idx = MAX_GRADIENT_STOPS - 1;
         assert!((gpu.colors[last_idx][0] - (last_idx as f32 / 255.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn gpu_paint_focal_defaults_to_the_center_and_stays_inside_the_circle() {
+        let radial = |focal| GradientPaint {
+            kind: PaintKind::RadialGradient,
+            center: [10.0, 20.0],
+            radius: [4.0, 2.0],
+            focal,
+            ..Default::default()
+        };
+        assert_eq!(gradient_to_gpu(&radial(None)).focal_offset, [0.0, 0.0]);
+        assert_eq!(
+            gradient_to_gpu(&radial(Some([12.0, 20.0]))).focal_offset,
+            [0.5, 0.0]
+        );
+        let clamped = gradient_to_gpu(&radial(Some([30.0, 20.0]))).focal_offset;
+        assert!((clamped[0] - 0.99).abs() < 0.0001);
+        assert_eq!(clamped[1], 0.0);
+        // Far from the origin with a tiny radius, rebuilding absolute coordinates would round the
+        // focal point back onto the circle.
+        let tiny = GradientPaint {
+            kind: PaintKind::RadialGradient,
+            center: [1000.5, 0.5],
+            radius: [0.000_122_070_31; 2],
+            focal: Some([1001.5, 0.5]),
+            ..Default::default()
+        };
+        let offset = gradient_to_gpu(&tiny).focal_offset;
+        assert!(offset[0].hypot(offset[1]) <= 0.99);
     }
 
     #[test]

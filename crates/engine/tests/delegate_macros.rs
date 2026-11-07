@@ -37,6 +37,7 @@ fn paint_delegate_round_trips_generated_enum_shape() {
         end: [3.0, 4.0],
         center: [5.0, 6.0],
         radius: [7.0, 8.0],
+        focal: Some([5.5, 6.5]),
         angle: 9.0,
         stops: vec![GradientStop {
             offset: 0.25,

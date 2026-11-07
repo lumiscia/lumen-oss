@@ -903,6 +903,13 @@ export type GradientPaint = {
   readonly center?: Vec2;
   /** End point of a linear gradient. */
   readonly end?: Vec2;
+  /**
+   * Focal point of a radial gradient, where the first stop's color sits. The gradient widens
+   * from it to the circle at `center` and `radius`, which gives an off-centre highlight.
+   * Defaults to `center`. A point on or outside that circle is moved to 99% of the way to it
+   * from `center`, along the same direction.
+   */
+  readonly focal?: Vec2;
   /** Color space the stops blend in. */
   readonly interpolation?: GradientInterpolation;
   /** Horizontal and vertical radius of a radial gradient. A number sets both. */

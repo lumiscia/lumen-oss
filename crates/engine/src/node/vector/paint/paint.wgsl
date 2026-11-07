@@ -10,6 +10,7 @@ struct Paint {
     end: vec2<f32>,
     center: vec2<f32>,
     radius: vec2<f32>,
+    focal_offset: vec2<f32>,
     angle: f32,
     kind: u32,
     units: u32,
@@ -72,6 +73,21 @@ fn interpolate_color(paint: Paint, t_raw: f32) -> vec4<f32> {
     return color;
 }
 
+// Position of `p` between the focal point (0) and the radial circle (1). In the space where that
+// circle is the unit circle, `t` is the largest root of |q - f (1 - t)| = t. The focal point lies
+// strictly inside the circle, so `a` is positive and the discriminant is never negative.
+fn radial_t(paint: Paint, p: vec2<f32>) -> f32 {
+    let delta = (p - paint.center) / max(paint.radius, vec2<f32>(0.00001));
+    let focal = paint.focal_offset;
+    if (all(focal == vec2<f32>(0.0))) {
+        return length(delta);
+    }
+    let d = delta - focal;
+    let a = 1.0 - dot(focal, focal);
+    let b = dot(d, focal);
+    return (b + sqrt(b * b + a * dot(d, d))) / a;
+}
+
 fn sample_paint(paint: Paint, pixel: vec2<f32>, local01: vec2<f32>) -> vec4<f32> {
     let p = select(local01, pixel, paint.units == 1u);
     if (paint.kind == 1u) {
@@ -79,8 +95,7 @@ fn sample_paint(paint: Paint, pixel: vec2<f32>, local01: vec2<f32>) -> vec4<f32>
         return interpolate_color(paint, dot(p - paint.start, axis) / max(dot(axis, axis), 0.00001));
     }
     if (paint.kind == 2u) {
-        let delta = (p - paint.center) / max(paint.radius, vec2<f32>(0.00001));
-        return interpolate_color(paint, length(delta));
+        return interpolate_color(paint, radial_t(paint, p));
     }
     if (paint.kind == 3u) {
         let angle = atan2(p.y - paint.center.y, p.x - paint.center.x) / 6.28318530718 + 0.5;
