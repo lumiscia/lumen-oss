@@ -245,6 +245,30 @@ fn shape_coverage() -> Vec<Case> {
             Expect::Uniform(CLEAR),
         ),
         Case::new(
+            "a path stroke under a pixel wide covers its width at a pixel centre",
+            path(
+                (16, 8),
+                json!({
+                    "data": "M 2.5 4.5 L 12.5 4.5", "fill_enabled": false, "stroke_enabled": true,
+                    "stroke_width": 0.1, "stroke_paint": GREEN
+                }),
+            ),
+            Expect::Probes(vec![(7, 4, [0, 26, 0, 26]), (7, 3, CLEAR), (7, 5, CLEAR)]),
+        )
+        .tolerance(2),
+        Case::new(
+            "a shape stroke under a pixel wide covers its width at a pixel centre",
+            shape(
+                (16, 8),
+                json!({
+                    "position": [2.5, 0], "width": 8, "height": 8, "fill_enabled": false,
+                    "stroke_enabled": true, "stroke_width": 0.1, "stroke_paint": GREEN
+                }),
+            ),
+            Expect::Probes(vec![(2, 4, [0, 26, 0, 26]), (1, 4, CLEAR), (3, 4, CLEAR)]),
+        )
+        .tolerance(2),
+        Case::new(
             "a path with more than 128 points fills inside its outline",
             path((128, 128), json!({ "data": polyline(400) })),
             Expect::Probes(vec![

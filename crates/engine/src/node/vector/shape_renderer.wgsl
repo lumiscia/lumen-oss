@@ -88,7 +88,7 @@ fn sample_shape(pixel: vec2<f32>, transform: DrawableTransform) -> vec4<f32> {
     let fill_alpha = select(0.0, edge_coverage(shape.fill, edge_antialias), fill_enabled);
     let stroke_alpha = select(
         0.0,
-        edge_coverage(shape.stroke, edge_antialias),
+        stroke_coverage(shape.stroke, canvas_stroke_width(transform, params.stroke_width), edge_antialias),
         stroke_enabled,
     );
     let local01 = clamp((local - params.position) / max(params.size, vec2<f32>(1.0)), vec2<f32>(0.0), vec2<f32>(1.0));

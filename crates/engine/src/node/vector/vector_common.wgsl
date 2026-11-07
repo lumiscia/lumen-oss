@@ -13,6 +13,20 @@ fn edge_coverage(distance: f32, edge_antialias: bool) -> f32 {
     );
 }
 
+// Coverage of a stroke `width` canvas pixels wide. One under a pixel wide covers at most
+// `width` of any pixel, so it fades out with its width wherever it lies.
+fn stroke_coverage(distance: f32, width: f32, edge_antialias: bool) -> f32 {
+    let coverage = edge_coverage(distance, edge_antialias);
+    return select(coverage, min(coverage, width), edge_antialias);
+}
+
+// The stroke's width in canvas pixels. Under non-uniform scale it varies with direction,
+// and the widest is used, so no stroke a pixel wide in any direction is capped.
+fn canvas_stroke_width(transform: DrawableTransform, stroke_width: f32) -> f32 {
+    let scale = drawable_axis_scale(transform);
+    return stroke_width * max(scale.x, scale.y);
+}
+
 // Signed distance to an ellipse centred on the origin, negative inside, and the outward
 // normal at its nearest point, not normalized.
 struct EllipseDistance {
