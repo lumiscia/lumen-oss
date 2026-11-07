@@ -88,7 +88,7 @@ pub fn run() -> anyhow::Result<()> {
     ]);
     summary.print();
     println!(
-        "The CLI row is wall clock for the whole process, including start-up and piping RGBA frames; the crate row decodes in process and hands frames over without a pipe. It is end-to-end, not decode-only throughput."
+        "The CLI row is wall clock for the whole process, including start-up and piping RGBA frames; the crate row decodes in process and hands frames over without a pipe or an RGBA conversion, since YUV sources come out as planes. It is end-to-end, not decode-only throughput."
     );
     Ok(())
 }
@@ -202,12 +202,12 @@ fn decode_with_crate(path: &Path) -> anyhow::Result<u32> {
     let mut frames = 0;
     while let Some(packet) = input.read_packet()? {
         decoder.send_packet(&packet)?;
-        while decoder.receive_cpu_frame()?.is_some() {
+        while decoder.receive_video_frame()?.is_some() {
             frames += 1;
         }
     }
     decoder.send_eof()?;
-    while decoder.receive_cpu_frame()?.is_some() {
+    while decoder.receive_video_frame()?.is_some() {
         frames += 1;
     }
     Ok(frames)

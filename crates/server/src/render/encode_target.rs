@@ -383,13 +383,16 @@ fn poll(
 
 #[cfg(all(test, target_os = "linux", feature = "cuda", feature = "vulkan"))]
 mod tests {
-    use lumen_ffmpeg::{CpuVideoFrame, DecodeMode, InputContext, VideoDecoder, VideoDecoderConfig};
+    use lumen_ffmpeg::{
+        DecodeMode, DecodedVideoFrame, InputContext, VideoDecoder, VideoDecoderConfig,
+        YuvVideoFrame,
+    };
 
     use super::*;
 
-    /// Decodes the first video stream of `path` to RGBA with FFmpeg's own conversion, which is
-    /// independent of the renderer's.
-    fn decode_rgba(path: &std::path::Path) -> Vec<CpuVideoFrame> {
+    /// Decodes the first video stream of `path` to the YUV planes it stores, which sidesteps any
+    /// colour conversion.
+    fn decode_yuv(path: &std::path::Path) -> Vec<YuvVideoFrame> {
         let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open video");
         let stream_index = input
             .best_video_stream()
@@ -404,16 +407,20 @@ mod tests {
         )
         .expect("open decoder");
         let mut frames = Vec::new();
+        let mut take = |decoder: &mut VideoDecoder| {
+            while let Some(frame) = decoder.receive_video_frame().expect("receive frame") {
+                match frame {
+                    DecodedVideoFrame::Yuv(frame) => frames.push(frame),
+                    DecodedVideoFrame::Rgba { .. } => panic!("the encoder writes a YUV stream"),
+                }
+            }
+        };
         while let Some(packet) = input.read_packet().expect("read packet") {
             decoder.send_packet(&packet).expect("send packet");
-            while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
-                frames.push(frame);
-            }
+            take(&mut decoder);
         }
         decoder.send_eof().expect("send eof");
-        while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
-            frames.push(frame);
-        }
+        take(&mut decoder);
         frames
     }
 
@@ -470,16 +477,21 @@ mod tests {
         target
             .finish(&renderer, &composition, &media_store, &mut timing)
             .unwrap();
-        let frames = decode_rgba(&output);
+        let frames = decode_yuv(&output);
         assert_eq!(frames.len(), 3);
+        // The encoder writes red (255, 0, 0) as BT.709 limited-range Y'CbCr.
+        const RED: [u16; 3] = [63, 102, 240];
         for (frame, decoded) in frames.iter().enumerate() {
-            assert!(
-                decoded
-                    .data
-                    .chunks_exact(4)
-                    .all(|pixel| pixel[0] >= 239 && pixel[1] <= 16 && pixel[2] <= 16),
-                "frame {frame} isn't the composition's red"
-            );
+            let is_red = (0..decoded.height)
+                .flat_map(|y| (0..decoded.width).map(move |x| (x, y)))
+                .all(|(x, y)| {
+                    let sample = decoded.sample(x, y);
+                    sample
+                        .iter()
+                        .zip(RED)
+                        .all(|(got, want)| got.abs_diff(want) <= 8)
+                });
+            assert!(is_red, "frame {frame} isn't the composition's red");
         }
     }
 }

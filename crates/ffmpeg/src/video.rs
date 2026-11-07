@@ -152,6 +152,53 @@ pub struct YuvVideoFrame {
     pub data: Vec<u8>,
 }
 
+impl YuvVideoFrame {
+    /// The Y, Cb and Cr code values at luma position `(x, y)` in coded orientation, with chroma from
+    /// the block covering that pixel. Values span `depth` bits whatever the sample's alignment.
+    ///
+    /// # Panics
+    ///
+    /// If `(x, y)` is outside the frame.
+    pub fn sample(&self, x: u32, y: u32) -> [u16; 3] {
+        assert!(
+            x < self.width && y < self.height,
+            "sample outside the frame"
+        );
+        let (x, y) = (x as usize, y as usize);
+        let (width, height) = (self.width as usize, self.height as usize);
+        let bytes = if self.depth > 8 { 2 } else { 1 };
+        let (shift_x, shift_y) = match self.subsampling {
+            YuvSubsampling::Yuv420 => (1, 1),
+            YuvSubsampling::Yuv422 => (1, 0),
+            YuvSubsampling::Yuv444 => (0, 0),
+        };
+        let chroma_width = width.div_ceil(1 << shift_x);
+        let chroma_size = chroma_width * height.div_ceil(1 << shift_y);
+        let value = |offset: usize| {
+            let raw = if bytes == 1 {
+                u16::from(self.data[offset])
+            } else {
+                u16::from_le_bytes([self.data[offset], self.data[offset + 1]])
+            };
+            if self.msb_aligned {
+                raw >> (16 - self.depth)
+            } else {
+                raw
+            }
+        };
+        let chroma = (y >> shift_y) * chroma_width + (x >> shift_x);
+        let chroma_start = width * height * bytes;
+        let (cb, cr) = if self.interleaved_chroma {
+            let offset = chroma_start + chroma * 2 * bytes;
+            (offset, offset + bytes)
+        } else {
+            let offset = chroma_start + chroma * bytes;
+            (offset, offset + chroma_size * bytes)
+        };
+        [value((y * width + x) * bytes), value(cb), value(cr)]
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct VideoDecoderConfig {
     pub stream_index: usize,
@@ -434,37 +481,6 @@ impl VideoDecoder {
         self.codec == VideoCodec::Av1 && matches!(self.mode, DecodeMode::Gpu(_))
     }
 
-    pub fn receive_cpu_frame(&mut self) -> Result<Option<CpuVideoFrame>> {
-        if let DecodeMode::Gpu(backend) = self.mode {
-            return Err(FfmpegError::new(
-                "receive_cpu_frame",
-                "hardware decoders produce GPU frames; create a CPU decoder to receive CPU bytes",
-            )
-            .with_backend(backend)
-            .with_codec(self.codec)
-            .with_stream_index(self.stream_index));
-        }
-        self.receive_rgba_frame()
-    }
-
-    /// Receives the next decoded frame as RGBA8.
-    ///
-    /// CPU decoders convert their native software frame with swscale. Hardware decoders first
-    /// transfer the decoded frame into software memory, then use the same RGBA8 conversion path.
-    /// This keeps callers independent from FFmpeg's platform-specific GPU frame handles while still
-    /// allowing decode itself to use VideoToolbox/NVDEC/Vulkan when available. Frames come out in
-    /// display orientation, with the stream's rotation applied.
-    pub fn receive_rgba_frame(&mut self) -> Result<Option<CpuVideoFrame>> {
-        let mut frame = AvFrame::new()?;
-        match self.receive_frame(&mut frame)? {
-            ReceiveStatus::Again => Ok(None),
-            ReceiveStatus::Frame => {
-                let frame = software_frame(frame)?;
-                self.frame_to_rgba(&frame).map(Some)
-            }
-        }
-    }
-
     /// Receives the next decoded frame in the form that keeps the source's colour: YUV sources as
     /// planes in coded orientation, with their colour tags and the stream's rotation, and the rest
     /// as RGBA8 in display orientation. Hardware decoders transfer the frame to software memory
@@ -531,21 +547,22 @@ impl VideoDecoder {
         }
     }
 
+    /// Converts a frame that isn't YUV, as `yuv_source` decides, to RGBA8 in display orientation.
     fn frame_to_rgba(&mut self, frame: &AvFrame) -> Result<CpuVideoFrame> {
-        let (width, height) = checked_size(frame, "receive_rgba_frame")?;
+        let (width, height) = checked_size(frame, "receive_video_frame")?;
         let (av_width, av_height) = (width as i32, height as i32);
         let stride = (width as usize).checked_mul(4).ok_or_else(|| {
-            FfmpegError::new("receive_rgba_frame", "decoded frame row is too large")
+            FfmpegError::new("receive_video_frame", "decoded frame row is too large")
         })?;
         // swscale's x86 YUV-to-RGBA kernels convert whole groups of pixels and drop the tail of a row
         // that has no padding, so it converts into rows padded to 64 bytes and packs them afterwards.
         let padded_stride = stride.div_ceil(64) * 64;
         let av_stride = i32::try_from(padded_stride).map_err(|_| {
-            FfmpegError::new("receive_rgba_frame", "decoded frame row is too large")
+            FfmpegError::new("receive_video_frame", "decoded frame row is too large")
         })?;
         let len = padded_stride
             .checked_mul(height as usize)
-            .ok_or_else(|| FfmpegError::new("receive_rgba_frame", "decoded frame is too large"))?;
+            .ok_or_else(|| FfmpegError::new("receive_video_frame", "decoded frame is too large"))?;
         let mut data = vec![0; len];
 
         // Rebuilds the converter whenever the frame's geometry or pixel format changes.
@@ -570,9 +587,11 @@ impl VideoDecoder {
                 "failed to create RGBA conversion context",
             ));
         }
-        // Applied per frame because recreating the converter resets these, and tags can change
+        // Applied per frame because recreating the converter resets it, and the tag can change
         // between frames. swscale returns early when nothing changed.
-        set_source_colorspace(self.scaler, frame)?;
+        if is_gray(frame.format()) {
+            set_gray_range(self.scaler, is_full_range(frame))?;
+        }
 
         let mut dst_data = [
             data.as_mut_ptr(),
@@ -1015,20 +1034,30 @@ fn pack_planes(frame: &AvFrame, shape: &YuvShape, width: u32, height: u32) -> Re
     Ok(data)
 }
 
-/// Tells swscale how to read the frame's YUV. Its default is limited-range BT.601. The destination is
-/// always full-range RGBA.
-fn set_source_colorspace(scaler: *mut sys::SwsContext, frame: &AvFrame) -> Result<()> {
+/// Whether a format has a luma channel and no chroma, which swscale reads as full range unless told
+/// otherwise.
+fn is_gray(format: sys::AVPixelFormat) -> bool {
+    let Some(descriptor) = (unsafe { sys::av_pix_fmt_desc_get(format).as_ref() }) else {
+        return false;
+    };
+    let not_gray = (sys::AV_PIX_FMT_FLAG_PAL | sys::AV_PIX_FMT_FLAG_BITSTREAM) as u64;
+    descriptor.nb_components <= 2 && descriptor.flags & not_gray == 0
+}
+
+/// Tells swscale the range of a gray source. The destination is always full-range RGBA.
+fn set_gray_range(scaler: *mut sys::SwsContext, full_range: bool) -> Result<()> {
     const DEFAULT_BRIGHTNESS: i32 = 0;
     const DEFAULT_CONTRAST: i32 = 1 << 16;
     const DEFAULT_SATURATION: i32 = 1 << 16;
 
     unsafe {
-        let coefficients = sys::sws_getCoefficients(source_matrix(frame));
+        // Gray has no chroma, so the matrix is never read.
+        let coefficients = sys::sws_getCoefficients(sys::SWS_CS_DEFAULT);
         ffi::check(
             sys::sws_setColorspaceDetails(
                 scaler,
                 coefficients,
-                i32::from(is_full_range(frame)),
+                i32::from(full_range),
                 coefficients,
                 1,
                 DEFAULT_BRIGHTNESS,
@@ -1058,19 +1087,6 @@ fn color_tags(frame: &AvFrame) -> ColorTags {
     ColorTags {
         matrix,
         full_range: is_full_range(frame),
-    }
-}
-
-/// Picks swscale's `SWS_CS_*` index, whose values match `AVColorSpace`.
-fn source_matrix(frame: &AvFrame) -> i32 {
-    match frame.colorspace() {
-        colorspace @ (AVCOL_SPC_BT709 | AVCOL_SPC_FCC | AVCOL_SPC_BT470BG | AVCOL_SPC_SMPTE170M
-        | AVCOL_SPC_SMPTE240M | AVCOL_SPC_BT2020_NCL) => colorspace as i32,
-        AVCOL_SPC_BT2020_CL => AVCOL_SPC_BT2020_NCL as i32,
-        // Heuristic for untagged video, not a fact about the source: HD is usually BT.709 and SD
-        // usually BT.601.
-        _ if frame.height() >= 720 => AVCOL_SPC_BT709 as i32,
-        _ => AVCOL_SPC_BT470BG as i32,
     }
 }
 
@@ -1496,6 +1512,64 @@ mod yuv_source_tests {
         ] {
             assert!(yuv_source(format).is_none(), "{format:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod sample_tests {
+    use super::*;
+
+    fn frame(
+        (width, height): (u32, u32),
+        subsampling: YuvSubsampling,
+        depth: u8,
+        msb_aligned: bool,
+        interleaved_chroma: bool,
+        data: Vec<u8>,
+    ) -> YuvVideoFrame {
+        YuvVideoFrame {
+            width,
+            height,
+            pts: None,
+            subsampling,
+            depth,
+            msb_aligned,
+            interleaved_chroma,
+            has_alpha: false,
+            color: ColorTags {
+                matrix: ColorMatrix::Other,
+                full_range: false,
+            },
+            rotation: 0,
+            data,
+        }
+    }
+
+    #[test]
+    fn samples_read_each_plane_layout() {
+        let planar = frame(
+            (4, 2),
+            YuvSubsampling::Yuv420,
+            8,
+            false,
+            false,
+            [0, 1, 2, 3, 4, 5, 6, 7, 100, 101, 200, 201].to_vec(),
+        );
+        assert_eq!(planar.sample(0, 0), [0, 100, 200]);
+        assert_eq!(planar.sample(3, 1), [7, 101, 201]);
+
+        let p010 = frame(
+            (2, 2),
+            YuvSubsampling::Yuv420,
+            10,
+            true,
+            true,
+            [1_u16, 2, 3, 4, 512, 1023]
+                .into_iter()
+                .flat_map(|code| (code << 6).to_le_bytes())
+                .collect(),
+        );
+        assert_eq!(p010.sample(1, 1), [4, 512, 1023]);
     }
 }
 

@@ -4,14 +4,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lumen_ffmpeg::{DecodeMode, GpuBackend, InputContext, VideoDecoder, VideoDecoderConfig};
+use lumen_ffmpeg::{
+    DecodeMode, DecodedVideoFrame, GpuBackend, InputContext, VideoDecoder, VideoDecoderConfig,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let path = args
         .next()
         .map(PathBuf::from)
-        .ok_or("usage: decode_file <path> [max_frames] [cpu|metal|vulkan] [gpu|rgba]")?;
+        .ok_or("usage: decode_file <path> [max_frames] [cpu|metal|vulkan] [video|gpu]")?;
     let next = args.next();
     let (max_frames, mode_arg) = match next {
         Some(value) => match value.parse::<usize>() {
@@ -28,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let receive = match args.next().as_deref() {
         Some("gpu") => ReceiveMode::Gpu,
-        Some("rgba") | None => ReceiveMode::Rgba,
+        Some("video") | None => ReceiveMode::Video,
         Some(other) => return Err(format!("unknown receive mode `{other}`").into()),
     };
 
@@ -50,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     'decode: while let Some(packet) = input.read_packet()? {
         decoder.send_packet(&packet)?;
-        while let Some(frame_bytes) = receive_frame(&mut decoder, mode, receive)? {
+        while let Some(frame_bytes) = receive_frame(&mut decoder, receive)? {
             frames = frames.saturating_add(1);
             bytes = bytes.saturating_add(frame_bytes);
             if max_frames.is_some_and(|limit| frames >= limit) {
@@ -61,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if max_frames.is_none_or(|limit| frames < limit) {
         decoder.send_eof()?;
-        while let Some(frame_bytes) = receive_frame(&mut decoder, mode, receive)? {
+        while let Some(frame_bytes) = receive_frame(&mut decoder, receive)? {
             frames = frames.saturating_add(1);
             bytes = bytes.saturating_add(frame_bytes);
             if max_frames.is_some_and(|limit| frames >= limit) {
@@ -95,21 +97,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn receive_frame(
     decoder: &mut VideoDecoder,
-    mode: DecodeMode,
     receive: ReceiveMode,
 ) -> lumen_ffmpeg::Result<Option<usize>> {
     match receive {
-        ReceiveMode::Rgba => Ok(decoder.receive_rgba_frame()?.map(|frame| frame.data.len())),
-        ReceiveMode::Gpu => match mode {
-            DecodeMode::Cpu => Ok(decoder.receive_cpu_frame()?.map(|frame| frame.data.len())),
-            DecodeMode::Gpu(_) => Ok(decoder.receive_gpu_frame()?.map(|_| 0)),
-        },
+        ReceiveMode::Video => Ok(decoder.receive_video_frame()?.map(|frame| match frame {
+            DecodedVideoFrame::Rgba { frame, .. } => frame.data.len(),
+            DecodedVideoFrame::Yuv(frame) => frame.data.len(),
+        })),
+        ReceiveMode::Gpu => Ok(decoder.receive_gpu_frame()?.map(|_| 0)),
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 enum ReceiveMode {
-    Rgba,
+    Video,
     Gpu,
 }
 
