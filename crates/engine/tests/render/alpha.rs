@@ -121,10 +121,10 @@ fn video_source(directory: &std::path::Path) -> Option<Source> {
         FfmpegResolverOptions::default(),
     )
     .expect("open video");
-    let MediaFrame::CpuRgba(frame) = resolver.frame(0).expect("decode video") else {
-        panic!("expected a CPU frame");
+    let MediaFrame::Yuv(frame) = resolver.frame(0).expect("decode video") else {
+        panic!("expected a YUV frame");
     };
-    let media = TestMedia::default().still_video("plate", width, height, frame.rgba.to_vec());
+    let media = TestMedia::default().yuv_video("plate", width, height, (*frame).clone());
     Some(media_source(
         "video",
         json!({ "kind": "video", "source": "plate" }),

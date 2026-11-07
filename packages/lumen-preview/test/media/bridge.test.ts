@@ -48,6 +48,7 @@ vi.mock("mediabunny", () => {
         }
         return {
           canDecode: async () => true,
+          getColorSpace: async () => ({}),
           computeDuration: async () => 10,
           displayHeight: 1,
           displayWidth: 1,
@@ -252,6 +253,38 @@ describe("LumenMediaBridge", () => {
 
       expect(target.setVideoFrame).not.toHaveBeenCalled();
       expect(read.closed).toBe(true);
+    });
+
+    it("sends rotated YUV frames unrotated with their display size to a target that takes planes", async () => {
+      const setVideoFrameYuv = vi.fn();
+      const { target } = fakeTarget({ setVideoFrameYuv });
+      const bridge = new LumenMediaBridge(target);
+      await bridge.registerVideoSource("clip", "clip.mp4", FPS);
+      const nv12 = {
+        ...fakeFrame(),
+        format: "NV12",
+        colorSpace: {},
+        visibleRect: { width: 4, height: 2 },
+        allocationSize: () => 12,
+        copyTo: async () => [
+          { offset: 0, stride: 4 },
+          { offset: 8, stride: 4 },
+        ],
+      };
+      mock.sampleStream = async function* (timestamp) {
+        const sample = {
+          ...fakeSample(timestamp),
+          rotation: 90,
+          displayWidth: 2,
+          displayHeight: 4,
+        };
+        yield { ...sample, clone: () => ({ ...sample, toVideoFrame: () => nv12 }) };
+      };
+
+      await bridge.loadVideoFrame("clip", 0);
+
+      expect(setVideoFrameYuv.mock.calls[0]?.slice(2, 5)).toEqual([4, 2, "NV12"]);
+      expect(setVideoFrameYuv.mock.calls[0]?.slice(10)).toEqual([90, 2, 4]);
     });
 
     it("asks the target which frames it still holds", async () => {

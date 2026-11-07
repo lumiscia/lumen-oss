@@ -298,6 +298,8 @@ pub struct MetalDecodedFrame {
     height: u32,
     pixel_format: u32,
     pts: Option<i64>,
+    color: crate::ColorTags,
+    rotation: u32,
 }
 
 // The retained CoreVideo pixel buffer owns the decoded image storage. Consumers create Metal
@@ -325,6 +327,8 @@ impl MetalDecodedFrame {
     pub(crate) unsafe fn retain_from_video_toolbox_frame(
         pixel_buffer: NonNull<CVPixelBuffer>,
         pts: Option<i64>,
+        color: crate::ColorTags,
+        rotation: u32,
     ) -> Self {
         let pixel_buffer = unsafe { CFRetained::retain(pixel_buffer) };
         let width = CVPixelBufferGetWidth(&pixel_buffer).min(u32::MAX as usize) as u32;
@@ -336,7 +340,18 @@ impl MetalDecodedFrame {
             height,
             pixel_format,
             pts,
+            color,
+            rotation,
         }
+    }
+
+    pub fn color_tags(&self) -> crate::ColorTags {
+        self.color
+    }
+
+    /// The stream's clockwise display rotation in degrees.
+    pub fn rotation(&self) -> u32 {
+        self.rotation
     }
 
     pub fn pixel_buffer(&self) -> &CVPixelBuffer {

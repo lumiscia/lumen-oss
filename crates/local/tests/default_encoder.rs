@@ -8,14 +8,12 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::Arc,
 };
 
-use lumen_engine::{
-    ffmpeg::FfmpegVideoResolver,
-    media::{CpuMediaFrame, MediaFrame, VideoFrameResolver},
+use lumen_ffmpeg::{
+    CpuVideoFrame, DecodeMode, DecodedVideoFrame, InputContext, MuxedEncoder, PixelFormat,
+    VideoDecoder, VideoDecoderConfig, VideoEncoderConfig, YuvVideoFrame,
 };
-use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoEncoderConfig};
 use serde_json::{Value, json};
 
 const WIDTH: u32 = 320;
@@ -23,7 +21,7 @@ const HEIGHT: u32 = 240;
 const FRAMES: u32 = 30;
 const ORANGE: [u8; 3] = [255, 128, 32];
 const BLUE: [u8; 3] = [32, 128, 255];
-const MAX_CHANNEL_ERROR: i32 = 3;
+const MAX_SAMPLE_ERROR: i32 = 3;
 
 fn lavapipe_icd() -> Option<PathBuf> {
     let icd = fs::read_dir("/usr/share/vulkan/icd.d")
@@ -140,32 +138,66 @@ fn write_solid_video(path: &Path, colour: [u8; 3]) {
     encoder.finish().expect("finish encode");
 }
 
-fn decoded_frames(path: &Path) -> Vec<Arc<CpuMediaFrame>> {
-    let video = FfmpegVideoResolver::open(path.to_string_lossy().to_string()).expect("open output");
-    let metadata = video.metadata();
-    assert_eq!(
-        (metadata.width, metadata.height, metadata.frame_count),
-        (WIDTH, HEIGHT, FRAMES)
-    );
-    (0..FRAMES)
-        .map(|frame| match video.frame(frame).expect("decode frame") {
-            MediaFrame::CpuRgba(decoded) => decoded,
-            _ => panic!("expected a CPU frame"),
-        })
-        .collect()
+/// Decodes the first video stream of `path` to the YUV planes it stores, which sidesteps any colour
+/// conversion.
+fn decoded_frames(path: &Path) -> Vec<YuvVideoFrame> {
+    let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open video");
+    let stream_index = input
+        .best_video_stream()
+        .expect("video stream")
+        .stream_index;
+    let mut decoder = VideoDecoder::open(
+        &input,
+        VideoDecoderConfig {
+            stream_index,
+            mode: DecodeMode::Cpu,
+        },
+    )
+    .expect("open decoder");
+    let mut frames = Vec::new();
+    let mut take = |decoder: &mut VideoDecoder| {
+        while let Some(frame) = decoder.receive_video_frame().expect("receive frame") {
+            match frame {
+                DecodedVideoFrame::Yuv(frame) => frames.push(frame),
+                DecodedVideoFrame::Rgba { .. } => panic!("the encoder writes a YUV stream"),
+            }
+        }
+    };
+    while let Some(packet) = input.read_packet().expect("read packet") {
+        decoder.send_packet(&packet).expect("send packet");
+        take(&mut decoder);
+    }
+    decoder.send_eof().expect("send eof");
+    take(&mut decoder);
+    frames
+}
+
+/// The BT.709 limited-range Y'CbCr the encoder writes for an RGB colour.
+fn encoded_ycbcr(rgb: [u8; 3]) -> [f64; 3] {
+    const KR: f64 = 0.2126;
+    const KB: f64 = 0.0722;
+    let [r, g, b] = rgb.map(|channel| f64::from(channel) / 255.0);
+    let y = KR * r + (1.0 - KR - KB) * g + KB * b;
+    [
+        16.0 + 219.0 * y,
+        128.0 + 224.0 * (b - y) / (2.0 * (1.0 - KB)),
+        128.0 + 224.0 * (r - y) / (2.0 * (1.0 - KR)),
+    ]
 }
 
 /// Checks the frame count and that frame `n` shows `expected(n)` at its centre and corners.
 fn assert_frames(path: &Path, expected: impl Fn(u32) -> [u8; 3]) {
-    for (frame, decoded) in decoded_frames(path).iter().enumerate() {
-        let want = expected(frame as u32);
+    let frames = decoded_frames(path);
+    assert_eq!(frames.len() as u32, FRAMES);
+    for (frame, decoded) in frames.iter().enumerate() {
+        assert_eq!((decoded.width, decoded.height), (WIDTH, HEIGHT));
+        let want = encoded_ycbcr(expected(frame as u32));
         for (x, y) in [(WIDTH / 2, HEIGHT / 2), (4, 4), (WIDTH - 5, HEIGHT - 5)] {
-            let offset = decoded.row_bytes * y as usize + x as usize * 4;
-            let pixel = &decoded.rgba[offset..offset + 3];
-            for (channel, want) in pixel.iter().zip(want) {
+            let sample = decoded.sample(x, y);
+            for (got, channel) in sample.iter().zip(want) {
                 assert!(
-                    (i32::from(*channel) - i32::from(want)).abs() <= MAX_CHANNEL_ERROR,
-                    "frame {frame} at {x},{y}: got {pixel:?}, want {want:?}",
+                    (f64::from(*got) - channel).abs() <= f64::from(MAX_SAMPLE_ERROR),
+                    "frame {frame} at {x},{y}: got {sample:?}, want {want:?}",
                 );
             }
         }
@@ -283,6 +315,6 @@ fn hardware_decode_that_cannot_run_falls_back_to_the_cpu_with_one_warning() {
 
     let (cpu, fallback) = (decoded_frames(&cpu_video), decoded_frames(&fallback_video));
     for (frame, (cpu, fallback)) in cpu.iter().zip(&fallback).enumerate() {
-        assert_eq!(cpu.rgba, fallback.rgba, "frame {frame}");
+        assert_eq!(cpu.data, fallback.data, "frame {frame}");
     }
 }

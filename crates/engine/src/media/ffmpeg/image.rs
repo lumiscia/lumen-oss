@@ -8,6 +8,15 @@ use crate::media::MediaFrame;
 const MAX_CACHED_FRAMES: usize = 64;
 const MAX_CACHED_BYTES: usize = 256 * 1024 * 1024;
 
+/// The memory a frame holds, which is what the cache limits count.
+pub(super) fn media_frame_bytes(frame: &MediaFrame) -> usize {
+    match frame {
+        MediaFrame::CpuRgba(cpu) => cpu.rgba.len(),
+        MediaFrame::Yuv(yuv) => yuv.data.len(),
+        MediaFrame::GpuVideo(gpu) => gpu.frame.estimated_rgba_bytes() as usize,
+    }
+}
+
 struct CachedFrame {
     data: MediaFrame,
     bytes: usize,
@@ -44,10 +53,7 @@ impl FrameLruCache {
     /// first because those are furthest ahead of playback, then the least recently used. A frame
     /// that was asked for always stays, even if it alone is over the byte limit.
     pub fn insert(&mut self, frame: u32, data: MediaFrame, speculative: bool) {
-        let bytes = match &data {
-            MediaFrame::CpuRgba(cpu) => cpu.rgba.len(),
-            MediaFrame::GpuVideo(gpu) => gpu.frame.estimated_rgba_bytes() as usize,
-        };
+        let bytes = media_frame_bytes(&data);
         self.order.retain(|cached| *cached != frame);
         self.order.push_back(frame);
         self.entries.insert(

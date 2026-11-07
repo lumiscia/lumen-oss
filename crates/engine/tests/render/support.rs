@@ -13,7 +13,7 @@ use lumen_engine::{
     gpu::{BoundFrame, GpuCompositionRenderer},
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
-        TextSession, VideoFrameResolver, VideoMetadata,
+        TextSession, VideoFrameResolver, VideoMetadata, YuvFrame,
     },
     node::NodeKind,
 };
@@ -121,8 +121,8 @@ impl From<Scene> for Composition {
 pub struct TestMedia {
     /// Resolver ID and pixels by source.
     images: HashMap<String, (String, Arc<CpuMediaFrame>)>,
-    /// Pixels of every frame by source.
-    still_videos: HashMap<String, Arc<CpuMediaFrame>>,
+    /// The size and pixels of every frame by source.
+    still_videos: HashMap<String, ((u32, u32), MediaFrame)>,
     numbered_video: Option<String>,
     /// Font data and resolver ID by family.
     fonts: HashMap<String, (String, Arc<Vec<u8>>)>,
@@ -157,8 +157,17 @@ impl TestMedia {
 
     /// A 30 fps video of 256 frames, which all show `rgba`.
     pub fn still_video(mut self, source: &str, width: u32, height: u32, rgba: Vec<u8>) -> Self {
-        let frame = still_frame(width, height, rgba);
-        self.still_videos.insert(source.to_string(), frame);
+        let frame = MediaFrame::CpuRgba(still_frame(width, height, rgba));
+        self.still_videos
+            .insert(source.to_string(), ((width, height), frame));
+        self
+    }
+
+    /// A 30 fps video of 256 frames of `width` × `height`, which all show `frame`.
+    pub fn yuv_video(mut self, source: &str, width: u32, height: u32, frame: YuvFrame) -> Self {
+        let frame = MediaFrame::Yuv(Arc::new(frame));
+        self.still_videos
+            .insert(source.to_string(), ((width, height), frame));
         self
     }
 
@@ -277,10 +286,11 @@ impl MediaStore for TestMedia {
         &self,
         stream_id: &str,
     ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
-        if let Some(frame) = self.still_videos.get(stream_id) {
+        if let Some((size, frame)) = self.still_videos.get(stream_id) {
             return Ok(Box::new(StillVideo {
                 id: stream_id.to_string(),
-                frame: Arc::clone(frame),
+                size: *size,
+                frame: frame.clone(),
             }));
         }
         (self.numbered_video.as_deref() == Some(stream_id))
@@ -336,7 +346,8 @@ impl ImageResolver for TestImage {
 
 struct StillVideo {
     id: String,
-    frame: Arc<CpuMediaFrame>,
+    size: (u32, u32),
+    frame: MediaFrame,
 }
 
 impl VideoFrameResolver for StillVideo {
@@ -346,15 +357,15 @@ impl VideoFrameResolver for StillVideo {
 
     fn metadata(&self) -> VideoMetadata {
         VideoMetadata {
-            width: self.frame.width,
-            height: self.frame.height,
+            width: self.size.0,
+            height: self.size.1,
             frame_count: 256,
             fps: 30.0,
         }
     }
 
     fn frame(&self, _frame: u32) -> Result<MediaFrame, MediaError> {
-        Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
+        Ok(self.frame.clone())
     }
 }
 

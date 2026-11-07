@@ -7,8 +7,9 @@ use std::{
 
 use lumen_ffmpeg::{
     AudioDecoder, AudioEncoderConfig, AudioFrame, AudioResampler, AudioResamplerConfig,
-    CpuVideoFrame, DecodeMode, FfmpegError, InputContext, MuxedEncoder, PixelFormat, RateControl,
-    Rational, VideoCodec, VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
+    ColorMatrix, ColorTags, CpuVideoFrame, DecodeMode, DecodedVideoFrame, FfmpegError,
+    InputContext, MuxedEncoder, PixelFormat, RateControl, Rational, VideoCodec, VideoDecoder,
+    VideoDecoderConfig, VideoEncoderConfig, YuvVideoFrame,
 };
 
 fn temp_path(name: &str, extension: &str) -> PathBuf {
@@ -191,12 +192,11 @@ fn encodes_opens_and_decodes_cpu_video() {
     assert_eq!(info.video_streams[0].width, 32);
     assert_eq!(info.video_streams[0].height, 24);
 
-    let decoded = decode_all_rgba(&path);
+    let decoded = decode_all(&path);
     assert_eq!(decoded.len(), 6);
     for frame in &decoded {
         assert_eq!((frame.width, frame.height), (32, 24));
-        assert_eq!(frame.stride, 32 * 4);
-        assert_eq!(frame.data.len(), 32 * 24 * 4);
+        assert_eq!(frame.data.len(), 32 * 24 * 3 / 2);
     }
 
     assert_bt709_tags(&path);
@@ -217,7 +217,7 @@ fn encodes_muxed_video_and_audio() {
     assert_eq!(info.video_streams[0].height, 36);
     assert_eq!(info.audio_streams[0].sample_rate, 48_000);
     assert_eq!(info.audio_streams[0].channels, 2);
-    assert_eq!(decode_all_rgba(&path).len(), 30);
+    assert_eq!(decode_all(&path).len(), 30);
 
     let _ = fs::remove_file(path);
 }
@@ -300,14 +300,15 @@ fn cuda_nvenc_keeps_each_frame_when_the_source_buffer_is_reused() {
     }
     encoder.finish().expect("finish CUDA encode");
 
-    let frames = decode_all_rgba(&path);
+    let frames = decode_all(&path);
     assert_eq!(frames.len(), count as usize);
     for (index, frame) in frames.iter().enumerate() {
-        let expected = index as u8 * 2;
-        let [red, ..] = pixel(frame, width as usize / 2, height as usize / 2);
+        // The frame is grey, so its luma is its value scaled into limited range.
+        let expected = (16.0 + 219.0 * f64::from(index as u8 * 2) / 255.0).round() as u16;
+        let [luma, ..] = frame.sample(width / 2, height / 2);
         assert!(
-            red.abs_diff(expected) <= 6,
-            "frame {index} holds the content of another frame: red {red}, expected {expected}"
+            luma.abs_diff(expected) <= 5,
+            "frame {index} holds the content of another frame: luma {luma}, expected {expected}"
         );
     }
     let _ = fs::remove_file(path);
@@ -364,7 +365,7 @@ fn decodes_and_resamples_audio_with_cli_fixture() {
 }
 
 #[test]
-fn decodes_rgba_frames_across_resolution_change() {
+fn decodes_frames_across_resolution_change() {
     let clips = [("32x24", 32usize, 24usize), ("64x48", 64, 48)];
     let mut stream = Vec::new();
     for (size, _, _) in clips {
@@ -402,18 +403,13 @@ fn decodes_rgba_frames_across_resolution_change() {
 
     let mut sizes = Vec::new();
     let mut drain = |decoder: &mut VideoDecoder| {
-        while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
-            assert_eq!(frame.stride, frame.width as usize * 4);
-            assert_eq!(frame.data.len(), frame.stride * frame.height as usize);
-            assert!(
-                frame
-                    .data
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .all(|pixel| pixel[3] == 255)
-            );
-            sizes.push((frame.width as usize, frame.height as usize));
+        while let Some(frame) = decoder.receive_video_frame().expect("receive frame") {
+            let DecodedVideoFrame::Yuv(frame) = frame else {
+                panic!("yuv420p decodes as planes");
+            };
+            let (width, height) = (frame.width as usize, frame.height as usize);
+            assert_eq!(frame.data.len(), width * height * 3 / 2);
+            sizes.push((width, height));
         }
     };
     while let Some(packet) = input.read_packet().expect("read packet") {
@@ -705,7 +701,7 @@ fn encode_patches(
     Some(path)
 }
 
-fn decode_all_rgba(path: &Path) -> Vec<CpuVideoFrame> {
+fn decode_all(path: &Path) -> Vec<YuvVideoFrame> {
     let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open video");
     let stream_index = input
         .best_video_stream()
@@ -720,30 +716,25 @@ fn decode_all_rgba(path: &Path) -> Vec<CpuVideoFrame> {
     )
     .expect("decoder");
     let mut frames = Vec::new();
+    let mut take = |decoder: &mut VideoDecoder| {
+        while let Some(frame) = decoder.receive_video_frame().expect("receive frame") {
+            match frame {
+                DecodedVideoFrame::Yuv(frame) => frames.push(frame),
+                DecodedVideoFrame::Rgba { .. } => panic!("a YUV source decodes as planes"),
+            }
+        }
+    };
     while let Some(packet) = input.read_packet().expect("read packet") {
         decoder.send_packet(&packet).expect("send packet");
-        while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
-            frames.push(frame);
-        }
+        take(&mut decoder);
     }
     decoder.send_eof().expect("send eof");
-    while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
-        frames.push(frame);
-    }
+    take(&mut decoder);
     frames
 }
 
-fn pixel(frame: &CpuVideoFrame, x: usize, y: usize) -> [u8; 3] {
-    let offset = y * frame.stride + x * 4;
-    [
-        frame.data[offset],
-        frame.data[offset + 1],
-        frame.data[offset + 2],
-    ]
-}
-
-fn assert_close(actual: [u8; 3], expected: [u8; 3], context: &str) {
-    const TOLERANCE: i32 = 3;
+fn assert_close(actual: [u16; 3], expected: [u8; 3], context: &str) {
+    const TOLERANCE: i32 = 2;
     assert!(
         actual
             .iter()
@@ -753,13 +744,21 @@ fn assert_close(actual: [u8; 3], expected: [u8; 3], context: &str) {
     );
 }
 
-fn assert_patches(frame: &CpuVideoFrame, context: &str) {
+/// Checks that each patch's centre holds the Y'CbCr the fixture wrote for it.
+fn assert_patches(frame: &YuvVideoFrame, matrix: Matrix, full_range: bool, context: &str) {
     let width = frame.width as usize;
-    for (index, expected) in PATCHES.iter().enumerate() {
+    for (index, patch) in PATCHES.iter().enumerate() {
         let x = (2 * index + 1) * width / (2 * PATCHES.len());
-        let actual = pixel(frame, x, frame.height as usize / 2);
-        assert_close(actual, *expected, &format!("{context} patch {index}"));
+        assert_close(
+            frame.sample(x as u32, frame.height / 2),
+            rgb_to_ycbcr(*patch, matrix, full_range),
+            &format!("{context} patch {index}"),
+        );
     }
+}
+
+fn assert_tags(frame: &YuvVideoFrame, expected: ColorTags, context: &str) {
+    assert_eq!(frame.color, expected, "{context}");
 }
 
 const BT709_TV: &[&str] = &["-colorspace", "bt709", "-color_range", "tv"];
@@ -770,18 +769,18 @@ struct ColourCase {
     matrix: Matrix,
     full_range: bool,
     tags: &'static [&'static str],
+    /// What the decoder reports for those tags.
+    reported: ColorMatrix,
 }
 
 struct RotationCase {
     display_rotation: &'static str,
     clockwise: u32,
     size: (usize, usize),
-    left_edge_at: (usize, usize),
-    right_edge_at: (usize, usize),
 }
 
 #[test]
-fn decodes_known_ycbcr_with_the_tagged_matrix_and_range() {
+fn decodes_known_ycbcr_unchanged_with_the_stream_tags() {
     let cases = [
         ColourCase {
             name: "bt709_sd",
@@ -789,6 +788,7 @@ fn decodes_known_ycbcr_with_the_tagged_matrix_and_range() {
             matrix: BT709,
             full_range: false,
             tags: BT709_TV,
+            reported: ColorMatrix::Bt709,
         },
         ColourCase {
             name: "bt601_hd",
@@ -796,6 +796,7 @@ fn decodes_known_ycbcr_with_the_tagged_matrix_and_range() {
             matrix: BT601,
             full_range: false,
             tags: &["-colorspace", "smpte170m", "-color_range", "tv"],
+            reported: ColorMatrix::Smpte170m,
         },
         ColourCase {
             name: "bt2020",
@@ -803,6 +804,7 @@ fn decodes_known_ycbcr_with_the_tagged_matrix_and_range() {
             matrix: BT2020,
             full_range: false,
             tags: &["-colorspace", "bt2020nc", "-color_range", "tv"],
+            reported: ColorMatrix::Bt2020Ncl,
         },
         ColourCase {
             name: "bt709_full",
@@ -810,20 +812,23 @@ fn decodes_known_ycbcr_with_the_tagged_matrix_and_range() {
             matrix: BT709,
             full_range: true,
             tags: &["-colorspace", "bt709", "-color_range", "pc"],
+            reported: ColorMatrix::Bt709,
         },
         ColourCase {
-            name: "untagged_sd_reads_as_bt601",
+            name: "untagged_sd",
             size: (64, 48),
             matrix: BT601,
             full_range: false,
             tags: &[],
+            reported: ColorMatrix::Other,
         },
         ColourCase {
-            name: "untagged_hd_reads_as_bt709",
+            name: "untagged_hd",
             size: (1280, 720),
             matrix: BT709,
             full_range: false,
             tags: &[],
+            reported: ColorMatrix::Other,
         },
     ];
     for case in cases {
@@ -836,18 +841,22 @@ fn decodes_known_ycbcr_with_the_tagged_matrix_and_range() {
         ) else {
             return;
         };
-        let frames = decode_all_rgba(&path);
+        let frames = decode_all(&path);
         assert_eq!(frames.len(), 2, "{}", case.name);
+        let reported = ColorTags {
+            matrix: case.reported,
+            full_range: case.full_range,
+        };
         for frame in &frames {
-            assert_patches(frame, case.name);
+            assert_tags(frame, reported, case.name);
+            assert_patches(frame, case.matrix, case.full_range, case.name);
         }
         let _ = fs::remove_file(path);
     }
 }
 
 #[test]
-fn keeps_the_matrix_across_a_resolution_change() {
-    // Both sizes are SD, so only the tag can select BT.709 once the converter is rebuilt.
+fn keeps_the_tags_across_a_resolution_change() {
     let sizes = [(64, 48), (128, 96)];
     let mut stream = Vec::new();
     for size in sizes {
@@ -860,7 +869,7 @@ fn keeps_the_matrix_across_a_resolution_change() {
     let path = temp_path("colour_resolution_change", "h264");
     fs::write(&path, stream).expect("write stream");
 
-    let frames = decode_all_rgba(&path);
+    let frames = decode_all(&path);
     for (width, height) in sizes {
         assert!(
             frames
@@ -869,8 +878,14 @@ fn keeps_the_matrix_across_a_resolution_change() {
             "missing {width}x{height}"
         );
     }
+    let bt709 = ColorTags {
+        matrix: ColorMatrix::Bt709,
+        full_range: false,
+    };
     for frame in &frames {
-        assert_patches(frame, &format!("{}x{}", frame.width, frame.height));
+        let context = format!("{}x{}", frame.width, frame.height);
+        assert_tags(frame, bt709, &context);
+        assert_patches(frame, BT709, false, &context);
     }
     let _ = fs::remove_file(path);
 }
@@ -881,29 +896,22 @@ fn applies_display_rotation_to_stream_info_and_frames() {
     let Some(coded) = encode_patches("rotation", (width, height), BT709, false, BT709_TV) else {
         return;
     };
-    let [left, right] = [PATCHES[0], PATCHES[3]];
-    // FFmpeg's `display_rotation` is counterclockwise. Positions match the FFmpeg CLI's autorotate.
+    // FFmpeg's `display_rotation` is counterclockwise.
     let cases = [
         RotationCase {
             display_rotation: "90",
             clockwise: 270,
             size: (32, 64),
-            left_edge_at: (16, 60),
-            right_edge_at: (16, 4),
         },
         RotationCase {
             display_rotation: "-90",
             clockwise: 90,
             size: (32, 64),
-            left_edge_at: (16, 4),
-            right_edge_at: (16, 60),
         },
         RotationCase {
             display_rotation: "180",
             clockwise: 180,
             size: (64, 32),
-            left_edge_at: (60, 16),
-            right_edge_at: (4, 16),
         },
     ];
     for case in cases {
@@ -923,15 +931,20 @@ fn applies_display_rotation_to_stream_info_and_frames() {
         assert_eq!(stream.rotation, case.clockwise);
         assert_eq!((stream.width as usize, stream.height as usize), case.size);
 
-        let frames = decode_all_rgba(&path);
+        // Frames come out in coded orientation, with the rotation to apply.
+        let frames = decode_all(&path);
         let frame = frames.first().expect("decoded frame");
-        assert_eq!((frame.width as usize, frame.height as usize), case.size);
-        assert_eq!(frame.stride, case.size.0 * 4);
-        let context = format!("rotation {}", case.display_rotation);
-        let (x, y) = case.left_edge_at;
-        assert_close(pixel(frame, x, y), left, &context);
-        let (x, y) = case.right_edge_at;
-        assert_close(pixel(frame, x, y), right, &context);
+        assert_eq!(
+            (frame.width as usize, frame.height as usize),
+            (width, height)
+        );
+        assert_eq!(frame.rotation, case.clockwise);
+        assert_patches(
+            frame,
+            BT709,
+            false,
+            &format!("rotation {}", case.display_rotation),
+        );
         let _ = fs::remove_file(path);
     }
     let _ = fs::remove_file(coded);
@@ -1017,19 +1030,17 @@ fn decodes_every_column_when_the_width_is_not_a_multiple_of_eight() {
             if !available {
                 return;
             }
-            let frames = decode_all_rgba(&path);
+            let frames = decode_all(&path);
             assert!(!frames.is_empty(), "{name}");
             for frame in &frames {
                 assert_eq!(frame.width as usize, width, "{name}");
-                let expected = &frame.data[..4];
-                assert_eq!(expected[3], 255, "{name}");
-                for (index, pixel) in frame.data.as_chunks::<4>().0.iter().enumerate() {
+                let expected = frame.sample(0, 0);
+                for (x, y) in (0..frame.height).flat_map(|y| (0..frame.width).map(move |x| (x, y)))
+                {
                     assert_eq!(
-                        pixel,
+                        frame.sample(x, y),
                         expected,
-                        "{name}: column {} of row {}",
-                        index % width,
-                        index / width
+                        "{name}: column {x} of row {y}"
                     );
                 }
             }

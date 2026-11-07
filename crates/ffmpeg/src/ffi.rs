@@ -135,6 +135,23 @@ impl AvFrame {
         Ok(Self { ptr })
     }
 
+    /// A frame of `format` and size with its own buffers allocated.
+    pub(crate) fn with_buffers(
+        format: sys::AVPixelFormat,
+        width: i32,
+        height: i32,
+    ) -> Result<Self> {
+        let mut frame = Self::new()?;
+        unsafe {
+            let raw = frame.as_mut_ptr();
+            (*raw).format = format as i32;
+            (*raw).width = width;
+            (*raw).height = height;
+            check(sys::av_frame_get_buffer(raw, 0), "av_frame_get_buffer")?;
+        }
+        Ok(frame)
+    }
+
     pub(crate) fn as_ptr(&self) -> *const sys::AVFrame {
         self.ptr.as_ptr()
     }

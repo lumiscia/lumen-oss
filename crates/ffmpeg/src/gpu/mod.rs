@@ -20,7 +20,6 @@ pub use metal::{
 #[cfg(feature = "vulkan")]
 pub use vulkan::{
     VulkanDecodedFrame, VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame,
-    YuvToRgb,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +127,29 @@ impl GpuVideoFrame {
             Self::Metal(frame) => frame.pts(),
             #[cfg(feature = "vulkan")]
             Self::Vulkan(frame) => frame.pts(),
+            Self::__NonExhaustive => unreachable!("hidden GPU frame variant"),
+        }
+    }
+
+    /// The colour tags FFmpeg read for the frame.
+    pub fn color_tags(&self) -> crate::ColorTags {
+        match self {
+            #[cfg(feature = "metal")]
+            Self::Metal(frame) => frame.color_tags(),
+            #[cfg(feature = "vulkan")]
+            Self::Vulkan(frame) => frame.color_tags(),
+            Self::__NonExhaustive => unreachable!("hidden GPU frame variant"),
+        }
+    }
+
+    /// The stream's clockwise display rotation in degrees, a multiple of 90, which the frame
+    /// hasn't had applied.
+    pub fn rotation(&self) -> u32 {
+        match self {
+            #[cfg(feature = "metal")]
+            Self::Metal(frame) => frame.rotation(),
+            #[cfg(feature = "vulkan")]
+            Self::Vulkan(frame) => frame.rotation(),
             Self::__NonExhaustive => unreachable!("hidden GPU frame variant"),
         }
     }

@@ -66,6 +66,28 @@ pub enum EncodeMode {
     GpuTexture(GpuBackend),
 }
 
+/// The `AVColorSpace` of a frame, among the values a YUV to RGB matrix follows from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMatrix {
+    Bt709,
+    Bt470bg,
+    Smpte170m,
+    Fcc,
+    Smpte240m,
+    Bt2020Ncl,
+    Bt2020Cl,
+    /// Unspecified, or a value that isn't a YUV matrix.
+    Other,
+}
+
+/// The colour tags FFmpeg read for a decoded frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColorTags {
+    pub matrix: ColorMatrix,
+    /// `AVCOL_RANGE_JPEG`, or a JPEG pixel format: samples span the whole code range.
+    pub full_range: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct CpuVideoFrame {
     pub width: u32,
@@ -74,6 +96,107 @@ pub struct CpuVideoFrame {
     pub pixel_format: PixelFormat,
     pub pts: Option<i64>,
     pub data: Vec<u8>,
+}
+
+/// A decoded video frame. Sources that store YUV come out as planes with the stream's colour tags, so
+/// the renderer picks the colour conversion; everything else comes out as RGBA.
+#[derive(Debug, Clone)]
+pub enum DecodedVideoFrame {
+    Rgba {
+        frame: CpuVideoFrame,
+        /// The source stores straight alpha, so the pixels still need premultiplying.
+        has_alpha: bool,
+    },
+    Yuv(YuvVideoFrame),
+}
+
+impl DecodedVideoFrame {
+    pub fn pts(&self) -> Option<i64> {
+        match self {
+            Self::Rgba { frame, .. } => frame.pts,
+            Self::Yuv(frame) => frame.pts,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YuvSubsampling {
+    /// Chroma at half width and half height.
+    Yuv420,
+    /// Chroma at half width.
+    Yuv422,
+    Yuv444,
+}
+
+/// A decoded frame as YUV planes, whose colour is exactly what the source stored.
+///
+/// `data` holds the planes back to back with no row padding: luma, then chroma, then alpha when
+/// there is any. Samples are one byte at depth 8 and two little-endian bytes above it. Chroma is
+/// either one plane of Cb, Cr pairs or a Cb plane followed by a Cr plane, and alpha is full size.
+#[derive(Debug, Clone)]
+pub struct YuvVideoFrame {
+    /// The coded size, before `rotation`.
+    pub width: u32,
+    pub height: u32,
+    pub pts: Option<i64>,
+    pub subsampling: YuvSubsampling,
+    /// Significant bits per sample.
+    pub depth: u8,
+    /// A two-byte sample's value sits in its high bits, as in P010.
+    pub msb_aligned: bool,
+    pub interleaved_chroma: bool,
+    pub has_alpha: bool,
+    pub color: ColorTags,
+    /// Clockwise degrees the frame turns to show upright: 0, 90, 180 or 270.
+    pub rotation: u32,
+    pub data: Vec<u8>,
+}
+
+impl YuvVideoFrame {
+    /// The Y, Cb and Cr code values at luma position `(x, y)` in coded orientation, with chroma from
+    /// the block covering that pixel. Values span `depth` bits whatever the sample's alignment.
+    ///
+    /// # Panics
+    ///
+    /// If `(x, y)` is outside the frame.
+    pub fn sample(&self, x: u32, y: u32) -> [u16; 3] {
+        assert!(
+            x < self.width && y < self.height,
+            "sample outside the frame"
+        );
+        let (x, y) = (x as usize, y as usize);
+        let (width, height) = (self.width as usize, self.height as usize);
+        let bytes = if self.depth > 8 { 2 } else { 1 };
+        let (shift_x, shift_y) = match self.subsampling {
+            YuvSubsampling::Yuv420 => (1, 1),
+            YuvSubsampling::Yuv422 => (1, 0),
+            YuvSubsampling::Yuv444 => (0, 0),
+        };
+        let chroma_width = width.div_ceil(1 << shift_x);
+        let chroma_size = chroma_width * height.div_ceil(1 << shift_y);
+        let value = |offset: usize| {
+            let raw = if bytes == 1 {
+                u16::from(self.data[offset])
+            } else {
+                u16::from_le_bytes([self.data[offset], self.data[offset + 1]])
+            };
+            if self.msb_aligned {
+                raw >> (16 - self.depth)
+            } else {
+                raw
+            }
+        };
+        let chroma = (y >> shift_y) * chroma_width + (x >> shift_x);
+        let chroma_start = width * height * bytes;
+        let (cb, cr) = if self.interleaved_chroma {
+            let offset = chroma_start + chroma * 2 * bytes;
+            (offset, offset + bytes)
+        } else {
+            let offset = chroma_start + chroma * bytes;
+            (offset, offset + chroma_size * bytes)
+        };
+        [value((y * width + x) * bytes), value(cb), value(cr)]
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -107,7 +230,6 @@ pub struct VideoDecoder {
     /// Timestamps of the packets an edit list discards, for decoders where `drops_by_timestamp`.
     discarded_pts: HashSet<i64>,
     drops_alpha: bool,
-    last_frame_had_alpha: bool,
 }
 
 unsafe impl Send for VideoDecoder {}
@@ -239,7 +361,6 @@ impl VideoDecoder {
             vulkan_frames: Box::default(),
             discarded_pts: HashSet::new(),
             drops_alpha: alpha_layer && alpha_decoder.is_none(),
-            last_frame_had_alpha: false,
         };
 
         unsafe {
@@ -296,12 +417,6 @@ impl VideoDecoder {
     /// Whether the stream has an alpha layer this decoder ignores, so its frames come out opaque.
     pub fn drops_alpha(&self) -> bool {
         self.drops_alpha
-    }
-
-    /// Whether the last frame [`Self::receive_rgba_frame`] returned was decoded with an alpha
-    /// channel, which can change from frame to frame within a stream.
-    pub fn last_frame_had_alpha(&self) -> bool {
-        self.last_frame_had_alpha
     }
 
     pub fn stream_index(&self) -> usize {
@@ -366,31 +481,32 @@ impl VideoDecoder {
         self.codec == VideoCodec::Av1 && matches!(self.mode, DecodeMode::Gpu(_))
     }
 
-    pub fn receive_cpu_frame(&mut self) -> Result<Option<CpuVideoFrame>> {
-        if let DecodeMode::Gpu(backend) = self.mode {
-            return Err(FfmpegError::new(
-                "receive_cpu_frame",
-                "hardware decoders produce GPU frames; create a CPU decoder to receive CPU bytes",
-            )
-            .with_backend(backend)
-            .with_codec(self.codec)
-            .with_stream_index(self.stream_index));
-        }
-        self.receive_rgba_frame()
-    }
-
-    /// Receives the next decoded frame as RGBA8.
+    /// Receives the next decoded frame in the form that keeps the source's colour: YUV sources as
+    /// planes in coded orientation, with their colour tags and the stream's rotation, and the rest
+    /// as RGBA8 in display orientation. Hardware decoders transfer the frame to software memory
+    /// first.
     ///
-    /// CPU decoders convert their native software frame with swscale. Hardware decoders first
-    /// transfer the decoded frame into software memory, then use the same RGBA8 conversion path.
-    /// This keeps callers independent from FFmpeg's platform-specific GPU frame handles while still
-    /// allowing decode itself to use VideoToolbox/NVDEC/Vulkan when available. Frames come out in
-    /// display orientation, with the stream's rotation applied.
-    pub fn receive_rgba_frame(&mut self) -> Result<Option<CpuVideoFrame>> {
+    /// Formats [`YuvVideoFrame`] can't carry as they are come out as the nearest layout it can, by
+    /// a swscale conversion between YUV formats that leaves the colour alone.
+    pub fn receive_video_frame(&mut self) -> Result<Option<DecodedVideoFrame>> {
         let mut frame = AvFrame::new()?;
         match self.receive_frame(&mut frame)? {
             ReceiveStatus::Again => Ok(None),
-            ReceiveStatus::Frame => self.frame_to_rgba(&frame).map(Some),
+            ReceiveStatus::Frame => {
+                let frame = software_frame(frame)?;
+                match yuv_source(frame.format()) {
+                    Some(source) => self
+                        .frame_to_yuv(&frame, source)
+                        .map(DecodedVideoFrame::Yuv),
+                    None => self
+                        .frame_to_rgba(&frame)
+                        .map(|rgba| DecodedVideoFrame::Rgba {
+                            has_alpha: crate::format::pixel_format_has_alpha(frame.format()),
+                            frame: rgba,
+                        }),
+                }
+                .map(Some)
+            }
         }
     }
 
@@ -431,48 +547,22 @@ impl VideoDecoder {
         }
     }
 
+    /// Converts a frame that isn't YUV, as `yuv_source` decides, to RGBA8 in display orientation.
     fn frame_to_rgba(&mut self, frame: &AvFrame) -> Result<CpuVideoFrame> {
-        if matches!(frame.format(), AV_PIX_FMT_VULKAN | AV_PIX_FMT_VIDEOTOOLBOX) {
-            let mut cpu_frame = AvFrame::new()?;
-            unsafe {
-                ffi::check(
-                    sys::av_hwframe_transfer_data(cpu_frame.as_mut_ptr(), frame.as_ptr(), 0),
-                    "av_hwframe_transfer_data",
-                )?;
-                ffi::check(
-                    sys::av_frame_copy_props(cpu_frame.as_mut_ptr(), frame.as_ptr()),
-                    "av_frame_copy_props",
-                )?;
-            }
-            return self.frame_to_rgba(&cpu_frame);
-        }
-
-        let width = frame.width();
-        let height = frame.height();
-        if width == 0 || height == 0 {
-            return Err(FfmpegError::new(
-                "receive_rgba_frame",
-                "decoded frame has zero width or height",
-            ));
-        }
-        let (Ok(av_width), Ok(av_height)) = (i32::try_from(width), i32::try_from(height)) else {
-            return Err(FfmpegError::new(
-                "receive_rgba_frame",
-                "decoded frame dimensions exceed FFmpeg's supported integer range",
-            ));
-        };
+        let (width, height) = checked_size(frame, "receive_video_frame")?;
+        let (av_width, av_height) = (width as i32, height as i32);
         let stride = (width as usize).checked_mul(4).ok_or_else(|| {
-            FfmpegError::new("receive_rgba_frame", "decoded frame row is too large")
+            FfmpegError::new("receive_video_frame", "decoded frame row is too large")
         })?;
         // swscale's x86 YUV-to-RGBA kernels convert whole groups of pixels and drop the tail of a row
         // that has no padding, so it converts into rows padded to 64 bytes and packs them afterwards.
         let padded_stride = stride.div_ceil(64) * 64;
         let av_stride = i32::try_from(padded_stride).map_err(|_| {
-            FfmpegError::new("receive_rgba_frame", "decoded frame row is too large")
+            FfmpegError::new("receive_video_frame", "decoded frame row is too large")
         })?;
         let len = padded_stride
             .checked_mul(height as usize)
-            .ok_or_else(|| FfmpegError::new("receive_rgba_frame", "decoded frame is too large"))?;
+            .ok_or_else(|| FfmpegError::new("receive_video_frame", "decoded frame is too large"))?;
         let mut data = vec![0; len];
 
         // Rebuilds the converter whenever the frame's geometry or pixel format changes.
@@ -497,9 +587,11 @@ impl VideoDecoder {
                 "failed to create RGBA conversion context",
             ));
         }
-        // Applied per frame because recreating the converter resets these, and tags can change
+        // Applied per frame because recreating the converter resets it, and the tag can change
         // between frames. swscale returns early when nothing changed.
-        set_source_colorspace(self.scaler, frame)?;
+        if is_gray(frame.format()) {
+            set_gray_range(self.scaler, is_full_range(frame))?;
+        }
 
         let mut dst_data = [
             data.as_mut_ptr(),
@@ -533,7 +625,6 @@ impl VideoDecoder {
             data.truncate(stride * height as usize);
         }
 
-        self.last_frame_had_alpha = crate::format::pixel_format_has_alpha(frame.format());
         let (width, height, data) = rotate_rgba(width, height, data, self.rotation);
         Ok(CpuVideoFrame {
             width,
@@ -543,6 +634,81 @@ impl VideoDecoder {
             pts: frame.pts(),
             data,
         })
+    }
+
+    fn frame_to_yuv(&mut self, frame: &AvFrame, source: YuvSource) -> Result<YuvVideoFrame> {
+        let (width, height) = checked_size(frame, "receive_video_frame")?;
+        let reshaped;
+        let (planes, shape) = match source {
+            YuvSource::Native(shape) => (frame, shape),
+            YuvSource::Reshape(target, shape) => {
+                reshaped = self.reshape_yuv(frame, target, width, height)?;
+                (&reshaped, shape)
+            }
+        };
+        Ok(YuvVideoFrame {
+            width,
+            height,
+            pts: frame.pts(),
+            subsampling: shape.subsampling,
+            depth: shape.depth,
+            msb_aligned: shape.msb_aligned,
+            interleaved_chroma: shape.interleaved,
+            has_alpha: shape.alpha,
+            color: color_tags(frame),
+            rotation: self.rotation,
+            data: pack_planes(planes, &shape, width, height)?,
+        })
+    }
+
+    /// Converts between two YUV formats of the same size. swscale's default colour details leave
+    /// the samples' range and matrix alone.
+    fn reshape_yuv(
+        &mut self,
+        frame: &AvFrame,
+        target: sys::AVPixelFormat,
+        width: u32,
+        height: u32,
+    ) -> Result<AvFrame> {
+        let (av_width, av_height) = (width as i32, height as i32);
+        self.scaler = unsafe {
+            sys::sws_getCachedContext(
+                self.scaler,
+                av_width,
+                av_height,
+                frame.format(),
+                av_width,
+                av_height,
+                target,
+                SWS_BILINEAR,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+            )
+        };
+        if self.scaler.is_null() {
+            return Err(FfmpegError::new(
+                "sws_getCachedContext",
+                "failed to create YUV conversion context",
+            ));
+        }
+        let mut converted = AvFrame::with_buffers(target, av_width, av_height)?;
+        unsafe {
+            let output = converted.as_mut_ptr();
+            ffi::check(
+                sys::sws_scale(
+                    self.scaler,
+                    (*frame.as_ptr()).data.as_ptr() as *const *const u8,
+                    (*frame.as_ptr()).linesize.as_ptr(),
+                    0,
+                    av_height,
+                    (*output).data.as_ptr(),
+                    (*output).linesize.as_ptr(),
+                ),
+                "sws_scale",
+            )?;
+        }
+        Ok(converted)
     }
 
     fn frame_to_gpu(&self, frame: AvFrame) -> Result<GpuVideoFrame> {
@@ -585,6 +751,8 @@ impl VideoDecoder {
             crate::gpu::MetalDecodedFrame::retain_from_video_toolbox_frame(
                 pixel_buffer,
                 frame.pts(),
+                color_tags(frame),
+                self.rotation,
             )
         }))
     }
@@ -610,26 +778,286 @@ impl VideoDecoder {
             )
             .with_backend(GpuBackend::Vulkan));
         }
-        let yuv_to_rgb = yuv_to_rgb(&frame);
-        crate::gpu::VulkanDecodedFrame::new(frame, device.clone(), yuv_to_rgb)
+        let color = color_tags(&frame);
+        crate::gpu::VulkanDecodedFrame::new(frame, device.clone(), color, self.rotation)
             .map(GpuVideoFrame::Vulkan)
     }
 }
 
-/// Tells swscale how to read the frame's YUV. Its default is limited-range BT.601. The destination is
-/// always full-range RGBA.
-fn set_source_colorspace(scaler: *mut sys::SwsContext, frame: &AvFrame) -> Result<()> {
+/// The frame itself, or for a hardware frame its contents transferred to software memory.
+fn software_frame(frame: AvFrame) -> Result<AvFrame> {
+    if !matches!(frame.format(), AV_PIX_FMT_VULKAN | AV_PIX_FMT_VIDEOTOOLBOX) {
+        return Ok(frame);
+    }
+    let mut cpu_frame = AvFrame::new()?;
+    unsafe {
+        ffi::check(
+            sys::av_hwframe_transfer_data(cpu_frame.as_mut_ptr(), frame.as_ptr(), 0),
+            "av_hwframe_transfer_data",
+        )?;
+        ffi::check(
+            sys::av_frame_copy_props(cpu_frame.as_mut_ptr(), frame.as_ptr()),
+            "av_frame_copy_props",
+        )?;
+    }
+    Ok(cpu_frame)
+}
+
+/// The frame's size, if FFmpeg can address a frame that big.
+fn checked_size(frame: &AvFrame, operation: &'static str) -> Result<(u32, u32)> {
+    let (width, height) = (frame.width(), frame.height());
+    if width == 0 || height == 0 {
+        return Err(FfmpegError::new(
+            operation,
+            "decoded frame has zero width or height",
+        ));
+    }
+    if i32::try_from(width).is_err() || i32::try_from(height).is_err() {
+        return Err(FfmpegError::new(
+            operation,
+            "decoded frame dimensions exceed FFmpeg's supported integer range",
+        ));
+    }
+    Ok((width, height))
+}
+
+/// How a pixel format's planes are laid out, for the formats [`YuvVideoFrame`] carries.
+#[derive(Debug, Clone, Copy)]
+struct YuvShape {
+    subsampling: YuvSubsampling,
+    depth: u8,
+    msb_aligned: bool,
+    interleaved: bool,
+    alpha: bool,
+}
+
+enum YuvSource {
+    /// The frame's planes are read as they are.
+    Native(YuvShape),
+    /// The frame converts to this YUV format first, which has this layout.
+    Reshape(sys::AVPixelFormat, YuvShape),
+}
+
+/// How to take a frame of `format` as YUV, or `None` if it isn't a YUV format.
+fn yuv_source(format: sys::AVPixelFormat) -> Option<YuvSource> {
+    let descriptor = unsafe { sys::av_pix_fmt_desc_get(format).as_ref()? };
+    let not_yuv = [
+        sys::AV_PIX_FMT_FLAG_RGB,
+        sys::AV_PIX_FMT_FLAG_PAL,
+        sys::AV_PIX_FMT_FLAG_BITSTREAM,
+        sys::AV_PIX_FMT_FLAG_HWACCEL,
+        sys::AV_PIX_FMT_FLAG_BAYER,
+    ]
+    .into_iter()
+    .fold(0, |flags, flag| flags | flag as u64);
+    if descriptor.nb_components < 3
+        || descriptor.flags & not_yuv != 0
+        || matches!(
+            format,
+            sys::AVPixelFormat::AV_PIX_FMT_XYZ12LE | sys::AVPixelFormat::AV_PIX_FMT_XYZ12BE
+        )
+    {
+        return None;
+    }
+    Some(match native_shape(descriptor) {
+        Some(shape) => YuvSource::Native(shape),
+        None => {
+            let target = reshape_target(descriptor, is_full_range_format(format));
+            let shape = native_shape(unsafe { sys::av_pix_fmt_desc_get(target).as_ref()? })?;
+            YuvSource::Reshape(target, shape)
+        }
+    })
+}
+
+fn is_full_range_format(format: sys::AVPixelFormat) -> bool {
+    matches!(
+        format,
+        AV_PIX_FMT_YUVJ411P
+            | AV_PIX_FMT_YUVJ420P
+            | AV_PIX_FMT_YUVJ422P
+            | AV_PIX_FMT_YUVJ440P
+            | AV_PIX_FMT_YUVJ444P
+    )
+}
+
+fn subsampling_of(descriptor: &sys::AVPixFmtDescriptor) -> Option<YuvSubsampling> {
+    match (descriptor.log2_chroma_w, descriptor.log2_chroma_h) {
+        (0, 0) => Some(YuvSubsampling::Yuv444),
+        (1, 0) => Some(YuvSubsampling::Yuv422),
+        (1, 1) => Some(YuvSubsampling::Yuv420),
+        _ => None,
+    }
+}
+
+/// The layout of a planar little-endian format whose samples sit in the low bits, or in the high
+/// bits of 16 as in P010, with chroma in two planes or one of pairs in Cb, Cr order.
+fn native_shape(descriptor: &sys::AVPixFmtDescriptor) -> Option<YuvShape> {
+    let flags = descriptor.flags;
+    let flag = |flag: u32| flags & u64::from(flag) != 0;
+    if flag(sys::AV_PIX_FMT_FLAG_BE as u32) || !flag(sys::AV_PIX_FMT_FLAG_PLANAR as u32) {
+        return None;
+    }
+    let alpha = flag(sys::AV_PIX_FMT_FLAG_ALPHA as u32);
+    let components = &descriptor.comp[..usize::from(descriptor.nb_components)];
+    if components.len() != 3 + usize::from(alpha) {
+        return None;
+    }
+    let (depth, shift) = (components[0].depth, components[0].shift);
+    if !(8..=16).contains(&depth)
+        || components
+            .iter()
+            .any(|component| component.depth != depth || component.shift != shift)
+    {
+        return None;
+    }
+    let msb_aligned = match shift {
+        0 => false,
+        shift if depth > 8 && shift == 16 - depth => true,
+        _ => return None,
+    };
+    let bytes = if depth > 8 { 2 } else { 1 };
+    let interleaved = components[1].plane == components[2].plane;
+    let chroma_step = if interleaved { 2 * bytes } else { bytes };
+    let layout_matches = components[0].plane == 0
+        && components[0].step == bytes
+        && components[0].offset == 0
+        && components[1].plane == 1
+        && components[1].step == chroma_step
+        && components[2].step == chroma_step
+        && components[1].offset == 0
+        && components[2].offset == if interleaved { bytes } else { 0 }
+        && (!alpha
+            || (components[3].plane == if interleaved { 2 } else { 3 }
+                && components[3].step == bytes
+                && components[3].offset == 0));
+    layout_matches.then_some(YuvShape {
+        subsampling: subsampling_of(descriptor)?,
+        depth: depth as u8,
+        msb_aligned,
+        interleaved,
+        alpha,
+    })
+}
+
+/// The planar little-endian format nearest to a YUV format `native_shape` rejects, without losing
+/// chroma or depth. Full-range 8-bit sources keep to the full-range formats, as swscale tells the
+/// ranges apart by format.
+fn reshape_target(descriptor: &sys::AVPixFmtDescriptor, full_range: bool) -> sys::AVPixelFormat {
+    use sys::AVPixelFormat::*;
+    let alpha = descriptor.flags & u64::from(sys::AV_PIX_FMT_FLAG_ALPHA as u32) != 0;
+    let subsampling = match (
+        descriptor.log2_chroma_w.min(1),
+        descriptor.log2_chroma_h.min(1),
+    ) {
+        (1, 1) => YuvSubsampling::Yuv420,
+        (1, 0) => YuvSubsampling::Yuv422,
+        _ => YuvSubsampling::Yuv444,
+    };
+    let depth = match descriptor.comp[0].depth {
+        ..=8 => 8,
+        9..=10 => 10,
+        11..=12 if !alpha => 12,
+        _ => 16,
+    };
+    match (alpha, depth, subsampling) {
+        (false, 8, YuvSubsampling::Yuv420) if full_range => AV_PIX_FMT_YUVJ420P,
+        (false, 8, YuvSubsampling::Yuv422) if full_range => AV_PIX_FMT_YUVJ422P,
+        (false, 8, YuvSubsampling::Yuv444) if full_range => AV_PIX_FMT_YUVJ444P,
+        (false, 8, YuvSubsampling::Yuv420) => AV_PIX_FMT_YUV420P,
+        (false, 8, YuvSubsampling::Yuv422) => AV_PIX_FMT_YUV422P,
+        (false, 8, YuvSubsampling::Yuv444) => AV_PIX_FMT_YUV444P,
+        (false, 10, YuvSubsampling::Yuv420) => AV_PIX_FMT_YUV420P10LE,
+        (false, 10, YuvSubsampling::Yuv422) => AV_PIX_FMT_YUV422P10LE,
+        (false, 10, YuvSubsampling::Yuv444) => AV_PIX_FMT_YUV444P10LE,
+        (false, 12, YuvSubsampling::Yuv420) => AV_PIX_FMT_YUV420P12LE,
+        (false, 12, YuvSubsampling::Yuv422) => AV_PIX_FMT_YUV422P12LE,
+        (false, 12, YuvSubsampling::Yuv444) => AV_PIX_FMT_YUV444P12LE,
+        (false, _, YuvSubsampling::Yuv420) => AV_PIX_FMT_YUV420P16LE,
+        (false, _, YuvSubsampling::Yuv422) => AV_PIX_FMT_YUV422P16LE,
+        (false, _, YuvSubsampling::Yuv444) => AV_PIX_FMT_YUV444P16LE,
+        (true, 8, YuvSubsampling::Yuv420) => AV_PIX_FMT_YUVA420P,
+        (true, 8, YuvSubsampling::Yuv422) => AV_PIX_FMT_YUVA422P,
+        (true, 8, YuvSubsampling::Yuv444) => AV_PIX_FMT_YUVA444P,
+        (true, 10, YuvSubsampling::Yuv420) => AV_PIX_FMT_YUVA420P10LE,
+        (true, 10, YuvSubsampling::Yuv422) => AV_PIX_FMT_YUVA422P10LE,
+        (true, 10, YuvSubsampling::Yuv444) => AV_PIX_FMT_YUVA444P10LE,
+        (true, _, YuvSubsampling::Yuv420) => AV_PIX_FMT_YUVA420P16LE,
+        (true, _, YuvSubsampling::Yuv422) => AV_PIX_FMT_YUVA422P16LE,
+        (true, _, YuvSubsampling::Yuv444) => AV_PIX_FMT_YUVA444P16LE,
+    }
+}
+
+/// Copies a frame's planes into one tightly packed buffer, in the order [`YuvVideoFrame`] states.
+fn pack_planes(frame: &AvFrame, shape: &YuvShape, width: u32, height: u32) -> Result<Vec<u8>> {
+    let (width, height) = (width as usize, height as usize);
+    let sample = if shape.depth > 8 { 2 } else { 1 };
+    let (chroma_width, chroma_height) = match shape.subsampling {
+        YuvSubsampling::Yuv420 => (width.div_ceil(2), height.div_ceil(2)),
+        YuvSubsampling::Yuv422 => (width.div_ceil(2), height),
+        YuvSubsampling::Yuv444 => (width, height),
+    };
+    // Each plane's index in the frame, row length in bytes and row count.
+    let mut planes = vec![(0, width * sample, height)];
+    if shape.interleaved {
+        planes.push((1, chroma_width * 2 * sample, chroma_height));
+    } else {
+        planes.push((1, chroma_width * sample, chroma_height));
+        planes.push((2, chroma_width * sample, chroma_height));
+    }
+    if shape.alpha {
+        planes.push((
+            if shape.interleaved { 2 } else { 3 },
+            width * sample,
+            height,
+        ));
+    }
+    let mut data = Vec::with_capacity(planes.iter().map(|(_, row, rows)| row * rows).sum());
+    for (plane, row_bytes, rows) in planes {
+        let (base, linesize) = unsafe {
+            (
+                (*frame.as_ptr()).data[plane],
+                (*frame.as_ptr()).linesize[plane] as isize,
+            )
+        };
+        if base.is_null() {
+            return Err(FfmpegError::new(
+                "receive_video_frame",
+                "decoded frame is missing a plane",
+            ));
+        }
+        for row in 0..rows {
+            data.extend_from_slice(unsafe {
+                std::slice::from_raw_parts(base.offset(row as isize * linesize), row_bytes)
+            });
+        }
+    }
+    Ok(data)
+}
+
+/// Whether a format has a luma channel and no chroma, which swscale reads as full range unless told
+/// otherwise.
+fn is_gray(format: sys::AVPixelFormat) -> bool {
+    let Some(descriptor) = (unsafe { sys::av_pix_fmt_desc_get(format).as_ref() }) else {
+        return false;
+    };
+    let not_gray = (sys::AV_PIX_FMT_FLAG_PAL | sys::AV_PIX_FMT_FLAG_BITSTREAM) as u64;
+    descriptor.nb_components <= 2 && descriptor.flags & not_gray == 0
+}
+
+/// Tells swscale the range of a gray source. The destination is always full-range RGBA.
+fn set_gray_range(scaler: *mut sys::SwsContext, full_range: bool) -> Result<()> {
     const DEFAULT_BRIGHTNESS: i32 = 0;
     const DEFAULT_CONTRAST: i32 = 1 << 16;
     const DEFAULT_SATURATION: i32 = 1 << 16;
 
     unsafe {
-        let coefficients = sys::sws_getCoefficients(source_matrix(frame));
+        // Gray has no chroma, so the matrix is never read.
+        let coefficients = sys::sws_getCoefficients(sys::SWS_CS_DEFAULT);
         ffi::check(
             sys::sws_setColorspaceDetails(
                 scaler,
                 coefficients,
-                i32::from(is_full_range(frame)),
+                i32::from(full_range),
                 coefficients,
                 1,
                 DEFAULT_BRIGHTNESS,
@@ -642,48 +1070,23 @@ fn set_source_colorspace(scaler: *mut sys::SwsContext, frame: &AvFrame) -> Resul
 }
 
 fn is_full_range(frame: &AvFrame) -> bool {
-    frame.color_range() == AVCOL_RANGE_JPEG
-        || matches!(
-            frame.format(),
-            AV_PIX_FMT_YUVJ411P
-                | AV_PIX_FMT_YUVJ420P
-                | AV_PIX_FMT_YUVJ422P
-                | AV_PIX_FMT_YUVJ440P
-                | AV_PIX_FMT_YUVJ444P
-        )
+    frame.color_range() == AVCOL_RANGE_JPEG || is_full_range_format(frame.format())
 }
 
-/// The conversion swscale would use for this frame, from the same coefficients.
-#[cfg(feature = "vulkan")]
-fn yuv_to_rgb(frame: &AvFrame) -> crate::gpu::YuvToRgb {
-    let coefficients = unsafe { sys::sws_getCoefficients(source_matrix(frame)) };
-    let [crv, cbu, cgu, cgv] = std::array::from_fn(|index| {
-        let value = unsafe { *coefficients.add(index) };
-        value as f32 / 65536.0
-    });
-    let full_range = is_full_range(frame);
-    // swscale's coefficients are for limited-range chroma.
-    let chroma_scale = if full_range { 224.0 / 255.0 } else { 1.0 };
-    crate::gpu::YuvToRgb {
-        y_scale: if full_range { 1.0 } else { 255.0 / 219.0 },
-        y_offset: if full_range { 0.0 } else { 16.0 },
-        r_cr: crv * chroma_scale,
-        g_cb: -cgu * chroma_scale,
-        g_cr: -cgv * chroma_scale,
-        b_cb: cbu * chroma_scale,
-    }
-}
-
-/// Picks swscale's `SWS_CS_*` index, whose values match `AVColorSpace`.
-fn source_matrix(frame: &AvFrame) -> i32 {
-    match frame.colorspace() {
-        colorspace @ (AVCOL_SPC_BT709 | AVCOL_SPC_FCC | AVCOL_SPC_BT470BG | AVCOL_SPC_SMPTE170M
-        | AVCOL_SPC_SMPTE240M | AVCOL_SPC_BT2020_NCL) => colorspace as i32,
-        AVCOL_SPC_BT2020_CL => AVCOL_SPC_BT2020_NCL as i32,
-        // Heuristic for untagged video, not a fact about the source: HD is usually BT.709 and SD
-        // usually BT.601.
-        _ if frame.height() >= 720 => AVCOL_SPC_BT709 as i32,
-        _ => AVCOL_SPC_BT470BG as i32,
+fn color_tags(frame: &AvFrame) -> ColorTags {
+    let matrix = match frame.colorspace() {
+        AVCOL_SPC_BT709 => ColorMatrix::Bt709,
+        AVCOL_SPC_BT470BG => ColorMatrix::Bt470bg,
+        AVCOL_SPC_SMPTE170M => ColorMatrix::Smpte170m,
+        AVCOL_SPC_FCC => ColorMatrix::Fcc,
+        AVCOL_SPC_SMPTE240M => ColorMatrix::Smpte240m,
+        AVCOL_SPC_BT2020_NCL => ColorMatrix::Bt2020Ncl,
+        AVCOL_SPC_BT2020_CL => ColorMatrix::Bt2020Cl,
+        _ => ColorMatrix::Other,
+    };
+    ColorTags {
+        matrix,
+        full_range: is_full_range(frame),
     }
 }
 
@@ -1038,6 +1441,135 @@ mod hardware_tests {
             );
         }
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod yuv_source_tests {
+    use super::*;
+    use sys::AVPixelFormat::*;
+
+    fn native(format: sys::AVPixelFormat) -> YuvShape {
+        match yuv_source(format) {
+            Some(YuvSource::Native(shape)) => shape,
+            _ => panic!("{format:?} should be read as it is"),
+        }
+    }
+
+    fn reshaped(format: sys::AVPixelFormat) -> sys::AVPixelFormat {
+        match yuv_source(format) {
+            Some(YuvSource::Reshape(target, _)) => target,
+            _ => panic!("{format:?} should be reshaped"),
+        }
+    }
+
+    #[test]
+    fn planar_little_endian_formats_pass_through() {
+        let nv12 = native(AV_PIX_FMT_NV12);
+        assert!(nv12.interleaved && !nv12.alpha && nv12.depth == 8);
+        assert_eq!(nv12.subsampling, YuvSubsampling::Yuv420);
+        let planar = native(AV_PIX_FMT_YUVJ422P);
+        assert!(!planar.interleaved && planar.subsampling == YuvSubsampling::Yuv422);
+
+        let p010 = native(AV_PIX_FMT_P010LE);
+        assert!(p010.interleaved && p010.msb_aligned && p010.depth == 10);
+        assert!(!native(AV_PIX_FMT_P016LE).msb_aligned);
+        let ten_bit = native(AV_PIX_FMT_YUV420P10LE);
+        assert!(!ten_bit.msb_aligned && ten_bit.depth == 10);
+
+        let alpha = native(AV_PIX_FMT_YUVA444P10LE);
+        assert!(alpha.alpha && alpha.subsampling == YuvSubsampling::Yuv444);
+        assert!(native(AV_PIX_FMT_NV24).interleaved);
+    }
+
+    #[test]
+    fn other_yuv_formats_reshape_to_the_nearest_planar_one() {
+        assert_eq!(reshaped(AV_PIX_FMT_NV21), AV_PIX_FMT_YUV420P);
+        assert_eq!(reshaped(AV_PIX_FMT_YUYV422), AV_PIX_FMT_YUV422P);
+        assert_eq!(reshaped(AV_PIX_FMT_UYVY422), AV_PIX_FMT_YUV422P);
+        assert_eq!(reshaped(AV_PIX_FMT_YUV411P), AV_PIX_FMT_YUV422P);
+        assert_eq!(reshaped(AV_PIX_FMT_YUV410P), AV_PIX_FMT_YUV420P);
+        assert_eq!(reshaped(AV_PIX_FMT_YUV440P), AV_PIX_FMT_YUV444P);
+        assert_eq!(reshaped(AV_PIX_FMT_YUVJ440P), AV_PIX_FMT_YUVJ444P);
+        assert_eq!(reshaped(AV_PIX_FMT_YUVJ411P), AV_PIX_FMT_YUVJ422P);
+        assert_eq!(reshaped(AV_PIX_FMT_YUV420P10BE), AV_PIX_FMT_YUV420P10LE);
+        assert_eq!(reshaped(AV_PIX_FMT_YUV444P9BE), AV_PIX_FMT_YUV444P10LE);
+        assert_eq!(reshaped(AV_PIX_FMT_YUV444P14BE), AV_PIX_FMT_YUV444P16LE);
+        assert_eq!(reshaped(AV_PIX_FMT_YUVA444P12BE), AV_PIX_FMT_YUVA444P16LE);
+        assert_eq!(reshaped(AV_PIX_FMT_P010BE), AV_PIX_FMT_YUV420P10LE);
+    }
+
+    #[test]
+    fn rgb_gray_and_palette_formats_stay_rgba() {
+        for format in [
+            AV_PIX_FMT_RGBA,
+            AV_PIX_FMT_BGR24,
+            AV_PIX_FMT_GBRP,
+            AV_PIX_FMT_GRAY8,
+            AV_PIX_FMT_YA8,
+            AV_PIX_FMT_PAL8,
+            AV_PIX_FMT_XYZ12LE,
+        ] {
+            assert!(yuv_source(format).is_none(), "{format:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod sample_tests {
+    use super::*;
+
+    fn frame(
+        (width, height): (u32, u32),
+        subsampling: YuvSubsampling,
+        depth: u8,
+        msb_aligned: bool,
+        interleaved_chroma: bool,
+        data: Vec<u8>,
+    ) -> YuvVideoFrame {
+        YuvVideoFrame {
+            width,
+            height,
+            pts: None,
+            subsampling,
+            depth,
+            msb_aligned,
+            interleaved_chroma,
+            has_alpha: false,
+            color: ColorTags {
+                matrix: ColorMatrix::Other,
+                full_range: false,
+            },
+            rotation: 0,
+            data,
+        }
+    }
+
+    #[test]
+    fn samples_read_each_plane_layout() {
+        let planar = frame(
+            (4, 2),
+            YuvSubsampling::Yuv420,
+            8,
+            false,
+            false,
+            [0, 1, 2, 3, 4, 5, 6, 7, 100, 101, 200, 201].to_vec(),
+        );
+        assert_eq!(planar.sample(0, 0), [0, 100, 200]);
+        assert_eq!(planar.sample(3, 1), [7, 101, 201]);
+
+        let p010 = frame(
+            (2, 2),
+            YuvSubsampling::Yuv420,
+            10,
+            true,
+            true,
+            [1_u16, 2, 3, 4, 512, 1023]
+                .into_iter()
+                .flat_map(|code| (code << 6).to_le_bytes())
+                .collect(),
+        );
+        assert_eq!(p010.sample(1, 1), [4, 512, 1023]);
     }
 }
 

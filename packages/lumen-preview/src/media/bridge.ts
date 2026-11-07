@@ -1,6 +1,6 @@
 import { ALL_FORMATS, type InputFormat } from "mediabunny";
 
-import { closeVideoFrame, syncVideoFrameToTarget } from "./canvas.js";
+import { closeVideoFrame, syncVideoFrameToTarget, takesYuvPlanes } from "./canvas.js";
 import { LumenMediaError } from "./errors.js";
 import { ImageSession } from "./image-session.js";
 import {
@@ -177,7 +177,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     this.removeVideoSource(streamId);
     this.videos.set(streamId, {
       registration,
-      session: new VideoSession(streamId, registration, this.options),
+      session: new VideoSession(streamId, registration, this.options, takesYuvPlanes(this.target)),
       syncedMetadata: null,
     });
     return this.loadVideoMetadata(streamId);
