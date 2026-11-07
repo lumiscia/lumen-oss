@@ -172,6 +172,10 @@ builtins! {
         "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.";
     Prop "prop" (1, Some(1)) [name: String] -> Any,
         "The value of a composition template's prop, e.g. `prop('title')`. Only inside a template.";
+    Noise "noise" (2, Some(2)) [seed: Number, x: Number] -> Number,
+        "Smooth gradient noise in `-1..=1`, continuous in `x` and varying about once per unit. Each `seed` is an unrelated curve. Arguments must be finite.";
+    Random "random" (1, Some(2)) [seed: Number, x: Number] -> Number,
+        "Uniform number in `0..1`, fixed by its inputs. `random(x)` is `random(seed, x)` with seed 0; e.g. `random(glyph)`. Arguments must be finite.";
     Spring "spring" (1, Some(3)) [t: Number, stiffness: Number, damping: Number] -> Number,
         "Spring from 0 to 1, `t` seconds after release, e.g. `spring((frame - 12) / fps)`. Stiffness defaults to 170 and damping to 26.";
     }

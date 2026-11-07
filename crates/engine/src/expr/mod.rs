@@ -5,6 +5,7 @@ mod builtins;
 mod easing;
 mod eval;
 pub(crate) mod functions;
+mod noise;
 mod parser;
 mod spec;
 
