@@ -10,9 +10,10 @@ use axum::{
 use lumen_server::render::parse_composition;
 
 use crate::server::{
-    ApiRenderJob, Artifact, CreateRenderResponse, GetRenderResponse, RenderJob, RenderJobInput,
-    RenderProgressResponse, RenderQueueState, RenderRecord, RenderStatus, current_timestamp,
-    execute_render_job, input_hash, map_execution_error, new_render_id, validate_media_manifest,
+    ApiRenderJob, Artifact, CreateRenderResponse, GetRenderResponse, QualityInput, RenderJob,
+    RenderJobInput, RenderProgressResponse, RenderQueueState, RenderRecord, RenderStatus,
+    current_timestamp, execute_render_job, input_hash, map_execution_error, new_render_id,
+    validate_media_manifest,
 };
 
 use super::{errors::ApiError, state::AppState, ws::render_socket_session};
@@ -48,11 +49,18 @@ pub(super) async fn create_render(
         ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, map_execution_error(error))
     })?;
 
+    let quality = input
+        .quality
+        .map(QualityInput::into_quality)
+        .transpose()
+        .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?
+        .flatten();
+
     let id = new_render_id();
     let record = state.insert(RenderRecord::new(
         id.clone(),
         current_timestamp(),
-        input_hash(&input.composition, &input.media),
+        input_hash(&input.composition, &input.media, quality.as_ref()),
     ));
     let render = ApiRenderJob::new(&record, &RenderStatus::Queued);
 
@@ -63,6 +71,7 @@ pub(super) async fn create_render(
             id,
             composition,
             media: input.media,
+            quality: quality.unwrap_or_default(),
         },
     );
 

@@ -74,6 +74,7 @@ export class Lumen {
         composition: composition instanceof Composition ? composition.toJSON() : composition,
         media: mediaManifest(options.media ?? {}),
         ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
+        ...(options.quality !== undefined ? { quality: options.quality } : {}),
       },
       idempotencyKey: options.idempotencyKey,
       signal: options.signal,

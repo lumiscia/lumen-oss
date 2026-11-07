@@ -5,12 +5,29 @@ export interface LumenOptions {
   readonly fetch?: typeof fetch;
 }
 
+/**
+ * Encode quality for the MP4. Set at most one of `bitrate`, `crf` and `qp`; `preset` goes with any
+ * of them. Which settings an encoder supports is checked when the render runs.
+ */
+export interface RenderQuality {
+  /** Target bits per second: a number, or text such as `"14M"` or `"500k"`. */
+  readonly bitrate?: number | string;
+  /** Constant rate factor; lower is higher quality. */
+  readonly crf?: number;
+  /** Constant quantizer. */
+  readonly qp?: number;
+  /** Encoder speed preset, such as `"fast"` for libx264 or `"p4"` for NVENC. */
+  readonly preset?: string;
+}
+
 export interface RenderOptions {
   readonly signal?: AbortSignal;
   readonly idempotencyKey?: string;
   /** Media by the alias the composition uses: a URL, or an upload to reference. */
   readonly media?: RenderMediaManifest;
   readonly webhookUrl?: string;
+  /** Sent only when set, so it is the encoder's default otherwise. */
+  readonly quality?: RenderQuality;
 }
 
 export type RenderStatus = "queued" | "processing" | "succeeded" | "failed";

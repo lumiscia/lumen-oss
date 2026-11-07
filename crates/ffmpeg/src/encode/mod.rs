@@ -15,5 +15,5 @@ pub use audio::AudioEncoderConfig;
 pub use choice::VideoEncoderChoice;
 pub use codec::{EncoderFamily, EncoderInfo, encoder_info};
 pub use muxed::MuxedEncoder;
-pub use quality::{EncoderQuality, RateControl};
+pub use quality::{EncoderQuality, RateControl, parse_bitrate};
 pub use video::{ContainerCrop, VideoEncoderConfig};

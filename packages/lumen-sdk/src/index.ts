@@ -18,6 +18,7 @@ export type {
   RenderMediaManifest,
   RenderOptions,
   RenderProgress,
+  RenderQuality,
   RenderStatus,
   TemporaryMedia,
   UploadMediaBody,

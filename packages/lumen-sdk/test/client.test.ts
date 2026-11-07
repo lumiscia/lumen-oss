@@ -140,6 +140,20 @@ describe("Lumen render and download", () => {
     expect(new Headers(requests[0]?.init.headers).get("idempotency-key")).toBe("key-1");
   });
 
+  test("render sends quality only when it is set", async () => {
+    const { requests, stub } = recordingFetch(() => ({
+      render: { id: "render-1", status: "queued" },
+    }));
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await lumen.render({} as never);
+    await lumen.render({} as never, { quality: { crf: 23, preset: "fast" } });
+
+    const bodies = requests.map((request) => JSON.parse(String(request.init.body)));
+    expect(bodies[0]).not.toHaveProperty("quality");
+    expect(bodies[1].quality).toEqual({ crf: 23, preset: "fast" });
+  });
+
   test("download sends the key to the API origin only", async () => {
     const seen: (string | null)[] = [];
     const stub = (async (_url: unknown, init: RequestInit = {}) => {

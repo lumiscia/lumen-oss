@@ -627,6 +627,28 @@ fn rejects_bad_requests_before_downloading_anything() {
 }
 
 #[test]
+fn rejects_conflicting_or_invalid_encode_quality() {
+    let server = Server::start(&[]);
+    for (quality, code) in [
+        (json!({ "crf": 23, "qp": 20 }), "invalid_quality"),
+        (json!({ "bitrate": "8M", "crf": 23 }), "invalid_quality"),
+        (json!({ "bitrate": "0" }), "invalid_quality"),
+        (json!({ "crf": 300 }), "invalid_request_body"),
+    ] {
+        let response = server.post(&json!({
+            "composition": solid_composition(),
+            "quality": quality,
+        }));
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{quality}"
+        );
+        assert_eq!(error_code(response), code, "{quality}");
+    }
+}
+
+#[test]
 fn clients_cannot_choose_render_ids() {
     let server = Server::start(&[]);
     let body = json!({
