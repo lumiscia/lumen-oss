@@ -24,7 +24,10 @@ use crate::{
     composition::Composition,
     error::RenderError,
     expr::ExpressionContext,
-    media::{CpuMediaFrame, MediaFrame, MediaStore},
+    media::{
+        CpuMediaFrame, MediaFrame, MediaStore, PlaneShape, YuvChroma, YuvFormat, YuvFrame,
+        YuvPlanes, YuvUniform,
+    },
     node::{
         Deferred, Node, NodeId, NodeKind,
         compositing::clip::Clip,
@@ -64,6 +67,15 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(output_tex, vec2<i32>(id.xy), texel);
 }
 ";
+const YUV_TO_RGBA_SHADER: &str = include_str!("shaders/yuv_to_rgba.wgsl");
+const YUV_TO_RGBA_LAYOUT: &[LayoutEntry] = &[
+    LayoutEntry::compute(0, LayoutKind::UintTexture),
+    LayoutEntry::compute(1, LayoutKind::UintTexture),
+    LayoutEntry::compute(2, LayoutKind::UintTexture),
+    LayoutEntry::compute(3, LayoutKind::UintTexture),
+    LayoutEntry::compute(4, LayoutKind::Uniform),
+    LayoutEntry::compute(5, LayoutKind::StorageTexture(RGBA8)),
+];
 /// Frames a retained output stays without being read.
 const RETAINED_IDLE_FRAMES: u64 = 600;
 /// Bytes retained outputs may hold before the least recently used are dropped.
@@ -131,6 +143,16 @@ impl Programs<'_> {
 
     pub(crate) fn spatial(&mut self, label: &str, shader: &'static str) -> crate::Result<()> {
         self.compute(label, shader, "cs_main", SPATIAL_LAYOUT)
+    }
+
+    /// The program `FrameCx::yuv_to_rgba` records with.
+    pub(crate) fn yuv_to_rgba(&mut self) -> crate::Result<()> {
+        self.compute(
+            "yuv-to-rgba",
+            YUV_TO_RGBA_SHADER,
+            "cs_main",
+            YUV_TO_RGBA_LAYOUT,
+        )
     }
 
     #[allow(clippy::too_many_arguments, reason = "a render program's parts")]
@@ -219,6 +241,15 @@ pub(crate) struct CachedShader {
     pub(crate) layout: Arc<[LayoutEntry]>,
 }
 
+/// A plane of a CPU YUV frame, written to its texture before the frame's passes run.
+struct YuvUpload {
+    tex: TexRef,
+    frame: Arc<YuvFrame>,
+    offset: usize,
+    stride: u32,
+    shape: PlaneShape,
+}
+
 #[derive(Default)]
 struct RecordState {
     fingerprint: Option<u64>,
@@ -243,6 +274,7 @@ struct RecordState {
     /// Adopted images by their texture, and the tick that last bound each.
     media: HashMap<usize, (TexRef, u64)>,
     video_uploads: Vec<(TexRef, Arc<CpuMediaFrame>, Size)>,
+    yuv_uploads: Vec<YuvUpload>,
     /// The slot each video source's GPU frames are imported into, and when it was last used.
     #[cfg(feature = "ffmpeg")]
     video_imports: HashMap<InstanceKey, (u32, u64)>,
@@ -376,6 +408,7 @@ impl FrameGraph {
             self.state.memo.clear();
             self.state.full_frames.clear();
             self.state.video_uploads.clear();
+            self.state.yuv_uploads.clear();
             self.recorder.begin_frame();
             let mut cx = FrameCx {
                 rec: &mut self.recorder,
@@ -457,6 +490,7 @@ impl FrameGraph {
         self.drop_pending();
         self.recorder.begin_frame();
         self.state.video_uploads.clear();
+        self.state.yuv_uploads.clear();
         self.state.output = None;
         let tick = self.state.tick;
         let recorder = &mut self.recorder;
@@ -564,6 +598,19 @@ impl FrameGraph {
                 size.as_extent(),
             );
         }
+        for upload in self.state.yuv_uploads.drain(..) {
+            let shape = upload.shape;
+            self.recorder.queue().write_texture(
+                self.recorder.texture(upload.tex).as_image_copy(),
+                &upload.frame.data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: upload.offset as u64,
+                    bytes_per_row: Some(upload.stride),
+                    rows_per_image: Some(shape.height),
+                },
+                Size::new(shape.width, shape.height).as_extent(),
+            );
+        }
         if let Some(atlas) = atlas_texture {
             bound.write_atlas_regions(self.recorder.queue(), atlas);
         }
@@ -655,6 +702,7 @@ impl FrameGraph {
         let state = &mut self.state;
         state.fingerprint = None;
         state.video_uploads.clear();
+        state.yuv_uploads.clear();
         #[cfg(feature = "ffmpeg")]
         {
             state.video_imports.clear();
@@ -1267,6 +1315,12 @@ impl<'a> FrameCx<'a> {
     ) -> crate::Result<TexRef> {
         let cpu = match frame {
             MediaFrame::CpuRgba(cpu) => cpu,
+            MediaFrame::Yuv(_) => {
+                return Err(RenderError::Gpu {
+                    details: "an image resolver returned a YUV frame".to_string(),
+                }
+                .into());
+            }
             #[cfg(feature = "ffmpeg")]
             MediaFrame::GpuVideo(_) => {
                 return Err(RenderError::Gpu {
@@ -1318,6 +1372,108 @@ impl<'a> FrameCx<'a> {
         tex
     }
 
+    /// The texture of a frame decoded on the CPU, either as RGBA or as YUV planes.
+    fn cpu_frame_texture(&mut self, frame: MediaFrame, size: Size) -> crate::Result<TexRef> {
+        match frame {
+            MediaFrame::CpuRgba(frame) => Ok(self.cpu_video_texture(frame, size)),
+            MediaFrame::Yuv(frame) => self.yuv_video_texture(frame, size),
+            #[cfg(feature = "ffmpeg")]
+            MediaFrame::GpuVideo(_) => Err(RenderError::Gpu {
+                details: "a CPU frame was expected, not a GPU one".to_string(),
+            }
+            .into()),
+        }
+    }
+
+    /// Writes a CPU YUV frame's planes to pooled textures before the frame's passes run, and
+    /// converts them to RGBA.
+    fn yuv_video_texture(&mut self, frame: Arc<YuvFrame>, size: Size) -> crate::Result<TexRef> {
+        frame.validate().map_err(|details| RenderError::Gpu {
+            details: format!("a YUV frame can't be read: {details}"),
+        })?;
+        let max = self.rec.device().limits().max_texture_dimension_2d;
+        if frame.format.width > max || frame.format.height > max {
+            return Err(RenderError::Gpu {
+                details: format!(
+                    "a {}x{} YUV frame is larger than this device's {max}-pixel texture limit",
+                    frame.format.width, frame.format.height
+                ),
+            }
+            .into());
+        }
+        let wide = frame.format.bytes_per_sample() == 2;
+        let rec = &mut *self.rec;
+        let uploads = &mut self.st.yuv_uploads;
+        let planes = frame.layout.map_with_shape(&frame.format, |plane, shape| {
+            let format = match (shape.channels, wide) {
+                (1, false) => wgpu::TextureFormat::R8Uint,
+                (_, false) => wgpu::TextureFormat::Rg8Uint,
+                (1, true) => wgpu::TextureFormat::R16Uint,
+                (_, true) => wgpu::TextureFormat::Rg16Uint,
+            };
+            let plane_size = Size::new(shape.width, shape.height);
+            let tex = rec.acquire_written_early(
+                plane_size,
+                format,
+                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            );
+            uploads.push(YuvUpload {
+                tex,
+                frame: Arc::clone(&frame),
+                offset: plane.offset,
+                // `validate` rejects strides that don't fit.
+                stride: plane.stride as u32,
+                shape,
+            });
+            tex
+        });
+        self.yuv_to_rgba(&planes, &frame.format, size)
+    }
+
+    /// Converts YUV planes into a premultiplied RGBA8 texture of `size`, showing the frame
+    /// `format` describes upright and stretched to it by nearest neighbour. Plane textures hold
+    /// unsigned-integer samples (`R8Uint`, `Rg8Uint` for interleaved chroma, or their 16-bit forms)
+    /// with the frame at their top left, and any texture this frame's passes can read will do:
+    /// pooled ones written before the passes, or adopted ones a decoder filled on the GPU.
+    pub(crate) fn yuv_to_rgba(
+        &mut self,
+        planes: &YuvPlanes<TexRef>,
+        format: &YuvFormat,
+        size: Size,
+    ) -> crate::Result<TexRef> {
+        let program = self.program(
+            "yuv-to-rgba",
+            YUV_TO_RGBA_SHADER,
+            "cs_main",
+            YUV_TO_RGBA_LAYOUT,
+        )?;
+        let (u, v, interleaved) = match planes.chroma {
+            YuvChroma::Interleaved(chroma) => (chroma, chroma, true),
+            YuvChroma::Planar { u, v } => (u, v, false),
+        };
+        // An absent alpha plane binds luma in its place, which the shader doesn't read.
+        let alpha = planes.alpha.unwrap_or(planes.luma);
+        let uniform = self.rec.uniform(&YuvUniform::new(
+            format,
+            interleaved,
+            planes.alpha.is_some(),
+        ));
+        let target = self.storage_target(size);
+        self.rec.compute(
+            program,
+            &[
+                (0, Res::Tex(planes.luma)),
+                (1, Res::Tex(u)),
+                (2, Res::Tex(v)),
+                (3, Res::Tex(alpha)),
+                (4, uniform),
+                (5, Res::Tex(target)),
+            ],
+            dispatch_for(size),
+        );
+        Ok(target)
+    }
+
     /// The texture a video frame shows through. A GPU frame is imported now, ahead of this frame's
     /// submission in queue order, which settles its source on the GPU. One the renderer can't use
     /// moves its source to the CPU, unless the source has already imported a GPU frame, even earlier
@@ -1329,7 +1485,9 @@ impl<'a> FrameCx<'a> {
         size: Size,
     ) -> crate::Result<TexRef> {
         match frame {
-            MediaFrame::CpuRgba(frame) => Ok(self.cpu_video_texture(frame, size)),
+            frame @ (MediaFrame::CpuRgba(_) | MediaFrame::Yuv(_)) => {
+                self.cpu_frame_texture(frame, size)
+            }
             #[cfg(feature = "ffmpeg")]
             MediaFrame::GpuVideo(frame) => {
                 let key = (self.graph_key(), self.path, node_id);
@@ -1359,7 +1517,7 @@ impl<'a> FrameCx<'a> {
                                 "failed to import GPU media frame: {reason}; decoding it on the CPU also failed: {error}"
                             ),
                         })?;
-                        Ok(self.cpu_video_texture(cpu, size))
+                        self.cpu_frame_texture(cpu, size)
                     }
                 }
             }

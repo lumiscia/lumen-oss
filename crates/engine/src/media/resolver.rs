@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use crate::error::MediaError;
+use crate::media::YuvFrame;
 
 #[derive(Debug, Clone)]
 pub struct CpuMediaFrame {
@@ -16,6 +17,8 @@ pub struct CpuMediaFrame {
 #[derive(Debug, Clone)]
 pub enum MediaFrame {
     CpuRgba(Arc<CpuMediaFrame>),
+    /// Planes the renderer converts to RGBA on the GPU.
+    Yuv(Arc<YuvFrame>),
     #[cfg(feature = "ffmpeg")]
     GpuVideo(Arc<GpuVideoMediaFrame>),
 }
@@ -67,10 +70,11 @@ impl GpuVideoMediaFrame {
 
     /// Moves this frame's source to the CPU for good and decodes the frame there, for when the
     /// renderer couldn't use the GPU frame because of `reason`. Fails once a GPU frame of the source
-    /// has reached a texture, as a move would change its pixels partway through.
-    pub fn decode_on_cpu(&self, reason: &str) -> Result<Arc<CpuMediaFrame>, MediaError> {
+    /// has reached a texture, as a move would change its pixels partway through. The frame it
+    /// returns is never a GPU frame.
+    pub fn decode_on_cpu(&self, reason: &str) -> Result<MediaFrame, MediaError> {
         match (self.cpu_retry)(reason)? {
-            MediaFrame::CpuRgba(frame) => Ok(frame),
+            frame @ (MediaFrame::CpuRgba(_) | MediaFrame::Yuv(_)) => Ok(frame),
             MediaFrame::GpuVideo(_) => Err(MediaError::Decode {
                 media_source: String::new(),
                 details: "a source moved to the CPU returned a GPU frame".to_string(),
