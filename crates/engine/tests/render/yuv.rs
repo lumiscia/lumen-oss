@@ -24,6 +24,8 @@ struct Row {
     depth: u8,
     msb_aligned: bool,
     alpha: bool,
+    /// The source's colour is already multiplied by its alpha, and the node says so.
+    premultiplied: bool,
     matrix: YuvMatrix,
     full_range: bool,
     reference: Reference,
@@ -40,6 +42,7 @@ fn nv12(name: &'static str) -> Row {
         depth: 8,
         msb_aligned: false,
         alpha: false,
+        premultiplied: false,
         matrix: YuvMatrix::Bt709,
         full_range: false,
         reference: LIMITED_709,
@@ -68,7 +71,8 @@ fn coded_samples(reference: [u8; 3]) -> Vec<[u8; 4]> {
     pixels
 }
 
-/// The premultiplied RGBA each coded pixel shows.
+/// The premultiplied RGBA each coded pixel shows. A source that is premultiplied already shows
+/// its converted colour as it is.
 fn coded_expected(row: &Row) -> Vec<[u8; 4]> {
     coded_samples(row.reference.0)
         .into_iter()
@@ -84,7 +88,13 @@ fn coded_expected(row: &Row) -> Vec<[u8; 4]> {
                 row.reference.1
             };
             let a = if row.alpha { a } else { 255 };
-            let premultiply = |c: u8| (f32::from(c) * f32::from(a) / 255.0).round() as u8;
+            let premultiply = |c: u8| {
+                if row.premultiplied {
+                    c
+                } else {
+                    (f32::from(c) * f32::from(a) / 255.0).round() as u8
+                }
+            };
             [
                 premultiply(rgb[0]),
                 premultiply(rgb[1]),
@@ -221,6 +231,12 @@ fn yuv_frames_convert_to_premultiplied_rgba() {
             ..nv12("i420 with alpha")
         },
         Row {
+            interleaved: false,
+            alpha: true,
+            premultiplied: true,
+            ..nv12("i420 with premultiplied alpha")
+        },
+        Row {
             rotation: Rotation::Cw90,
             ..nv12("rotated 90")
         },
@@ -248,9 +264,14 @@ fn yuv_frames_convert_to_premultiplied_rgba() {
         let (display_w, display_h, display) = rotate(&coded_expected(&row), row.rotation);
         let (width, height) = row.output.unwrap_or((display_w, display_h));
         let media = TestMedia::default().yuv_video("clip", width, height, frame(&row));
+        let alpha = if row.premultiplied {
+            "premultiplied"
+        } else {
+            "straight"
+        };
         let composition = scene(
             (width, height),
-            json!([{ "id": 1, "type": "media_in", "params": { "kind": "video", "source": "clip" } }]),
+            json!([{ "id": 1, "type": "media_in", "params": { "kind": "video", "source": "clip", "alpha": alpha } }]),
         )
         .into();
         let shown = render(&mut gpu.renderer(), &composition, 0.0, &media);
@@ -274,4 +295,29 @@ fn yuv_frames_convert_to_premultiplied_rgba() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn raw_rgba_video_is_premultiplied_unless_the_node_says_it_already_is() {
+    let gpu = gpu();
+    let media = TestMedia::default().raw_video("clip", 1, 1, vec![100, 50, 24, 128]);
+    for (alpha, expected) in [
+        ("straight", [50, 25, 12, 128]),
+        ("premultiplied", [100, 50, 24, 128]),
+    ] {
+        let composition = scene(
+            (1, 1),
+            json!([{ "id": 1, "type": "media_in", "params": { "kind": "video", "source": "clip", "alpha": alpha } }]),
+        )
+        .into();
+        let shown = render(&mut gpu.renderer(), &composition, 0.0, &media);
+        let actual = shown.pixel(0, 0);
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(&actual, expected)| actual.abs_diff(expected) <= 1),
+            "{alpha}: {actual:?}, expected {expected:?}"
+        );
+    }
 }

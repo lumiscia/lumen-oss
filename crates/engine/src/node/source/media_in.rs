@@ -30,6 +30,20 @@ pub enum MediaInSourceKind {
     Video = 1,
 }
 
+/// How a video's colour relates to its alpha.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum", expressions)]
+pub enum AlphaMode {
+    /// Colour is independent of alpha; the engine premultiplies it.
+    #[default]
+    Straight = 0,
+    /// Colour is already multiplied by alpha, as in ProRes exports from many editors.
+    Premultiplied = 1,
+}
+
 #[derive(Debug, Clone)]
 pub enum MediaInKind {
     Image {
@@ -40,6 +54,7 @@ pub enum MediaInKind {
         range: Range<u32>,
         speed: f32,
         loop_mode: LoopMode,
+        alpha: AlphaMode,
     },
 }
 
@@ -64,6 +79,9 @@ pub struct MediaInParams {
     /// Behavior when playback leaves the source range.
     #[meta(kind = "enum", enum_type = LoopMode)]
     pub loop_mode: LoopMode,
+    /// Whether a video's colour is already multiplied by its alpha. Images ignore it.
+    #[meta(kind = "enum", enum_type = AlphaMode)]
+    pub alpha: AlphaMode,
 }
 
 impl Default for MediaInParams {
@@ -75,6 +93,7 @@ impl Default for MediaInParams {
             range_end: None,
             speed: 1.0,
             loop_mode: LoopMode::Clamp,
+            alpha: AlphaMode::Straight,
         }
     }
 }
@@ -105,6 +124,7 @@ impl MediaIn {
                     ..params.range_end.map_or(u32::MAX, saturate_frame),
                 speed: params.speed as f32,
                 loop_mode: params.loop_mode,
+                alpha: params.alpha,
             },
         })
     }
@@ -233,6 +253,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
                 range,
                 speed,
                 loop_mode,
+                alpha,
             } => {
                 let resolver = media.get_video_resolver(&stream_id)?;
                 let metadata = resolver.metadata();
@@ -250,7 +271,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
                     frame: cx.frame_number(),
                     frame_count: metadata.frame_count,
                 })?;
-                cx.video_texture(self.id, resolver.frame(source_frame)?, size)?
+                cx.video_texture(self.id, resolver.frame(source_frame)?, size, alpha)?
             }
         };
         Ok(crate::gpu::frame_graph::Raster {

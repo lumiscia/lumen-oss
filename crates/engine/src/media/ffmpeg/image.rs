@@ -11,7 +11,7 @@ const MAX_CACHED_BYTES: usize = 256 * 1024 * 1024;
 /// The memory a frame holds, which is what the cache limits count.
 pub(super) fn media_frame_bytes(frame: &MediaFrame) -> usize {
     match frame {
-        MediaFrame::CpuRgba(cpu) => cpu.rgba.len(),
+        MediaFrame::CpuRgba(cpu) | MediaFrame::RawRgba(cpu) => cpu.rgba.len(),
         MediaFrame::Yuv(yuv) => yuv.data.len(),
         MediaFrame::GpuVideo(gpu) => gpu.frame.estimated_rgba_bytes() as usize,
     }

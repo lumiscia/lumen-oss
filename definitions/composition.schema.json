@@ -2102,6 +2102,34 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "alpha": {
+                    "anyOf": [
+                      {
+                        "enum": ["straight", "premultiplied"],
+                        "type": "string",
+                        "x-lumen-type": "AlphaMode"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "straight",
+                    "description": "Whether a video's colour is already multiplied by its alpha. Images ignore it.",
+                    "title": "Alpha",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Straight",
+                        "name": "straight",
+                        "value": 0
+                      },
+                      {
+                        "label": "Premultiplied",
+                        "name": "premultiplied",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
                   "kind": {
                     "anyOf": [
                       {

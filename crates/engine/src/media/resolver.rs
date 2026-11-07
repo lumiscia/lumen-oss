@@ -7,7 +7,7 @@ use crate::media::YuvFrame;
 
 #[derive(Debug, Clone)]
 pub struct CpuMediaFrame {
-    /// Premultiplied RGBA8, which is what the renderer's textures hold.
+    /// RGBA8, premultiplied unless the frame is a `MediaFrame::RawRgba`.
     pub rgba: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
@@ -17,6 +17,8 @@ pub struct CpuMediaFrame {
 #[derive(Debug, Clone)]
 pub enum MediaFrame {
     CpuRgba(Arc<CpuMediaFrame>),
+    /// RGBA8 as decoded, whose colour is multiplied by alpha only if the node reading it says so.
+    RawRgba(Arc<CpuMediaFrame>),
     /// Planes the renderer converts to RGBA on the GPU.
     Yuv(Arc<YuvFrame>),
     #[cfg(feature = "ffmpeg")]
@@ -74,7 +76,9 @@ impl GpuVideoMediaFrame {
     /// returns is never a GPU frame.
     pub fn decode_on_cpu(&self, reason: &str) -> Result<MediaFrame, MediaError> {
         match (self.cpu_retry)(reason)? {
-            frame @ (MediaFrame::CpuRgba(_) | MediaFrame::Yuv(_)) => Ok(frame),
+            frame @ (MediaFrame::CpuRgba(_) | MediaFrame::RawRgba(_) | MediaFrame::Yuv(_)) => {
+                Ok(frame)
+            }
             MediaFrame::GpuVideo(_) => Err(MediaError::Decode {
                 media_source: String::new(),
                 details: "a source moved to the CPU returned a GPU frame".to_string(),

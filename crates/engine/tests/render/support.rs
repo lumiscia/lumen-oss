@@ -163,6 +163,14 @@ impl TestMedia {
         self
     }
 
+    /// Like `still_video`, with pixels the renderer premultiplies unless the node says they are.
+    pub fn raw_video(mut self, source: &str, width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        let frame = MediaFrame::RawRgba(still_frame(width, height, rgba));
+        self.still_videos
+            .insert(source.to_string(), ((width, height), frame));
+        self
+    }
+
     /// A 30 fps video of 256 frames of `width` × `height`, which all show `frame`.
     pub fn yuv_video(mut self, source: &str, width: u32, height: u32, frame: YuvFrame) -> Self {
         let frame = MediaFrame::Yuv(Arc::new(frame));

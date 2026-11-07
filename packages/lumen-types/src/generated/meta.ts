@@ -837,6 +837,7 @@ export const expressionReservedNames = [
   "span_count"
 ] as const;
 
+export type AlphaMode = "straight" | "premultiplied";
 export type AudioClip = {
   readonly duration_ms: number;
   readonly id: string;
@@ -936,6 +937,7 @@ export type GradientStop = {
 export type GradientUnits = "object_bounding_box" | "user_space" | "userSpaceOnUse";
 export type LoopMode = "clamp" | "repeat" | "ping_pong";
 export type MaskMode = "alpha" | "luma";
+export type MediaInAlpha = AlphaMode;
 export type MediaInKind = MediaInSourceKind;
 export type MediaInLoopMode = LoopMode;
 export type MediaInSourceKind = "image" | "video";
@@ -1203,6 +1205,8 @@ export interface LevelsNode extends CompositionNodeBase<"levels"> {
 /** Binds an external image or video frame as a GPU texture. */
 export interface MediaInNode extends CompositionNodeBase<"media_in"> {
   readonly params?: {
+    /** Whether a video's colour is already multiplied by its alpha. Images ignore it. */
+    readonly alpha?: ExpressionValue<AlphaMode>;
     /** Type of external media source. */
     readonly kind?: ExpressionValue<MediaInSourceKind>;
     /** Behavior when playback leaves the source range. */

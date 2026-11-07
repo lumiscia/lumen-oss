@@ -152,6 +152,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                 range,
                 speed,
                 loop_mode,
+                ..
             } => {
                 let resolver = self.media_store.get_video_resolver(&stream_id)?;
                 let metadata = resolver.metadata();

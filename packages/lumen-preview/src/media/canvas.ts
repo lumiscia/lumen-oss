@@ -100,7 +100,12 @@ export function isYuvVideoFrame(videoFrame: VideoFrame): boolean {
   return !!videoFrame.format && YUV_FORMATS.has(videoFrame.format);
 }
 
-/** Bakes a sample's rotation into a new frame, because `VideoFrame.copyTo` returns coded pixels. */
+/**
+ * Bakes a sample's rotation into a new frame, because `VideoFrame.copyTo` returns coded pixels.
+ * The canvas stores colour premultiplied, so colour at partial alpha comes back rounded rather
+ * than as the file's own values, and a source with premultiplied alpha can differ slightly from
+ * a render.
+ */
 export function createUprightVideoFrame(
   sample: VideoSample,
   width: number,

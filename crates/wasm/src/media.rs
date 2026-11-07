@@ -21,7 +21,8 @@ pub(crate) const DEFAULT_VIDEO_FRAME_CACHE_BYTES: usize = 512 * 1024 * 1024;
 /// A decoded video frame, as RGBA pixels or as YUV planes the renderer converts.
 #[derive(Debug, Clone)]
 pub(crate) enum VideoFrameData {
-    Rgba(Arc<CpuMediaFrame>),
+    /// Pixels as decoded, which the renderer premultiplies unless the node says they are.
+    RawRgba(Arc<CpuMediaFrame>),
     /// Planes, and the size the frame shows at, which carries the source's pixel aspect ratio.
     Yuv(Arc<YuvFrame>, (u32, u32)),
 }
@@ -29,7 +30,7 @@ pub(crate) enum VideoFrameData {
 impl VideoFrameData {
     fn bytes(&self) -> usize {
         match self {
-            Self::Rgba(frame) => frame.rgba.len(),
+            Self::RawRgba(frame) => frame.rgba.len(),
             Self::Yuv(frame, _) => frame.data.len(),
         }
     }
@@ -37,14 +38,14 @@ impl VideoFrameData {
     /// The size the frame shows at.
     fn display_size(&self) -> (u32, u32) {
         match self {
-            Self::Rgba(frame) => (frame.width, frame.height),
+            Self::RawRgba(frame) => (frame.width, frame.height),
             Self::Yuv(_, size) => *size,
         }
     }
 
     fn into_media_frame(self) -> MediaFrame {
         match self {
-            Self::Rgba(frame) => MediaFrame::CpuRgba(frame),
+            Self::RawRgba(frame) => MediaFrame::RawRgba(frame),
             Self::Yuv(frame, _) => MediaFrame::Yuv(frame),
         }
     }
@@ -424,7 +425,7 @@ impl WasmMediaStore {
         frame: u32,
         image: CpuMediaFrame,
     ) -> Result<(), &'static str> {
-        self.set_video_frame_data(stream_id, frame, VideoFrameData::Rgba(Arc::new(image)))
+        self.set_video_frame_data(stream_id, frame, VideoFrameData::RawRgba(Arc::new(image)))
     }
 
     pub fn set_video_frame_yuv(

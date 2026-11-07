@@ -104,7 +104,7 @@ pub struct CpuVideoFrame {
 pub enum DecodedVideoFrame {
     Rgba {
         frame: CpuVideoFrame,
-        /// The source stores straight alpha, so the pixels still need premultiplying.
+        /// The pixels carry alpha that the renderer may still need to premultiply.
         has_alpha: bool,
     },
     Yuv(YuvVideoFrame),
