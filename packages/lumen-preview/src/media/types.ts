@@ -74,6 +74,10 @@ export interface VideoFramePayload {
   width: number;
   height: number;
   videoFrame: VideoFrame;
+  /** The colour space the source is tagged with, which can leave out the matrix and range. */
+  sourceColorSpace?: VideoColorSpaceInit;
+  /** Degrees clockwise the frame's native planes turn to show upright. */
+  rotation?: 0 | 90 | 180 | 270;
 }
 
 export interface VideoFramePixels extends DecodedImageFrame {
@@ -123,6 +127,26 @@ export interface LumenMediaTarget {
 }
 
 export interface NativeVideoFrameTarget extends LumenMediaTarget {
+  /**
+   * Takes a frame's native YUV planes, as `VideoFrame.copyTo` lays them out, for the engine to
+   * convert. `width` and `height` are the copied size before `rotation`; `displayWidth` and
+   * `displayHeight` are the size it shows at, after rotation and pixel aspect ratio.
+   */
+  setVideoFrameYuv?(
+    streamId: string,
+    frame: number,
+    width: number,
+    height: number,
+    format: string,
+    data: Uint8Array,
+    offsets: Uint32Array,
+    strides: Uint32Array,
+    matrix: string | undefined,
+    fullRange: boolean,
+    rotation: number,
+    displayWidth: number,
+    displayHeight: number,
+  ): void;
   setVideoFrameObject?(
     streamId: string,
     frame: number,

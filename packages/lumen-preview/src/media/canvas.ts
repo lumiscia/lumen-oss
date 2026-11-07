@@ -47,30 +47,57 @@ export async function decodeImageBitmapToRgba(bitmap: ImageBitmap): Promise<Deco
 export async function decodeVideoFramePixels(
   payload: VideoFramePayload,
 ): Promise<VideoFramePixels> {
-  const rgba = new Uint8Array(payload.width * payload.height * 4);
-  await payload.videoFrame.copyTo(rgba, {
-    format: "RGBA",
-    layout: [{ offset: 0, stride: payload.width * 4 }],
-  });
+  const { videoFrame, width, height } = payload;
+  const rgba = new Uint8Array(width * height * 4);
+  const layout = [{ offset: 0, stride: width * 4 }];
+  if (videoFrame.format && RGB_FORMATS.has(videoFrame.format)) {
+    // Safari ignores `format` and copies the native layout, so RGB frames are copied as they are.
+    await videoFrame.copyTo(rgba, { layout });
+    if (videoFrame.format.startsWith("BGR")) {
+      for (let i = 0; i < rgba.length; i += 4) {
+        const blue = rgba[i]!;
+        rgba[i] = rgba[i + 2]!;
+        rgba[i + 2] = blue;
+      }
+    }
+    if (videoFrame.format.endsWith("X")) {
+      for (let i = 3; i < rgba.length; i += 4) {
+        rgba[i] = 255;
+      }
+    }
+  } else {
+    await videoFrame.copyTo(rgba, { format: "RGBA", layout });
+  }
 
-  return {
-    width: payload.width,
-    height: payload.height,
-    rgba,
-    videoFrame: payload.videoFrame,
-  };
+  return { width, height, rgba, videoFrame };
 }
 
 export function createVideoFramePayload(
   videoFrame: VideoFrame,
   width: number,
   height: number,
+  { sourceColorSpace, rotation }: Pick<VideoFramePayload, "sourceColorSpace" | "rotation"> = {},
 ): VideoFramePayload {
   return {
     width,
     height,
     videoFrame,
+    ...(sourceColorSpace && { sourceColorSpace }),
+    ...(rotation && { rotation }),
   };
+}
+
+/** Whether `target` takes YUV planes, which the engine rotates itself. */
+export function takesYuvPlanes(target: NativeVideoFrameTarget): boolean {
+  return (
+    typeof target.setVideoFrameYuv === "function" &&
+    typeof target.setVideoFrameObject !== "function"
+  );
+}
+
+/** Whether the frame's native planes are a YUV layout the engine converts. */
+export function isYuvVideoFrame(videoFrame: VideoFrame): boolean {
+  return !!videoFrame.format && YUV_FORMATS.has(videoFrame.format);
 }
 
 /** Bakes a sample's rotation into a new frame, because `VideoFrame.copyTo` returns coded pixels. */
@@ -105,6 +132,11 @@ export async function syncVideoFrameToTarget(
       return;
     }
 
+    if (takesYuvPlanes(target) && isYuvVideoFrame(payload.videoFrame)) {
+      await copyYuvToTarget(target, streamId, frame, payload, isCurrent);
+      return;
+    }
+
     const pixels = await decodeVideoFramePixels(payload);
     if (isCurrent()) {
       target.setVideoFrame(streamId, frame, pixels.width, pixels.height, pixels.rgba);
@@ -112,6 +144,59 @@ export async function syncVideoFrameToTarget(
   } finally {
     closeVideoFrame(payload.videoFrame);
   }
+}
+
+const RGB_FORMATS = new Set<string>(["RGBA", "RGBX", "BGRA", "BGRX"]);
+const YUV_FORMATS = new Set<string>([
+  "NV12",
+  ...["I420", "I422", "I444"].flatMap((base) =>
+    ["", "A", "P10", "P12", "AP10", "AP12"].map((suffix) => `${base}${suffix}`),
+  ),
+]);
+
+/**
+ * Hands the engine the frame's native planes, so it converts with the same matrix as a render
+ * rather than the browser's. The matrix comes from the source's tags, because browsers report their
+ * own guess on the frame. The range comes from the frame when it reports one, because Safari
+ * expands samples to full range.
+ */
+async function copyYuvToTarget(
+  target: NativeVideoFrameTarget,
+  streamId: string,
+  frame: number,
+  {
+    videoFrame,
+    sourceColorSpace,
+    rotation,
+    width: displayWidth,
+    height: displayHeight,
+  }: VideoFramePayload,
+  isCurrent: () => boolean,
+): Promise<void> {
+  const data = new Uint8Array(videoFrame.allocationSize());
+  const layout = await videoFrame.copyTo(data);
+  if (!isCurrent()) {
+    return;
+  }
+  const { width, height } = videoFrame.visibleRect ?? {
+    width: videoFrame.codedWidth,
+    height: videoFrame.codedHeight,
+  };
+  target.setVideoFrameYuv!(
+    streamId,
+    frame,
+    width,
+    height,
+    videoFrame.format!,
+    data,
+    Uint32Array.from(layout, (plane) => plane.offset),
+    Uint32Array.from(layout, (plane) => plane.stride),
+    sourceColorSpace?.matrix ?? undefined,
+    videoFrame.colorSpace.fullRange ?? sourceColorSpace?.fullRange ?? false,
+    rotation ?? 0,
+    displayWidth,
+    displayHeight,
+  );
 }
 
 export function closeVideoFrame(frame: VideoFrame | undefined): void {

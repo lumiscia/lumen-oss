@@ -6,7 +6,12 @@ import {
   type VideoSample,
 } from "mediabunny";
 
-import { createUprightVideoFrame, createVideoFramePayload } from "./canvas.js";
+import {
+  closeVideoFrame,
+  createUprightVideoFrame,
+  createVideoFramePayload,
+  isYuvVideoFrame,
+} from "./canvas.js";
 import { LumenMediaError, toMediaError } from "./errors.js";
 import { createInputSource } from "./source.js";
 import { createVideoTimeline, normalizeFps, type VideoTimeline } from "./timeline.js";
@@ -25,6 +30,7 @@ const SEQUENTIAL_FRAME_GAP_SECONDS = 2;
 const VIDEO_SAMPLE_TIMESTAMP_EPSILON_SECONDS = 1e-10;
 
 type VideoSetup = {
+  colorSpace: VideoColorSpaceInit;
   input: Input;
   track: InputVideoTrack;
   sink: VideoSampleSink;
@@ -55,6 +61,8 @@ export class VideoSession {
     private readonly streamId: string,
     private readonly registration: VideoSourceRegistration,
     private readonly options: Required<LumenMediaBridgeOptions>,
+    /** Whether the target takes YUV planes, so frames are sent unrotated. */
+    private readonly yuvPlanes = false,
   ) {}
 
   /**
@@ -166,6 +174,7 @@ export class VideoSession {
       });
 
       return {
+        colorSpace: await track.getColorSpace(),
         input,
         track,
         sink: new VideoSampleSink(track),
@@ -208,19 +217,32 @@ export class VideoSession {
     return track;
   }
 
-  private createPayloadFromSample(
-    sample: VideoSample,
-    metadata: VideoFrameMetadata,
-  ): VideoFramePayload {
+  private createPayloadFromSample(sample: VideoSample, setup: VideoSetup): VideoFramePayload {
+    const { metadata } = setup.timeline;
     const width = Math.max(1, Math.round(sample.displayWidth ?? metadata.width));
     const height = Math.max(1, Math.round(sample.displayHeight ?? metadata.height));
-    if (sample.rotation !== 0) {
-      return createVideoFramePayload(createUprightVideoFrame(sample, width, height), width, height);
-    }
-
     const retainedSample = sample.clone();
     try {
-      return createVideoFramePayload(retainedSample.toVideoFrame(), width, height);
+      const videoFrame = retainedSample.toVideoFrame();
+      // The engine rotates YUV planes itself; anything else, and flipped frames, are turned
+      // upright here.
+      if (this.yuvPlanes && isYuvVideoFrame(videoFrame) && !sample.flip) {
+        return createVideoFramePayload(videoFrame, width, height, {
+          sourceColorSpace: setup.colorSpace,
+          rotation: sample.rotation,
+        });
+      }
+      if (sample.rotation !== 0 || sample.flip) {
+        closeVideoFrame(videoFrame);
+        return createVideoFramePayload(
+          createUprightVideoFrame(sample, width, height),
+          width,
+          height,
+        );
+      }
+      return createVideoFramePayload(videoFrame, width, height, {
+        sourceColorSpace: setup.colorSpace,
+      });
     } finally {
       retainedSample.close();
     }
@@ -255,7 +277,7 @@ export class VideoSession {
         }
 
         try {
-          results.set(request.frame, this.createPayloadFromSample(sample, setup.timeline.metadata));
+          results.set(request.frame, this.createPayloadFromSample(sample, setup));
         } finally {
           sample.close();
           activeFrame = undefined;
@@ -303,7 +325,7 @@ export class VideoSession {
           );
         }
 
-        results.set(request.frame, this.createPayloadFromSample(sample, setup.timeline.metadata));
+        results.set(request.frame, this.createPayloadFromSample(sample, setup));
         state.lastFrame = request.frame;
         state.lastTimestamp = request.timestamp;
         activeFrame = undefined;
