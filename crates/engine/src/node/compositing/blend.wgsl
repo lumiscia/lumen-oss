@@ -18,6 +18,41 @@ fn blend_rgb(base: vec3<f32>, overlay: vec3<f32>, mode: u32) -> vec3<f32> {
     if (mode == 5u) {
         return max(base, overlay);
     }
+    if (mode == 6u) {
+        return min(base + overlay, vec3<f32>(1.0));
+    }
+    if (mode == 7u) {
+        return abs(base - overlay);
+    }
+    if (mode == 8u) {
+        return base + overlay - 2.0 * base * overlay;
+    }
+    if (mode == 9u) {
+        let dodged = min(base / max(vec3<f32>(1.0) - overlay, vec3<f32>(1e-6)), vec3<f32>(1.0));
+        let non_zero = select(dodged, vec3<f32>(1.0), overlay >= vec3<f32>(1.0));
+        return select(non_zero, vec3<f32>(0.0), base <= vec3<f32>(0.0));
+    }
+    if (mode == 10u) {
+        let burned = vec3<f32>(1.0) - min((vec3<f32>(1.0) - base) / max(overlay, vec3<f32>(1e-6)), vec3<f32>(1.0));
+        let non_zero = select(burned, vec3<f32>(0.0), overlay <= vec3<f32>(0.0));
+        return select(non_zero, vec3<f32>(1.0), base >= vec3<f32>(1.0));
+    }
+    if (mode == 11u) {
+        let low = base * (2.0 * overlay);
+        let doubled = 2.0 * overlay - vec3<f32>(1.0);
+        let high = base + doubled - base * doubled;
+        return select(high, low, overlay <= vec3<f32>(0.5));
+    }
+    if (mode == 12u) {
+        let curve = select(
+            sqrt(base),
+            ((16.0 * base - vec3<f32>(12.0)) * base + vec3<f32>(4.0)) * base,
+            base <= vec3<f32>(0.25),
+        );
+        let low = base - (vec3<f32>(1.0) - 2.0 * overlay) * base * (vec3<f32>(1.0) - base);
+        let high = base + (2.0 * overlay - vec3<f32>(1.0)) * (curve - base);
+        return select(high, low, overlay <= vec3<f32>(0.5));
+    }
     return overlay;
 }
 
