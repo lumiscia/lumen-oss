@@ -17,11 +17,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lumen_engine::{
-    ffmpeg::FfmpegVideoResolver,
-    media::{MediaFrame, VideoFrameResolver},
+use lumen_ffmpeg::{
+    CpuVideoFrame, DecodeMode, InputContext, MuxedEncoder, PixelFormat, VideoDecoder,
+    VideoDecoderConfig, VideoEncoderConfig,
 };
-use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, VideoEncoderConfig};
 use reqwest::{
     StatusCode,
     blocking::{Client, Response},
@@ -892,19 +891,47 @@ fn the_default_encoder_falls_back_to_a_correct_video_with_gpu() {
     let directory = tempfile::tempdir().expect("temp directory");
     let path = directory.path().join("output.mp4");
     std::fs::write(&path, artifact.bytes().expect("artifact bytes")).expect("write artifact");
-    let video = FfmpegVideoResolver::open(path.display().to_string()).expect("open artifact");
-    assert_eq!(video.metadata().frame_count, 1);
-    let MediaFrame::CpuRgba(decoded) = video.frame(0).expect("decode frame") else {
-        panic!("expected a CPU frame");
-    };
-    let offset = decoded.row_bytes * 8 + 8 * 4;
-    for (channel, want) in decoded.rgba[offset..offset + 3].iter().zip([255, 0, 0]) {
+    let frames = decode_rgba(&path);
+    assert_eq!(frames.len(), 1);
+    let decoded = &frames[0];
+    let offset = decoded.stride * 8 + 8 * 4;
+    for (channel, want) in decoded.data[offset..offset + 3].iter().zip([255, 0, 0]) {
         assert!(
             (i32::from(*channel) - want).abs() <= 3,
             "{:?}",
-            &decoded.rgba[offset..offset + 3]
+            &decoded.data[offset..offset + 3]
         );
     }
+}
+
+/// Decodes the first video stream of `path` to RGBA with FFmpeg's own conversion, which is
+/// independent of the renderer's.
+fn decode_rgba(path: &Path) -> Vec<CpuVideoFrame> {
+    let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open video");
+    let stream_index = input
+        .best_video_stream()
+        .expect("video stream")
+        .stream_index;
+    let mut decoder = VideoDecoder::open(
+        &input,
+        VideoDecoderConfig {
+            stream_index,
+            mode: DecodeMode::Cpu,
+        },
+    )
+    .expect("open decoder");
+    let mut frames = Vec::new();
+    while let Some(packet) = input.read_packet().expect("read packet") {
+        decoder.send_packet(&packet).expect("send packet");
+        while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
+            frames.push(frame);
+        }
+    }
+    decoder.send_eof().expect("send eof");
+    while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
+        frames.push(frame);
+    }
+    frames
 }
 
 #[test]

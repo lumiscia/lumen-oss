@@ -383,9 +383,39 @@ fn poll(
 
 #[cfg(all(test, target_os = "linux", feature = "cuda", feature = "vulkan"))]
 mod tests {
-    use lumen_engine::media::{FfmpegVideoResolver, MediaFrame, VideoFrameResolver};
+    use lumen_ffmpeg::{CpuVideoFrame, DecodeMode, InputContext, VideoDecoder, VideoDecoderConfig};
 
     use super::*;
+
+    /// Decodes the first video stream of `path` to RGBA with FFmpeg's own conversion, which is
+    /// independent of the renderer's.
+    fn decode_rgba(path: &std::path::Path) -> Vec<CpuVideoFrame> {
+        let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open video");
+        let stream_index = input
+            .best_video_stream()
+            .expect("video stream")
+            .stream_index;
+        let mut decoder = VideoDecoder::open(
+            &input,
+            VideoDecoderConfig {
+                stream_index,
+                mode: DecodeMode::Cpu,
+            },
+        )
+        .expect("open decoder");
+        let mut frames = Vec::new();
+        while let Some(packet) = input.read_packet().expect("read packet") {
+            decoder.send_packet(&packet).expect("send packet");
+            while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
+                frames.push(frame);
+            }
+        }
+        decoder.send_eof().expect("send eof");
+        while let Some(frame) = decoder.receive_cpu_frame().expect("receive frame") {
+            frames.push(frame);
+        }
+        frames
+    }
 
     /// libx264 can't take CUDA frames, so its target always fails to open, after the renderer and
     /// on NVIDIA the CUDA context are up.
@@ -440,15 +470,12 @@ mod tests {
         target
             .finish(&renderer, &composition, &media_store, &mut timing)
             .unwrap();
-        let video = FfmpegVideoResolver::open(output.to_string_lossy().to_string()).unwrap();
-        assert_eq!(video.metadata().frame_count, 3);
-        for frame in 0..3 {
-            let MediaFrame::CpuRgba(decoded) = video.frame(frame).unwrap() else {
-                panic!("expected a CPU frame");
-            };
+        let frames = decode_rgba(&output);
+        assert_eq!(frames.len(), 3);
+        for (frame, decoded) in frames.iter().enumerate() {
             assert!(
                 decoded
-                    .rgba
+                    .data
                     .chunks_exact(4)
                     .all(|pixel| pixel[0] >= 239 && pixel[1] <= 16 && pixel[2] <= 16),
                 "frame {frame} isn't the composition's red"

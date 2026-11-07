@@ -105,7 +105,7 @@ pub struct VideoStreamInfo {
     pub width: u32,
     /// Display height, with `rotation` applied.
     pub height: u32,
-    /// Clockwise rotation in degrees (0, 90, 180 or 270) that RGBA decode applies to each frame.
+    /// Clockwise rotation in degrees (0, 90, 180 or 270) that RGBA decode applies to each frame, and that YUV decode reports on each.
     pub rotation: u32,
     pub pixel_format: PixelFormat,
     /// Whether the stream carries alpha, in its pixel format or in a VP8 or VP9 alpha layer.

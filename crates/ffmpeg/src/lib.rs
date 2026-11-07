@@ -40,8 +40,8 @@ pub use gpu::{
     YuvToRgb,
 };
 pub use video::{
-    CpuVideoFrame, DecodeMode, EncodeMode, PixelFormat, VideoCodec, VideoDecoder,
-    VideoDecoderConfig,
+    CpuVideoFrame, DecodeMode, DecodedVideoFrame, EncodeMode, PixelFormat, VideoCodec,
+    VideoColorspace, VideoDecoder, VideoDecoderConfig, YuvSubsampling, YuvVideoFrame,
 };
 
 pub type Result<T> = std::result::Result<T, FfmpegError>;

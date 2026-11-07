@@ -700,7 +700,10 @@ fn a_frame_the_renderer_cannot_import_moves_its_source_to_the_cpu() {
         assert_eq!(fallback, reference, "frame {frame}");
     }
     let resolver = store.resolver(&source);
-    assert!(matches!(resolver.frame(5), Ok(MediaFrame::CpuRgba(_))));
+    assert!(matches!(
+        resolver.frame(5),
+        Ok(MediaFrame::CpuRgba(_) | MediaFrame::Yuv(_))
+    ));
 }
 
 /// Binding resolves both frames before either is imported, so the first failed import finds another
