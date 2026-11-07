@@ -5,8 +5,8 @@ use std::{
 };
 
 use lumen_ffmpeg::{
-    CpuVideoFrame, DecodeMode, DecodedVideoFrame, GpuBackend, InputContext, VideoColorspace,
-    VideoDecoder, VideoDecoderConfig, VideoStreamInfo, YuvSubsampling, YuvVideoFrame,
+    CpuVideoFrame, DecodeMode, DecodedVideoFrame, GpuBackend, InputContext, VideoDecoder,
+    VideoDecoderConfig, VideoStreamInfo, YuvSubsampling, YuvVideoFrame,
 };
 
 use crate::{
@@ -492,10 +492,7 @@ impl LibavStreamDecoder {
             },
             depth: decoded.depth,
             msb_aligned: decoded.msb_aligned,
-            color: YuvColor {
-                matrix: yuv_matrix(decoded.colorspace, decoded.height),
-                full_range: decoded.full_range,
-            },
+            color: yuv_color(decoded.color, decoded.height),
             rotation: Rotation::from_degrees(decoded.rotation).unwrap_or_default(),
         };
         let (layout, _) = YuvLayout::packed(&format, decoded.interleaved_chroma, decoded.has_alpha);
@@ -839,16 +836,19 @@ impl VideoFrameResolver for FfmpegVideoResolver {
     }
 }
 
-/// The matrix a stream's colour tag names. FCC and SMPTE 240M have no matrix of their own, so they
-/// read as the nearest one, and a stream with no usable tag reads by its height.
-fn yuv_matrix(colorspace: VideoColorspace, height: u32) -> YuvMatrix {
-    match colorspace {
-        VideoColorspace::Bt709 | VideoColorspace::Smpte240m => YuvMatrix::Bt709,
-        VideoColorspace::Bt470bg | VideoColorspace::Smpte170m | VideoColorspace::Fcc => {
-            YuvMatrix::Bt601
-        }
-        VideoColorspace::Bt2020Ncl | VideoColorspace::Bt2020Cl => YuvMatrix::Bt2020,
-        VideoColorspace::Other => YuvMatrix::untagged(height),
+/// The colour FFmpeg's tags describe. FCC and SMPTE 240M have no matrix of their own, so they read
+/// as the nearest one, and a frame with no usable tag reads by its coded height.
+pub(crate) fn yuv_color(tags: lumen_ffmpeg::ColorTags, height: u32) -> YuvColor {
+    use lumen_ffmpeg::ColorMatrix;
+    let matrix = match tags.matrix {
+        ColorMatrix::Bt709 | ColorMatrix::Smpte240m => YuvMatrix::Bt709,
+        ColorMatrix::Bt470bg | ColorMatrix::Smpte170m | ColorMatrix::Fcc => YuvMatrix::Bt601,
+        ColorMatrix::Bt2020Ncl | ColorMatrix::Bt2020Cl => YuvMatrix::Bt2020,
+        ColorMatrix::Other => YuvMatrix::untagged(height),
+    };
+    YuvColor {
+        matrix,
+        full_range: tags.full_range,
     }
 }
 
@@ -914,10 +914,7 @@ fn open_video_decoder(
     }
 
     let backend = preferred_gpu_backend(options);
-    let opened = if stream.rotation != 0 {
-        // GPU frames stay in coded orientation.
-        Err("rotated sources need the CPU path's rotation".to_string())
-    } else if stream.has_alpha {
+    let opened = if stream.has_alpha {
         // GPU frames carry no alpha.
         Err("sources with alpha need the CPU path, which decodes the alpha layer".to_string())
     } else {

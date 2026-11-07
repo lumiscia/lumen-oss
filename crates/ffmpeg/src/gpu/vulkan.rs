@@ -60,8 +60,10 @@ impl VulkanVideoFrame {
         }
     }
 
+    /// Rows are padded to 256 bytes, the row alignment wgpu copies between buffers and textures
+    /// need.
     pub fn nv12_pitch(width: u32) -> u32 {
-        width.next_multiple_of(4)
+        width.next_multiple_of(256)
     }
 
     pub fn nv12_chroma_offset(width: u32, height: u32) -> u64 {
@@ -93,19 +95,6 @@ impl VulkanVideoFrame {
     }
 }
 
-/// How to turn a frame's 8-bit YCbCr samples into RGB in 0-255: every channel starts from
-/// `y_scale * (Y - y_offset)`, then adds `r_cr * (Cr - 128)` for red, `g_cb * (Cb - 128) + g_cr * (Cr -
-/// 128)` for green and `b_cb * (Cb - 128)` for blue.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct YuvToRgb {
-    pub y_scale: f32,
-    pub y_offset: f32,
-    pub r_cr: f32,
-    pub g_cb: f32,
-    pub g_cr: f32,
-    pub b_cb: f32,
-}
-
 /// A decoded NV12 frame held in an FFmpeg Vulkan image on the [`VulkanDevice`] that decoded it.
 /// Copies share the frame, which stays alive until the last one is dropped.
 #[derive(Clone)]
@@ -117,7 +106,8 @@ pub struct VulkanDecodedFrame {
     crop_left: u32,
     crop_top: u32,
     pts: Option<i64>,
-    yuv_to_rgb: YuvToRgb,
+    color: crate::ColorTags,
+    rotation: u32,
 }
 
 struct DecodedAvFrame(AvFrame);
@@ -140,7 +130,12 @@ impl std::fmt::Debug for VulkanDecodedFrame {
 
 impl VulkanDecodedFrame {
     /// `frame` must be an `AV_PIX_FMT_VULKAN` frame with NV12 software format decoded on `device`.
-    pub(crate) fn new(frame: AvFrame, device: VulkanDevice, yuv_to_rgb: YuvToRgb) -> Result<Self> {
+    pub(crate) fn new(
+        frame: AvFrame,
+        device: VulkanDevice,
+        color: crate::ColorTags,
+        rotation: u32,
+    ) -> Result<Self> {
         let raw = frame.as_ptr();
         let vk_frame = frame_image(&frame);
         if vk_frame.is_null() || unsafe { (*vk_frame).img[1] } != 0 {
@@ -161,7 +156,8 @@ impl VulkanDecodedFrame {
             pts: frame.pts(),
             frame: Arc::new(DecodedAvFrame(frame)),
             device,
-            yuv_to_rgb,
+            color,
+            rotation,
         })
     }
 
@@ -173,8 +169,13 @@ impl VulkanDecodedFrame {
         self.pts
     }
 
-    pub fn yuv_to_rgb(&self) -> YuvToRgb {
-        self.yuv_to_rgb
+    pub fn color_tags(&self) -> crate::ColorTags {
+        self.color
+    }
+
+    /// The stream's clockwise display rotation in degrees.
+    pub fn rotation(&self) -> u32 {
+        self.rotation
     }
 
     /// The device that decoded this frame, which must also be the one reading it.
@@ -645,11 +646,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nv12_layout_pads_rows_to_four_bytes_and_rounds_chroma_up() {
+    fn nv12_layout_pads_rows_to_256_bytes_and_rounds_chroma_up() {
         for (width, height, pitch, chroma_offset, size) in [
-            (640, 480, 640, 640 * 480, 640 * 720),
-            (642, 480, 644, 644 * 480, 644 * 720),
-            (2, 3, 4, 4 * 3, 4 * 5),
+            (512, 480, 512, 512 * 480, 512 * 720),
+            (642, 480, 768, 768 * 480, 768 * 720),
+            (2, 3, 256, 256 * 3, 256 * 5),
         ] {
             assert_eq!(VulkanVideoFrame::nv12_pitch(width), pitch);
             assert_eq!(

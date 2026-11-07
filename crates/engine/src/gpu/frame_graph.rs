@@ -1502,15 +1502,22 @@ impl<'a> FrameCx<'a> {
                 let imported = self
                     .importer
                     .import(self.renderer, self.imports, slot, &frame)
-                    .and_then(|texture| {
+                    .and_then(|imported| {
                         if frame.settle_on_gpu() {
-                            Ok(texture)
+                            Ok(imported)
                         } else {
                             Err("its source moved to the CPU".to_string())
                         }
                     });
                 match imported {
-                    Ok(texture) => Ok(self.adopted_media(texture)),
+                    Ok(imported) => {
+                        let planes = imported
+                            .planes
+                            .map_with_shape(&imported.format, |texture, _| {
+                                self.adopted_media(Arc::clone(texture))
+                            });
+                        self.yuv_to_rgba(&planes, &imported.format, size)
+                    }
                     Err(reason) => {
                         let cpu = frame.decode_on_cpu(&reason).map_err(|error| RenderError::Gpu {
                             details: format!(

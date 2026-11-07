@@ -66,6 +66,28 @@ pub enum EncodeMode {
     GpuTexture(GpuBackend),
 }
 
+/// The `AVColorSpace` of a frame, among the values a YUV to RGB matrix follows from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorMatrix {
+    Bt709,
+    Bt470bg,
+    Smpte170m,
+    Fcc,
+    Smpte240m,
+    Bt2020Ncl,
+    Bt2020Cl,
+    /// Unspecified, or a value that isn't a YUV matrix.
+    Other,
+}
+
+/// The colour tags FFmpeg read for a decoded frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColorTags {
+    pub matrix: ColorMatrix,
+    /// `AVCOL_RANGE_JPEG`, or a JPEG pixel format: samples span the whole code range.
+    pub full_range: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct CpuVideoFrame {
     pub width: u32,
@@ -106,20 +128,6 @@ pub enum YuvSubsampling {
     Yuv444,
 }
 
-/// The colour matrix a stream is tagged with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VideoColorspace {
-    Bt709,
-    Bt470bg,
-    Smpte170m,
-    Fcc,
-    Smpte240m,
-    Bt2020Ncl,
-    Bt2020Cl,
-    /// Unspecified, or one this crate doesn't name.
-    Other,
-}
-
 /// A decoded frame as YUV planes, whose colour is exactly what the source stored.
 ///
 /// `data` holds the planes back to back with no row padding: luma, then chroma, then alpha when
@@ -138,8 +146,7 @@ pub struct YuvVideoFrame {
     pub msb_aligned: bool,
     pub interleaved_chroma: bool,
     pub has_alpha: bool,
-    pub colorspace: VideoColorspace,
-    pub full_range: bool,
+    pub color: ColorTags,
     /// Clockwise degrees the frame turns to show upright: 0, 90, 180 or 270.
     pub rotation: u32,
     pub data: Vec<u8>,
@@ -629,8 +636,7 @@ impl VideoDecoder {
             msb_aligned: shape.msb_aligned,
             interleaved_chroma: shape.interleaved,
             has_alpha: shape.alpha,
-            colorspace: video_colorspace(frame),
-            full_range: is_full_range(frame),
+            color: color_tags(frame),
             rotation: self.rotation,
             data: pack_planes(planes, &shape, width, height)?,
         })
@@ -726,6 +732,8 @@ impl VideoDecoder {
             crate::gpu::MetalDecodedFrame::retain_from_video_toolbox_frame(
                 pixel_buffer,
                 frame.pts(),
+                color_tags(frame),
+                self.rotation,
             )
         }))
     }
@@ -751,8 +759,8 @@ impl VideoDecoder {
             )
             .with_backend(GpuBackend::Vulkan));
         }
-        let yuv_to_rgb = yuv_to_rgb(&frame);
-        crate::gpu::VulkanDecodedFrame::new(frame, device.clone(), yuv_to_rgb)
+        let color = color_tags(&frame);
+        crate::gpu::VulkanDecodedFrame::new(frame, device.clone(), color, self.rotation)
             .map(GpuVideoFrame::Vulkan)
     }
 }
@@ -1007,19 +1015,6 @@ fn pack_planes(frame: &AvFrame, shape: &YuvShape, width: u32, height: u32) -> Re
     Ok(data)
 }
 
-fn video_colorspace(frame: &AvFrame) -> VideoColorspace {
-    match frame.colorspace() {
-        AVCOL_SPC_BT709 => VideoColorspace::Bt709,
-        AVCOL_SPC_BT470BG => VideoColorspace::Bt470bg,
-        AVCOL_SPC_SMPTE170M => VideoColorspace::Smpte170m,
-        AVCOL_SPC_FCC => VideoColorspace::Fcc,
-        AVCOL_SPC_SMPTE240M => VideoColorspace::Smpte240m,
-        AVCOL_SPC_BT2020_NCL => VideoColorspace::Bt2020Ncl,
-        AVCOL_SPC_BT2020_CL => VideoColorspace::Bt2020Cl,
-        _ => VideoColorspace::Other,
-    }
-}
-
 /// Tells swscale how to read the frame's YUV. Its default is limited-range BT.601. The destination is
 /// always full-range RGBA.
 fn set_source_colorspace(scaler: *mut sys::SwsContext, frame: &AvFrame) -> Result<()> {
@@ -1049,24 +1044,20 @@ fn is_full_range(frame: &AvFrame) -> bool {
     frame.color_range() == AVCOL_RANGE_JPEG || is_full_range_format(frame.format())
 }
 
-/// The conversion swscale would use for this frame, from the same coefficients.
-#[cfg(feature = "vulkan")]
-fn yuv_to_rgb(frame: &AvFrame) -> crate::gpu::YuvToRgb {
-    let coefficients = unsafe { sys::sws_getCoefficients(source_matrix(frame)) };
-    let [crv, cbu, cgu, cgv] = std::array::from_fn(|index| {
-        let value = unsafe { *coefficients.add(index) };
-        value as f32 / 65536.0
-    });
-    let full_range = is_full_range(frame);
-    // swscale's coefficients are for limited-range chroma.
-    let chroma_scale = if full_range { 224.0 / 255.0 } else { 1.0 };
-    crate::gpu::YuvToRgb {
-        y_scale: if full_range { 1.0 } else { 255.0 / 219.0 },
-        y_offset: if full_range { 0.0 } else { 16.0 },
-        r_cr: crv * chroma_scale,
-        g_cb: -cgu * chroma_scale,
-        g_cr: -cgv * chroma_scale,
-        b_cb: cbu * chroma_scale,
+fn color_tags(frame: &AvFrame) -> ColorTags {
+    let matrix = match frame.colorspace() {
+        AVCOL_SPC_BT709 => ColorMatrix::Bt709,
+        AVCOL_SPC_BT470BG => ColorMatrix::Bt470bg,
+        AVCOL_SPC_SMPTE170M => ColorMatrix::Smpte170m,
+        AVCOL_SPC_FCC => ColorMatrix::Fcc,
+        AVCOL_SPC_SMPTE240M => ColorMatrix::Smpte240m,
+        AVCOL_SPC_BT2020_NCL => ColorMatrix::Bt2020Ncl,
+        AVCOL_SPC_BT2020_CL => ColorMatrix::Bt2020Cl,
+        _ => ColorMatrix::Other,
+    };
+    ColorTags {
+        matrix,
+        full_range: is_full_range(frame),
     }
 }
 
