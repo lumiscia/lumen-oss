@@ -1,5 +1,6 @@
 import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
 import type { MediaSourceInput } from "./media/types.js";
+import { createModuleWorker } from "./module-worker.js";
 
 export const LUMEN_AUDIO_SAMPLE_RATE = 48_000;
 export const LUMEN_AUDIO_CHANNELS = 2;
@@ -517,7 +518,7 @@ export class LumenAudioEngine {
     }
 
     const workerModuleUrl = this.#options.workerModuleUrl ?? defaultAudioWorkerUrl();
-    const worker = new Worker(String(workerModuleUrl), { type: "module" });
+    const worker = createModuleWorker(workerModuleUrl);
     worker.onmessage = (event: MessageEvent<AudioWorkerEventMessage>) => {
       const node = this.#node;
       if (!node || event.data.generation !== this.#generation) {

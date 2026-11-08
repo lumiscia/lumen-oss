@@ -166,7 +166,11 @@ describe("LumenPreviewSession", () => {
     vi.stubGlobal("OffscreenCanvas", class {});
     vi.stubGlobal("HTMLCanvasElement", FakeCanvas);
     vi.stubGlobal("navigator", { gpu: {} });
-    vi.stubGlobal("document", { createElement: () => new FakeCanvas() });
+    vi.stubGlobal("location", { origin: "https://a.test" });
+    vi.stubGlobal("document", {
+      baseURI: "https://a.test/",
+      createElement: () => new FakeCanvas(),
+    });
   });
 
   afterEach(() => {

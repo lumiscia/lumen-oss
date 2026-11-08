@@ -31,6 +31,15 @@ document.querySelector("button")?.addEventListener("click", () => {
 });
 ```
 
-Both URLs are resolved with `new URL(..., import.meta.url)`, so Vite emits the files as assets without extra plugins, and plain ESM served from a static path or a CDN finds them next to `urls.js`. A page that serves copies elsewhere passes those URLs instead. In React or Svelte, use `Player` from `@lumiscia/lumen-react` or `@lumiscia/lumen-svelte` instead of `mountPreview`.
+Both URLs are resolved with `new URL(..., import.meta.url)`, so Vite emits the files as assets without extra plugins, and plain ESM served from a static path or a CDN finds them next to `urls.js`. Another origin needs CORS headers on both files. A page that serves copies elsewhere passes those URLs instead. In React or Svelte, use `Player` from `@lumiscia/lumen-react` or `@lumiscia/lumen-svelte` instead of `mountPreview`.
+
+With Vite 6 or 7, keep `@lumiscia/lumen-bindings` out of the dev server's dependency pre-bundling. It moves the module that locates the worker and wasm into `node_modules/.vite/deps`, so the worker 404s. Vite 8 and `vite build` need nothing.
+
+```js
+// vite.config.js
+export default defineConfig({
+  optimizeDeps: { exclude: ["@lumiscia/lumen-bindings"] },
+});
+```
 
 See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.

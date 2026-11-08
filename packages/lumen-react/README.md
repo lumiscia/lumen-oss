@@ -36,6 +36,15 @@ export const App = () => {
 
 Pass `media` and `fonts` (name to URL) to `Player` when the composition uses them. `examples/vite-react` is a complete app.
 
-The preview renders in a worker, which loads the wasm renderer. Both come from `@lumiscia/lumen-bindings`, a dependency of this package, and Vite or plain ESM finds them next to it. A page that serves them elsewhere passes `workerUrl` and `wasmUrl` to `Player`, pointing at copies of `dist/browser/worker.js` and `wasm/lumen_wasm_bg.wasm` from that package.
+The preview renders in a worker, which loads the wasm renderer. Both come from `@lumiscia/lumen-bindings`, a dependency of this package, and Vite or plain ESM finds them next to it. They can be on another origin, such as a CDN, that sends CORS headers. A page that serves them elsewhere passes `workerUrl` and `wasmUrl` to `Player`, pointing at copies of `dist/browser/worker.js` and `wasm/lumen_wasm_bg.wasm` from that package.
+
+With Vite 6 or 7, keep `@lumiscia/lumen-bindings` out of the dev server's dependency pre-bundling. It moves the module that locates these files into `node_modules/.vite/deps`, so the worker 404s. Vite 8 and `vite build` need nothing.
+
+```js
+// vite.config.js
+export default defineConfig({
+  optimizeDeps: { exclude: ["@lumiscia/lumen-bindings"] },
+});
+```
 
 See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.

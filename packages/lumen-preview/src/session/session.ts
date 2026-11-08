@@ -2,6 +2,7 @@ import { LumenAudioEngine } from "../audio-engine.js";
 import { clockPositionMs, epochNow, fitClock, type PreviewClock } from "../clock.js";
 import type { MediaRegistration, MediaSourceInput } from "../media/index.js";
 import { sameMediaInput } from "../media/source.js";
+import { createModuleWorker } from "../module-worker.js";
 import type { LumenPreviewContext, LumenPreviewErrorCode } from "../preview.js";
 import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../worker-host.js";
 import { describeError, reportConsoleError } from "./errors.js";
@@ -101,7 +102,7 @@ export class LumenPreviewSession {
     this.#startup = new AbortController();
     try {
       assertBrowserSupport();
-      worker = new Worker(String(this.#workerUrl), { type: "module" });
+      worker = createModuleWorker(this.#workerUrl);
       this.#workerOptions = this.#desiredOptions();
       await startWorker(
         worker,
