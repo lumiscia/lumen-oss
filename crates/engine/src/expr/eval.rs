@@ -839,6 +839,14 @@ mod tests {
                 "a key at 1.5s follows one at 2s",
             ),
             (
+                "keyframes(frame, key(-1s, 0), key(-2s, 1))",
+                "a key at -2s follows one at -1s",
+            ),
+            (
+                "keyframes(frame, key(-100ms, 0), key(-200ms, 1))",
+                "a key at -0.2s follows one at -0.1s",
+            ),
+            (
                 "keyframes(frame, key(0, 0), key(10, vec2(1, 1)))",
                 "same kind of value, got number and vec2",
             ),

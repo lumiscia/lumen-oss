@@ -670,6 +670,9 @@ fn literal_key_time(node: &ExprNode) -> Option<(f64, &'static str)> {
         {
             literal_number(seconds).map(|seconds| (seconds, "s"))
         }
+        ExprNode::Unary(UnaryOp::Neg, value) => {
+            literal_key_time(value).map(|(time, unit)| (-time, unit))
+        }
         _ => literal_number(node).map(|frames| (frames, "")),
     }
 }
