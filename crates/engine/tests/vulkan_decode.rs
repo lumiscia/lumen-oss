@@ -358,43 +358,61 @@ fn patch_error(a: &[u8], b: &[u8], width: usize, height: usize) -> (u8, usize, u
     worst
 }
 
-/// Compares `path` decoded on the GPU with software inside its patches, returning whether it did.
-fn check_patch_clip(path: &Path) -> bool {
-    let Some((mut hardware_renderer, hardware_store)) = hardware() else {
-        return false;
-    };
-    if !decodes_on_hardware(&hardware_store, path) {
-        return false;
+/// One hardware and one software renderer for every patch clip. A device per clip runs NVIDIA out of
+/// driver contexts after a few clips.
+struct PatchCheck {
+    hardware: Option<(GpuCompositionRenderer, Store)>,
+    software: (GpuCompositionRenderer, Store),
+}
+
+impl PatchCheck {
+    fn new() -> Self {
+        Self {
+            hardware: hardware(),
+            software: software(),
+        }
     }
-    let (mut software_renderer, software_store) = software();
+
+    /// Compares `path` decoded on the GPU with software inside its patches, returning whether it
+    /// did.
+    fn check(&mut self, path: &Path) -> bool {
+        let Some((hardware_renderer, hardware_store)) = &mut self.hardware else {
+            return false;
+        };
+        if !decodes_on_hardware(hardware_store, path) {
+            return false;
+        }
+        check_patch_clip(
+            path,
+            (hardware_renderer, hardware_store),
+            (&mut self.software.0, &self.software.1),
+        );
+        true
+    }
+}
+
+fn check_patch_clip(
+    path: &Path,
+    (hardware_renderer, hardware_store): (&mut GpuCompositionRenderer, &Store),
+    (software_renderer, software_store): (&mut GpuCompositionRenderer, &Store),
+) {
     let source = path.to_string_lossy();
     let nodes = json!([media(1, &source)]);
-    let hardware_scene = composition(&hardware_store, nodes.clone(), &[&source]);
-    let software_scene = composition(&software_store, nodes, &[&source]);
+    let hardware_scene = composition(hardware_store, nodes.clone(), &[&source]);
+    let software_scene = composition(software_store, nodes, &[&source]);
     let metadata = software_store.resolver(&source).metadata();
     let (width, height) = (metadata.width as usize, metadata.height as usize);
     for frame in 0..PATCH_FRAMES as u32 {
-        let on_hardware = render(
-            &mut hardware_renderer,
-            &hardware_scene,
-            frame,
-            &hardware_store,
-        );
-        let on_software = render(
-            &mut software_renderer,
-            &software_scene,
-            frame,
-            &software_store,
-        );
+        let on_hardware = render(hardware_renderer, &hardware_scene, frame, hardware_store);
+        let on_software = render(software_renderer, &software_scene, frame, software_store);
         let (error, x, y) = patch_error(&on_hardware, &on_software, width, height);
         assert!(
             error <= MAX_CHANNEL_ERROR,
             "{source} frame {frame}: {error}/255 off at ({x}, {y})"
         );
     }
-    assert!(decodes_on_hardware(&hardware_store, path), "{source}");
+    assert!(decodes_on_hardware(hardware_store, path), "{source}");
     println!("{source}: patches within {MAX_CHANNEL_ERROR}/255");
-    true
 }
 
 /// Flat patches in `sampling`'s raw format, whose YCbCr is computed from `PATCH_RGB` with `matrix`
@@ -551,10 +569,12 @@ fn decoded_colours_match_software_inside_patches() {
             .map(|entry| entry.unwrap().path())
             .collect();
         clips.sort();
-        clips.retain(|clip| check_patch_clip(clip));
+        let mut patches = PatchCheck::new();
+        clips.retain(|clip| patches.check(clip));
         assert_expected_checked(&clips);
         return;
     }
+    let mut patches = PatchCheck::new();
     let mut checked = Vec::new();
     let directory = tempfile::tempdir().expect("temp dir");
     let [h264, hevc, av1] = ENCODERS;
@@ -585,7 +605,7 @@ fn decoded_colours_match_software_inside_patches() {
             ) else {
                 break;
             };
-            if check_patch_clip(&clip) {
+            if patches.check(&clip) {
                 checked.push(clip);
             }
         }
