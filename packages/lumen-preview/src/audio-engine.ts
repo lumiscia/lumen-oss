@@ -3,6 +3,9 @@ import type { MediaSourceInput } from "./media/types.js";
 import { assetHint } from "./asset-hint.js";
 import { createModuleWorker } from "./module-worker.js";
 
+const AUDIO_FALLBACK =
+  "If it isn't served there, pass `audio.workerModuleUrl` pointing at a copy of `dist/audio-worker.js` from `@lumiscia/lumen-preview`.";
+
 export const LUMEN_AUDIO_SAMPLE_RATE = 48_000;
 export const LUMEN_AUDIO_CHANNELS = 2;
 const MS_PER_SECOND = 1_000;
@@ -533,7 +536,7 @@ export class LumenAudioEngine {
       const url = String(workerModuleUrl);
       console.error(
         "[LumenAudioEngine]",
-        `the audio worker failed at ${url}: ${event.message}. ${assetHint(url)}`,
+        `the audio worker failed at ${url}: ${event.message}. ${assetHint(url, AUDIO_FALLBACK)}`,
       );
       this.#halt();
       worker.terminate();
