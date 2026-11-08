@@ -4,7 +4,7 @@ import { assetHint } from "./asset-hint.js";
 import { createModuleWorker } from "./module-worker.js";
 
 const AUDIO_FALLBACK =
-  "If it isn't served there, pass `audio.workerModuleUrl` pointing at a copy of `dist/audio-worker.js` from `@lumiscia/lumen-preview`.";
+  "If it isn't served there, serve `dist/audio-worker.js` from `@lumiscia/lumen-preview` beside `dist/audio-engine.js`, or pass `audio.workerModuleUrl` to `mountPreview`.";
 
 export const LUMEN_AUDIO_SAMPLE_RATE = 48_000;
 export const LUMEN_AUDIO_CHANNELS = 2;

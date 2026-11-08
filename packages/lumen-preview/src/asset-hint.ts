@@ -3,8 +3,16 @@ const PREVIEW_FALLBACK =
 
 /** How to fix a Lumen file that didn't load from `url`, with `fallback` when it isn't Vite's. */
 export function assetHint(url: string, fallback = PREVIEW_FALLBACK): string {
-  if (URL.canParse(url) && new URL(url).pathname.includes("/.vite/deps/")) {
+  if (pathOf(url).includes("/.vite/deps/")) {
     return 'Vite 6 and 7 move it there when they pre-bundle dependencies in dev; add `optimizeDeps: { exclude: ["@lumiscia/lumen-bindings", "@lumiscia/lumen-preview"] }` to the Vite config.';
   }
   return fallback;
+}
+
+function pathOf(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return "";
+  }
 }
