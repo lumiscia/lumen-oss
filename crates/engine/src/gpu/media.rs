@@ -227,16 +227,16 @@ fn media_texture_usage() -> lumen_gpu::wgpu::TextureUsages {
 }
 
 /// The buffer a source's frames are copied out of FFmpeg's image into, and the plane textures
-/// copied from it, which stay the slot's until the frame size changes.
+/// copied from it, which stay the slot's until the frame's layout changes.
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 struct VulkanMediaTexture {
-    size: lumen_gpu::Size,
-    nv12: Arc<lumen_gpu::wgpu::Buffer>,
+    layout: lumen_ffmpeg::VulkanFrameLayout,
+    buffer: Arc<lumen_gpu::wgpu::Buffer>,
     luma: Arc<lumen_gpu::wgpu::Texture>,
     chroma: Arc<lumen_gpu::wgpu::Texture>,
 }
 
-/// Copies `frame` out of FFmpeg's image into `slot`'s NV12 buffer, then into its plane textures.
+/// Copies `frame` out of FFmpeg's image into `slot`'s buffer, then into its plane textures.
 /// Nothing else reads the image, so the frame only has to outlive the first copy, whose semaphore
 /// wait and layout change go through FFmpeg's frame lock.
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
@@ -246,7 +246,7 @@ fn import_vulkan(
     slot: u32,
     frame: &crate::media::GpuVideoMediaFrame,
 ) -> Result<ImportedFrame, String> {
-    use lumen_ffmpeg::VulkanVideoFrame;
+    use lumen_ffmpeg::YuvSubsampling;
     use lumen_gpu::wgpu;
 
     let lumen_ffmpeg::GpuVideoFrame::Vulkan(decoded) = &frame.frame else {
@@ -260,43 +260,42 @@ fn import_vulkan(
     if decoded.device() != device {
         return Err("the frame was decoded on another Vulkan device".to_string());
     }
-    let (width, height) = decoded.dimensions();
-    let size = lumen_gpu::Size::new(width, height);
+    let layout = decoded.layout();
     if textures
         .get(&slot)
-        .is_none_or(|texture| texture.size != size)
+        .is_none_or(|texture| texture.layout != layout)
     {
-        textures.insert(slot, VulkanMediaTexture::new(renderer, size)?);
+        textures.insert(slot, VulkanMediaTexture::new(renderer, layout)?);
     }
     let texture = textures
         .get(&slot)
         .ok_or_else(|| "Vulkan media texture was not initialized".to_string())?;
 
     let buffer =
-        lumen_gpu::raw_vulkan_buffer(&texture.nv12).map_err(|error| format!("{error:#}"))?;
-    // SAFETY: the buffer was created on this device for this frame size with COPY_DST, and the
+        lumen_gpu::raw_vulkan_buffer(&texture.buffer).map_err(|error| format!("{error:#}"))?;
+    // SAFETY: the buffer was created on this device for this layout with COPY_DST, and the
     // retained Arc keeps it alive through the copy.
-    unsafe { decoded.copy_to_buffer(buffer, Box::new(Arc::clone(&texture.nv12))) }
+    unsafe { decoded.copy_to_buffer(buffer, Box::new(Arc::clone(&texture.buffer))) }
         .map_err(|error| error.to_string())?;
 
     // Submitted after the copy above on the same queue, whose closing barrier makes its writes
     // visible to these reads.
-    let pitch = VulkanVideoFrame::nv12_pitch(width);
     let mut encoder = renderer
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("lumen decoded NV12 planes"),
+            label: Some("lumen decoded YCbCr planes"),
         });
-    for (plane, offset) in [
-        (&texture.luma, 0),
+    for (plane, offset, pitch) in [
+        (&texture.luma, 0, layout.luma_pitch()),
         (
             &texture.chroma,
-            VulkanVideoFrame::nv12_chroma_offset(width, height),
+            layout.chroma_offset(),
+            layout.chroma_pitch(),
         ),
     ] {
         encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
-                buffer: &texture.nv12,
+                buffer: &texture.buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset,
                     bytes_per_row: Some(pitch),
@@ -308,50 +307,53 @@ fn import_vulkan(
         );
     }
     renderer.queue.submit([encoder.finish()]);
+    let subsampling = match layout.subsampling {
+        YuvSubsampling::Yuv420 => crate::media::ChromaSubsampling::Yuv420,
+        YuvSubsampling::Yuv422 => crate::media::ChromaSubsampling::Yuv422,
+        YuvSubsampling::Yuv444 => crate::media::ChromaSubsampling::Yuv444,
+    };
     Ok(ImportedFrame {
         planes: YuvPlanes {
             luma: Arc::clone(&texture.luma),
             chroma: crate::media::YuvChroma::Interleaved(Arc::clone(&texture.chroma)),
             alpha: None,
         },
-        format: gpu_frame_format(
-            &frame.frame,
-            crate::media::ChromaSubsampling::Yuv420,
-            8,
-            false,
-        ),
+        format: gpu_frame_format(&frame.frame, subsampling, layout.depth, layout.depth > 8),
     })
 }
 
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 impl VulkanMediaTexture {
-    fn new(renderer: &lumen_gpu::Renderer, size: lumen_gpu::Size) -> Result<Self, String> {
-        use lumen_gpu::wgpu;
+    fn new(
+        renderer: &lumen_gpu::Renderer,
+        layout: lumen_ffmpeg::VulkanFrameLayout,
+    ) -> Result<Self, String> {
+        use lumen_gpu::wgpu::{self, TextureFormat};
 
         let device = &renderer.device;
         let limits = device.limits();
-        let nv12_size = lumen_ffmpeg::VulkanVideoFrame::nv12_size(size.width, size.height);
-        if size.width > limits.max_texture_dimension_2d
-            || size.height > limits.max_texture_dimension_2d
-            || nv12_size > limits.max_buffer_size
+        let (chroma_width, chroma_height) = layout.chroma_size();
+        if layout.width > limits.max_texture_dimension_2d
+            || layout.height > limits.max_texture_dimension_2d
+            || layout.size() > limits.max_buffer_size
         {
             return Err(format!(
                 "{}x{} frames are too large for this device",
-                size.width, size.height
+                layout.width, layout.height
             ));
         }
-        let nv12 = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("lumen decoded NV12"),
-            size: nv12_size,
+        let buffer = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lumen decoded YCbCr"),
+            size: layout.size(),
             usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }));
         // wgpu would clear a buffer it believes is uninitialized when a copy first reads it, which
         // is after raw commands have written it.
         let mut clear = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("lumen clear decoded NV12"),
+            label: Some("lumen clear decoded YCbCr"),
         });
-        clear.clear_buffer(&nv12, 0, None);
+        clear.clear_buffer(&buffer, 0, None);
         renderer.queue.submit([clear.finish()]);
 
         let plane = |label, size: lumen_gpu::Size, format| {
@@ -366,19 +368,23 @@ impl VulkanMediaTexture {
                 view_formats: &[],
             }))
         };
-        let chroma_size = lumen_gpu::Size::new(size.width.div_ceil(2), size.height.div_ceil(2));
+        let (luma_format, chroma_format) = if layout.bytes_per_sample() == 2 {
+            (TextureFormat::R16Uint, TextureFormat::Rg16Uint)
+        } else {
+            (TextureFormat::R8Uint, TextureFormat::Rg8Uint)
+        };
         Ok(Self {
-            size,
-            nv12,
+            layout,
+            buffer,
             luma: plane(
                 "lumen Vulkan decoded luma",
-                size,
-                wgpu::TextureFormat::R8Uint,
+                lumen_gpu::Size::new(layout.width, layout.height),
+                luma_format,
             ),
             chroma: plane(
                 "lumen Vulkan decoded chroma",
-                chroma_size,
-                wgpu::TextureFormat::Rg8Uint,
+                lumen_gpu::Size::new(chroma_width, chroma_height),
+                chroma_format,
             ),
         })
     }

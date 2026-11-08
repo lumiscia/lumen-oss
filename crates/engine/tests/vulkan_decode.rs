@@ -1,5 +1,5 @@
 //! Vulkan hardware decode on the renderer's device, read back from the final renderer texture and
-//! compared with software decode. Skips on hardware without Vulkan Video decode, and any codec the
+//! compared with software decode. Skips on hardware without Vulkan Video decode, and any profile the
 //! hardware or the `ffmpeg` CLI lacks.
 //!
 //! `LUMEN_VULKAN_DECODE_FIXTURES=<dir>` checks every patch clip in the directory instead of
@@ -66,6 +66,40 @@ const BT2020: Matrix = Matrix {
     kr: 0.2627,
     kb: 0.0593,
     tags: ["bt2020nc", "bt2020", "bt2020-10"],
+};
+
+/// A planar raw YUV format patch clips are encoded from, and keep.
+struct Sampling {
+    pix_fmt: &'static str,
+    depth: u32,
+    /// log2 of the horizontal and vertical chroma subsampling.
+    chroma_shift: (usize, usize),
+}
+
+const YUV420: Sampling = Sampling {
+    pix_fmt: "yuv420p",
+    depth: 8,
+    chroma_shift: (1, 1),
+};
+const YUV420P10: Sampling = Sampling {
+    pix_fmt: "yuv420p10le",
+    depth: 10,
+    chroma_shift: (1, 1),
+};
+const YUV422P10: Sampling = Sampling {
+    pix_fmt: "yuv422p10le",
+    depth: 10,
+    chroma_shift: (1, 0),
+};
+const YUV444: Sampling = Sampling {
+    pix_fmt: "yuv444p",
+    depth: 8,
+    chroma_shift: (0, 0),
+};
+const YUV444P10: Sampling = Sampling {
+    pix_fmt: "yuv444p10le",
+    depth: 10,
+    chroma_shift: (0, 0),
 };
 
 struct Store {
@@ -323,16 +357,32 @@ fn check_patch_clip(path: &Path) {
     println!("{source}: patches within {MAX_CHANNEL_ERROR}/255");
 }
 
-/// 8-bit 4:2:0 flat patches whose YCbCr is computed from `PATCH_RGB` with `matrix` and `full_range`.
-fn patch_frames(width: usize, height: usize, matrix: &Matrix, full_range: bool) -> Vec<u8> {
+/// Flat patches in `sampling`'s raw format, whose YCbCr is computed from `PATCH_RGB` with `matrix`
+/// and `full_range`.
+fn patch_frames(
+    width: usize,
+    height: usize,
+    matrix: &Matrix,
+    full_range: bool,
+    sampling: &Sampling,
+) -> Vec<u8> {
     let (xs, ys) = (patch_edges(width, 4), patch_edges(height, 3));
-    let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+    let (shift_x, shift_y) = sampling.chroma_shift;
+    let (chroma_width, chroma_height) =
+        (width.div_ceil(1 << shift_x), height.div_ceil(1 << shift_y));
+    let max = f64::from((1 << sampling.depth) - 1);
+    let scale = f64::from(1 << (sampling.depth - 8));
+    let (luma, chroma, offset, mid) = if full_range {
+        (max, max, 0., f64::from(1 << (sampling.depth - 1)))
+    } else {
+        (219. * scale, 224. * scale, 16. * scale, 128. * scale)
+    };
     let mut frames = Vec::new();
     for frame in 0..PATCH_FRAMES {
         let mut planes = [
-            vec![0_u8; width * height],
-            vec![0_u8; chroma_width * chroma_height],
-            vec![0_u8; chroma_width * chroma_height],
+            vec![0_u16; width * height],
+            vec![0_u16; chroma_width * chroma_height],
+            vec![0_u16; chroma_width * chroma_height],
         ];
         for row in 0..3 {
             for column in 0..4 {
@@ -340,26 +390,26 @@ fn patch_frames(width: usize, height: usize, matrix: &Matrix, full_range: bool) 
                 let y = matrix.kr * r + (1. - matrix.kr - matrix.kb) * g + matrix.kb * b;
                 let cb = (b - y) / (2. * (1. - matrix.kb));
                 let cr = (r - y) / (2. * (1. - matrix.kr));
-                let (luma, chroma, offset) = if full_range {
-                    (255., 255., 0.)
-                } else {
-                    (219., 224., 16.)
-                };
-                let samples = [offset + luma * y, 128. + chroma * cb, 128. + chroma * cr]
-                    .map(|sample: f64| sample.round().clamp(0., 255.) as u8);
+                let samples = [offset + luma * y, mid + chroma * cb, mid + chroma * cr]
+                    .map(|sample: f64| sample.round().clamp(0., max) as u16);
                 for line in ys[row]..ys[row + 1] {
                     planes[0][line * width..][xs[column]..xs[column + 1]].fill(samples[0]);
                 }
-                for line in ys[row] / 2..ys[row + 1] / 2 {
+                for line in ys[row] >> shift_y..ys[row + 1] >> shift_y {
                     for plane in 1..3 {
-                        planes[plane][line * chroma_width..][xs[column] / 2..xs[column + 1] / 2]
+                        planes[plane][line * chroma_width..]
+                            [xs[column] >> shift_x..xs[column + 1] >> shift_x]
                             .fill(samples[plane]);
                     }
                 }
             }
         }
-        for plane in &planes {
-            frames.extend_from_slice(plane);
+        for sample in planes.iter().flatten() {
+            if sampling.depth > 8 {
+                frames.extend_from_slice(&sample.to_le_bytes());
+            } else {
+                frames.push(*sample as u8);
+            }
         }
     }
     frames
@@ -409,22 +459,32 @@ const ENCODERS: [&[&str]; 3] = [
 fn generated_patch_clip(
     directory: &Path,
     encoder: &[&str],
+    sampling: &Sampling,
     (width, height): (usize, usize),
     matrix: &Matrix,
     full_range: bool,
 ) -> Option<PathBuf> {
     let path = directory.join(format!(
-        "{}_{width}x{height}_{}_{}.mp4",
-        encoder[1], matrix.tags[0], full_range
+        "{}_{}_{width}x{height}_{}_{}.mp4",
+        encoder[1], sampling.pix_fmt, matrix.tags[0], full_range
     ));
     let size = format!("{width}x{height}");
     let mut args = vec![
-        "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", &size, "-r", "24", "-i", "-",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        sampling.pix_fmt,
+        "-s",
+        &size,
+        "-r",
+        "24",
+        "-i",
+        "-",
     ];
     args.extend_from_slice(encoder);
     args.extend([
         "-pix_fmt",
-        "yuv420p",
+        sampling.pix_fmt,
         "-colorspace",
         matrix.tags[0],
         "-color_primaries",
@@ -438,7 +498,7 @@ fn generated_patch_clip(
     args.push(&output);
     run_ffmpeg(
         &args,
-        Some(&patch_frames(width, height, matrix, full_range)),
+        Some(&patch_frames(width, height, matrix, full_range, sampling)),
     )
     .then_some(path.clone())
 }
@@ -457,16 +517,32 @@ fn decoded_colours_match_software_inside_patches() {
         return;
     }
     let directory = tempfile::tempdir().expect("temp dir");
-    for encoder in ENCODERS {
+    let [h264, hevc, av1] = ENCODERS;
+    // HEVC Main 10 is what iPhones record.
+    for (encoder, sampling) in [
+        (h264, &YUV420),
+        (hevc, &YUV420),
+        (av1, &YUV420),
+        (hevc, &YUV420P10),
+        (hevc, &YUV422P10),
+        (hevc, &YUV444),
+        (hevc, &YUV444P10),
+        (av1, &YUV420P10),
+    ] {
         for (matrix, full_range) in [
             (&BT601, false),
             (&BT709, false),
             (&BT709, true),
             (&BT2020, false),
         ] {
-            let Some(clip) =
-                generated_patch_clip(directory.path(), encoder, (642, 362), matrix, full_range)
-            else {
+            let Some(clip) = generated_patch_clip(
+                directory.path(),
+                encoder,
+                sampling,
+                (642, 362),
+                matrix,
+                full_range,
+            ) else {
                 break;
             };
             check_patch_clip(&clip);
@@ -756,6 +832,57 @@ fn a_frame_the_renderer_cannot_import_moves_its_source_to_the_cpu() {
         resolver.frame(5),
         Ok(MediaFrame::CpuRgba(_) | MediaFrame::Yuv(_))
     ));
+}
+
+/// H.264 High 10, a profile Vulkan Video has no H.264 profile for, so FFmpeg's setup of the first
+/// frame's decode fails on every device.
+#[test]
+fn a_profile_the_device_cannot_decode_moves_its_source_to_the_cpu() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let clip = directory.path().join("h264_high10.mp4");
+    let source = clip.to_string_lossy();
+    if !run_ffmpeg(
+        &[
+            &["-f", "lavfi", "-i", "testsrc2=s=642x362:r=30:d=2"][..],
+            ENCODERS[0],
+            &["-pix_fmt", "yuv420p10le", &source],
+        ]
+        .concat(),
+        None,
+    ) {
+        return;
+    }
+    let Some((mut hardware_renderer, store)) = hardware() else {
+        return;
+    };
+    let resolver = store.resolver(&source);
+    match resolver.frame(0) {
+        Ok(MediaFrame::GpuVideo(_)) => {
+            eprintln!("this device decodes H.264 High 10; skipping");
+            return;
+        }
+        Ok(_) => {}
+        Err(error) => panic!("{source} should fall back to the CPU: {error}"),
+    }
+    let (mut software_renderer, software_store) = software();
+    let nodes = json!([media(1, &source)]);
+    let scene = composition(&store, nodes.clone(), &[&source]);
+    let software_scene = composition(&software_store, nodes, &[&source]);
+    for frame in [0, 1, 2, 40, 3] {
+        let fallback = render(&mut hardware_renderer, &scene, frame, &store);
+        let reference = render(
+            &mut software_renderer,
+            &software_scene,
+            frame,
+            &software_store,
+        );
+        assert_eq!(fallback, reference, "frame {frame}");
+    }
+    assert!(matches!(
+        resolver.frame(5),
+        Ok(MediaFrame::CpuRgba(_) | MediaFrame::Yuv(_))
+    ));
+    println!("{source}: fell back to the CPU and matches software");
 }
 
 /// Binding resolves both frames before either is imported, so the first failed import finds another
