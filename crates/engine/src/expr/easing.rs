@@ -1,12 +1,12 @@
 //! Easing curves, cubic Béziers and springs. All are pure functions of their inputs.
 
-use super::spec::Easing;
+use super::spec::NamedEasing;
 
 const BACK_C1: f64 = 1.70158;
 const BACK_C2: f64 = BACK_C1 * 1.525;
 const BACK_C3: f64 = BACK_C1 + 1.0;
 
-impl Easing {
+impl NamedEasing {
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|easing| easing.name() == name)
     }
@@ -18,6 +18,8 @@ impl Easing {
         }
         match self {
             Self::Linear => t,
+            Self::Hold if t < 1.0 => 0.0,
+            Self::Hold => 1.0,
             Self::InQuad => t * t,
             Self::OutQuad => 1.0 - (1.0 - t).powi(2),
             Self::InOutQuad if t < 0.5 => 2.0 * t * t,
@@ -38,6 +40,38 @@ impl Easing {
             Self::InOutBack => {
                 ((2.0 * t - 2.0).powi(2) * ((BACK_C2 + 1.0) * (2.0 * t - 2.0) + BACK_C2) + 2.0)
                     / 2.0
+            }
+        }
+    }
+}
+
+/// The value an expression's `Easing` argument takes: a named curve or a cubic Bézier.
+#[derive(Debug, Clone, Copy, PartialEq, lumen_macros::StructuralHash)]
+pub enum Easing {
+    Named(NamedEasing),
+    /// CSS `cubic-bezier(x1, y1, x2, y2)`, with both x components in `0..=1`.
+    CubicBezier([f64; 4]),
+}
+
+impl Easing {
+    pub const LINEAR: Self = Self::Named(NamedEasing::Linear);
+
+    /// Maps 0 to 0 and 1 to 1 exactly, like every named easing.
+    pub fn apply(self, t: f64) -> f64 {
+        match self {
+            Self::Named(easing) => easing.apply(t),
+            Self::CubicBezier(_) if t == 0.0 || t == 1.0 => t,
+            Self::CubicBezier([x1, y1, x2, y2]) => cubic_bezier(x1, y1, x2, y2, t),
+        }
+    }
+}
+
+impl std::fmt::Display for Easing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Named(easing) => write!(f, "'{}'", easing.name()),
+            Self::CubicBezier([x1, y1, x2, y2]) => {
+                write!(f, "cubic_bezier(vec2({x1}, {y1}), vec2({x2}, {y2}))")
             }
         }
     }
@@ -123,7 +157,10 @@ mod tests {
 
     #[test]
     fn every_easing_starts_at_zero_and_ends_at_one() {
-        for easing in Easing::ALL {
+        for easing in NamedEasing::ALL
+            .into_iter()
+            .filter(|&e| e != NamedEasing::Hold)
+        {
             assert_eq!(easing.apply(0.0), 0.0, "{}", easing.name());
             assert_eq!(easing.apply(1.0), 1.0, "{}", easing.name());
             let near = |t: f64| (easing.apply(t) - t).abs();
@@ -138,15 +175,15 @@ mod tests {
     #[test]
     fn in_out_easings_are_symmetric_and_back_overshoots() {
         for easing in [
-            Easing::InOutQuad,
-            Easing::InOutCubic,
-            Easing::InOutExpo,
-            Easing::InOutBack,
+            NamedEasing::InOutQuad,
+            NamedEasing::InOutCubic,
+            NamedEasing::InOutExpo,
+            NamedEasing::InOutBack,
         ] {
             assert!((easing.apply(0.5) - 0.5).abs() < 1e-12, "{}", easing.name());
         }
-        assert!(Easing::InBack.apply(0.3) < 0.0);
-        assert!(Easing::OutBack.apply(0.7) > 1.0);
+        assert!(NamedEasing::InBack.apply(0.3) < 0.0);
+        assert!(NamedEasing::OutBack.apply(0.7) > 1.0);
     }
 
     #[test]

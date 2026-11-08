@@ -472,7 +472,7 @@ fn prop_declaration_json(kind: &str, default: Value) -> Value {
 }
 
 fn expressions_json() -> Value {
-    use lumen_engine::expr::{BUILTINS, Easing, FORMS, GLOBALS, reserved_names};
+    use lumen_engine::expr::{BUILTINS, FORMS, GLOBALS, NamedEasing, reserved_names};
     let builtins = BUILTINS
         .iter()
         .map(|spec| {
@@ -495,7 +495,7 @@ fn expressions_json() -> Value {
         .iter()
         .map(|global| json!({ "name": global.name, "doc": global.doc }))
         .collect::<Vec<_>>();
-    let easings = Easing::ALL.map(Easing::name);
+    let easings = NamedEasing::ALL.map(NamedEasing::name);
     let forms = FORMS
         .iter()
         .map(|form| json!({ "name": form.name, "signature": form.signature, "doc": form.doc }))

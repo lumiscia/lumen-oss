@@ -311,6 +311,23 @@ mod tests {
     }
 
     #[test]
+    fn functions_take_and_return_easings() {
+        let _scope = FunctionScope::enter(&definitions(&[
+            ("snappy()", "cubic_bezier(vec2(0, 0), vec2(1, 1))"),
+            ("fade(e)", "tween(0, 10, 0, 10, e)"),
+        ]))
+        .unwrap();
+        for source in ["fade(snappy())", "fade('linear')"] {
+            let expression = Expression::parse(source).unwrap();
+            assert_eq!(
+                at_frame(&expression, 5),
+                ExpressionValue::Number(5.0),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
     fn functions_only_exist_inside_their_scope() {
         {
             let _scope = FunctionScope::enter(&definitions(&[("double(x)", "x * 2")])).unwrap();
@@ -337,8 +354,8 @@ mod tests {
                 "functions.f (`x + y`): unknown variable `y`",
             ),
             (
-                &[("f(e)", "tween(0, 1, 0, 10, e)")],
-                "must be a quoted easing name",
+                &[("f()", "tween(0, 1, 0, 10, 2)")],
+                "`ease` must be an easing",
             ),
             (&[("f(x", "x")], "invalid function signature `f(x`"),
             (&[("f(x,)", "x")], "invalid function signature"),

@@ -434,31 +434,78 @@ export const expressionBuiltins = [
   {
     "args": [
       {
-        "kind": "number",
-        "name": "x1"
-      },
-      {
-        "kind": "number",
-        "name": "y1"
-      },
-      {
-        "kind": "number",
-        "name": "x2"
-      },
-      {
-        "kind": "number",
-        "name": "y2"
+        "kind": "easing",
+        "name": "easing"
       },
       {
         "kind": "number",
         "name": "t"
       }
     ],
-    "doc": "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.",
-    "maxArgs": 5,
-    "minArgs": 5,
-    "name": "cubic_bezier",
+    "doc": "Applies an easing to progress `t`, e.g. `ease('out_expo', progress(0, 18))`.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "ease",
     "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "vec2",
+        "name": "out"
+      },
+      {
+        "kind": "vec2",
+        "name": "in"
+      }
+    ],
+    "doc": "The easing CSS writes `cubic-bezier(out.x, out.y, in.x, in.y)`. Both x components must be in `0..=1`.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "cubic_bezier",
+    "returns": "easing"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "at"
+      },
+      {
+        "kind": "any",
+        "name": "value"
+      },
+      {
+        "kind": "easing",
+        "name": "ease"
+      }
+    ],
+    "doc": "A keyframe for `keyframes`: `value` at `at`, a number, vec2 or colour. `ease` is how the curve leaves this key toward the next.",
+    "maxArgs": 3,
+    "minArgs": 2,
+    "name": "key",
+    "returns": "key"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      },
+      {
+        "kind": "easing",
+        "name": "ease"
+      },
+      {
+        "kind": "key",
+        "name": "keys"
+      }
+    ],
+    "doc": "The value of keys ordered by `at` at time `t`, usually `frame`. `ease` may be left out; it is the easing of keys without one and defaults to `'linear'`. Before the first key and after the last, the value holds. Keys at the same `at` jump.",
+    "maxArgs": null,
+    "minArgs": 2,
+    "name": "keyframes",
+    "returns": "any"
   },
   {
     "args": [
@@ -689,6 +736,7 @@ export type ExpressionBuiltinName = (typeof expressionBuiltins)[number]["name"];
 
 export const easingNames = [
   "linear",
+  "hold",
   "in_quad",
   "out_quad",
   "in_out_quad",
@@ -805,7 +853,10 @@ export const expressionReservedNames = [
   "rgba",
   "progress",
   "tween",
+  "ease",
   "cubic_bezier",
+  "key",
+  "keyframes",
   "prop",
   "noise",
   "random",

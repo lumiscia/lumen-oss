@@ -8,6 +8,8 @@ pub enum ValueKind {
     Color,
     String,
     Easing,
+    Key,
+    /// Any value but an easing or a key.
     Any,
 }
 
@@ -19,6 +21,7 @@ impl ValueKind {
             Self::Color => "color",
             Self::String => "string",
             Self::Easing => "easing",
+            Self::Key => "key",
             Self::Any => "any",
         }
     }
@@ -56,8 +59,9 @@ impl BuiltinSpec {
     }
 }
 
-/// Declares `BuiltinFn`, `BUILTINS` and `Easing` together so none can drift from the others. Each
-/// easing is a builtin of the same name, and `'linear'` is an easing name with no builtin.
+/// Declares `BuiltinFn`, `BUILTINS` and `NamedEasing` together so none can drift from the others.
+/// Each easing is a builtin of the same name, and `'linear'` and `'hold'` are easing names with no
+/// builtin.
 macro_rules! builtins {
     (
         functions {$(
@@ -72,9 +76,10 @@ macro_rules! builtins {
             $($easing,)*
         }
 
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum Easing {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum NamedEasing {
             Linear,
+            Hold,
             $($easing,)*
         }
 
@@ -99,13 +104,14 @@ macro_rules! builtins {
             },)*
         ];
 
-        impl Easing {
-            pub const ALL: [Self; 1 + [$($easing_name),*].len()] =
-                [Self::Linear, $(Self::$easing),*];
+        impl NamedEasing {
+            pub const ALL: [Self; 2 + [$($easing_name),*].len()] =
+                [Self::Linear, Self::Hold, $(Self::$easing),*];
 
             pub const fn name(self) -> &'static str {
                 match self {
                     Self::Linear => "linear",
+                    Self::Hold => "hold",
                     $(Self::$easing => $easing_name,)*
                 }
             }
@@ -167,9 +173,14 @@ builtins! {
     Tween "tween" (4, Some(5))
         [from: Any, to: Any, start: Number, duration: Number, ease: Easing] -> Any,
         "Eases from `from` to `to` over `duration` frames from frame `start`. `ease` defaults to `'linear'`.";
-    CubicBezier "cubic_bezier" (5, Some(5))
-        [x1: Number, y1: Number, x2: Number, y2: Number, t: Number] -> Number,
-        "CSS `cubic-bezier(x1, y1, x2, y2)` at progress `t`.";
+    Ease "ease" (2, Some(2)) [easing: Easing, t: Number] -> Number,
+        "Applies an easing to progress `t`, e.g. `ease('out_expo', progress(0, 18))`.";
+    CubicBezier "cubic_bezier" (2, Some(2)) [out: Vec2, in: Vec2] -> Easing,
+        "The easing CSS writes `cubic-bezier(out.x, out.y, in.x, in.y)`. Both x components must be in `0..=1`.";
+    Key "key" (2, Some(3)) [at: Number, value: Any, ease: Easing] -> Key,
+        "A keyframe for `keyframes`: `value` at `at`, a number, vec2 or colour. `ease` is how the curve leaves this key toward the next.";
+    Keyframes "keyframes" (2, None) [t: Number, ease: Easing, keys: Key] -> Any,
+        "The value of keys ordered by `at` at time `t`, usually `frame`. `ease` may be left out; it is the easing of keys without one and defaults to `'linear'`. Before the first key and after the last, the value holds. Keys at the same `at` jump.";
     Prop "prop" (1, Some(1)) [name: String] -> Any,
         "The value of a composition template's prop, e.g. `prop('title')`. Only inside a template.";
     Noise "noise" (2, Some(2)) [seed: Number, x: Number] -> Number,

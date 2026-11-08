@@ -12,9 +12,26 @@ import {
 import { quote } from "./quote.js";
 
 declare const valueType: unique symbol;
+declare const easingType: unique symbol;
+declare const keyType: unique symbol;
 
-/** A type an expression can evaluate to. */
-export type Value = number | Vec2 | Color | string;
+/** A type an expression can evaluate to. Params take all but `Easing` and `Key`. */
+export type Value = number | Vec2 | Color | string | Easing | Key;
+
+/** What `cubicBezier` evaluates to. `ease`, `tween`, `key` and `keyframes` take it; params don't. */
+export interface Easing {
+  readonly [easingType]: true;
+}
+
+/** An easing name such as `ease.outExpo`, or an easing such as `cubicBezier(..)`. */
+export type EasingArg = EasingName | Expr<Easing> | Expr<string>;
+
+export type KeyValue = number | Vec2 | Color;
+
+/** What `key` evaluates to: a keyframe holding a `T`. Only `keyframes` takes it. */
+export interface Key<T extends KeyValue = KeyValue> {
+  readonly [keyType]: T;
+}
 
 export type Num = number | Expr<number>;
 
@@ -140,8 +157,10 @@ type KindArg<K> = K extends "number"
       : K extends "string"
         ? Arg<string>
         : K extends "easing"
-          ? EasingName
-          : AnyArg;
+          ? EasingArg
+          : K extends "key"
+            ? Expr<Key>
+            : AnyArg;
 
 type KindValue<K> = K extends "number"
   ? number
@@ -151,7 +170,11 @@ type KindValue<K> = K extends "number"
       ? Color
       : K extends "string"
         ? string
-        : Value;
+        : K extends "easing"
+          ? Easing
+          : K extends "key"
+            ? Key
+            : Value;
 
 /** Skipped arguments must be `undefined` through to the end, so an interior hole is a type error. */
 type SkippedArgs<A> = A extends readonly [SpecArg, ...infer Tail]
@@ -231,9 +254,23 @@ export interface Interpolate {
 }
 
 export interface Tween {
-  (from: Num, to: Num, start: Num, duration: Num, ease?: EasingName): Expr<number>;
-  (from: Arg<Vec2>, to: Arg<Vec2>, start: Num, duration: Num, ease?: EasingName): Expr<Vec2>;
-  (from: Arg<Color>, to: Arg<Color>, start: Num, duration: Num, ease?: EasingName): Expr<Color>;
+  (from: Num, to: Num, start: Num, duration: Num, ease?: EasingArg): Expr<number>;
+  (from: Arg<Vec2>, to: Arg<Vec2>, start: Num, duration: Num, ease?: EasingArg): Expr<Vec2>;
+  (from: Arg<Color>, to: Arg<Color>, start: Num, duration: Num, ease?: EasingArg): Expr<Color>;
+}
+
+export interface MakeKey {
+  (at: Num, value: Num, ease?: EasingArg): Expr<Key<number>>;
+  (at: Num, value: Arg<Vec2>, ease?: EasingArg): Expr<Key<Vec2>>;
+  (at: Num, value: Arg<Color>, ease?: EasingArg): Expr<Key<Color>>;
+}
+
+type Keys<T extends KeyValue> = readonly [Expr<Key<T>>, ...Expr<Key<T>>[]];
+
+/** Keys without an easing of their own use `ease`, which defaults to `'linear'`. */
+export interface Keyframes {
+  <T extends KeyValue>(t: Num, ...keys: Keys<T>): Expr<T>;
+  <T extends KeyValue>(t: Num, ease: EasingArg, ...keys: Keys<T>): Expr<T>;
 }
 
 export const {
@@ -276,9 +313,12 @@ export const {
   uppercase,
   vec2,
 } = builtins;
-// `from` and `to` share a type, which the table can only describe as `any`.
+// `from` and `to`, and the values of keys, share a type, which the table can only describe as
+// `any`. It also can't say that the `ease` of `keyframes` is optional.
 export const lerp = builtins.lerp as Interpolate;
 export const tween = builtins.tween as Tween;
+export const key = builtins.key as MakeKey;
+export const keyframes = builtins.keyframes as Keyframes;
 
 /**
  * `glyph`, `word`, `line` and `span` index the glyph a text node is drawing, and the counts
@@ -302,10 +342,16 @@ export const {
   expressionGlobals.map((global) => [camelCase(global.name), new Expr(global.name)]),
 ) as { readonly [N in ExpressionGlobalName as CamelCase<N>]: Expr<number> };
 
-/** Easing names for `tween`, such as `ease.outExpo` for `'out_expo'`. */
-export const ease = Object.fromEntries(easingNames.map((name) => [camelCase(name), name])) as {
-  readonly [N in EasingName as CamelCase<N>]: N;
-};
+/**
+ * `ease(easing, t)` applies an easing to progress `t`. Its properties are the easing names, such
+ * as `ease.outExpo` for `'out_expo'`.
+ */
+export const ease = Object.assign(
+  builtins.ease,
+  Object.fromEntries(easingNames.map((name) => [camelCase(name), name])) as {
+    readonly [N in EasingName as CamelCase<N>]: N;
+  },
+);
 
 /** `seconds` as a `1.5s` literal, which the evaluator converts to frames. */
 export function sec(seconds: number): Expr<number> {
@@ -399,7 +445,7 @@ export interface Move<T extends number | Vec2> {
   readonly by: Arg<T>;
   readonly start: Num;
   readonly duration: Num;
-  readonly ease?: EasingName;
+  readonly ease?: EasingArg;
 }
 
 /** `base` plus `by * tween(0, 1, ..)` per move, so moves can overlap. */

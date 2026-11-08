@@ -8,7 +8,7 @@ use crate::{
     expr::{
         ExpressionContext, GlyphScope,
         ast::{BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
-        builtins::{evaluate_builtin, measure_node},
+        builtins::{evaluate_builtin, measure_node, unusable_result},
     },
     node::{NodeId, PropertyEval, PropertyRead},
 };
@@ -16,7 +16,11 @@ use crate::{
 impl Expression {
     pub fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
         let _evaluation = EvaluationGuard::enter(self.depth)?;
-        self.plan.evaluate(ctx)
+        let value = self.plan.evaluate(ctx)?;
+        match unusable_result(value.kind()) {
+            Some(details) => Err(LumenError::evaluate(details)),
+            None => Ok(value),
+        }
     }
 }
 
@@ -119,6 +123,9 @@ impl Literal {
             ExpressionValue::String(text) => (2, [0; 4], text),
             ExpressionValue::Vec2((x, y)) => (3, [x.to_bits(), y.to_bits(), 0, 0], ""),
             ExpressionValue::Color(color) => (4, color.map(f64::to_bits), ""),
+            ExpressionValue::Easing(_) | ExpressionValue::Key(_) => {
+                unreachable!("the parser makes no easing or key literals")
+            }
         }
     }
 }
@@ -648,7 +655,9 @@ mod tests {
     fn spring_and_cubic_bezier_evaluate() {
         assert_eq!(number_at("spring((frame - 12) / fps)", 6), 0.0);
         assert!((number_at("spring((frame - 12) / fps, 170, 26)", 60) - 1.0).abs() < 1e-3);
-        assert!((number_at("cubic_bezier(0, 0, 1, 1, 0.25)", 0) - 0.25).abs() < 1e-6);
+        assert!(
+            (number_at("ease(cubic_bezier(vec2(0, 0), vec2(1, 1)), 0.25)", 0) - 0.25).abs() < 1e-6
+        );
         let error = Expression::parse("spring(1, 0 - 1)")
             .unwrap()
             .evaluate(&test_context())
@@ -685,7 +694,7 @@ mod tests {
             ("vec2(1)", "`vec2`: expects 2 arguments"),
             ("vec2(1, 2, 3)", "`vec2`: expects 2 arguments"),
             ("tween(0, 1, 0, 10, 'bounce')", "unknown easing `bounce`"),
-            ("tween(0, 1, 0, 10, frame)", "must be a quoted easing name"),
+            ("tween(0, 1, 0, 10, frame)", "`ease` must be an easing"),
             ("tween(0, 1, 0)", "expects 4 to 5 arguments, got 3"),
             ("spring(1, 0)", "stiffness must be greater than 0"),
             ("spring(1, 170, -0.5 * 2)", ""),
@@ -697,6 +706,196 @@ mod tests {
                 Ok(_) if expected.is_empty() => {}
                 other => panic!("{source}: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn keyframes_hold_outside_their_keys_and_interpolate_between() {
+        let track = "keyframes(frame, key(10, 0), key(20, 100), key(40, 50))";
+        for (frame, expected) in [
+            (0, 0.0),
+            (10, 0.0),
+            (15, 50.0),
+            (20, 100.0),
+            (30, 75.0),
+            (40, 50.0),
+            (99, 50.0),
+        ] {
+            assert_eq!(number_at(track, frame), expected, "frame {frame}");
+        }
+        assert_eq!(number_at("keyframes(frame, key(5, 7))", 0), 7.0);
+        assert_eq!(number_at("keyframes(frame, key(5, 7))", 9), 7.0);
+    }
+
+    #[test]
+    fn keys_ease_by_their_own_easing_or_the_default() {
+        let track = "keyframes(frame, 'in_quad', key(0, 0), key(10, 100, 'linear'), key(20, 200))";
+        assert_eq!(number_at(track, 5), 25.0);
+        assert_eq!(number_at(track, 15), 150.0);
+        assert_eq!(
+            number_at("keyframes(frame, key(0, 0), key(10, 100))", 5),
+            50.0
+        );
+
+        let hold = "keyframes(frame, key(0, 0, 'hold'), key(10, 100))";
+        assert_eq!(number_at(hold, 9), 0.0);
+        assert_eq!(number_at(hold, 10), 100.0);
+        assert_eq!(number_at("tween(0, 10, 0, 10, 'hold')", 9), 0.0);
+        assert_eq!(number_at("tween(0, 10, 0, 10, 'hold')", 10), 10.0);
+    }
+
+    #[test]
+    fn cubic_bezier_is_the_css_curve() {
+        let close = |source: &str, expected: f64| {
+            let value = number_at(source, 5);
+            assert!((value - expected).abs() < 1e-3, "{source}: {value}");
+        };
+        // CSS `ease` at x = 0.5.
+        let css_ease = "cubic_bezier(vec2(0.25, 0.1), vec2(0.25, 1))";
+        close(&format!("ease({css_ease}, 0.5)"), 0.8024);
+        close(&format!("tween(0, 1, 0, 10, {css_ease})"), 0.8024);
+        close(
+            &format!("keyframes(frame, key(0, 0, {css_ease}), key(10, 1))"),
+            0.8024,
+        );
+        close("ease(cubic_bezier(vec2(0, 0), vec2(1, 1)), 0.25)", 0.25);
+        assert_eq!(
+            number_at("ease(cubic_bezier(vec2(0.42, 0), vec2(0.58, 1)), 1)", 0),
+            1.0
+        );
+        assert_eq!(
+            number_at("ease('out_expo', 0.5)", 0),
+            number_at("out_expo(0.5)", 0)
+        );
+    }
+
+    #[test]
+    fn vec2_and_colour_keys_interpolate_like_lerp() {
+        assert_eq!(
+            evaluate(
+                "keyframes(frame, key(0, vec2(0, 10)), key(10, vec2(10, 30)))",
+                5
+            )
+            .unwrap(),
+            ExpressionValue::Vec2((5.0, 20.0))
+        );
+        let colour = evaluate("keyframes(frame, key(0, #ff000000), key(10, #0000ff))", 5);
+        assert_eq!(
+            colour.unwrap(),
+            ExpressionValue::Color([0.0, 0.0, 1.0, 0.5])
+        );
+        assert_eq!(
+            evaluate("keyframes(frame, key(0, #ff000000), key(10, #0000ff))", 5).unwrap(),
+            evaluate("lerp(#ff000000, #0000ff, 0.5)", 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn keys_at_the_same_time_jump() {
+        let track = "keyframes(frame, key(0, 0), key(10, 10), key(10, 50), key(20, 60))";
+        assert_eq!(number_at(track, 9), 9.0);
+        assert_eq!(number_at(track, 10), 50.0);
+        assert_eq!(number_at(track, 15), 55.0);
+    }
+
+    #[test]
+    fn boolean_keys_are_numbers_everywhere_on_the_track() {
+        let track = "keyframes(frame, key(10, false), key(20, true))";
+        for (frame, expected) in [(0, 0.0), (15, 0.5), (20, 1.0)] {
+            assert_eq!(
+                evaluate(track, frame).unwrap(),
+                ExpressionValue::Number(expected)
+            );
+        }
+        // Frames and seconds aren't ordered until `fps` is known.
+        assert!(Expression::parse("keyframes(frame, key(1s, 0), key(20, 1))").is_ok());
+    }
+
+    #[test]
+    fn rejects_bad_easings_and_keys_at_parse_time() {
+        for (source, expected) in [
+            (
+                "cubic_bezier(0.4, 0, 0.2, 1, 0.5)",
+                "`ease(cubic_bezier(vec2(x1, y1), vec2(x2, y2)), t)`",
+            ),
+            (
+                "keyframes(frame, 'bounce', key(0, 0))",
+                "unknown easing `bounce`",
+            ),
+            (
+                "ease(cubic_bezier(vec2(1.2, 0), vec2(0, 1)), 0.5)",
+                "must be in 0..=1",
+            ),
+            (
+                "ease(cubic_bezier(vec2(0, 0), vec2(-0.1, 1)), 0.5)",
+                "must be in 0..=1",
+            ),
+            (
+                "keyframes(frame, key(10, 0), key(5, 1))",
+                "a key at 5 follows one at 10",
+            ),
+            (
+                "keyframes(frame, key(2s, 0), key(1.5s, 1))",
+                "a key at 1.5s follows one at 2s",
+            ),
+            (
+                "keyframes(frame, key(-1s, 0), key(-2s, 1))",
+                "a key at -2s follows one at -1s",
+            ),
+            (
+                "keyframes(frame, key(-100ms, 0), key(-200ms, 1))",
+                "a key at -0.2s follows one at -0.1s",
+            ),
+            (
+                "keyframes(frame, key(0, 0), key(10, vec2(1, 1)))",
+                "same kind of value, got number and vec2",
+            ),
+            ("keyframes(frame, 'linear')", "expects at least one key"),
+            (
+                "key(0, 'a')",
+                "`value` must be a number, vec2 or colour, got string",
+            ),
+            (
+                "abs(cubic_bezier(vec2(0, 0), vec2(1, 1)))",
+                "`value` does not take an easing",
+            ),
+            (
+                "cubic_bezier(vec2(0.4, 0), vec2(0.2, 1))",
+                "the expression is an easing, which no param takes",
+            ),
+            ("key(0, 1)", "the expression is a key, which no param takes"),
+        ] {
+            match Expression::parse(source) {
+                Err(ExpressionError::Parse { details, .. }) => {
+                    assert!(details.contains(expected), "{source}: {details}")
+                }
+                other => panic!("{source}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn checks_easings_and_keys_it_can_only_see_when_evaluating() {
+        for (source, expected) in [
+            (
+                "if(frame > 0, cubic_bezier(vec2(0, 0), vec2(1, 1)), 'linear')",
+                "the expression is an easing, which no param takes",
+            ),
+            (
+                "ease(if(frame > 0, 'bounce', 'linear'), 0.5)",
+                "unknown easing `bounce`",
+            ),
+            (
+                "ease(cubic_bezier(vec2(frame, 0), vec2(0, 1)), 0.5)",
+                "must be in 0..=1",
+            ),
+            (
+                "keyframes(frame, key(frame, 0), key(5, 1))",
+                "a key at 5 follows one at 48",
+            ),
+        ] {
+            let error = evaluate(source, 48).unwrap_err().to_string();
+            assert!(error.contains(expected), "{source}: {error}");
         }
     }
 

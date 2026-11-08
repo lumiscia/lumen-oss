@@ -2,6 +2,8 @@ use std::{fmt, sync::Arc};
 
 use crate::node::NodeId;
 
+pub use super::easing::Easing;
+use super::spec::ValueKind;
 pub use super::spec::{BuiltinFn, GlobalVar};
 
 #[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
@@ -12,6 +14,19 @@ pub enum ExpressionValue {
     Vec2((f64, f64)),
     /// Straight-alpha RGBA with components in `0..=1`.
     Color([f64; 4]),
+    /// Only builtins take easings and keys; no param does.
+    Easing(Easing),
+    Key(Box<Key>),
+}
+
+/// A keyframe made by `key(at, value, ease?)`.
+#[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
+pub struct Key {
+    pub at: f64,
+    /// A number, vec2 or colour.
+    pub value: ExpressionValue,
+    /// How the curve leaves this key, or `None` for the `keyframes` default.
+    pub ease: Option<Easing>,
 }
 
 /// Parses `rrggbb` or `rrggbbaa` hex digits to RGBA, with alpha opaque when it is absent.
@@ -38,6 +53,20 @@ impl ExpressionValue {
             Self::String(_) => "string",
             Self::Vec2(_) => "vec2",
             Self::Color(_) => "color",
+            Self::Easing(_) => "easing",
+            Self::Key(_) => "key",
+        }
+    }
+
+    /// The kind of builtin argument this value is, where booleans count as numbers.
+    pub fn kind(&self) -> ValueKind {
+        match self {
+            Self::Number(_) | Self::Boolean(_) => ValueKind::Number,
+            Self::String(_) => ValueKind::String,
+            Self::Vec2(_) => ValueKind::Vec2,
+            Self::Color(_) => ValueKind::Color,
+            Self::Easing(_) => ValueKind::Easing,
+            Self::Key(_) => ValueKind::Key,
         }
     }
 
@@ -45,7 +74,9 @@ impl ExpressionValue {
         match self {
             Self::Number(n) => Some(*n),
             Self::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
-            Self::String(_) | Self::Vec2(_) | Self::Color(_) => None,
+            Self::String(_) | Self::Vec2(_) | Self::Color(_) | Self::Easing(_) | Self::Key(_) => {
+                None
+            }
         }
     }
 
@@ -56,6 +87,7 @@ impl ExpressionValue {
             Self::String(s) => !s.is_empty(),
             Self::Vec2((x, y)) => is_truthy(*x) || is_truthy(*y),
             Self::Color(color) => color.iter().copied().any(is_truthy),
+            Self::Easing(_) | Self::Key(_) => true,
         }
     }
 
@@ -69,6 +101,11 @@ impl ExpressionValue {
                 let [r, g, b, a] = self.as_color_u8().expect("colour value");
                 format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
             }
+            Self::Easing(easing) => easing.to_string(),
+            Self::Key(key) => match key.ease {
+                Some(ease) => format!("key({}, {}, {ease})", key.at, key.value.as_string()),
+                None => format!("key({}, {})", key.at, key.value.as_string()),
+            },
         }
     }
 

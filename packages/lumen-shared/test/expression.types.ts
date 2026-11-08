@@ -2,10 +2,13 @@ import type { Color, Vec2 } from "@lumiscia/lumen-types";
 
 import {
   Composition,
+  cubicBezier,
   ease,
   fn,
   frame,
   hex,
+  key,
+  keyframes,
   lerp,
   moves,
   rgb,
@@ -33,7 +36,37 @@ composition.addNode({
   type: "path",
   params: { fill_paint: color, position: point, stroke_width: number },
 });
+const bezier = cubicBezier([0.4, 0], [0.2, 1]);
+const keyed: Expr<number> = keyframes(frame, key(0, 0), key(30, 1, bezier));
+const eased: Expr<Vec2> = keyframes(frame, ease.outExpo, key(0, [0, 0]), key(30, point, "hold"));
+const curve: Expr<number> = ease(bezier, 0.5);
+const bent: Expr<number> = tween(0, 1, 0, 12, bezier);
 void [scalar, position, tint, slid, composition, spring(1), rgb(1, 2, 3)];
+void [keyed, eased, curve, bent];
+
+// @ts-expect-error every key holds the same kind of value
+keyframes(frame, key(0, 0), key(30, point));
+
+// @ts-expect-error `keyframes` needs at least one key
+keyframes(frame, ease.outExpo);
+
+// @ts-expect-error `cubicBezier` takes two vec2 handles
+cubicBezier(0.4, 0, 0.2, 1, 0.5);
+
+// @ts-expect-error an unknown easing name
+tween(0, 1, 0, 12, "bounce");
+
+new Composition().addNode({
+  type: "opacity",
+  // @ts-expect-error an easing is not a param value
+  params: { opacity: bezier },
+});
+
+new Composition().addNode({
+  type: "opacity",
+  // @ts-expect-error a key is not a param value
+  params: { opacity: key(0, 1) },
+});
 
 // @ts-expect-error numbers and colours don't combine
 number.add(color);

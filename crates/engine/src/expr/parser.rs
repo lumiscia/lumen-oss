@@ -7,9 +7,12 @@ use crate::{
             BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp,
             parse_hex_color,
         },
-        builtins::range_error,
+        builtins::{
+            handle_x_error, is_key_value, key_order_error, key_value_error, kind_error,
+            mixed_keys_error, param, range_error, unknown_easing, unusable_result,
+        },
         functions,
-        spec::{BuiltinSpec, Easing, ValueKind, builtin_for_name},
+        spec::{BuiltinSpec, NamedEasing, ValueKind, builtin_for_name},
     },
     node::NodeId,
 };
@@ -289,6 +292,11 @@ fn is_ident_continue(ch: char) -> bool {
 
 pub fn parse_expression(source: &str) -> Result<Expression, ExpressionError> {
     let ast = Parser::new(source, &[])?.parse()?;
+    if let Some(kind) = static_kind(&ast)
+        && let Some(details) = unusable_result(kind)
+    {
+        return Err(ExpressionError::Parse { details });
+    }
     Ok(Expression::new(ast, source.to_string()))
 }
 
@@ -637,12 +645,59 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Checks what can be known before evaluation: arity, easing names, literal spring ranges and
-/// measuring a node with overrides.
+/// The kind `node` evaluates to, when the parser can tell.
+fn static_kind(node: &ExprNode) -> Option<ValueKind> {
+    match node {
+        ExprNode::Literal(value) => Some(value.kind()),
+        ExprNode::Global(_) => Some(ValueKind::Number),
+        ExprNode::Builtin(builtin, _) => {
+            Some(builtin.spec().returns).filter(|kind| *kind != ValueKind::Any)
+        }
+        ExprNode::Conditional(_, when_true, when_false) => {
+            static_kind(when_true).filter(|kind| static_kind(when_false) == Some(*kind))
+        }
+        _ => None,
+    }
+}
+
+/// The number `node` is, when it is a literal or a negated literal.
+/// A key time written as a number or a time literal, with the time literal's unit, `s`. Times
+/// in different units can't be ordered before `fps` is known.
+fn literal_key_time(node: &ExprNode) -> Option<(f64, &'static str)> {
+    match node {
+        ExprNode::Binary(seconds, BinaryOp::Mul, fps)
+            if matches!(**fps, ExprNode::Global(GlobalVar::Fps)) =>
+        {
+            literal_number(seconds).map(|seconds| (seconds, "s"))
+        }
+        ExprNode::Unary(UnaryOp::Neg, value) => {
+            literal_key_time(value).map(|(time, unit)| (-time, unit))
+        }
+        _ => literal_number(node).map(|frames| (frames, "")),
+    }
+}
+
+fn literal_number(node: &ExprNode) -> Option<f64> {
+    match node {
+        ExprNode::Literal(ExpressionValue::Number(value)) => Some(*value),
+        ExprNode::Unary(UnaryOp::Neg, value) => literal_number(value).map(|value| -value),
+        _ => None,
+    }
+}
+
+/// Checks what can be known before evaluation: arity, where easings and keys go, easing names,
+/// literal ranges, the order and value kinds of keys, and measuring a node with overrides.
 fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), ExpressionError> {
     let error = |details: String| ExpressionError::Parse {
         details: format!("`{}`: {details}", spec.name),
     };
+    if spec.builtin == BuiltinFn::CubicBezier && args.len() == 5 {
+        return Err(error(
+            "`cubic_bezier(x1, y1, x2, y2, t)` is now an easing; write \
+             `ease(cubic_bezier(vec2(x1, y1), vec2(x2, y2)), t)`"
+                .to_string(),
+        ));
+    }
     if !spec.accepts_arity(args.len()) {
         return Err(error(format!(
             "expects {} arguments, got {}",
@@ -657,29 +712,80 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
             "`node(id)` does not accept override arguments".to_string(),
         ));
     }
-    for (arg, param) in args.iter().zip(spec.args) {
-        if param.kind != ValueKind::Easing {
-            continue;
-        }
-        let ExprNode::Literal(ExpressionValue::String(name)) = arg else {
-            return Err(error(format!(
-                "`{}` must be a quoted easing name such as 'out_expo'",
-                param.name
-            )));
-        };
-        if Easing::from_name(name).is_none() {
-            let names = Easing::ALL.map(Easing::name).join(", ");
-            return Err(error(format!(
-                "unknown easing `{name}`; expected one of {names}"
-            )));
-        }
-    }
+    let second = args.get(1).and_then(static_kind);
+    let second_is_key = second == Some(ValueKind::Key);
     for (index, arg) in args.iter().enumerate() {
+        if let ExprNode::Literal(ExpressionValue::String(name)) = arg
+            && param(spec, index, second_is_key).is_some_and(|p| p.kind == ValueKind::Easing)
+            && NamedEasing::from_name(name).is_none()
+        {
+            return Err(error(unknown_easing(name)));
+        }
+        if let Some(kind) = static_kind(arg)
+            && let Some(details) = kind_error(spec, index, kind, second_is_key)
+        {
+            return Err(error(details));
+        }
         if let ExprNode::Literal(ExpressionValue::Number(value)) = arg
             && let Some(details) = range_error(spec.builtin, index, *value)
         {
             return Err(error(details.to_string()));
         }
+    }
+    match spec.builtin {
+        BuiltinFn::CubicBezier => {
+            for arg in args {
+                if let ExprNode::Builtin(BuiltinFn::Vec2, handle) = arg
+                    && let Some(x) = literal_number(&handle[0])
+                    && let Some(details) = handle_x_error(x)
+                {
+                    return Err(error(details.to_string()));
+                }
+            }
+        }
+        BuiltinFn::Key => {
+            if let Some(kind) = static_kind(&args[1])
+                && !is_key_value(kind)
+            {
+                return Err(error(key_value_error(kind)));
+            }
+        }
+        BuiltinFn::Keyframes => {
+            if args.len() == 2 && matches!(second, Some(ValueKind::Easing | ValueKind::String)) {
+                return Err(error("expects at least one key".to_string()));
+            }
+            // A second argument of unknown kind may be a key or the default easing.
+            let keys = &args[if second_is_key { 1 } else { 2 }..];
+            let mut first_kind = None;
+            let (mut previous_frames, mut previous_seconds) = (None, None);
+            for key in keys {
+                let ExprNode::Builtin(BuiltinFn::Key, key) = key else {
+                    continue;
+                };
+                if let Some(kind) = static_kind(&key[1]) {
+                    match first_kind {
+                        Some(first) if first != kind => {
+                            return Err(error(mixed_keys_error(first, kind)));
+                        }
+                        _ => first_kind = Some(kind),
+                    }
+                }
+                if let Some((at, unit)) = literal_key_time(&key[0]) {
+                    let previous = if unit.is_empty() {
+                        &mut previous_frames
+                    } else {
+                        &mut previous_seconds
+                    };
+                    if let Some(previous) = *previous
+                        && let Some(details) = key_order_error(previous, at, unit)
+                    {
+                        return Err(error(details));
+                    }
+                    *previous = Some(at);
+                }
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
