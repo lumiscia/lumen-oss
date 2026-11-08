@@ -76,6 +76,14 @@ pub(crate) struct PathUniforms {
     /// Canvas pixel of the output's first texel.
     pub(crate) origin: [i32; 2],
     pub(crate) _origin_pad: [i32; 2],
+    /// Lengths in `dash` that the stroke alternately draws and skips, or 0 for a solid stroke.
+    pub(crate) dash_count: u32,
+    /// Sum of the dash lengths.
+    pub(crate) dash_period: f32,
+    /// Distance into the pattern where each contour starts, within one period.
+    pub(crate) dash_offset: f32,
+    pub(crate) _dash_pad: u32,
+    pub(crate) dash: [[f32; 4]; super::dash::GPU_DASH_LENGTHS / 4],
     pub(crate) motion: GpuDrawableMotion,
 }
 
@@ -85,6 +93,8 @@ pub(crate) struct PathPoint {
     pub(crate) position: [f32; 2],
     pub(crate) contour_start: u32,
     pub(crate) flags: u32,
+    /// Fraction of its contour's length at which the point lies.
     pub(crate) offset: f32,
-    pub(crate) _pad: f32,
+    /// Length of the point's contour.
+    pub(crate) contour_length: f32,
 }

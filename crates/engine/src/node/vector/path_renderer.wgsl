@@ -19,6 +19,13 @@ struct PathUniforms {
     // Canvas pixel of the output's first texel.
     origin: vec2<i32>,
     _origin_pad: vec2<i32>,
+    // Lengths in `dash` that the stroke alternately draws and skips, or 0 for a solid stroke.
+    dash_count: u32,
+    dash_period: f32,
+    // Distance into the pattern where each contour starts, within one period.
+    dash_offset: f32,
+    _dash_pad: u32,
+    dash: array<vec4<f32>, 8>,
     motion: DrawableMotion,
 }
 
@@ -30,8 +37,9 @@ struct PathPoint {
     position: vec2<f32>,
     contour_start: u32,
     flags: u32,
+    // Fraction of its contour's length at which the point lies.
     offset: f32,
-    _pad: f32,
+    contour_length: f32,
 }
 
 struct PathPoints {
@@ -89,13 +97,16 @@ fn stroke_band_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, half_width: f3
     return select(outside, -depth, inside);
 }
 
-// The fractions of a segment between which the trimmed stroke covers it, if it does, and
-// whether the stroke ends at its end, where no following segment starts with the cap.
+// The fractions of a segment between which the trimmed stroke covers it, if it does, whether
+// the stroke ends at its end, where no following segment starts with the cap, and the distance
+// along the contour at which the segment starts and its length there.
 struct StrokeSpan {
     start: f32,
     end: f32,
     covered: bool,
     end_cap: bool,
+    distance: f32,
+    length: f32,
 }
 
 fn stroke_span(current: PathPoint, next: PathPoint, is_end: bool) -> StrokeSpan {
@@ -108,7 +119,57 @@ fn stroke_span(current: PathPoint, next: PathPoint, is_end: bool) -> StrokeSpan 
         end,
         segment_end >= params.trim_start && current.offset <= params.trim_end,
         end < 1.0 || is_end || next_is_open_end,
+        current.offset * current.contour_length,
+        max(span * current.contour_length, 0.000001),
     );
+}
+
+fn dash_length(index: u32) -> f32 {
+    return params.dash[index / 4u][index % 4u];
+}
+
+// The start and end along the contour of the dash at or before `distance`, in `xy`, and of the
+// dash after it, in `zw`.
+fn dashes_around(distance: f32) -> vec4<f32> {
+    let shifted = distance + params.dash_offset;
+    var start = distance - (shifted - floor(shifted / params.dash_period) * params.dash_period);
+    var index = 0u;
+    loop {
+        let next = start + dash_length(index) + dash_length(index + 1u);
+        if (distance < next || index + 2u >= params.dash_count) {
+            break;
+        }
+        start = next;
+        index = index + 2u;
+    }
+    let next = start + dash_length(index) + dash_length(index + 1u);
+    let following = select(index + 2u, 0u, index + 2u >= params.dash_count);
+    return vec4<f32>(start, start + dash_length(index), next, next + dash_length(following));
+}
+
+// `dash`, from `dashes_around` as fractions of the segment, clipped to the span, or an empty
+// piece, whose start is past its end, where it misses the span.
+fn dash_piece(dash: vec2<f32>, span: StrokeSpan) -> vec2<f32> {
+    let piece = clamp(dash, vec2<f32>(span.start), vec2<f32>(span.end));
+    return select(vec2<f32>(1.0, 0.0), piece, dash.y >= span.start && dash.x <= span.end);
+}
+
+// The pieces of segment `a`-`b` that the stroke draws and that can be nearest `p`, as
+// `(start, end)` fractions of the segment in `xy` and `zw`; empty ones start past their end.
+// Without dashes that is the span. With them it is the dashes either side of the point of the
+// span nearest `p` in untransformed pixels, since any other dash lies beyond one of them.
+fn stroke_pieces(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, span: StrokeSpan) -> vec4<f32> {
+    let empty = vec2<f32>(1.0, 0.0);
+    if (!span.covered) {
+        return vec4<f32>(empty, empty);
+    }
+    if (params.dash_count == 0u) {
+        return vec4<f32>(span.start, span.end, empty);
+    }
+    let ab = b - a;
+    let along = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-20), span.start, span.end);
+    let dashes = (dashes_around(span.distance + along * span.length) - span.distance) / span.length;
+    return vec4<f32>(dash_piece(dashes.xy, span), dash_piece(dashes.zw, span));
 }
 
 // Whether `flags` end an open contour, whose segment back to its start only closes the
@@ -184,43 +245,53 @@ fn path_edges(transform: DrawableTransform, p: vec2<f32>, fill_enabled: bool, st
         if (is_open_end(current.flags)) {
             continue;
         }
-        let span = stroke_span(current, next, is_end);
-        if (trimmed_stroke_enabled && span.covered) {
-            let distance = stroke_band_distance(
-                p,
-                mix(a, b, span.start),
-                mix(a, b, span.end),
-                stroke_half_width,
-                axis_scale,
-            );
-            edges.stroke = min(edges.stroke, distance);
-            stroke_reaches = true;
+        if (!trimmed_stroke_enabled) {
+            continue;
+        }
+        let pieces = stroke_pieces(p, a, b, stroke_span(current, next, is_end));
+        for (var piece_index = 0u; piece_index < 2u; piece_index = piece_index + 1u) {
+            let piece = select(pieces.xy, pieces.zw, piece_index == 1u);
+            if (piece.x <= piece.y) {
+                let distance = stroke_band_distance(
+                    p,
+                    mix(a, b, piece.x),
+                    mix(a, b, piece.y),
+                    stroke_half_width,
+                    axis_scale,
+                );
+                edges.stroke = min(edges.stroke, distance);
+                stroke_reaches = true;
+            }
         }
     }
 
     // Elliptical caps take a second pass, kept apart so their cost does not slow the first
-    // for every path, and made only where they can still change the coverage. Each segment
-    // adds the cap at its start, and is visited again for the one at its end if no segment
-    // follows there.
+    // for every path, and made only where they can still change the coverage. Each piece
+    // adds the cap at its start, and the one at its end unless the stroke goes on into the
+    // next segment there.
     if (stroke_reaches && axis_scale.x != axis_scale.y && edges.stroke > -0.5) {
         let cap = vec2<f32>(stroke_half_width) * axis_scale;
-        var k = start;
-        var at_end = false;
-        while (k < end) {
+        for (var k = start; k < end; k = k + 1u) {
             let i = path_bands.values[k];
             let current = path_points.points[i];
             let is_end = (current.flags & POINT_END) != 0u;
             let next = path_points.points[select(i + 1u, current.contour_start, is_end)];
             let a = current.position;
             let b = next.position;
+            if (is_open_end(current.flags) || !segment_reaches(p, a, b)) {
+                continue;
+            }
             let span = stroke_span(current, next, is_end);
-            let reaches = span.covered && !is_open_end(current.flags) && segment_reaches(p, a, b);
-            if (reaches) {
-                let centre = mix(a, b, select(span.start, span.end, at_end));
+            let pieces = stroke_pieces(p, a, b, span);
+            for (var cap_index = 0u; cap_index < 4u; cap_index = cap_index + 1u) {
+                let piece = select(pieces.xy, pieces.zw, cap_index >= 2u);
+                let at_end = (cap_index & 1u) == 1u;
+                if (piece.x > piece.y || (at_end && piece.y >= 1.0 && !span.end_cap)) {
+                    continue;
+                }
+                let centre = mix(a, b, select(piece.x, piece.y, at_end));
                 edges.stroke = min(edges.stroke, ellipse_distance((p - centre) * axis_scale, cap).distance);
             }
-            at_end = !at_end && reaches && span.end_cap;
-            k = k + select(1u, 0u, at_end);
         }
     }
     return edges;

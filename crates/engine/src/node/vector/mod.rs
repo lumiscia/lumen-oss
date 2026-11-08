@@ -1,3 +1,4 @@
+pub mod dash;
 pub mod drawable;
 pub mod paint;
 pub mod path;

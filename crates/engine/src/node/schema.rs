@@ -19,6 +19,7 @@ pub enum PropertyKind {
     TextHighlight = 12,
     FontFeatures = 13,
     TextStroke = 14,
+    DashPattern = 15,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

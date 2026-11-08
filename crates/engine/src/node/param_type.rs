@@ -129,6 +129,12 @@ impl NodeParamType for super::source::text_content::TextStroke {
     }
 }
 
+impl NodeParamType for super::vector::dash::DashPattern {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::DashPattern
+    }
+}
+
 // Only nested delegates may hold `Vec` fields: `#[derive(Node)]` rejects params with
 // `NodeParams::HAS_VEC_FIELDS` because the schema has no array kind.
 impl<T> NodeParamType for Vec<T> {

@@ -655,6 +655,163 @@ fn ellipse_outline(x: f64, y: f64) -> bool {
     (x / 20.0).powi(2) + (y / 10.0).powi(2) <= 1.0
 }
 
+/// The `[start, end)` columns of each run of opaque pixels in row `y`.
+fn opaque_runs(frame: &Frame, y: usize) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
+    let mut start = None;
+    for x in 0..=frame.width as usize {
+        let opaque = x < frame.width as usize && alpha_of(frame, x, y) == 255;
+        match (opaque, start) {
+            (true, None) => start = Some(x),
+            (false, Some(from)) => {
+                runs.push((from, x));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    runs
+}
+
+fn dash_rows() -> Vec<Case> {
+    // A line 2 wide whose rows 3 and 4 are opaque where a pixel centre lies within a dash, as
+    // a pixel centre half a pixel past either end of one is inside its round cap only partly.
+    let line = |dash: Value, more: Value| {
+        path(
+            (64, 8),
+            with(
+                json!({
+                    "data": "M 2 4 L 62 4", "fill_enabled": false, "stroke_enabled": true,
+                    "stroke_width": 2, "stroke_dash": dash
+                }),
+                more,
+            ),
+        )
+    };
+    let runs = |expected: Vec<(usize, usize)>| {
+        Expect::Custom(Box::new(move |frames| {
+            for y in [3, 4] {
+                assert_eq!(opaque_runs(&frames[0], y), expected, "row {y}");
+            }
+        }))
+    };
+    let stroked = |data: &str, more: Value| {
+        path(
+            (48, 48),
+            with(
+                json!({
+                    "data": data, "fill_enabled": false, "stroke_enabled": true,
+                    "stroke_width": 3, "stroke_paint": WHITE
+                }),
+                more,
+            ),
+        )
+    };
+    let corner = "M 4 4 L 30 4 L 30 30";
+    let corner_dashes = "M 4 4 L 24 4 M 26 4 L 30 4 L 30 20 M 30 22 L 30 30";
+    let corner_dash = |more: Value| with(json!({ "stroke_dash": [20, 2] }), more);
+    vec![
+        Case::new(
+            "a dashed line draws its dashes and skips its gaps",
+            line(json!([10, 6]), json!({})),
+            runs(vec![(2, 12), (18, 28), (34, 44), (50, 60)]),
+        ),
+        Case::new(
+            "an odd number of dash lengths repeats",
+            line(json!([6, 4, 2]), json!({})),
+            runs(vec![
+                (2, 8),
+                (12, 14),
+                (20, 24),
+                (26, 32),
+                (36, 38),
+                (44, 48),
+                (50, 56),
+                (60, 62),
+            ]),
+        ),
+        Case::new(
+            "an animated dash offset moves the dashes toward the start",
+            line(
+                json!([10, 6]),
+                json!({ "stroke_dash_offset": "=frame * 4" }),
+            )
+            .frames(2),
+            Expect::Custom(Box::new(|frames| {
+                let expected = [
+                    vec![(2, 12), (18, 28), (34, 44), (50, 60)],
+                    vec![(2, 8), (14, 24), (30, 40), (46, 56)],
+                ];
+                for (frame, expected) in frames.iter().zip(expected) {
+                    assert_eq!(opaque_runs(frame, 4), expected, "frame {}", frame.at);
+                }
+            })),
+        )
+        .frames([0.0, 1.0]),
+        Case::new(
+            "trimming clips dashes measured along the whole contour",
+            line(
+                json!([10, 6]),
+                json!({ "trim_start": 0.1, "trim_end": 0.75 }),
+            ),
+            runs(vec![(8, 12), (18, 28), (34, 44)]),
+        ),
+        Case::new(
+            "an empty or all-zero dash pattern strokes solidly",
+            line(json!([0, 0]), json!({})),
+            Expect::Matches(line(json!([]), json!({})).into()),
+        )
+        .tolerance(0),
+        Case::new(
+            "zero-length dashes draw round dots",
+            path(
+                (40, 16),
+                json!({
+                    "data": "M 4 8 L 36 8", "fill_enabled": false, "stroke_enabled": true,
+                    "stroke_width": 4, "stroke_dash": [0, 8]
+                }),
+            ),
+            Expect::Probes(vec![
+                (11, 7, BLACK),
+                (12, 8, BLACK),
+                (36, 8, BLACK),
+                (16, 7, CLEAR),
+                (16, 8, CLEAR),
+                (12, 5, CLEAR),
+            ]),
+        ),
+        Case::new(
+            "dashes have round caps like separate strokes",
+            stroked("M 4 24 L 44 24", json!({ "stroke_dash": [10, 6] })),
+            Expect::Matches(
+                stroked("M 4 24 L 14 24 M 20 24 L 30 24 M 36 24 L 44 24", json!({})).into(),
+            ),
+        )
+        .tolerance(2),
+        Case::new(
+            "a dash crossing a corner joins like a solid stroke",
+            stroked(corner, corner_dash(json!({}))),
+            Expect::Matches(stroked(corner_dashes, json!({})).into()),
+        )
+        .tolerance(2),
+        Case::new(
+            "a dash crossing a corner joins like a solid stroke under non-uniform scale",
+            stroked(
+                corner,
+                corner_dash(json!({ "scale": [1.5, 0.75], "rotation": 25 })),
+            ),
+            Expect::Matches(
+                stroked(
+                    corner_dashes,
+                    json!({ "scale": [1.5, 0.75], "rotation": 25 }),
+                )
+                .into(),
+            ),
+        )
+        .tolerance(2),
+    ]
+}
+
 /// A shape or path drawn at `scale` and `rotation` against its supersampled outline.
 fn outline_rows() -> Vec<Case> {
     const SIZE: usize = 256;
@@ -1253,6 +1410,11 @@ fn crop_and_resize_rows() -> Vec<Case> {
 #[test]
 fn shapes_and_paths_cover_the_pixels_they_describe() {
     check(shape_coverage());
+}
+
+#[test]
+fn dashed_strokes_draw_their_pattern_along_each_contour() {
+    check(dash_rows());
 }
 
 #[test]

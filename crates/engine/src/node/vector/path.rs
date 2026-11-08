@@ -1,3 +1,4 @@
+use super::dash::{DashPattern, GpuDash};
 use super::drawable::{
     DrawableMotion, DrawablePlacement, DrawableStyle, DrawableTransform, largest_scale, peak_scale,
 };
@@ -7,7 +8,7 @@ use crate::gpu::params;
 use crate::node::motion::Shutter;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
-const PATH_SHADER: &str = concat!(
+pub(crate) const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
     include_str!("paint/paint.wgsl"),
     include_str!("drawable.wgsl"),
@@ -41,6 +42,17 @@ pub struct PathParams {
     /// Normalized end of the visible stroke range for each contour.
     #[meta(name = "Trim end", min = 0, max = 1, step = 0.01)]
     pub trim_end: f64,
+    /// Lengths in untransformed pixels that the stroke alternately draws and skips along each
+    /// contour, starting with a dash. An odd number of lengths is repeated to make the
+    /// pattern, as in SVG. Each dash has round caps, so a dash of length 0 draws a dot. No
+    /// lengths, or only zeros, draw a solid stroke. Dashes are measured along the whole
+    /// contour, and `trim_start` and `trim_end` then clip them.
+    #[meta(name = "Stroke dash")]
+    pub stroke_dash: DashPattern,
+    /// Distance in untransformed pixels into the dash pattern at which each contour starts.
+    /// Increasing it moves the dashes toward the start of the contour.
+    #[meta(name = "Stroke dash offset", step = 0.5)]
+    pub stroke_dash_offset: f64,
 }
 
 impl Default for PathParams {
@@ -51,6 +63,8 @@ impl Default for PathParams {
             style: DrawableStyle::default(),
             trim_start: 0.0,
             trim_end: 1.0,
+            stroke_dash: DashPattern::default(),
+            stroke_dash_offset: 0.0,
         }
     }
 }
@@ -89,6 +103,14 @@ fn path_frame(
     let (x, y) = evaluated.placement.position;
     let style = &evaluated.style;
     let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
+    let dash =
+        GpuDash::new(&evaluated.stroke_dash, evaluated.stroke_dash_offset).map_err(|details| {
+            RenderError::NodeEvaluation {
+                node_id,
+                node_kind: "Path",
+                details,
+            }
+        })?;
 
     let uniforms = PathUniforms {
         fill_paint: style.fill_paint.to_gpu(),
@@ -102,6 +124,10 @@ fn path_frame(
         ),
         trim_start,
         trim_end,
+        dash_count: dash.count,
+        dash_period: dash.period,
+        dash_offset: dash.offset,
+        dash: dash.lengths,
         ..bytemuck::Zeroable::zeroed()
     };
     Ok(PathFrame::new(
@@ -417,7 +443,7 @@ fn push_path_point(
         contour_start,
         flags: 0,
         offset: 0.0,
-        _pad: 0.0,
+        contour_length: 0.0,
     });
     true
 }
@@ -468,6 +494,9 @@ fn normalize_contour_offsets(points: &mut [PathPoint]) {
             for index in start + 1..=end {
                 length += point_distance(points[index - 1].position, points[index].position);
                 points[index].offset = length / total_length;
+            }
+            for point in &mut points[start..=end] {
+                point.contour_length = total_length;
             }
         }
         start = end + 1;
@@ -746,6 +775,12 @@ mod tests {
         assert_eq!(points[2].offset, 1.0);
         assert_eq!(points[3].offset, 0.0);
         assert_eq!(points[4].offset, 0.5);
+        assert!(
+            points[..3]
+                .iter()
+                .all(|point| point.contour_length == 100.0)
+        );
+        assert!(points[3..].iter().all(|point| point.contour_length == 40.0));
     }
 
     #[test]

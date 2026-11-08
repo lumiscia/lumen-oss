@@ -12,6 +12,8 @@ use crate::node::{
     vector::{
         drawable::{DRAWABLE_SHADER, GpuDrawableMotion, GpuDrawableTransform},
         paint::GpuPaint,
+        path::PATH_SHADER,
+        renderer::{PathPoint, PathUniforms},
     },
 };
 
@@ -37,6 +39,49 @@ fn text_module() -> Module {
     ]
     .concat();
     naga::front::wgsl::parse_str(&source).expect("the text shader should parse")
+}
+
+fn path_module() -> Module {
+    naga::front::wgsl::parse_str(PATH_SHADER).expect("the path shader should parse")
+}
+
+fn path_layouts() -> Vec<Layout> {
+    vec![
+        layout!(
+            "PathUniforms",
+            PathUniforms,
+            fill_paint,
+            stroke_paint,
+            position,
+            bounds_min,
+            bounds_size,
+            stroke_width,
+            flags,
+            trim_start,
+            trim_end,
+            transform,
+            screen_bounds,
+            band_origin,
+            band_scale,
+            band_count,
+            reach,
+            origin,
+            dash_count,
+            dash_period,
+            dash_offset,
+            dash,
+            motion,
+        ),
+        layout!(
+            "PathPoint",
+            PathPoint,
+            position,
+            contour_start,
+            flags,
+            offset,
+            contour_length,
+        ),
+    ]
 }
 
 fn layouts() -> Vec<Layout> {
@@ -101,8 +146,12 @@ fn is_padding(member: &str) -> bool {
 
 #[test]
 fn shader_structs_match_their_rust_layouts() {
-    let module = text_module();
-    for (name, size, offsets) in layouts() {
+    check_layouts(&text_module(), layouts());
+    check_layouts(&path_module(), path_layouts());
+}
+
+fn check_layouts(module: &Module, layouts: Vec<Layout>) {
+    for (name, size, offsets) in layouts {
         let (members, span) = module
             .types
             .iter()

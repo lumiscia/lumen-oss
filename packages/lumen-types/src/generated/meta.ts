@@ -5,7 +5,7 @@ import type { Color, ExpressionValue, HexColor, Vec2 } from "../values.js";
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
-export type NodeParamKind = "bool" | "clip_props" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
+export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
 export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
@@ -945,6 +945,8 @@ export type Connection = {
   readonly to_node: number;
   readonly to_port: string;
 };
+/** Lengths that a stroke alternately draws and skips, starting with a dash. Each takes a literal or an expression. */
+export type DashPattern = readonly ExpressionValue<number>[];
 /** OpenType features by four-character tag. 0 turns a feature off, 1 turns it on and larger values select an alternate. */
 export type FontFeatures = Readonly<Record<string, ExpressionValue<number>>>;
 export type GradientInterpolation = "srgb" | "linear_srgb" | "linear";
@@ -1328,6 +1330,19 @@ export interface PathNode extends CompositionNodeBase<"path"> {
     readonly rotation?: ExpressionValue<number>;
     /** Scale multiplier per axis, about the anchor. */
     readonly scale?: ExpressionValue<Vec2>;
+    /**
+     * Lengths in untransformed pixels that the stroke alternately draws and skips along each
+     * contour, starting with a dash. An odd number of lengths is repeated to make the
+     * pattern, as in SVG. Each dash has round caps, so a dash of length 0 draws a dot. No
+     * lengths, or only zeros, draw a solid stroke. Dashes are measured along the whole
+     * contour, and `trim_start` and `trim_end` then clip them.
+     */
+    readonly stroke_dash?: DashPattern;
+    /**
+     * Distance in untransformed pixels into the dash pattern at which each contour starts.
+     * Increasing it moves the dashes toward the start of the contour.
+     */
+    readonly stroke_dash_offset?: ExpressionValue<number>;
     /** Enables stroke rendering. */
     readonly stroke_enabled?: ExpressionValue<boolean>;
     /** Stroke paint. Accepts a solid color or gradient. */

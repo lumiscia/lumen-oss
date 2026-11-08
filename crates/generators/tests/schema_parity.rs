@@ -363,6 +363,31 @@ fn paint_shader_uniform_and_clip_props_schemas_match_engine_parsing() {
 }
 
 #[test]
+fn dash_pattern_schema_matches_engine_parsing() {
+    let validator = schema_validator();
+    for (dash, valid) in [
+        (json!([]), true),
+        (json!([12, 6]), true),
+        (json!([0, 4.5, "=frame"]), true),
+        (json!(vec![1; 16]), true),
+        (json!(vec![1; 17]), false),
+        (json!([4, -1]), false),
+        (json!(["x"]), false),
+        (json!("=frame"), false),
+        (json!(4), false),
+    ] {
+        let composition =
+            composition_with_node(&node_schema("path"), json!({ "stroke_dash": dash }));
+        assert_eq!(validator.is_valid(&composition), valid, "{dash} schema");
+        assert_eq!(
+            lumen_engine::json::parse_value(&composition).is_ok(),
+            valid,
+            "{dash} engine"
+        );
+    }
+}
+
+#[test]
 fn compositions_schema_matches_engine_parsing() {
     let validator = schema_validator();
     let demo: Value = serde_json::from_str(include_str!("../../local/demo/clips.json")).unwrap();
