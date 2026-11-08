@@ -2342,7 +2342,11 @@
                           "color_dodge",
                           "color_burn",
                           "hard_light",
-                          "soft_light"
+                          "soft_light",
+                          "hue",
+                          "saturation",
+                          "color",
+                          "luminosity"
                         ],
                         "type": "string",
                         "x-lumen-type": "BlendMode"
@@ -2419,6 +2423,26 @@
                         "label": "Soft Light",
                         "name": "soft_light",
                         "value": 12
+                      },
+                      {
+                        "label": "Hue",
+                        "name": "hue",
+                        "value": 13
+                      },
+                      {
+                        "label": "Saturation",
+                        "name": "saturation",
+                        "value": 14
+                      },
+                      {
+                        "label": "Color",
+                        "name": "color",
+                        "value": 15
+                      },
+                      {
+                        "label": "Luminosity",
+                        "name": "luminosity",
+                        "value": 16
                       }
                     ],
                     "x-lumen-kind": "enum"
@@ -2888,7 +2912,11 @@
                           "color_dodge",
                           "color_burn",
                           "hard_light",
-                          "soft_light"
+                          "soft_light",
+                          "hue",
+                          "saturation",
+                          "color",
+                          "luminosity"
                         ],
                         "type": "string",
                         "x-lumen-type": "BlendMode"
@@ -2965,6 +2993,26 @@
                         "label": "Soft Light",
                         "name": "soft_light",
                         "value": 12
+                      },
+                      {
+                        "label": "Hue",
+                        "name": "hue",
+                        "value": 13
+                      },
+                      {
+                        "label": "Saturation",
+                        "name": "saturation",
+                        "value": 14
+                      },
+                      {
+                        "label": "Color",
+                        "name": "color",
+                        "value": 15
+                      },
+                      {
+                        "label": "Luminosity",
+                        "name": "luminosity",
+                        "value": 16
                       }
                     ],
                     "x-lumen-kind": "enum"

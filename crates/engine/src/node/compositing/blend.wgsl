@@ -1,5 +1,38 @@
 // Shared blend helpers for Merge and RasterMultiMerge. Requires the alpha chunk.
 
+fn lum(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.3, 0.59, 0.11));
+}
+
+fn clip_color(c: vec3<f32>) -> vec3<f32> {
+    let l = lum(c);
+    let n = min(c.r, min(c.g, c.b));
+    let x = max(c.r, max(c.g, c.b));
+    var out = c;
+    // A near-grey colour has nothing to rescale, and its denominator can round to zero.
+    if (n < 0.0 && l - n > 1e-6) {
+        out = l + (out - l) * l / (l - n);
+    }
+    if (x > 1.0 && x - l > 1e-6) {
+        out = l + (out - l) * (1.0 - l) / (x - l);
+    }
+    return out;
+}
+
+fn set_lum(c: vec3<f32>, l: f32) -> vec3<f32> {
+    return clip_color(c + (l - lum(c)));
+}
+
+fn sat(c: vec3<f32>) -> f32 {
+    return max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+}
+
+fn set_sat(c: vec3<f32>, s: f32) -> vec3<f32> {
+    let n = min(c.r, min(c.g, c.b));
+    let range = sat(c);
+    return select(vec3<f32>(0.0), (c - n) * (s / max(range, 1e-6)), range > 0.0);
+}
+
 fn blend_rgb(base: vec3<f32>, overlay: vec3<f32>, mode: u32) -> vec3<f32> {
     if (mode == 1u) {
         return base * overlay;
@@ -52,6 +85,18 @@ fn blend_rgb(base: vec3<f32>, overlay: vec3<f32>, mode: u32) -> vec3<f32> {
         let low = base - (vec3<f32>(1.0) - 2.0 * overlay) * base * (vec3<f32>(1.0) - base);
         let high = base + (2.0 * overlay - vec3<f32>(1.0)) * (curve - base);
         return select(high, low, overlay <= vec3<f32>(0.5));
+    }
+    if (mode == 13u) {
+        return set_lum(set_sat(overlay, sat(base)), lum(base));
+    }
+    if (mode == 14u) {
+        return set_lum(set_sat(base, sat(overlay)), lum(base));
+    }
+    if (mode == 15u) {
+        return set_lum(overlay, lum(base));
+    }
+    if (mode == 16u) {
+        return set_lum(base, lum(overlay));
     }
     return overlay;
 }

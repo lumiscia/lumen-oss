@@ -25,4 +25,8 @@ pub enum BlendMode {
     ColorBurn = 10,
     HardLight = 11,
     SoftLight = 12,
+    Hue = 13,
+    Saturation = 14,
+    Color = 15,
+    Luminosity = 16,
 }

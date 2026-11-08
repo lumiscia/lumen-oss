@@ -275,6 +275,56 @@ fn separable_blend_modes_match_the_w3c_formulas() {
 }
 
 #[test]
+fn nonseparable_blend_modes_match_the_w3c_formulas() {
+    // Each row works the W3C Compositing Lum, SetLum, Sat and SetSat helpers on
+    // b = base / 255, s = overlay / 255, with Lum = .3r + .59g + .11b.
+    let rows = [
+        // The overlay's hue and the base's saturation and luminosity.
+        ("hue", [200, 100, 50], [50, 150, 230], [59, 142, 209]),
+        // The base's hue and luminosity and the overlay's saturation.
+        ("saturation", [200, 100, 50], [50, 150, 230], [215, 95, 35]),
+        // The overlay's hue and saturation and the base's luminosity.
+        ("color", [200, 100, 50], [50, 150, 230], [46, 146, 226]),
+        // The base's hue and saturation and the overlay's luminosity.
+        ("luminosity", [200, 100, 50], [50, 150, 230], [204, 104, 54]),
+        // ClipColor rescales around the luminosity when a channel falls below 0 (hue, color)
+        ("hue", [30, 60, 200], [240, 200, 20], [85, 69, 0]),
+        ("saturation", [30, 60, 200], [240, 200, 20], [19, 58, 239]),
+        ("color", [30, 60, 200], [240, 200, 20], [85, 69, 0]),
+        // or rises above 1 (luminosity).
+        ("luminosity", [30, 60, 200], [240, 200, 20], [175, 189, 255]),
+        // Above 1 (hue) and below 0 (luminosity) again.
+        ("hue", [20, 230, 40], [250, 30, 30], [255, 99, 99]),
+        ("luminosity", [20, 230, 40], [250, 30, 30], [0, 160, 15]),
+    ];
+    let mut cases: Vec<Case> = rows
+        .into_iter()
+        .map(|(mode, base, overlay, [r, g, b])| {
+            Case::new(
+                mode,
+                blended(mode, base, overlay),
+                Expect::Uniform([r, g, b, 255]),
+            )
+        })
+        .collect();
+    // A grey base under black lands on a uniform result whose ClipColor denominator rounds to
+    // zero. A clear overlay keeps the base, and a half-transparent one darkens it by half.
+    for (alpha, expected) in [(0, 193), (128, 96)] {
+        cases.push(Case::new(
+            "luminosity of a translucent black over grey",
+            scene(
+                (4, 4),
+                json!([solid(1, [193, 193, 193, 255]), solid(2, [0, 0, 0, alpha]),
+                    { "id": 3, "type": "merge", "params": { "blend_mode": "luminosity" },
+                      "in": { "base": 1, "overlay": 2 } }]),
+            ),
+            Expect::Uniform([expected, expected, expected, 255]),
+        ));
+    }
+    check(cases);
+}
+
+#[test]
 fn mattes_select_by_alpha_or_luma() {
     // Columns 6 to 17 of a mask that covers half of 8, all of 9 to 15 and half of 16.
     let edge = |full: u8| {
