@@ -178,6 +178,42 @@ fn software() -> (GpuCompositionRenderer, Store) {
     (renderer, Store::new(FfmpegResolverOptions::default()))
 }
 
+/// A hardware and a software renderer that a test's comparisons share, so it opens one Vulkan Video
+/// device however many sources it compares: NVIDIA runs out of driver contexts after a few devices.
+/// Each comparison takes fresh stores, so no decode state carries between them.
+struct Renderers {
+    hardware: GpuCompositionRenderer,
+    device: lumen_ffmpeg::VulkanDevice,
+    software: GpuCompositionRenderer,
+}
+
+impl Renderers {
+    /// `None` on hardware without Vulkan Video decode.
+    fn new() -> Option<Self> {
+        let (hardware, device) =
+            match pollster::block_on(GpuCompositionRenderer::new_vulkan_decode()) {
+                Ok(pair) => pair,
+                Err(error) => {
+                    eprintln!("Vulkan Video decode unavailable ({error}); skipping");
+                    return None;
+                }
+            };
+        let software = pollster::block_on(GpuCompositionRenderer::new()).expect("create renderer");
+        Some(Self {
+            hardware,
+            device,
+            software,
+        })
+    }
+
+    /// A store whose sources decode on the shared device.
+    fn hardware_store(&self) -> Store {
+        let mut options = FfmpegResolverOptions::with_hardware_decode(true);
+        options.vulkan_device = Some(self.device.clone());
+        Store::new(options)
+    }
+}
+
 /// Tags from `LUMEN_VULKAN_DECODE_EXPECT`.
 fn expected_tags() -> Vec<String> {
     std::env::var("LUMEN_VULKAN_DECODE_EXPECT")
@@ -358,61 +394,41 @@ fn patch_error(a: &[u8], b: &[u8], width: usize, height: usize) -> (u8, usize, u
     worst
 }
 
-/// One hardware and one software renderer for every patch clip. A device per clip runs NVIDIA out of
-/// driver contexts after a few clips.
-struct PatchCheck {
-    hardware: Option<(GpuCompositionRenderer, Store)>,
-    software: (GpuCompositionRenderer, Store),
-}
-
-impl PatchCheck {
-    fn new() -> Self {
-        Self {
-            hardware: hardware(),
-            software: software(),
-        }
+/// Compares `path` decoded on the GPU with software inside its patches, returning whether it did.
+fn check_patch_clip(renderers: &mut Renderers, path: &Path) -> bool {
+    let hardware_store = renderers.hardware_store();
+    if !decodes_on_hardware(&hardware_store, path) {
+        return false;
     }
-
-    /// Compares `path` decoded on the GPU with software inside its patches, returning whether it
-    /// did.
-    fn check(&mut self, path: &Path) -> bool {
-        let Some((hardware_renderer, hardware_store)) = &mut self.hardware else {
-            return false;
-        };
-        if !decodes_on_hardware(hardware_store, path) {
-            return false;
-        }
-        check_patch_clip(
-            path,
-            (hardware_renderer, hardware_store),
-            (&mut self.software.0, &self.software.1),
-        );
-        true
-    }
-}
-
-fn check_patch_clip(
-    path: &Path,
-    (hardware_renderer, hardware_store): (&mut GpuCompositionRenderer, &Store),
-    (software_renderer, software_store): (&mut GpuCompositionRenderer, &Store),
-) {
+    let software_store = Store::new(FfmpegResolverOptions::default());
     let source = path.to_string_lossy();
     let nodes = json!([media(1, &source)]);
-    let hardware_scene = composition(hardware_store, nodes.clone(), &[&source]);
-    let software_scene = composition(software_store, nodes, &[&source]);
+    let hardware_scene = composition(&hardware_store, nodes.clone(), &[&source]);
+    let software_scene = composition(&software_store, nodes, &[&source]);
     let metadata = software_store.resolver(&source).metadata();
     let (width, height) = (metadata.width as usize, metadata.height as usize);
     for frame in 0..PATCH_FRAMES as u32 {
-        let on_hardware = render(hardware_renderer, &hardware_scene, frame, hardware_store);
-        let on_software = render(software_renderer, &software_scene, frame, software_store);
+        let on_hardware = render(
+            &mut renderers.hardware,
+            &hardware_scene,
+            frame,
+            &hardware_store,
+        );
+        let on_software = render(
+            &mut renderers.software,
+            &software_scene,
+            frame,
+            &software_store,
+        );
         let (error, x, y) = patch_error(&on_hardware, &on_software, width, height);
         assert!(
             error <= MAX_CHANNEL_ERROR,
             "{source} frame {frame}: {error}/255 off at ({x}, {y})"
         );
     }
-    assert!(decodes_on_hardware(hardware_store, path), "{source}");
+    assert!(decodes_on_hardware(&hardware_store, path), "{source}");
     println!("{source}: patches within {MAX_CHANNEL_ERROR}/255");
+    true
 }
 
 /// Flat patches in `sampling`'s raw format, whose YCbCr is computed from `PATCH_RGB` with `matrix`
@@ -569,12 +585,16 @@ fn decoded_colours_match_software_inside_patches() {
             .map(|entry| entry.unwrap().path())
             .collect();
         clips.sort();
-        let mut patches = PatchCheck::new();
-        clips.retain(|clip| patches.check(clip));
+        let mut renderers = Renderers::new();
+        clips.retain(|clip| {
+            renderers
+                .as_mut()
+                .is_some_and(|renderers| check_patch_clip(renderers, clip))
+        });
         assert_expected_checked(&clips);
         return;
     }
-    let mut patches = PatchCheck::new();
+    let mut renderers = Renderers::new();
     let mut checked = Vec::new();
     let directory = tempfile::tempdir().expect("temp dir");
     let [h264, hevc, av1] = ENCODERS;
@@ -605,7 +625,10 @@ fn decoded_colours_match_software_inside_patches() {
             ) else {
                 break;
             };
-            if patches.check(&clip) {
+            if renderers
+                .as_mut()
+                .is_some_and(|renderers| check_patch_clip(renderers, &clip))
+            {
                 checked.push(clip);
             }
         }
@@ -645,35 +668,34 @@ fn playback_clips(directory: &Path) -> Vec<PathBuf> {
 /// more than `MAX_CHANNEL_ERROR` off, for the edges swscale's SIMD rounds differently. Returns whether
 /// the hardware could decode the sources, as nothing is compared when it can't.
 fn compare_playback(
+    renderers: &mut Renderers,
     label: &str,
     nodes: Value,
     sources: &[&str],
     frames: impl IntoIterator<Item = u32>,
 ) -> bool {
-    let Some((mut hardware_renderer, hardware_store)) = hardware() else {
-        return false;
-    };
+    let hardware_store = renderers.hardware_store();
     if !sources
         .iter()
         .all(|source| decodes_on_hardware(&hardware_store, Path::new(source)))
     {
         return false;
     }
-    let (mut software_renderer, software_store) = software();
+    let software_store = Store::new(FfmpegResolverOptions::default());
     let hardware_scene = composition(&hardware_store, nodes.clone(), sources);
     let software_scene = composition(&software_store, nodes, sources);
     let width = software_store.resolver(sources[0]).metadata().width as usize;
     let (mut largest, mut total, mut over, mut samples) = (0_u8, 0_u64, 0_u64, 0_u64);
     for frame in frames {
         let on_hardware = render(
-            &mut hardware_renderer,
+            &mut renderers.hardware,
             &hardware_scene,
             frame,
             &hardware_store,
         );
         // A new decoder per frame, as software decode on one CPU can share a seek bug with hardware.
         let on_software = render(
-            &mut software_renderer,
+            &mut renderers.software,
             &software_scene,
             frame,
             &Store::new(FfmpegResolverOptions::default()),
@@ -712,17 +734,22 @@ fn compare_playback(
 
 #[test]
 fn seeking_time_remap_and_two_sources_match_software() {
+    let Some(mut renderers) = Renderers::new() else {
+        return;
+    };
     let directory = tempfile::tempdir().expect("temp dir");
     let clips = playback_clips(directory.path());
     let sources: Vec<_> = clips.iter().map(|clip| clip.to_string_lossy()).collect();
     for source in &sources {
         compare_playback(
+            &mut renderers,
             &format!("{source} forward then seeks"),
             json!([media(1, source)]),
             &[source],
             (0..30).chain([100, 101, 40, 41, 42, 7, 8, 80, 3]),
         );
         compare_playback(
+            &mut renderers,
             &format!("{source} time remap"),
             json!([
                 media(1, source),
@@ -737,6 +764,7 @@ fn seeking_time_remap_and_two_sources_match_software() {
     for pair in sources.windows(2) {
         let (first, second) = (&pair[0], &pair[1]);
         compare_playback(
+            &mut renderers,
             &format!("{first} and {second} at once"),
             json!([
                 media(1, first),
@@ -767,7 +795,11 @@ fn rotated_sources_decode_upright_and_match_software() {
     ) {
         return;
     }
+    let Some(mut renderers) = Renderers::new() else {
+        return;
+    };
     if !compare_playback(
+        &mut renderers,
         "the unrotated clip",
         json!([media(1, &coded_path)]),
         &[&coded_path],
@@ -792,6 +824,7 @@ fn rotated_sources_decode_upright_and_match_software() {
         );
         assert!(
             compare_playback(
+                &mut renderers,
                 &format!("{source} with display rotation {degrees}"),
                 json!([media(1, &source)]),
                 &[&source],
@@ -851,7 +884,11 @@ fn seeking_back_from_frames_an_idr_frame_released_matches_software() {
         Err(reason) => return skip_unless_required(&reason),
     };
     let source = clip.to_string_lossy();
+    let Some(mut renderers) = Renderers::new() else {
+        return skip_unless_required("no Vulkan Video decode device");
+    };
     let compared = compare_playback(
+        &mut renderers,
         &format!("{source} seeks back before IDR frames"),
         json!([media(1, &source)]),
         &[&source],
