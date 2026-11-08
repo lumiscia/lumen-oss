@@ -661,6 +661,19 @@ fn static_kind(node: &ExprNode) -> Option<ValueKind> {
 }
 
 /// The number `node` is, when it is a literal or a negated literal.
+/// A key time written as a number or a time literal, with the time literal's unit, `s`. Times
+/// in different units can't be ordered before `fps` is known.
+fn literal_key_time(node: &ExprNode) -> Option<(f64, &'static str)> {
+    match node {
+        ExprNode::Binary(seconds, BinaryOp::Mul, fps)
+            if matches!(**fps, ExprNode::Global(GlobalVar::Fps)) =>
+        {
+            literal_number(seconds).map(|seconds| (seconds, "s"))
+        }
+        _ => literal_number(node).map(|frames| (frames, "")),
+    }
+}
+
 fn literal_number(node: &ExprNode) -> Option<f64> {
     match node {
         ExprNode::Literal(ExpressionValue::Number(value)) => Some(*value),
@@ -740,7 +753,8 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
             }
             // A second argument of unknown kind may be a key or the default easing.
             let keys = &args[if second_is_key { 1 } else { 2 }..];
-            let (mut first_kind, mut previous_at) = (None, None);
+            let mut first_kind = None;
+            let (mut previous_frames, mut previous_seconds) = (None, None);
             for key in keys {
                 let ExprNode::Builtin(BuiltinFn::Key, key) = key else {
                     continue;
@@ -753,13 +767,18 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
                         _ => first_kind = Some(kind),
                     }
                 }
-                if let Some(at) = literal_number(&key[0]) {
-                    if let Some(previous) = previous_at
-                        && let Some(details) = key_order_error(previous, at)
+                if let Some((at, unit)) = literal_key_time(&key[0]) {
+                    let previous = if unit.is_empty() {
+                        &mut previous_frames
+                    } else {
+                        &mut previous_seconds
+                    };
+                    if let Some(previous) = *previous
+                        && let Some(details) = key_order_error(previous, at, unit)
                     {
                         return Err(error(details));
                     }
-                    previous_at = Some(at);
+                    *previous = Some(at);
                 }
             }
         }

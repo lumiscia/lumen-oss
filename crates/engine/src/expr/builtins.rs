@@ -164,7 +164,11 @@ pub fn evaluate_builtin(
             if !at.is_finite() {
                 return Err(named(format!("`at` must be finite, got {at}")));
             }
-            let value = args[1].clone();
+            // Booleans become numbers so a track has one kind before, between and after its keys.
+            let value = match args[1].as_f64() {
+                Some(number) => ExpressionValue::Number(number),
+                None => args[1].clone(),
+            };
             if !is_key_value(value.kind()) {
                 return Err(named(key_value_error(value.kind())));
             }
@@ -292,9 +296,12 @@ pub(crate) fn key_value_error(kind: ValueKind) -> String {
 }
 
 /// Why a key at `at` can't follow one at `previous`, if it can't.
-pub(crate) fn key_order_error(previous: f64, at: f64) -> Option<String> {
+/// `unit` is the suffix the times were written with, such as `s` for time literals.
+pub(crate) fn key_order_error(previous: f64, at: f64, unit: &str) -> Option<String> {
     (previous > at).then(|| {
-        format!("keys must be in order of `at`, but a key at {at} follows one at {previous}")
+        format!(
+            "keys must be in order of `at`, but a key at {at}{unit} follows one at {previous}{unit}"
+        )
     })
 }
 
@@ -342,7 +349,7 @@ fn keyframes(t: f64, args: &[ExpressionValue]) -> Result<ExpressionValue, String
         if key.value.kind() != first.value.kind() {
             return Err(mixed_keys_error(first.value.kind(), key.value.kind()));
         }
-        if let Some(details) = key_order_error(previous.at, key.at) {
+        if let Some(details) = key_order_error(previous.at, key.at, "") {
             return Err(details);
         }
     }

@@ -799,6 +799,19 @@ mod tests {
     }
 
     #[test]
+    fn boolean_keys_are_numbers_everywhere_on_the_track() {
+        let track = "keyframes(frame, key(10, false), key(20, true))";
+        for (frame, expected) in [(0, 0.0), (15, 0.5), (20, 1.0)] {
+            assert_eq!(
+                evaluate(track, frame).unwrap(),
+                ExpressionValue::Number(expected)
+            );
+        }
+        // Frames and seconds aren't ordered until `fps` is known.
+        assert!(Expression::parse("keyframes(frame, key(1s, 0), key(20, 1))").is_ok());
+    }
+
+    #[test]
     fn rejects_bad_easings_and_keys_at_parse_time() {
         for (source, expected) in [
             (
@@ -820,6 +833,10 @@ mod tests {
             (
                 "keyframes(frame, key(10, 0), key(5, 1))",
                 "a key at 5 follows one at 10",
+            ),
+            (
+                "keyframes(frame, key(2s, 0), key(1.5s, 1))",
+                "a key at 1.5s follows one at 2s",
             ),
             (
                 "keyframes(frame, key(0, 0), key(10, vec2(1, 1)))",
