@@ -33,7 +33,7 @@ pub struct EncoderQuality {
 impl EncoderQuality {
     /// The quality a caller asked for with at most one of `bitrate`, `crf` and `qp`, plus a
     /// preset, or `None` if it asked for none of them. Errors when more than one rate control is
-    /// given. Whether the chosen encoder supports the result is only known when it opens.
+    /// given. [`Self::check_encoder`] checks the result against an encoder.
     pub fn from_options(
         bitrate: Option<u64>,
         crf: Option<u8>,
@@ -55,6 +55,14 @@ impl EncoderQuality {
             rate_control: rate_control.unwrap_or_default(),
             preset,
         }))
+    }
+
+    /// Whether `encoder` supports this quality, without opening it. Errors with the message
+    /// opening it would give.
+    pub fn check_encoder(&self, encoder: &str) -> std::result::Result<(), String> {
+        encoder_quality_options(encoder, self.rate_control, self.preset.as_deref())
+            .map(|_| ())
+            .map_err(|error| error.message)
     }
 }
 
@@ -106,6 +114,22 @@ pub(crate) fn quality_options(
     preset: Option<&str>,
     mode: EncodeMode,
 ) -> Result<QualityOptions> {
+    let mut quality = encoder_quality_options(encoder, rate_control, preset)?;
+    // NVIDIA's Vulkan H.264 encode can stall forever at a GOP boundary with more than one frame in
+    // flight on more than one queue, with or without B-frames. Zero-copy encodes use the one
+    // encode queue lumen lists on the shared device. CPU-upload encodes create their own device
+    // with every queue, and `limit_queues` does nothing on FFmpeg 8.0.
+    if encoder == "h264_vulkan" && mode == EncodeMode::CpuUpload {
+        quality.options.push(("async_depth", "1".to_string()));
+    }
+    Ok(quality)
+}
+
+fn encoder_quality_options(
+    encoder: &str,
+    rate_control: RateControl,
+    preset: Option<&str>,
+) -> Result<QualityOptions> {
     let family = EncoderFamily::of(encoder);
     let unsupported = |what: &str, supported: &str| {
         FfmpegError::new(
@@ -115,13 +139,6 @@ pub(crate) fn quality_options(
     };
 
     let mut options = Vec::new();
-    // NVIDIA's Vulkan H.264 encode can stall forever at a GOP boundary with more than one frame in
-    // flight on more than one queue, with or without B-frames. Zero-copy encodes use the one
-    // encode queue lumen lists on the shared device. CPU-upload encodes create their own device
-    // with every queue, and `limit_queues` does nothing on FFmpeg 8.0.
-    if encoder == "h264_vulkan" && mode == EncodeMode::CpuUpload {
-        options.push(("async_depth", "1".to_string()));
-    }
     if let Some(preset) = preset {
         let presets: &[&str] = match family {
             EncoderFamily::X264 => &X264_PRESETS,
@@ -293,6 +310,21 @@ mod tests {
     fn zero_quality_that_means_automatic_errors() {
         assert!(options("h264_nvenc", RateControl::Crf(0), None).is_err());
         assert!(options("libx264", RateControl::Crf(0), None).is_ok());
+    }
+
+    #[test]
+    fn check_encoder_gives_the_error_opening_would() {
+        let crf = EncoderQuality {
+            rate_control: RateControl::Crf(20),
+            preset: None,
+        };
+        assert_eq!(crf.check_encoder("libx264"), Ok(()));
+        assert_eq!(
+            crf.check_encoder("h264_vulkan"),
+            Err(options("h264_vulkan", crf.rate_control, None)
+                .unwrap_err()
+                .message)
+        );
     }
 
     #[test]

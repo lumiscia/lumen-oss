@@ -649,6 +649,43 @@ fn rejects_conflicting_or_invalid_encode_quality() {
 }
 
 #[test]
+fn rejects_quality_the_configured_encoder_cannot_use() {
+    for (encoder, quality, status) in [
+        (
+            "h264_vulkan",
+            json!({ "crf": 20, "preset": "slow" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        ("h264_vulkan", json!({ "qp": 20 }), StatusCode::ACCEPTED),
+        (
+            "libx264",
+            json!({ "crf": 20, "preset": "slow" }),
+            StatusCode::ACCEPTED,
+        ),
+    ] {
+        let server = Server::start_with(&[], |command| {
+            command.env("LUMEN_VIDEO_ENCODER", encoder);
+        });
+        let response = server.post(&json!({
+            "composition": solid_composition(),
+            "quality": quality,
+        }));
+        assert_eq!(response.status(), status, "{encoder} {quality}");
+        if status == StatusCode::UNPROCESSABLE_ENTITY {
+            let body: Value = response.json().expect("error body");
+            assert_eq!(body["code"], "invalid_quality");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("h264_vulkan"),
+                "{body}"
+            );
+        }
+    }
+}
+
+#[test]
 fn clients_cannot_choose_render_ids() {
     let server = Server::start(&[]);
     let body = json!({

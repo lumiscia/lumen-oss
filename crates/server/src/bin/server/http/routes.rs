@@ -7,13 +7,14 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use lumen_ffmpeg::VideoEncoderChoice;
 use lumen_server::render::parse_composition;
 
 use crate::server::{
     ApiRenderJob, Artifact, CreateRenderResponse, GetRenderResponse, QualityInput, RenderJob,
-    RenderJobInput, RenderProgressResponse, RenderQueueState, RenderRecord, RenderStatus,
-    current_timestamp, execute_render_job, input_hash, map_execution_error, new_render_id,
-    validate_media_manifest,
+    RenderJobError, RenderJobInput, RenderProgressResponse, RenderQueueState, RenderRecord,
+    RenderStatus, current_timestamp, execute_render_job, input_hash, map_execution_error,
+    new_render_id, validate_media_manifest,
 };
 
 use super::{errors::ApiError, state::AppState, ws::render_socket_session};
@@ -55,6 +56,17 @@ pub(super) async fn create_render(
         .transpose()
         .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?
         .flatten();
+    if let Some(quality) = &quality {
+        // Renders name no encoder, so they use `LUMEN_VIDEO_ENCODER` or the platform default.
+        VideoEncoderChoice::resolve(None)
+            .check_quality(quality)
+            .map_err(|message| {
+                ApiError::rejected(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    RenderJobError::invalid_quality(&message),
+                )
+            })?;
+    }
 
     let id = new_render_id();
     let record = state.insert(RenderRecord::new(

@@ -41,11 +41,7 @@ enum BitrateInput {
 impl QualityInput {
     /// `None` when the request asked for neither a rate control nor a preset.
     pub fn into_quality(self) -> Result<Option<EncoderQuality>, RenderJobError> {
-        let invalid = |message: String| RenderJobError {
-            code: "invalid_quality".to_string(),
-            message: sanitize_error_message(&message),
-            retryable: false,
-        };
+        let invalid = |message: String| RenderJobError::invalid_quality(&message);
         let bitrate = self
             .bitrate
             .map(|bitrate| match bitrate {
@@ -64,6 +60,16 @@ pub struct RenderJobError {
     pub code: String,
     pub message: String,
     pub retryable: bool,
+}
+
+impl RenderJobError {
+    pub fn invalid_quality(message: &str) -> Self {
+        Self {
+            code: "invalid_quality".to_string(),
+            message: sanitize_error_message(message),
+            retryable: false,
+        }
+    }
 }
 
 /// A render and its latest status. Sockets subscribe to the status and polling reads it, so every
