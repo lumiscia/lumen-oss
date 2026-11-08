@@ -2,10 +2,10 @@ use crate::{
     error::LumenError,
     expr::{
         ExpressionContext,
-        ast::{BuiltinFn, ExpressionValue},
-        easing::{SPRING_DAMPING, SPRING_STIFFNESS, cubic_bezier, spring},
+        ast::{BuiltinFn, Easing, ExpressionValue, Key},
+        easing::{SPRING_DAMPING, SPRING_STIFFNESS, spring},
         noise::{noise, random},
-        spec::{Easing, easing_builtins},
+        spec::{BuiltinArg, BuiltinSpec, NamedEasing, ValueKind, easing_builtins},
     },
     node::{
         DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
@@ -36,6 +36,13 @@ pub fn evaluate_builtin(
             args[1].type_name()
         ))
     };
+    let named = |details: String| error(format!("`{}`: {details}", spec.name));
+    let second_is_key = matches!(args.get(1), Some(ExpressionValue::Key(_)));
+    for (index, arg) in args.iter().enumerate() {
+        if let Some(details) = kind_error(spec, index, arg.kind(), second_is_key) {
+            return Err(named(details));
+        }
+    }
     let unary = |f: fn(f64) -> f64| Ok(ExpressionValue::Number(f(number(0)?)));
     let optional = |index: usize, default: f64| {
         if index < args.len() {
@@ -118,27 +125,53 @@ pub fn evaluate_builtin(
             number(1)?,
         ))),
         BuiltinFn::Tween => {
-            let ease = match args.get(4) {
-                None => Some(Easing::Linear),
-                Some(ExpressionValue::String(name)) => Easing::from_name(name),
-                Some(_) => None,
-            }
-            .ok_or_else(|| error(format!("unknown easing `{}`", args[4].as_string())))?;
+            let ease = args.get(4).map(easing).transpose().map_err(named)?;
             let start = number(2)?;
-            let t = ease.apply(progress(ctx, start, start + number(3)?));
+            let t = ease
+                .unwrap_or(Easing::LINEAR)
+                .apply(progress(ctx, start, start + number(3)?));
             interpolate(&args[0], &args[1], t).ok_or_else(|| mismatch(spec.name))
         }
         easing_builtins!() => {
-            let easing = Easing::for_builtin(builtin).expect("easing builtin");
+            let easing = NamedEasing::for_builtin(builtin).expect("easing builtin");
             Ok(ExpressionValue::Number(easing.apply(number(0)?)))
         }
-        BuiltinFn::CubicBezier => Ok(ExpressionValue::Number(cubic_bezier(
-            number(0)?,
-            number(1)?,
-            number(2)?,
-            number(3)?,
-            number(4)?,
-        ))),
+        BuiltinFn::Ease => {
+            let easing = easing(&args[0]).map_err(named)?;
+            Ok(ExpressionValue::Number(easing.apply(number(1)?)))
+        }
+        BuiltinFn::CubicBezier => {
+            let handle = |index: usize| {
+                let (x, y) = args[index].as_vec2().ok_or_else(|| {
+                    named(format!(
+                        "`{}` must be a vec2, got {}",
+                        spec.args[index].name,
+                        args[index].type_name()
+                    ))
+                })?;
+                match handle_x_error(x) {
+                    Some(details) => Err(named(details.to_string())),
+                    None => Ok([x, y]),
+                }
+            };
+            let ([x1, y1], [x2, y2]) = (handle(0)?, handle(1)?);
+            Ok(ExpressionValue::Easing(Easing::CubicBezier([
+                x1, y1, x2, y2,
+            ])))
+        }
+        BuiltinFn::Key => {
+            let at = number(0)?;
+            if !at.is_finite() {
+                return Err(named(format!("`at` must be finite, got {at}")));
+            }
+            let value = args[1].clone();
+            if !is_key_value(value.kind()) {
+                return Err(named(key_value_error(value.kind())));
+            }
+            let ease = args.get(2).map(easing).transpose().map_err(named)?;
+            Ok(ExpressionValue::Key(Box::new(Key { at, value, ease })))
+        }
+        BuiltinFn::Keyframes => keyframes(number(0)?, &args[1..]).map_err(named),
         BuiltinFn::Prop => {
             let name = args[0].as_string();
             let props = ctx.props.ok_or_else(|| {
@@ -183,6 +216,151 @@ pub fn evaluate_builtin(
             )))
         }
     }
+}
+
+/// The argument `index` of a call to `spec` binds to. The second argument of `keyframes` is its
+/// first key when `second_is_key`, and its default easing otherwise.
+pub(crate) fn param(spec: &BuiltinSpec, index: usize, second_is_key: bool) -> Option<&BuiltinArg> {
+    let index = if spec.builtin == BuiltinFn::Keyframes && second_is_key && index == 1 {
+        2
+    } else {
+        index
+    };
+    let repeats = spec.max_args.is_none();
+    spec.args
+        .get(index)
+        .or_else(|| spec.args.last().filter(|_| repeats))
+}
+
+/// Why a `given` value can't be argument `index` of a call to `spec`, if it can't. Only easings
+/// and keys are checked: they go to the params that take them and nowhere else.
+pub(crate) fn kind_error(
+    spec: &BuiltinSpec,
+    index: usize,
+    given: ValueKind,
+    second_is_key: bool,
+) -> Option<String> {
+    let param = param(spec, index, second_is_key)?;
+    let name = param.name;
+    match (param.kind, given) {
+        (ValueKind::Easing, ValueKind::Easing | ValueKind::String)
+        | (ValueKind::Key, ValueKind::Key) => None,
+        (ValueKind::Easing, _) => Some(format!(
+            "`{name}` must be an easing such as 'out_expo' or cubic_bezier(out, in), got {}",
+            given.name()
+        )),
+        (ValueKind::Key, _) => Some(format!(
+            "`{name}` must be a key made with key(at, value), got {}",
+            given.name()
+        )),
+        (_, ValueKind::Easing) => Some(format!("`{name}` does not take an easing")),
+        (_, ValueKind::Key) => Some(format!("`{name}` does not take a key")),
+        _ => None,
+    }
+}
+
+pub(crate) fn unknown_easing(name: &str) -> String {
+    let names = NamedEasing::ALL.map(NamedEasing::name).join(", ");
+    format!("unknown easing `{name}`; expected one of {names}, or cubic_bezier(out, in)")
+}
+
+/// An easing argument, which is an easing or an easing's name.
+fn easing(value: &ExpressionValue) -> Result<Easing, String> {
+    match value {
+        ExpressionValue::Easing(easing) => Ok(*easing),
+        ExpressionValue::String(name) => NamedEasing::from_name(name)
+            .map(Easing::Named)
+            .ok_or_else(|| unknown_easing(name)),
+        other => Err(format!("expected an easing, got {}", other.type_name())),
+    }
+}
+
+/// Why `x` can't be the x component of a `cubic_bezier` handle, if it can't.
+pub(crate) fn handle_x_error(x: f64) -> Option<&'static str> {
+    (!(0.0..=1.0).contains(&x)).then_some("the x components of `out` and `in` must be in 0..=1")
+}
+
+pub(crate) fn is_key_value(kind: ValueKind) -> bool {
+    matches!(kind, ValueKind::Number | ValueKind::Vec2 | ValueKind::Color)
+}
+
+pub(crate) fn key_value_error(kind: ValueKind) -> String {
+    format!(
+        "`value` must be a number, vec2 or colour, got {}",
+        kind.name()
+    )
+}
+
+/// Why a key at `at` can't follow one at `previous`, if it can't.
+pub(crate) fn key_order_error(previous: f64, at: f64) -> Option<String> {
+    (previous > at).then(|| {
+        format!("keys must be in order of `at`, but a key at {at} follows one at {previous}")
+    })
+}
+
+/// Why an expression whose result is `kind` can't be a param value, if it can't.
+pub(crate) fn unusable_result(kind: ValueKind) -> Option<String> {
+    match kind {
+        ValueKind::Easing => Some(
+            "the expression is an easing, which no param takes; pass it to `ease`, `tween`, \
+             `key` or `keyframes`"
+                .to_string(),
+        ),
+        ValueKind::Key => Some(
+            "the expression is a key, which no param takes; pass it to `keyframes`".to_string(),
+        ),
+        _ => None,
+    }
+}
+
+pub(crate) fn mixed_keys_error(first: ValueKind, other: ValueKind) -> String {
+    format!(
+        "every key must hold the same kind of value, got {} and {}",
+        first.name(),
+        other.name()
+    )
+}
+
+/// The value at `t` of a track of keys, which may be preceded by the default easing.
+fn keyframes(t: f64, args: &[ExpressionValue]) -> Result<ExpressionValue, String> {
+    let (default, keys) = match args.split_first() {
+        Some((ease, keys)) if !matches!(ease, ExpressionValue::Key(_)) => (easing(ease)?, keys),
+        _ => (Easing::LINEAR, args),
+    };
+    let keys = keys
+        .iter()
+        .map(|key| match key {
+            ExpressionValue::Key(key) => Ok(&**key),
+            other => Err(format!("expected a key, got {}", other.type_name())),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(first) = keys.first() else {
+        return Err("expects at least one key".to_string());
+    };
+    for (index, key) in keys.iter().enumerate().skip(1) {
+        let previous = keys[index - 1];
+        if key.value.kind() != first.value.kind() {
+            return Err(mixed_keys_error(first.value.kind(), key.value.kind()));
+        }
+        if let Some(details) = key_order_error(previous.at, key.at) {
+            return Err(details);
+        }
+    }
+    if t.is_nan() || t < first.at {
+        return Ok(first.value.clone());
+    }
+    // The last key at or before `t`, so of keys at the same `at`, the later one is reached.
+    let index = keys.partition_point(|key| key.at <= t) - 1;
+    let key = keys[index];
+    let Some(next) = keys.get(index + 1) else {
+        return Ok(key.value.clone());
+    };
+    let eased = key
+        .ease
+        .unwrap_or(default)
+        .apply((t - key.at) / (next.at - key.at));
+    interpolate(&key.value, &next.value, eased)
+        .ok_or_else(|| mixed_keys_error(key.value.kind(), next.value.kind()))
 }
 
 /// Why `value` is out of range as argument `index` of `builtin`, if it is.

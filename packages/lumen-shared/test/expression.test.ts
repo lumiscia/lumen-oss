@@ -29,6 +29,8 @@ import {
   inOutExpo,
   inOutQuad,
   inQuad,
+  key,
+  keyframes,
   lerp,
   literal,
   lowercase,
@@ -115,7 +117,23 @@ const cases: Readonly<Record<string, Case>> = {
   in_back: { expression: inBack(0), expected: 0 },
   out_back: { expression: outBack(1), expected: 1 },
   in_out_back: { expression: inOutBack(0.5), expected: 0.5 },
-  cubic_bezier: { expression: cubicBezier(0, 0, 1, 1, 0.5), expected: 0.5 },
+  ease: { expression: ease(ease.outQuad, 0.5), expected: 0.75 },
+  cubic_bezier: { expression: ease(cubicBezier([0, 0], [1, 1]), 0.5), expected: 0.5 },
+  key: { expression: keyframes(frame, key(30, 0), key(60, 10)), expected: 5 },
+  keyframes: {
+    expression: keyframes(
+      frame,
+      ease.inQuad,
+      key(sec(1), [0, 0]),
+      key(sec(2), vec2(100, 200), ease.hold),
+      key(sec(3), [0, 0]),
+    ),
+    expected: [25, 50],
+  },
+  colour_keys: {
+    expression: keyframes(frame, key(30, hex("#ff000000")), key(60, hex("#0000ff"))),
+    expected: "#0000ff80",
+  },
   spring: { expression: spring(0, 170, 26), expected: 0 },
   noise: { expression: noise(1, 0.5), expected: -0.37396682188384345 },
   random: { expression: random(7, 0.5), expected: 0.7553920660716886 },
@@ -228,6 +246,20 @@ describe("expression helpers", () => {
     ).toThrow("Function `rise` already exists.");
   });
 
+  test("emit keyframes with and without a default easing", () => {
+    const bezier = cubicBezier([0.4, 0], [0.2, 1]);
+    expect(String(bezier)).toBe("=cubic_bezier(vec2(0.4, 0), vec2(0.2, 1))");
+    expect(String(keyframes(frame, ease.inOutCubic, key(0, 0), key(30, 1, bezier)))).toBe(
+      "=keyframes(frame, 'in_out_cubic', key(0, 0), key(30, 1, cubic_bezier(vec2(0.4, 0), vec2(0.2, 1))))",
+    );
+    expect(String(keyframes(frame, key(0, [0, 0]), key(sec(1), [1, 1], "hold")))).toBe(
+      "=keyframes(frame, key(0, vec2(0, 0)), key(1s, vec2(1, 1), 'hold'))",
+    );
+    expect(String(tween(0, 1, 0, 12, bezier))).toBe(
+      "=tween(0, 1, 0, 12, cubic_bezier(vec2(0.4, 0), vec2(0.2, 1)))",
+    );
+  });
+
   test("drop trailing undefined arguments", () => {
     expect(String(tween(0, 1, 0, 12, undefined))).toBe("=tween(0, 1, 0, 12)");
     expect(String(spring(0, undefined, undefined))).toBe("=spring(0)");
@@ -259,7 +291,7 @@ describe("expression helpers", () => {
     for (const { name } of expressionBuiltins) {
       const helper = name.replace(/_([a-z])/g, (_, char: string) => char.toUpperCase());
       expect(typeof exports[helper], helper).toBe("function");
-      expect(cases[name]?.expression.toString(), name).toMatch(new RegExp(`^=${name}\\(`));
+      expect(cases[name]?.expression.toString(), name).toMatch(new RegExp(`\\b${name}\\(`));
     }
     for (const { name } of expressionGlobals) {
       const helper = name.replace(/_([a-z])/g, (_, char: string) => char.toUpperCase());

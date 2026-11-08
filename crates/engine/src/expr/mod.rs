@@ -13,12 +13,13 @@ use crate::{error::ExpressionError, graph::Graph};
 
 pub(crate) use ast::parse_hex_color;
 pub use ast::{
-    BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, Reads, UnaryOp,
+    BinaryOp, BuiltinFn, Easing, ExprNode, Expression, ExpressionValue, GlobalVar, Key, Reads,
+    UnaryOp,
 };
 pub use functions::FunctionScope;
 pub use spec::{
-    BUILTINS, BuiltinArg, BuiltinSpec, Easing, FORMS, FormSpec, GLOBALS, GlobalSpec, ValueKind,
-    reserved_names,
+    BUILTINS, BuiltinArg, BuiltinSpec, FORMS, FormSpec, GLOBALS, GlobalSpec, NamedEasing,
+    ValueKind, reserved_names,
 };
 
 impl Expression {

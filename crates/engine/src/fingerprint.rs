@@ -41,6 +41,7 @@ hash_leaf!(
     crate::expr::UnaryOp,
     crate::expr::GlobalVar,
     crate::expr::BuiltinFn,
+    crate::expr::NamedEasing,
 );
 
 impl StructuralHash for f32 {
