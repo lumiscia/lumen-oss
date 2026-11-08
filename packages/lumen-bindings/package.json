@@ -22,6 +22,8 @@
   },
   "files": [
     "dist",
+    "urls.d.ts",
+    "urls.js",
     "wasm"
   ],
   "type": "module",
@@ -48,7 +50,13 @@
     "./node": {
       "types": "./dist/node/index.d.ts",
       "default": "./dist/node/index.js"
-    }
+    },
+    "./urls": {
+      "types": "./urls.d.ts",
+      "default": "./urls.js"
+    },
+    "./wasm": "./wasm/lumen_wasm_bg.wasm",
+    "./worker": "./dist/browser/worker.js"
   },
   "scripts": {
     "build": "test -f wasm/lumen_wasm.d.ts || { echo 'packages/lumen-bindings: wasm/ is missing. Generate it with: just wasm-bindings-debug' >&2; exit 1; } && (tsc -p tsconfig.json && esbuild dist/browser/worker.js --bundle --minify --format=esm --platform=browser --allow-overwrite --outfile=dist/browser/worker.js)",

@@ -35,7 +35,6 @@ function holdFetches() {
 async function loadedBindings() {
   return (await import("@lumiscia/lumen-bindings")).createLumenBindings({
     previewWasmUrl: "https://a.test/lumen.wasm",
-    previewWorkerUrl: "https://a.test/worker.js",
   });
 }
 

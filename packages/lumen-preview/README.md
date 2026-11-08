@@ -8,7 +8,7 @@ pnpm add @lumiscia/lumen-preview @lumiscia/lumen-bindings @lumiscia/lumen-shared
 
 ```ts
 import { createLumenPreview, mountPreview } from "@lumiscia/lumen-preview";
-import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
+import { wasmUrl, workerUrl } from "@lumiscia/lumen-bindings/urls";
 import { Composition } from "@lumiscia/lumen-shared";
 
 const composition = new Composition({ timeline: { durationSeconds: 3 } });
@@ -21,11 +21,7 @@ const merged = composition.addNode({ type: "merge", inputs: { base: bg, overlay:
 composition.addNode({ type: "media_output", inputs: { source: merged } });
 
 const preview = createLumenPreview();
-mountPreview(document.body, {
-  preview,
-  bindings: createLumenBindings(),
-  composition,
-});
+mountPreview(document.body, { preview, composition, wasmUrl, workerUrl });
 
 // Loading is asynchronous, and play() before it finishes is ignored.
 document.querySelector("button")?.addEventListener("click", () => {
@@ -33,6 +29,6 @@ document.querySelector("button")?.addEventListener("click", () => {
 });
 ```
 
-Pass `media` and `fonts` (name to URL) when the composition uses them.
+Pass `media` and `fonts` (name to URL) when the composition uses them. The preview renders in a worker; `@lumiscia/lumen-bindings/urls` names that worker and the wasm it loads, and a page that serves copies of them elsewhere passes those URLs instead. Either can be on another origin that sends CORS headers. A worker on another origin starts from a `blob:` URL that imports it, so a Content Security Policy must allow `blob:` and that origin in `worker-src`. With Vite 6 or 7, the `@lumiscia/lumen-bindings` README has the dev server setting these URLs need.
 
 See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.

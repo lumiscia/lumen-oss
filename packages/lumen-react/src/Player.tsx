@@ -1,14 +1,18 @@
 import { useEffect, useRef } from "react";
 
 import type { CSSProperties } from "react";
+import * as defaults from "@lumiscia/lumen-bindings/urls";
 import { mountPreview, type LumenPreviewSession } from "@lumiscia/lumen-preview";
-import type { LumenPreviewSessionInputs, LumenWorkerBindings } from "@lumiscia/lumen-preview";
+import type { LumenPreviewSessionInputs } from "@lumiscia/lumen-preview";
 
 import type { LumenPreviewContext } from "./preview.js";
 
 export interface PlayerProps extends LumenPreviewSessionInputs {
   preview: LumenPreviewContext;
-  bindings: LumenWorkerBindings;
+  /** Where the preview worker's wasm is served. Defaults to the copy in `@lumiscia/lumen-bindings`. */
+  wasmUrl?: string | URL | undefined;
+  /** Where the preview worker is served. Defaults to the copy in `@lumiscia/lumen-bindings`. */
+  workerUrl?: string | URL | undefined;
   /** Applied to the element that holds the canvas, which fills it and keeps its aspect ratio. */
   className?: string;
   style?: CSSProperties;
@@ -16,7 +20,8 @@ export interface PlayerProps extends LumenPreviewSessionInputs {
 
 export function Player({
   preview,
-  bindings,
+  wasmUrl,
+  workerUrl,
   composition,
   fonts,
   lookaheadCount,
@@ -29,16 +34,19 @@ export function Player({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<LumenPreviewSession | null>(null);
   const inputs = { composition, fonts, lookaheadCount, logLevel, media, onStats };
+  const wasm = String(wasmUrl ?? defaults.wasmUrl);
+  const worker = String(workerUrl ?? defaults.workerUrl);
 
   useEffect(() => {
     const session = mountPreview(hostRef.current as HTMLDivElement, {
       ...inputs,
-      bindings,
       preview,
+      wasmUrl: wasm,
+      workerUrl: worker,
     });
     sessionRef.current = session;
     return () => session.dispose();
-  }, [preview, bindings]);
+  }, [preview, wasm, worker]);
 
   useEffect(() => {
     sessionRef.current?.update(inputs);

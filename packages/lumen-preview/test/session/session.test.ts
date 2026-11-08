@@ -121,13 +121,8 @@ function createSession(inputs: ConstructorParameters<typeof LumenPreviewSession>
   const canvases: unknown[] = [];
   const host = { append: (canvas: unknown) => canvases.push(canvas) } as unknown as HTMLElement;
   const session = new LumenPreviewSession({
-    bindings: {
-      preview: async () => {
-        throw new Error("a session loads its bindings in the worker");
-      },
-      previewWasmUrl: () => "https://a.test/lumen.wasm",
-      previewWorkerUrl: () => "https://a.test/worker.js",
-    },
+    wasmUrl: "https://a.test/lumen.wasm",
+    workerUrl: "https://a.test/worker.js",
     composition: composition("first"),
     preview,
     ...inputs,
@@ -171,7 +166,12 @@ describe("LumenPreviewSession", () => {
     vi.stubGlobal("OffscreenCanvas", class {});
     vi.stubGlobal("HTMLCanvasElement", FakeCanvas);
     vi.stubGlobal("navigator", { gpu: {} });
-    vi.stubGlobal("document", { createElement: () => new FakeCanvas() });
+    vi.stubGlobal("location", { origin: "https://a.test" });
+    vi.stubGlobal("origin", "https://a.test");
+    vi.stubGlobal("document", {
+      baseURI: "https://a.test/",
+      createElement: () => new FakeCanvas(),
+    });
   });
 
   afterEach(() => {
@@ -201,8 +201,19 @@ describe("LumenPreviewSession", () => {
 
     expect(preview.getSnapshot().errorCode).toBe("worker_failed");
     expect(preview.getSnapshot().error).toContain("worker-src");
+    expect(preview.getSnapshot().error).toContain("from https://a.test/worker.js");
+    expect(preview.getSnapshot().error).toContain("pass `workerUrl` and `wasmUrl`");
     expect(canvases).toHaveLength(0);
     expect(worker.terminated).toBe(true);
+  });
+
+  it("names the Vite setting when a pre-bundled worker URL doesn't load", async () => {
+    const workerUrl = "https://a.test/node_modules/.vite/deps/dist/browser/worker.js";
+    const { attached, preview, worker } = createSession({ workerUrl });
+    worker.onerror?.({ message: "" });
+    await attached;
+
+    expect(preview.getSnapshot().error).toContain("optimizeDeps");
   });
 
   it("passes on the reason the worker gives for not starting", async () => {
@@ -272,7 +283,7 @@ describe("LumenPreviewSession", () => {
   it("reports a browser without WebGPU before it creates a worker", async () => {
     vi.stubGlobal("navigator", {});
     const preview = new LumenPreviewContext();
-    const session = new LumenPreviewSession({ bindings: {} as never, preview });
+    const session = new LumenPreviewSession({ preview, wasmUrl: "", workerUrl: "" });
     await session.attach({} as HTMLElement);
 
     expect(preview.getSnapshot().errorCode).toBe("webgpu_unavailable");

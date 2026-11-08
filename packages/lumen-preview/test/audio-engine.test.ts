@@ -38,6 +38,10 @@ function installFakes() {
     }[],
   };
 
+  vi.stubGlobal("location", { origin: "https://app.test" });
+
+  vi.stubGlobal("origin", "https://app.test");
+  vi.stubGlobal("document", { baseURI: "https://app.test/" });
   vi.stubGlobal(
     "AudioContext",
     class {

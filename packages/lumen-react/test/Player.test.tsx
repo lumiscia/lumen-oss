@@ -4,12 +4,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { LumenWorkerBindings } from "@lumiscia/lumen-preview";
+import * as defaults from "@lumiscia/lumen-bindings/urls";
 import { createLumenPreview } from "@lumiscia/lumen-preview/preview";
 
 interface MockSession {
   host: HTMLElement;
-  options: { composition?: unknown; preview: unknown };
+  options: { composition?: unknown; preview: unknown; wasmUrl: unknown; workerUrl: unknown };
   dispose: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
 }
@@ -25,8 +25,6 @@ vi.mock("@lumiscia/lumen-preview", () => ({
 }));
 
 import { Player } from "../src/Player.js";
-
-const bindings = {} as LumenWorkerBindings;
 
 // These cover the wiring between props and a mocked session. Player.lifecycle.test.tsx runs the
 // real one, for what actually gets cleaned up.
@@ -47,12 +45,12 @@ describe("Player", () => {
     const root = createRoot(container);
 
     await act(async () => {
-      root.render(<Player preview={firstPreview} bindings={bindings} className="stage" />);
+      root.render(<Player preview={firstPreview} className="stage" />);
     });
     expect(sessions[0]?.host.className).toBe("stage");
 
     await act(async () => {
-      root.render(<Player preview={nextPreview} bindings={bindings} composition={null} />);
+      root.render(<Player preview={nextPreview} composition={null} />);
     });
     expect(sessions[0]?.dispose).toHaveBeenCalledOnce();
     expect(sessions[1]?.options.preview).toBe(nextPreview);
@@ -67,13 +65,36 @@ describe("Player", () => {
     const composition = { toJSON: () => ({}) } as never;
 
     await act(async () => {
-      root.render(<Player preview={preview} bindings={bindings} />);
+      root.render(<Player preview={preview} />);
     });
     await act(async () => {
-      root.render(<Player preview={preview} bindings={bindings} composition={composition} />);
+      root.render(<Player preview={preview} composition={composition} />);
     });
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.update).toHaveBeenLastCalledWith(expect.objectContaining({ composition }));
+
+    await act(async () => root.unmount());
+  });
+
+  it("starts the worker this package ships unless told where another is", async () => {
+    const preview = createLumenPreview();
+    const root = createRoot(document.createElement("div"));
+
+    await act(async () => {
+      root.render(<Player preview={preview} />);
+    });
+    expect(sessions[0]?.options).toMatchObject({
+      wasmUrl: defaults.wasmUrl.href,
+      workerUrl: defaults.workerUrl.href,
+    });
+    expect(defaults.workerUrl.pathname).toMatch(/\/lumen-bindings\/dist\/browser\/worker\.js$/);
+    expect(defaults.wasmUrl.pathname).toMatch(/\/lumen-bindings\/wasm\/lumen_wasm_bg\.wasm$/);
+
+    await act(async () => {
+      root.render(<Player preview={preview} wasmUrl="/lumen.wasm" workerUrl="/worker.js" />);
+    });
+    expect(sessions[0]?.dispose).toHaveBeenCalledOnce();
+    expect(sessions[1]?.options).toMatchObject({ wasmUrl: "/lumen.wasm", workerUrl: "/worker.js" });
 
     await act(async () => root.unmount());
   });

@@ -3,14 +3,15 @@
 import { flushSync, mount, unmount } from "svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { LumenPreviewComposition, LumenWorkerBindings } from "@lumiscia/lumen-preview";
+import * as defaults from "@lumiscia/lumen-bindings/urls";
+import type { LumenPreviewComposition } from "@lumiscia/lumen-preview";
 
 import { createLumenPreview } from "../src/lib/preview.svelte.js";
 import Harness from "./PlayerHarness.svelte";
 
 interface MockSession {
   host: HTMLElement;
-  options: { preview: unknown };
+  options: { preview: unknown; wasmUrl: unknown; workerUrl: unknown };
   dispose: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
 }
@@ -25,8 +26,6 @@ vi.mock("@lumiscia/lumen-preview", () => ({
   },
 }));
 
-const bindings = {} as LumenWorkerBindings;
-
 describe("Player", () => {
   beforeEach(() => {
     sessions.length = 0;
@@ -38,10 +37,14 @@ describe("Player", () => {
     const nextPreview = createLumenPreview();
     const component = mount(Harness, {
       target: document.body,
-      props: { initialPreview: firstPreview, bindings },
+      props: { initialPreview: firstPreview },
     });
     flushSync();
     expect(sessions[0]?.host.className).toBe("stage");
+    expect(sessions[0]?.options).toMatchObject({
+      wasmUrl: defaults.wasmUrl.href,
+      workerUrl: defaults.workerUrl.href,
+    });
 
     component.setPreview(nextPreview);
     flushSync();
@@ -55,7 +58,7 @@ describe("Player", () => {
   it("sends a changed input to the current session", async () => {
     const component = mount(Harness, {
       target: document.body,
-      props: { initialPreview: createLumenPreview(), bindings },
+      props: { initialPreview: createLumenPreview() },
     });
     flushSync();
     const composition = { toJSON: () => ({}) } as unknown as LumenPreviewComposition;

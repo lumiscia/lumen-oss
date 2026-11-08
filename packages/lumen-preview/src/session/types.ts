@@ -1,7 +1,7 @@
 import type { LumenComposition } from "@lumiscia/lumen-types";
 
 import type { LumenAudioEngineOptions } from "../audio-engine.js";
-import type { LumenLogLevel, LumenWorkerBindings } from "../index.js";
+import type { LumenLogLevel } from "../index.js";
 import type { MediaSourceInput, VideoSourceRegistration } from "../media/index.js";
 import type { LumenPreviewContext } from "../preview.js";
 import type { LumenPreviewStatsCallback } from "./stats.js";
@@ -35,6 +35,9 @@ export interface LumenPreviewSessionInputs {
 
 export interface LumenPreviewSessionOptions extends LumenPreviewSessionInputs {
   audio?: LumenAudioEngineOptions;
-  bindings: LumenWorkerBindings;
   preview: LumenPreviewContext;
+  /** The wasm the worker loads: `wasmUrl` from `@lumiscia/lumen-bindings/urls`, or a copy of it. */
+  wasmUrl: string | URL;
+  /** The worker script: `workerUrl` from `@lumiscia/lumen-bindings/urls`, or a copy of it. */
+  workerUrl: string | URL;
 }

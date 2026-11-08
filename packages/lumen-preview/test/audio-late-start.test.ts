@@ -24,6 +24,9 @@ async function createAudio() {
     worker: null as { onmessage: ((event: { data: unknown }) => void) | null } | null,
   };
   vi.spyOn(performance, "now").mockImplementation(() => state.now);
+  vi.stubGlobal("location", { origin: "https://app.test" });
+  vi.stubGlobal("origin", "https://app.test");
+  vi.stubGlobal("document", { baseURI: "https://app.test/" });
   vi.stubGlobal(
     "AudioWorkletProcessor",
     class {

@@ -1,4 +1,4 @@
-import type { LumenWorkerBindings } from "@lumiscia/lumen-preview";
+import type { LumenBindings } from "@lumiscia/lumen-preview";
 
 import initPreview, * as previewBindings from "../wasm/lumen_wasm.js";
 
@@ -37,16 +37,11 @@ async function install(wasmUrl: string | URL): Promise<void> {
   }
 }
 
-export function createBindings(
-  wasmUrl: string | URL,
-  workerUrl: string | URL,
-): LumenWorkerBindings {
+export function createBindings(wasmUrl: string | URL): LumenBindings {
   return {
     preview: async () => {
       await initialize(wasmUrl);
       return previewBindings;
     },
-    previewWasmUrl: () => wasmUrl,
-    previewWorkerUrl: () => workerUrl,
   };
 }

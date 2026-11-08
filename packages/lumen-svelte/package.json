@@ -41,6 +41,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@lumiscia/lumen-bindings": "workspace:*",
     "@lumiscia/lumen-preview": "workspace:*"
   },
   "devDependencies": {

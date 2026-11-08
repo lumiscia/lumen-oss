@@ -40,24 +40,17 @@ const render = await lumen.render(composition);
 console.log((await lumen.waitForRender(render)).url);
 ```
 
-Preview it in a React page with `pnpm add @lumiscia/lumen-react @lumiscia/lumen-bindings`. The preview needs a browser with WebGPU. Svelte has the same `Player` in `@lumiscia/lumen-svelte`.
+Preview it in a React page with `pnpm add @lumiscia/lumen-react`. The preview needs a browser with WebGPU. Svelte has the same `Player` in `@lumiscia/lumen-svelte`.
 
 ```tsx
 import { Player, createLumenPreview } from "@lumiscia/lumen-react";
-import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
 import { composition } from "./composition.js";
 
 const preview = createLumenPreview();
-const bindings = createLumenBindings();
 
 export const App = () => (
   <>
-    <Player
-      preview={preview}
-      bindings={bindings}
-      composition={composition}
-      style={{ width: 640 }}
-    />
+    <Player preview={preview} composition={composition} style={{ width: 640 }} />
     <button onClick={() => preview.play()}>Play</button>
   </>
 );
@@ -113,7 +106,7 @@ See [`crates/server`](crates/server/README.md) for the current self-hosted HTTP 
 - `packages/lumen-shared`: dependency-light composition builder
 - `packages/lumen-sdk`: client for the hosted Lumiscia API (upload media, render, wait, download), re-exporting the composition builder
 - `packages/lumen-preview`: browser preview engine and media bridge
-- `packages/lumen-bindings`: the preview renderer compiled to WebAssembly, with `/bundler`, `/browser` and `/node` entry points
+- `packages/lumen-bindings`: the preview renderer compiled to WebAssembly, with the preview worker and `/browser`, `/bundler` and `/node` entry points
 - `packages/lumen-react` and `packages/lumen-svelte`: the `Player` component for each framework
 - `examples/vite-react` and `examples/vite-svelte`: preview a video with sound and a title
 - `examples/node`: renders the same composition through the hosted API

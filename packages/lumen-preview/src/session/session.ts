@@ -1,8 +1,9 @@
 import { LumenAudioEngine } from "../audio-engine.js";
 import { clockPositionMs, epochNow, fitClock, type PreviewClock } from "../clock.js";
-import type { LumenWorkerBindings } from "../index.js";
 import type { MediaRegistration, MediaSourceInput } from "../media/index.js";
 import { sameMediaInput } from "../media/source.js";
+import { assetHint } from "../asset-hint.js";
+import { createModuleWorker } from "../module-worker.js";
 import type { LumenPreviewContext, LumenPreviewErrorCode } from "../preview.js";
 import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../worker-host.js";
 import { describeError, reportConsoleError } from "./errors.js";
@@ -52,7 +53,6 @@ export class LumenPreviewSession {
   #attachment = 0;
   #audio: LumenAudioEngine | null = null;
   readonly #audioOptions: LumenPreviewSessionOptions["audio"];
-  readonly #bindings: LumenWorkerBindings;
   #canvas: HTMLCanvasElement | null = null;
   #clock = PARKED_CLOCK;
   #correctionTimer: ReturnType<typeof setInterval> | null = null;
@@ -71,16 +71,19 @@ export class LumenPreviewSession {
   #sentFonts: ReadonlyMap<string, MediaSourceInput> = new Map();
   #sentMedia: ReadonlyMap<string, MediaRegistration> = new Map();
   #timeline: { fps: number; totalFrames: number } | null = null;
+  readonly #wasmUrl: string | URL;
   #worker: Worker | null = null;
+  readonly #workerUrl: string | URL;
   #workerOptions: PreviewWorkerOptions = {
     logLevel: "off",
     lookaheadCount: DEFAULT_LOOKAHEAD_COUNT,
   };
 
-  constructor({ audio, bindings, preview, ...inputs }: LumenPreviewSessionOptions) {
+  constructor({ audio, preview, wasmUrl, workerUrl, ...inputs }: LumenPreviewSessionOptions) {
     this.#audioOptions = audio;
-    this.#bindings = bindings;
     this.preview = preview;
+    this.#wasmUrl = wasmUrl;
+    this.#workerUrl = workerUrl;
     this.#inputs = inputs;
   }
 
@@ -100,16 +103,16 @@ export class LumenPreviewSession {
     this.#startup = new AbortController();
     try {
       assertBrowserSupport();
-      assertWorkerBindings(this.#bindings);
-      worker = new Worker(String(this.#bindings.previewWorkerUrl()), { type: "module" });
+      worker = createModuleWorker(this.#workerUrl);
       this.#workerOptions = this.#desiredOptions();
       await startWorker(
         worker,
         {
           ...this.#workerOptions,
           type: "start",
-          wasmUrl: absoluteUrl(this.#bindings.previewWasmUrl()),
+          wasmUrl: absoluteUrl(this.#wasmUrl),
         },
+        absoluteUrl(this.#workerUrl),
         this.#startup.signal,
       );
     } catch (error) {
@@ -561,19 +564,11 @@ function assertBrowserSupport(): void {
   }
 }
 
-function assertWorkerBindings(bindings: LumenWorkerBindings): void {
-  if (!bindings.previewWorkerUrl?.() || !bindings.previewWasmUrl?.()) {
-    throw new PreviewStartupError(
-      "worker_failed",
-      "Lumen preview needs bindings that name a worker and its wasm. Use createLumenBindings from @lumiscia/lumen-bindings, or /bundler under Vite.",
-    );
-  }
-}
-
 /** Waits for the worker to prove it can render, before anything irreversible happens to a canvas. */
 function startWorker(
   worker: Worker,
   start: Extract<LumenPreviewWorkerCommand, { type: "start" }>,
+  workerUrl: string,
   signal: AbortSignal,
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -581,7 +576,7 @@ function startWorker(
       reject(
         new PreviewStartupError(
           "worker_failed",
-          `The Lumen preview worker failed to start: ${detail}. Check that the worker and wasm URLs are served and that the page's CSP allows them (worker-src, script-src 'wasm-unsafe-eval').`,
+          `The Lumen preview worker failed to start from ${workerUrl}: ${detail}. Check that the page's CSP allows it (worker-src, script-src 'wasm-unsafe-eval'). ${assetHint(workerUrl)}`,
         ),
       );
     const timeout = setTimeout(

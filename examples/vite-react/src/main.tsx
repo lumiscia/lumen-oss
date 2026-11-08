@@ -1,6 +1,5 @@
 import { Composition } from "@lumiscia/lumen-shared";
 import { Player, createLumenPreview, useLumenPreview } from "@lumiscia/lumen-react";
-import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
 import { createRoot } from "react-dom/client";
 
 import clipUrl from "../../assets/clip.mp4?url";
@@ -42,7 +41,6 @@ composition
   .addAudio({ source: "clip", start: 0, duration: 4, trackId: "clip-audio" });
 
 const preview = createLumenPreview();
-const bindings = createLumenBindings();
 const media = { clip: clipUrl };
 const fonts = { Roboto: robotoUrl };
 
@@ -53,7 +51,6 @@ function App() {
     <main>
       <Player
         preview={preview}
-        bindings={bindings}
         composition={composition}
         media={media}
         fonts={fonts}

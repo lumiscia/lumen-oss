@@ -1,5 +1,10 @@
 import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
 import type { MediaSourceInput } from "./media/types.js";
+import { assetHint } from "./asset-hint.js";
+import { createModuleWorker } from "./module-worker.js";
+
+const AUDIO_FALLBACK =
+  "If it isn't served there, serve `dist/audio-worker.js` from `@lumiscia/lumen-preview` beside `dist/audio-engine.js`, or pass `audio.workerModuleUrl` to `mountPreview`.";
 
 export const LUMEN_AUDIO_SAMPLE_RATE = 48_000;
 export const LUMEN_AUDIO_CHANNELS = 2;
@@ -517,7 +522,7 @@ export class LumenAudioEngine {
     }
 
     const workerModuleUrl = this.#options.workerModuleUrl ?? defaultAudioWorkerUrl();
-    const worker = new Worker(String(workerModuleUrl), { type: "module" });
+    const worker = createModuleWorker(workerModuleUrl);
     worker.onmessage = (event: MessageEvent<AudioWorkerEventMessage>) => {
       const node = this.#node;
       if (!node || event.data.generation !== this.#generation) {
@@ -528,7 +533,11 @@ export class LumenAudioEngine {
     // Without a mixer no chunk ever arrives, so stop holding the video. The next sync decodes into a
     // new worker.
     worker.onerror = (event) => {
-      console.error("[LumenAudioEngine]", event.message);
+      const url = String(workerModuleUrl);
+      console.error(
+        "[LumenAudioEngine]",
+        `the audio worker failed at ${url}: ${event.message}. ${assetHint(url, AUDIO_FALLBACK)}`,
+      );
       this.#halt();
       worker.terminate();
       this.#worker = null;

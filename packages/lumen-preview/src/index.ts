@@ -85,12 +85,6 @@ export interface LumenBindings {
   preview: () => Promise<LumenPreviewBindings>;
 }
 
-/** What a session needs: where its worker and that worker's wasm are served from. */
-export interface LumenWorkerBindings extends LumenBindings {
-  previewWasmUrl: () => string | URL;
-  previewWorkerUrl: () => string | URL;
-}
-
 export type LumenPreviewBindingSource = LumenPreviewBindings | LumenBindings;
 
 export async function resolveLumenPreviewBindings(

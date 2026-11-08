@@ -14,7 +14,6 @@ export type {
   LumenPreviewMediaEntry,
   LumenPreviewStats,
   LumenPreviewStatsCallback,
-  LumenWorkerBindings,
   MediaRegistration,
   MediaSourceInput,
 } from "@lumiscia/lumen-preview";
