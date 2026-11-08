@@ -98,8 +98,6 @@ impl CompositionFixture for AntialiasingStress {
                     id,
                     params: PathParamsDelegate {
                         data: Deferred::value(data.to_string()),
-                        trim_start: Deferred::value(0.0),
-                        trim_end: Deferred::value(1.0),
                         placement: DrawablePlacementDelegate {
                             position: Deferred::value(position),
                             ..Default::default()
@@ -112,6 +110,7 @@ impl CompositionFixture for AntialiasingStress {
                             stroke_width: Deferred::value(2.0),
                             edge_antialias: Deferred::value(self.edge_antialias),
                         },
+                        ..Default::default()
                     },
                 })
             };

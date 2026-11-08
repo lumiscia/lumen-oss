@@ -250,7 +250,10 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
         source::text_content::{
             TextHighlightDelegate, TextLineDelegate, TextSpanDelegate, TextStrokeDelegate,
         },
-        vector::paint::{GradientPaintDelegate, GradientStopDelegate, MAX_GRADIENT_STOPS},
+        vector::{
+            dash::{MAX_DASH_LENGTH, MAX_DASH_LENGTHS},
+            paint::{GradientPaintDelegate, GradientStopDelegate, MAX_GRADIENT_STOPS},
+        },
     };
 
     let mut defs = Map::new();
@@ -315,6 +318,21 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
         }),
     );
 
+    insert_def(
+        &mut defs,
+        "DashPattern",
+        json!({
+            "description": "Lengths that a stroke alternately draws and skips, starting with a dash. Each takes a literal or an expression.",
+            "type": "array",
+            "maxItems": MAX_DASH_LENGTHS,
+            "items": {
+                "anyOf": [
+                    { "type": "number", "minimum": 0, "maximum": MAX_DASH_LENGTH },
+                    { "$ref": "#/$defs/expression" }
+                ]
+            }
+        }),
+    );
     insert_def(
         &mut defs,
         "FontFeatures",
@@ -573,6 +591,7 @@ fn value_schema_json(property: &PropertyDef) -> Value {
         PropertyKind::TextHighlight => json!({ "$ref": "#/$defs/textHighlight" }),
         PropertyKind::FontFeatures => json!({ "$ref": "#/$defs/fontFeatures" }),
         PropertyKind::TextStroke => json!({ "$ref": "#/$defs/textStroke" }),
+        PropertyKind::DashPattern => json!({ "$ref": "#/$defs/dashPattern" }),
         PropertyKind::Enum => enum_schema_json(property),
     }
 }
@@ -708,6 +727,7 @@ fn property_kind_name(kind: PropertyKind) -> &'static str {
         PropertyKind::TextHighlight => "text_highlight",
         PropertyKind::FontFeatures => "font_features",
         PropertyKind::TextStroke => "text_stroke",
+        PropertyKind::DashPattern => "dash_pattern",
     }
 }
 

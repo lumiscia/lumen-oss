@@ -234,6 +234,24 @@
       "type": "object",
       "x-lumen-type": "Connection"
     },
+    "dashPattern": {
+      "description": "Lengths that a stroke alternately draws and skips, starting with a dash. Each takes a literal or an expression.",
+      "items": {
+        "anyOf": [
+          {
+            "maximum": 1e37,
+            "minimum": 0,
+            "type": "number"
+          },
+          {
+            "$ref": "#/$defs/expression"
+          }
+        ]
+      },
+      "maxItems": 16,
+      "type": "array",
+      "x-lumen-type": "DashPattern"
+    },
     "expression": {
       "description": "An expression evaluated per frame in place of a literal value.",
       "pattern": "^=([^=]|$)",
@@ -2781,6 +2799,30 @@
                     "description": "Scale multiplier per axis, about the anchor.",
                     "title": "Scale",
                     "x-lumen-kind": "vec2"
+                  },
+                  "stroke_dash": {
+                    "$ref": "#/$defs/dashPattern",
+                    "default": [],
+                    "description": "Lengths in untransformed pixels that the stroke alternately draws and skips along each\ncontour, starting with a dash. An odd number of lengths is repeated to make the\npattern, as in SVG. Each dash has round caps, so a dash of length 0 draws a dot. No\nlengths, or only zeros, draw a solid stroke. Dashes are measured along the whole\ncontour, and `trim_start` and `trim_end` then clip them.",
+                    "title": "Stroke dash",
+                    "x-lumen-kind": "dash_pattern"
+                  },
+                  "stroke_dash_offset": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Distance in untransformed pixels into the dash pattern at which each contour starts.\nIncreasing it moves the dashes toward the start of the contour.",
+                    "title": "Stroke dash offset",
+                    "x-lumen-constraints": {
+                      "step": 0.5
+                    },
+                    "x-lumen-kind": "float"
                   },
                   "stroke_enabled": {
                     "anyOf": [

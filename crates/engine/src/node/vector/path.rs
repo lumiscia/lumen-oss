@@ -1,3 +1,4 @@
+use super::dash::{DashPattern, GpuDash};
 use super::drawable::{
     DrawableMotion, DrawablePlacement, DrawableStyle, DrawableTransform, largest_scale, peak_scale,
 };
@@ -7,7 +8,7 @@ use crate::gpu::params;
 use crate::node::motion::Shutter;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
-const PATH_SHADER: &str = concat!(
+pub(crate) const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
     include_str!("paint/paint.wgsl"),
     include_str!("drawable.wgsl"),
@@ -41,6 +42,17 @@ pub struct PathParams {
     /// Normalized end of the visible stroke range for each contour.
     #[meta(name = "Trim end", min = 0, max = 1, step = 0.01)]
     pub trim_end: f64,
+    /// Lengths in untransformed pixels that the stroke alternately draws and skips along each
+    /// contour, starting with a dash. An odd number of lengths is repeated to make the
+    /// pattern, as in SVG. Each dash has round caps, so a dash of length 0 draws a dot. No
+    /// lengths, or only zeros, draw a solid stroke. Dashes are measured along the whole
+    /// contour, and `trim_start` and `trim_end` then clip them.
+    #[meta(name = "Stroke dash")]
+    pub stroke_dash: DashPattern,
+    /// Distance in untransformed pixels into the dash pattern at which each contour starts.
+    /// Increasing it moves the dashes toward the start of the contour.
+    #[meta(name = "Stroke dash offset", step = 0.5)]
+    pub stroke_dash_offset: f64,
 }
 
 impl Default for PathParams {
@@ -51,6 +63,8 @@ impl Default for PathParams {
             style: DrawableStyle::default(),
             trim_start: 0.0,
             trim_end: 1.0,
+            stroke_dash: DashPattern::default(),
+            stroke_dash_offset: 0.0,
         }
     }
 }
@@ -76,7 +90,7 @@ fn path_frame(
         .placement
         .shutter(&evaluated.placement, node_id, expr)?;
     // Curves are flattened for the largest scale that the shutter draws them at.
-    let points = parse_path_points(
+    let mut points = parse_path_points(
         &evaluated.data,
         flattening_tolerance(peak_scale(evaluated.placement.scale, shutter.as_ref())),
         MAX_PATH_POINTS,
@@ -89,6 +103,15 @@ fn path_frame(
     let (x, y) = evaluated.placement.position;
     let style = &evaluated.style;
     let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
+    let dash =
+        GpuDash::new(&evaluated.stroke_dash, evaluated.stroke_dash_offset).map_err(|details| {
+            RenderError::NodeEvaluation {
+                node_id,
+                node_kind: "Path",
+                details,
+            }
+        })?;
+    set_dash_phases(&mut points, &dash);
 
     let uniforms = PathUniforms {
         fill_paint: style.fill_paint.to_gpu(),
@@ -102,6 +125,10 @@ fn path_frame(
         ),
         trim_start,
         trim_end,
+        dash_count: dash.count,
+        dash_period: dash.period(),
+        dash_start_phase: dash.phase(0.0),
+        dash: dash.lengths,
         ..bytemuck::Zeroable::zeroed()
     };
     Ok(PathFrame::new(
@@ -417,7 +444,7 @@ fn push_path_point(
         contour_start,
         flags: 0,
         offset: 0.0,
-        _pad: 0.0,
+        dash_phase: 0.0,
     });
     true
 }
@@ -472,6 +499,30 @@ fn normalize_contour_offsets(points: &mut [PathPoint]) {
         }
         start = end + 1;
     }
+}
+
+/// Sets each point's place in `dash`, measuring along its contour in f64 so that it stays
+/// precise however long the contour is. A contour's first point takes the place where the
+/// contour ends, after its closing segment.
+fn set_dash_phases(points: &mut [PathPoint], dash: &GpuDash) {
+    let mut distance = 0.0;
+    for index in 0..points.len() {
+        let start = points[index].contour_start as usize;
+        if start == index {
+            distance = 0.0;
+        } else {
+            distance += precise_distance(points[index - 1].position, points[index].position);
+            points[index].dash_phase = dash.phase(distance);
+        }
+        if points[index].flags & POINT_END != 0 {
+            let closing = precise_distance(points[index].position, points[start].position);
+            points[start].dash_phase = dash.phase(distance + closing);
+        }
+    }
+}
+
+fn precise_distance(from: [f32; 2], to: [f32; 2]) -> f64 {
+    (f64::from(to[0]) - f64::from(from[0])).hypot(f64::from(to[1]) - f64::from(from[1]))
 }
 
 impl crate::gpu::frame_graph::RecordNode for Path {
