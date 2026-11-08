@@ -142,6 +142,10 @@ impl Packet {
     pub fn pts(&self) -> Option<i64> {
         self.inner.pts()
     }
+
+    pub fn dts(&self) -> Option<i64> {
+        self.inner.dts()
+    }
 }
 
 /// Demuxers media can be read with. Everything here keeps a file's data inside that file. Demuxers

@@ -101,6 +101,11 @@ impl AvPacket {
         (pts != sys::AV_NOPTS_VALUE).then_some(pts)
     }
 
+    pub(crate) fn dts(&self) -> Option<i64> {
+        let dts = unsafe { (*self.ptr.as_ptr()).dts };
+        (dts != sys::AV_NOPTS_VALUE).then_some(dts)
+    }
+
     pub(crate) fn is_discarded(&self) -> bool {
         unsafe { (*self.ptr.as_ptr()).flags & sys::AV_PKT_FLAG_DISCARD != 0 }
     }
