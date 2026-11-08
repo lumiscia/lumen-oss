@@ -163,19 +163,21 @@ export class LumenAudioEngine {
   }
 
   /**
-   * Replaces the timeline with the one the engine parsed from a newly loaded composition, and
-   * rewinds, because loading a composition stops the video at frame 0.
+   * Replaces the timeline with the one the engine parsed from a newly loaded composition. An
+   * identical timeline leaves playback running. A different one stops it and parks at 0, so the
+   * caller plays or seeks to where the video is. Returns whether the timeline changed.
    */
-  loadAudioTimeline(timelineJson: string | null): void {
+  loadAudioTimeline(timelineJson: string | null): boolean {
+    if (timelineJson === this.#timelineJson) {
+      return false;
+    }
     this.#halt();
     this.#pausedMs = 0;
-    if (timelineJson === this.#timelineJson) {
-      return;
-    }
     this.#timelineJson = timelineJson;
     this.#timeline =
       timelineJson === null ? null : (JSON.parse(timelineJson) as AudioEngineTimeline);
     this.#worker?.postMessage({ type: "set-timeline", timeline: this.#timeline });
+    return true;
   }
 
   /**

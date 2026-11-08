@@ -101,7 +101,7 @@ function createRunner() {
 
 async function loaded() {
   const fake = createRunner();
-  fake.runner.load(DURATION, FPS);
+  fake.runner.load(DURATION, FPS, fake.clock(0, 0));
   await fake.settle();
   return fake;
 }
@@ -117,6 +117,35 @@ describe("PreviewRunner", () => {
     fake.runner.setClock(fake.clock(0, 1));
     await fake.advance(350);
     expect(fake.rendered).toEqual([0, 1, 2, 3]);
+  });
+
+  it("starts a timeline on its clock, parked within the timeline", async () => {
+    const fake = createRunner();
+    fake.runner.load(DURATION, FPS, fake.clock(700, 0));
+    await fake.settle();
+    fake.runner.load(DURATION, FPS, fake.clock(5_000, 0));
+    await fake.settle();
+    expect(fake.rendered).toEqual([7, 19]);
+  });
+
+  it("parks a pause past the end of the loaded timeline on its last frame", async () => {
+    const fake = await loaded();
+    fake.runner.setClock(fake.clock(5_000, 0));
+    await fake.settle();
+    expect(fake.rendered).toEqual([0, 19]);
+  });
+
+  it("keeps the clock it follows through a load whose clock is only jitter", async () => {
+    const fake = await loaded();
+    fake.runner.setClock(fake.clock(0, 1));
+    await fake.advance(1_005);
+    const before = fake.rendered.length;
+    expect(fake.rendered.at(-1)).toBe(10);
+
+    fake.runner.unload();
+    fake.runner.load(DURATION, FPS, fake.clock(995, 1));
+    await fake.advance(50);
+    expect(fake.rendered.slice(before)).toEqual([10]);
   });
 
   it("wraps at the end of the timeline", async () => {
@@ -261,7 +290,7 @@ describe("PreviewRunner", () => {
     });
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-    runner.load(10_000, FAST_FPS);
+    runner.load(10_000, FAST_FPS, clock(0, 0));
     runner.setClock(clock(0, 1));
     await wait(300);
     expect(failures).toEqual([]);
@@ -284,7 +313,7 @@ describe("PreviewRunner", () => {
 
     fake.runner.unload();
     fake.holdRenders(false);
-    fake.runner.load(DURATION, FPS);
+    fake.runner.load(DURATION, FPS, fake.clock(0, 0));
     fake.held.splice(0).forEach((release) => release());
     await fake.settle();
 

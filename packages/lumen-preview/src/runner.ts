@@ -1,4 +1,4 @@
-import { clockPositionMs, type PreviewClock } from "./clock.js";
+import { clockPositionMs, fitClock, type PreviewClock } from "./clock.js";
 
 // A correction this close to the running clock is jitter, and following it could step a frame back.
 const CLOCK_TOLERANCE_MS = 30;
@@ -49,15 +49,20 @@ export class PreviewRunner<TTimer> {
     this.#host = host;
   }
 
-  /** Starts a newly loaded timeline, parked on frame 0. */
-  load(durationFrames: number, fps: number): void {
+  /**
+   * Starts a newly loaded timeline on `clock`. A running clock within jitter of the one already
+   * followed leaves that one in place, so a load never steps the frame back.
+   */
+  load(durationFrames: number, fps: number, clock: PreviewClock): void {
     this.#generation += 1;
-    this.#clock = { atEpochMs: this.#host.now(), originMs: 0, rate: 0 };
     this.#dirty = true;
     this.#durationFrames = durationFrames;
     this.#failed = false;
     this.#fps = fps;
     this.#rendered = null;
+    if (clock.rate === 0 || !this.#isJitter(clock)) {
+      this.#clock = fitClock(clock, durationFrames, fps);
+    }
     this.#wake();
   }
 
@@ -67,9 +72,10 @@ export class PreviewRunner<TTimer> {
     this.#cancelTimer();
   }
 
+  /** A parked clock is fitted to this timeline, which the page may not have heard about yet. */
   setClock(clock: PreviewClock): void {
-    const drift = this.#wrappedMs(clock.originMs - clockPositionMs(this.#clock, clock.atEpochMs));
-    if (clock.rate === this.#clock.rate && Math.abs(drift) < CLOCK_TOLERANCE_MS) {
+    clock = this.#fit(clock);
+    if (this.#isJitter(clock)) {
       return;
     }
     this.#clock = clock;
@@ -80,10 +86,14 @@ export class PreviewRunner<TTimer> {
 
   /** The newest seek wins, and one that lands on the frame on screen is answered without a render. */
   seek(seekId: number, clock: PreviewClock): void {
-    this.#clock = clock;
+    this.#clock = this.#fit(clock);
     this.#failed = false;
     this.#seekId = seekId;
     this.#wake();
+  }
+
+  #fit(clock: PreviewClock): PreviewClock {
+    return this.#durationFrames === 0 ? clock : fitClock(clock, this.#durationFrames, this.#fps);
   }
 
   #wake(): void {
@@ -173,6 +183,11 @@ export class PreviewRunner<TTimer> {
 
   #framePosition(positionMs: number): number {
     return Math.floor((Math.max(positionMs, 0) * this.#fps) / 1_000 + FRAME_EPSILON);
+  }
+
+  #isJitter(clock: PreviewClock): boolean {
+    const drift = this.#wrappedMs(clock.originMs - clockPositionMs(this.#clock, clock.atEpochMs));
+    return clock.rate === this.#clock.rate && Math.abs(drift) < CLOCK_TOLERANCE_MS;
   }
 
   /** The shortest way round the loop, because the audio clock wraps where this clock keeps going. */

@@ -13,3 +13,11 @@ export function epochNow(): number {
 export function clockPositionMs(clock: PreviewClock, nowEpochMs: number): number {
   return clock.originMs + (nowEpochMs - clock.atEpochMs) * clock.rate;
 }
+
+/** A parked clock past the end of a timeline waits on its last frame. A running one loops. */
+export function fitClock(clock: PreviewClock, durationFrames: number, fps: number): PreviewClock {
+  const lastFrameMs = (Math.max(durationFrames - 1, 0) * 1_000) / fps;
+  return clock.rate === 0 && clock.originMs > lastFrameMs
+    ? { ...clock, originMs: lastFrameMs }
+    : clock;
+}

@@ -482,21 +482,25 @@ describe("LumenAudioEngine", () => {
     });
   });
 
-  it("sends the mixer a timeline only when it changes, and rewinds on every load", async () => {
+  it("keeps playing through an identical timeline, and stops and parks at 0 for a new one", async () => {
     const engine = createEngine();
     const json = timelineJson("a");
-    engine.loadAudioTimeline(json);
+    expect(engine.loadAudioTimeline(json)).toBe(true);
     engine.play(500);
     await settled(fakes);
     const worker = fakes.workers[0];
+    const node = fakes.nodes[0];
+    expect(postedOfType(worker?.posted, "set-timeline")).toHaveLength(1);
+    expect(postedOfType(node?.posted, "pause")).toHaveLength(0);
+
+    expect(engine.loadAudioTimeline(json)).toBe(false);
+    expect(engine.isPlaying()).toBe(true);
+    expect(postedOfType(node?.posted, "pause")).toHaveLength(0);
     expect(postedOfType(worker?.posted, "set-timeline")).toHaveLength(1);
 
-    engine.loadAudioTimeline(json);
+    expect(engine.loadAudioTimeline(timelineJson("a", "b"))).toBe(true);
     expect(engine.isPlaying()).toBe(false);
     expect(engine.currentTimeMs()).toBe(0);
-    expect(postedOfType(worker?.posted, "set-timeline")).toHaveLength(1);
-
-    engine.loadAudioTimeline(timelineJson("a", "b"));
     expect(postedOfType(worker?.posted, "set-timeline")).toHaveLength(2);
   });
 

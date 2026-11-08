@@ -32,6 +32,8 @@ export type LumenPreviewWorkerCommand =
       type: "attach-canvas";
     }
   | {
+      /** Where playback is. The first render follows it, and so do clock changes during the load. */
+      clock: PreviewClock;
       compositionJson: string;
       /** New or changed fonts. A source can be large, so one the worker has isn't sent again. */
       fonts: readonly (readonly [family: string, source: MediaSourceInput])[];
@@ -120,11 +122,12 @@ export function createLumenPreviewWorkerHost({
   const loadedFonts = new Map<string, MediaSourceInput>();
   const media = new Map<string, MediaRegistration>();
   const playbackFps = new PlaybackFpsMeter();
+  // The newest clock the page sent, which a load starts on.
+  let clock: PreviewClock = { atEpochMs: 0, originMs: 0, rate: 0 };
   let canvas: OffscreenCanvas | null = null;
   let controller: LumenPreviewController | null = null;
   let lastRenderMs = 0;
   let loadId = 0;
-  let playing = false;
 
   const runner = new PreviewRunner<ReturnType<typeof setTimeout>>(
     {
@@ -146,7 +149,7 @@ export function createLumenPreviewWorkerHost({
       onFrame: (frame, seekId, renderMs) => {
         lastRenderMs = renderMs ?? lastRenderMs;
         scope.postMessage({
-          actualFps: playbackFps.sample(frame, playing),
+          actualFps: playbackFps.sample(frame, clock.rate > 0),
           frame,
           loadId,
           renderMs: lastRenderMs,
@@ -180,9 +183,11 @@ export function createLumenPreviewWorkerHost({
         requireController().clear();
         break;
       case "clock":
-        setClock(message.clock);
+        followClock(message.clock);
+        runner.setClock(message.clock);
         break;
       case "seek":
+        followClock(message.clock);
         runner.seek(message.seekId, message.clock);
         break;
       case "set-options":
@@ -238,7 +243,7 @@ export function createLumenPreviewWorkerHost({
     const isCurrent = () => message.loadId === loadId;
     loadId = message.loadId;
     runner.unload();
-    playing = false;
+    followClock(message.clock);
     lastRenderMs = 0;
     playbackFps.reset();
     replaceEntries(fonts, message.keepFonts, message.fonts);
@@ -268,7 +273,7 @@ export function createLumenPreviewWorkerHost({
         type: "loaded",
         width: activeController.width(),
       });
-      runner.load(activeController.durationFrames(), activeController.fps());
+      runner.load(activeController.durationFrames(), activeController.fps(), clock);
     } catch (error) {
       if (isCurrent()) {
         scope.postMessage({ loadId, message: describeError(error), type: "load-failed" });
@@ -301,12 +306,11 @@ export function createLumenPreviewWorkerHost({
     );
   }
 
-  function setClock(clock: PreviewClock): void {
-    if (clock.rate > 0 && !playing) {
+  function followClock(next: PreviewClock): void {
+    if (next.rate > 0 && clock.rate <= 0) {
       playbackFps.reset();
     }
-    playing = clock.rate > 0;
-    runner.setClock(clock);
+    clock = next;
   }
 }
 
