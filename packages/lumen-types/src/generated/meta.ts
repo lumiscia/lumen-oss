@@ -857,7 +857,7 @@ export type AudioTrack = {
   readonly volume?: number;
   readonly [key: string]: unknown;
 };
-export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten" | "add" | "difference" | "exclusion" | "color_dodge" | "color_burn" | "hard_light" | "soft_light";
+export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten" | "add" | "difference" | "exclusion" | "color_dodge" | "color_burn" | "hard_light" | "soft_light" | "hue" | "saturation" | "color" | "luminosity";
 export type BooleanOperation = "union" | "intersect" | "subtract" | "xor";
 export type ClipEnd = "hide" | "hold" | "loop";
 /** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */

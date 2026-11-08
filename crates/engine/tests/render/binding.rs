@@ -140,14 +140,14 @@ fn bind_errors() {
             "raster_multimerge",
             json!({ "layers": [1, 2] }),
             "blend_mode",
-            "=13",
+            "=17",
             "BlendMode",
         ),
         (
             "merge",
             json!({ "base": 1, "overlay": 2 }),
             "blend_mode",
-            "=13",
+            "=17",
             "BlendMode",
         ),
         (
