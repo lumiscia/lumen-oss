@@ -14,7 +14,10 @@ use crate::{
     media::WasmMediaStore,
     renderer::SurfaceCompositionRenderer,
     types::{AudioTimelinePayload, FrameRequirementsPayload},
-    utils::{composition_json_to_composition, image_frame_from_rgba, validate_rgba_len},
+    utils::{
+        composition_json_to_composition, image_frame_from_rgba, raw_frame_from_rgba,
+        validate_rgba_len,
+    },
 };
 
 /// The GPU device is created once per controller and kept across composition and media changes.
@@ -321,8 +324,7 @@ impl LumenPreviewController {
         if !validate_rgba_len(width, height, rgba.len()) {
             return Err(JsValue::from_str("invalid video rgba buffer length"));
         }
-        let image =
-            image_frame_from_rgba(width, height, rgba).map_err(|e| JsValue::from_str(&e))?;
+        let image = raw_frame_from_rgba(width, height, rgba).map_err(|e| JsValue::from_str(&e))?;
         self.change_media(|media| media.set_video_frame(stream_id.to_string(), frame, image))
     }
 
@@ -655,6 +657,8 @@ fn yuv_frame(input: YuvInput<'_>, data: Vec<u8>) -> Result<YuvFrame, String> {
 
 #[cfg(test)]
 mod tests {
+    use lumen_engine::media::{MediaFrame, MediaStore};
+
     use super::*;
 
     const COMPOSITION_JSON: &str = r#"{
@@ -876,6 +880,25 @@ mod tests {
         controller
             .set_video_frame(stream_id, frame, 1, 1, vec![255, 0, 0, 255])
             .expect("set frame");
+    }
+
+    #[test]
+    fn rgba_video_frames_reach_the_engine_as_decoded() {
+        let controller = controller(1 << 20);
+        let source = vec![100, 50, 24, 128];
+        controller
+            .set_video_frame("a", 0, 1, 1, source.clone())
+            .expect("set frame");
+
+        let Ok(MediaFrame::RawRgba(frame)) = controller
+            .media
+            .get_video_resolver("a")
+            .expect("resolver")
+            .frame(0)
+        else {
+            panic!("an RGBA video frame should stay unpremultiplied");
+        };
+        assert_eq!(*frame.rgba, source);
     }
 
     fn ready_at_playhead(controller: &LumenPreviewController) -> bool {

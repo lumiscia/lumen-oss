@@ -14,7 +14,6 @@ use crate::{
     media::{
         ChromaSubsampling, CpuMediaFrame, GpuVideoMediaFrame, MediaFrame, Rotation,
         VideoFrameResolver, VideoMetadata, YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix,
-        premultiply_rgba_in_place_if_needed,
         resolver::{CpuRetry, PixelOrigin, SettledOrigin},
     },
 };
@@ -443,19 +442,19 @@ impl LibavStreamDecoder {
 
     fn cpu_media_frame(&self, decoded: DecodedVideoFrame) -> Result<MediaFrame, MediaError> {
         match decoded {
-            DecodedVideoFrame::Rgba { frame, has_alpha } => self
-                .rgba_media_frame(frame, has_alpha)
-                .map(MediaFrame::CpuRgba),
+            DecodedVideoFrame::Rgba { frame, has_alpha } => {
+                let rgba = self.rgba_media_frame(frame)?;
+                Ok(if has_alpha {
+                    MediaFrame::RawRgba(rgba)
+                } else {
+                    MediaFrame::CpuRgba(rgba)
+                })
+            }
             DecodedVideoFrame::Yuv(frame) => self.yuv_media_frame(frame).map(MediaFrame::Yuv),
         }
     }
 
-    /// Premultiplies a frame that carries alpha, so opaque video skips the per-pixel loop.
-    fn rgba_media_frame(
-        &self,
-        decoded: CpuVideoFrame,
-        has_alpha: bool,
-    ) -> Result<Arc<CpuMediaFrame>, MediaError> {
+    fn rgba_media_frame(&self, decoded: CpuVideoFrame) -> Result<Arc<CpuMediaFrame>, MediaError> {
         let row_bytes = (decoded.width as usize).saturating_mul(4);
         let expected = row_bytes.saturating_mul(decoded.height as usize);
         if decoded.stride != row_bytes || decoded.data.len() < expected {
@@ -469,12 +468,8 @@ impl LibavStreamDecoder {
             });
         }
 
-        let mut rgba = decoded.data;
-        if has_alpha {
-            premultiply_rgba_in_place_if_needed(&mut rgba);
-        }
         Ok(Arc::new(CpuMediaFrame {
-            rgba: Arc::new(rgba),
+            rgba: Arc::new(decoded.data),
             width: decoded.width,
             height: decoded.height,
             row_bytes,

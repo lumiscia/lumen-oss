@@ -26,13 +26,16 @@ use crate::{
     expr::ExpressionContext,
     media::{
         CpuMediaFrame, MediaFrame, MediaStore, PlaneShape, YuvChroma, YuvFormat, YuvFrame,
-        YuvPlanes, YuvUniform,
+        YuvPlanes, YuvUniform, premultiply_rgba_in_place_if_needed,
     },
     node::{
         Deferred, Node, NodeId, NodeKind,
         compositing::clip::Clip,
         required_input,
-        source::text::{TextDraw, TextInstance},
+        source::{
+            media_in::AlphaMode,
+            text::{TextDraw, TextInstance},
+        },
     },
     scope::{FrameTime, Routed, Scope},
 };
@@ -241,6 +244,15 @@ pub(crate) struct CachedShader {
     pub(crate) layout: Arc<[LayoutEntry]>,
 }
 
+/// A CPU RGBA video frame, written to its texture before the frame's passes run.
+struct VideoUpload {
+    tex: TexRef,
+    frame: Arc<CpuMediaFrame>,
+    size: Size,
+    /// The pixels' colour isn't multiplied by alpha yet.
+    premultiply: bool,
+}
+
 /// A plane of a CPU YUV frame, written to its texture before the frame's passes run.
 struct YuvUpload {
     tex: TexRef,
@@ -273,7 +285,7 @@ struct RecordState {
     atlas: Option<TexRef>,
     /// Adopted images by their texture, and the tick that last bound each.
     media: HashMap<usize, (TexRef, u64)>,
-    video_uploads: Vec<(TexRef, Arc<CpuMediaFrame>, Size)>,
+    video_uploads: Vec<VideoUpload>,
     yuv_uploads: Vec<YuvUpload>,
     /// The slot each video source's GPU frames are imported into, and when it was last used.
     #[cfg(feature = "ffmpeg")]
@@ -585,8 +597,17 @@ impl FrameGraph {
         bound: &BoundFrame,
         atlas_texture: Option<&wgpu::Texture>,
     ) -> crate::Result<()> {
-        for (tex, frame, size) in self.state.video_uploads.drain(..) {
-            let rgba = fit_frame_to_rgba8(&frame, size.width, size.height);
+        for VideoUpload {
+            tex,
+            frame,
+            size,
+            premultiply,
+        } in self.state.video_uploads.drain(..)
+        {
+            let mut rgba = fit_frame_to_rgba8(&frame, size.width, size.height);
+            if premultiply {
+                premultiply_rgba_in_place_if_needed(&mut rgba);
+            }
             self.recorder.queue().write_texture(
                 self.recorder.texture(tex).as_image_copy(),
                 &rgba,
@@ -1315,9 +1336,9 @@ impl<'a> FrameCx<'a> {
     ) -> crate::Result<TexRef> {
         let cpu = match frame {
             MediaFrame::CpuRgba(cpu) => cpu,
-            MediaFrame::Yuv(_) => {
+            MediaFrame::RawRgba(_) | MediaFrame::Yuv(_) => {
                 return Err(RenderError::Gpu {
-                    details: "an image resolver returned a YUV frame".to_string(),
+                    details: "an image resolver returned a video frame".to_string(),
                 }
                 .into());
             }
@@ -1364,19 +1385,37 @@ impl<'a> FrameCx<'a> {
     }
 
     /// A pooled texture a CPU video frame is written to before the frame's passes run.
-    fn cpu_video_texture(&mut self, frame: Arc<CpuMediaFrame>, size: Size) -> TexRef {
+    fn cpu_video_texture(
+        &mut self,
+        frame: Arc<CpuMediaFrame>,
+        size: Size,
+        premultiply: bool,
+    ) -> TexRef {
         let tex =
             self.rec
                 .acquire_written_early(size, RGBA8, TextureDesc::sampled(size, RGBA8).usage);
-        self.st.video_uploads.push((tex, frame, size));
+        self.st.video_uploads.push(VideoUpload {
+            tex,
+            frame,
+            size,
+            premultiply,
+        });
         tex
     }
 
     /// The texture of a frame decoded on the CPU, either as RGBA or as YUV planes.
-    fn cpu_frame_texture(&mut self, frame: MediaFrame, size: Size) -> crate::Result<TexRef> {
+    fn cpu_frame_texture(
+        &mut self,
+        frame: MediaFrame,
+        size: Size,
+        alpha: AlphaMode,
+    ) -> crate::Result<TexRef> {
         match frame {
-            MediaFrame::CpuRgba(frame) => Ok(self.cpu_video_texture(frame, size)),
-            MediaFrame::Yuv(frame) => self.yuv_video_texture(frame, size),
+            MediaFrame::CpuRgba(frame) => Ok(self.cpu_video_texture(frame, size, false)),
+            MediaFrame::RawRgba(frame) => {
+                Ok(self.cpu_video_texture(frame, size, alpha == AlphaMode::Straight))
+            }
+            MediaFrame::Yuv(frame) => self.yuv_video_texture(frame, size, alpha),
             #[cfg(feature = "ffmpeg")]
             MediaFrame::GpuVideo(_) => Err(RenderError::Gpu {
                 details: "a CPU frame was expected, not a GPU one".to_string(),
@@ -1387,7 +1426,12 @@ impl<'a> FrameCx<'a> {
 
     /// Writes a CPU YUV frame's planes to pooled textures before the frame's passes run, and
     /// converts them to RGBA.
-    fn yuv_video_texture(&mut self, frame: Arc<YuvFrame>, size: Size) -> crate::Result<TexRef> {
+    fn yuv_video_texture(
+        &mut self,
+        frame: Arc<YuvFrame>,
+        size: Size,
+        alpha: AlphaMode,
+    ) -> crate::Result<TexRef> {
         frame.validate().map_err(|details| RenderError::Gpu {
             details: format!("a YUV frame can't be read: {details}"),
         })?;
@@ -1427,11 +1471,12 @@ impl<'a> FrameCx<'a> {
             });
             tex
         });
-        self.yuv_to_rgba(&planes, &frame.format, size)
+        self.yuv_to_rgba(&planes, &frame.format, size, alpha)
     }
 
     /// Converts YUV planes into a premultiplied RGBA8 texture of `size`, showing the frame
-    /// `format` describes upright and stretched to it by nearest neighbour. Plane textures hold
+    /// `format` describes upright and stretched to it by nearest neighbour. Colour that `alpha`
+    /// says is already premultiplied is left as it is. Plane textures hold
     /// unsigned-integer samples (`R8Uint`, `Rg8Uint` for interleaved chroma, or their 16-bit forms)
     /// with the frame at their top left, and any texture this frame's passes can read will do:
     /// pooled ones written before the passes, or adopted ones a decoder filled on the GPU.
@@ -1440,6 +1485,7 @@ impl<'a> FrameCx<'a> {
         planes: &YuvPlanes<TexRef>,
         format: &YuvFormat,
         size: Size,
+        alpha: AlphaMode,
     ) -> crate::Result<TexRef> {
         let program = self.program(
             "yuv-to-rgba",
@@ -1452,11 +1498,12 @@ impl<'a> FrameCx<'a> {
             YuvChroma::Planar { u, v } => (u, v, false),
         };
         // An absent alpha plane binds luma in its place, which the shader doesn't read.
-        let alpha = planes.alpha.unwrap_or(planes.luma);
+        let alpha_plane = planes.alpha.unwrap_or(planes.luma);
         let uniform = self.rec.uniform(&YuvUniform::new(
             format,
             interleaved,
             planes.alpha.is_some(),
+            alpha == AlphaMode::Premultiplied,
         ));
         let target = self.storage_target(size);
         self.rec.compute(
@@ -1465,7 +1512,7 @@ impl<'a> FrameCx<'a> {
                 (0, Res::Tex(planes.luma)),
                 (1, Res::Tex(u)),
                 (2, Res::Tex(v)),
-                (3, Res::Tex(alpha)),
+                (3, Res::Tex(alpha_plane)),
                 (4, uniform),
                 (5, Res::Tex(target)),
             ],
@@ -1483,10 +1530,11 @@ impl<'a> FrameCx<'a> {
         #[cfg_attr(not(feature = "ffmpeg"), allow(unused_variables))] node_id: NodeId,
         frame: MediaFrame,
         size: Size,
+        alpha: AlphaMode,
     ) -> crate::Result<TexRef> {
         match frame {
-            frame @ (MediaFrame::CpuRgba(_) | MediaFrame::Yuv(_)) => {
-                self.cpu_frame_texture(frame, size)
+            frame @ (MediaFrame::CpuRgba(_) | MediaFrame::RawRgba(_) | MediaFrame::Yuv(_)) => {
+                self.cpu_frame_texture(frame, size, alpha)
             }
             #[cfg(feature = "ffmpeg")]
             MediaFrame::GpuVideo(frame) => {
@@ -1516,7 +1564,7 @@ impl<'a> FrameCx<'a> {
                             .map_with_shape(&imported.format, |texture, _| {
                                 self.adopted_media(Arc::clone(texture))
                             });
-                        self.yuv_to_rgba(&planes, &imported.format, size)
+                        self.yuv_to_rgba(&planes, &imported.format, size, alpha)
                     }
                     Err(reason) => {
                         let cpu = frame.decode_on_cpu(&reason).map_err(|error| RenderError::Gpu {
@@ -1524,7 +1572,7 @@ impl<'a> FrameCx<'a> {
                                 "failed to import GPU media frame: {reason}; decoding it on the CPU also failed: {error}"
                             ),
                         })?;
-                        self.cpu_frame_texture(cpu, size)
+                        self.cpu_frame_texture(cpu, size, alpha)
                     }
                 }
             }

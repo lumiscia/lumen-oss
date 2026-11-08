@@ -28,12 +28,12 @@ pub fn validate_rgba_len(width: u32, height: u32, len: usize) -> bool {
         .is_some_and(|expected| expected == len)
 }
 
-pub fn image_frame_from_rgba(
+/// A frame holding `rgba` as it is, whose colour may or may not be multiplied by alpha.
+pub fn raw_frame_from_rgba(
     width: u32,
     height: u32,
-    mut rgba: Vec<u8>,
+    rgba: Vec<u8>,
 ) -> Result<CpuMediaFrame, String> {
-    premultiply_rgba_in_place_if_needed(&mut rgba);
     let expected = width as usize * height as usize * 4;
     if rgba.len() < expected {
         return Err("RGBA buffer is smaller than frame dimensions".to_string());
@@ -44,6 +44,16 @@ pub fn image_frame_from_rgba(
         height,
         row_bytes: width as usize * 4,
     })
+}
+
+/// A frame of straight-alpha `rgba` with its colour premultiplied.
+pub fn image_frame_from_rgba(
+    width: u32,
+    height: u32,
+    mut rgba: Vec<u8>,
+) -> Result<CpuMediaFrame, String> {
+    premultiply_rgba_in_place_if_needed(&mut rgba);
+    raw_frame_from_rgba(width, height, rgba)
 }
 
 pub fn composition_json_to_composition(composition_json: &str) -> Result<Composition, String> {

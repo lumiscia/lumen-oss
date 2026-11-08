@@ -19,9 +19,10 @@ struct Params {
     g_cb: f32,
     g_cr: f32,
     b_cb: f32,
+    // Non-zero when the planes' colour is already multiplied by alpha.
+    premultiplied: u32,
     _pad0: f32,
     _pad1: f32,
-    _pad2: f32,
 }
 
 @group(0) @binding(0) var luma: texture_2d<u32>;
@@ -74,5 +75,6 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (params.has_alpha != 0u) {
         a = min(f32(textureLoad(alpha, coded, 0).x >> shift) * params.a_scale, 1.0);
     }
-    textureStore(output, id.xy, vec4<f32>(rgb * a, a));
+    let color = select(rgb * a, rgb, params.premultiplied != 0u);
+    textureStore(output, id.xy, vec4<f32>(color, a));
 }

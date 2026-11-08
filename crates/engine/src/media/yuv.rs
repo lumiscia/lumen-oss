@@ -310,11 +310,18 @@ pub(crate) struct YuvUniform {
     pub(crate) g_cb: f32,
     pub(crate) g_cr: f32,
     pub(crate) b_cb: f32,
-    pub(crate) _pad: [f32; 3],
+    /// Non-zero when the planes' colour is already multiplied by alpha.
+    pub(crate) premultiplied: u32,
+    pub(crate) _pad: [f32; 2],
 }
 
 impl YuvUniform {
-    pub(crate) fn new(format: &YuvFormat, interleaved: bool, has_alpha: bool) -> Self {
+    pub(crate) fn new(
+        format: &YuvFormat,
+        interleaved: bool,
+        has_alpha: bool,
+        premultiplied: bool,
+    ) -> Self {
         let depth = u32::from(format.depth.clamp(8, 16));
         let max = ((1u32 << depth) - 1) as f32;
         let scale = (1u32 << (depth - 8)) as f32;
@@ -354,7 +361,8 @@ impl YuvUniform {
             g_cb: -2.0 * (1.0 - kb) * kb / kg,
             g_cr: -2.0 * (1.0 - kr) * kr / kg,
             b_cb: 2.0 * (1.0 - kb),
-            _pad: [0.0; 3],
+            premultiplied: u32::from(premultiplied),
+            _pad: [0.0; 2],
         }
     }
 }
@@ -408,17 +416,17 @@ mod tests {
     #[test]
     fn coefficients_match_reference_conversions() {
         let red = [76.0, 109.0, 211.0];
-        let limited_709 = YuvUniform::new(&format(8, false, YuvMatrix::Bt709), true, false);
+        let limited_709 = YuvUniform::new(&format(8, false, YuvMatrix::Bt709), true, false, false);
         assert_near(rgb(&limited_709, red), [219, 30, 30], "limited BT.709");
-        let limited_601 = YuvUniform::new(&format(8, false, YuvMatrix::Bt601), true, false);
+        let limited_601 = YuvUniform::new(&format(8, false, YuvMatrix::Bt601), true, false, false);
         assert_near(rgb(&limited_601, red), [202, 10, 32], "limited BT.601");
-        let full_709 = YuvUniform::new(&format(8, true, YuvMatrix::Bt709), true, false);
+        let full_709 = YuvUniform::new(&format(8, true, YuvMatrix::Bt709), true, false, false);
         assert_near(
             rgb(&full_709, [70.0, 106.0, 222.0]),
             [218, 30, 29],
             "full BT.709",
         );
-        let ten_bit = YuvUniform::new(&format(10, false, YuvMatrix::Bt709), true, false);
+        let ten_bit = YuvUniform::new(&format(10, false, YuvMatrix::Bt709), true, false, false);
         assert_near(rgb(&ten_bit, red.map(|s| s * 4.0)), [219, 30, 30], "10-bit");
     }
 
