@@ -6,8 +6,8 @@
 //! generating a few. `LUMEN_VULKAN_DECODE_FILES=<a.mp4>:<b.mkv>` adds real footage to the playback
 //! checks and prints how close each file came. `LUMEN_VULKAN_DECODE_REQUIRED=1` fails the IDR seek
 //! test instead of skipping it, for runs on hardware that should be able to run it.
-//! `LUMEN_VULKAN_DECODE_EXPECT=libx265_yuv420p10le,libsvtav1_yuv420p10le` fails instead of skipping
-//! when a clip whose file name contains one of the tags doesn't decode on the GPU.
+//! `LUMEN_VULKAN_DECODE_EXPECT=libx265_yuv420p10le,libsvtav1_yuv420p10le` fails the patch test
+//! unless a clip whose file name contains each tag decodes on the GPU and matches software.
 #![cfg(all(target_os = "linux", feature = "ffmpeg", feature = "vulkan"))]
 
 use std::{
@@ -178,9 +178,26 @@ fn software() -> (GpuCompositionRenderer, Store) {
     (renderer, Store::new(FfmpegResolverOptions::default()))
 }
 
+/// Tags from `LUMEN_VULKAN_DECODE_EXPECT`.
+fn expected_tags() -> Vec<String> {
+    std::env::var("LUMEN_VULKAN_DECODE_EXPECT")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Whether the source's frames arrive as GPU frames. A decoder that opens may still move to the CPU
-/// on its first frame. Fails instead of skipping for a source whose file name contains a tag in
-/// `LUMEN_VULKAN_DECODE_EXPECT`.
+/// on its first frame. Fails instead of skipping for a source whose file name contains an
+/// [`expected_tags`] tag.
 fn decodes_on_hardware(store: &Store, path: &Path) -> bool {
     let source = path.to_string_lossy();
     let reason = match store.resolver(&source).frame(0) {
@@ -188,15 +205,25 @@ fn decodes_on_hardware(store: &Store, path: &Path) -> bool {
         Ok(_) => "it moved to the CPU".to_string(),
         Err(error) => format!("decoding failed: {error}"),
     };
-    let expected = std::env::var("LUMEN_VULKAN_DECODE_EXPECT").unwrap_or_default();
+    let name = file_name(path);
     assert!(
-        !expected
-            .split(',')
-            .any(|tag| !tag.is_empty() && source.contains(tag)),
+        !expected_tags()
+            .iter()
+            .any(|tag| name.contains(tag.as_str())),
         "{source} should decode on this hardware, but {reason}"
     );
     eprintln!("{source} doesn't decode on this hardware ({reason}); skipping");
     false
+}
+
+/// Fails unless every [`expected_tags`] tag is in the file name of a clip in `checked`.
+fn assert_expected_checked(checked: &[PathBuf]) {
+    for tag in expected_tags() {
+        assert!(
+            checked.iter().any(|path| file_name(path).contains(&tag)),
+            "LUMEN_VULKAN_DECODE_EXPECT names `{tag}`, but no clip with it was compared on the GPU"
+        );
+    }
 }
 
 /// The first test clip whose frames arrive as GPU frames.
@@ -331,12 +358,13 @@ fn patch_error(a: &[u8], b: &[u8], width: usize, height: usize) -> (u8, usize, u
     worst
 }
 
-fn check_patch_clip(path: &Path) {
+/// Compares `path` decoded on the GPU with software inside its patches, returning whether it did.
+fn check_patch_clip(path: &Path) -> bool {
     let Some((mut hardware_renderer, hardware_store)) = hardware() else {
-        return;
+        return false;
     };
     if !decodes_on_hardware(&hardware_store, path) {
-        return;
+        return false;
     }
     let (mut software_renderer, software_store) = software();
     let source = path.to_string_lossy();
@@ -366,6 +394,7 @@ fn check_patch_clip(path: &Path) {
     }
     assert!(decodes_on_hardware(&hardware_store, path), "{source}");
     println!("{source}: patches within {MAX_CHANNEL_ERROR}/255");
+    true
 }
 
 /// Flat patches in `sampling`'s raw format, whose YCbCr is computed from `PATCH_RGB` with `matrix`
@@ -522,11 +551,11 @@ fn decoded_colours_match_software_inside_patches() {
             .map(|entry| entry.unwrap().path())
             .collect();
         clips.sort();
-        for clip in clips {
-            check_patch_clip(&clip);
-        }
+        clips.retain(|clip| check_patch_clip(clip));
+        assert_expected_checked(&clips);
         return;
     }
+    let mut checked = Vec::new();
     let directory = tempfile::tempdir().expect("temp dir");
     let [h264, hevc, av1] = ENCODERS;
     // HEVC Main 10 is what iPhones record.
@@ -556,9 +585,12 @@ fn decoded_colours_match_software_inside_patches() {
             ) else {
                 break;
             };
-            check_patch_clip(&clip);
+            if check_patch_clip(&clip) {
+                checked.push(clip);
+            }
         }
     }
+    assert_expected_checked(&checked);
 }
 
 fn motion_clip(directory: &Path, encoder: &[&str]) -> Option<PathBuf> {
