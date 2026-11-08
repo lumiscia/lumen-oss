@@ -282,8 +282,14 @@ mod tests {
         }))
         .unwrap();
         let options = RenderOptions {
-            // Registered in every FFmpeg build, and refuses the frames lumen gives a video encoder.
-            encoder: Some(VideoEncoderChoice::single("bmp", EncoderQuality::default())),
+            // libx264 only checks `tune` when it opens.
+            encoder: Some(VideoEncoderChoice::single(
+                "libx264",
+                EncoderQuality {
+                    options: vec![("tune".to_string(), "not-a-tune".to_string())],
+                    ..EncoderQuality::default()
+                },
+            )),
             ..RenderOptions::default()
         };
 
