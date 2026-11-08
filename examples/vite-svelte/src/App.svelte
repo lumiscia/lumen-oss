@@ -1,7 +1,6 @@
 <script lang="ts">
     import { Composition } from "@lumiscia/lumen-shared";
     import { Player, createLumenPreview } from "@lumiscia/lumen-svelte";
-    import { createLumenBindings } from "@lumiscia/lumen-bindings/bundler";
 
     import clipUrl from "../../assets/clip.mp4?url";
     import robotoUrl from "../../../crates/text/assets/roboto/Roboto-Regular.ttf?url";
@@ -41,13 +40,12 @@
         .addAudio({ source: "clip", start: 0, duration: 4, trackId: "clip-audio" });
 
     const preview = createLumenPreview();
-    const bindings = createLumenBindings();
     const media = { clip: clipUrl };
     const fonts = { Roboto: robotoUrl };
 </script>
 
 <main>
-    <Player {preview} {bindings} {composition} {media} {fonts} class="stage" />
+    <Player {preview} {composition} {media} {fonts} class="stage" />
     <div class="controls">
         <button
             type="button"

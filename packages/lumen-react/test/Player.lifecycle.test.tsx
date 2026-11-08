@@ -4,7 +4,7 @@ import { act, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createLumenPreview, type LumenWorkerBindings } from "@lumiscia/lumen-preview";
+import { createLumenPreview } from "@lumiscia/lumen-preview";
 
 import { Player } from "../src/Player.js";
 
@@ -20,12 +20,6 @@ class FakeWorker {
     this.terminated = true;
   }
 }
-
-const bindings: LumenWorkerBindings = {
-  preview: () => Promise.reject(new Error("unused")),
-  previewWasmUrl: () => "https://a.test/lumen.wasm",
-  previewWorkerUrl: () => "https://a.test/worker.js",
-};
 
 // The real session, with only the browser's Worker, canvas transfer and WebGPU faked.
 describe("Player with a real session", () => {
@@ -51,7 +45,7 @@ describe("Player with a real session", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <Player preview={preview} bindings={bindings} />
+          <Player preview={preview} />
         </StrictMode>,
       );
     });

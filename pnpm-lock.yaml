@@ -108,9 +108,6 @@ importers:
 
   examples/vite-react:
     dependencies:
-      '@lumiscia/lumen-bindings':
-        specifier: workspace:*
-        version: link:../../packages/lumen-bindings
       '@lumiscia/lumen-preview':
         specifier: workspace:*
         version: link:../../packages/lumen-preview
@@ -142,9 +139,6 @@ importers:
 
   examples/vite-svelte:
     dependencies:
-      '@lumiscia/lumen-bindings':
-        specifier: workspace:*
-        version: link:../../packages/lumen-bindings
       '@lumiscia/lumen-shared':
         specifier: workspace:*
         version: link:../../packages/lumen-shared
@@ -186,6 +180,9 @@ importers:
 
   packages/lumen-react:
     dependencies:
+      '@lumiscia/lumen-bindings':
+        specifier: workspace:*
+        version: link:../lumen-bindings
       '@lumiscia/lumen-preview':
         specifier: workspace:*
         version: link:../lumen-preview
@@ -230,6 +227,9 @@ importers:
 
   packages/lumen-svelte:
     dependencies:
+      '@lumiscia/lumen-bindings':
+        specifier: workspace:*
+        version: link:../lumen-bindings
       '@lumiscia/lumen-preview':
         specifier: workspace:*
         version: link:../lumen-preview

@@ -1,11 +1,13 @@
 <script lang="ts">
     import { untrack } from "svelte";
+    import * as defaults from "@lumiscia/lumen-bindings/urls";
     import { mountPreview, type LumenPreviewSession } from "@lumiscia/lumen-preview";
     import type { PlayerProps } from "./types.js";
 
     let {
         preview,
-        bindings,
+        wasmUrl,
+        workerUrl,
         composition,
         fonts,
         lookaheadCount,
@@ -18,6 +20,9 @@
 
     const inputs = () => ({ composition, fonts, lookaheadCount, logLevel, media, onStats });
 
+    const wasm = $derived(String(wasmUrl ?? defaults.wasmUrl));
+    const worker = $derived(String(workerUrl ?? defaults.workerUrl));
+
     let host = $state<HTMLDivElement>();
     let session = $state.raw<LumenPreviewSession>();
 
@@ -25,7 +30,12 @@
         if (!host) {
             return;
         }
-        const mounted = mountPreview(host, { ...untrack(inputs), bindings, preview });
+        const mounted = mountPreview(host, {
+            ...untrack(inputs),
+            preview,
+            wasmUrl: wasm,
+            workerUrl: worker,
+        });
         session = mounted;
         return () => mounted.dispose();
     });

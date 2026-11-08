@@ -121,13 +121,8 @@ function createSession(inputs: ConstructorParameters<typeof LumenPreviewSession>
   const canvases: unknown[] = [];
   const host = { append: (canvas: unknown) => canvases.push(canvas) } as unknown as HTMLElement;
   const session = new LumenPreviewSession({
-    bindings: {
-      preview: async () => {
-        throw new Error("a session loads its bindings in the worker");
-      },
-      previewWasmUrl: () => "https://a.test/lumen.wasm",
-      previewWorkerUrl: () => "https://a.test/worker.js",
-    },
+    wasmUrl: "https://a.test/lumen.wasm",
+    workerUrl: "https://a.test/worker.js",
     composition: composition("first"),
     preview,
     ...inputs,
@@ -272,7 +267,7 @@ describe("LumenPreviewSession", () => {
   it("reports a browser without WebGPU before it creates a worker", async () => {
     vi.stubGlobal("navigator", {});
     const preview = new LumenPreviewContext();
-    const session = new LumenPreviewSession({ bindings: {} as never, preview });
+    const session = new LumenPreviewSession({ preview, wasmUrl: "", workerUrl: "" });
     await session.attach({} as HTMLElement);
 
     expect(preview.getSnapshot().errorCode).toBe("webgpu_unavailable");

@@ -22,6 +22,8 @@
   },
   "files": [
     "dist",
+    "urls.d.ts",
+    "urls.js",
     "wasm"
   ],
   "type": "module",
@@ -48,6 +50,10 @@
     "./node": {
       "types": "./dist/node/index.d.ts",
       "default": "./dist/node/index.js"
+    },
+    "./urls": {
+      "types": "./urls.d.ts",
+      "default": "./urls.js"
     }
   },
   "scripts": {
