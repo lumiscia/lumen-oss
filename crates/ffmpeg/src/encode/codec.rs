@@ -1,4 +1,4 @@
-use std::ffi::{CString, c_int, c_void};
+use std::ffi::CString;
 
 use crate::ffi::sys;
 use crate::gpu::GpuBackend;
@@ -92,6 +92,14 @@ pub(crate) fn video_encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
 
 /// Whether `codec` lists `yuv420p` among its input formats. One that lists none takes any.
 fn takes_yuv420p(codec: *const sys::AVCodec) -> bool {
+    pixel_formats(codec)
+        .is_none_or(|formats| formats.contains(&sys::AVPixelFormat::AV_PIX_FMT_YUV420P))
+}
+
+#[cfg(ffmpeg_supported_config)]
+fn pixel_formats(codec: *const sys::AVCodec) -> Option<&'static [sys::AVPixelFormat]> {
+    use std::ffi::{c_int, c_void};
+
     let mut formats: *const c_void = std::ptr::null();
     let mut count: c_int = 0;
     let result = unsafe {
@@ -105,15 +113,29 @@ fn takes_yuv420p(codec: *const sys::AVCodec) -> bool {
         )
     };
     if result < 0 || formats.is_null() {
-        return true;
+        return None;
     }
-    let formats = unsafe {
+    // The list is static data of the codec.
+    Some(unsafe {
         std::slice::from_raw_parts(
             formats.cast::<sys::AVPixelFormat>(),
             usize::try_from(count).unwrap_or(0),
         )
-    };
-    formats.contains(&sys::AVPixelFormat::AV_PIX_FMT_YUV420P)
+    })
+}
+
+#[cfg(not(ffmpeg_supported_config))]
+fn pixel_formats(codec: *const sys::AVCodec) -> Option<&'static [sys::AVPixelFormat]> {
+    let formats = unsafe { (*codec).pix_fmts };
+    if formats.is_null() {
+        return None;
+    }
+    let mut count = 0;
+    while unsafe { *formats.add(count) } != sys::AVPixelFormat::AV_PIX_FMT_NONE {
+        count += 1;
+    }
+    // The list is static data of the codec, ended by `AV_PIX_FMT_NONE`.
+    Some(unsafe { std::slice::from_raw_parts(formats, count) })
 }
 
 pub(crate) fn encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
