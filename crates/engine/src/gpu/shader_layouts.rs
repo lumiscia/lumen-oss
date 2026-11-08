@@ -68,7 +68,6 @@ fn path_layouts() -> Vec<Layout> {
             origin,
             dash_count,
             dash_period,
-            dash_offset,
             dash,
             motion,
         ),
@@ -79,7 +78,7 @@ fn path_layouts() -> Vec<Layout> {
             contour_start,
             flags,
             offset,
-            contour_length,
+            dash_phase,
         ),
     ]
 }

@@ -239,6 +239,7 @@
       "items": {
         "anyOf": [
           {
+            "maximum": 1e37,
             "minimum": 0,
             "type": "number"
           },

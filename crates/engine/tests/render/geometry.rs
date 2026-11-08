@@ -695,9 +695,9 @@ fn dash_rows() -> Vec<Case> {
             }
         }))
     };
-    let stroked = |data: &str, more: Value| {
+    let stroked_in = |size: (u32, u32), data: &str, more: Value| {
         path(
-            (48, 48),
+            size,
             with(
                 json!({
                     "data": data, "fill_enabled": false, "stroke_enabled": true,
@@ -707,6 +707,7 @@ fn dash_rows() -> Vec<Case> {
             ),
         )
     };
+    let stroked = |data: &str, more: Value| stroked_in((48, 48), data, more);
     let corner = "M 4 4 L 30 4 L 30 30";
     let corner_dashes = "M 4 4 L 24 4 M 26 4 L 30 4 L 30 20 M 30 22 L 30 30";
     let corner_dash = |more: Value| with(json!({ "stroke_dash": [20, 2] }), more);
@@ -809,7 +810,79 @@ fn dash_rows() -> Vec<Case> {
             ),
         )
         .tolerance(2),
+        Case::new(
+            "under non-uniform scale a dash beyond the nearest point can cover a pixel",
+            stroked(
+                "M 0 0 L 20 20",
+                json!({
+                    "stroke_dash": [0.1, 0.1], "stroke_width": 10, "scale": [20, 0.05],
+                    "position": [10, 10]
+                }),
+            ),
+            Expect::Matches(
+                stroked(
+                    &diagonal_dashes(),
+                    json!({ "stroke_width": 10, "scale": [20, 0.05], "position": [10, 10] }),
+                )
+                .into(),
+            ),
+        )
+        .tolerance(2),
+        Case::new(
+            "a dash ending at a corner keeps its cap under non-uniform scale",
+            // The dash ends 4e-6 before the corner, nearer than f32 can tell apart from it.
+            stroked_in(
+                (160, 64),
+                "M 0 0 L 64 0 L 64 40",
+                json!({
+                    "stroke_dash": [72, 100], "stroke_dash_offset": 8.000004,
+                    "stroke_width": 4, "scale": [2, 0.75], "position": [12, 20]
+                }),
+            ),
+            Expect::Matches(
+                stroked_in(
+                    (160, 64),
+                    "M 0 0 L 64 0",
+                    json!({ "stroke_width": 4, "scale": [2, 0.75], "position": [12, 20] }),
+                )
+                .into(),
+            ),
+        )
+        .tolerance(2),
+        Case::new(
+            "a short segment ending a long contour keeps its dash spacing",
+            path(
+                (128, 96),
+                json!({
+                    "data": "M 1 -10000000 L 1 4 L 6 4", "fill_enabled": false,
+                    "stroke_enabled": true, "stroke_width": 0.1, "stroke_dash": [4, 4],
+                    "scale": [20, 20]
+                }),
+            ),
+            Expect::Probes(vec![(90, 80, CLEAR), (110, 80, BLACK)]),
+        ),
+        Case::new(
+            "a dash period that underflows f32 strokes solidly",
+            line(json!([1e-50, 1e-50]), json!({})),
+            Expect::Matches(line(json!([]), json!({})).into()),
+        )
+        .tolerance(0),
     ]
+}
+
+/// `M 0 0 L 20 20` dashed by `[0.1, 0.1]`, as one contour per dash.
+fn diagonal_dashes() -> String {
+    let length = 20.0 * std::f64::consts::SQRT_2;
+    let point = |distance: f64| distance.min(length) / std::f64::consts::SQRT_2;
+    (0..)
+        .map(|index| 0.2 * f64::from(index))
+        .take_while(|&start| start < length)
+        .map(|start| {
+            let (from, to) = (point(start), point(start + 0.1));
+            format!("M {from} {from} L {to} {to}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A shape or path drawn at `scale` and `rotation` against its supersampled outline.

@@ -90,7 +90,7 @@ fn path_frame(
         .placement
         .shutter(&evaluated.placement, node_id, expr)?;
     // Curves are flattened for the largest scale that the shutter draws them at.
-    let points = parse_path_points(
+    let mut points = parse_path_points(
         &evaluated.data,
         flattening_tolerance(peak_scale(evaluated.placement.scale, shutter.as_ref())),
         MAX_PATH_POINTS,
@@ -111,6 +111,7 @@ fn path_frame(
                 details,
             }
         })?;
+    set_dash_phases(&mut points, &dash);
 
     let uniforms = PathUniforms {
         fill_paint: style.fill_paint.to_gpu(),
@@ -125,8 +126,7 @@ fn path_frame(
         trim_start,
         trim_end,
         dash_count: dash.count,
-        dash_period: dash.period,
-        dash_offset: dash.offset,
+        dash_period: dash.period(),
         dash: dash.lengths,
         ..bytemuck::Zeroable::zeroed()
     };
@@ -443,7 +443,7 @@ fn push_path_point(
         contour_start,
         flags: 0,
         offset: 0.0,
-        contour_length: 0.0,
+        dash_phase: 0.0,
     });
     true
 }
@@ -495,11 +495,26 @@ fn normalize_contour_offsets(points: &mut [PathPoint]) {
                 length += point_distance(points[index - 1].position, points[index].position);
                 points[index].offset = length / total_length;
             }
-            for point in &mut points[start..=end] {
-                point.contour_length = total_length;
-            }
         }
         start = end + 1;
+    }
+}
+
+/// Sets each point's place in `dash`, measuring along its contour in f64 so that it stays
+/// precise however long the contour is.
+fn set_dash_phases(points: &mut [PathPoint], dash: &GpuDash) {
+    let mut distance = 0.0;
+    for index in 0..points.len() {
+        distance = if points[index].contour_start == index as u32 {
+            0.0
+        } else {
+            distance
+                + f64::from(point_distance(
+                    points[index - 1].position,
+                    points[index].position,
+                ))
+        };
+        points[index].dash_phase = dash.phase(distance);
     }
 }
 
@@ -775,12 +790,6 @@ mod tests {
         assert_eq!(points[2].offset, 1.0);
         assert_eq!(points[3].offset, 0.0);
         assert_eq!(points[4].offset, 0.5);
-        assert!(
-            points[..3]
-                .iter()
-                .all(|point| point.contour_length == 100.0)
-        );
-        assert!(points[3..].iter().all(|point| point.contour_length == 40.0));
     }
 
     #[test]

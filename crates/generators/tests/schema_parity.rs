@@ -372,6 +372,8 @@ fn dash_pattern_schema_matches_engine_parsing() {
         (json!(vec![1; 16]), true),
         (json!(vec![1; 17]), false),
         (json!([4, -1]), false),
+        (json!([1e37, 1]), true),
+        (json!([1e38, 1]), false),
         (json!(["x"]), false),
         (json!("=frame"), false),
         (json!(4), false),

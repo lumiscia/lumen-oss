@@ -251,7 +251,7 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
             TextHighlightDelegate, TextLineDelegate, TextSpanDelegate, TextStrokeDelegate,
         },
         vector::{
-            dash::MAX_DASH_LENGTHS,
+            dash::{MAX_DASH_LENGTH, MAX_DASH_LENGTHS},
             paint::{GradientPaintDelegate, GradientStopDelegate, MAX_GRADIENT_STOPS},
         },
     };
@@ -327,7 +327,7 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
             "maxItems": MAX_DASH_LENGTHS,
             "items": {
                 "anyOf": [
-                    { "type": "number", "minimum": 0 },
+                    { "type": "number", "minimum": 0, "maximum": MAX_DASH_LENGTH },
                     { "$ref": "#/$defs/expression" }
                 ]
             }
