@@ -297,17 +297,31 @@ fn nonseparable_blend_modes_match_the_w3c_formulas() {
         ("hue", [20, 230, 40], [250, 30, 30], [255, 99, 99]),
         ("luminosity", [20, 230, 40], [250, 30, 30], [0, 160, 15]),
     ];
-    check(
-        rows.into_iter()
-            .map(|(mode, base, overlay, [r, g, b])| {
-                Case::new(
-                    mode,
-                    blended(mode, base, overlay),
-                    Expect::Uniform([r, g, b, 255]),
-                )
-            })
-            .collect(),
-    );
+    let mut cases: Vec<Case> = rows
+        .into_iter()
+        .map(|(mode, base, overlay, [r, g, b])| {
+            Case::new(
+                mode,
+                blended(mode, base, overlay),
+                Expect::Uniform([r, g, b, 255]),
+            )
+        })
+        .collect();
+    // A grey base under black lands on a uniform result whose ClipColor denominator rounds to
+    // zero. A clear overlay keeps the base, and a half-transparent one darkens it by half.
+    for (alpha, expected) in [(0, 193), (128, 96)] {
+        cases.push(Case::new(
+            "luminosity of a translucent black over grey",
+            scene(
+                (4, 4),
+                json!([solid(1, [193, 193, 193, 255]), solid(2, [0, 0, 0, alpha]),
+                    { "id": 3, "type": "merge", "params": { "blend_mode": "luminosity" },
+                      "in": { "base": 1, "overlay": 2 } }]),
+            ),
+            Expect::Uniform([expected, expected, expected, 255]),
+        ));
+    }
+    check(cases);
 }
 
 #[test]

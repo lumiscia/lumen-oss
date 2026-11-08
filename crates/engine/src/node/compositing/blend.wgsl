@@ -9,10 +9,11 @@ fn clip_color(c: vec3<f32>) -> vec3<f32> {
     let n = min(c.r, min(c.g, c.b));
     let x = max(c.r, max(c.g, c.b));
     var out = c;
-    if (n < 0.0) {
+    // A near-grey colour has nothing to rescale, and its denominator can round to zero.
+    if (n < 0.0 && l - n > 1e-6) {
         out = l + (out - l) * l / (l - n);
     }
-    if (x > 1.0) {
+    if (x > 1.0 && x - l > 1e-6) {
         out = l + (out - l) * (1.0 - l) / (x - l);
     }
     return out;
