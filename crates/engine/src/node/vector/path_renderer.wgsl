@@ -22,7 +22,9 @@ struct PathUniforms {
     // Lengths in `dash` that the stroke alternately draws and skips, or 0 for a solid stroke.
     dash_count: u32,
     dash_period: f32,
-    _dash_pad: vec2<u32>,
+    // Distance into `dash` at which every contour starts.
+    dash_start_phase: f32,
+    _dash_pad: u32,
     dash: array<vec4<f32>, 8>,
     motion: DrawableMotion,
 }
@@ -37,7 +39,8 @@ struct PathPoint {
     flags: u32,
     // Fraction of its contour's length at which the point lies.
     offset: f32,
-    // Distance into the dash pattern at which the point lies, within one period.
+    // Distance into the dash pattern at which the point lies, within one period. A contour's
+    // first point holds it where the contour ends instead, after its closing segment.
     dash_phase: f32,
 }
 
@@ -97,18 +100,20 @@ fn stroke_band_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, half_width: f3
 }
 
 // The fractions of a segment between which the trimmed stroke covers it, if it does, whether
-// the stroke ends at its end, where no following segment starts with the cap, the distance into
-// the dash pattern at which the segment starts, and its length.
+// the stroke ends at its end, where no following segment starts with the cap, the distances
+// into the dash pattern at which the segment starts and ends, and its length.
 struct StrokeSpan {
     start: f32,
     end: f32,
     covered: bool,
     end_cap: bool,
-    phase: f32,
+    start_phase: f32,
+    end_phase: f32,
     length: f32,
 }
 
-fn stroke_span(current: PathPoint, next: PathPoint, is_end: bool) -> StrokeSpan {
+// The span of the segment from point `index`, `current`, to `next`.
+fn stroke_span(index: u32, current: PathPoint, next: PathPoint, is_end: bool) -> StrokeSpan {
     let segment_end = select(next.offset, 1.0, is_end);
     let span = max(segment_end - current.offset, 0.000001);
     // Trim bounds beyond the segment clip nothing, even where `span` is too short to divide by.
@@ -128,7 +133,8 @@ fn stroke_span(current: PathPoint, next: PathPoint, is_end: bool) -> StrokeSpan 
         end,
         segment_end >= params.trim_start && current.offset <= params.trim_end,
         end < 1.0 || is_end || next_is_open_end,
-        current.dash_phase,
+        select(current.dash_phase, params.dash_start_phase, index == current.contour_start),
+        next.dash_phase,
         max(length(next.position - current.position), 1e-20),
     );
 }
@@ -156,11 +162,11 @@ fn dashes_around(phase: f32, distance: f32) -> vec4<f32> {
     return vec4<f32>(start, start + dash_length(index), next, next + dash_length(following));
 }
 
-// `dash`, from `dashes_around` as fractions of the segment, clipped to the span, or an empty
-// piece, whose start is past its end, where it misses the span.
-fn dash_piece(dash: vec2<f32>, span: StrokeSpan) -> vec2<f32> {
-    let piece = clamp(dash, vec2<f32>(span.start), vec2<f32>(span.end));
-    return select(vec2<f32>(1.0, 0.0), piece, dash.y >= span.start && dash.x <= span.end);
+// `dash` clipped to `span`, both `(start, end)` fractions of a segment, or an empty piece,
+// whose start is past its end, where it misses the span.
+fn dash_piece(dash: vec2<f32>, span: vec2<f32>) -> vec2<f32> {
+    let piece = clamp(dash, vec2<f32>(span.x), vec2<f32>(span.y));
+    return select(vec2<f32>(1.0, 0.0), piece, dash.y >= span.x && dash.x <= span.y);
 }
 
 // The fraction of segment `a`-`b` at which the stroke's disc, an ellipse in canvas pixels, comes
@@ -181,21 +187,46 @@ fn nearest_fraction(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, half_width: f32, s
 }
 
 // The pieces of segment `a`-`b` that the stroke draws and that can be nearest `p`, as
-// `(start, end)` fractions of the segment in `xy` and `zw`; empty ones start past their end.
-// Without dashes that is the span. With them it is the dashes either side of the point of the
-// span whose stroke comes nearest `p`: canvas distance from `p` is convex along the segment,
-// so every other dash is farther than one of them.
-fn stroke_pieces(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, span: StrokeSpan, half_width: f32, scale: vec2<f32>) -> vec4<f32> {
+// `(start, end)` fractions of the segment in `xy` and `zw`, measured from `a`, or from `b`
+// where `from_b`; empty ones start past their end.
+struct StrokePieces {
+    pieces: vec4<f32>,
+    from_b: bool,
+}
+
+// Without dashes the pieces are the span. With them they are the dashes either side of the
+// point of the span whose stroke comes nearest `p`: canvas distance from `p` is convex along
+// the segment, so every other dash is farther than one of them. Dashes are measured from the
+// end nearer `p`, so that they stay precise near either end of a long segment.
+fn stroke_pieces(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, span: StrokeSpan, half_width: f32, scale: vec2<f32>) -> StrokePieces {
     let empty = vec2<f32>(1.0, 0.0);
     if (!span.covered) {
-        return vec4<f32>(empty, empty);
+        return StrokePieces(vec4<f32>(empty, empty), false);
     }
     if (params.dash_count == 0u) {
-        return vec4<f32>(span.start, span.end, empty);
+        return StrokePieces(vec4<f32>(span.start, span.end, empty), false);
     }
-    let along = clamp(nearest_fraction(p, a, b, half_width, scale), span.start, span.end);
-    let dashes = dashes_around(span.phase, along * span.length) / span.length;
-    return vec4<f32>(dash_piece(dashes.xy, span), dash_piece(dashes.zw, span));
+    let from_b = dot(p - b, p - b) < dot(p - a, p - a);
+    let near_span = select(vec2<f32>(span.start, span.end), 1.0 - vec2<f32>(span.end, span.start), from_b);
+    let along = clamp(
+        nearest_fraction(p, select(a, b, from_b), select(b, a, from_b), half_width, scale),
+        near_span.x,
+        near_span.y,
+    );
+    // From `b` the pattern runs backwards, so it is measured as the distance before `b`.
+    let direction = select(1.0, -1.0, from_b);
+    let dashes = dashes_around(
+        select(span.start_phase, span.end_phase, from_b),
+        direction * along * span.length,
+    ) * direction / span.length;
+    let first = select(dashes.xy, dashes.yx, from_b);
+    let second = select(dashes.zw, dashes.wz, from_b);
+    return StrokePieces(vec4<f32>(dash_piece(first, near_span), dash_piece(second, near_span)), from_b);
+}
+
+// The point at fraction `t` of segment `a`-`b`, measured from the end that `pieces` are.
+fn piece_point(a: vec2<f32>, b: vec2<f32>, pieces: StrokePieces, t: f32) -> vec2<f32> {
+    return select(mix(a, b, t), mix(b, a, t), pieces.from_b);
 }
 
 // Whether `flags` end an open contour, whose segment back to its start only closes the
@@ -278,17 +309,17 @@ fn path_edges(transform: DrawableTransform, p: vec2<f32>, fill_enabled: bool, st
             p,
             a,
             b,
-            stroke_span(current, next, is_end),
+            stroke_span(i, current, next, is_end),
             stroke_half_width,
             axis_scale,
         );
         for (var piece_index = 0u; piece_index < 2u; piece_index = piece_index + 1u) {
-            let piece = select(pieces.xy, pieces.zw, piece_index == 1u);
+            let piece = select(pieces.pieces.xy, pieces.pieces.zw, piece_index == 1u);
             if (piece.x <= piece.y) {
                 let distance = stroke_band_distance(
                     p,
-                    mix(a, b, piece.x),
-                    mix(a, b, piece.y),
+                    piece_point(a, b, pieces, piece.x),
+                    piece_point(a, b, pieces, piece.y),
                     stroke_half_width,
                     axis_scale,
                 );
@@ -315,16 +346,16 @@ fn path_edges(transform: DrawableTransform, p: vec2<f32>, fill_enabled: bool, st
             if (is_open_end(current.flags) || !segment_reaches(p, a, b)) {
                 continue;
             }
-            let span = stroke_span(current, next, is_end);
+            let span = stroke_span(i, current, next, is_end);
             let pieces = stroke_pieces(p, a, b, span, stroke_half_width, axis_scale);
             for (var cap_index = 0u; cap_index < 4u; cap_index = cap_index + 1u) {
-                let piece = select(pieces.xy, pieces.zw, cap_index >= 2u);
+                let piece = select(pieces.pieces.xy, pieces.pieces.zw, cap_index >= 2u);
                 let at_end = (cap_index & 1u) == 1u;
                 let continues = params.dash_count == 0u && !span.end_cap;
                 if (piece.x > piece.y || (at_end && piece.y >= 1.0 && continues)) {
                     continue;
                 }
-                let centre = mix(a, b, select(piece.x, piece.y, at_end));
+                let centre = piece_point(a, b, pieces, select(piece.x, piece.y, at_end));
                 edges.stroke = min(edges.stroke, ellipse_distance((p - centre) * axis_scale, cap).distance);
             }
         }

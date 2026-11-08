@@ -127,6 +127,7 @@ fn path_frame(
         trim_end,
         dash_count: dash.count,
         dash_period: dash.period(),
+        dash_start_phase: dash.phase(0.0),
         dash: dash.lengths,
         ..bytemuck::Zeroable::zeroed()
     };
@@ -501,21 +502,27 @@ fn normalize_contour_offsets(points: &mut [PathPoint]) {
 }
 
 /// Sets each point's place in `dash`, measuring along its contour in f64 so that it stays
-/// precise however long the contour is.
+/// precise however long the contour is. A contour's first point takes the place where the
+/// contour ends, after its closing segment.
 fn set_dash_phases(points: &mut [PathPoint], dash: &GpuDash) {
     let mut distance = 0.0;
     for index in 0..points.len() {
-        distance = if points[index].contour_start == index as u32 {
-            0.0
+        let start = points[index].contour_start as usize;
+        if start == index {
+            distance = 0.0;
         } else {
-            distance
-                + f64::from(point_distance(
-                    points[index - 1].position,
-                    points[index].position,
-                ))
-        };
-        points[index].dash_phase = dash.phase(distance);
+            distance += precise_distance(points[index - 1].position, points[index].position);
+            points[index].dash_phase = dash.phase(distance);
+        }
+        if points[index].flags & POINT_END != 0 {
+            let closing = precise_distance(points[index].position, points[start].position);
+            points[start].dash_phase = dash.phase(distance + closing);
+        }
     }
+}
+
+fn precise_distance(from: [f32; 2], to: [f32; 2]) -> f64 {
+    (f64::from(to[0]) - f64::from(from[0])).hypot(f64::from(to[1]) - f64::from(from[1]))
 }
 
 impl crate::gpu::frame_graph::RecordNode for Path {

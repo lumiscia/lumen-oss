@@ -708,6 +708,15 @@ fn dash_rows() -> Vec<Case> {
         )
     };
     let stroked = |data: &str, more: Value| stroked_in((48, 48), data, more);
+    let far_dashes = |data: &str| {
+        path(
+            (160, 160),
+            json!({
+                "data": data, "fill_enabled": false, "stroke_enabled": true,
+                "stroke_width": 0.1, "stroke_dash": [1, 1], "scale": [20, 20]
+            }),
+        )
+    };
     let corner = "M 4 4 L 30 4 L 30 30";
     let corner_dashes = "M 4 4 L 24 4 M 26 4 L 30 4 L 30 20 M 30 22 L 30 30";
     let corner_dash = |more: Value| with(json!({ "stroke_dash": [20, 2] }), more);
@@ -861,6 +870,18 @@ fn dash_rows() -> Vec<Case> {
             ),
             Expect::Probes(vec![(90, 80, CLEAR), (110, 80, BLACK)]),
         ),
+        Case::new(
+            "a short segment after a long diagonal one keeps its dash phase",
+            far_dashes("M -10000000 -10000000 L 1 4 L 6 4"),
+            Expect::Probes(vec![(37, 79, BLACK)]),
+        ),
+        Case::new(
+            "dashes near the far end of a long segment keep their spacing",
+            far_dashes("M 1 -10000000 L 1 4"),
+            // The start differs only by whole dash periods.
+            Expect::Matches(far_dashes("M 1 -4 L 1 4").into()),
+        )
+        .tolerance(2),
         Case::new(
             "a dash period that underflows f32 strokes solidly",
             line(json!([1e-50, 1e-50]), json!({})),

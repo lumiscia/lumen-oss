@@ -80,7 +80,9 @@ pub(crate) struct PathUniforms {
     pub(crate) dash_count: u32,
     /// Sum of the dash lengths.
     pub(crate) dash_period: f32,
-    pub(crate) _dash_pad: [u32; 2],
+    /// Distance into `dash` at which every contour starts.
+    pub(crate) dash_start_phase: f32,
+    pub(crate) _dash_pad: u32,
     pub(crate) dash: [[f32; 4]; super::dash::GPU_DASH_LENGTHS / 4],
     pub(crate) motion: GpuDrawableMotion,
 }
@@ -93,6 +95,7 @@ pub(crate) struct PathPoint {
     pub(crate) flags: u32,
     /// Fraction of its contour's length at which the point lies.
     pub(crate) offset: f32,
-    /// Distance into the dash pattern at which the point lies, within one period.
+    /// Distance into the dash pattern at which the point lies, within one period. A contour's
+    /// first point holds it where the contour ends instead, after its closing segment.
     pub(crate) dash_phase: f32,
 }
