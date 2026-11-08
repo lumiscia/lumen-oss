@@ -21,6 +21,9 @@ use crate::{
 use super::image::{FrameLruCache, media_frame_bytes};
 
 const SEEK_REOPEN_THRESHOLD: u32 = 120;
+/// Seeks to an earlier keyframe after one that landed past its target, before reopening the input
+/// at the start.
+const SEEK_RETRIES: u8 = 2;
 
 #[derive(Debug, Clone, Default)]
 pub struct FfmpegResolverOptions {
@@ -122,12 +125,23 @@ struct LibavStreamDecoder {
     /// that replacement failed to open.
     decoder: Option<VideoDecoder>,
     next_frame_hint: u32,
+    /// Set by a seek until its first frame arrives.
+    seek: Option<PendingSeek>,
     sent_eof: bool,
     gpu_decode_status: GpuDecodeStatus,
     origin: SettledOrigin,
     /// A decode failure after GPU frames were drawn. The stream can't continue from a lost packet
     /// and the CPU would change the pixels, so every later decode fails the same way.
     mid_render_failure: Option<MediaError>,
+}
+
+/// A seek lands on a keyframe by the container's index, which for MP4 is by decode time. An open
+/// GOP's keyframe decodes before the frames shown just ahead of it, and a decoder starting there
+/// drops those frames, so its first frame can come after the one asked for.
+struct PendingSeek {
+    /// The earliest timestamp of the first packet read after the seek.
+    landed: Option<i64>,
+    retries: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +244,7 @@ impl LibavStreamDecoder {
             input,
             decoder: Some(decoder),
             next_frame_hint: 0,
+            seek: None,
             sent_eof: false,
             gpu_decode_status,
             origin: SettledOrigin::default(),
@@ -336,6 +351,12 @@ impl LibavStreamDecoder {
 
             match self.input.read_packet() {
                 Ok(Some(packet)) => {
+                    if let Some(seek) = &mut self.seek
+                        && seek.landed.is_none()
+                        && packet.stream_index() == self.stream_index
+                    {
+                        seek.landed = [packet.pts(), packet.dts()].into_iter().flatten().min();
+                    }
                     self.open_decoder()?.send_packet(&packet).map_err(|err| {
                         MediaError::Decode {
                             media_source: self.source.clone(),
@@ -371,6 +392,13 @@ impl LibavStreamDecoder {
                 match self.open_decoder()?.receive_gpu_frame() {
                     Ok(Some(decoded)) => {
                         let decoded_frame = self.frame_for_pts(decoded.pts());
+                        if let Some(seek) = self.seek.take()
+                            && decoded_frame > target_frame
+                        {
+                            drop(decoded);
+                            self.seek_before_landing(target_frame, seek)?;
+                            continue;
+                        }
                         self.next_frame_hint = decoded_frame.saturating_add(1);
                         if decoded_frame < target_frame {
                             continue;
@@ -393,6 +421,13 @@ impl LibavStreamDecoder {
                 match self.open_decoder()?.receive_video_frame() {
                     Ok(Some(decoded)) => {
                         let decoded_frame = self.frame_for_pts(decoded.pts());
+                        if let Some(seek) = self.seek.take()
+                            && decoded_frame > target_frame
+                        {
+                            drop(decoded);
+                            self.seek_before_landing(target_frame, seek)?;
+                            continue;
+                        }
                         self.next_frame_hint = decoded_frame.saturating_add(1);
                         if decoded_frame < target_frame {
                             continue;
@@ -523,6 +558,33 @@ impl LibavStreamDecoder {
                     details: format!("seek failed: {err}"),
                 })?;
         }
+        self.after_seek(target_frame, 0)
+    }
+
+    /// Seeks to the keyframe before the one `seek` landed on, whose first frame came after
+    /// `target_frame`. Once the retries run out, or that seek fails, the input reopens at the start.
+    fn seek_before_landing(
+        &mut self,
+        target_frame: u32,
+        seek: PendingSeek,
+    ) -> Result<(), MediaError> {
+        let earlier = seek
+            .landed
+            .filter(|_| seek.retries < SEEK_RETRIES)
+            .map(|landed| landed.saturating_sub(1));
+        match earlier {
+            Some(timestamp) if self.input.seek_stream(self.stream_index, timestamp).is_ok() => {
+                self.after_seek(target_frame, seek.retries + 1)
+            }
+            _ => {
+                self.reopen()?;
+                self.next_frame_hint = target_frame;
+                Ok(())
+            }
+        }
+    }
+
+    fn after_seek(&mut self, target_frame: u32, retries: u8) -> Result<(), MediaError> {
         if let Some(decoder) = &mut self.decoder {
             decoder.flush().map_err(|err| MediaError::Decode {
                 media_source: self.source.clone(),
@@ -531,6 +593,10 @@ impl LibavStreamDecoder {
         }
         self.sent_eof = false;
         self.next_frame_hint = target_frame;
+        self.seek = Some(PendingSeek {
+            landed: None,
+            retries,
+        });
         Ok(())
     }
 
@@ -1378,6 +1444,26 @@ mod tests {
         }
         assert!(origin.get().is_none());
         let _ = fs::remove_file(path);
+    }
+
+    /// The fixture is an open GOP, with CRA keyframes every 12 frames and a RASL frame before each:
+    /// `ffmpeg -f lavfi -i testsrc2=s=128x72:r=30:d=3 -g 12 -c:v libx265 -preset veryfast -crf 24
+    /// -tag:v hvc1 -pix_fmt yuv420p open_gop.mp4`.
+    #[test]
+    fn stepping_back_before_an_open_gop_keyframe_decodes_the_frame_asked_for() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/open_gop.mp4");
+        let mut cache = FrameLruCache::default();
+        let mut stepping = LibavStreamDecoder::open(path, Default::default()).expect("open clip");
+        // Frames 59 and 35 are RASL frames, and a seek to 57 also lands on CRA 60.
+        for frame in [60, 59, 36, 35, 60, 57] {
+            let stepped = yuv_frame(stepping.decode_frame(frame, &mut cache).expect("decode"));
+            let fresh = LibavStreamDecoder::open(path, Default::default())
+                .expect("open clip")
+                .decode_frame(frame, &mut cache)
+                .map(yuv_frame)
+                .expect("decode");
+            assert!(stepped.data == fresh.data, "frame {frame}");
+        }
     }
 
     /// Runs on a GPU with Vulkan decode for `libx264` or a file in `LUMEN_VULKAN_DECODE_FILES`.
