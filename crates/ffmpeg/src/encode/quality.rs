@@ -164,14 +164,16 @@ fn encoder_quality_options(
             options.push(("crf", crf.to_string()));
             0
         }
-        (RateControl::Crf(0), EncoderFamily::Nvenc) => {
-            let max = if encoder.starts_with("av1_") { 63 } else { 51 };
-            return Err(FfmpegError::new(
-                "VideoEncoder::create",
-                format!("encoder `{encoder}` treats CRF 0 as automatic; use 1-{max}"),
-            ));
-        }
         (RateControl::Crf(cq), EncoderFamily::Nvenc) => {
+            let max = if encoder.starts_with("av1_") { 63 } else { 51 };
+            if cq == 0 || cq > max {
+                return Err(FfmpegError::new(
+                    "VideoEncoder::create",
+                    format!(
+                        "invalid CRF {cq} for encoder `{encoder}` (0 means automatic); use 1-{max}"
+                    ),
+                ));
+            }
             options.push(("rc", "vbr".to_string()));
             options.push(("cq", cq.to_string()));
             0
@@ -187,6 +189,12 @@ fn encoder_quality_options(
             0
         }
         (RateControl::Qp(qp), EncoderFamily::Nvenc) => {
+            if qp > 51 && !encoder.starts_with("av1_") {
+                return Err(FfmpegError::new(
+                    "VideoEncoder::create",
+                    format!("invalid QP {qp} for encoder `{encoder}`; use 0-51"),
+                ));
+            }
             options.push(("rc", "constqp".to_string()));
             options.push(("qp", qp.to_string()));
             0
@@ -307,9 +315,14 @@ mod tests {
     }
 
     #[test]
-    fn zero_quality_that_means_automatic_errors() {
+    fn nvenc_quality_outside_its_range_errors() {
         assert!(options("h264_nvenc", RateControl::Crf(0), None).is_err());
         assert!(options("libx264", RateControl::Crf(0), None).is_ok());
+        assert!(options("hevc_nvenc", RateControl::Crf(52), None).is_err());
+        assert!(options("av1_nvenc", RateControl::Crf(63), None).is_ok());
+        assert!(options("av1_nvenc", RateControl::Crf(64), None).is_err());
+        assert!(options("h264_nvenc", RateControl::Qp(52), None).is_err());
+        assert!(options("av1_nvenc", RateControl::Qp(255), None).is_ok());
     }
 
     #[test]
