@@ -221,6 +221,59 @@ fn operators_produce_hand_computed_colors() {
     check(cases);
 }
 
+/// An opaque `overlay` merged over an opaque `base` with `mode`.
+fn blended(mode: &str, base: [u8; 3], overlay: [u8; 3]) -> Scene {
+    let opaque = |[r, g, b]: [u8; 3]| [r, g, b, 255];
+    scene(
+        (4, 4),
+        json!([solid(1, opaque(base)), solid(2, opaque(overlay)),
+            { "id": 3, "type": "merge", "params": { "blend_mode": mode },
+              "in": { "base": 1, "overlay": 2 } }]),
+    )
+}
+
+#[test]
+fn separable_blend_modes_match_the_w3c_formulas() {
+    // Each row works the W3C Compositing formulas per channel on b = base / 255, s = overlay / 255.
+    let rows = [
+        // min(b + s, 1): red and green clip at 250 (200 + 50) and 250 (100 + 150), blue at 1.
+        ("add", [200, 100, 50], [50, 150, 230], [250, 250, 255]),
+        // |b - s|.
+        ("difference", [200, 100, 50], [50, 150, 230], [150, 50, 180]),
+        // b + s - 2bs.
+        ("exclusion", [200, 100, 50], [50, 150, 230], [172, 132, 190]),
+        // min(1, b / (1 - s)), with 0 for a black base and 1 for a white overlay.
+        ("color_dodge", [0, 100, 200], [128, 255, 128], [0, 255, 255]),
+        // 1 - min(1, (1 - b) / s), with 1 for a white base and 0 for a black overlay.
+        ("color_burn", [255, 100, 200], [128, 0, 128], [255, 0, 145]),
+        // Unclipped dodge, the black-base rule winning over a white overlay, and unclipped dodge.
+        ("color_dodge", [64, 0, 30], [100, 255, 200], [105, 0, 139]),
+        // Unclipped burn, the white-base rule winning over a black overlay, and burn clipping to 0.
+        ("color_burn", [200, 255, 60], [230, 0, 100], [194, 255, 0]),
+        // Multiply by 2s for s <= .5, else screen with 2s - 1.
+        (
+            "hard_light",
+            [200, 100, 50],
+            [64, 200, 230],
+            [100, 188, 215],
+        ),
+        // b - (1 - 2s) b (1 - b) for s <= .5, else b + (2s - 1) (D(b) - b), where D is the
+        // cubic for b <= .25 and the square root above it. The channels cover all three branches.
+        ("soft_light", [40, 128, 30], [100, 200, 220], [33, 158, 69]),
+    ];
+    check(
+        rows.into_iter()
+            .map(|(mode, base, overlay, [r, g, b])| {
+                Case::new(
+                    mode,
+                    blended(mode, base, overlay),
+                    Expect::Uniform([r, g, b, 255]),
+                )
+            })
+            .collect(),
+    );
+}
+
 #[test]
 fn mattes_select_by_alpha_or_luma() {
     // Columns 6 to 17 of a mask that covers half of 8, all of 9 to 15 and half of 16.

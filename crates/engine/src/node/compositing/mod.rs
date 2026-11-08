@@ -18,4 +18,11 @@ pub enum BlendMode {
     Overlay = 3,
     Darken = 4,
     Lighten = 5,
+    Add = 6,
+    Difference = 7,
+    Exclusion = 8,
+    ColorDodge = 9,
+    ColorBurn = 10,
+    HardLight = 11,
+    SoftLight = 12,
 }

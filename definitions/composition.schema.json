@@ -2295,7 +2295,21 @@
                   "blend_mode": {
                     "anyOf": [
                       {
-                        "enum": ["normal", "multiply", "screen", "overlay", "darken", "lighten"],
+                        "enum": [
+                          "normal",
+                          "multiply",
+                          "screen",
+                          "overlay",
+                          "darken",
+                          "lighten",
+                          "add",
+                          "difference",
+                          "exclusion",
+                          "color_dodge",
+                          "color_burn",
+                          "hard_light",
+                          "soft_light"
+                        ],
                         "type": "string",
                         "x-lumen-type": "BlendMode"
                       },
@@ -2336,6 +2350,41 @@
                         "label": "Lighten",
                         "name": "lighten",
                         "value": 5
+                      },
+                      {
+                        "label": "Add",
+                        "name": "add",
+                        "value": 6
+                      },
+                      {
+                        "label": "Difference",
+                        "name": "difference",
+                        "value": 7
+                      },
+                      {
+                        "label": "Exclusion",
+                        "name": "exclusion",
+                        "value": 8
+                      },
+                      {
+                        "label": "Color Dodge",
+                        "name": "color_dodge",
+                        "value": 9
+                      },
+                      {
+                        "label": "Color Burn",
+                        "name": "color_burn",
+                        "value": 10
+                      },
+                      {
+                        "label": "Hard Light",
+                        "name": "hard_light",
+                        "value": 11
+                      },
+                      {
+                        "label": "Soft Light",
+                        "name": "soft_light",
+                        "value": 12
                       }
                     ],
                     "x-lumen-kind": "enum"
@@ -2792,7 +2841,21 @@
                   "blend_mode": {
                     "anyOf": [
                       {
-                        "enum": ["normal", "multiply", "screen", "overlay", "darken", "lighten"],
+                        "enum": [
+                          "normal",
+                          "multiply",
+                          "screen",
+                          "overlay",
+                          "darken",
+                          "lighten",
+                          "add",
+                          "difference",
+                          "exclusion",
+                          "color_dodge",
+                          "color_burn",
+                          "hard_light",
+                          "soft_light"
+                        ],
                         "type": "string",
                         "x-lumen-type": "BlendMode"
                       },
@@ -2833,6 +2896,41 @@
                         "label": "Lighten",
                         "name": "lighten",
                         "value": 5
+                      },
+                      {
+                        "label": "Add",
+                        "name": "add",
+                        "value": 6
+                      },
+                      {
+                        "label": "Difference",
+                        "name": "difference",
+                        "value": 7
+                      },
+                      {
+                        "label": "Exclusion",
+                        "name": "exclusion",
+                        "value": 8
+                      },
+                      {
+                        "label": "Color Dodge",
+                        "name": "color_dodge",
+                        "value": 9
+                      },
+                      {
+                        "label": "Color Burn",
+                        "name": "color_burn",
+                        "value": 10
+                      },
+                      {
+                        "label": "Hard Light",
+                        "name": "hard_light",
+                        "value": 11
+                      },
+                      {
+                        "label": "Soft Light",
+                        "name": "soft_light",
+                        "value": 12
                       }
                     ],
                     "x-lumen-kind": "enum"
