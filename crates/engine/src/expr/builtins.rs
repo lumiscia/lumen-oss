@@ -4,6 +4,7 @@ use crate::{
         ExpressionContext,
         ast::{BuiltinFn, ExpressionValue},
         easing::{SPRING_DAMPING, SPRING_STIFFNESS, cubic_bezier, spring},
+        noise::{noise, random},
         spec::{Easing, easing_builtins},
     },
     node::{
@@ -160,6 +161,18 @@ pub fn evaluate_builtin(
                 ))
             })
         }
+        BuiltinFn::Noise => Ok(ExpressionValue::Number(noise(
+            checked(0, number(0)?)?,
+            checked(1, number(1)?)?,
+        ))),
+        BuiltinFn::Random => {
+            let (seed, x) = if args.len() == 1 {
+                (0.0, checked(0, number(0)?)?)
+            } else {
+                (checked(0, number(0)?)?, checked(1, number(1)?)?)
+            };
+            Ok(ExpressionValue::Number(random(seed, x)))
+        }
         BuiltinFn::Spring => {
             let stiffness = checked(1, optional(1, SPRING_STIFFNESS)?)?;
             let damping = checked(2, optional(2, SPRING_DAMPING)?)?;
@@ -180,6 +193,9 @@ pub(crate) fn range_error(builtin: BuiltinFn, index: usize, value: f64) -> Optio
         }
         (BuiltinFn::Spring, 2) if value < 0.0 || !value.is_finite() => {
             Some("damping must not be negative")
+        }
+        (BuiltinFn::Noise | BuiltinFn::Random, _) if !value.is_finite() => {
+            Some("arguments must be finite numbers")
         }
         (BuiltinFn::Rgb | BuiltinFn::Rgba, _) if !(0.0..=255.0).contains(&value) => {
             Some("colour components must be between 0 and 255")

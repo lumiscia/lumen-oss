@@ -661,6 +661,24 @@ mod tests {
     }
 
     #[test]
+    fn noise_and_random_evaluate() {
+        assert_eq!(number_at("random(7)", 0), number_at("random(0, 7)", 0));
+        assert_ne!(number_at("random(frame)", 1), number_at("random(frame)", 2));
+        assert_ne!(
+            number_at("noise(1, time)", 3),
+            number_at("noise(2, time)", 3)
+        );
+        assert!((-1.0..=1.0).contains(&number_at("noise(1, frame / 7)", 40)));
+        let error = evaluate("noise(1, pow(10, 999))", 0)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("arguments must be finite numbers"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn rejects_bad_builtin_arguments_at_parse_time() {
         for (source, expected) in [
             ("vec2()", "`vec2`: expects 2 arguments"),

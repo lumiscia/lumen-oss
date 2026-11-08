@@ -98,6 +98,8 @@
     "in_out_back": { "expression": "=in_out_back(0.5)", "expected": 0.5 },
     "cubic_bezier": { "expression": "=cubic_bezier(0, 0, 1, 1, 0.5)", "expected": 0.5 },
     "spring": { "expression": "=spring(0, 170, 26)", "expected": 0 },
+    "noise": { "expression": "=noise(1, 0.5)", "expected": -0.37396682188384345 },
+    "random": { "expression": "=random(7, 0.5)", "expected": 0.7553920660716886 },
     "prop": { "expression": "=prop('title')", "expected": "Lumen" },
     "issue_position": { "expression": "=(vec2(160, 900) + rise(570))", "expected": [160, 960] },
     "issue_opacity": { "expression": "=tween(0, 1, 1.5s, 300ms, 'out_expo')", "expected": 0 },

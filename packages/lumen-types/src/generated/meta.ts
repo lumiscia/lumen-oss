@@ -477,6 +477,40 @@ export const expressionBuiltins = [
     "args": [
       {
         "kind": "number",
+        "name": "seed"
+      },
+      {
+        "kind": "number",
+        "name": "x"
+      }
+    ],
+    "doc": "Smooth gradient noise in `-1..=1`, continuous in `x` and varying about once per unit. Each `seed` is an unrelated curve. Arguments must be finite.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "noise",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "seed"
+      },
+      {
+        "kind": "number",
+        "name": "x"
+      }
+    ],
+    "doc": "Uniform number in `0..1`, fixed by its inputs. `random(x)` is `random(seed, x)` with seed 0; e.g. `random(glyph)`. Arguments must be finite.",
+    "maxArgs": 2,
+    "minArgs": 1,
+    "name": "random",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
         "name": "t"
       },
       {
@@ -773,6 +807,8 @@ export const expressionReservedNames = [
   "tween",
   "cubic_bezier",
   "prop",
+  "noise",
+  "random",
   "spring",
   "in_quad",
   "out_quad",
