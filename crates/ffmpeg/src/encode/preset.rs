@@ -52,8 +52,8 @@ impl EncodeCodec {
     /// hardware encoder, then the software one.
     pub fn default_encoders(self) -> &'static [&'static str] {
         match self {
-            Self::H264 if cfg!(target_os = "macos") => &["h264_videotoolbox"],
-            Self::Hevc if cfg!(target_os = "macos") => &["hevc_videotoolbox"],
+            Self::H264 if cfg!(target_os = "macos") => &["h264_videotoolbox", "libx264"],
+            Self::Hevc if cfg!(target_os = "macos") => &["hevc_videotoolbox", "libx265"],
             Self::H264 if cfg!(target_os = "linux") => &["h264_vulkan", "libx264"],
             Self::Hevc if cfg!(target_os = "linux") => &["hevc_vulkan", "libx265"],
             Self::Av1 if cfg!(target_os = "linux") => &["av1_vulkan", "libsvtav1"],
@@ -320,16 +320,22 @@ impl QualityConfig {
     }
 
     /// The encoders a render tries for `request`, in order, each with its preset's settings.
-    /// Errors when the preset isn't defined, when no encoder of the codec has an entry in it, or
-    /// when the request's codec or the preset doesn't fit the pinned encoder.
+    /// Errors when the preset isn't defined, when no encoder of the codec has an entry in it or is
+    /// in this FFmpeg build, or when the pinned encoder isn't in the build or doesn't fit the
+    /// request's codec or the preset.
     pub fn resolve(&self, request: &QualityRequest) -> Result<VideoEncoderChoice, String> {
-        self.resolve_with_env(request, env::var(ENCODER_ENV).ok().as_deref())
+        self.resolve_with(
+            request,
+            env::var(ENCODER_ENV).ok().as_deref(),
+            encoder_codec,
+        )
     }
 
-    fn resolve_with_env(
+    fn resolve_with(
         &self,
         request: &QualityRequest,
         from_env: Option<&str>,
+        codec_of: impl Fn(&str) -> Result<EncodeCodec, String>,
     ) -> Result<VideoEncoderChoice, String> {
         let pinned = [request.encoder.as_deref(), from_env]
             .into_iter()
@@ -337,23 +343,20 @@ impl QualityConfig {
             .map(str::trim)
             .find(|name| !name.is_empty());
         let name = request.preset.as_deref().unwrap_or(&self.default_preset);
-        let preset = match request.settings {
-            Some(_) => None,
-            None => Some(self.presets.get(name).ok_or_else(|| {
-                format!(
-                    "quality preset `{name}` isn't defined on this host; built-in: {}",
-                    BUILT_IN_PRESETS.join(", ")
-                )
-            })?),
-        };
-        let quality_for = |encoder: &str| match (&request.settings, preset) {
-            (Some(settings), _) => Some(settings.clone()),
-            (None, Some(preset)) => preset.encoders.get(encoder).cloned(),
-            (None, None) => None,
+        let preset = self.presets.get(name).ok_or_else(|| {
+            format!(
+                "quality preset `{name}` isn't defined on this host; built-in: {}",
+                BUILT_IN_PRESETS.join(", ")
+            )
+        })?;
+        let quality_for = |encoder: &str| match &request.settings {
+            Some(settings) => Some(settings.clone()),
+            None => preset.encoders.get(encoder).cloned(),
         };
 
         if let Some(encoder) = pinned {
-            if let (Some(asked), Ok(encodes)) = (request.codec, encoder_codec(encoder))
+            let encodes = codec_of(encoder)?;
+            if let Some(asked) = request.codec
                 && asked != encodes
             {
                 return Err(format!(
@@ -366,10 +369,7 @@ impl QualityConfig {
             return Ok(VideoEncoderChoice::single(encoder, quality));
         }
 
-        let codec = request
-            .codec
-            .or(preset.and_then(|preset| preset.codec))
-            .unwrap_or(self.default_codec);
+        let codec = request.codec.or(preset.codec).unwrap_or(self.default_codec);
         let encoders = self.encoders(codec);
         let candidates: Vec<_> = encoders
             .iter()
@@ -380,6 +380,20 @@ impl QualityConfig {
                 })
             })
             .collect();
+        if !candidates.is_empty()
+            && !candidates
+                .iter()
+                .any(|candidate| codec_of(&candidate.encoder).is_ok())
+        {
+            return Err(format!(
+                "none of the {codec} encoders quality preset `{name}` has settings for are in this FFmpeg build: {}",
+                candidates
+                    .iter()
+                    .map(|candidate| candidate.encoder.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         VideoEncoderChoice::new(candidates).ok_or_else(|| {
             format!(
                 "quality preset `{name}` has no settings for any {codec} encoder this host tries: {}",
@@ -506,6 +520,29 @@ mod tests {
             preset: preset.map(str::to_string),
             codec,
             ..QualityRequest::default()
+        }
+    }
+
+    /// The codec each encoder name writes, standing in for this FFmpeg build. `missing_*` isn't in it.
+    fn codec_by_name(encoder: &str) -> Result<EncodeCodec, String> {
+        if encoder.starts_with("missing") {
+            Err(format!("encoder `{encoder}` not found"))
+        } else if encoder == "libx264" || encoder.starts_with("h264_") {
+            Ok(EncodeCodec::H264)
+        } else if encoder == "libx265" || encoder.starts_with("hevc_") {
+            Ok(EncodeCodec::Hevc)
+        } else {
+            Ok(EncodeCodec::Av1)
+        }
+    }
+
+    impl QualityConfig {
+        fn resolve_with_env(
+            &self,
+            request: &QualityRequest,
+            from_env: Option<&str>,
+        ) -> Result<VideoEncoderChoice, String> {
+            self.resolve_with(request, from_env, codec_by_name)
         }
     }
 
@@ -665,6 +702,27 @@ mod tests {
             .resolve_with_env(&request(Some("lossless"), None), Some("h264_vulkan"))
             .unwrap_err();
         assert!(no_entry.contains("h264_vulkan"), "{no_entry}");
+        let missing = config
+            .resolve_with_env(&request(None, None), Some("missing_encoder"))
+            .unwrap_err();
+        assert!(missing.contains("missing_encoder"), "{missing}");
+    }
+
+    #[test]
+    fn a_codec_needs_one_candidate_in_this_build() {
+        let config = QualityConfig::built_in();
+        let hevc = request(None, Some(EncodeCodec::Hevc));
+        let error = config
+            .resolve_with(&hevc, None, |_| Err("not built".to_string()))
+            .unwrap_err();
+        assert!(error.contains("libx265"), "{error}");
+        // A missing candidate before an available one is left to fall through at look-up.
+        let only_software = |encoder: &str| match encoder {
+            "libx265" => Ok(EncodeCodec::Hevc),
+            _ => Err("not built".to_string()),
+        };
+        let choice = config.resolve_with(&hevc, None, only_software).unwrap();
+        assert_eq!(encoders(&choice), EncodeCodec::Hevc.default_encoders());
     }
 
     #[test]
@@ -673,16 +731,22 @@ mod tests {
             rate_control: Some(RateControl::Crf(20)),
             ..EncoderQuality::default()
         };
-        let choice = QualityConfig::built_in()
+        let config = config(json!({
+            "default_preset": "archive",
+            "default_codec": "av1",
+            "presets": { "archive": { "codec": "h264", "encoders": { "libx264": { "crf": 16 } } } }
+        }))
+        .unwrap();
+        let choice = config
             .resolve_with_env(
                 &QualityRequest {
-                    preset: Some("not_a_preset".to_string()),
                     settings: Some(settings.clone()),
                     ..QualityRequest::default()
                 },
                 None,
             )
             .unwrap();
+        // The preset still picks the codec.
         assert_eq!(encoders(&choice), EncodeCodec::H264.default_encoders());
         assert!(
             choice

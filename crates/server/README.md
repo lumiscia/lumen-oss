@@ -93,7 +93,7 @@ Renders run in submission order, `--max-concurrent-renders` at a time (default 1
 }
 ```
 
-- `codecs.<codec>.encoders` is the order a codec's encoders are tried in, and the first that opens wins, with a warning for each that didn't. Without it, Linux tries `<codec>_vulkan` then `libx264`, `libx265` or `libsvtav1`, macOS tries `h264_videotoolbox` or `hevc_videotoolbox`, and elsewhere only the software encoder. NVENC is only tried when named here or in `LUMEN_VIDEO_ENCODER`.
+- `codecs.<codec>.encoders` is the order a codec's encoders are tried in, and the first that opens wins, with a warning for each that didn't. Without it, Linux tries `<codec>_vulkan` then `libx264`, `libx265` or `libsvtav1`, macOS tries `h264_videotoolbox` or `hevc_videotoolbox` then the same software encoders, and elsewhere only the software encoder. NVENC is only tried when named here or in `LUMEN_VIDEO_ENCODER`.
 - A preset's `encoders` are keyed by FFmpeg encoder name. Each sets at most one of `crf`, `qp` and `bitrate` (bits per second, or text such as `"14M"`), plus an optional `preset`, which lumen translates for the encoder: `crf` is `rc=vbr` plus `cq` on NVENC, and `qp` is `rc_mode=cqp` on Vulkan. `options` are FFmpeg AVOptions, set after those, and may not repeat a key they set.
 - A render only tries the encoders its preset has settings for, so `lossless` skips to an encoder that is truly lossless: `libx264` (`qp` 0), `libx265` (`x265-params lossless=1`) and NVENC H.264 and HEVC (`tune=lossless`).
 - An entry for a built-in preset replaces that encoder's built-in settings, and other encoders keep theirs. A custom preset's `codec` applies when neither the request nor the composition names one.

@@ -35,7 +35,7 @@ On .mp4 output, --quality names a preset: draft, standard (the default), high, l
 --quality-config defines. --codec picks h264 (the default), hevc or av1. Both win over the \
 composition's render_settings, which win over the config's defaults. Each codec tries its encoders \
 in order, warning when one won't open: on Linux the Vulkan encoder, then libx264, libx265 or \
-libsvtav1, and on macOS VideoToolbox. A preset with no settings for an encoder skips it, so \
+libsvtav1, and on macOS VideoToolbox, then the same CPU encoders. A preset with no settings for an encoder skips it, so \
 lossless uses libx264 or libx265. --encoder or LUMEN_VIDEO_ENCODER pins one encoder, which either \
 opens or fails the render.
 

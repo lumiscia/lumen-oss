@@ -204,7 +204,7 @@ pub(crate) fn portable_options(
             0
         }
         (Some(RateControl::Crf(crf)), EncoderFamily::SvtAv1) => {
-            check_range("CRF", crf, 1, 63)?;
+            check_range("CRF", crf, 0, 63)?;
             options.push(("crf", crf.to_string()));
             0
         }
@@ -235,7 +235,7 @@ pub(crate) fn portable_options(
             0
         }
         (Some(RateControl::Qp(qp)), EncoderFamily::SvtAv1) => {
-            check_range("QP", qp, 1, 63)?;
+            check_range("QP", qp, 0, 63)?;
             options.push(("qp", qp.to_string()));
             0
         }
@@ -460,7 +460,8 @@ mod tests {
         assert!(options("h264_nvenc", RateControl::Qp(52), None).is_err());
         assert!(options("av1_nvenc", RateControl::Qp(255), None).is_ok());
         assert!(options("libx265", RateControl::Crf(52), None).is_err());
-        assert!(options("libsvtav1", RateControl::Crf(0), None).is_err());
+        assert!(options("libsvtav1", RateControl::Crf(0), None).is_ok());
+        assert!(options("libsvtav1", RateControl::Crf(64), None).is_err());
         assert!(options("libsvtav1", RateControl::Qp(64), None).is_err());
     }
 
