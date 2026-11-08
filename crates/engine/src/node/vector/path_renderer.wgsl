@@ -240,7 +240,11 @@ fn sample_path(pixel: vec2<f32>, transform: DrawableTransform) -> vec4<f32> {
         fill_coverage(signed_distance, edges.inside, edge_antialias),
         fill_enabled,
     );
-    let stroke_alpha = select(0.0, edge_coverage(edges.stroke, edge_antialias), stroke_enabled);
+    let stroke_alpha = select(
+        0.0,
+        stroke_coverage(edges.stroke, canvas_stroke_width(transform, params.stroke_width), edge_antialias),
+        stroke_enabled,
+    );
     if (fill_alpha <= 0.0 && stroke_alpha <= 0.0) {
         return vec4<f32>(0.0);
     }
