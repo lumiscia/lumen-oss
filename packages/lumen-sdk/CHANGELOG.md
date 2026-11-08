@@ -1,5 +1,21 @@
 # @lumiscia/lumen-sdk
 
+## 0.5.0
+
+### Minor Changes
+
+- d60eaad: `POST /renders` on `lumen-server` accepts `quality: { bitrate, crf, qp, preset }`, with the same meanings and rules as `lumen-local`'s flags: at most one of `bitrate` (a number or text such as `"14M"`), `crf` and `qp`. Invalid combinations or values return `422`. `RenderOptions.quality` in the SDK sends it. For Rust users of `lumen-engine-ffmpeg`, `EncoderQuality::from_options` and `parse_bitrate` hold the checks `lumen-local` and `lumen-server` share.
+
+### Patch Changes
+
+- 92b28e3: Every package now has a README, so its npm page describes it.
+- Updated dependencies [48ad23c]
+- Updated dependencies [92b28e3]
+- Updated dependencies [ef422d1]
+- Updated dependencies [5db9958]
+  - @lumiscia/lumen-types@0.5.0
+  - @lumiscia/lumen-shared@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes

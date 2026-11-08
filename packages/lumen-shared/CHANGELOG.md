@@ -1,5 +1,16 @@
 # @lumiscia/lumen-shared
 
+## 0.5.0
+
+### Patch Changes
+
+- 92b28e3: Every package now has a README, so its npm page describes it.
+- Updated dependencies [48ad23c]
+- Updated dependencies [92b28e3]
+- Updated dependencies [ef422d1]
+- Updated dependencies [5db9958]
+  - @lumiscia/lumen-types@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes

@@ -1,5 +1,17 @@
 # @lumiscia/lumen-types
 
+## 0.5.0
+
+### Minor Changes
+
+- 48ad23c: `media_in` takes an `alpha` param for video: `"straight"` (the default, as before) or `"premultiplied"`, for sources like many ProRes exports whose colour is already multiplied by alpha and would otherwise be premultiplied twice and show dark edges. For Rust users, `MediaFrame` has a new `RawRgba` variant for RGBA frames whose premultiplication is left to the node reading them; FFmpeg RGB video with alpha now comes out as one.
+- ef422d1: Radial gradients take an optional `focal` point, which makes them two-point conical gradients for off-centre highlights. The first stop sits at the focal point and the last on the circle at `center` and `radius`. A focal point on or outside that circle is moved just inside it. Without `focal`, or with `focal` equal to `center`, gradients render as before.
+- 5db9958: Merge and RasterMultiMerge gain the add, difference, exclusion, color dodge, color burn, hard light and soft light blend modes.
+
+### Patch Changes
+
+- 92b28e3: Every package now has a README, so its npm page describes it.
+
 ## 0.4.0
 
 ### Minor Changes

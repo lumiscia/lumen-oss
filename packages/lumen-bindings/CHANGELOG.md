@@ -1,5 +1,32 @@
 # @lumiscia/lumen-bindings
 
+## 0.5.0
+
+### Minor Changes
+
+- a08ab26: Expressions gain seeded `noise(seed, x)` and `random(seed, x)` builtins. `noise` is smooth 1D gradient noise in `-1..=1`; `random` is a uniform number in `0..1`, and `random(x)` uses seed 0. Both are built from integer hashing and exact float arithmetic, so a frame renders identically on every host.
+- 48ad23c: `media_in` takes an `alpha` param for video: `"straight"` (the default, as before) or `"premultiplied"`, for sources like many ProRes exports whose colour is already multiplied by alpha and would otherwise be premultiplied twice and show dark edges. For Rust users, `MediaFrame` has a new `RawRgba` variant for RGBA frames whose premultiplication is left to the node reading them; FFmpeg RGB video with alpha now comes out as one.
+- ef422d1: Radial gradients take an optional `focal` point, which makes them two-point conical gradients for off-centre highlights. The first stop sits at the focal point and the last on the circle at `center` and `radius`. A focal point on or outside that circle is moved just inside it. Without `focal`, or with `focal` equal to `center`, gradients render as before.
+- 5db9958: Merge and RasterMultiMerge gain the add, difference, exclusion, color dodge, color burn, hard light and soft light blend modes.
+- d60eaad: `POST /renders` on `lumen-server` accepts `quality: { bitrate, crf, qp, preset }`, with the same meanings and rules as `lumen-local`'s flags: at most one of `bitrate` (a number or text such as `"14M"`), `crf` and `qp`. Invalid combinations or values return `422`. `RenderOptions.quality` in the SDK sends it. For Rust users of `lumen-engine-ffmpeg`, `EncoderQuality::from_options` and `parse_bitrate` hold the checks `lumen-local` and `lumen-server` share.
+- 04f41b2: With `LUMEN_HARDWARE_DECODE=1` on Linux, Vulkan hardware decode now covers every H.264, HEVC and AV1 profile the device's driver can decode, not only 8-bit 4:2:0. 10-bit HEVC from iPhones, 10-bit AV1 and 4:2:2 or 4:4:4 HEVC decode on the GPU where the hardware supports them; anything the device refuses still moves to CPU decode with one warning. For Rust users of `lumen-engine-ffmpeg`: `VulkanDecodedFrame::layout` returns a `VulkanFrameLayout` describing the frame's subsampling, depth and buffer layout for `copy_to_buffer`.
+
+### Patch Changes
+
+- 9208a20: For Rust users of `lumen-engine-ffmpeg`: `VideoDecoder::receive_rgba_frame` and `receive_cpu_frame` are removed in favour of `receive_video_frame`, and nothing in `lumen-ffmpeg` converts YUV to RGBA any more. YUV sources come out of `receive_video_frame` as planes with their colour tags, and the renderer's shader does the conversion; sources that are already RGB, gray or palette-based still come out as RGBA. `YuvVideoFrame::sample` reads the Y, Cb and Cr values at a pixel.
+- 1484e3a: Gradient paints with `interpolation: "linear_srgb"` now blend their stops in linear light, as documented. They were mixed in sRGB like the default, so mid-gradient colours came out darker than asked for. `srgb` gradients are unchanged.
+- 92b28e3: Every package now has a README, so its npm page describes it.
+- 5260e32: The preview hands video to the engine as the browser's native YUV planes, and the engine converts them with the same matrix as a server render, instead of leaving the conversion to the browser. Untagged video now looks the same in the preview and in a render: below 720 rows it's BT.601, and from 720 rows it's BT.709. Chrome used to pick BT.709 for sizes like 960×540 and 720×576, and Safari for everything, including video tagged BT.601. Video also shows in Safari again, which ignored the RGBA conversion and left frames black. Rotated video is rotated by the engine.
+- 699ae65: A `path` or `shape` stroke under a pixel wide now covers at most its width of a pixel, so a stroke animated to zero width fades out instead of popping off on its last frame. Centred on a pixel, a 0.1 px stroke drew at about 55% alpha and now draws at 10%. Strokes 1 px wide and up are unchanged.
+- b9efc3b: Server CPU video decode hands YUV planes and the stream's colour tags to the renderer instead of converting to RGBA in FFmpeg, so server video converts with the same GPU shader as every other path. Video with an alpha layer keeps it as a plane, and rotation is applied by the shader.
+- 833d912: The engine can take video frames as YUV planes (NV12, I420, I422, I444, 8 to 16 bits, with an optional alpha plane and rotation) and convert them to RGBA with one GPU shader. Nothing produces these frames yet, so output is unchanged.
+- 892990a: Hardware-decoded video converts to RGBA with the same YUV shader as every other decode path, following the stream's colour tags. VideoToolbox frames on macOS no longer render white, and rotated sources now decode on the GPU and show upright.
+- Updated dependencies [92b28e3]
+- Updated dependencies [bc958b9]
+- Updated dependencies [8b9b483]
+- Updated dependencies [5260e32]
+  - @lumiscia/lumen-preview@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes
