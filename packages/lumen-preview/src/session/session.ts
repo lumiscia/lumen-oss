@@ -2,6 +2,7 @@ import { LumenAudioEngine } from "../audio-engine.js";
 import { clockPositionMs, epochNow, fitClock, type PreviewClock } from "../clock.js";
 import type { MediaRegistration, MediaSourceInput } from "../media/index.js";
 import { sameMediaInput } from "../media/source.js";
+import { assetHint } from "../asset-hint.js";
 import { createModuleWorker } from "../module-worker.js";
 import type { LumenPreviewContext, LumenPreviewErrorCode } from "../preview.js";
 import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../worker-host.js";
@@ -111,6 +112,7 @@ export class LumenPreviewSession {
           type: "start",
           wasmUrl: absoluteUrl(this.#wasmUrl),
         },
+        absoluteUrl(this.#workerUrl),
         this.#startup.signal,
       );
     } catch (error) {
@@ -566,6 +568,7 @@ function assertBrowserSupport(): void {
 function startWorker(
   worker: Worker,
   start: Extract<LumenPreviewWorkerCommand, { type: "start" }>,
+  workerUrl: string,
   signal: AbortSignal,
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -573,7 +576,7 @@ function startWorker(
       reject(
         new PreviewStartupError(
           "worker_failed",
-          `The Lumen preview worker failed to start: ${detail}. Check that the worker and wasm URLs are served and that the page's CSP allows them (worker-src, script-src 'wasm-unsafe-eval').`,
+          `The Lumen preview worker failed to start from ${workerUrl}: ${detail}. Check that the page's CSP allows it (worker-src, script-src 'wasm-unsafe-eval'). ${assetHint(workerUrl)}`,
         ),
       );
     const timeout = setTimeout(

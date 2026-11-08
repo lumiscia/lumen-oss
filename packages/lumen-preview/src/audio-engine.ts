@@ -1,5 +1,6 @@
 import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
 import type { MediaSourceInput } from "./media/types.js";
+import { assetHint } from "./asset-hint.js";
 import { createModuleWorker } from "./module-worker.js";
 
 export const LUMEN_AUDIO_SAMPLE_RATE = 48_000;
@@ -529,7 +530,11 @@ export class LumenAudioEngine {
     // Without a mixer no chunk ever arrives, so stop holding the video. The next sync decodes into a
     // new worker.
     worker.onerror = (event) => {
-      console.error("[LumenAudioEngine]", event.message);
+      const url = String(workerModuleUrl);
+      console.error(
+        "[LumenAudioEngine]",
+        `the audio worker failed at ${url}: ${event.message}. ${assetHint(url)}`,
+      );
       this.#halt();
       worker.terminate();
       this.#worker = null;

@@ -201,8 +201,19 @@ describe("LumenPreviewSession", () => {
 
     expect(preview.getSnapshot().errorCode).toBe("worker_failed");
     expect(preview.getSnapshot().error).toContain("worker-src");
+    expect(preview.getSnapshot().error).toContain("from https://a.test/worker.js");
+    expect(preview.getSnapshot().error).toContain("pass `workerUrl` and `wasmUrl`");
     expect(canvases).toHaveLength(0);
     expect(worker.terminated).toBe(true);
+  });
+
+  it("names the Vite setting when a pre-bundled worker URL doesn't load", async () => {
+    const workerUrl = "https://a.test/node_modules/.vite/deps/dist/browser/worker.js";
+    const { attached, preview, worker } = createSession({ workerUrl });
+    worker.onerror?.({ message: "" });
+    await attached;
+
+    expect(preview.getSnapshot().error).toContain("optimizeDeps");
   });
 
   it("passes on the reason the worker gives for not starting", async () => {

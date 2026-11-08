@@ -10,6 +10,7 @@ import {
 import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
 import type { LumenPreviewErrorCode } from "./preview.js";
 import { PreviewRunner } from "./runner.js";
+import { assetHint } from "./asset-hint.js";
 import { describeError } from "./session/errors.js";
 import { PlaybackFpsMeter } from "./session/stats.js";
 
@@ -228,7 +229,7 @@ export function createLumenPreviewWorkerHost({
     } catch (error) {
       scope.postMessage({
         code: "worker_failed",
-        message: `The Lumen preview worker couldn't load its wasm from ${message.wasmUrl}: ${describeError(error)}`,
+        message: `The Lumen preview worker couldn't load its wasm from ${message.wasmUrl}: ${describeError(error)}. ${assetHint(message.wasmUrl)}`,
         type: "startup-failed",
       });
       return;
