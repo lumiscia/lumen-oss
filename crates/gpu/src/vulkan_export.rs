@@ -51,14 +51,19 @@ impl Renderer {
         ))
     }
 
-    /// Creates a `size`-byte device-local buffer whose memory is exported as an opaque fd. Only
-    /// `STORAGE`, `COPY_SRC` and `COPY_DST` usages are mapped.
+    /// Creates a zeroed `size`-byte device-local buffer whose memory is exported as an opaque fd.
+    /// `size` must be a multiple of 4. Only `STORAGE`, `COPY_SRC` and `COPY_DST` usages are
+    /// mapped, and `COPY_DST` is always added.
     pub fn create_exportable_vulkan_buffer(
         &self,
         label: Option<&str>,
         size: u64,
         usage: wgpu::BufferUsages,
     ) -> Result<ExportableVulkanBuffer> {
+        if !size.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT) {
+            bail!("exportable buffer size {size} is not a multiple of 4");
+        }
+        let usage = usage | wgpu::BufferUsages::COPY_DST;
         let Some(hal_device) = (unsafe { self.device.as_hal::<wgpu_hal::api::Vulkan>() }) else {
             bail!("wgpu device is not using the Vulkan backend");
         };
@@ -139,6 +144,12 @@ impl Renderer {
                 },
             )
         };
+        // wgpu doesn't track the initialization of a buffer it didn't allocate.
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label });
+        encoder.clear_buffer(&buffer, 0, None);
+        self.queue.submit([encoder.finish()]);
 
         Ok(ExportableVulkanBuffer {
             buffer: Arc::new(buffer),
