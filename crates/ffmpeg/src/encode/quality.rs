@@ -6,7 +6,7 @@ use super::codec::EncoderFamily;
 const DEFAULT_BIT_RATE: u64 = 14_000_000;
 
 /// How an encoder trades bitrate against quality.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RateControl {
     /// Target average bitrate in bits per second.
     Bitrate(u64),
@@ -23,11 +23,59 @@ impl Default for RateControl {
 }
 
 /// The quality settings a render asks its encoder for.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct EncoderQuality {
     pub rate_control: RateControl,
     /// Encoder preset: `ultrafast`..`placebo` for libx264, `p1`..`p7` for NVENC.
     pub preset: Option<String>,
+}
+
+impl EncoderQuality {
+    /// The quality a caller asked for with at most one of `bitrate`, `crf` and `qp`, plus a
+    /// preset, or `None` if it asked for none of them. Errors when more than one rate control is
+    /// given. Whether the chosen encoder supports the result is only known when it opens.
+    pub fn from_options(
+        bitrate: Option<u64>,
+        crf: Option<u8>,
+        qp: Option<u8>,
+        preset: Option<String>,
+    ) -> std::result::Result<Option<Self>, String> {
+        let mut requested = [
+            bitrate.map(RateControl::Bitrate),
+            crf.map(RateControl::Crf),
+            qp.map(RateControl::Qp),
+        ]
+        .into_iter()
+        .flatten();
+        let rate_control = requested.next();
+        if requested.next().is_some() {
+            return Err("bitrate, crf and qp are mutually exclusive; set only one".to_string());
+        }
+        Ok((rate_control.is_some() || preset.is_some()).then(|| Self {
+            rate_control: rate_control.unwrap_or_default(),
+            preset,
+        }))
+    }
+}
+
+/// Parses bits per second, with optional `k` or `M` suffixes (`14M` is 14,000,000).
+pub fn parse_bitrate(value: &str) -> std::result::Result<u64, String> {
+    let (digits, multiplier) = match value.strip_suffix(['k', 'K']) {
+        Some(digits) => (digits, 1_000),
+        None => match value.strip_suffix(['m', 'M']) {
+            Some(digits) => (digits, 1_000_000),
+            None => (value, 1),
+        },
+    };
+    let bitrate = digits
+        .parse::<u64>()
+        .map_err(|error| format!("invalid bitrate `{value}`: {error}"))?
+        .checked_mul(multiplier)
+        .ok_or("bitrate is too large")?;
+    if bitrate == 0 {
+        return Err("bitrate must be greater than zero".to_string());
+    }
+    Ok(bitrate)
 }
 
 const X264_PRESETS: [&str; 10] = [
@@ -153,6 +201,41 @@ mod tests {
         preset: Option<&str>,
     ) -> Result<QualityOptions> {
         quality_options(encoder, rate_control, preset, EncodeMode::CpuUpload)
+    }
+
+    #[test]
+    fn options_allow_one_rate_control() {
+        let quality = |bitrate, crf, qp, preset: Option<&str>| {
+            EncoderQuality::from_options(bitrate, crf, qp, preset.map(str::to_string))
+        };
+        assert_eq!(quality(None, None, None, None), Ok(None));
+        assert_eq!(
+            quality(None, Some(23), None, Some("fast")),
+            Ok(Some(EncoderQuality {
+                rate_control: RateControl::Crf(23),
+                preset: Some("fast".into()),
+            }))
+        );
+        assert_eq!(
+            quality(None, None, None, Some("fast"))
+                .unwrap()
+                .unwrap()
+                .rate_control,
+            RateControl::default()
+        );
+        assert!(quality(None, Some(23), Some(20), None).is_err());
+        assert!(quality(Some(1), Some(23), None, None).is_err());
+        assert!(quality(Some(1), None, Some(20), None).is_err());
+    }
+
+    #[test]
+    fn parse_bitrate_accepts_suffixes() {
+        assert_eq!(parse_bitrate("14000000"), Ok(14_000_000));
+        assert_eq!(parse_bitrate("500k"), Ok(500_000));
+        assert_eq!(parse_bitrate("14M"), Ok(14_000_000));
+        assert!(parse_bitrate("0").is_err());
+        assert!(parse_bitrate("fast").is_err());
+        assert!(parse_bitrate("18446744073709551615M").is_err());
     }
 
     #[test]

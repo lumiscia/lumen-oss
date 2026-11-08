@@ -8,7 +8,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgGroup, Parser};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen_engine::composition::Composition;
-use lumen_ffmpeg::{EncoderQuality, RateControl};
+use lumen_ffmpeg::{EncoderQuality, parse_bitrate};
 use lumen_server::render::{
     FONT_DIR_ENV, LocalMediaStore, Mp4Render, RenderReport, create_gpu_renderer, existing_font_dir,
 };
@@ -94,18 +94,8 @@ impl Cli {
 
     /// The rate control and preset the command line asked for, or `None` if it asked for neither.
     fn quality(&self) -> Option<EncoderQuality> {
-        let rate_control = [
-            self.bitrate.map(RateControl::Bitrate),
-            self.crf.map(RateControl::Crf),
-            self.qp.map(RateControl::Qp),
-        ]
-        .into_iter()
-        .flatten()
-        .next();
-        (rate_control.is_some() || self.preset.is_some()).then(|| EncoderQuality {
-            rate_control: rate_control.unwrap_or_default(),
-            preset: self.preset.clone(),
-        })
+        EncoderQuality::from_options(self.bitrate, self.crf, self.qp, self.preset.clone())
+            .expect("clap allows at most one rate control")
     }
 
     /// The kind of output asked for, after checking that no flag only the other kind supports was
@@ -138,25 +128,6 @@ impl Cli {
             ),
         }
     }
-}
-
-/// Parses bits per second, with optional `k` or `M` suffixes (`14M` is 14,000,000).
-fn parse_bitrate(value: &str) -> Result<u64> {
-    let (digits, multiplier) = match value.strip_suffix(['k', 'K']) {
-        Some(digits) => (digits, 1_000),
-        None => match value.strip_suffix(['m', 'M']) {
-            Some(digits) => (digits, 1_000_000),
-            None => (value, 1),
-        },
-    };
-    let bitrate = digits
-        .parse::<u64>()?
-        .checked_mul(multiplier)
-        .ok_or_else(|| anyhow!("bitrate is too large"))?;
-    if bitrate == 0 {
-        return Err(anyhow!("bitrate must be greater than zero"));
-    }
-    Ok(bitrate)
 }
 
 fn main() {
@@ -403,7 +374,9 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, EncoderQuality, RateControl, parse_bitrate, render_to_partial};
+    use lumen_ffmpeg::RateControl;
+
+    use super::{Cli, EncoderQuality, render_to_partial};
 
     #[test]
     fn failed_renders_leave_no_partial_file_and_keep_earlier_output() {
@@ -705,15 +678,5 @@ mod tests {
                 .to_string()
                 .contains("`no-such-fonts` is not a directory")
         );
-    }
-
-    #[test]
-    fn parse_bitrate_accepts_suffixes() {
-        assert_eq!(parse_bitrate("14000000").unwrap(), 14_000_000);
-        assert_eq!(parse_bitrate("500k").unwrap(), 500_000);
-        assert_eq!(parse_bitrate("14M").unwrap(), 14_000_000);
-        assert!(parse_bitrate("0").is_err());
-        assert!(parse_bitrate("fast").is_err());
-        assert!(parse_bitrate("18446744073709551615M").is_err());
     }
 }
