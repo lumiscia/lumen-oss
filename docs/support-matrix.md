@@ -68,11 +68,11 @@ Software Vulkan through lavapipe is the deterministic CI baseline. It is useful 
 
 A render asks for a codec (`h264`, `hevc` or `av1`, default `h264`) and a quality preset (`draft`, `standard`, `high` or `lossless`, default `standard`). Each codec tries its encoders in order, and the first that opens wins, with one warning and the reason for each that didn't:
 
-| Platform | `h264`                        | `hevc`                        | `av1`                          |
-| -------- | ----------------------------- | ----------------------------- | ------------------------------ |
-| Linux    | `h264_vulkan`, then `libx264` | `hevc_vulkan`, then `libx265` | `av1_vulkan`, then `libsvtav1` |
-| macOS    | `h264_videotoolbox`, then `libx264` | `hevc_videotoolbox`, then `libx265` | `libsvtav1` |
-| Other    | `libx264`                     | `libx265`                     | `libsvtav1`                    |
+| Platform | `h264`                              | `hevc`                              | `av1`                          |
+| -------- | ----------------------------------- | ----------------------------------- | ------------------------------ |
+| Linux    | `h264_vulkan`, then `libx264`       | `hevc_vulkan`, then `libx265`       | `av1_vulkan`, then `libsvtav1` |
+| macOS    | `h264_videotoolbox`, then `libx264` | `hevc_videotoolbox`, then `libx265` | `libsvtav1`                    |
+| Other    | `libx264`                           | `libx265`                           | `libsvtav1`                    |
 
 An operator's quality config can change the order and the presets' settings; see the [server README](../crates/server/README.md#quality-config). A preset only tries the encoders it has settings for, so `lossless` uses `libx264`, `libx265` or NVENC. `--encoder` (`lumen-local`) or `LUMEN_VIDEO_ENCODER` pins one encoder, which either opens or fails the render.
 
