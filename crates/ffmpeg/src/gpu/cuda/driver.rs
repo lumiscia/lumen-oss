@@ -5,7 +5,7 @@ use std::{mem::MaybeUninit, sync::Arc};
 use cudarc::driver::{CudaContext as CudaContextInner, result, sys};
 
 use super::{CudaVideoFrame, interop};
-pub use interop::{ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image};
+pub use interop::{ImportedCudaExternalBuffer, import_owned_vulkan_opaque_fd_buffer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CudaDeviceInfo {
@@ -85,21 +85,21 @@ impl CudaContext {
             .map_err(|error| error.to_string())
     }
 
-    pub fn allocate_rgba_frame(
+    /// Allocates an NV12 frame laid out as [`CudaVideoFrame`] describes.
+    pub fn allocate_nv12_frame(
         &self,
         width: u32,
         height: u32,
     ) -> Result<CudaDeviceAllocation, String> {
         self.set_current()?;
-        let width_bytes = width as usize * 4;
         let mut device_ptr = MaybeUninit::<sys::CUdeviceptr>::uninit();
         let mut pitch = MaybeUninit::<usize>::uninit();
         unsafe {
             sys::cuMemAllocPitch_v2(
                 device_ptr.as_mut_ptr(),
                 pitch.as_mut_ptr(),
-                width_bytes,
-                height as usize,
+                width.next_multiple_of(2) as usize,
+                nv12_rows(height),
                 16,
             )
             .result()
@@ -115,21 +115,10 @@ impl CudaContext {
             }),
         })
     }
+}
 
-    pub fn copy_image_to_rgba_frame(
-        &self,
-        source: &ImportedCudaExternalImage,
-        destination: &CudaDeviceAllocation,
-    ) -> Result<(), String> {
-        self.set_current()?;
-        interop::copy_image_to_rgba_frame(
-            source,
-            destination.memory.device_ptr,
-            destination.memory.pitch,
-            destination.memory.width,
-            destination.memory.height,
-        )
-    }
+fn nv12_rows(height: u32) -> usize {
+    (height + height.div_ceil(2)) as usize
 }
 
 pub struct CudaDeviceAllocation {
@@ -168,6 +157,7 @@ impl CudaDeviceAllocation {
         self.memory.pitch
     }
 
+    /// Sets every byte of both planes to `value`.
     pub fn clear(&self, value: u8) -> Result<(), String> {
         self.memory.context.set_current()?;
         unsafe {
@@ -176,7 +166,7 @@ impl CudaDeviceAllocation {
                 value,
                 self.memory
                     .pitch
-                    .saturating_mul(self.memory.height as usize),
+                    .saturating_mul(nv12_rows(self.memory.height)),
             )
             .result()
             .map_err(|error| error.to_string())

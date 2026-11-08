@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 pub const BACKEND: GpuBackend = GpuBackend::Cuda;
 
+/// An NV12 frame in CUDA device memory: `height` luma rows of `pitch` bytes, directly followed by
+/// `height.div_ceil(2)` rows of interleaved CbCr pairs with the same pitch.
 #[derive(Clone)]
 pub struct CudaVideoFrame {
     device_ptr: u64,
@@ -36,9 +38,9 @@ impl CudaVideoFrame {
     ///
     /// # Safety
     ///
-    /// `device_ptr` must point to a CUDA allocation matching `width`, `height`, and `pitch`. The
-    /// allocation must remain valid and unmodified until the call that submits the frame to an
-    /// encoder returns.
+    /// `device_ptr` must point to a CUDA allocation holding an NV12 frame laid out as the type
+    /// describes for `width`, `height`, and `pitch`. The allocation must remain valid and
+    /// unmodified until the call that submits the frame to an encoder returns.
     pub unsafe fn from_device_ptr(
         device_ptr: u64,
         width: u32,
@@ -94,13 +96,10 @@ impl CudaVideoFrame {
         GpuBackend::Cuda
     }
 
-    /// Copies this frame's pixels into `destination`, a CUDA allocation of the same dimensions,
-    /// in the context that owns the frame, and waits for the copy to finish.
-    pub(crate) fn copy_to_device(
-        &self,
-        destination: u64,
-        destination_pitch: usize,
-    ) -> Result<(), String> {
+    /// Copies this frame's luma and chroma planes into the planes of `destination`, a CUDA NV12
+    /// frame of the same dimensions given as a pointer and pitch per plane, in the context that
+    /// owns the frame, and waits for the copies to finish.
+    pub(crate) fn copy_to_device(&self, destination: [(u64, usize); 2]) -> Result<(), String> {
         use cudarc::driver::sys;
         use sys::CUmemorytype_enum::CU_MEMORYTYPE_DEVICE;
 
@@ -117,28 +116,41 @@ impl CudaVideoFrame {
                 .result()
                 .map_err(|error| error.to_string())?;
         }
-        let copy = sys::CUDA_MEMCPY2D {
-            srcXInBytes: 0,
-            srcY: 0,
-            srcMemoryType: CU_MEMORYTYPE_DEVICE,
-            srcHost: std::ptr::null(),
-            srcDevice: self.device_ptr,
-            srcArray: std::ptr::null_mut(),
-            srcPitch: self.pitch as usize,
-            dstXInBytes: 0,
-            dstY: 0,
-            dstMemoryType: CU_MEMORYTYPE_DEVICE,
-            dstHost: std::ptr::null_mut(),
-            dstDevice: destination,
-            dstArray: std::ptr::null_mut(),
-            dstPitch: destination_pitch,
-            WidthInBytes: self.width as usize * 4,
-            Height: self.height as usize,
+        let pitch = self.pitch as usize;
+        let planes = [
+            (self.device_ptr, self.width as usize, self.height as usize),
+            (
+                self.device_ptr + self.pitch * u64::from(self.height),
+                self.width.next_multiple_of(2) as usize,
+                self.height.div_ceil(2) as usize,
+            ),
+        ];
+        let copy_plane = |(source, width_bytes, rows): (u64, usize, usize),
+                          (destination, destination_pitch): (u64, usize)| {
+            let copy = sys::CUDA_MEMCPY2D {
+                srcXInBytes: 0,
+                srcY: 0,
+                srcMemoryType: CU_MEMORYTYPE_DEVICE,
+                srcHost: std::ptr::null(),
+                srcDevice: source,
+                srcArray: std::ptr::null_mut(),
+                srcPitch: pitch,
+                dstXInBytes: 0,
+                dstY: 0,
+                dstMemoryType: CU_MEMORYTYPE_DEVICE,
+                dstHost: std::ptr::null_mut(),
+                dstDevice: destination,
+                dstArray: std::ptr::null_mut(),
+                dstPitch: destination_pitch,
+                WidthInBytes: width_bytes,
+                Height: rows,
+            };
+            unsafe { sys::cuMemcpy2DAsync_v2(&copy, std::ptr::null_mut()) }.result()
         };
         // FFmpeg's NVENC reads the destination from its own context, whose stream isn't ordered
-        // against this one, so the copy has to finish here.
-        let copied = unsafe { sys::cuMemcpy2D_v2(&copy) }
-            .result()
+        // against this one, so the copies have to finish here.
+        let copied = copy_plane(planes[0], destination[0])
+            .and_then(|()| copy_plane(planes[1], destination[1]))
             .and_then(|()| unsafe { sys::cuStreamSynchronize(std::ptr::null_mut()) }.result());
         let mut popped: sys::CUcontext = std::ptr::null_mut();
         let popped_result = unsafe { sys::cuCtxPopCurrent_v2(&mut popped) }.result();

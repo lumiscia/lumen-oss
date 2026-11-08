@@ -11,8 +11,8 @@ use lumen_ffmpeg::{
 };
 
 use super::{
-    RenderError, RenderTiming, create_gpu_renderer, encode_failed, has_audio, poll_failed,
-    render_failed, timed,
+    RenderError, RenderTiming, create_gpu_renderer, encode_failed, has_audio, poll, render_failed,
+    timed,
 };
 use crate::render::media::LocalMediaStore;
 
@@ -98,7 +98,7 @@ impl CudaTarget {
         frame: u32,
         timing: &mut RenderTiming,
     ) -> Result<(), RenderError> {
-        let submitted = timed(&mut timing.render, || {
+        timed(&mut timing.render, || {
             renderer.render_frame_into_external(
                 composition,
                 frame,
@@ -107,17 +107,17 @@ impl CudaTarget {
             )
         })
         .map_err(|err| render_failed(format!("render failed at frame {frame}: {err}")))?;
-        timed(&mut timing.flush, || {
-            submitted.wait(&renderer.gpu_renderer().device)
-        })
-        .map_err(|err| poll_failed(frame, err))?;
+        let converted = timed(&mut timing.render, || {
+            self.target.convert(renderer.gpu_renderer())
+        });
+        poll(renderer, frame, timing, Some(converted))?;
         timed(&mut timing.encode_send, || {
-            self.target.copy_rendered_frame_to_cuda().map_err(|err| {
-                encode_failed(format!(
-                    "failed to copy Vulkan frame into CUDA at frame {frame}: {err}"
-                ))
-            })?;
-            let frame_ref = self.target.video_frame(Some(i64::from(frame)));
+            let frame_ref = self
+                .target
+                .video_frame(Some(i64::from(frame)))
+                .map_err(|err| {
+                    encode_failed(format!("CUDA frame failed at frame {frame}: {err}"))
+                })?;
             self.encoder
                 .write_gpu_frame(&self.target.video_input(&frame_ref))
                 .map_err(|err| encode_failed(format!("encode failed at frame {frame}: {err}")))

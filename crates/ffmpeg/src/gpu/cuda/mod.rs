@@ -9,6 +9,6 @@ pub use frame::{BACKEND, CudaVideoFrame};
 
 #[cfg(target_os = "linux")]
 pub use driver::{
-    CudaContext, CudaDeviceAllocation, CudaDeviceInfo, CudaDriver, ImportedCudaExternalImage,
-    import_owned_vulkan_opaque_fd_image,
+    CudaContext, CudaDeviceAllocation, CudaDeviceInfo, CudaDriver, ImportedCudaExternalBuffer,
+    import_owned_vulkan_opaque_fd_buffer,
 };

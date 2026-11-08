@@ -1,7 +1,7 @@
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 use lumen_ffmpeg::{
-    CudaContext, CudaDeviceAllocation, CudaDriver, CudaVideoFrame, GpuVideoInput,
-    ImportedCudaExternalImage, import_owned_vulkan_opaque_fd_image,
+    CudaDriver, CudaVideoFrame, GpuVideoInput, ImportedCudaExternalBuffer,
+    import_owned_vulkan_opaque_fd_buffer,
 };
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_ffmpeg::{GpuVideoInput, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache};
@@ -15,6 +15,13 @@ use crate::gpu::GpuCompositionRenderer;
 /// Converts rendered RGBA frames to NV12 for a Vulkan Video encoder sharing the renderer's device.
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub struct VulkanVideoTarget {
+    pass: Nv12Pass,
+}
+
+/// Converts an RGBA texture to BT.709 limited-range NV12 in a buffer laid out as
+/// [`VulkanVideoFrame`] describes.
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+struct Nv12Pass {
     pipeline: lumen_gpu::wgpu::ComputePipeline,
     params: lumen_gpu::wgpu::Buffer,
     nv12: std::sync::Arc<lumen_gpu::wgpu::Buffer>,
@@ -92,8 +99,12 @@ impl VulkanRenderQueue for WgpuRenderQueue {
 }
 
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
-impl VulkanVideoTarget {
-    pub fn nv12(renderer: &lumen_gpu::Renderer, size: lumen_gpu::Size) -> Self {
+impl Nv12Pass {
+    fn new(
+        renderer: &lumen_gpu::Renderer,
+        size: lumen_gpu::Size,
+        nv12: std::sync::Arc<lumen_gpu::wgpu::Buffer>,
+    ) -> Self {
         use lumen_gpu::wgpu;
 
         let device = &renderer.device;
@@ -122,28 +133,19 @@ impl VulkanVideoTarget {
             0,
             bytemuck::cast_slice(&[size.width, size.height, pitch, chroma_offset]),
         );
-        let nv12 = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("lumen NV12 frame"),
-            size: VulkanVideoFrame::nv12_size(size.width, size.height),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
         Self {
             pipeline,
             params,
-            nv12: std::sync::Arc::new(nv12),
+            nv12,
             size,
         }
     }
 
-    /// Submits the conversion of `texture` and returns the NV12 frame for the encoder. The frame
-    /// must be sent before the next conversion, which reuses the buffer.
-    pub fn convert(
+    fn submit(
         &self,
         renderer: &lumen_gpu::Renderer,
         texture: &lumen_gpu::wgpu::Texture,
-        pts: Option<i64>,
-    ) -> crate::Result<VulkanVideoFrame> {
+    ) -> lumen_gpu::wgpu::SubmissionIndex {
         use lumen_gpu::wgpu;
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -185,20 +187,49 @@ impl VulkanVideoTarget {
                 1,
             );
         }
-        renderer.queue.submit([encoder.finish()]);
+        renderer.queue.submit([encoder.finish()])
+    }
+}
 
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+impl VulkanVideoTarget {
+    pub fn nv12(renderer: &lumen_gpu::Renderer, size: lumen_gpu::Size) -> Self {
+        use lumen_gpu::wgpu;
+
+        let nv12 = renderer.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lumen NV12 frame"),
+            size: VulkanVideoFrame::nv12_size(size.width, size.height),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        Self {
+            pass: Nv12Pass::new(renderer, size, std::sync::Arc::new(nv12)),
+        }
+    }
+
+    /// Submits the conversion of `texture` and returns the NV12 frame for the encoder. The frame
+    /// must be sent before the next conversion, which reuses the buffer.
+    pub fn convert(
+        &self,
+        renderer: &lumen_gpu::Renderer,
+        texture: &lumen_gpu::wgpu::Texture,
+        pts: Option<i64>,
+    ) -> crate::Result<VulkanVideoFrame> {
+        self.pass.submit(renderer, texture);
         let device =
             lumen_gpu::raw_vulkan_device(&renderer.device).map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
         let buffer =
-            lumen_gpu::raw_vulkan_buffer(&self.nv12).map_err(|error| RenderError::Gpu {
+            lumen_gpu::raw_vulkan_buffer(&self.pass.nv12).map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        let (width, height) = (self.size.width, self.size.height);
+        let lumen_gpu::Size { width, height } = self.pass.size;
         // SAFETY: The buffer lives on `device`, the conversion writing it was just submitted to
         // that device's render queue, and the frame retains the buffer, which retains the device.
-        Ok(unsafe { VulkanVideoFrame::new(device, buffer, width, height, pts, self.nv12.clone()) })
+        Ok(unsafe {
+            VulkanVideoFrame::new(device, buffer, width, height, pts, self.pass.nv12.clone())
+        })
     }
 }
 
@@ -211,13 +242,13 @@ pub struct CudaNvencTargetPool {
     vulkan_device: lumen_gpu::VulkanDeviceInfo,
 }
 
+/// An RGBA render target whose frames are converted to NV12 in Vulkan memory that CUDA maps, for
+/// NVENC to read.
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 pub struct CudaNvencTarget {
     external: lumen_gpu::ExternalTexture,
-    cuda_frame: CudaDeviceAllocation,
-    imported: ImportedCudaExternalImage,
-    exportable: lumen_gpu::ExportableVulkanTexture,
-    context: CudaContext,
+    imported: ImportedCudaExternalBuffer,
+    pass: Nv12Pass,
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
@@ -237,17 +268,11 @@ pub struct MetalVideoToolboxTarget {
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 impl CudaNvencTargetPool {
     pub fn rgba8(renderer: &lumen_gpu::Renderer, size: lumen_gpu::Size) -> crate::Result<Self> {
-        let bootstrap = renderer
-            .create_exportable_vulkan_texture(
-                Some("lumen CUDA/NVENC target bootstrap"),
-                size,
-                lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-                cuda_nvenc_usage(),
-            )
+        let vulkan_device = renderer
+            .vulkan_device_info()
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        let vulkan_device = bootstrap.device_info().clone();
         let driver = CudaDriver::load().map_err(|details| RenderError::Gpu { details })?;
         let cuda_ordinal = driver
             .devices()
@@ -262,7 +287,6 @@ impl CudaNvencTargetPool {
                     format_uuid(&vulkan_device.device_uuid)
                 ),
             })?;
-        drop(bootstrap);
         Ok(Self {
             driver,
             cuda_ordinal,
@@ -273,21 +297,33 @@ impl CudaNvencTargetPool {
     }
 
     pub fn acquire(&self, renderer: &lumen_gpu::Renderer) -> crate::Result<CudaNvencTarget> {
+        use lumen_gpu::wgpu;
+
         let context = self
             .driver
             .create_primary_context_for_ordinal(self.cuda_ordinal)
             .map_err(|details| RenderError::Gpu { details })?;
+        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("lumen CUDA/NVENC render target"),
+            size: self.size.as_extent(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: cuda_nvenc_usage(),
+            view_formats: &[],
+        });
+        let nv12_size = VulkanVideoFrame::nv12_size(self.size.width, self.size.height);
         let exportable = renderer
-            .create_exportable_vulkan_texture(
-                Some("lumen CUDA/NVENC render target"),
-                self.size,
-                self.format,
-                cuda_nvenc_usage(),
+            .create_exportable_vulkan_buffer(
+                Some("lumen CUDA/NVENC NV12 frame"),
+                nv12_size,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             )
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        let imported = import_owned_vulkan_opaque_fd_image(
+        let imported = import_owned_vulkan_opaque_fd_buffer(
             &context,
             exportable
                 .memory_fd()
@@ -296,20 +332,13 @@ impl CudaNvencTargetPool {
                     details: format!("failed to duplicate Vulkan memory fd: {error}"),
                 })?,
             exportable.allocation_size(),
-            self.size.width,
-            self.size.height,
+            nv12_size,
         )
         .map_err(|details| RenderError::Gpu { details })?;
-        let cuda_frame = context
-            .allocate_rgba_frame(self.size.width, self.size.height)
-            .map_err(|details| RenderError::Gpu { details })?;
-        let external = lumen_gpu::ExternalTexture::new(exportable.texture_arc());
         Ok(CudaNvencTarget {
-            external,
-            cuda_frame,
+            external: lumen_gpu::ExternalTexture::from_texture(texture),
             imported,
-            exportable,
-            context,
+            pass: Nv12Pass::new(renderer, self.size, exportable.buffer_arc()),
         })
     }
 
@@ -340,31 +369,23 @@ impl CudaNvencTarget {
         self.external.clone()
     }
 
-    pub fn copy_rendered_frame_to_cuda(&self) -> crate::Result<()> {
-        Ok(self
-            .context
-            .copy_image_to_rgba_frame(&self.imported, &self.cuda_frame)
-            .map_err(|details| RenderError::Gpu { details })?)
+    /// Submits the conversion of the rendered frame to NV12. Once the submission has finished,
+    /// [`video_frame`](Self::video_frame) holds the frame until the next conversion.
+    pub fn convert(&self, renderer: &lumen_gpu::Renderer) -> lumen_gpu::wgpu::SubmissionIndex {
+        self.pass.submit(renderer, &self.external.texture_arc())
     }
 
-    pub fn video_frame(&self, pts: Option<i64>) -> CudaVideoFrame {
-        self.cuda_frame.as_video_frame(pts)
+    pub fn video_frame(&self, pts: Option<i64>) -> crate::Result<CudaVideoFrame> {
+        let lumen_gpu::Size { width, height } = self.pass.size;
+        let pitch = u64::from(VulkanVideoFrame::nv12_pitch(width));
+        Ok(self
+            .imported
+            .nv12_frame(width, height, pitch, pts)
+            .map_err(|details| RenderError::Gpu { details })?)
     }
 
     pub fn video_input<'a>(&'a self, frame: &'a CudaVideoFrame) -> GpuVideoInput<'a> {
         GpuVideoInput::Cuda(frame)
-    }
-
-    pub fn allocation_size(&self) -> u64 {
-        self.exportable.allocation_size()
-    }
-
-    pub fn memory_fd_raw(&self) -> i32 {
-        self.exportable.memory_fd_raw()
-    }
-
-    pub fn memory_type_index(&self) -> u32 {
-        self.exportable.memory_type_index()
     }
 }
 
@@ -498,14 +519,15 @@ mod tests {
     fn read_nv12(renderer: &lumen_gpu::Renderer, target: &VulkanVideoTarget) -> Vec<u8> {
         let readback = renderer.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: target.nv12.size(),
+            size: target.pass.nv12.size(),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
         let mut encoder = renderer
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        encoder.copy_buffer_to_buffer(&target.nv12, 0, &readback, 0, target.nv12.size());
+        let nv12 = &target.pass.nv12;
+        encoder.copy_buffer_to_buffer(nv12, 0, &readback, 0, nv12.size());
         renderer.queue.submit([encoder.finish()]);
         readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         renderer

@@ -13,32 +13,23 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use lumen_engine::gpu::CudaNvencTargetPool;
 use lumen_ffmpeg::{
-    CudaDriver, EncodeMode, GpuBackend, GpuVideoInput, MuxedEncoder, RateControl,
-    VideoEncoderConfig, import_owned_vulkan_opaque_fd_image,
+    ColorMatrix, ColorTags, DecodeMode, DecodedVideoFrame, EncodeMode, GpuBackend, InputContext,
+    MuxedEncoder, RateControl, VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
 };
 
 #[test]
 #[ignore = "requires NVIDIA"]
-fn vulkan_texture_imports_into_cuda_and_encodes_with_nvenc() {
+fn rendered_texture_encodes_with_nvenc_as_bt709() {
     let renderer = pollster::block_on(lumen_gpu::Renderer::new())
         .expect("create Vulkan-capable wgpu renderer");
     let size = lumen_gpu::Size::new(640, 360);
-    let exportable = renderer
-        .create_exportable_vulkan_texture(
-            Some("lumen vk-cuda-nvenc smoke texture"),
-            size,
-            lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-            lumen_gpu::wgpu::TextureUsages::COPY_DST
-                | lumen_gpu::wgpu::TextureUsages::COPY_SRC
-                | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING,
-        )
-        .expect("create exportable Vulkan texture");
-
-    let rgba = rgba_gradient(size.width, size.height);
+    let pool = CudaNvencTargetPool::rgba8(&renderer, size).expect("create CUDA/NVENC target pool");
+    let target = pool.acquire(&renderer).expect("create CUDA/NVENC target");
     renderer.queue.write_texture(
-        exportable.texture().as_image_copy(),
-        &rgba,
+        target.external_texture().texture_arc().as_image_copy(),
+        &[255, 0, 0, 255].repeat((size.width * size.height) as usize),
         lumen_gpu::wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(size.width * 4),
@@ -46,74 +37,78 @@ fn vulkan_texture_imports_into_cuda_and_encodes_with_nvenc() {
         },
         size.as_extent(),
     );
-    renderer
-        .device
-        .poll(lumen_gpu::wgpu::PollType::wait_indefinitely())
-        .expect("wait for Vulkan texture upload");
-
-    let driver = CudaDriver::load().expect("load CUDA driver");
-    let vulkan_uuid = exportable.device_info().device_uuid;
-    let ordinal = driver
-        .devices()
-        .expect("list CUDA devices")
-        .into_iter()
-        .find(|device| device.uuid == vulkan_uuid)
-        .expect("CUDA device matching the Vulkan device")
-        .ordinal;
-    let context = driver
-        .create_primary_context_for_ordinal(ordinal)
-        .expect("create CUDA primary context");
-    let imported = import_owned_vulkan_opaque_fd_image(
-        &context,
-        exportable
-            .memory_fd()
-            .try_clone()
-            .expect("duplicate Vulkan memory fd for CUDA import"),
-        exportable.allocation_size(),
-        size.width,
-        size.height,
-    )
-    .expect("import exportable Vulkan memory into CUDA");
-    assert_ne!(imported.mipmapped_array_raw(), 0);
-    assert_ne!(imported.level_zero_raw(), 0);
-    let cuda_frame = context
-        .allocate_rgba_frame(size.width, size.height)
-        .expect("allocate CUDA RGBA frame");
-    context
-        .copy_image_to_rgba_frame(&imported, &cuda_frame)
-        .expect("copy imported Vulkan image into CUDA RGBA frame");
 
     let path = temp_path("vk_cuda_nvenc", "mp4");
     let mut config = VideoEncoderConfig::cpu_rgba(size.width, size.height, 30, "h264_nvenc");
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
-    config.cuda_ordinal = Some(ordinal);
+    config.cuda_ordinal = Some(pool.cuda_ordinal());
     config.quality.rate_control = RateControl::Bitrate(2_000_000);
     let mut encoder =
         MuxedEncoder::create(path.to_string_lossy().to_string(), config).expect("create NVENC");
     for pts in 0..30 {
-        let frame = cuda_frame.as_video_frame(Some(pts));
-        let input = GpuVideoInput::Cuda(&frame);
-        encoder.write_gpu_frame(&input).expect("write CUDA frame");
+        let converted = target.convert(&renderer);
+        renderer
+            .device
+            .poll(lumen_gpu::wgpu::PollType::Wait {
+                submission_index: Some(converted),
+                timeout: None,
+            })
+            .expect("wait for NV12 conversion");
+        let frame = target.video_frame(Some(pts)).expect("CUDA NV12 frame");
+        encoder
+            .write_gpu_frame(&target.video_input(&frame))
+            .expect("write CUDA frame");
     }
     encoder.finish().expect("finish NVENC encode");
 
-    let metadata = fs::metadata(&path).expect("encoded output exists");
-    assert!(metadata.len() > 0);
+    let frame = first_frame(&path);
+    assert_eq!(
+        frame.color,
+        ColorTags {
+            matrix: ColorMatrix::Bt709,
+            full_range: false,
+        }
+    );
+    // Pure red in BT.709 limited range.
+    let sample = frame.sample(size.width / 2, size.height / 2);
+    assert!(
+        sample
+            .iter()
+            .zip([63, 102, 240])
+            .all(|(got, want)| got.abs_diff(want) <= 4),
+        "decoded {sample:?}"
+    );
     let _ = fs::remove_file(path);
 }
 
-fn rgba_gradient(width: u32, height: u32) -> Vec<u8> {
-    let mut rgba = vec![0; width as usize * height as usize * 4];
-    for y in 0..height {
-        for x in 0..width {
-            let offset = (y as usize * width as usize + x as usize) * 4;
-            rgba[offset] = (x % 256) as u8;
-            rgba[offset + 1] = (y % 256) as u8;
-            rgba[offset + 2] = 0x80;
-            rgba[offset + 3] = 0xff;
+fn first_frame(path: &std::path::Path) -> lumen_ffmpeg::YuvVideoFrame {
+    let mut input = InputContext::open(path.to_string_lossy().to_string()).expect("open output");
+    let stream_index = input
+        .best_video_stream()
+        .expect("video stream")
+        .stream_index;
+    let mut decoder = VideoDecoder::open(
+        &input,
+        VideoDecoderConfig {
+            stream_index,
+            mode: DecodeMode::Cpu,
+        },
+    )
+    .expect("open decoder");
+    while let Some(packet) = input.read_packet().expect("read packet") {
+        decoder.send_packet(&packet).expect("send packet");
+        if let Some(frame) = decoder.receive_video_frame().expect("receive frame") {
+            match frame {
+                DecodedVideoFrame::Yuv(frame) => return frame,
+                DecodedVideoFrame::Rgba { .. } => panic!("NVENC writes a YUV stream"),
+            }
         }
     }
-    rgba
+    decoder.send_eof().expect("send eof");
+    match decoder.receive_video_frame().expect("receive frame") {
+        Some(DecodedVideoFrame::Yuv(frame)) => frame,
+        _ => panic!("no decoded frame"),
+    }
 }
 
 fn temp_path(name: &str, extension: &str) -> PathBuf {

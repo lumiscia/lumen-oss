@@ -127,9 +127,9 @@ fn make_cuda_video_with_nvenc(path: &Path, width: u32, height: u32, with_audio: 
     let driver = CudaDriver::load().expect("CUDA driver");
     let context = driver.create_primary_context().expect("CUDA context");
     let frame = context
-        .allocate_rgba_frame(width, height)
+        .allocate_nv12_frame(width, height)
         .expect("CUDA frame allocation");
-    frame.clear(0x7f).expect("CUDA frame clear");
+    frame.clear(0x80).expect("CUDA frame clear");
 
     let mut video = VideoEncoderConfig::cpu_rgba(width, height, 30, "h264_nvenc");
     video.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
@@ -265,6 +265,7 @@ fn encodes_cuda_frames_with_nvenc_when_requested() {
             assert_eq!(info.audio_streams[0].sample_rate, 48_000);
             assert_eq!(info.audio_streams[0].channels, 2);
         }
+        assert_bt709_tags(&path);
 
         let _ = fs::remove_file(path);
     }
@@ -283,7 +284,7 @@ fn cuda_nvenc_keeps_each_frame_when_the_source_buffer_is_reused() {
     let driver = CudaDriver::load().expect("CUDA driver");
     let context = driver.create_primary_context().expect("CUDA context");
     let source = context
-        .allocate_rgba_frame(width, height)
+        .allocate_nv12_frame(width, height)
         .expect("CUDA frame allocation");
 
     let path = temp_path("cuda_nvenc_order", "mp4");
@@ -292,7 +293,8 @@ fn cuda_nvenc_keeps_each_frame_when_the_source_buffer_is_reused() {
     video.quality.rate_control = RateControl::Bitrate(4_000_000);
     let mut encoder = create_encoder(&path, video, None);
     for index in 0..count {
-        source.clear(index as u8 * 2).expect("CUDA frame clear");
+        // Every byte holds the value, so each frame's luma is `expected` below.
+        source.clear(16 + index as u8).expect("CUDA frame clear");
         let frame = source.as_video_frame(Some(index));
         encoder
             .write_gpu_frame(&GpuVideoInput::Cuda(&frame))
@@ -303,8 +305,7 @@ fn cuda_nvenc_keeps_each_frame_when_the_source_buffer_is_reused() {
     let frames = decode_all(&path);
     assert_eq!(frames.len(), count as usize);
     for (index, frame) in frames.iter().enumerate() {
-        // The frame is grey, so its luma is its value scaled into limited range.
-        let expected = (16.0 + 219.0 * f64::from(index as u8 * 2) / 255.0).round() as u16;
+        let expected = 16 + index as u16;
         let [luma, ..] = frame.sample(width / 2, height / 2);
         assert!(
             luma.abs_diff(expected) <= 5,

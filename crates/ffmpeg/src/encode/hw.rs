@@ -8,7 +8,7 @@ use crate::{FfmpegError, Result};
 use sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA;
 use sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN;
 #[cfg(feature = "cuda")]
-use sys::AVPixelFormat::{AV_PIX_FMT_CUDA, AV_PIX_FMT_RGBA};
+use sys::AVPixelFormat::AV_PIX_FMT_CUDA;
 use sys::AVPixelFormat::{AV_PIX_FMT_NV12, AV_PIX_FMT_VULKAN};
 
 use super::video::VideoEncoderConfig;
@@ -42,7 +42,7 @@ pub(crate) fn create_encoder_hw_contexts(
                 &device,
                 GpuBackend::Cuda,
                 AV_PIX_FMT_CUDA,
-                AV_PIX_FMT_RGBA,
+                AV_PIX_FMT_NV12,
                 config.width,
                 config.height,
             )?;
@@ -50,7 +50,7 @@ pub(crate) fn create_encoder_hw_contexts(
                 backend: GpuBackend::Cuda,
                 frames,
                 hw_format: AV_PIX_FMT_CUDA,
-                sw_format: AV_PIX_FMT_RGBA,
+                sw_format: AV_PIX_FMT_NV12,
             }))
         }
         #[cfg(feature = "vulkan")]

@@ -3,127 +3,96 @@
 use std::{
     ffi::CStr,
     os::fd::{AsRawFd, IntoRawFd, OwnedFd},
-    ptr,
+    sync::Arc,
 };
 
 use cudarc::driver::{result, sys};
 
-use super::CudaContext;
+use super::{CudaContext, CudaVideoFrame};
 
-use cudarc::driver::sys::CUarray_format_enum::CU_AD_FORMAT_UNSIGNED_INT8;
-const CUDA_ARRAY3D_COLOR_ATTACHMENT: u32 = 0x20;
-use cudarc::driver::sys::CUmemorytype_enum::{CU_MEMORYTYPE_ARRAY, CU_MEMORYTYPE_DEVICE};
+/// Vulkan memory mapped into CUDA as linear device memory.
+#[derive(Clone)]
+pub struct ImportedCudaExternalBuffer {
+    inner: Arc<ImportedBuffer>,
+}
 
-pub struct ImportedCudaExternalImage {
+struct ImportedBuffer {
     context: CudaContext,
     external_memory: sys::CUexternalMemory,
-    /// Null until the external memory has been mapped.
-    mipmapped_array: sys::CUmipmappedArray,
-    level_zero: sys::CUarray,
+    /// Zero until the external memory has been mapped.
+    device_ptr: sys::CUdeviceptr,
+    size: u64,
 }
 
-impl ImportedCudaExternalImage {
-    pub fn mipmapped_array_raw(&self) -> usize {
-        self.mipmapped_array as usize
-    }
+// SAFETY: The handles are plain CUDA driver handles, usable from any thread with the context bound,
+// and `Drop` binds it.
+unsafe impl Send for ImportedBuffer {}
+unsafe impl Sync for ImportedBuffer {}
 
-    pub fn level_zero_raw(&self) -> usize {
-        self.level_zero as usize
+impl ImportedCudaExternalBuffer {
+    /// A view of the buffer as an NV12 frame laid out as [`CudaVideoFrame`] describes, which keeps
+    /// the import alive.
+    pub fn nv12_frame(
+        &self,
+        width: u32,
+        height: u32,
+        pitch: u64,
+        pts: Option<i64>,
+    ) -> Result<CudaVideoFrame, String> {
+        let rows = u64::from(height) + u64::from(height.div_ceil(2));
+        if pitch < u64::from(width.next_multiple_of(2)) || pitch * rows > self.inner.size {
+            return Err(format!(
+                "a {width}x{height} NV12 frame with pitch {pitch} doesn't fit the {}-byte imported buffer",
+                self.inner.size
+            ));
+        }
+        Ok(CudaVideoFrame::from_retained_device_ptr(
+            self.inner.device_ptr,
+            width,
+            height,
+            pitch,
+            pts,
+            self.inner.clone(),
+        ))
     }
 }
 
-impl Drop for ImportedCudaExternalImage {
+impl Drop for ImportedBuffer {
     fn drop(&mut self) {
         let _ = self.context.set_current();
-        if !self.mipmapped_array.is_null() {
-            let _ = unsafe { sys::cuMipmappedArrayDestroy(self.mipmapped_array) };
+        if self.device_ptr != 0 {
+            let _ = unsafe { sys::cuMemFree_v2(self.device_ptr) };
         }
         let _ = unsafe { result::external_memory::destroy_external_memory(self.external_memory) };
     }
 }
 
-/// Maps Vulkan memory exported as an opaque fd into `context`. CUDA owns `fd` once the import
-/// succeeds; on failure it is closed here.
-pub fn import_owned_vulkan_opaque_fd_image(
+/// Maps the first `size` bytes of Vulkan memory exported as an opaque fd into `context`. CUDA owns
+/// `fd` once the import succeeds; on failure it is closed here.
+pub fn import_owned_vulkan_opaque_fd_buffer(
     context: &CudaContext,
     fd: OwnedFd,
     allocation_size: u64,
-    width: u32,
-    height: u32,
-) -> Result<ImportedCudaExternalImage, String> {
+    size: u64,
+) -> Result<ImportedCudaExternalBuffer, String> {
     context.set_current()?;
     let external_memory = unsafe {
         result::external_memory::import_external_memory_opaque_fd(fd.as_raw_fd(), allocation_size)
     }
     .map_err(driver_error)?;
     let _ = fd.into_raw_fd();
-    let mut image = ImportedCudaExternalImage {
+    let mut buffer = ImportedBuffer {
         context: context.clone(),
         external_memory,
-        mipmapped_array: ptr::null_mut(),
-        level_zero: ptr::null_mut(),
+        device_ptr: 0,
+        size,
     };
-
-    let array_desc = sys::CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC {
-        offset: 0,
-        arrayDesc: sys::CUDA_ARRAY3D_DESCRIPTOR {
-            Width: width as usize,
-            Height: height as usize,
-            Depth: 0,
-            Format: CU_AD_FORMAT_UNSIGNED_INT8 as _,
-            NumChannels: 4,
-            Flags: CUDA_ARRAY3D_COLOR_ATTACHMENT,
-        },
-        numLevels: 1,
-        reserved: [0; 16],
-    };
-    unsafe {
-        sys::cuExternalMemoryGetMappedMipmappedArray(
-            &mut image.mipmapped_array,
-            external_memory,
-            &array_desc,
-        )
-        .result()
-        .map_err(driver_error)?;
-        sys::cuMipmappedArrayGetLevel(&mut image.level_zero, image.mipmapped_array, 0)
-            .result()
+    buffer.device_ptr =
+        unsafe { result::external_memory::get_mapped_buffer(external_memory, 0, size) }
             .map_err(driver_error)?;
-    }
-    Ok(image)
-}
-
-pub fn copy_image_to_rgba_frame(
-    source: &ImportedCudaExternalImage,
-    destination_device_ptr: sys::CUdeviceptr,
-    destination_pitch: usize,
-    width: u32,
-    height: u32,
-) -> Result<(), String> {
-    let copy = sys::CUDA_MEMCPY2D {
-        srcXInBytes: 0,
-        srcY: 0,
-        srcMemoryType: CU_MEMORYTYPE_ARRAY,
-        srcHost: std::ptr::null(),
-        srcDevice: 0,
-        srcArray: source.level_zero,
-        srcPitch: 0,
-        dstXInBytes: 0,
-        dstY: 0,
-        dstMemoryType: CU_MEMORYTYPE_DEVICE,
-        dstHost: std::ptr::null_mut(),
-        dstDevice: destination_device_ptr,
-        dstArray: std::ptr::null_mut(),
-        dstPitch: destination_pitch,
-        WidthInBytes: width as usize * 4,
-        Height: height as usize,
-    };
-    unsafe { sys::cuMemcpy2D_v2(&copy) }
-        .result()
-        .map_err(driver_error)?;
-    // The copy is queued, and the caller re-renders into the source image once this returns.
-    unsafe { sys::cuStreamSynchronize(ptr::null_mut()) }
-        .result()
-        .map_err(driver_error)
+    Ok(ImportedCudaExternalBuffer {
+        inner: Arc::new(buffer),
+    })
 }
 
 fn driver_error(error: cudarc::driver::result::DriverError) -> String {

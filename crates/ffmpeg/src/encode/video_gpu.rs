@@ -66,7 +66,7 @@ fn prepare_gpu_frame(transport: &Transport, frame: &GpuVideoInput<'_>) -> Result
         #[allow(unreachable_patterns)]
         _ => Err(FfmpegError::new(
             "VideoEncoder::send_gpu_frame",
-            "this encoder takes CVPixelBuffer-backed Metal frames, CUDA device pointers or Vulkan NV12 buffers from its own backend",
+            "this encoder takes CVPixelBuffer-backed Metal frames, CUDA or Vulkan NV12 frames from its own backend",
         )
         .with_backend(frame.backend())),
     }
@@ -83,11 +83,13 @@ fn cuda_frame(frames: &AvBufferRef, frame: &crate::gpu::CudaVideoFrame) -> Resul
             "av_hwframe_get_buffer",
         )
         .map_err(|error| error.with_backend(GpuBackend::Cuda))?;
+        let planes = (*av_frame.as_ptr()).data;
+        let pitches = (*av_frame.as_ptr()).linesize;
         frame
-            .copy_to_device(
-                (*av_frame.as_ptr()).data[0] as u64,
-                (*av_frame.as_ptr()).linesize[0] as usize,
-            )
+            .copy_to_device([
+                (planes[0] as u64, pitches[0] as usize),
+                (planes[1] as u64, pitches[1] as usize),
+            ])
             .map_err(|details| {
                 FfmpegError::new("VideoEncoder::send_gpu_frame", details)
                     .with_backend(GpuBackend::Cuda)
