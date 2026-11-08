@@ -31,7 +31,6 @@ use serde_json::{Value, json};
 
 const MAX_CHANNEL_ERROR: u8 = 3;
 const PATCH_INSET: usize = 4;
-const UNWRITTEN_SLACK: u8 = 5;
 const PATCH_RGB: [[f64; 3]; 12] = [
     [1., 0., 0.],
     [0., 1., 0.],
@@ -343,16 +342,9 @@ fn patch_edges(size: usize, count: usize) -> Vec<usize> {
         .collect()
 }
 
-/// Pixels per row that software decode writes. swscale's x86 RGBA converter only writes whole groups
-/// of 8 into a row with no padding, leaving the rest zero.
-fn software_row_pixels(width: usize) -> usize {
-    width & !7
-}
-
 /// The largest channel difference inside the 4x3 patches. It covers each patch up to the frame's
 /// edge, where padding beyond the visible size would show, and stops short of the edges between
-/// patches, which 4:2:0 chroma and lossy coding blur. Past the pixels `b`, the software frame, has,
-/// it is read at the last one it wrote, with `UNWRITTEN_SLACK` for lossy coding across that distance.
+/// patches, which 4:2:0 chroma and lossy coding blur.
 fn patch_error(a: &[u8], b: &[u8], width: usize, height: usize) -> (u8, usize, usize) {
     let (xs, ys) = (patch_edges(width, 4), patch_edges(height, 3));
     let mut worst = (0, 0, 0);
@@ -377,13 +369,10 @@ fn patch_error(a: &[u8], b: &[u8], width: usize, height: usize) -> (u8, usize, u
             for y in top..bottom {
                 for x in left..right {
                     let at = (y * width + x) * 4;
-                    let reference = (y * width + x.min(software_row_pixels(width) - 1)) * 4;
-                    let slack = if at == reference { 0 } else { UNWRITTEN_SLACK };
                     let error = (0..4)
-                        .map(|channel| a[at + channel].abs_diff(b[reference + channel]))
+                        .map(|channel| a[at + channel].abs_diff(b[at + channel]))
                         .max()
-                        .unwrap()
-                        .saturating_sub(slack);
+                        .unwrap();
                     if error > worst.0 {
                         worst = (error, x, y);
                     }
@@ -665,8 +654,8 @@ fn playback_clips(directory: &Path) -> Vec<PathBuf> {
 }
 
 /// Compares frames decoded on hardware and software in one scene, allowing one sample in a thousand
-/// more than `MAX_CHANNEL_ERROR` off, for the edges swscale's SIMD rounds differently. Returns whether
-/// the hardware could decode the sources, as nothing is compared when it can't.
+/// more than `MAX_CHANNEL_ERROR` off. Returns whether the hardware could decode the sources, as
+/// nothing is compared when it can't.
 fn compare_playback(
     renderers: &mut Renderers,
     label: &str,
@@ -684,7 +673,6 @@ fn compare_playback(
     let software_store = Store::new(FfmpegResolverOptions::default());
     let hardware_scene = composition(&hardware_store, nodes.clone(), sources);
     let software_scene = composition(&software_store, nodes, sources);
-    let width = software_store.resolver(sources[0]).metadata().width as usize;
     let (mut largest, mut total, mut over, mut samples) = (0_u8, 0_u64, 0_u64, 0_u64);
     for frame in frames {
         let on_hardware = render(
@@ -700,18 +688,12 @@ fn compare_playback(
             frame,
             &Store::new(FfmpegResolverOptions::default()),
         );
-        let written = software_row_pixels(width) * 4;
-        for (a, b) in on_hardware
-            .chunks(width * 4)
-            .zip(on_software.chunks(width * 4))
-        {
-            for (a, b) in a[..written].iter().zip(&b[..written]) {
-                let error = a.abs_diff(*b);
-                largest = largest.max(error);
-                total += u64::from(error);
-                over += u64::from(error > MAX_CHANNEL_ERROR);
-                samples += 1;
-            }
+        for (a, b) in on_hardware.iter().zip(&on_software) {
+            let error = a.abs_diff(*b);
+            largest = largest.max(error);
+            total += u64::from(error);
+            over += u64::from(error > MAX_CHANNEL_ERROR);
+            samples += 1;
         }
     }
     println!(
