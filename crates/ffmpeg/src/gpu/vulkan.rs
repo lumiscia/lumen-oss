@@ -5,9 +5,93 @@ use ash::vk::{self, Handle};
 use crate::encode::hw::AvBufferRef;
 use crate::ffi::{self, AvFrame, sys};
 use crate::gpu::GpuBackend;
-use crate::{FfmpegError, Result};
+use crate::{FfmpegError, Result, YuvSubsampling};
 
 pub const BACKEND: GpuBackend = GpuBackend::Vulkan;
+
+/// How a two-plane YCbCr frame sits in a buffer: luma rows, then rows of interleaved Cb, Cr pairs
+/// at [`chroma_offset`](Self::chroma_offset), each plane's rows padded to 256 bytes, the row
+/// alignment wgpu copies between buffers and textures need.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VulkanFrameLayout {
+    pub width: u32,
+    pub height: u32,
+    pub subsampling: YuvSubsampling,
+    /// Significant bits per sample. Above 8, a sample is two little-endian bytes holding its value
+    /// in the high bits, as in P010.
+    pub depth: u8,
+}
+
+impl VulkanFrameLayout {
+    pub fn nv12(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            subsampling: YuvSubsampling::Yuv420,
+            depth: 8,
+        }
+    }
+
+    pub fn bytes_per_sample(&self) -> u32 {
+        if self.depth > 8 { 2 } else { 1 }
+    }
+
+    /// The horizontal and vertical log2 chroma subsampling factors.
+    pub fn chroma_shifts(&self) -> (u32, u32) {
+        match self.subsampling {
+            YuvSubsampling::Yuv420 => (1, 1),
+            YuvSubsampling::Yuv422 => (1, 0),
+            YuvSubsampling::Yuv444 => (0, 0),
+        }
+    }
+
+    /// The chroma plane's size in Cb, Cr pairs.
+    pub fn chroma_size(&self) -> (u32, u32) {
+        let (x, y) = self.chroma_shifts();
+        (self.width.div_ceil(1 << x), self.height.div_ceil(1 << y))
+    }
+
+    pub fn luma_pitch(&self) -> u32 {
+        (self.width * self.bytes_per_sample()).next_multiple_of(256)
+    }
+
+    pub fn chroma_pitch(&self) -> u32 {
+        (self.chroma_size().0 * 2 * self.bytes_per_sample()).next_multiple_of(256)
+    }
+
+    pub fn chroma_offset(&self) -> u64 {
+        u64::from(self.luma_pitch()) * u64::from(self.height)
+    }
+
+    pub fn size(&self) -> u64 {
+        self.chroma_offset() + u64::from(self.chroma_pitch()) * u64::from(self.chroma_size().1)
+    }
+
+    /// The layout of a `width` by `height` frame's visible part, and where it starts, with the left
+    /// and top crop rounded down to whole chroma samples.
+    fn cropped(
+        width: u32,
+        height: u32,
+        (crop_left, crop_top): (u32, u32),
+        subsampling: YuvSubsampling,
+        depth: u8,
+    ) -> (Self, u32, u32) {
+        let mut layout = Self {
+            width,
+            height,
+            subsampling,
+            depth,
+        };
+        let (shift_x, shift_y) = layout.chroma_shifts();
+        let (left, top) = (
+            (crop_left >> shift_x) << shift_x,
+            (crop_top >> shift_y) << shift_y,
+        );
+        layout.width = width.saturating_sub(left);
+        layout.height = height.saturating_sub(top);
+        (layout, left, top)
+    }
+}
 
 /// An NV12 frame in a Vulkan buffer on a [`VulkanDevice`]: [`nv12_pitch`](Self::nv12_pitch)-byte
 /// luma rows, followed at [`nv12_chroma_offset`](Self::nv12_chroma_offset) by interleaved CbCr rows
@@ -60,18 +144,17 @@ impl VulkanVideoFrame {
         }
     }
 
-    /// Rows are padded to 256 bytes, the row alignment wgpu copies between buffers and textures
-    /// need.
+    /// The row pitch of both planes, as [`VulkanFrameLayout::nv12`] lays them out.
     pub fn nv12_pitch(width: u32) -> u32 {
-        width.next_multiple_of(256)
+        VulkanFrameLayout::nv12(width, 1).luma_pitch()
     }
 
     pub fn nv12_chroma_offset(width: u32, height: u32) -> u64 {
-        u64::from(Self::nv12_pitch(width)) * u64::from(height)
+        VulkanFrameLayout::nv12(width, height).chroma_offset()
     }
 
     pub fn nv12_size(width: u32, height: u32) -> u64 {
-        u64::from(Self::nv12_pitch(width)) * u64::from(height + height.div_ceil(2))
+        VulkanFrameLayout::nv12(width, height).size()
     }
 
     pub fn device(&self) -> vk::Device {
@@ -95,14 +178,13 @@ impl VulkanVideoFrame {
     }
 }
 
-/// A decoded NV12 frame held in an FFmpeg Vulkan image on the [`VulkanDevice`] that decoded it.
-/// Copies share the frame, which stays alive until the last one is dropped.
+/// A decoded two-plane YCbCr frame held in an FFmpeg Vulkan image on the [`VulkanDevice`] that
+/// decoded it. Copies share the frame, which stays alive until the last one is dropped.
 #[derive(Clone)]
 pub struct VulkanDecodedFrame {
     frame: Arc<DecodedAvFrame>,
     device: VulkanDevice,
-    width: u32,
-    height: u32,
+    layout: VulkanFrameLayout,
     crop_left: u32,
     crop_top: u32,
     pts: Option<i64>,
@@ -121,18 +203,20 @@ impl std::fmt::Debug for VulkanDecodedFrame {
         formatter
             .debug_struct("VulkanDecodedFrame")
             .field("device", &self.device)
-            .field("width", &self.width)
-            .field("height", &self.height)
+            .field("layout", &self.layout)
             .field("pts", &self.pts)
             .finish_non_exhaustive()
     }
 }
 
 impl VulkanDecodedFrame {
-    /// `frame` must be an `AV_PIX_FMT_VULKAN` frame with NV12 software format decoded on `device`.
+    /// `frame` must be an `AV_PIX_FMT_VULKAN` frame decoded on `device`, whose software format is
+    /// two-plane YCbCr with this subsampling and depth.
     pub(crate) fn new(
         frame: AvFrame,
         device: VulkanDevice,
+        subsampling: YuvSubsampling,
+        depth: u8,
         color: crate::ColorTags,
         rotation: u32,
     ) -> Result<Self> {
@@ -141,16 +225,20 @@ impl VulkanDecodedFrame {
         if vk_frame.is_null() || unsafe { (*vk_frame).img[1] } != 0 {
             return Err(FfmpegError::new(
                 "VulkanDecodedFrame::new",
-                "expected a decoded frame to be a single multi-planar NV12 image",
+                "expected a decoded frame to be a single multi-planar image",
             )
             .with_backend(BACKEND));
         }
         // FFmpeg trims the right and bottom of hardware frames but leaves these two.
-        let crop_left = unsafe { (*raw).crop_left } as u32 & !1;
-        let crop_top = unsafe { (*raw).crop_top } as u32 & !1;
+        let (layout, crop_left, crop_top) = VulkanFrameLayout::cropped(
+            frame.width(),
+            frame.height(),
+            unsafe { ((*raw).crop_left as u32, (*raw).crop_top as u32) },
+            subsampling,
+            depth,
+        );
         Ok(Self {
-            width: frame.width().saturating_sub(crop_left),
-            height: frame.height().saturating_sub(crop_top),
+            layout,
             crop_left,
             crop_top,
             pts: frame.pts(),
@@ -162,7 +250,12 @@ impl VulkanDecodedFrame {
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
+        (self.layout.width, self.layout.height)
+    }
+
+    /// How [`copy_to_buffer`](Self::copy_to_buffer) lays out the frame's visible pixels.
+    pub fn layout(&self) -> VulkanFrameLayout {
+        self.layout
     }
 
     pub fn pts(&self) -> Option<i64> {
@@ -184,13 +277,13 @@ impl VulkanDecodedFrame {
     }
 
     /// Copies the frame's visible pixels into `buffer` on the render queue, laid out as
-    /// [`VulkanVideoFrame::nv12_pitch`] describes, after the decode that wrote it. `retain` is
-    /// dropped once the copy has finished executing.
+    /// [`layout`](Self::layout) describes, after the decode that wrote it. `retain` is dropped once
+    /// the copy has finished executing.
     ///
     /// # Safety
     ///
     /// `buffer` must belong to this frame's device, have `TRANSFER_DST` usage, hold at least
-    /// [`VulkanVideoFrame::nv12_size`] bytes, and be kept alive by `retain`.
+    /// [`VulkanFrameLayout::size`] bytes, and be kept alive by `retain`.
     pub unsafe fn copy_to_buffer(&self, buffer: vk::Buffer, retain: Box<dyn Send>) -> Result<()> {
         let frame = &self.frame.0;
         let target = frame_image(frame);
@@ -227,8 +320,11 @@ impl VulkanDecodedFrame {
             )
         };
 
-        let (width, height) = (self.width, self.height);
-        let pitch = VulkanVideoFrame::nv12_pitch(width);
+        let layout = self.layout;
+        let bytes = layout.bytes_per_sample();
+        let (shift_x, shift_y) = layout.chroma_shifts();
+        let (chroma_width, chroma_height) = layout.chroma_size();
+        // Row lengths are in texels of each plane's format: a sample for luma, a pair for chroma.
         let plane = |aspect, buffer_offset, row_length, x, y, width, height| vk::BufferImageCopy {
             buffer_offset,
             buffer_row_length: row_length,
@@ -250,20 +346,20 @@ impl VulkanDecodedFrame {
             plane(
                 vk::ImageAspectFlags::PLANE_0,
                 0,
-                pitch,
+                layout.luma_pitch() / bytes,
                 self.crop_left as i32,
                 self.crop_top as i32,
-                width,
-                height,
+                layout.width,
+                layout.height,
             ),
             plane(
                 vk::ImageAspectFlags::PLANE_1,
-                VulkanVideoFrame::nv12_chroma_offset(width, height),
-                pitch / 2,
-                (self.crop_left / 2) as i32,
-                (self.crop_top / 2) as i32,
-                width.div_ceil(2),
-                height.div_ceil(2),
+                layout.chroma_offset(),
+                layout.chroma_pitch() / (2 * bytes),
+                (self.crop_left >> shift_x) as i32,
+                (self.crop_top >> shift_y) as i32,
+                chroma_width,
+                chroma_height,
             ),
         ];
         let to_transfer = [vk::ImageMemoryBarrier2::default()
@@ -645,6 +741,20 @@ unsafe extern "C" fn free_device_owner(context: *mut sys::AVHWDeviceContext) {
 mod tests {
     use super::*;
 
+    fn layout(
+        width: u32,
+        height: u32,
+        subsampling: YuvSubsampling,
+        depth: u8,
+    ) -> VulkanFrameLayout {
+        VulkanFrameLayout {
+            width,
+            height,
+            subsampling,
+            depth,
+        }
+    }
+
     #[test]
     fn nv12_layout_pads_rows_to_256_bytes_and_rounds_chroma_up() {
         for (width, height, pitch, chroma_offset, size) in [
@@ -658,6 +768,68 @@ mod tests {
                 chroma_offset
             );
             assert_eq!(VulkanVideoFrame::nv12_size(width, height), size);
+        }
+    }
+
+    #[test]
+    fn layouts_follow_sample_size_and_subsampling() {
+        use YuvSubsampling::{Yuv420, Yuv422, Yuv444};
+
+        // (layout, luma pitch, chroma size, chroma pitch, size)
+        for (layout, luma_pitch, chroma_size, chroma_pitch, size) in [
+            // P010: two-byte samples double both pitches.
+            (
+                layout(642, 480, Yuv420, 10),
+                1536,
+                (321, 240),
+                1536,
+                1536 * 720,
+            ),
+            (layout(3, 3, Yuv420, 12), 256, (2, 2), 256, 256 * 5),
+            // 4:2:2 keeps chroma at full height.
+            (layout(642, 480, Yuv422, 8), 768, (321, 480), 768, 768 * 960),
+            (layout(5, 3, Yuv422, 10), 256, (3, 3), 256, 256 * 6),
+            // 4:4:4 chroma rows hold a pair per pixel, twice the luma row.
+            (
+                layout(642, 480, Yuv444, 8),
+                768,
+                (642, 480),
+                1536,
+                768 * 480 + 1536 * 480,
+            ),
+            (
+                layout(642, 3, Yuv444, 10),
+                1536,
+                (642, 3),
+                2816,
+                1536 * 3 + 2816 * 3,
+            ),
+        ] {
+            assert_eq!(layout.luma_pitch(), luma_pitch, "{layout:?}");
+            assert_eq!(layout.chroma_size(), chroma_size, "{layout:?}");
+            assert_eq!(layout.chroma_pitch(), chroma_pitch, "{layout:?}");
+            assert_eq!(
+                layout.chroma_offset(),
+                u64::from(luma_pitch) * u64::from(layout.height),
+                "{layout:?}"
+            );
+            assert_eq!(layout.size(), size, "{layout:?}");
+        }
+    }
+
+    #[test]
+    fn crops_keep_to_whole_chroma_samples() {
+        use YuvSubsampling::{Yuv420, Yuv422, Yuv444};
+
+        for (subsampling, visible, left, top) in [
+            (Yuv420, (62, 46), 2, 2),
+            (Yuv422, (62, 45), 2, 3),
+            (Yuv444, (61, 45), 3, 3),
+        ] {
+            let (layout, crop_left, crop_top) =
+                VulkanFrameLayout::cropped(64, 48, (3, 3), subsampling, 10);
+            assert_eq!((layout.width, layout.height), visible, "{subsampling:?}");
+            assert_eq!((crop_left, crop_top), (left, top), "{subsampling:?}");
         }
     }
 }

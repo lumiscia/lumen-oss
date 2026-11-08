@@ -19,7 +19,8 @@ pub use metal::{
 };
 #[cfg(feature = "vulkan")]
 pub use vulkan::{
-    VulkanDecodedFrame, VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame,
+    VulkanDecodedFrame, VulkanDevice, VulkanDeviceDesc, VulkanFrameLayout, VulkanRenderQueue,
+    VulkanVideoFrame,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

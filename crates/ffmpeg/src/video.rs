@@ -28,8 +28,8 @@ use sys::{
     AVPixelFormat::{
         AV_PIX_FMT_BGRA, AV_PIX_FMT_CUDA, AV_PIX_FMT_NONE, AV_PIX_FMT_NV12, AV_PIX_FMT_P010BE,
         AV_PIX_FMT_P010LE, AV_PIX_FMT_RGBA, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_VULKAN,
-        AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ411P, AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ422P,
-        AV_PIX_FMT_YUVJ440P, AV_PIX_FMT_YUVJ444P,
+        AV_PIX_FMT_YUVJ411P, AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ440P,
+        AV_PIX_FMT_YUVJ444P,
     },
 };
 
@@ -290,8 +290,9 @@ impl VideoDecoder {
     }
 
     /// Opens a decoder whose frames [`receive_gpu_frame`](Self::receive_gpu_frame) returns on
-    /// `device`, for a renderer on that device to read. Fails for what that path doesn't cover:
-    /// FFmpeg older than 8.0, and anything other than 8-bit 4:2:0 H.264, HEVC or AV1.
+    /// `device`, for a renderer on that device to read. Fails for FFmpeg older than 8.0 and codecs
+    /// other than H.264, HEVC and AV1. Whether the device decodes the stream's profile is only known
+    /// once FFmpeg sets up decoding for the first frame, which fails if it doesn't.
     #[cfg(feature = "vulkan")]
     pub fn open_on_vulkan_device(
         input: &InputContext,
@@ -299,10 +300,9 @@ impl VideoDecoder {
         device: &crate::gpu::VulkanDevice,
     ) -> Result<Self> {
         let parameters = input.stream_parameters(stream_index)?;
-        let (codec_id, format) = unsafe { ((*parameters).codec_id, (*parameters).format) };
+        let codec_id = unsafe { (*parameters).codec_id };
         ensure_vulkan_texture_decode(
             VideoCodec::from_av_codec_id(codec_id),
-            format,
             unsafe { sys::avcodec_version() } >> 16,
         )?;
         let hw_device = device.hw_device()?;
@@ -766,21 +766,24 @@ impl VideoDecoder {
             )
             .with_backend(GpuBackend::Vulkan));
         };
-        // The renderer reads NV12.
-        let pixel_format = frame
-            .hw_sw_format()
-            .map(PixelFormat::from_av_pixel_format)
-            .unwrap_or(PixelFormat::Unknown);
-        if pixel_format != PixelFormat::Nv12 {
-            return Err(FfmpegError::new(
+        let format = frame.hw_sw_format().unwrap_or(AV_PIX_FMT_NONE);
+        let (subsampling, depth) = two_plane_layout(format).ok_or_else(|| {
+            FfmpegError::new(
                 "receive_gpu_frame",
-                format!("Vulkan decoded {pixel_format:?} frames, only NV12 converts to RGBA"),
+                format!("Vulkan decoded {format:?} frames, which aren't two-plane YCbCr"),
             )
-            .with_backend(GpuBackend::Vulkan));
-        }
+            .with_backend(GpuBackend::Vulkan)
+        })?;
         let color = color_tags(&frame);
-        crate::gpu::VulkanDecodedFrame::new(frame, device.clone(), color, self.rotation)
-            .map(GpuVideoFrame::Vulkan)
+        crate::gpu::VulkanDecodedFrame::new(
+            frame,
+            device.clone(),
+            subsampling,
+            depth,
+            color,
+            self.rotation,
+        )
+        .map(GpuVideoFrame::Vulkan)
     }
 }
 
@@ -937,6 +940,16 @@ fn native_shape(descriptor: &sys::AVPixFmtDescriptor) -> Option<YuvShape> {
         interleaved,
         alpha,
     })
+}
+
+/// The chroma subsampling and depth of a little-endian format with a luma plane and a plane of
+/// Cb, Cr pairs, whose samples are a byte or two bytes holding the value in the high bits, as in
+/// NV12, P010 and NV24.
+#[cfg(feature = "vulkan")]
+fn two_plane_layout(format: sys::AVPixelFormat) -> Option<(YuvSubsampling, u8)> {
+    let shape = native_shape(unsafe { sys::av_pix_fmt_desc_get(format).as_ref()? })?;
+    let samples_fit = shape.depth == 8 || shape.depth == 16 || shape.msb_aligned;
+    (shape.interleaved && !shape.alpha && samples_fit).then_some((shape.subsampling, shape.depth))
 }
 
 /// The planar little-endian format nearest to a YUV format `native_shape` rejects, without losing
@@ -1355,22 +1368,13 @@ fn decoder_supports_backend(decoder: *const sys::AVCodec, backend: GpuBackend) -
 /// libavcodec 62 is FFmpeg 8.0. VP9 stays out: on NVIDIA it decodes wrongly from the second inter
 /// frame.
 #[cfg(feature = "vulkan")]
-fn ensure_vulkan_texture_decode(codec: VideoCodec, format: i32, avcodec_major: u32) -> Result<()> {
+fn ensure_vulkan_texture_decode(codec: VideoCodec, avcodec_major: u32) -> Result<()> {
     let refusal = if avcodec_major < 62 {
         format!(
             "Vulkan decode needs FFmpeg 8.0 or newer, but this FFmpeg has libavcodec {avcodec_major}"
         )
     } else if !matches!(codec, VideoCodec::H264 | VideoCodec::Hevc | VideoCodec::Av1) {
         format!("Vulkan decode doesn't cover {codec:?}")
-    } else if ![
-        AV_PIX_FMT_NONE as i32,
-        AV_PIX_FMT_YUV420P as i32,
-        AV_PIX_FMT_YUVJ420P as i32,
-        AV_PIX_FMT_NV12 as i32,
-    ]
-    .contains(&format)
-    {
-        "Vulkan decode only covers 8-bit 4:2:0 sources".to_string()
     } else {
         return Ok(());
     };
@@ -1578,24 +1582,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vulkan_texture_decode_covers_8_bit_4_2_0_h264_hevc_and_av1_from_ffmpeg_8() {
-        let yuv420p = AV_PIX_FMT_YUV420P as i32;
+    fn vulkan_texture_decode_covers_h264_hevc_and_av1_from_ffmpeg_8() {
         for codec in [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1] {
-            assert!(ensure_vulkan_texture_decode(codec, yuv420p, 62).is_ok());
-            assert!(ensure_vulkan_texture_decode(codec, AV_PIX_FMT_YUVJ420P as i32, 63).is_ok());
-            assert!(ensure_vulkan_texture_decode(codec, yuv420p, 61).is_err());
-            assert!(ensure_vulkan_texture_decode(codec, AV_PIX_FMT_P010LE as i32, 62).is_err());
-            assert!(
-                ensure_vulkan_texture_decode(
-                    codec,
-                    sys::AVPixelFormat::AV_PIX_FMT_YUV420P10LE as i32,
-                    62
-                )
-                .is_err()
-            );
+            assert!(ensure_vulkan_texture_decode(codec, 62).is_ok());
+            assert!(ensure_vulkan_texture_decode(codec, 63).is_ok());
+            assert!(ensure_vulkan_texture_decode(codec, 61).is_err());
         }
         for codec in [VideoCodec::Vp9, VideoCodec::ProRes, VideoCodec::Unknown] {
-            assert!(ensure_vulkan_texture_decode(codec, yuv420p, 62).is_err());
+            assert!(ensure_vulkan_texture_decode(codec, 62).is_err());
+        }
+    }
+
+    #[test]
+    fn vulkan_frames_import_as_two_plane_ycbcr_of_any_depth_and_subsampling() {
+        use YuvSubsampling::{Yuv420, Yuv422, Yuv444};
+        use sys::AVPixelFormat::*;
+
+        for (format, layout) in [
+            (AV_PIX_FMT_NV12, (Yuv420, 8)),
+            (AV_PIX_FMT_P010LE, (Yuv420, 10)),
+            (AV_PIX_FMT_P012LE, (Yuv420, 12)),
+            (AV_PIX_FMT_P016LE, (Yuv420, 16)),
+            (AV_PIX_FMT_NV16, (Yuv422, 8)),
+            (AV_PIX_FMT_P210LE, (Yuv422, 10)),
+            (AV_PIX_FMT_NV24, (Yuv444, 8)),
+            (AV_PIX_FMT_P410LE, (Yuv444, 10)),
+        ] {
+            assert_eq!(two_plane_layout(format), Some(layout), "{format:?}");
+        }
+        for format in [
+            AV_PIX_FMT_YUV420P,
+            AV_PIX_FMT_YUV420P10LE,
+            AV_PIX_FMT_YUYV422,
+            AV_PIX_FMT_NV21,
+            AV_PIX_FMT_P010BE,
+            AV_PIX_FMT_NV20LE,
+            AV_PIX_FMT_RGBA,
+            AV_PIX_FMT_VULKAN,
+            AV_PIX_FMT_NONE,
+        ] {
+            assert_eq!(two_plane_layout(format), None, "{format:?}");
         }
     }
 }

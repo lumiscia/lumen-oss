@@ -36,7 +36,8 @@ pub use gpu::{
 };
 #[cfg(feature = "vulkan")]
 pub use gpu::{
-    VulkanDecodedFrame, VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame,
+    VulkanDecodedFrame, VulkanDevice, VulkanDeviceDesc, VulkanFrameLayout, VulkanRenderQueue,
+    VulkanVideoFrame,
 };
 pub use video::{
     ColorMatrix, ColorTags, CpuVideoFrame, DecodeMode, DecodedVideoFrame, EncodeMode, PixelFormat,
