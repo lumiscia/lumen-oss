@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, env, fmt, path::Path, str::FromStr};
 use serde::Deserialize;
 
 use super::choice::{EncoderCandidate, VideoEncoderChoice};
-use super::codec::encoder_info;
+use super::codec::{EncoderFamily, encoder_info};
 use super::quality::{
     EncoderQuality, RateControl, check_raw_options, one_rate_control, parse_bitrate,
     portable_options,
@@ -480,10 +480,25 @@ impl EncoderFile {
                 BitrateFile::Text(text) => parse_bitrate(&text),
             })
             .transpose()?;
+        let mut options = self.options;
+        // A speed preset lumen knows the values of is checked the same way in either spelling.
+        let preset = match self.preset {
+            None if matches!(
+                EncoderFamily::of(encoder),
+                EncoderFamily::X264
+                    | EncoderFamily::X265
+                    | EncoderFamily::SvtAv1
+                    | EncoderFamily::Nvenc
+            ) =>
+            {
+                options.remove("preset")
+            }
+            preset => preset,
+        };
         let quality = EncoderQuality {
             rate_control: one_rate_control(bitrate, self.crf, self.qp)?,
-            preset: self.preset,
-            options: self.options.into_iter().collect(),
+            preset,
+            options: options.into_iter().collect(),
         };
         let (_, portable) = portable_options(encoder, &quality).map_err(|error| error.message)?;
         let bitrate_key =
@@ -805,6 +820,14 @@ mod tests {
             (
                 json!({ "presets": { "x": { "encoders": { "libx264": { "preset": "p4" } } } } }),
                 "invalid preset",
+            ),
+            (
+                json!({ "presets": { "x": { "encoders": { "libx264": { "options": { "preset": "p4" } } } } } }),
+                "invalid preset",
+            ),
+            (
+                json!({ "codecs": { "h264": { "encoders": ["libx264rgb"] } } }),
+                "YUV 4:2:0",
             ),
             (
                 json!({ "presets": { "x": { "encoders": { "libx264": { "crf": 20, "options": { "crf": "18" } } } } } }),

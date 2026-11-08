@@ -1,4 +1,4 @@
-use std::ffi::CString;
+use std::ffi::{CString, c_int, c_void};
 
 use crate::ffi::sys;
 use crate::gpu::GpuBackend;
@@ -80,7 +80,40 @@ pub(crate) fn video_encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
             format!("`{name}` is not a video encoder"),
         ));
     }
+    // Vulkan encoders take frames from their own hardware frames context.
+    if EncoderFamily::of(name) != EncoderFamily::Vulkan && !takes_yuv420p(codec) {
+        return Err(FfmpegError::new(
+            "encoder_info",
+            format!("`{name}` doesn't take the YUV 4:2:0 frames lumen encodes from"),
+        ));
+    }
     Ok(codec)
+}
+
+/// Whether `codec` lists `yuv420p` among its input formats. One that lists none takes any.
+fn takes_yuv420p(codec: *const sys::AVCodec) -> bool {
+    let mut formats: *const c_void = std::ptr::null();
+    let mut count: c_int = 0;
+    let result = unsafe {
+        sys::avcodec_get_supported_config(
+            std::ptr::null(),
+            codec,
+            sys::AVCodecConfig::AV_CODEC_CONFIG_PIX_FORMAT,
+            0,
+            &mut formats,
+            &mut count,
+        )
+    };
+    if result < 0 || formats.is_null() {
+        return true;
+    }
+    let formats = unsafe {
+        std::slice::from_raw_parts(
+            formats.cast::<sys::AVPixelFormat>(),
+            usize::try_from(count).unwrap_or(0),
+        )
+    };
+    formats.contains(&sys::AVPixelFormat::AV_PIX_FMT_YUV420P)
 }
 
 pub(crate) fn encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
