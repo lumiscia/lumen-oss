@@ -71,6 +71,7 @@ fn layouts() -> Vec<Layout> {
             end,
             center,
             radius,
+            focal_offset,
             angle,
             kind,
             units,

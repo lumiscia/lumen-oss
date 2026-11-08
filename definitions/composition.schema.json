@@ -293,6 +293,12 @@
           "title": "End",
           "x-lumen-kind": "vec2"
         },
+        "focal": {
+          "$ref": "#/$defs/vec2",
+          "description": "Focal point of a radial gradient, where the first stop's color sits. The gradient widens\nfrom it to the circle at `center` and `radius`, which gives an off-centre highlight.\nDefaults to `center`. A point on or outside that circle is moved to 99% of the way to it\nfrom `center`, along the same direction.",
+          "title": "Focal",
+          "x-lumen-kind": "vec2"
+        },
         "interpolation": {
           "$ref": "#/$defs/gradientInterpolation",
           "default": "srgb",

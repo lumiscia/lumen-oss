@@ -175,3 +175,57 @@ fn linear_srgb_interpolation_blends_in_linear_light() {
         .tolerance(2),
     ]);
 }
+
+#[test]
+fn a_focal_point_moves_the_start_of_a_radial_gradient() {
+    let radial = |extra: Value| {
+        let mut paint = json!({ "type": "radial_gradient", "center": [0.5, 0.5], "radius": 0.5 });
+        paint
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        paint
+    };
+    let row = |paint| ramp(16, 1, paint);
+    let probes = |values: [u8; 5]| {
+        Expect::Probes(
+            [0, 4, 8, 12, 15]
+                .into_iter()
+                .zip(values)
+                .map(|(x, value)| (x, 0, grey(value)))
+                .collect(),
+        )
+    };
+    check(vec![
+        Case::new(
+            "no focal",
+            row(radial(json!({}))),
+            probes([239, 112, 16, 143, 239]),
+        )
+        .tolerance(2),
+        Case::new(
+            "focal at the center",
+            row(radial(json!({ "focal": [0.5, 0.5] }))),
+            Expect::Matches(row(radial(json!({}))).into()),
+        ),
+        // The focal point is the centre of pixel 4, which is where t reaches 0.
+        Case::new(
+            "off-centre focal",
+            row(radial(json!({ "focal": [0.28125, 0.5] }))),
+            probes([227, 0, 89, 177, 244]),
+        )
+        .tolerance(2),
+        Case::new(
+            "focal outside the radius",
+            row(radial(json!({ "focal": [2, 0.5] }))),
+            probes([247, 183, 119, 55, 7]),
+        )
+        .tolerance(2),
+        Case::new(
+            "focal on the radius",
+            row(radial(json!({ "focal": [1, 0.5] }))),
+            probes([247, 183, 119, 55, 7]),
+        )
+        .tolerance(2),
+    ]);
+}

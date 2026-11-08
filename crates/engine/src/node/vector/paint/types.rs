@@ -135,6 +135,13 @@ pub struct GradientPaint {
     #[meta(constant)]
     #[serde(deserialize_with = "super::json::deserialize_radius")]
     pub radius: [f32; 2],
+    /// Focal point of a radial gradient, where the first stop's color sits. The gradient widens
+    /// from it to the circle at `center` and `radius`, which gives an off-centre highlight.
+    /// Defaults to `center`. A point on or outside that circle is moved to 99% of the way to it
+    /// from `center`, along the same direction.
+    #[meta(constant)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focal: Option<[f32; 2]>,
     /// Start angle of a conic gradient in degrees.
     #[meta(step = 1, constant)]
     pub angle: f32,
@@ -168,6 +175,7 @@ impl Default for GradientPaint {
             end: [1.0, 0.0],
             center: [0.5, 0.5],
             radius: [0.5, 0.5],
+            focal: None,
             angle: 0.0,
             stops: Vec::new(),
         }
