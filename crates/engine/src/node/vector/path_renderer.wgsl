@@ -61,7 +61,8 @@ struct PathBands {
 // Vector from the nearest point of segment `a`-`b` to `p`.
 fn segment_offset(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     let ab = b - a;
-    let h = clamp(dot(p - a, ab) / max(dot(ab, ab), 0.0001), 0.0, 1.0);
+    let length_squared = dot(ab, ab);
+    let h = select(0.0, clamp(dot(p - a, ab) / length_squared, 0.0, 1.0), length_squared > 0.0);
     return p - (a + ab * h);
 }
 

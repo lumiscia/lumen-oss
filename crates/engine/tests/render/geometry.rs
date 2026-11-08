@@ -717,6 +717,16 @@ fn dash_rows() -> Vec<Case> {
             }),
         )
     };
+    let tiny = |data: &str, dash: Value| {
+        path(
+            (200, 160),
+            json!({
+                "data": data, "fill_enabled": false, "stroke_enabled": true,
+                "stroke_width": 0.002, "stroke_dash": dash, "stroke_dash_offset": 0.012,
+                "scale": [10000, 10000], "position": [30, 80]
+            }),
+        )
+    };
     let corner = "M 4 4 L 30 4 L 30 30";
     let corner_dashes = "M 4 4 L 24 4 M 26 4 L 30 4 L 30 20 M 30 22 L 30 30";
     let corner_dash = |more: Value| with(json!({ "stroke_dash": [20, 2] }), more);
@@ -880,6 +890,12 @@ fn dash_rows() -> Vec<Case> {
             far_dashes("M 1 -10000000 L 1 4"),
             // The start differs only by whole dash periods.
             Expect::Matches(far_dashes("M 1 -4 L 1 4").into()),
+        )
+        .tolerance(2),
+        Case::new(
+            "a dash on a segment shorter than 0.01 has no seam where its nearer end switches",
+            tiny("M 0 0 L 0.012 0", json!([0.008, 0.008])),
+            Expect::Matches(tiny("M 0.004 0 L 0.012 0", json!([])).into()),
         )
         .tolerance(2),
         Case::new(
