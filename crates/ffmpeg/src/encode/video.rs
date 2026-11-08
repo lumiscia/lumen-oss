@@ -17,7 +17,7 @@ use super::codec::{EncoderFamily, video_encoder_by_name};
 use super::common::{refresh_stream_time_base, send_frame_and_write_packets};
 use super::hw::{AvBufferRef, EncoderHwContexts, create_encoder_hw_contexts};
 use super::output::OutputContext;
-use super::quality::{EncoderQuality, QualityOptions, quality_options};
+use super::quality::{EncoderQuality, apply_quality_options, quality_options};
 
 // swscale range flags: 1 is full (JPEG) range, 0 is limited (MPEG) range.
 const SWS_RANGE_FULL: i32 = 1;
@@ -179,12 +179,8 @@ impl VideoEncoder {
         }
         let codec = video_encoder_by_name(&config.encoder)?;
         let encoder_name = config.encoder.as_str();
-        let quality = quality_options(
-            encoder_name,
-            config.quality.rate_control,
-            config.quality.preset.as_deref(),
-            config.mode,
-        )?;
+        let quality = quality_options(encoder_name, &config.quality, config.mode)?;
+        check_container_holds(output, codec, encoder_name)?;
         let stream = unsafe { sys::avformat_new_stream(output.ptr, ptr::null()) };
         if stream.is_null() {
             return Err(FfmpegError::new(
@@ -200,8 +196,6 @@ impl VideoEncoder {
                 "failed to allocate encoder context",
             ));
         }
-
-        apply_private_options(context, &quality, encoder_name)?;
 
         let time_base = sys::AVRational {
             num: framerate.den,
@@ -240,6 +234,7 @@ impl VideoEncoder {
             if ((*(*output.ptr).oformat).flags & sys::AVFMT_GLOBALHEADER) != 0 {
                 (*context).flags |= sys::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
             }
+            apply_quality_options(context, &quality, encoder_name)?;
             ffi::check(
                 sys::avcodec_open2(context, codec, ptr::null_mut()),
                 "avcodec_open2",
@@ -543,23 +538,24 @@ unsafe fn crop_coded_padding(
     Ok(None)
 }
 
-fn apply_private_options(
-    context: *mut sys::AVCodecContext,
-    quality: &QualityOptions,
-    encoder_name: &str,
+/// Errors when the output's container can't hold what `codec` writes, such as H.264 in `.webm`.
+fn check_container_holds(
+    output: &OutputContext,
+    codec: *const sys::AVCodec,
+    encoder: &str,
 ) -> Result<()> {
-    for (name, value) in &quality.options {
-        let c_name = ffi::cstring("av_opt_set", name)?;
-        let c_value = ffi::cstring("av_opt_set", value)?;
-        let code =
-            unsafe { sys::av_opt_set((*context).priv_data, c_name.as_ptr(), c_value.as_ptr(), 0) };
-        ffi::check(code, "av_opt_set").map_err(|mut error| {
-            error.message = format!(
-                "failed to set `{name}={value}` on encoder `{encoder_name}`: {}",
-                error.message
-            );
-            error
-        })?;
+    unsafe {
+        let format = (*output.ptr).oformat;
+        if sys::avformat_query_codec(format, (*codec).id, sys::FF_COMPLIANCE_NORMAL) == 0 {
+            let container = std::ffi::CStr::from_ptr((*format).name).to_string_lossy();
+            return Err(FfmpegError::new(
+                "VideoEncoder::create",
+                format!(
+                    "the {container} container can't hold the video `{encoder}` encodes; use a codec it supports or another container"
+                ),
+            )
+            .with_path(output.path()));
+        }
     }
     Ok(())
 }

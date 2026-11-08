@@ -20,6 +20,24 @@ pub struct RenderSettings {
     pub height: u32,
 }
 
+/// A video codec a composition asks its encode for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputCodec {
+    H264,
+    Hevc,
+    Av1,
+}
+
+/// How the root composition asks to be encoded. Renderers ignore it; the host that encodes reads
+/// it, and resolves `quality` against the presets it defines.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutputSettings {
+    pub codec: Option<OutputCodec>,
+    /// A quality preset name, such as `high`.
+    pub quality: Option<String>,
+}
+
 /// A validated composition that can no longer change. It is fingerprinted once when built, so
 /// renderers recognize it across frames without reading all of it again. Edit it through
 /// [`Composition::into_builder`].
@@ -47,6 +65,8 @@ pub struct CompositionBuilder {
     pub scene: Scene,
     #[structural_hash(skip)] // Audio is independent of what frames record and of GPU caches.
     pub audio: Option<AudioTimeline>,
+    #[structural_hash(skip)] // Frames don't depend on how they're encoded.
+    pub output: OutputSettings,
     /// Templates that `clip` nodes instantiate, by name.
     pub compositions: BTreeMap<String, CompositionTemplate>,
 }
@@ -165,6 +185,10 @@ impl Composition {
         self.parts.audio.as_ref()
     }
 
+    pub fn output_settings(&self) -> &OutputSettings {
+        &self.parts.output
+    }
+
     /// Templates that `clip` nodes instantiate, by name.
     pub fn compositions(&self) -> &BTreeMap<String, CompositionTemplate> {
         &self.parts.compositions
@@ -201,6 +225,7 @@ impl CompositionBuilder {
                 render_settings,
             },
             audio: None,
+            output: OutputSettings::default(),
             compositions: BTreeMap::new(),
         }
     }

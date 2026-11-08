@@ -410,6 +410,10 @@ fn compositions_schema_matches_engine_parsing() {
         ),
         (json!({ "props": { "n": { "type": "matrix" } } }), false),
         (json!({ "functions": {} }), false),
+        (
+            json!({ "render_settings": { "width": 16, "height": 16, "codec": "hevc" } }),
+            false,
+        ),
     ] {
         let mut template = template.clone();
         for (key, value) in patch.as_object().unwrap() {
@@ -549,6 +553,24 @@ fn document_keys_schema_matches_engine_parsing() {
         (
             "background_color",
             with_key(&["render_settings", "background_color"], json!([0, 0, 0])),
+            false,
+        ),
+        (
+            "codec and quality",
+            with_key(
+                &["render_settings"],
+                json!({ "width": 16, "height": 16, "codec": "hevc", "quality": "high" }),
+            ),
+            true,
+        ),
+        (
+            "unknown codec",
+            with_key(&["render_settings", "codec"], json!("vp9")),
+            false,
+        ),
+        (
+            "non-string quality",
+            with_key(&["render_settings", "quality"], json!(18)),
             false,
         ),
         ("whole clip", audio(json!({})), true),

@@ -23,6 +23,13 @@ const render = await lumen.render(composition);
 console.log((await lumen.waitForRender(render)).url);
 ```
 
+`render` takes `quality`, a preset name (`draft`, `standard`, `high` or `lossless` on every host), and `codec`, `h264`, `hevc` or `av1`. They win over the composition's `renderSettings.quality` and `renderSettings.codec`, and a host that can't serve them rejects the render:
+
+```ts
+const composition = new Composition({ renderSettings: { codec: "hevc", quality: "high" } });
+await lumen.render(composition, { quality: "lossless", codec: "h264" });
+```
+
 `examples/node` also uploads a clip with `lumen.uploadMedia` and passes it to `render` as `media`.
 
 See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.

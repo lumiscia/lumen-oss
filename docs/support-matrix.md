@@ -66,15 +66,17 @@ Software Vulkan through lavapipe is the deterministic CI baseline. It is useful 
 
 ## Encoding
 
-`lumen-local` and `lumen-server` pick their encoder from `--encoder` (`lumen-local`) or the render options (`lumen-server`), then `LUMEN_VIDEO_ENCODER`, then the platform default:
+A render asks for a codec (`h264`, `hevc` or `av1`, default `h264`) and a quality preset (`draft`, `standard`, `high` or `lossless`, default `standard`). Each codec tries its encoders in order, and the first that opens wins, with one warning and the reason for each that didn't:
 
-| Platform | Default             | If it won't open                                       |
-| -------- | ------------------- | ------------------------------------------------------ |
-| Linux    | `h264_vulkan`       | One warning with the reason, then `libx264` on the CPU |
-| macOS    | `h264_videotoolbox` | The render fails                                       |
-| Other    | `libx264`           | The render fails                                       |
+| Platform | `h264`                        | `hevc`                        | `av1`                          |
+| -------- | ----------------------------- | ----------------------------- | ------------------------------ |
+| Linux    | `h264_vulkan`, then `libx264` | `hevc_vulkan`, then `libx265` | `av1_vulkan`, then `libsvtav1` |
+| macOS    | `h264_videotoolbox`           | `hevc_videotoolbox`           | `libsvtav1`                    |
+| Other    | `libx264`                     | `libx265`                     | `libsvtav1`                    |
 
-Encoder names are FFmpeg's own, such as `libx264` or `hevc_nvenc`, and are checked against your FFmpeg build before rendering starts. `*_vaapi` encoders aren't supported. Only the automatic default falls back. An encoder you name either opens or fails the render, and `av1_vulkan` needs FFmpeg 8.0 or newer. The fallback covers everything that stops the encoder opening: FFmpeg built without `h264_vulkan`, no Vulkan driver, a device without `VK_KHR_video_encode_queue`, no H.264 encode support, a canvas size the hardware rejects, and `--crf` or `--preset`, which `h264_vulkan` doesn't support. A failure after the encoder has opened stays an error.
+An operator's quality config can change the order and the presets' settings; see the [server README](../crates/server/README.md#quality-config). A preset only tries the encoders it has settings for, so `lossless` uses `libx264`, `libx265` or NVENC. `--encoder` (`lumen-local`) or `LUMEN_VIDEO_ENCODER` pins one encoder, which either opens or fails the render.
+
+Encoder names are FFmpeg's own, such as `libx264` or `hevc_nvenc`, and are checked against your FFmpeg build before rendering starts. `*_vaapi` encoders aren't supported, and `av1_vulkan` needs FFmpeg 8.0 or newer. Falling through covers everything that stops an encoder opening: FFmpeg built without it, no Vulkan driver, a device without `VK_KHR_video_encode_queue` or without the codec, a canvas size the hardware rejects, and settings the encoder doesn't support. A failure after the encoder has opened stays an error. The output container must hold the codec; `.mp4` holds all three.
 
 `lumen-local` and `lumen-server` render and encode `h264_vulkan` on one Vulkan device, so frames never leave the GPU. If that device can't open they warn and upload frames to the encoder instead. Each logs the encoder it opened and how frames reach it.
 
@@ -88,8 +90,8 @@ Encoder names are FFmpeg's own, such as `libx264` or `hevc_nvenc`, and are check
 
 What they all need:
 
-- A Vulkan device with `VK_KHR_video_encode_queue` that supports the codec, and an FFmpeg built with Vulkan. Otherwise the encoder fails to open: the Linux default then falls back to `libx264`, and a named encoder fails the render. Distribution Mesa builds that leave out patent-encumbered codecs have no H.264 or HEVC encode. A Rocky Linux 10 box with Mesa 25.2 and an AMD 780M offered only AV1.
-- Bitrate or `--qp` rate control. `--crf` and `--preset` aren't supported.
+- A Vulkan device with `VK_KHR_video_encode_queue` that supports the codec, and an FFmpeg built with Vulkan. Otherwise the encoder fails to open: the render then moves to the codec's next encoder, and a pinned encoder fails the render. Distribution Mesa builds that leave out patent-encumbered codecs have no H.264 or HEVC encode. A Rocky Linux 10 box with Mesa 25.2 and an AMD 780M offered only AV1.
+- Bitrate or `qp` rate control. `crf` and encoder presets aren't supported. `av1_vulkan`'s `qp` is an AV1 qindex, 0-255.
 - On NVIDIA, `h264_vulkan` can stall forever at a GOP boundary when FFmpeg encodes on more than one queue. `n8.0` and `n9.0.2` do, and no other release was measured. `lumen-local` and `lumen-server` avoid it, with one encode queue when frames stay on the GPU and `async_depth=1` when they are uploaded, which is slower. FFmpeg `master` and `release/9.1` fix it.
 - NVIDIA's driver limits the Vulkan contexts one process can hold, 63 on the cards measured, so `lumen-server` makes `h264_vulkan` renders wait: at most 14 when frames stay on the GPU, 9 when they are uploaded, or 6 uploaded with hardware decode. See the [server README](../crates/server/README.md).
 

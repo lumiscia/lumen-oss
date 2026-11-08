@@ -75,6 +75,7 @@ export class Lumen {
         media: mediaManifest(options.media ?? {}),
         ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
         ...(options.quality !== undefined ? { quality: options.quality } : {}),
+        ...(options.codec !== undefined ? { codec: options.codec } : {}),
       },
       idempotencyKey: options.idempotencyKey,
       signal: options.signal,

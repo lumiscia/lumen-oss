@@ -13,18 +13,21 @@ cargo run -p lumen-local -- --composition crates/local/demo/gradient-paints.json
 
 `.mp4` renders every frame, and `.png` renders one. `--help` lists every flag.
 
-| Flag                                               | Environment             | Meaning                                                                                                                                                      |
-| -------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--composition <path>`                             |                         | Composition JSON to render. Required.                                                                                                                        |
-| `--output <path>`                                  |                         | `.mp4` or `.png`. Required. An `.mp4` is written beside the output and moved into place when the render succeeds, so a failed render keeps any earlier file. |
-| `--media-root <path>`                              |                         | Directory media sources must stay inside. Defaults to the current directory.                                                                                 |
-| `--font-dir <path>`                                | `LUMEN_FONT_DIR`        | Must exist. Fonts looked up first, then `<media-root>/assets/fonts`, then the system fonts, by family name. The flag wins.                                   |
-| `--encoder <name>`                                 | `LUMEN_VIDEO_ENCODER`   | `.mp4` only. The flag wins over the variable, and `--encoder` with a `.png` output is an error.                                                              |
-| `--bitrate <bps\|Nk\|NM>`, `--crf <n>`, `--qp <n>` |                         | `.mp4` only. At most one of the three.                                                                                                                       |
-| `--preset <name>`                                  |                         | `.mp4` only.                                                                                                                                                 |
-| `--frame <n>`                                      |                         | `.png` only. Defaults to 0.                                                                                                                                  |
-|                                                    | `LUMEN_HARDWARE_DECODE` | `1`, `true`, `yes` or `on` decodes video on the GPU when the hardware supports it. Off when unset.                                                           |
-|                                                    | `RUST_LOG`              | Log filter. Defaults to `lumen_engine=warn,lumen_server=warn`.                                                                                               |
+| Flag                                               | Environment             | Meaning                                                                                                                                                                       |
+| -------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--composition <path>`                             |                         | Composition JSON to render. Required.                                                                                                                                         |
+| `--output <path>`                                  |                         | `.mp4` or `.png`. Required. An `.mp4` is written beside the output and moved into place when the render succeeds, so a failed render keeps any earlier file.                  |
+| `--media-root <path>`                              |                         | Directory media sources must stay inside. Defaults to the current directory.                                                                                                  |
+| `--font-dir <path>`                                | `LUMEN_FONT_DIR`        | Must exist. Fonts looked up first, then `<media-root>/assets/fonts`, then the system fonts, by family name. The flag wins.                                                    |
+| `--encoder <name>`                                 | `LUMEN_VIDEO_ENCODER`   | `.mp4` only. Pins one encoder with no fallback. The flag wins over the variable, and `--encoder` with a `.png` output is an error.                                            |
+| `--quality <name>`                                 |                         | `.mp4` only. Quality preset: `draft`, `standard` (the default), `high`, `lossless`, or one the quality config defines. Wins over the composition's `render_settings.quality`. |
+| `--codec <codec>`                                  |                         | `.mp4` only. `h264` (the default), `hevc` or `av1`. Wins over the composition's `render_settings.codec`.                                                                      |
+| `--quality-config <path>`                          | `LUMEN_QUALITY_CONFIG`  | Quality config JSON, checked before rendering. See the [server README](../server/README.md#quality-config).                                                                   |
+| `--bitrate <bps\|Nk\|NM>`, `--crf <n>`, `--qp <n>` |                         | `.mp4` only. At most one of the three. Replaces the preset's settings on every encoder tried, so it can't go with `--quality`.                                                |
+| `--preset <name>`                                  |                         | `.mp4` only. The encoder's own speed preset. Can't go with `--quality`.                                                                                                       |
+| `--frame <n>`                                      |                         | `.png` only. Defaults to 0.                                                                                                                                                   |
+|                                                    | `LUMEN_HARDWARE_DECODE` | `1`, `true`, `yes` or `on` decodes video on the GPU when the hardware supports it. Off when unset.                                                                            |
+|                                                    | `RUST_LOG`              | Log filter. Defaults to `lumen_engine=warn,lumen_server=warn`.                                                                                                                |
 
 Progress and the render summary go to stdout. Warnings and errors go to stderr.
 
@@ -41,7 +44,7 @@ VideoToolbox GPU texture encode is only available on macOS. `h264_nvenc` and `he
 
 ## Encoders
 
-`--encoder` or `LUMEN_VIDEO_ENCODER` names the encoder, and a named encoder that won't open fails the render. With neither set, Linux uses `h264_vulkan`, uploading frames to it if frames can't stay on the GPU, and falls back to `libx264` on the CPU with one warning, and macOS uses `h264_videotoolbox`. See the [support matrix](../../docs/support-matrix.md#encoding).
+Each codec tries its encoders in order, warning once for each that won't open. On Linux that is the Vulkan encoder, uploading frames to it if they can't stay on the GPU, then `libx264`, `libx265` or `libsvtav1` on the CPU. macOS uses VideoToolbox. `--encoder` or `LUMEN_VIDEO_ENCODER` pins one encoder, which either opens or fails the render. See the [support matrix](../../docs/support-matrix.md#encoding).
 
 ## Features
 

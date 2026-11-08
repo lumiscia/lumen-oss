@@ -280,3 +280,16 @@ describe("Composition rich text", () => {
     });
   });
 });
+
+describe("Composition render settings", () => {
+  test("keeps the codec and quality preset beside the default canvas", () => {
+    const composition = new Composition({ renderSettings: { codec: "hevc", quality: "high" } });
+
+    expect(composition.toJSON().render_settings).toEqual({
+      codec: "hevc",
+      height: 1080,
+      quality: "high",
+      width: 1920,
+    });
+  });
+});

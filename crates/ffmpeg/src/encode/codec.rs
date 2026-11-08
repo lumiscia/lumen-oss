@@ -18,6 +18,8 @@ pub struct EncoderInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncoderFamily {
     X264,
+    X265,
+    SvtAv1,
     Nvenc,
     Vulkan,
     VideoToolbox,
@@ -25,9 +27,14 @@ pub enum EncoderFamily {
 }
 
 impl EncoderFamily {
-    pub(crate) fn of(encoder: &str) -> Self {
+    /// The family of an encoder by its FFmpeg name.
+    pub fn of(encoder: &str) -> Self {
         if encoder == "libx264" {
             Self::X264
+        } else if encoder == "libx265" {
+            Self::X265
+        } else if encoder == "libsvtav1" {
+            Self::SvtAv1
         } else if encoder.ends_with("_nvenc") {
             Self::Nvenc
         } else if encoder.ends_with("_vulkan") {

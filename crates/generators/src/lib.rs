@@ -119,6 +119,27 @@ fn render_schema() -> Result<String> {
             },
             "renderSettings": {
                 "x-lumen-type": "RenderSettings",
+                "description": "The canvas, and how the host that renders the video encodes it. Previews ignore `codec` and `quality`.",
+                "type": "object",
+                "required": ["width", "height"],
+                "properties": {
+                    "width": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                    "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
+                    "codec": {
+                        "x-lumen-type": "VideoCodec",
+                        "description": "Video codec of the rendered file. A render request's `codec` wins over it.",
+                        "type": "string",
+                        "enum": ["h264", "hevc", "av1"]
+                    },
+                    "quality": {
+                        "description": "Quality preset name. Every host defines `draft`, `standard`, `high` and `lossless`; operators can add others. A render request's `quality` wins over it.",
+                        "type": "string"
+                    }
+                },
+                "additionalProperties": false
+            },
+            "templateRenderSettings": {
+                "x-lumen-type": "TemplateRenderSettings",
                 "type": "object",
                 "required": ["width", "height"],
                 "properties": {
@@ -133,7 +154,7 @@ fn render_schema() -> Result<String> {
                 "type": "object",
                 "required": ["nodes", "connections"],
                 "properties": {
-                    "render_settings": { "$ref": "#/$defs/renderSettings" },
+                    "render_settings": { "$ref": "#/$defs/templateRenderSettings" },
                     "timeline": { "$ref": "#/$defs/timeline" },
                     "props": {
                         "description": "Props that `prop('name')` reads inside the template, set per `clip`.",

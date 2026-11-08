@@ -7,7 +7,7 @@ use lumen_engine::{
     composition::Composition,
     gpu::{GpuCompositionRenderer, RasterHandle},
 };
-use lumen_ffmpeg::{EncoderFamily, EncoderQuality, VideoEncoderChoice};
+use lumen_ffmpeg::{EncoderCandidate, EncoderFamily, VideoEncoderChoice};
 use lumen_gpu::wgpu::{PollType, SubmissionIndex};
 
 use super::{
@@ -54,34 +54,50 @@ pub(super) struct OpenedTarget {
 }
 
 impl EncodeTarget {
-    /// Opens the encoder on the target its family has, and CPU upload for the rest. A hardware
-    /// target that won't open moves to CPU upload with the same encoder, where the automatic
-    /// default can still fall back.
+    /// Opens the choice's encoders in order until one starts, warning for each that won't.
     pub(super) fn open(
         choice: &VideoEncoderChoice,
+        composition: &Composition,
+        media_store: &mut LocalMediaStore,
+        output: &Path,
+    ) -> Result<OpenedTarget, RenderError> {
+        choice
+            .open(
+                |candidate| {
+                    Self::open_encoder(
+                        candidate,
+                        EncoderFamily::of(&candidate.encoder),
+                        composition,
+                        media_store,
+                        output,
+                    )
+                },
+                |warning| tracing::warn!("{warning}"),
+            )
+            .map(|(opened, _)| opened)
+    }
+
+    /// Opens one encoder on the target its family has, and CPU upload for the rest. A hardware
+    /// target that won't open moves to CPU upload with the same encoder.
+    fn open_encoder(
+        candidate: &EncoderCandidate,
         family: EncoderFamily,
         composition: &Composition,
         media_store: &mut LocalMediaStore,
         output: &Path,
-        quality: &EncoderQuality,
     ) -> Result<OpenedTarget, RenderError> {
+        let (name, quality) = (candidate.encoder.as_str(), &candidate.quality);
         let hardware_decode = media_store.video_options.prefer_hardware_decode;
         let unavailable: Option<anyhow::Error> = match family {
             #[cfg(all(target_os = "linux", feature = "vulkan"))]
             EncoderFamily::Vulkan => {
                 let devices = reserve_shared_video_device();
-                match vulkan::VulkanTarget::open(
-                    composition,
-                    media_store,
-                    output,
-                    &choice.name,
-                    quality,
-                ) {
+                match vulkan::VulkanTarget::open(composition, media_store, output, name, quality) {
                     Ok((renderer, target)) => {
                         return Ok(OpenedTarget {
                             renderer,
                             target: Self::Vulkan(target),
-                            encoder: choice.name.clone(),
+                            encoder: name.to_string(),
                             path: "zero_copy",
                             devices,
                         });
@@ -92,18 +108,12 @@ impl EncodeTarget {
             #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
             EncoderFamily::Nvenc => {
                 let devices = reserve_devices(family, hardware_decode);
-                match cuda::CudaTarget::open(
-                    composition,
-                    media_store,
-                    output,
-                    &choice.name,
-                    quality,
-                ) {
+                match cuda::CudaTarget::open(composition, media_store, output, name, quality) {
                     Ok((renderer, target)) => {
                         return Ok(OpenedTarget {
                             renderer,
                             target: Self::Cuda(target),
-                            encoder: choice.name.clone(),
+                            encoder: name.to_string(),
                             path: "cuda",
                             devices,
                         });
@@ -119,12 +129,12 @@ impl EncodeTarget {
             #[cfg(all(target_os = "macos", feature = "metal"))]
             EncoderFamily::VideoToolbox => {
                 let devices = reserve_devices(family, hardware_decode);
-                match metal::MetalTarget::open(composition, output, &choice.name, quality) {
+                match metal::MetalTarget::open(composition, output, name, quality) {
                     Ok((renderer, target)) => {
                         return Ok(OpenedTarget {
                             renderer,
                             target: Self::Metal(target),
-                            encoder: choice.name.clone(),
+                            encoder: name.to_string(),
                             path: "zero_copy",
                             devices,
                         });
@@ -142,35 +152,36 @@ impl EncodeTarget {
             retryable: true,
         })?;
         let settings = composition.render_settings();
-        let (sink, encoder) = choice
-            .open(
-                |name| {
-                    EncoderSink::create(
-                        output,
-                        settings.width,
-                        settings.height,
-                        composition.timeline().fps,
-                        name,
-                        quality,
-                        has_audio(composition),
-                    )
-                },
-                |warning| tracing::warn!("{warning}"),
-            )
-            .map_err(|err| RenderError {
+        let sink = EncoderSink::create(
+            output,
+            settings.width,
+            settings.height,
+            composition.timeline().fps,
+            name,
+            quality,
+            has_audio(composition),
+        )
+        .map_err(|err| {
+            // The next encoder tried makes its own renderer, and decoders must share its device.
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
+            {
+                media_store.video_options.vulkan_device = None;
+            }
+            RenderError {
                 code: "encode_failed",
                 message: err.to_string(),
                 retryable: false,
-            })?;
-        if let Some(error) = unavailable.filter(|_| encoder == choice.name) {
+            }
+        })?;
+        if let Some(error) = unavailable {
             tracing::warn!(
-                "{encoder} can't keep frames on the GPU, uploading them instead: {error:#}"
+                "{name} can't keep frames on the GPU, uploading them instead: {error:#}"
             );
         }
         Ok(OpenedTarget {
             renderer,
             target: Self::Cpu(sink),
-            encoder,
+            encoder: name.to_string(),
             path: "cpu_upload",
             devices,
         })
@@ -385,8 +396,8 @@ fn poll(
 #[cfg(all(test, target_os = "linux", feature = "cuda", feature = "vulkan"))]
 mod tests {
     use lumen_ffmpeg::{
-        DecodeMode, DecodedVideoFrame, InputContext, VideoDecoder, VideoDecoderConfig,
-        YuvVideoFrame,
+        DecodeMode, DecodedVideoFrame, EncoderQuality, InputContext, VideoDecoder,
+        VideoDecoderConfig, YuvVideoFrame,
     };
 
     use super::*;
@@ -441,9 +452,10 @@ mod tests {
         .unwrap();
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path().join("output.mp4");
-        let (choice, _) = VideoEncoderChoice::resolve(Some("libx264"))
-            .look_up(|_| {})
-            .unwrap();
+        let candidate = EncoderCandidate {
+            encoder: "libx264".to_string(),
+            quality: EncoderQuality::default(),
+        };
         let mut media_store = LocalMediaStore::new(directory.path().to_path_buf(), None);
 
         let OpenedTarget {
@@ -452,13 +464,12 @@ mod tests {
             encoder,
             path,
             devices: _devices,
-        } = EncodeTarget::open(
-            &choice,
+        } = EncodeTarget::open_encoder(
+            &candidate,
             EncoderFamily::Nvenc,
             &composition,
             &mut media_store,
             &output,
-            &EncoderQuality::default(),
         )
         .unwrap();
 

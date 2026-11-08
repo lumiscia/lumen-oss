@@ -3,6 +3,8 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
+use anyhow::anyhow;
+use lumen_ffmpeg::QualityConfig;
 use tokio::sync::Semaphore;
 
 use crate::server::{MediaClient, RenderJobError, RenderRecord, RenderStatus};
@@ -14,17 +16,26 @@ pub(super) struct AppState {
     pub api_token: Option<String>,
     pub media_client: MediaClient,
     pub progress_min_delta: f32,
+    pub quality: Arc<QualityConfig>,
     pub render_slots: Arc<Semaphore>,
     renders: Arc<Mutex<RenderRegistry>>,
     retained_renders: usize,
 }
 
 impl AppState {
+    /// Fails when the quality config doesn't load.
     pub fn new(args: Args) -> anyhow::Result<Self> {
+        let quality = QualityConfig::load(
+            args.quality_config
+                .as_deref()
+                .filter(|path| !path.as_os_str().is_empty()),
+        )
+        .map_err(|error| anyhow!(error))?;
         Ok(Self {
             api_token: args.token,
             media_client: MediaClient::new(args.allowed_media_hosts)?,
             progress_min_delta: args.progress_min_delta,
+            quality: Arc::new(quality),
             render_slots: Arc::new(Semaphore::new(args.max_concurrent_renders.get())),
             renders: Arc::new(Mutex::new(RenderRegistry::default())),
             retained_renders: args.retained_renders.get(),

@@ -7,8 +7,8 @@ mod media;
 
 use std::path::PathBuf;
 
-use lumen_engine::composition::Composition;
-use lumen_ffmpeg::EncoderQuality;
+use lumen_engine::composition::{Composition, OutputCodec};
+use lumen_ffmpeg::{EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoice};
 
 pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir, font_dir_from_env};
 pub use gpu::{Mp4Render, RenderReport, RenderTiming, create_gpu_renderer, render_project_mp4};
@@ -40,8 +40,26 @@ pub struct RenderProgress {
 #[derive(Debug, Clone, Default)]
 pub struct RenderOptions {
     pub media_root: Option<PathBuf>,
-    pub video_encoder: Option<String>,
-    pub quality: EncoderQuality,
+    /// The encoders to try. `None` resolves the composition's settings against the built-in
+    /// presets, with `LUMEN_VIDEO_ENCODER` pinning one.
+    pub encoder: Option<VideoEncoderChoice>,
+}
+
+/// The encoders a render of `composition` tries: `request`'s preset and codec where it names them,
+/// then the composition's `render_settings`, then `config`'s defaults.
+pub fn resolve_encoder(
+    config: &QualityConfig,
+    composition: &Composition,
+    mut request: QualityRequest,
+) -> Result<VideoEncoderChoice, String> {
+    let output = composition.output_settings();
+    request.preset = request.preset.or_else(|| output.quality.clone());
+    request.codec = request.codec.or(output.codec.map(|codec| match codec {
+        OutputCodec::H264 => EncodeCodec::H264,
+        OutputCodec::Hevc => EncodeCodec::Hevc,
+        OutputCodec::Av1 => EncodeCodec::Av1,
+    }));
+    config.resolve(&request)
 }
 
 pub fn parse_composition(payload: &serde_json::Value) -> Result<Composition, RenderError> {

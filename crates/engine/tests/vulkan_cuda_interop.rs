@@ -42,7 +42,7 @@ fn rendered_texture_encodes_with_nvenc_as_bt709() {
     let mut config = VideoEncoderConfig::cpu_rgba(size.width, size.height, 30, "h264_nvenc");
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
     config.cuda_ordinal = Some(pool.cuda_ordinal());
-    config.quality.rate_control = RateControl::Bitrate(2_000_000);
+    config.quality.rate_control = Some(RateControl::Bitrate(2_000_000));
     let mut encoder =
         MuxedEncoder::create(path.to_string_lossy().to_string(), config).expect("create NVENC");
     for pts in 0..30 {
