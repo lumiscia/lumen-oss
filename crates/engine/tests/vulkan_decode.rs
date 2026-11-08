@@ -6,6 +6,8 @@
 //! generating a few. `LUMEN_VULKAN_DECODE_FILES=<a.mp4>:<b.mkv>` adds real footage to the playback
 //! checks and prints how close each file came. `LUMEN_VULKAN_DECODE_REQUIRED=1` fails the IDR seek
 //! test instead of skipping it, for runs on hardware that should be able to run it.
+//! `LUMEN_VULKAN_DECODE_EXPECT=libx265_yuv420p10le,libsvtav1_yuv420p10le` fails instead of skipping
+//! when a clip whose file name contains one of the tags doesn't decode on the GPU.
 #![cfg(all(target_os = "linux", feature = "ffmpeg", feature = "vulkan"))]
 
 use std::{
@@ -177,15 +179,24 @@ fn software() -> (GpuCompositionRenderer, Store) {
 }
 
 /// Whether the source's frames arrive as GPU frames. A decoder that opens may still move to the CPU
-/// on its first frame.
+/// on its first frame. Fails instead of skipping for a source whose file name contains a tag in
+/// `LUMEN_VULKAN_DECODE_EXPECT`.
 fn decodes_on_hardware(store: &Store, path: &Path) -> bool {
     let source = path.to_string_lossy();
-    let resolver = store.resolver(&source);
-    let active = matches!(resolver.frame(0), Ok(MediaFrame::GpuVideo(_)));
-    if !active {
-        eprintln!("{source} doesn't decode on this hardware; skipping");
-    }
-    active
+    let reason = match store.resolver(&source).frame(0) {
+        Ok(MediaFrame::GpuVideo(_)) => return true,
+        Ok(_) => "it moved to the CPU".to_string(),
+        Err(error) => format!("decoding failed: {error}"),
+    };
+    let expected = std::env::var("LUMEN_VULKAN_DECODE_EXPECT").unwrap_or_default();
+    assert!(
+        !expected
+            .split(',')
+            .any(|tag| !tag.is_empty() && source.contains(tag)),
+        "{source} should decode on this hardware, but {reason}"
+    );
+    eprintln!("{source} doesn't decode on this hardware ({reason}); skipping");
+    false
 }
 
 /// The first test clip whose frames arrive as GPU frames.
