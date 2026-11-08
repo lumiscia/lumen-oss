@@ -763,7 +763,6 @@ fn seeking_time_remap_and_two_sources_match_software() {
 #[test]
 fn rotated_sources_decode_upright_and_match_software() {
     let directory = tempfile::tempdir().expect("temp dir");
-    // Coded rows of a multiple of 8 pixels, which software decode writes whole before rotating.
     let coded = directory.path().join("coded.mp4");
     let coded_path = coded.to_string_lossy();
     if !run_ffmpeg(
