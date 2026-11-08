@@ -9,8 +9,8 @@ pub mod vulkan;
 pub use cuda::CudaVideoFrame;
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 pub use cuda::{
-    CudaContext, CudaDeviceAllocation, CudaDriver, ImportedCudaExternalImage,
-    import_owned_vulkan_opaque_fd_image,
+    CudaContext, CudaDeviceAllocation, CudaDriver, ImportedCudaExternalBuffer,
+    import_owned_vulkan_opaque_fd_buffer,
 };
 #[cfg(feature = "metal")]
 pub use metal::{

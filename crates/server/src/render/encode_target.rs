@@ -356,6 +356,7 @@ fn checked_size(
     all(target_os = "linux", feature = "cuda", feature = "vulkan"),
     all(target_os = "macos", feature = "metal"),
 ))]
+#[cfg(all(target_os = "macos", feature = "metal"))]
 fn poll_failed(frame: u32, err: impl std::fmt::Display) -> RenderError {
     render_failed(format!("GPU poll failed at frame {frame}: {err}"))
 }

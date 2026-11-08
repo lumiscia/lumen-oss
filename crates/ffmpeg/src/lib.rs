@@ -25,8 +25,8 @@ pub use format::{
 pub use gpu::CudaVideoFrame;
 #[cfg(all(feature = "cuda", target_os = "linux"))]
 pub use gpu::{
-    CudaContext, CudaDeviceAllocation, CudaDriver, ImportedCudaExternalImage,
-    import_owned_vulkan_opaque_fd_image,
+    CudaContext, CudaDeviceAllocation, CudaDriver, ImportedCudaExternalBuffer,
+    import_owned_vulkan_opaque_fd_buffer,
 };
 pub use gpu::{GpuBackend, GpuVideoFrame, GpuVideoInput};
 #[cfg(feature = "metal")]

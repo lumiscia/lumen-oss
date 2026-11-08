@@ -8,7 +8,7 @@ use crate::{FfmpegError, Result};
 use sys::{
     AVColorPrimaries::AVCOL_PRI_BT709,
     AVColorRange::AVCOL_RANGE_MPEG,
-    AVColorSpace::{AVCOL_SPC_BT470BG, AVCOL_SPC_BT709},
+    AVColorSpace::AVCOL_SPC_BT709,
     AVColorTransferCharacteristic::AVCOL_TRC_BT709,
     AVPixelFormat::{AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P},
 };
@@ -222,12 +222,7 @@ impl VideoEncoder {
             };
             (*context).color_primaries = AVCOL_PRI_BT709;
             (*context).color_trc = AVCOL_TRC_BT709;
-            // NVENC converts RGB frames itself, with BT.601, and writes bt470bg into the stream.
-            (*context).colorspace = if config.mode == EncodeMode::GpuTexture(GpuBackend::Cuda) {
-                AVCOL_SPC_BT470BG
-            } else {
-                AVCOL_SPC_BT709
-            };
+            (*context).colorspace = AVCOL_SPC_BT709;
             (*context).color_range = AVCOL_RANGE_MPEG;
             (*context).bit_rate = quality.bit_rate;
             (*context).gop_size = gop_size;

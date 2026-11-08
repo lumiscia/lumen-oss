@@ -487,7 +487,7 @@ async fn vk_cuda_nvenc(
     let setup = setup_started.elapsed();
     let times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
-        let submitted = timed(phases, "render", || {
+        timed(phases, "render", || {
             renderer.render_frame_into_external(
                 workload.composition,
                 frame,
@@ -495,13 +495,19 @@ async fn vk_cuda_nvenc(
                 target.external_texture(),
             )
         })?;
+        let converted = timed(phases, "convert", || {
+            target.convert(renderer.gpu_renderer())
+        });
         timed(phases, "poll", || {
-            submitted.wait(&renderer.gpu_renderer().device)
+            renderer
+                .gpu_renderer()
+                .device
+                .poll(lumen_gpu::wgpu::PollType::Wait {
+                    submission_index: Some(converted),
+                    timeout: None,
+                })
         })?;
-        timed(phases, "copy_to_cuda", || {
-            target.copy_rendered_frame_to_cuda()
-        })?;
-        let cuda_frame = target.video_frame(Some(i64::from(frame)));
+        let cuda_frame = target.video_frame(Some(i64::from(frame)))?;
         timed(phases, "encode", || {
             encoder.write_gpu_frame(&target.video_input(&cuda_frame))
         })?;

@@ -1,20 +1,33 @@
 use std::{
     ffi::CStr,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::fd::{FromRawFd, OwnedFd},
     sync::Arc,
 };
 
 use anyhow::{Result, anyhow, bail};
 use ash::vk;
 
-use crate::{Renderer, Size};
+use crate::Renderer;
 
-pub struct ExportableVulkanTexture {
-    texture: Arc<wgpu::Texture>,
+/// A wgpu buffer in Vulkan memory exported as an opaque fd, for another API to import.
+pub struct ExportableVulkanBuffer {
+    buffer: Arc<wgpu::Buffer>,
     memory_fd: OwnedFd,
     allocation_size: u64,
-    device_info: VulkanDeviceInfo,
-    memory_type_index: u32,
+}
+
+impl ExportableVulkanBuffer {
+    pub fn buffer_arc(&self) -> Arc<wgpu::Buffer> {
+        Arc::clone(&self.buffer)
+    }
+
+    pub fn memory_fd(&self) -> &OwnedFd {
+        &self.memory_fd
+    }
+
+    pub fn allocation_size(&self) -> u64 {
+        self.allocation_size
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,44 +40,30 @@ pub struct VulkanDeviceInfo {
     pub driver_uuid: [u8; 16],
 }
 
-impl ExportableVulkanTexture {
-    pub fn texture(&self) -> &wgpu::Texture {
-        &self.texture
-    }
-
-    pub fn texture_arc(&self) -> Arc<wgpu::Texture> {
-        Arc::clone(&self.texture)
-    }
-
-    pub fn memory_fd(&self) -> &OwnedFd {
-        &self.memory_fd
-    }
-
-    pub fn memory_fd_raw(&self) -> i32 {
-        self.memory_fd.as_raw_fd()
-    }
-
-    pub fn allocation_size(&self) -> u64 {
-        self.allocation_size
-    }
-
-    pub fn device_info(&self) -> &VulkanDeviceInfo {
-        &self.device_info
-    }
-
-    pub fn memory_type_index(&self) -> u32 {
-        self.memory_type_index
-    }
-}
-
 impl Renderer {
-    pub fn create_exportable_vulkan_texture(
+    pub fn vulkan_device_info(&self) -> Result<VulkanDeviceInfo> {
+        let Some(hal_device) = (unsafe { self.device.as_hal::<wgpu_hal::api::Vulkan>() }) else {
+            bail!("wgpu device is not using the Vulkan backend");
+        };
+        Ok(vulkan_device_info(
+            hal_device.shared_instance().raw_instance(),
+            hal_device.raw_physical_device(),
+        ))
+    }
+
+    /// Creates a zeroed `size`-byte device-local buffer whose memory is exported as an opaque fd.
+    /// `size` must be a multiple of 4. Only `STORAGE`, `COPY_SRC` and `COPY_DST` usages are
+    /// mapped, and `COPY_DST` is always added.
+    pub fn create_exportable_vulkan_buffer(
         &self,
         label: Option<&str>,
-        size: Size,
-        format: wgpu::TextureFormat,
-        usage: wgpu::TextureUsages,
-    ) -> Result<ExportableVulkanTexture> {
+        size: u64,
+        usage: wgpu::BufferUsages,
+    ) -> Result<ExportableVulkanBuffer> {
+        if !size.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT) {
+            bail!("exportable buffer size {size} is not a multiple of 4");
+        }
+        let usage = usage | wgpu::BufferUsages::COPY_DST;
         let Some(hal_device) = (unsafe { self.device.as_hal::<wgpu_hal::api::Vulkan>() }) else {
             bail!("wgpu device is not using the Vulkan backend");
         };
@@ -72,32 +71,17 @@ impl Renderer {
         let raw_device = hal_device.raw_device();
         let raw_instance = hal_device.shared_instance().raw_instance();
         let physical_device = hal_device.raw_physical_device();
-        let device_info = vulkan_device_info(raw_instance, physical_device);
 
-        let vk_format = map_texture_format(format)?;
-        let vk_extent = vk::Extent3D {
-            width: size.width,
-            height: size.height,
-            depth: 1,
-        };
-        let mut external_image = vk::ExternalMemoryImageCreateInfo::default()
+        let mut external_buffer = vk::ExternalMemoryBufferCreateInfo::default()
             .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
-        let image_info = vk::ImageCreateInfo::default()
-            .push_next(&mut external_image)
-            .image_type(vk::ImageType::TYPE_2D)
-            .format(vk_format)
-            .extent(vk_extent)
-            .mip_levels(1)
-            .array_layers(1)
-            .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(map_texture_usage(usage))
-            .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-
-        let image = unsafe { raw_device.create_image(&image_info, None) }
-            .map_err(|err| anyhow!("vkCreateImage for exportable texture failed: {err:?}"))?;
-        let requirements = unsafe { raw_device.get_image_memory_requirements(image) };
+        let buffer_info = vk::BufferCreateInfo::default()
+            .push_next(&mut external_buffer)
+            .size(size)
+            .usage(map_buffer_usage(usage))
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let buffer = unsafe { raw_device.create_buffer(&buffer_info, None) }
+            .map_err(|err| anyhow!("vkCreateBuffer for exportable buffer failed: {err:?}"))?;
+        let requirements = unsafe { raw_device.get_buffer_memory_requirements(buffer) };
         let memory_type_index = match find_device_local_memory_type(
             raw_instance,
             physical_device,
@@ -105,7 +89,7 @@ impl Renderer {
         ) {
             Ok(index) => index,
             Err(err) => {
-                unsafe { raw_device.destroy_image(image, None) };
+                unsafe { raw_device.destroy_buffer(buffer, None) };
                 return Err(err);
             }
         };
@@ -118,86 +102,59 @@ impl Renderer {
         let memory = match unsafe { raw_device.allocate_memory(&allocate_info, None) } {
             Ok(memory) => memory,
             Err(err) => {
-                unsafe { raw_device.destroy_image(image, None) };
+                unsafe { raw_device.destroy_buffer(buffer, None) };
                 return Err(anyhow!(
-                    "vkAllocateMemory for exportable texture failed: {err:?}"
+                    "vkAllocateMemory for exportable buffer failed: {err:?}"
                 ));
             }
         };
-        if let Err(err) = unsafe { raw_device.bind_image_memory(image, memory, 0) } {
-            unsafe {
-                raw_device.free_memory(memory, None);
-                raw_device.destroy_image(image, None);
-            }
+        let destroy = || unsafe {
+            raw_device.free_memory(memory, None);
+            raw_device.destroy_buffer(buffer, None);
+        };
+        if let Err(err) = unsafe { raw_device.bind_buffer_memory(buffer, memory, 0) } {
+            destroy();
             return Err(anyhow!(
-                "vkBindImageMemory for exportable texture failed: {err:?}"
+                "vkBindBufferMemory for exportable buffer failed: {err:?}"
             ));
         }
-
         let memory_fd = match export_memory_fd(raw_instance, raw_device, memory) {
             Ok(fd) => fd,
             Err(err) => {
-                unsafe {
-                    raw_device.free_memory(memory, None);
-                    raw_device.destroy_image(image, None);
-                }
+                destroy();
                 return Err(err);
             }
         };
 
-        let hal_desc = wgpu_hal::TextureDescriptor {
-            label,
-            size: wgpu::Extent3d {
-                width: size.width,
-                height: size.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: map_hal_texture_usage(usage),
-            memory_flags: wgpu_hal::MemoryFlags::empty(),
-            view_formats: Vec::new(),
-        };
-        let wgpu_desc = wgpu::TextureDescriptor {
-            label,
-            size: hal_desc.size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage,
-            view_formats: &[],
-        };
         let drop_device = raw_device.clone();
         let drop_callback: wgpu_hal::DropCallback = Box::new(move || unsafe {
             drop_device.free_memory(memory, None);
-            drop_device.destroy_image(image, None);
+            drop_device.destroy_buffer(buffer, None);
         });
-        let hal_texture = unsafe {
-            hal_device.texture_from_raw(
-                image,
-                &hal_desc,
-                Some(drop_callback),
-                wgpu_hal::vulkan::TextureMemory::External,
+        let hal_buffer =
+            unsafe { wgpu_hal::vulkan::Buffer::from_raw_externally_owned(buffer, drop_callback) };
+        let buffer = unsafe {
+            self.device.create_buffer_from_hal::<wgpu_hal::api::Vulkan>(
+                hal_buffer,
+                &wgpu::BufferDescriptor {
+                    label,
+                    size,
+                    usage,
+                    mapped_at_creation: false,
+                },
             )
         };
-        let texture = unsafe {
-            self.device
-                .create_texture_from_hal::<wgpu_hal::api::Vulkan>(
-                    hal_texture,
-                    &wgpu_desc,
-                    wgpu::TextureUses::UNINITIALIZED,
-                )
-        };
+        // wgpu doesn't track the initialization of a buffer it didn't allocate.
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label });
+        encoder.clear_buffer(&buffer, 0, None);
+        self.queue.submit([encoder.finish()]);
 
-        Ok(ExportableVulkanTexture {
-            texture: Arc::new(texture),
+        Ok(ExportableVulkanBuffer {
+            buffer: Arc::new(buffer),
             memory_fd,
             allocation_size: requirements.size,
-            device_info,
-            memory_type_index,
         })
     }
 }
@@ -254,58 +211,22 @@ fn find_device_local_memory_type(
         }
     }
     Err(anyhow!(
-        "no DEVICE_LOCAL Vulkan memory type matched exportable image requirements"
+        "no DEVICE_LOCAL Vulkan memory type matched exportable memory requirements"
     ))
 }
 
-fn map_texture_format(format: wgpu::TextureFormat) -> Result<vk::Format> {
-    match format {
-        wgpu::TextureFormat::Rgba8Unorm => Ok(vk::Format::R8G8B8A8_UNORM),
-        wgpu::TextureFormat::Bgra8Unorm => Ok(vk::Format::B8G8R8A8_UNORM),
-        other => Err(anyhow!(
-            "exportable Vulkan texture format {other:?} is not mapped"
-        )),
+fn map_buffer_usage(usage: wgpu::BufferUsages) -> vk::BufferUsageFlags {
+    let mut flags = vk::BufferUsageFlags::empty();
+    if usage.contains(wgpu::BufferUsages::COPY_SRC) {
+        flags |= vk::BufferUsageFlags::TRANSFER_SRC;
     }
-}
-
-fn map_texture_usage(usage: wgpu::TextureUsages) -> vk::ImageUsageFlags {
-    let mut flags = vk::ImageUsageFlags::empty();
-    if usage.contains(wgpu::TextureUsages::COPY_SRC) {
-        flags |= vk::ImageUsageFlags::TRANSFER_SRC;
+    if usage.contains(wgpu::BufferUsages::COPY_DST) {
+        flags |= vk::BufferUsageFlags::TRANSFER_DST;
     }
-    if usage.contains(wgpu::TextureUsages::COPY_DST) {
-        flags |= vk::ImageUsageFlags::TRANSFER_DST;
-    }
-    if usage.contains(wgpu::TextureUsages::TEXTURE_BINDING) {
-        flags |= vk::ImageUsageFlags::SAMPLED;
-    }
-    if usage.contains(wgpu::TextureUsages::STORAGE_BINDING) {
-        flags |= vk::ImageUsageFlags::STORAGE;
-    }
-    if usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
-        flags |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
+    if usage.contains(wgpu::BufferUsages::STORAGE) {
+        flags |= vk::BufferUsageFlags::STORAGE_BUFFER;
     }
     flags
-}
-
-fn map_hal_texture_usage(usage: wgpu::TextureUsages) -> wgpu::TextureUses {
-    let mut uses = wgpu::TextureUses::empty();
-    if usage.contains(wgpu::TextureUsages::COPY_SRC) {
-        uses |= wgpu::TextureUses::COPY_SRC;
-    }
-    if usage.contains(wgpu::TextureUsages::COPY_DST) {
-        uses |= wgpu::TextureUses::COPY_DST;
-    }
-    if usage.contains(wgpu::TextureUsages::TEXTURE_BINDING) {
-        uses |= wgpu::TextureUses::RESOURCE;
-    }
-    if usage.contains(wgpu::TextureUsages::STORAGE_BINDING) {
-        uses |= wgpu::TextureUses::STORAGE_WRITE_ONLY;
-    }
-    if usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
-        uses |= wgpu::TextureUses::COLOR_TARGET;
-    }
-    uses
 }
 
 #[cfg(test)]
@@ -313,22 +234,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_rgba8_exportable_format() {
+    fn maps_buffer_usage() {
+        let usage = map_buffer_usage(wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
         assert_eq!(
-            map_texture_format(wgpu::TextureFormat::Rgba8Unorm).unwrap(),
-            vk::Format::R8G8B8A8_UNORM
+            usage,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC
         );
-    }
-
-    #[test]
-    fn maps_copy_destination_usage() {
-        let usage = map_texture_usage(
-            wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::TEXTURE_BINDING,
-        );
-        assert!(usage.contains(vk::ImageUsageFlags::TRANSFER_DST));
-        assert!(usage.contains(vk::ImageUsageFlags::TRANSFER_SRC));
-        assert!(usage.contains(vk::ImageUsageFlags::SAMPLED));
     }
 }
