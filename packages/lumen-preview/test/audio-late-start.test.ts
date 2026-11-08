@@ -25,6 +25,7 @@ async function createAudio() {
   };
   vi.spyOn(performance, "now").mockImplementation(() => state.now);
   vi.stubGlobal("location", { origin: "https://app.test" });
+  vi.stubGlobal("origin", "https://app.test");
   vi.stubGlobal("document", { baseURI: "https://app.test/" });
   vi.stubGlobal(
     "AudioWorkletProcessor",
