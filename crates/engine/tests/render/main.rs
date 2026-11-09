@@ -3,6 +3,7 @@ mod alpha;
 mod binding;
 mod cache;
 mod clips;
+mod displacement;
 mod edits;
 mod effects;
 mod frame_graph;

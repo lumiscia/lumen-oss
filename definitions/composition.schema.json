@@ -1958,6 +1958,215 @@
           },
           {
             "additionalProperties": false,
+            "description": "Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. Map bytes are\npremultiplied by alpha, so transparent areas of the map, and everything outside it, leave\nthe source in place.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount_x": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 10.0,
+                    "description": "Pixels the source moves horizontally at full strength: a channel byte of 0 moves it this\nfar left, 255 nearly as far right, and 128 leaves it in place. Negative amounts reverse it.",
+                    "title": "Amount X",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "amount_y": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 10.0,
+                    "description": "Pixels the source moves vertically at full strength: a channel byte of 0 moves it this far\nup, 255 nearly as far down, and 128 leaves it in place. Negative amounts reverse it.",
+                    "title": "Amount Y",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "channel_x": {
+                    "anyOf": [
+                      {
+                        "enum": ["red", "green", "blue", "luma"],
+                        "type": "string",
+                        "x-lumen-type": "DisplacementChannel"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "red",
+                    "description": "Map channel that drives horizontal displacement.",
+                    "title": "Channel X",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Red",
+                        "name": "red",
+                        "value": 0
+                      },
+                      {
+                        "label": "Green",
+                        "name": "green",
+                        "value": 1
+                      },
+                      {
+                        "label": "Blue",
+                        "name": "blue",
+                        "value": 2
+                      },
+                      {
+                        "label": "Luma",
+                        "name": "luma",
+                        "value": 3
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "channel_y": {
+                    "anyOf": [
+                      {
+                        "enum": ["red", "green", "blue", "luma"],
+                        "type": "string",
+                        "x-lumen-type": "DisplacementChannel"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "green",
+                    "description": "Map channel that drives vertical displacement.",
+                    "title": "Channel Y",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Red",
+                        "name": "red",
+                        "value": 0
+                      },
+                      {
+                        "label": "Green",
+                        "name": "green",
+                        "value": 1
+                      },
+                      {
+                        "label": "Blue",
+                        "name": "blue",
+                        "value": 2
+                      },
+                      {
+                        "label": "Luma",
+                        "name": "luma",
+                        "value": 3
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "edge": {
+                    "anyOf": [
+                      {
+                        "enum": ["clamp", "transparent"],
+                        "type": "string",
+                        "x-lumen-type": "EdgeMode"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "clamp",
+                    "description": "What the source reads as beyond its edges.",
+                    "title": "Edge",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Clamp",
+                        "name": "clamp",
+                        "value": 0
+                      },
+                      {
+                        "label": "Transparent",
+                        "name": "transparent",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "sampling": {
+                    "anyOf": [
+                      {
+                        "enum": ["nearest", "linear"],
+                        "type": "string",
+                        "x-lumen-type": "RasterSampling"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "linear",
+                    "description": "Sampling filter used to read the displaced source.",
+                    "title": "Sampling",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Nearest",
+                        "name": "nearest",
+                        "value": 0
+                      },
+                      {
+                        "label": "Linear",
+                        "name": "linear",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "displacement_map"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Displacement Map",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster_frame",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              },
+              {
+                "kind": "raster_frame",
+                "name": "map",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster_frame",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Adjusts raster exposure, contrast, and offset.",
             "properties": {
               "id": {
