@@ -110,6 +110,7 @@ const X26X_PRESETS: [&str; 10] = [
     "veryslow",
     "placebo",
 ];
+const HEVC_NVENC_CQ_MAX_RATE: u64 = 100_000_000;
 const NVENC_PRESETS: [&str; 7] = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 const SVT_AV1_PRESETS: [&str; 14] = [
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13",
@@ -217,6 +218,11 @@ pub(crate) fn portable_options(
             }
             options.push(("rc", "vbr".to_string()));
             options.push(("cq", cq.to_string()));
+            // Without a maximum, HEVC NVENC caps VBR near 10 Mb/s at 1080p whatever `cq` asks
+            // for. NVENC signals the level from `maxrate`; 100 Mb/s gives level 5.0 at 1080p.
+            if encoder.starts_with("hevc_") {
+                options.push(("maxrate", HEVC_NVENC_CQ_MAX_RATE.to_string()));
+            }
             0
         }
         (Some(RateControl::Crf(_)), _) => {
@@ -415,6 +421,17 @@ mod tests {
                 RateControl::Crf(28),
                 Some("p5"),
                 &[("preset", "p5"), ("rc", "vbr"), ("cq", "28")],
+            ),
+            (
+                "hevc_nvenc",
+                RateControl::Crf(24),
+                Some("p5"),
+                &[
+                    ("preset", "p5"),
+                    ("rc", "vbr"),
+                    ("cq", "24"),
+                    ("maxrate", "100000000"),
+                ],
             ),
             (
                 "av1_nvenc",

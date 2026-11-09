@@ -106,38 +106,41 @@ const fn raw(options: &'static [(&'static str, &'static str)]) -> BuiltIn {
 
 use RateControl::{Bitrate, Crf, Qp};
 
-/// Every built-in preset, by encoder. `crf` is `cq` on NVENC. `lossless` lists only encoders
-/// that are truly lossless, so a codec's candidates skip to one of those.
+/// Every built-in preset, by encoder. `crf` is `cq` on NVENC. Each level matches libx264's VMAF
+/// at that level (crf 28 veryfast, 23 medium, 18 slow) on a natural clip and a motion-graphics
+/// render, averaged: NVENC and Vulkan measured on an NVIDIA L4, `av1_vulkan` on an AMD 780M.
+/// VideoToolbox is uncalibrated. `lossless` lists only encoders that are truly lossless, so a
+/// codec's candidates skip to one of those.
 const BUILT_IN: [(&str, &[(&str, BuiltIn)]); 4] = [
     (
         "draft",
         &[
             ("libx264", set(Crf(28), Some("veryfast"))),
-            ("h264_nvenc", set(Crf(28), Some("p2"))),
-            ("h264_vulkan", set(Qp(30), None)),
+            ("h264_nvenc", set(Crf(34), Some("p2"))),
+            ("h264_vulkan", set(Qp(36), None)),
             ("h264_videotoolbox", set(Bitrate(5_000_000), None)),
             ("libx265", set(Crf(30), Some("fast"))),
-            ("hevc_nvenc", set(Crf(30), Some("p2"))),
-            ("hevc_vulkan", set(Qp(32), None)),
+            ("hevc_nvenc", set(Crf(34), Some("p2"))),
+            ("hevc_vulkan", set(Qp(36), None)),
             ("hevc_videotoolbox", set(Bitrate(3_000_000), None)),
-            ("libsvtav1", set(Crf(40), Some("12"))),
-            ("av1_nvenc", set(Crf(38), Some("p2"))),
-            ("av1_vulkan", set(Qp(170), None)),
+            ("libsvtav1", set(Crf(48), Some("12"))),
+            ("av1_nvenc", set(Crf(42), Some("p2"))),
+            ("av1_vulkan", set(Qp(175), None)),
         ],
     ),
     (
         "standard",
         &[
             ("libx264", set(Crf(23), None)),
-            ("h264_nvenc", set(Crf(23), Some("p5"))),
-            ("h264_vulkan", set(Qp(24), None)),
+            ("h264_nvenc", set(Crf(26), Some("p5"))),
+            ("h264_vulkan", set(Qp(30), None)),
             ("h264_videotoolbox", set(Bitrate(12_000_000), None)),
-            ("libx265", set(Crf(25), None)),
-            ("hevc_nvenc", set(Crf(25), Some("p5"))),
-            ("hevc_vulkan", set(Qp(26), None)),
+            ("libx265", set(Crf(24), None)),
+            ("hevc_nvenc", set(Crf(24), Some("p5"))),
+            ("hevc_vulkan", set(Qp(28), None)),
             ("hevc_videotoolbox", set(Bitrate(8_000_000), None)),
-            ("libsvtav1", set(Crf(32), Some("8"))),
-            ("av1_nvenc", set(Crf(32), Some("p5"))),
+            ("libsvtav1", set(Crf(39), Some("8"))),
+            ("av1_nvenc", set(Crf(30), Some("p5"))),
             ("av1_vulkan", set(Qp(130), None)),
         ],
     ),
@@ -145,15 +148,15 @@ const BUILT_IN: [(&str, &[(&str, BuiltIn)]); 4] = [
         "high",
         &[
             ("libx264", set(Crf(18), Some("slow"))),
-            ("h264_nvenc", set(Crf(19), Some("p6"))),
-            ("h264_vulkan", set(Qp(20), None)),
+            ("h264_nvenc", set(Crf(20), Some("p6"))),
+            ("h264_vulkan", set(Qp(26), None)),
             ("h264_videotoolbox", set(Bitrate(20_000_000), None)),
-            ("libx265", set(Crf(20), None)),
-            ("hevc_nvenc", set(Crf(21), Some("p6"))),
+            ("libx265", set(Crf(18), None)),
+            ("hevc_nvenc", set(Crf(20), Some("p6"))),
             ("hevc_vulkan", set(Qp(22), None)),
             ("hevc_videotoolbox", set(Bitrate(14_000_000), None)),
-            ("libsvtav1", set(Crf(26), Some("6"))),
-            ("av1_nvenc", set(Crf(28), Some("p6"))),
+            ("libsvtav1", set(Crf(30), Some("6"))),
+            ("av1_nvenc", set(Crf(21), Some("p6"))),
             ("av1_vulkan", set(Qp(100), None)),
         ],
     ),
