@@ -295,6 +295,10 @@ struct RecordState {
     output: Option<Raster>,
     /// The font resolver of each family text names, which retained text was drawn with.
     fonts: HashMap<String, Option<String>>,
+    /// The template, node and family of each font fallback reported for this composition.
+    font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
+    /// Warnings not yet taken.
+    diagnostics: Vec<crate::diagnostic::Diagnostic>,
     /// Passes reads of retained outputs skipped.
     skipped_passes: u64,
 }
@@ -740,6 +744,7 @@ impl FrameGraph {
         }
         state.statics.clear();
         state.texts.clear();
+        state.font_fallbacks.clear();
         state.shaders.clear();
         state.memo.clear();
         state.full_frames.clear();
@@ -771,6 +776,11 @@ impl FrameGraph {
             }
         }
         changed
+    }
+
+    /// The warnings recording has raised since the last call.
+    pub(crate) fn take_diagnostics(&mut self) -> Vec<crate::diagnostic::Diagnostic> {
+        std::mem::take(&mut self.state.diagnostics)
     }
 
     pub(crate) fn set_retained_budget(&mut self, bytes: u64) {
@@ -910,7 +920,37 @@ impl<'a> FrameCx<'a> {
     /// to the frame's buffers.
     pub(crate) fn bind_text(&mut self, text: &TextInstance) -> crate::Result<TextDraw> {
         let expr = self.scope.expr_context(self.frame, self.media);
-        text.bind(expr, self.media, &mut self.bound, self.rec)
+        let mut fallbacks = Vec::new();
+        let draw = text.bind(expr, self.media, &mut self.bound, self.rec, &mut fallbacks)?;
+        for family in fallbacks {
+            self.note_font_fallback(text.node_id, family);
+        }
+        Ok(draw)
+    }
+
+    /// Warns once per composition that `family` fell back for text node `node_id`.
+    fn note_font_fallback(&mut self, node_id: NodeId, family: String) {
+        let template = self
+            .composition
+            .compositions()
+            .iter()
+            .find(|(_, template)| std::ptr::eq(&template.scene, self.scope.scene))
+            .map(|(name, _)| name.clone());
+        let key = (template, node_id, family);
+        if self.st.font_fallbacks.contains(&key) {
+            return;
+        }
+        let warning = crate::error::Warning::FontFallback {
+            template: key.0.clone(),
+            node_id,
+            family: key.2.clone(),
+        };
+        tracing::warn!(target: "lumen_text", "{warning}");
+        let path = crate::diagnostic::scene_pointer(key.0.as_deref());
+        self.st
+            .diagnostics
+            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
+        self.st.font_fallbacks.insert(key);
     }
 
     pub(crate) fn media(&self) -> Option<&'a dyn MediaStore> {

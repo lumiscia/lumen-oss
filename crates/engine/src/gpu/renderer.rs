@@ -298,6 +298,13 @@ impl GpuCompositionRenderer {
         self.graph.skipped_passes()
     }
 
+    /// The warnings frames have raised since the last call, each once per composition: a text
+    /// family that fell back, for one. Their paths point at the root or the template the node is
+    /// in.
+    pub fn take_diagnostics(&mut self) -> Vec<crate::diagnostic::Diagnostic> {
+        self.graph.take_diagnostics()
+    }
+
     /// Number of image textures kept in the media cache.
     #[doc(hidden)]
     pub fn cached_media_texture_count(&self) -> usize {

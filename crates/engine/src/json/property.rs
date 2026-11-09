@@ -1,10 +1,8 @@
 //! The JSON forms params share: a leading `=`, whole numbers and colors.
 
-use anyhow::{Result, anyhow};
 use serde_json::Value;
 
 use crate::expr::parse_hex_color;
-use crate::node::NodeId;
 
 /// How a JSON string parameter starting with `=` is interpreted.
 pub(crate) enum StringParam<'a> {
@@ -56,11 +54,6 @@ pub(crate) fn integer_mismatch(value: &Value) -> String {
         }
         _ => format!("must be an integer within the i64 range, got {value}"),
     }
-}
-
-/// The error for a param a node does not have.
-pub fn unknown_param_error(key: &str, id: NodeId) -> anyhow::Error {
-    anyhow!("unknown param `{key}` on node {id}")
 }
 
 /// Parses `[r, g, b]`, `[r, g, b, a]` with integer components in 0–255, or a

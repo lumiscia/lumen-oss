@@ -137,16 +137,23 @@ pub(crate) fn expand_struct_delegate(
         let ident = &meta.ident;
         let name = &meta.property.id;
         if meta.property.flatten {
-            return quote!(::lumen_engine::node::NodeParams::set_json_fields(&mut self.#ident, fields, path)?;);
+            return quote!(::lumen_engine::node::NodeParams::set_json_fields(&mut self.#ident, fields, path, errors););
         }
-        let reject_expression = meta.property.constant.then(|| {
-            quote!(::lumen_engine::json::reject_expression(value, &path)?;)
-        });
+        let parsed = if meta.property.constant {
+            quote! {
+                ::lumen_engine::json::reject_expression(value, &path)
+                    .and_then(|()| ::lumen_engine::node::DelegateEvaluable::from_json_value(value, &path))
+            }
+        } else {
+            quote!(::lumen_engine::node::DelegateEvaluable::from_json_value(value, &path))
+        };
         quote! {
             if let Some(value) = fields.get(#name) {
                 let path = ::lumen_engine::node::field_path(path, #name);
-                #reject_expression
-                self.#ident = ::lumen_engine::node::DelegateEvaluable::from_json_value(value, &path)?;
+                match #parsed {
+                    Ok(value) => self.#ident = value,
+                    Err(error) => errors.push((#name, error)),
+                }
             }
         }
     });
@@ -246,9 +253,9 @@ pub(crate) fn expand_struct_delegate(
                 &mut self,
                 fields: &::serde_json::Map<::std::string::String, ::serde_json::Value>,
                 path: &str,
-            ) -> ::core::result::Result<(), ::std::string::String> {
+                errors: &mut ::std::vec::Vec<(&'static str, ::std::string::String)>,
+            ) {
                 #(#json_sets)*
-                Ok(())
             }
         }
 

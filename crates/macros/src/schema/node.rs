@@ -55,7 +55,10 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     });
     let json_metas_sets = metas.iter().map(|(field, _)| {
         quote! {
-            node.#field = ::lumen_engine::node::NodeParams::from_json(id, params)?;
+            match ::lumen_engine::node::NodeParams::from_json(id, params) {
+                Ok(value) => node.#field = value,
+                Err(param_errors) => errors.extend(param_errors),
+            }
         }
     });
     let assert_no_vec_fields = metas.iter().map(|(_, ty)| {
@@ -140,21 +143,29 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
             fn from_json(
                 id: ::lumen_engine::node::NodeId,
                 params: Option<&::serde_json::Map<String, ::serde_json::Value>>,
-            ) -> ::anyhow::Result<Self> {
+            ) -> ::core::result::Result<Self, ::std::vec::Vec<::lumen_engine::error::DocumentError>> {
                 let mut node = <Self as ::core::default::Default>::default();
                 node.id = id;
+                let mut errors = ::std::vec::Vec::new();
 
                 if let Some(params) = params {
                     for key in params.keys() {
                         match key.as_str() {
                             _ if false #(|| #json_metas_known)* => (),
-                            _ => return ::core::result::Result::Err(::lumen_engine::json::unknown_param_error(key, id)),
+                            _ => errors.push(::lumen_engine::error::DocumentError::UnknownParam {
+                                node_id: id,
+                                param: key.clone(),
+                            }),
                         };
                     }
                 }
 
                 #(#json_metas_sets)*
-                Ok(node)
+                if errors.is_empty() {
+                    Ok(node)
+                } else {
+                    Err(errors)
+                }
             }
 
             fn set_input_json(

@@ -250,13 +250,18 @@ impl CompositionBuilder {
     fn validate(&self) -> Result<(), Vec<LumenError>> {
         let mut errors = Vec::new();
 
-        errors.extend(settings_problems(&self.scene).into_iter().map(|details| {
-            GraphValidationError::InvalidSettings {
-                template: None,
-                details,
-            }
-            .into()
-        }));
+        errors.extend(
+            settings_problems(&self.scene)
+                .into_iter()
+                .map(|(field, details)| {
+                    GraphValidationError::InvalidSettings {
+                        template: None,
+                        field,
+                        details,
+                    }
+                    .into()
+                }),
+        );
         match self.scene.graph.validate() {
             Ok(_) => {}
             Err(graph_errors) => errors.extend(graph_errors),
@@ -264,15 +269,19 @@ impl CompositionBuilder {
         for (name, template) in &self.compositions {
             let defaults = template.props.iter().filter_map(|(prop, def)| {
                 let error = def.kind.check(def.default.clone()).err()?;
-                Some(format!("prop `{prop}` default: {error}"))
+                Some((
+                    format!("/props/{}/default", crate::diagnostic::escape(prop)),
+                    format!("prop `{prop}` default: {error}"),
+                ))
             });
             errors.extend(
                 settings_problems(&template.scene)
                     .into_iter()
                     .chain(defaults)
-                    .map(|details| {
+                    .map(|(field, details)| {
                         GraphValidationError::InvalidSettings {
                             template: Some(name.clone()),
+                            field,
                             details,
                         }
                         .into()
@@ -448,8 +457,8 @@ impl CompositionBuilder {
 }
 
 /// What stops a timeline and canvas from rendering: a frame rate that isn't positive and finite,
-/// and no frames or pixels.
-fn settings_problems(scene: &Scene) -> Vec<String> {
+/// and no frames or pixels. Each comes with the JSON pointer of its setting.
+fn settings_problems(scene: &Scene) -> Vec<(String, String)> {
     let Scene {
         timeline,
         render_settings: settings,
@@ -457,9 +466,12 @@ fn settings_problems(scene: &Scene) -> Vec<String> {
     } = scene;
     let mut problems = Vec::new();
     if !(timeline.fps.is_finite() && timeline.fps > 0.0) {
-        problems.push(format!(
-            "`timeline.fps` must be a positive, finite number, got {}",
-            timeline.fps
+        problems.push((
+            "/timeline/fps".to_string(),
+            format!(
+                "`timeline.fps` must be a positive, finite number, got {}",
+                timeline.fps
+            ),
         ));
     }
     let counts = [
@@ -469,7 +481,10 @@ fn settings_problems(scene: &Scene) -> Vec<String> {
     ];
     for (name, count) in counts {
         if count == 0 {
-            problems.push(format!("`{name}` must be at least 1"));
+            problems.push((
+                format!("/{}", name.replace('.', "/")),
+                format!("`{name}` must be at least 1"),
+            ));
         }
     }
     problems

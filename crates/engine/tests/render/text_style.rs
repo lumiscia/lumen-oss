@@ -982,3 +982,24 @@ fn distance_field_stroke_follows_its_fill_across_font_sizes() {
         );
     });
 }
+
+#[test]
+fn a_family_no_font_answers_to_warns_once_per_node() {
+    let gpu = crate::support::gpu();
+    let mut renderer = gpu.renderer();
+    let content = json!([{ "text": "a", "font_family": "Missing" }, { "text": "b" }]);
+    let composition: Composition = styled(32, content, json!({})).frames(2).into();
+    render(&mut renderer, &composition, 0.0, &media());
+    let warnings = renderer.take_diagnostics();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].code, "font.fallback");
+    assert_eq!(warnings[0].node, Some(lumen_engine::node::NodeId::new(1)));
+    assert!(
+        warnings[0].message.contains("`Missing`"),
+        "{}",
+        warnings[0].message
+    );
+
+    render(&mut renderer, &composition, 1.0, &media());
+    assert!(renderer.take_diagnostics().is_empty());
+}

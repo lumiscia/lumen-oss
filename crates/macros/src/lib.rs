@@ -9,6 +9,7 @@ use syn::parse_macro_input;
 
 mod common;
 mod delegate;
+mod diagnostic_code;
 mod schema;
 mod structural_hash;
 
@@ -40,6 +41,17 @@ pub fn derive_node_enum(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Delegate, attributes(delegate, meta, default))]
 pub fn derive_delegate(input: TokenStream) -> TokenStream {
     match delegate::expand_delegate(parse_macro_input!(input as syn::DeriveInput)) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+/// Gives an error enum a stable `code()` and the list of `CODES` its variants declare. Each
+/// variant takes `#[code("area.problem")]`, or `#[code(transparent)]` to take the code of the error
+/// it wraps.
+#[proc_macro_derive(DiagnosticCode, attributes(code))]
+pub fn derive_diagnostic_code(input: TokenStream) -> TokenStream {
+    match diagnostic_code::expand(&parse_macro_input!(input as syn::DeriveInput)) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }

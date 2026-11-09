@@ -1,8 +1,19 @@
 use std::fmt;
 
 #[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, lumen_macros::StructuralHash,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    lumen_macros::StructuralHash,
 )]
+#[serde(transparent)]
 pub struct NodeId(pub u64);
 
 impl NodeId {
