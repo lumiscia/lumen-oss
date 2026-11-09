@@ -15,7 +15,7 @@ use crate::{
     renderer::SurfaceCompositionRenderer,
     types::{AudioTimelinePayload, FrameRequirementsPayload},
     utils::{
-        composition_json_to_composition, image_frame_from_rgba, raw_frame_from_rgba,
+        composition_json_to_composition, image_frame_from_rgba, parse_failure, raw_frame_from_rgba,
         validate_rgba_len,
     },
 };
@@ -132,8 +132,8 @@ impl LumenPreviewController {
 
     #[wasm_bindgen(js_name = "loadComposition")]
     pub fn load_composition(&self, composition_json: &str) -> Result<(), JsValue> {
-        let composition =
-            composition_json_to_composition(composition_json).map_err(|e| JsValue::from_str(&e))?;
+        let composition = composition_json_to_composition(composition_json)
+            .map_err(|error| parse_failure(&error))?;
 
         self.update_state(|state| state.install_composition(composition))?;
         let state = self.state()?;

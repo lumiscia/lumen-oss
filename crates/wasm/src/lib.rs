@@ -16,6 +16,21 @@ use wasm_bindgen::JsValue;
 
 pub use preview::LumenPreviewController;
 
+/// What is wrong with a composition, without loading or rendering it: an array of diagnostics,
+/// errors and warnings both. With `fonts`, the families the page can load, a text family outside
+/// them that isn't the bundled one is a `font.fallback` warning; without it, fonts aren't checked.
+/// `asset:` references aren't checked, since the page has no asset store to check them against.
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn check(composition_json: &str, fonts: Option<Vec<String>>) -> wasm_bindgen::JsValue {
+    let known_font = |family: &str| fonts.iter().flatten().any(|font| font == family);
+    let known_font: Option<&dyn Fn(&str) -> bool> = fonts.is_some().then_some(&known_font);
+    utils::diagnostics_value(&lumen_engine::json::check(
+        composition_json,
+        known_font,
+        None,
+    ))
+}
+
 static INSTALL_RUNTIME_HOOKS: Once = Once::new();
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

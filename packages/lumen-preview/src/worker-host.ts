@@ -1,3 +1,4 @@
+import type { LumenDiagnostic } from "@lumiscia/lumen-types";
 import { epochNow, type PreviewClock } from "./clock.js";
 import {
   createLumenPreviewRuntime,
@@ -11,7 +12,7 @@ import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
 import type { LumenPreviewErrorCode } from "./preview.js";
 import { PreviewRunner } from "./runner.js";
 import { assetHint } from "./asset-hint.js";
-import { describeError } from "./session/errors.js";
+import { describeError, errorDiagnostics } from "./session/errors.js";
 import { PlaybackFpsMeter } from "./session/stats.js";
 
 type InitPreview = (options: { module_or_path: string }) => Promise<object>;
@@ -84,6 +85,7 @@ export type LumenPreviewWorkerEvent =
       width: number;
     }
   | {
+      diagnostics: LumenDiagnostic[];
       loadId: number;
       message: string;
       type: "load-failed";
@@ -277,7 +279,12 @@ export function createLumenPreviewWorkerHost({
       runner.load(activeController.durationFrames(), activeController.fps(), clock);
     } catch (error) {
       if (isCurrent()) {
-        scope.postMessage({ loadId, message: describeError(error), type: "load-failed" });
+        scope.postMessage({
+          diagnostics: errorDiagnostics(error),
+          loadId,
+          message: describeError(error),
+          type: "load-failed",
+        });
       }
     }
   }

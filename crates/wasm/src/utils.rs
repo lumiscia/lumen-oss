@@ -1,6 +1,8 @@
 use lumen_engine::{
     composition::Composition,
+    diagnostic::Diagnostic,
     error::{LumenError, MediaError},
+    json::ParseError,
     media::{CpuMediaFrame, premultiply_rgba_in_place_if_needed},
 };
 use std::sync::Arc;
@@ -56,6 +58,25 @@ pub fn image_frame_from_rgba(
     raw_frame_from_rgba(width, height, rgba)
 }
 
-pub fn composition_json_to_composition(composition_json: &str) -> Result<Composition, String> {
-    lumen_engine::json::parse(composition_json).map_err(|e| format!("{e:#}"))
+/// `diagnostics` as a JS array of plain objects.
+pub fn diagnostics_value(diagnostics: &[Diagnostic]) -> JsValue {
+    serde_json::to_string(diagnostics)
+        .ok()
+        .and_then(|json| js_sys::JSON::parse(&json).ok())
+        .unwrap_or_else(|| js_sys::Array::new().into())
+}
+
+/// The JS `Error` for a composition that doesn't parse, with its `diagnostics`.
+pub fn parse_failure(error: &ParseError) -> JsValue {
+    let js_error = js_sys::Error::new(&error.to_string());
+    let _ = js_sys::Reflect::set(
+        &js_error,
+        &JsValue::from_str("diagnostics"),
+        &diagnostics_value(error.diagnostics()),
+    );
+    js_error.into()
+}
+
+pub fn composition_json_to_composition(composition_json: &str) -> Result<Composition, ParseError> {
+    lumen_engine::json::parse(composition_json)
 }

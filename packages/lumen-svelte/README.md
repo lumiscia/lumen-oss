@@ -45,4 +45,6 @@ export default defineConfig({
 });
 ```
 
+`onError` on `Player` is called with each failure the state's `error` shows. When the engine rejects the composition, its `diagnostics` say what is wrong and where, each with a `severity`, a public `code`, a JSON pointer `path` and a `message`. New codes can appear in a patch release, so handle codes you don't know by their `severity`. The [engine README](https://github.com/lumiscia/lumen-oss/tree/main/crates/engine#diagnostics) lists them.
+
 See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.

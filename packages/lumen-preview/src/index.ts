@@ -1,8 +1,11 @@
+import type { LumenDiagnostic } from "@lumiscia/lumen-types";
+
 import { LumenMediaBridge } from "./media/index.js";
 export { defaultAudioWorkerUrl, defaultAudioWorkletUrl, LumenAudioEngine } from "./audio-engine.js";
 export {
   LumenPreviewContext,
   createLumenPreview,
+  type LumenPreviewError,
   type LumenPreviewErrorCode,
   type LumenPreviewListener,
   type LumenPreviewPatch,
@@ -78,6 +81,11 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
 }
 
 export interface LumenPreviewBindings {
+  /**
+   * Checks a composition without loading it. With `fonts`, also warns of families none of them
+   * provides.
+   */
+  check(compositionJson: string, fonts?: string[] | null): LumenDiagnostic[];
   LumenPreviewController: new () => LumenPreviewControllerBinding;
 }
 

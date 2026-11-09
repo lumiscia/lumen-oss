@@ -572,6 +572,7 @@ describe("LumenPreviewSession", () => {
 
       session.update({ composition: composition("broken") });
       worker.emit({
+        diagnostics: [],
         loadId: worker.ofType("load").at(-1)?.loadId as number,
         message: "bad",
         type: "load-failed",
@@ -603,7 +604,7 @@ describe("LumenPreviewSession", () => {
     const staleLoadId = worker.ofType("load").at(-1)?.loadId as number;
     session.update({ composition: composition("second") });
 
-    worker.emit({ loadId: staleLoadId, message: "too late", type: "load-failed" });
+    worker.emit({ diagnostics: [], loadId: staleLoadId, message: "too late", type: "load-failed" });
     expect(preview.getSnapshot().error).toBeNull();
   });
 
@@ -646,19 +647,91 @@ describe("LumenPreviewSession", () => {
   });
 
   it("doesn't retry a failed load until an input really changes", async () => {
-    const { preview, session, worker } = await started();
+    const onError = vi.fn();
+    const { preview, session, worker } = await started({ onError });
+    const diagnostics = [
+      {
+        code: "node.unknown_type",
+        message: "node 1: unknown or unsupported node type `blur2`",
+        node: 1,
+        path: "/nodes/0/type",
+        severity: "error" as const,
+      },
+    ];
     worker.emit({
+      diagnostics,
       loadId: worker.ofType("load").at(-1)?.loadId as number,
       message: "bad composition",
       type: "load-failed",
     });
     expect(preview.getSnapshot().errorCode).toBe("load_failed");
+    expect(onError).toHaveBeenCalledExactlyOnceWith({
+      code: "load_failed",
+      diagnostics,
+      message: "bad composition",
+    });
 
     session.update({ composition: composition("first") });
     expect(worker.ofType("load")).toHaveLength(1);
 
     session.update({ composition: composition("second") });
     expect(worker.ofType("load")).toHaveLength(2);
+  });
+
+  it("reports inputs that don't resolve once, until they change", async () => {
+    const onError = vi.fn();
+    const { session } = await started({ onError });
+    const unresolved = { composition: composition("first"), media: { unused: "/image.png" } };
+    session.update({ ...unresolved, onError });
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError.mock.calls[0]?.[0]).toMatchObject({ code: "load_failed", diagnostics: [] });
+
+    // A callback that re-renders with the same inputs doesn't hear the same failure again.
+    const replaced = vi.fn();
+    session.update({ ...unresolved, onError: replaced });
+    session.update({ ...unresolved, media: { unused: "/image.png" }, onError: replaced });
+    expect(onError).toHaveBeenCalledOnce();
+    expect(replaced).not.toHaveBeenCalled();
+
+    session.update({ composition: composition("first"), onError: replaced });
+    session.update({ ...unresolved, onError: replaced });
+    expect(replaced).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a resolution error over an earlier load, then clears it when valid inputs load", async () => {
+    const { preview, session, worker } = await started({});
+    session.update({ composition: composition("first") });
+    const first = worker.ofType("load").at(-1)?.loadId as number;
+    const unresolved = { composition: composition("second"), media: { unused: "/image.png" } };
+    session.update(unresolved);
+    expect(preview.getSnapshot().errorCode).toBe("load_failed");
+
+    worker.emit({
+      audioTimelineJson: null,
+      fps: 30,
+      height: 16,
+      loadId: first,
+      totalFrames: 30,
+      type: "loaded",
+      width: 16,
+    });
+    expect(preview.getSnapshot().errorCode).toBe("load_failed");
+    session.update(unresolved);
+    expect(preview.getSnapshot().errorCode).toBe("load_failed");
+
+    session.update({ composition: composition("first") });
+    const retry = worker.ofType("load").at(-1)?.loadId as number;
+    expect(retry).toBeGreaterThan(first);
+    worker.emit({
+      audioTimelineJson: null,
+      fps: 30,
+      height: 16,
+      loadId: retry,
+      totalFrames: 30,
+      type: "loaded",
+      width: 16,
+    });
+    expect(preview.getSnapshot().errorCode).toBeNull();
   });
 
   it("sends a source again if the worker never received it", async () => {

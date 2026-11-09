@@ -40,10 +40,22 @@ describe("Lumen errors", () => {
       fetch: (async () => respond()) as typeof fetch,
     });
 
-  test("an error body becomes a LumenError with its code, status and request id", async () => {
+  test("an error body becomes a LumenError with its code, status, request id and diagnostics", async () => {
+    const missing = {
+      severity: "error",
+      code: "graph.missing_media_output",
+      path: "/nodes",
+      message: "no output node",
+    };
+    const unknownCode = { ...missing, code: "graph.some_future_check", node: 3 };
     const lumen = lumenWith(() =>
       Response.json(
-        { code: "invalid_composition", error: "no output node", requestId: "req-1" },
+        {
+          code: "invalid_composition",
+          error: "no output node",
+          requestId: "req-1",
+          diagnostics: [missing, unknownCode, { code: "not.a.diagnostic" }],
+        },
         { status: 422 },
       ),
     );
@@ -57,6 +69,8 @@ describe("Lumen errors", () => {
       requestId: "req-1",
       status: 422,
     });
+    expect((error as LumenError).diagnostics).toEqual([missing, unknownCode]);
+    expect(new LumenError("network_error", "down").diagnostics).toEqual([]);
   });
 
   test("a response without a body still names its status", async () => {

@@ -27,13 +27,14 @@ export function Player({
   lookaheadCount,
   logLevel,
   media,
+  onError,
   onStats,
   className,
   style,
 }: PlayerProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<LumenPreviewSession | null>(null);
-  const inputs = { composition, fonts, lookaheadCount, logLevel, media, onStats };
+  const inputs = { composition, fonts, lookaheadCount, logLevel, media, onError, onStats };
   const wasm = String(wasmUrl ?? defaults.wasmUrl);
   const worker = String(workerUrl ?? defaults.workerUrl);
 
@@ -50,7 +51,7 @@ export function Player({
 
   useEffect(() => {
     sessionRef.current?.update(inputs);
-  }, [composition, fonts, lookaheadCount, logLevel, media, onStats]);
+  }, [composition, fonts, lookaheadCount, logLevel, media, onError, onStats]);
 
   return <div ref={hostRef} className={className} style={style} />;
 }

@@ -1,3 +1,5 @@
+import type { LumenDiagnostic } from "@lumiscia/lumen-types";
+
 import { LumenAudioEngine } from "../audio-engine.js";
 import { clockPositionMs, epochNow, fitClock, type PreviewClock } from "../clock.js";
 import type { MediaRegistration, MediaSourceInput } from "../media/index.js";
@@ -66,6 +68,9 @@ export class LumenPreviewSession {
   #pendingSeek: number | null = null;
   #pendingSeeks = new Map<number, (presented: boolean) => void>();
   #playing = false;
+  // Why the inputs last failed to resolve. The same failure isn't reported again, so a callback that
+  // re-renders with the same inputs can't loop.
+  #resolveFailure: string | null = null;
   #seekId = 0;
   #startup: AbortController | null = null;
   #sentFonts: ReadonlyMap<string, MediaSourceInput> = new Map();
@@ -185,6 +190,7 @@ export class LumenPreviewSession {
     this.#loading = false;
     this.#pendingSeek = null;
     this.#playing = false;
+    this.#resolveFailure = null;
     // The next worker counts its seeks from zero.
     this.#seekId = 0;
     this.#sentFonts = new Map();
@@ -216,12 +222,20 @@ export class LumenPreviewSession {
     try {
       next = resolvePreviewInputs(this.#inputs.composition, this.#inputs.media, this.#inputs.fonts);
     } catch (error) {
-      this.#reportError("load_failed", "load", error);
+      const message = describeError(error);
+      if (message !== this.#resolveFailure) {
+        this.#resolveFailure = message;
+        this.#reportError("load_failed", "load", error);
+      }
       return;
     }
+    // Loading again replaces the resolution error with the loaded inputs' own outcome.
+    const recovering = this.#resolveFailure !== null;
+    this.#resolveFailure = null;
 
     const previous = this.#loaded;
     if (
+      !recovering &&
       previous &&
       previous.compositionJson === next.compositionJson &&
       sameEntries(previous.media, next.media, sameRegistration) &&
@@ -290,13 +304,13 @@ export class LumenPreviewSession {
     }
   }
 
-  #loadFailed(error: unknown): void {
+  #loadFailed(error: unknown, diagnostics: readonly LumenDiagnostic[] = []): void {
     this.#loading = false;
     this.#pause();
     this.#timeline = null;
     this.#inputs.onStats?.(EMPTY_PREVIEW_STATS);
     this.preview.update({ isLoaded: false });
-    this.#reportError("load_failed", "load", error);
+    this.#reportError("load_failed", "load", error, diagnostics);
   }
 
   #receive(event: LumenPreviewWorkerEvent): void {
@@ -306,7 +320,7 @@ export class LumenPreviewSession {
         break;
       case "load-failed":
         if (event.loadId === this.#loadId) {
-          this.#loadFailed(event.message);
+          this.#loadFailed(event.message, event.diagnostics);
         }
         break;
       case "frame":
@@ -385,8 +399,8 @@ export class LumenPreviewSession {
       timelineFps: fps,
     });
     this.preview.update({
-      error: null,
-      errorCode: null,
+      // Newer inputs that didn't resolve keep their error over this earlier load.
+      ...(this.#resolveFailure === null && { error: null, errorCode: null }),
       frame,
       height: event.height,
       isLoaded: true,
@@ -532,9 +546,16 @@ export class LumenPreviewSession {
     this.#reportError("worker_failed", "worker", `the preview worker stopped: ${message}`);
   }
 
-  #reportError(code: LumenPreviewErrorCode, scope: string, error: unknown): void {
+  #reportError(
+    code: LumenPreviewErrorCode,
+    scope: string,
+    error: unknown,
+    diagnostics: readonly LumenDiagnostic[] = [],
+  ): void {
     reportConsoleError(scope, error);
-    this.preview.update({ error: describeError(error), errorCode: code });
+    const message = describeError(error);
+    this.preview.update({ error: message, errorCode: code });
+    this.#inputs.onError?.({ code, message, diagnostics });
   }
 
   #post(message: LumenPreviewWorkerCommand, transfer: Transferable[] = []): void {
