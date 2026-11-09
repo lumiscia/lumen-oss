@@ -338,6 +338,12 @@ mod tests {
         assert_eq!(angle("M 1000000 0 L 1000001 0 M 0 0 L 0 1", 0.75), 90.0);
         let after_curve = "M 1000000 0 Q 1000000.5 0 1000001 0 L 1000001 1";
         assert_eq!(angle(after_curve, 0.75), 90.0);
+        // An arc resets the control a smooth quadratic reflects.
+        for smooth in ["T 300 100", "t 100 0"] {
+            let data = format!("M 0 100 A 100 100 0 0 1 200 100 {smooth}");
+            assert_close(angle(&data, 1.0), 0.0, 1e-9);
+            assert_close(point(&data, 0.9).1, 100.0, 1e-9);
+        }
     }
 
     #[test]

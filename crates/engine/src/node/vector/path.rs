@@ -373,10 +373,11 @@ pub(crate) fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                     if !finite {
                         return Err("has an arc too extreme to flatten".to_string());
                     }
-                    match pending {
-                        Some((ctrl, _)) => builder.quadratic_bezier_to(ctrl, to),
-                        None => builder.line_to(to),
-                    };
+                    if let Some((ctrl, _)) = pending {
+                        builder.quadratic_bezier_to(ctrl, to);
+                    }
+                    // A zero-length line, so a `T` after the arc doesn't reflect its last control.
+                    builder.line_to(to);
                 }
             }
             PathSegment::ClosePath { .. } => builder.close(),
