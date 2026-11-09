@@ -220,15 +220,17 @@ impl PathFrame {
             &Drawn::Copies(&copies),
             band_capacity,
         );
-        // Each copy is culled like the path drawn once: a segment's reach beyond the box.
-        let reach = uniforms.reach;
+        // Each copy is culled like the path drawn once, by a segment's reach at its own scale.
         let mut gpu = copies.to_gpu(
-            [min[0] - reach, min[1] - reach],
-            [max[0] + reach, max[1] + reach],
+            min,
+            max,
+            |scale| super::path_bands::segment_reach(&uniforms, scale) as f32,
             0.0,
         );
         if bands.is_empty() {
             gpu.copies.clear();
+        } else {
+            uniforms.screen_bounds = gpu.bounds;
         }
         Self {
             uniforms,

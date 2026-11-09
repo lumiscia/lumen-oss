@@ -183,6 +183,31 @@ fn animated_offsets() -> Vec<Case> {
     ]
 }
 
+fn frame_count_and_columns_across_the_shutter() -> Vec<Case> {
+    // At either end of the shutter, the count would be 1022 and 1026 and the columns -2 and 2.
+    let repeats = [
+        json!({ "count": "=1024 + frame * 8", "position_offset": [0.05, 0] }),
+        json!({ "count": 2, "columns": "=frame * 8", "position_offset": [30, 0] }),
+    ];
+    let mut cases = Vec::new();
+    for (kind, params) in [("shape", outlined_box()), ("path", triangle())] {
+        for repeat in &repeats {
+            let blurred = with(params.clone(), json!({ "motion_blur": 180 }));
+            cases.push(
+                Case::new(
+                    format!(
+                        "a {kind} keeps the frame's count and columns across the shutter, {repeat}"
+                    ),
+                    repeated(kind, blurred, repeat.clone()),
+                    Expect::Matches(repeated(kind, params.clone(), repeat.clone()).into()),
+                )
+                .tolerance(0),
+            );
+        }
+    }
+    cases
+}
+
 #[test]
 fn repeated_copies_match_the_node_drawn_once_per_copy() {
     check(copies_match_separate_nodes());
@@ -196,6 +221,50 @@ fn a_single_copy_is_identical_to_no_repeat() {
 #[test]
 fn animated_offsets_match_separately_animated_nodes() {
     check(animated_offsets());
+}
+
+#[test]
+fn motion_blur_keeps_the_frame_count_and_columns() {
+    check(frame_count_and_columns_across_the_shutter());
+}
+
+/// A path copy scaled almost to nothing reaches far in untransformed space, but the copies
+/// beside it keep the reach of their own scale: the repeat records about the union of what each
+/// copy records alone, not the whole canvas.
+#[test]
+fn a_tiny_path_copy_does_not_widen_the_others() {
+    let composition = |params: Value| -> Composition {
+        scene(
+            (1920, 1080),
+            json!([{ "id": 1, "type": "path", "params": with(
+                json!({ "data": "M0 0 L16 0 L16 12 Z", "position": [100, 200] }),
+                params,
+            ) }]),
+        )
+        .into()
+    };
+    let gpu = gpu();
+    let domain = |composition: Composition| {
+        let mut renderer = gpu.renderer();
+        render(&mut renderer, &composition, 0.0, &TestMedia::default());
+        renderer
+            .recorded_domain(&composition, NodeId::new(1))
+            .unwrap()
+            .data_rect
+    };
+    let normal = domain(composition(json!({})));
+    let tiny = domain(composition(json!({ "scale": [0.00001, 1] })));
+    let repeated = domain(composition(
+        json!({ "repeat": { "count": 2, "scale_offset": [-0.99999, 0] } }),
+    ));
+    assert!(
+        repeated.contains(normal) && repeated.contains(tiny),
+        "{repeated:?} should hold {normal:?} and {tiny:?}"
+    );
+    assert!(
+        repeated.width <= 2 * normal.width.max(tiny.width),
+        "{repeated:?} is wider than its copies, {normal:?} and {tiny:?}"
+    );
 }
 
 /// The texture covers the copies that draw anything and no more: three visible copies of a

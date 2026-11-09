@@ -149,7 +149,8 @@ impl Repeat {
 
 impl RepeatDelegate {
     /// The offsets at either end of the shutter around `frame`, which gives the count and
-    /// columns. `None` when motion blur is off or no offset moves.
+    /// columns. Only the offsets are evaluated there. `None` when motion blur is off or no offset
+    /// moves.
     pub(crate) fn shutter(
         &self,
         frame: &Repeat,
@@ -165,17 +166,22 @@ impl RepeatDelegate {
         }
         let at = |subframe: f64| -> crate::Result<Repeat> {
             let expr = expr.at_subframe(subframe);
-            let evaluated = self
-                .eval(&DelegateEvalContext {
-                    node_id,
-                    expr: &expr,
+            let ctx = DelegateEvalContext {
+                node_id,
+                expr: &expr,
+            };
+            let offsets = || -> crate::Result<Repeat> {
+                Ok(Repeat {
+                    count: frame.count,
+                    columns: frame.columns,
+                    position_offset: ctx.eval_field("position_offset", &self.position_offset)?,
+                    row_offset: ctx.eval_field("row_offset", &self.row_offset)?,
+                    rotation_offset: ctx.eval_field("rotation_offset", &self.rotation_offset)?,
+                    scale_offset: ctx.eval_field("scale_offset", &self.scale_offset)?,
+                    opacity_offset: ctx.eval_field("opacity_offset", &self.opacity_offset)?,
                 })
-                .map_err(|error| error.in_field("repeat"))?;
-            Ok(Repeat {
-                count: frame.count,
-                columns: frame.columns,
-                ..evaluated
-            })
+            };
+            offsets().map_err(|error| error.in_field("repeat"))
         };
         let (open, close) = (at(-offset)?, at(offset)?);
         Ok((open != *frame || close != *frame).then(|| Shutter {
@@ -285,16 +291,28 @@ impl DrawableCopies {
     }
 
     /// The copies, the taps of those that move, and the union of their bounds, for geometry
-    /// within the untransformed box from `min` to `max`. Each copy's canvas bounds are grown
-    /// by `pad` pixels. Nothing is drawn outside a copy's bounds.
-    pub(crate) fn to_gpu(&self, min: [f32; 2], max: [f32; 2], pad: f32) -> GpuCopies {
+    /// within the untransformed box from `min` to `max`. Each copy's box is grown by `reach` of
+    /// its smallest absolute scale component, in untransformed units, and its canvas bounds by
+    /// `pad` pixels. Nothing is drawn outside a copy's bounds.
+    pub(crate) fn to_gpu(
+        &self,
+        min: [f32; 2],
+        max: [f32; 2],
+        reach: impl Fn(f64) -> f32,
+        pad: f32,
+    ) -> GpuCopies {
         let mut gpu = GpuCopies {
             copies: Vec::with_capacity(self.copies.len()),
             taps: Vec::new(),
             bounds: [f32::MAX, f32::MAX, f32::MIN, f32::MIN],
         };
         for copy in &self.copies {
-            let [x0, y0, x1, y1] = copy.motion.canvas_bounds(copy.gpu, min, max);
+            let reach = reach(copy.motion.smallest_scale(&copy.frame));
+            let [x0, y0, x1, y1] = copy.motion.canvas_bounds(
+                copy.gpu,
+                [min[0] - reach, min[1] - reach],
+                [max[0] + reach, max[1] + reach],
+            );
             let bounds = [x0 - pad, y0 - pad, x1 + pad, y1 + pad];
             let first_tap = gpu.taps.len() as u32;
             gpu.taps.extend(copy.motion.gpu_taps());
@@ -333,20 +351,6 @@ impl Drawn<'_> {
         match self {
             Self::Once(transform, motion) => motion.smallest_scale(transform),
             Self::Copies(copies) => copies.smallest_scale(),
-        }
-    }
-
-    /// The canvas bounds of the untransformed box from `min` to `max`, of which `transform` is
-    /// the GPU form of the transform drawn once.
-    pub(crate) fn canvas_bounds(
-        &self,
-        transform: GpuDrawableTransform,
-        min: [f32; 2],
-        max: [f32; 2],
-    ) -> [f32; 4] {
-        match self {
-            Self::Once(_, motion) => motion.canvas_bounds(transform, min, max),
-            Self::Copies(copies) => copies.to_gpu(min, max, 0.0).bounds,
         }
     }
 }
@@ -539,7 +543,7 @@ mod tests {
             repeat_shutter: None,
         }
         .copies([10.0, 20.0], [20.0, 30.0]);
-        let gpu = copies.to_gpu([10.0, 20.0], [20.0, 30.0], 0.0);
+        let gpu = copies.to_gpu([10.0, 20.0], [20.0, 30.0], |_| 0.0, 0.0);
         // Opacities 1, 0.5, 0 and -0.5: the last two draw nothing.
         assert_eq!(gpu.copies.len(), 2);
         assert_eq!(gpu.copies[1].transform.opacity, 0.5);

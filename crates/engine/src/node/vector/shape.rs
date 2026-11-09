@@ -107,7 +107,7 @@ fn shape_frame(
     }
     .copies(min, max)
     // Antialiasing reaches a canvas pixel beyond each copy's box.
-    .to_gpu(min, max, 1.0);
+    .to_gpu(min, max, |_| 0.0, 1.0);
     uniforms.screen_bounds = copies.bounds;
     Ok((uniforms, Some(copies)))
 }

@@ -18,9 +18,10 @@ pub(super) fn band_capacity(point_capacity: usize) -> usize {
 /// all of which are listed in its band, so the fill rule needs no other bands.
 ///
 /// The buffer starts with a `(start, count)` pair per band, followed by the index of the
-/// first point of each listed segment. An empty buffer means nothing is drawn. The culling
-/// covers every transform the path is `drawn` under. `min` and `max` are the box around
-/// `points`.
+/// first point of each listed segment. An empty buffer means nothing is drawn. The bands'
+/// reach covers every transform the path is `drawn` under. The screen bounds are set for a
+/// path drawn once, and left empty for copies, whose bounds are their own. `min` and `max` are
+/// the box around `points`.
 pub(super) fn bin_path(
     uniforms: &mut PathUniforms,
     points: &[PathPoint],
@@ -53,14 +54,7 @@ pub(super) fn bin_path(
         return Vec::new();
     }
 
-    // Untransformed distance within which a segment can still cover part of a pixel: a
-    // canvas pixel of antialiasing, plus half the stroke.
-    let stroke_reach = if stroke {
-        f64::from(uniforms.stroke_width).max(0.0) * 0.5
-    } else {
-        0.0
-    };
-    let reach = 1.0 / drawn.smallest_scale() + stroke_reach;
+    let reach = segment_reach(uniforms, drawn.smallest_scale());
     // Covers rounding differences between this binning and the shader's band lookup.
     let pad = reach + 1e-4 * (1.0 + f64::from(min[1].abs().max(max[1].abs())));
     let origin = f64::from(min[1]) - pad;
@@ -107,17 +101,31 @@ pub(super) fn bin_path(
     }
 
     let reach = reach as f32;
-    let [x, y] = uniforms.position;
-    uniforms.screen_bounds = drawn.canvas_bounds(
-        uniforms.transform,
-        [min[0] - reach + x, min[1] - reach + y],
-        [max[0] + reach + x, max[1] + reach + y],
-    );
+    if let Drawn::Once(_, motion) = drawn {
+        let [x, y] = uniforms.position;
+        uniforms.screen_bounds = motion.canvas_bounds(
+            uniforms.transform,
+            [min[0] - reach + x, min[1] - reach + y],
+            [max[0] + reach + x, max[1] + reach + y],
+        );
+    }
     uniforms.band_origin = origin as f32;
     uniforms.band_scale = (band_count as f64 / height) as f32;
     uniforms.band_count = band_count as u32;
     uniforms.reach = reach;
     data
+}
+
+/// Untransformed distance within which a segment can still cover part of a pixel when drawn at
+/// a smallest absolute scale component of `scale`: a canvas pixel of antialiasing, plus half the
+/// stroke.
+pub(super) fn segment_reach(uniforms: &PathUniforms, scale: f64) -> f64 {
+    let stroke_reach = if uniforms.flags & STYLE_STROKE_ENABLED != 0 {
+        f64::from(uniforms.stroke_width).max(0.0) * 0.5
+    } else {
+        0.0
+    };
+    1.0 / scale + stroke_reach
 }
 
 #[cfg(test)]
