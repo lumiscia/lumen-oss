@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2 } from "../values.js";
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
 export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
-export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "exposure" | "fractal_noise" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "displacement_map" | "exposure" | "fractal_noise" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
 
@@ -983,6 +983,12 @@ export type Connection = {
 };
 /** Lengths that a stroke alternately draws and skips, starting with a dash. Each takes a literal or an expression. */
 export type DashPattern = readonly ExpressionValue<number>[];
+export type DisplacementChannel = "red" | "green" | "blue" | "luma";
+export type DisplacementMapChannelX = DisplacementChannel;
+export type DisplacementMapChannelY = DisplacementChannel;
+export type DisplacementMapEdge = EdgeMode;
+export type DisplacementMapSampling = RasterSampling;
+export type EdgeMode = "clamp" | "transparent";
 /** OpenType features by four-character tag. 0 turns a feature off, 1 turns it on and larger values select an alternate. */
 export type FontFeatures = Readonly<Record<string, ExpressionValue<number>>>;
 export type FractalNoiseMode = NoiseMode;
@@ -1279,6 +1285,34 @@ export interface CropNode extends CompositionNodeBase<"crop"> {
     readonly x?: ExpressionValue<number>;
     /** Top edge of the crop region in pixels. */
     readonly y?: ExpressionValue<number>;
+  };
+}
+
+/**
+ * Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. Map bytes are
+ * premultiplied by alpha, so transparent areas of the map, and everything outside it, leave
+ * the source in place.
+ */
+export interface DisplacementMapNode extends CompositionNodeBase<"displacement_map"> {
+  readonly params?: {
+    /**
+     * Pixels the source moves horizontally at full strength: a channel byte of 0 moves it this
+     * far left, 255 nearly as far right, and 128 leaves it in place. Negative amounts reverse it.
+     */
+    readonly amount_x?: ExpressionValue<number>;
+    /**
+     * Pixels the source moves vertically at full strength: a channel byte of 0 moves it this far
+     * up, 255 nearly as far down, and 128 leaves it in place. Negative amounts reverse it.
+     */
+    readonly amount_y?: ExpressionValue<number>;
+    /** Map channel that drives horizontal displacement. */
+    readonly channel_x?: ExpressionValue<DisplacementChannel>;
+    /** Map channel that drives vertical displacement. */
+    readonly channel_y?: ExpressionValue<DisplacementChannel>;
+    /** What the source reads as beyond its edges. */
+    readonly edge?: ExpressionValue<EdgeMode>;
+    /** Sampling filter used to read the displaced source. */
+    readonly sampling?: ExpressionValue<RasterSampling>;
   };
 }
 
@@ -1748,6 +1782,7 @@ export interface CompositionNodeByKind {
   readonly "clip": ClipNode;
   readonly "color_grade": ColorGradeNode;
   readonly "crop": CropNode;
+  readonly "displacement_map": DisplacementMapNode;
   readonly "exposure": ExposureNode;
   readonly "fractal_noise": FractalNoiseNode;
   readonly "hue_saturation": HueSaturationNode;
@@ -1785,6 +1820,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "crop": Omit<CropNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "displacement_map": Omit<DisplacementMapNode, "id"> & {
     readonly id?: number;
   };
   readonly "exposure": Omit<ExposureNode, "id"> & {
@@ -1850,6 +1888,7 @@ export interface NodeInputPortNameByKind {
   readonly "clip": "source";
   readonly "color_grade": "source";
   readonly "crop": "source";
+  readonly "displacement_map": "map" | "source";
   readonly "exposure": "source";
   readonly "fractal_noise": never;
   readonly "hue_saturation": "source";
@@ -1877,6 +1916,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "clip": never;
   readonly "color_grade": never;
   readonly "crop": never;
+  readonly "displacement_map": never;
   readonly "exposure": never;
   readonly "fractal_noise": never;
   readonly "hue_saturation": never;

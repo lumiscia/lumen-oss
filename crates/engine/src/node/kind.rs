@@ -105,6 +105,7 @@ node_kinds! {
     Crop(processing::crop::Crop),
     Resize(processing::resize::Resize),
     Shadow(processing::shadow::Shadow),
+    DisplacementMap(processing::displacement_map::DisplacementMap),
     WgslShader(processing::wgsl_shader::WgslShader),
     MediaOutput(media_output::MediaOutput),
 }

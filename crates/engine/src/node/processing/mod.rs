@@ -1,6 +1,7 @@
 pub mod blur;
 pub mod color_grade;
 pub mod crop;
+pub mod displacement_map;
 pub mod exposure;
 pub(crate) mod gaussian;
 pub mod hue_saturation;
