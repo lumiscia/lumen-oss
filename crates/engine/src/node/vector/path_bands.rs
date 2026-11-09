@@ -143,7 +143,8 @@ pub(super) fn bin_path(
 
 /// Untransformed distance past the outline within which a segment can still cover part of a
 /// pixel when drawn at a smallest absolute scale component of `scale`: a canvas pixel of
-/// antialiasing past the farther of the stroke's half width and the fill's offset edge and fade.
+/// antialiasing past the farther of the stroke's half width and the fill's offset edge and fade,
+/// or just the pixel when neither is drawn.
 pub(super) fn segment_extent(uniforms: &PathUniforms, scale: f64) -> f64 {
     let stroke = if uniforms.flags & STYLE_STROKE_ENABLED != 0 {
         f64::from(uniforms.stroke_width).max(0.0) * 0.5
@@ -155,7 +156,8 @@ pub(super) fn segment_extent(uniforms: &PathUniforms, scale: f64) -> f64 {
     } else {
         f64::NEG_INFINITY
     };
-    1.0 / scale + stroke.max(fill)
+    let drawn = stroke.max(fill);
+    1.0 / scale + if drawn.is_finite() { drawn } else { 0.0 }
 }
 
 #[cfg(test)]
