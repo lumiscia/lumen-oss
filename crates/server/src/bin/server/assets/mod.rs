@@ -199,8 +199,13 @@ impl AssetStore {
                 let _ = fs::remove_dir_all(&path);
                 continue;
             };
+            // Only a checked media's bytes are kept. Anything else a pending one holds on disk is
+            // from uploads that ended with the last run, and nothing counts it.
             let _ = fs::remove_dir_all(path.join(PARTS_DIR));
             remove_temp_files(&path);
+            if stored.media.status == MediaStatus::Pending {
+                let _ = fs::remove_file(path.join(CONTENT_FILE));
+            }
             entries.insert(
                 id.to_string(),
                 Entry::new(stored.media, stored.expires_at_ms),
@@ -558,17 +563,24 @@ impl AssetStore {
         tokio::fs::rename(&temp, &finishing.content).await?;
         let probed = probe_blocking(finishing.content.clone()).await;
 
+        // Recorded and then published under the lock a delete takes, so nothing can lease the
+        // checked media or delete its record before the record is written, and a media deleted
+        // first is never recorded again.
         let mut entries = self.entries();
-        let entry = entries.get_mut(id).ok_or(StoreError::NotFound)?;
-        entry.finishing = false;
-        finishing.done = true;
-        apply_probe(&mut entry.media, probed);
+        let entry = entries
+            .get_mut(id)
+            .filter(|entry| !entry.deleted)
+            .ok_or(StoreError::NotFound)?;
+        let mut stored = entry.stored();
+        apply_probe(&mut stored.media, probed);
+        self.persist(&stored)?;
+        entry.media = stored.media.clone();
         entry.uploads.clear();
         entry.staged_bytes = 0;
-        let stored = entry.stored();
+        entry.finishing = false;
+        finishing.done = true;
         drop(entries);
         let _ = fs::remove_dir_all(self.entry_dir(id).join(PARTS_DIR));
-        self.persist(&stored)?;
         Ok(stored.media)
     }
 
@@ -922,7 +934,117 @@ mod tests {
         assert_eq!(retried.status, MediaStatus::Rejected);
     }
 
+    const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8,
+        0xef, 0xa0, 0xf0, 0x1f, 0x00, 0x06, 0x00, 0x02, 0x5f, 0x34, 0xcd, 0x40, 0xc0, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    fn new_upload(size_bytes: usize) -> NewUpload {
+        NewUpload {
+            content_type: "image/png".to_string(),
+            file_name: "pixel.png".to_string(),
+            size_bytes: size_bytes as u64,
+        }
+    }
+
     fn stream_of(bytes: &'static [u8]) -> impl Stream<Item = Result<Bytes, io::Error>> + Unpin {
         futures_util::stream::iter([Ok(Bytes::from_static(bytes))])
+    }
+
+    #[tokio::test]
+    async fn a_delete_during_completion_stays_deleted_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
+        let id = store.create(new_upload(TINY_PNG.len())).unwrap().id;
+        let upload_id = store.start_multipart(&id).unwrap();
+        let etag = store
+            .put_part(&id, &upload_id, 1, stream_of(TINY_PNG))
+            .await
+            .unwrap();
+        // Empty parts left out of the upload, which completion deletes, keep it busy for a while
+        // after the bytes are checked.
+        for number in 2..5_000 {
+            store
+                .put_part(&id, &upload_id, number, stream_of(b""))
+                .await
+                .unwrap();
+        }
+
+        // Leases and deletes the media the moment it reads as checked, as a render and a client
+        // racing the completion would.
+        let deleter = {
+            let (store, id) = (store.clone(), id.clone());
+            std::thread::spawn(move || {
+                loop {
+                    if store
+                        .get(&id)
+                        .is_ok_and(|media| media.status == MediaStatus::Validated)
+                    {
+                        let render = store.job_assets();
+                        assert!(render.resolve(&id).is_some());
+                        store.delete(&id).unwrap();
+                        return render;
+                    }
+                    std::hint::spin_loop();
+                }
+            })
+        };
+        store
+            .complete_multipart(&id, &upload_id, &[(1, etag)])
+            .await
+            .unwrap();
+        let render = deleter.join().unwrap();
+
+        let entry = dir.path().canonicalize().unwrap().join(&id);
+        assert!(
+            entry.join(CONTENT_FILE).exists(),
+            "the render still reads it"
+        );
+        assert!(!entry.join(RECORD_FILE).exists(), "the delete was undone");
+        drop(render);
+        let reopened = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
+        assert!(matches!(reopened.get(&id), Err(StoreError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn unchecked_bytes_a_crash_left_behind_do_not_count_against_a_new_upload() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = AssetStore::open(dir.path(), Duration::from_secs(60), 1024)
+            .unwrap()
+            .create(new_upload(1024))
+            .unwrap()
+            .id;
+        // What a crash leaves between moving the bytes into place and recording their check.
+        let entry = dir.path().canonicalize().unwrap().join(&id);
+        fs::write(entry.join(CONTENT_FILE), [0; 1024]).unwrap();
+
+        let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
+        assert_eq!(store.get(&id).unwrap().status, MediaStatus::Pending);
+        let upload_id = store.start_multipart(&id).unwrap();
+        static PART: [u8; 1024] = [0; 1024];
+        store
+            .put_part(&id, &upload_id, 1, stream_of(&PART))
+            .await
+            .unwrap();
+        let held: u64 = [CONTENT_FILE, PARTS_DIR]
+            .iter()
+            .map(|name| bytes_under(&entry.join(name)))
+            .sum();
+        assert_eq!(held, 1024, "only the new part is held");
+    }
+
+    fn bytes_under(path: &Path) -> u64 {
+        match fs::metadata(path) {
+            Ok(metadata) if metadata.is_dir() => fs::read_dir(path)
+                .unwrap()
+                .flatten()
+                .map(|item| bytes_under(&item.path()))
+                .sum(),
+            Ok(metadata) => metadata.len(),
+            Err(_) => 0,
+        }
     }
 }
