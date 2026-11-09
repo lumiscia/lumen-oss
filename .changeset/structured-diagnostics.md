@@ -1,0 +1,7 @@
+---
+"@lumiscia/lumen-bindings": minor
+---
+
+Invalid compositions report every problem as a structured diagnostic, with a stable `code`, a JSON pointer `path`, the `node` id and a message, instead of one joined string. Errors are collected per phase (the document's shape, functions, nodes, connections, then the graphs), stopping at the first phase with errors, and at most 50 are reported. `lumen_engine::json::check` runs the same pass without rendering, and `json::parse` fails with a `ParseError` whose `diagnostics()` lists them. The first warning, `font.fallback`, says a text node's family resolved to no font: `check` raises it for literal families a host's font lookup can't resolve, and renderers raise it once per node and family when shaping falls back, through `GpuCompositionRenderer::take_diagnostics`. Warnings never fail a render, and clients must accept codes they don't know. The engine README lists the codes.
+
+`lumen-local --check` prints them and exits 1 when there are errors, with `--format json` for `{ "ok", "diagnostics" }`. `lumen-server` answers `POST /renders/check` with the same object, and the `422` for an invalid composition on `POST /renders` carries a `diagnostics` array. Messages lose their `composition structure validation failed:` prefix, and for Rust users, `json::unknown_param_error` is removed and `GraphValidationError::InvalidSettings` gains a `field` pointer.
