@@ -7,6 +7,7 @@ mod eval;
 pub(crate) mod functions;
 mod noise;
 mod parser;
+mod path;
 mod spec;
 
 use crate::{error::ExpressionError, graph::Graph};

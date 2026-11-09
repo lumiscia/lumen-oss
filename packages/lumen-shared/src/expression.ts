@@ -298,6 +298,8 @@ export const {
   outCubic,
   outExpo,
   outQuad,
+  pathAngle,
+  pathPoint,
   pow,
   progress,
   random,

@@ -290,6 +290,34 @@ fn animated_values_update_each_frame() {
     ]);
 }
 
+#[test]
+fn expressions_on_path_data_draw_like_their_values() {
+    let path = |params: Value| {
+        let mut params = params;
+        params["stroke_enabled"] = json!(false);
+        scene(
+            (24, 24),
+            json!([{ "id": 1, "type": "path", "params": params }]),
+        )
+        .frames(12)
+    };
+    let row = |name: &str, animated: Value, literal: Value| {
+        Case::new(name, path(animated), Expect::Matches(path(literal).into()))
+            .frames([5.0])
+            .tolerance(0)
+    };
+    let bar = "M 0 0 H 6 V 2 H 0 Z";
+    check(vec![row(
+        "a path placed by path_point and path_angle",
+        json!({
+            "data": bar,
+            "position": "=path_point('M 2 2 L 2 22', frame / 10)",
+            "rotation": "=path_angle('M 2 2 L 2 22', frame / 10)",
+        }),
+        json!({ "data": bar, "position": [2, 12], "rotation": 90 }),
+    )]);
+}
+
 /// Only the selected branch is drawn, so a frame records one pass for its one solid.
 #[test]
 fn routing_records_one_branch() {

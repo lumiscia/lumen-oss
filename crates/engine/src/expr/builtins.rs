@@ -5,6 +5,7 @@ use crate::{
         ast::{BuiltinFn, Easing, ExpressionValue, Key},
         easing::{SPRING_DAMPING, SPRING_STIFFNESS, spring},
         noise::{noise, random},
+        path::sample_path,
         spec::{BuiltinArg, BuiltinSpec, NamedEasing, ValueKind, easing_builtins},
     },
     node::{
@@ -219,6 +220,21 @@ pub fn evaluate_builtin(
                 damping,
             )))
         }
+        BuiltinFn::PathPoint | BuiltinFn::PathAngle => {
+            let ExpressionValue::String(data) = &args[0] else {
+                return Err(named(format!(
+                    "`path_data` must be a string, got {}",
+                    args[0].type_name()
+                )));
+            };
+            let sample = sample_path(data, checked(1, number(1)?)?)
+                .map_err(|details| named(format!("`path_data` {details}")))?;
+            Ok(if builtin == BuiltinFn::PathPoint {
+                ExpressionValue::Vec2(sample.point)
+            } else {
+                ExpressionValue::Number(sample.angle)
+            })
+        }
     }
 }
 
@@ -381,6 +397,9 @@ pub(crate) fn range_error(builtin: BuiltinFn, index: usize, value: f64) -> Optio
         }
         (BuiltinFn::Noise | BuiltinFn::Random, _) if !value.is_finite() => {
             Some("arguments must be finite numbers")
+        }
+        (BuiltinFn::PathPoint | BuiltinFn::PathAngle, 1) if value.is_nan() => {
+            Some("`t` must not be NaN")
         }
         (BuiltinFn::Rgb | BuiltinFn::Rgba, _) if !(0.0..=255.0).contains(&value) => {
             Some("colour components must be between 0 and 255")

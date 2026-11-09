@@ -189,6 +189,10 @@ builtins! {
         "Uniform number in `0..1`, fixed by its inputs. `random(x)` is `random(seed, x)` with seed 0; e.g. `random(glyph)`. Arguments must be finite.";
     Spring "spring" (1, Some(3)) [t: Number, stiffness: Number, damping: Number] -> Number,
         "Spring from 0 to 1, `t` seconds after release, e.g. `spring((frame - 12) / fps)`. Stiffness defaults to 170 and damping to 26.";
+    PathPoint "path_point" (2, Some(2)) [path_data: String, t: Number] -> Vec2,
+        "The point `t` of the way along path data by arc length, so that `t` moving steadily moves the point at a steady speed. `t` is clamped to `0..=1`. Moves between contours add no length, and a closed contour's closing segment does.";
+    PathAngle "path_angle" (2, Some(2)) [path_data: String, t: Number] -> Number,
+        "The direction in degrees that path data heads at `path_point(path_data, t)`, clockwise from +x like `rotation`. It counts whole turns along the path instead of wrapping, so a clockwise circle ends at 360.";
     }
     easings {
     InQuad "in_quad", "Quadratic ease-in.";

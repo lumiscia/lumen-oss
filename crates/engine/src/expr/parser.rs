@@ -14,7 +14,7 @@ use crate::{
         functions,
         spec::{BuiltinSpec, NamedEasing, ValueKind, builtin_for_name},
     },
-    node::NodeId,
+    node::{NodeId, vector::path::build_lyon_path},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -743,6 +743,19 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
                 }
             }
         }
+        BuiltinFn::PathPoint | BuiltinFn::PathAngle => match &args[0] {
+            ExprNode::Literal(ExpressionValue::String(data)) => {
+                build_lyon_path(data).map_err(|details| error(format!("`path_data` {details}")))?;
+            }
+            arg => {
+                if let Some(kind) = static_kind(arg).filter(|kind| *kind != ValueKind::String) {
+                    return Err(error(format!(
+                        "`path_data` must be a string, got {}",
+                        kind.name()
+                    )));
+                }
+            }
+        },
         BuiltinFn::Key => {
             if let Some(kind) = static_kind(&args[1])
                 && !is_key_value(kind)
