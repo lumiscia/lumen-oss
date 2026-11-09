@@ -1,5 +1,8 @@
+import type { LumenDiagnostic } from "@lumiscia/lumen-types";
+
 export interface LumenErrorFields {
   readonly cause?: unknown;
+  readonly diagnostics?: readonly LumenDiagnostic[];
   readonly renderId?: string;
   readonly requestId?: string;
   readonly retryAfterMs?: number;
@@ -24,6 +27,11 @@ export class LumenError extends Error {
   readonly retryable?: boolean;
   /** How long the server asked to wait before retrying, from a `Retry-After` header. */
   readonly retryAfterMs?: number;
+  /**
+   * What is wrong with the composition, when the server rejected it as invalid. Empty otherwise.
+   * Codes you don't know may appear; treat them by their severity.
+   */
+  readonly diagnostics: readonly LumenDiagnostic[];
 
   constructor(code: string, message: string, fields: LumenErrorFields = {}) {
     super(message, fields.cause === undefined ? undefined : { cause: fields.cause });
@@ -34,6 +42,7 @@ export class LumenError extends Error {
     if (fields.renderId !== undefined) this.renderId = fields.renderId;
     if (fields.retryable !== undefined) this.retryable = fields.retryable;
     if (fields.retryAfterMs !== undefined) this.retryAfterMs = fields.retryAfterMs;
+    this.diagnostics = fields.diagnostics ?? [];
   }
 }
 
@@ -52,7 +61,7 @@ export async function readBody(
   }
 }
 
-/** Reads an error response, whose body is `{ code?, error, requestId? }`. */
+/** Reads an error response, whose body is `{ code?, error, requestId?, diagnostics? }`. */
 export async function errorFromResponse(
   response: Response,
   signal: AbortSignal | undefined,
@@ -69,8 +78,36 @@ export async function errorFromResponse(
       status: response.status,
       ...(typeof fields.requestId === "string" ? { requestId: fields.requestId } : {}),
       ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      diagnostics: readDiagnostics(fields.diagnostics),
     },
   );
+}
+
+/** The well-formed diagnostics in `value`, dropping anything else. */
+function readDiagnostics(value: unknown): LumenDiagnostic[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry: unknown): LumenDiagnostic[] => {
+    if (
+      !isRecord(entry) ||
+      (entry.severity !== "error" && entry.severity !== "warning") ||
+      typeof entry.code !== "string" ||
+      typeof entry.path !== "string" ||
+      typeof entry.message !== "string"
+    ) {
+      return [];
+    }
+    return [
+      {
+        severity: entry.severity,
+        code: entry.code,
+        path: entry.path,
+        ...(typeof entry.node === "number" ? { node: entry.node } : {}),
+        message: entry.message,
+      },
+    ];
+  });
 }
 
 function parseRetryAfter(header: string | null): number | undefined {
