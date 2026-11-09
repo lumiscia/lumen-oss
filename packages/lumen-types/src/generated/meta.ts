@@ -993,6 +993,7 @@ export type EdgeMode = "clamp" | "transparent";
 /** OpenType features by four-character tag. 0 turns a feature off, 1 turns it on and larger values select an alternate. */
 export type FontFeatures = Readonly<Record<string, ExpressionValue<number>>>;
 export type FractalNoiseMode = NoiseMode;
+export type GlowEdge = EdgeMode;
 export type GradientInterpolation = "srgb" | "linear_srgb" | "linear";
 export type GradientPaint = {
   /** Start angle of a conic gradient in degrees. */
@@ -1380,6 +1381,8 @@ export interface FractalNoiseNode extends CompositionNodeBase<"fractal_noise"> {
  */
 export interface GlowNode extends CompositionNodeBase<"glow"> {
   readonly params?: {
+    /** What the source reads as beyond the canvas. */
+    readonly edge?: ExpressionValue<EdgeMode>;
     /** Outputs only the glow instead of adding it to the source. */
     readonly glow_only?: ExpressionValue<boolean>;
     /** Multiplies the glow's brightness, up to 1000. */
@@ -1552,7 +1555,10 @@ export interface RadialBlurNode extends CompositionNodeBase<"radial_blur"> {
   readonly params?: {
     /** Arc in degrees each pixel is spread along about `center`, centred on it, up to 360. */
     readonly amount?: ExpressionValue<number>;
-    /** Centre of the spin in canvas pixels. */
+    /**
+     * Centre of the spin in canvas pixels. The canvas centre, `[width / 2, height / 2]`, when
+     * absent.
+     */
     readonly center?: ExpressionValue<Vec2>;
     /** What the source reads as beyond the canvas. */
     readonly edge?: ExpressionValue<EdgeMode>;
@@ -1850,7 +1856,10 @@ export interface ZoomBlurNode extends CompositionNodeBase<"zoom_blur"> {
      * farther away from `center` than towards it.
      */
     readonly amount?: ExpressionValue<number>;
-    /** Centre of the zoom in canvas pixels. */
+    /**
+     * Centre of the zoom in canvas pixels. The canvas centre, `[width / 2, height / 2]`, when
+     * absent.
+     */
     readonly center?: ExpressionValue<Vec2>;
     /** What the source reads as beyond the canvas. */
     readonly edge?: ExpressionValue<EdgeMode>;

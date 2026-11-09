@@ -66,9 +66,10 @@ pub struct DirectionalBlur {
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct RadialBlurParams {
-    /// Centre of the spin in canvas pixels.
+    /// Centre of the spin in canvas pixels. The canvas centre, `[width / 2, height / 2]`, when
+    /// absent.
     #[meta()]
-    pub center: (f64, f64),
+    pub center: Option<(f64, f64)>,
     /// Arc in degrees each pixel is spread along about `center`, centred on it, up to 360.
     #[meta(min = 0, max = 360, step = 1)]
     pub amount: f64,
@@ -80,7 +81,7 @@ pub struct RadialBlurParams {
 impl Default for RadialBlurParams {
     fn default() -> Self {
         Self {
-            center: (960.0, 540.0),
+            center: None,
             amount: 10.0,
             edge: EdgeMode::Clamp,
         }
@@ -100,9 +101,10 @@ pub struct RadialBlur {
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ZoomBlurParams {
-    /// Centre of the zoom in canvas pixels.
+    /// Centre of the zoom in canvas pixels. The canvas centre, `[width / 2, height / 2]`, when
+    /// absent.
     #[meta()]
-    pub center: (f64, f64),
+    pub center: Option<(f64, f64)>,
     /// Length of the streak through each pixel, as a fraction of its distance from `center`.
     /// The streak runs both ways along the ray, sampled in equal ratios of scale, so it reaches
     /// farther away from `center` than towards it.
@@ -116,7 +118,7 @@ pub struct ZoomBlurParams {
 impl Default for ZoomBlurParams {
     fn default() -> Self {
         Self {
-            center: (960.0, 540.0),
+            center: None,
             amount: 0.2,
             edge: EdgeMode::Clamp,
         }
@@ -524,7 +526,7 @@ fn record(
 }
 
 macro_rules! sweep_node {
-    ($node:ty, |$params:ident| $sweep:expr) => {
+    ($node:ty, |$params:ident, $render:ident| $sweep:expr) => {
         impl crate::gpu::frame_graph::RecordNode for $node {
             fn programs(
                 &self,
@@ -538,22 +540,25 @@ macro_rules! sweep_node {
                 cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
             ) -> crate::Result<crate::gpu::frame_graph::Raster> {
                 let source = cx.required(self.id, "source", self.source)?;
+                let expr = cx.expr();
                 let $params = self.params.eval(&DelegateEvalContext {
                     node_id: self.id,
-                    expr: &cx.expr(),
+                    expr: &expr,
                 })?;
+                let $render = [f64::from(expr.width), f64::from(expr.height)];
                 self::record(cx, source, $sweep)
             }
         }
     };
 }
 
-fn center(center: (f64, f64)) -> [f64; 2] {
-    [center.0, center.1]
-        .map(|axis| finite_or_zero(axis).clamp(-MAX_BOUNDED_MAGNITUDE, MAX_BOUNDED_MAGNITUDE))
+/// `center`, or the middle of a render of `render` pixels when it is absent.
+fn center(center: Option<(f64, f64)>, render: [f64; 2]) -> [f64; 2] {
+    let (x, y) = center.unwrap_or((render[0] / 2.0, render[1] / 2.0));
+    [x, y].map(|axis| finite_or_zero(axis).clamp(-MAX_BOUNDED_MAGNITUDE, MAX_BOUNDED_MAGNITUDE))
 }
 
-sweep_node!(DirectionalBlur, |params| {
+sweep_node!(DirectionalBlur, |params, _render| {
     let (sin, cos) = finite_or_zero(params.angle).to_radians().sin_cos();
     Sweep {
         path: Path::Line {
@@ -566,17 +571,17 @@ sweep_node!(DirectionalBlur, |params| {
     }
 });
 
-sweep_node!(RadialBlur, |params| Sweep {
+sweep_node!(RadialBlur, |params, render| Sweep {
     path: Path::Spin {
-        center: center(params.center),
+        center: center(params.center, render),
     },
     span: finite_or_zero(params.amount).abs().min(360.0).to_radians(),
     edge: params.edge,
 });
 
-sweep_node!(ZoomBlur, |params| Sweep {
+sweep_node!(ZoomBlur, |params, render| Sweep {
     path: Path::Zoom {
-        center: center(params.center),
+        center: center(params.center, render),
     },
     // A span of `2 asinh(amount / 2)` in log scale reaches `amount` times the distance.
     span: 2.0 * (finite_or_zero(params.amount).abs().min(1e3) / 2.0).asinh(),

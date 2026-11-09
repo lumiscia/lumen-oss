@@ -2589,6 +2589,34 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "edge": {
+                    "anyOf": [
+                      {
+                        "enum": ["clamp", "transparent"],
+                        "type": "string",
+                        "x-lumen-type": "EdgeMode"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "clamp",
+                    "description": "What the source reads as beyond the canvas.",
+                    "title": "Edge",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Clamp",
+                        "name": "clamp",
+                        "value": 0
+                      },
+                      {
+                        "label": "Transparent",
+                        "name": "transparent",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
                   "glow_only": {
                     "anyOf": [
                       {
@@ -3833,8 +3861,7 @@
                         "$ref": "#/$defs/expression"
                       }
                     ],
-                    "default": [960.0, 540.0],
-                    "description": "Centre of the spin in canvas pixels.",
+                    "description": "Centre of the spin in canvas pixels. The canvas centre, `[width / 2, height / 2]`, when\nabsent.",
                     "title": "Center",
                     "x-lumen-kind": "vec2"
                   },
@@ -5793,8 +5820,7 @@
                         "$ref": "#/$defs/expression"
                       }
                     ],
-                    "default": [960.0, 540.0],
-                    "description": "Centre of the zoom in canvas pixels.",
+                    "description": "Centre of the zoom in canvas pixels. The canvas centre, `[width / 2, height / 2]`, when\nabsent.",
                     "title": "Center",
                     "x-lumen-kind": "vec2"
                   },
