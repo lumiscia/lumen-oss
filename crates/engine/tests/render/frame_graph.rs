@@ -59,7 +59,8 @@ fn every_program() -> Scene {
             { "id": 16, "type": "boolean", "params": {} },
             { "id": 17, "type": "switch", "params": { "selected_layer": "=min(frame, 1)" } },
             { "id": 18, "type": "raster_multimerge" },
-            { "id": 19, "type": "media_output" }
+            { "id": 19, "type": "media_output" },
+            { "id": 20, "type": "fractal_noise", "params": { "evolution": "=frame / 30" } }
         ],
         "connections": [
             { "from_node": 2, "to_node": 6, "to_port": "source" },
@@ -78,6 +79,7 @@ fn every_program() -> Scene {
             { "from_node": 15, "to_node": 16, "to_port": "b" },
             { "from_node": 12, "to_node": 17, "to_port": "layers" },
             { "from_node": 4, "to_node": 17, "to_port": "layers" },
+            { "from_node": 20, "to_node": 18, "to_port": "layers" },
             { "from_node": 15, "to_node": 18, "to_port": "layers" },
             { "from_node": 17, "to_node": 18, "to_port": "layers" },
             { "from_node": 5, "to_node": 18, "to_port": "layers" },

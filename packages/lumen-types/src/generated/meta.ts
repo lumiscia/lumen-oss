@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2 } from "../values.js";
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
 export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
-export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "exposure" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "exposure" | "fractal_noise" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
 
@@ -985,6 +985,7 @@ export type Connection = {
 export type DashPattern = readonly ExpressionValue<number>[];
 /** OpenType features by four-character tag. 0 turns a feature off, 1 turns it on and larger values select an alternate. */
 export type FontFeatures = Readonly<Record<string, ExpressionValue<number>>>;
+export type FractalNoiseMode = NoiseMode;
 export type GradientInterpolation = "srgb" | "linear_srgb" | "linear";
 export type GradientPaint = {
   /** Start angle of a conic gradient in degrees. */
@@ -1032,6 +1033,7 @@ export type MediaInLoopMode = LoopMode;
 export type MediaInSourceKind = "image" | "video";
 export type MergeBlendMode = BlendMode;
 export type MergeMaskMode = MaskMode;
+export type NoiseMode = "smooth" | "turbulent";
 /** A solid color or a gradient. */
 export type Paint = Color | GradientPaint;
 export type PaintKind = "linear_gradient" | "radial_gradient" | "conic_gradient" | "linear" | "radial" | "conic";
@@ -1270,6 +1272,37 @@ export interface ExposureNode extends CompositionNodeBase<"exposure"> {
     readonly exposure?: ExpressionValue<number>;
     /** Linear color offset. */
     readonly offset?: ExpressionValue<number>;
+  };
+}
+
+/** Generates opaque grey fractal noise, the same for a given seed and evolution. */
+export interface FractalNoiseNode extends CompositionNodeBase<"fractal_noise"> {
+  readonly params?: {
+    /** Added to every pixel after contrast. */
+    readonly brightness?: ExpressionValue<number>;
+    /** Contrast multiplier around mid grey. */
+    readonly contrast?: ExpressionValue<number>;
+    /**
+     * Morphs the pattern smoothly, in turns: it repeats every whole turn, so `=time` loops once a
+     * second.
+     */
+    readonly evolution?: ExpressionValue<number>;
+    /** Output height in pixels. Use 0 to match the composition height. */
+    readonly height?: number;
+    /** How the layers are summed. */
+    readonly mode?: ExpressionValue<NoiseMode>;
+    /** Layers of detail, from 1 to 8. Each adds features half the size, at half the strength. */
+    readonly octaves?: ExpressionValue<number>;
+    /** Moves the pattern right by this many pixels. */
+    readonly offset_x?: ExpressionValue<number>;
+    /** Moves the pattern down by this many pixels. */
+    readonly offset_y?: ExpressionValue<number>;
+    /** Size of the largest features in pixels. */
+    readonly scale?: ExpressionValue<number>;
+    /** Picks an unrelated pattern. */
+    readonly seed?: ExpressionValue<number>;
+    /** Output width in pixels. Use 0 to match the composition width. */
+    readonly width?: number;
   };
 }
 
@@ -1693,6 +1726,7 @@ export interface CompositionNodeByKind {
   readonly "color_grade": ColorGradeNode;
   readonly "crop": CropNode;
   readonly "exposure": ExposureNode;
+  readonly "fractal_noise": FractalNoiseNode;
   readonly "hue_saturation": HueSaturationNode;
   readonly "levels": LevelsNode;
   readonly "media_in": MediaInNode;
@@ -1731,6 +1765,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "exposure": Omit<ExposureNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "fractal_noise": Omit<FractalNoiseNode, "id"> & {
     readonly id?: number;
   };
   readonly "hue_saturation": Omit<HueSaturationNode, "id"> & {
@@ -1791,6 +1828,7 @@ export interface NodeInputPortNameByKind {
   readonly "color_grade": "source";
   readonly "crop": "source";
   readonly "exposure": "source";
+  readonly "fractal_noise": never;
   readonly "hue_saturation": "source";
   readonly "levels": "source";
   readonly "media_in": never;
@@ -1817,6 +1855,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "color_grade": never;
   readonly "crop": never;
   readonly "exposure": never;
+  readonly "fractal_noise": never;
   readonly "hue_saturation": never;
   readonly "levels": never;
   readonly "media_in": never;

@@ -1691,6 +1691,7 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
     match node {
         NodeKind::MediaIn(node) => node.programs(programs),
         NodeKind::Background(node) => node.programs(programs),
+        NodeKind::FractalNoise(node) => node.programs(programs),
         NodeKind::Text(node) => node.programs(programs),
         NodeKind::Path(node) => node.programs(programs),
         NodeKind::Shape(node) => node.programs(programs),
@@ -1719,6 +1720,7 @@ fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
     match node {
         NodeKind::MediaIn(node) => node.record(cx),
         NodeKind::Background(node) => node.record(cx),
+        NodeKind::FractalNoise(node) => node.record(cx),
         NodeKind::Text(node) => node.record(cx),
         NodeKind::Path(node) => node.record(cx),
         NodeKind::Shape(node) => node.record(cx),
