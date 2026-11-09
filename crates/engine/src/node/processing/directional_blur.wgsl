@@ -1,4 +1,5 @@
-// One pass of a blur along a path: each texel averages its input at the taps' moves of it.
+// A blur along a path: each texel averages its input at the taps' moves of it, in one pass of
+// the two, or at every comb tap's move of those in the one-pass blur.
 
 struct SweepTap {
     // `M` as `(m00, m01, m10, m11)`: a tap reads `M p + t.xy` for canvas position `p`.
@@ -7,13 +8,15 @@ struct SweepTap {
 }
 
 struct SweepParams {
-    // `x`: tap count, `y`: 1 when reads clamp to the canvas.
+    // `x`: tap count, `y`: 1 when reads clamp to the canvas, `z`: the comb's tap count for the
+    // one-pass blur.
     header: vec4<u32>,
     // Canvas pixel of the input's first texel in `xy`, and the canvas size in `zw`.
     input: vec4<i32>,
     // Canvas pixel of the output's first texel in `xy`.
     output: vec4<i32>,
     taps: array<SweepTap, 64>,
+    comb: array<SweepTap, 64>,
 }
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
@@ -48,12 +51,18 @@ fn sweep_read(pos: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(input_tex, linear_sampler, local / dims, 0.0) * sweep_coverage(local, dims);
 }
 
-fn sweep(id: vec2<u32>) -> vec4<f32> {
-    let pos = vec2<f32>(id) + vec2<f32>(0.5) + vec2<f32>(params.output.xy);
+fn sweep_move(tap: SweepTap, pos: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(dot(tap.m.xy, pos), dot(tap.m.zw, pos)) + tap.t.xy;
+}
+
+fn sweep_pos(id: vec2<u32>) -> vec2<f32> {
+    return vec2<f32>(id) + vec2<f32>(0.5) + vec2<f32>(params.output.xy);
+}
+
+fn sweep(pos: vec2<f32>) -> vec4<f32> {
     var sum = vec4<f32>(0.0);
     for (var index = 0u; index < params.header.x; index = index + 1u) {
-        let tap = params.taps[index];
-        sum += sweep_read(vec2<f32>(dot(tap.m.xy, pos), dot(tap.m.zw, pos)) + tap.t.xy);
+        sum += sweep_read(sweep_move(params.taps[index], pos));
     }
     return sum / f32(params.header.x);
 }
@@ -64,7 +73,7 @@ fn inner_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= size.x || id.y >= size.y) {
         return;
     }
-    textureStore(inner_tex, vec2<i32>(id.xy), sweep(id.xy));
+    textureStore(inner_tex, vec2<i32>(id.xy), sweep(sweep_pos(id.xy)));
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -73,5 +82,19 @@ fn outer_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= size.x || id.y >= size.y) {
         return;
     }
-    textureStore(output_tex, vec2<i32>(id.xy), sweep(id.xy));
+    textureStore(output_tex, vec2<i32>(id.xy), sweep(sweep_pos(id.xy)));
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn direct_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = textureDimensions(output_tex);
+    if (id.x >= size.x || id.y >= size.y) {
+        return;
+    }
+    let pos = sweep_pos(id.xy);
+    var sum = vec4<f32>(0.0);
+    for (var index = 0u; index < params.header.z; index = index + 1u) {
+        sum += sweep(sweep_move(params.comb[index], pos));
+    }
+    textureStore(output_tex, vec2<i32>(id.xy), sum / f32(params.header.z));
 }

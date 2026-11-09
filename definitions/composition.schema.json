@@ -5741,7 +5741,7 @@
                       }
                     ],
                     "default": 0.2,
-                    "description": "Length of the streak through each pixel, as a fraction of its distance from `center`.\nThe streak runs both ways along the ray, in equal steps of scale.",
+                    "description": "Length of the streak through each pixel, as a fraction of its distance from `center`.\nThe streak runs both ways along the ray, sampled in equal ratios of scale, so it reaches\nfarther away from `center` than towards it.",
                     "title": "Amount",
                     "x-lumen-constraints": {
                       "min": 0.0,

@@ -207,6 +207,82 @@ fn spins_and_zooms_keep_what_their_moves_keep() {
     ]);
 }
 
+/// Blurs at the edges and limits of what they can store: clamped streaks off the canvas keep
+/// their weights, streaks too long or too far out to store a first pass for still average every
+/// tap, and a blur of nothing is its source.
+#[test]
+fn sweeps_past_what_they_store() {
+    // 81 taps, in two passes, from 40 pixels left to 40 right: off the canvas they clamp to the
+    // white column.
+    let column = blurred(
+        (256, 64),
+        rect([0.0, 0.0], [1.0, 64.0], [255; 4]),
+        "directional_blur",
+        json!({ "distance": 81 }),
+    );
+    let wide = blurred(
+        (8192, 8),
+        fill([255; 4]),
+        "directional_blur",
+        json!({ "distance": 9, "edge": "transparent" }),
+    );
+    let far = |kind: &str, amount: f64| {
+        blurred(
+            (16, 8),
+            fill([30, 90, 200, 255]),
+            kind,
+            json!({ "center": [1.7e308, 1.7e308], "amount": amount }),
+        )
+    };
+    // Streaks 200,000 pixels long, of which the canvas holds about 1 tap in 100 everywhere.
+    let distant_zoom = Case::new(
+        "a zoom about a distant centre",
+        blurred(
+            (2048, 8),
+            fill([255; 4]),
+            "zoom_blur",
+            json!({ "center": [-1000000, 4], "amount": 0.2, "edge": "transparent" }),
+        ),
+        Expect::Custom(Box::new(|frames| {
+            let row: Vec<u8> = (0..2048).map(|x| frames[0].pixel(x, 4)[3]).collect();
+            let (low, high) = (row.iter().min(), row.iter().max());
+            assert!(low > Some(&0) && high <= Some(&4), "{low:?}..{high:?}");
+        })),
+    );
+    let mut cases = vec![
+        Case::new(
+            "clamped streaks off the canvas",
+            column,
+            Expect::Probes(vec![
+                (0, 32, [box_alpha(41, 81); 4]),
+                (1, 32, [box_alpha(40, 81); 4]),
+                (40, 32, [box_alpha(1, 81); 4]),
+                (41, 32, [0; 4]),
+            ]),
+        ),
+        Case::new(
+            "a canvas as wide as a texture",
+            wide,
+            Expect::Probes(vec![
+                (0, 4, [box_alpha(5, 9); 4]),
+                (4096, 4, [255; 4]),
+                (8191, 4, [box_alpha(5, 9); 4]),
+            ]),
+        ),
+        distant_zoom,
+    ];
+    for kind in ["radial_blur", "zoom_blur"] {
+        for amount in [0.0, 0.5] {
+            cases.push(Case::new(
+                format!("{kind} {amount} about a centre past any canvas"),
+                far(kind, amount),
+                Expect::Uniform([30, 90, 200, 255]),
+            ));
+        }
+    }
+    check(cases);
+}
+
 fn render_scene(scene: Scene) -> Frame {
     let gpu = gpu();
     render(

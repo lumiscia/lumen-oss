@@ -1835,7 +1835,8 @@ export interface ZoomBlurNode extends CompositionNodeBase<"zoom_blur"> {
   readonly params?: {
     /**
      * Length of the streak through each pixel, as a fraction of its distance from `center`.
-     * The streak runs both ways along the ray, in equal steps of scale.
+     * The streak runs both ways along the ray, sampled in equal ratios of scale, so it reaches
+     * farther away from `center` than towards it.
      */
     readonly amount?: ExpressionValue<number>;
     /** Centre of the zoom in canvas pixels. */

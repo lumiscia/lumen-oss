@@ -1,11 +1,14 @@
 //! Blurs that average a raster along a path through each pixel: a line, an arc about a centre,
 //! or a ray from it. Each path is a one-parameter family of moves that compose by adding their
-//! parameters, so a box along it splits exactly into two passes: a short box, then a comb of its
-//! copies. `n` taps in each pass sample the path as finely as `n²` taps in one.
+//! parameters, so a box along it splits into two passes: a short box, then a comb of its copies.
+//! `n` taps in each pass sample the path as finely as `n²` taps in one, but for the comb's
+//! bilinear reads of the first pass, which soften the streak by about a pixel more. Streaks
+//! short enough that this shows, and blurs whose first pass would not fit in a texture or would
+//! take more than `MAX_INNER_CANVASES` canvases of it, take every tap from the source in one pass.
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::gpu::params;
+use crate::gpu::{frame_graph, params};
 use crate::node::motion::MAX_BOUNDED_MAGNITUDE;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
@@ -13,12 +16,11 @@ use super::displacement_map::EdgeMode;
 
 const SHADER: &str = include_str!("directional_blur.wgsl");
 
-/// Most taps one pass averages. Two passes sample a streak up to `MAX_SWEEP_TAPS²` pixels long
-/// with a tap per pixel, and longer streaks with taps that far apart.
+/// Most taps of the short box, and of the comb. A streak up to `MAX_SWEEP_TAPS²` pixels long is
+/// sampled with a tap per pixel, and longer streaks with taps that far apart.
 pub const MAX_SWEEP_TAPS: usize = 64;
-/// Canvas pixels past the canvas that the first pass is stored for, when a blur reaches that far
-/// out of it with transparent edges. Taps beyond it read as transparent.
-const MAX_INNER_PAD: f64 = 512.0;
+/// Most canvases' worth of texels the first pass may be stored in.
+const MAX_INNER_CANVASES: u64 = 4;
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct DirectionalBlurParams {
@@ -98,7 +100,8 @@ pub struct ZoomBlurParams {
     #[meta()]
     pub center: (f64, f64),
     /// Length of the streak through each pixel, as a fraction of its distance from `center`.
-    /// The streak runs both ways along the ray, in equal steps of scale.
+    /// The streak runs both ways along the ray, sampled in equal ratios of scale, so it reaches
+    /// farther away from `center` than towards it.
     #[meta(min = 0, step = 0.01)]
     pub amount: f64,
     /// What the source reads as beyond the canvas.
@@ -296,9 +299,11 @@ fn taps(sweep: &Sweep, count: usize, range: f64) -> [GpuSweepTap; MAX_SWEEP_TAPS
 
 /// Taps of the short box and of the comb: about one tap per pixel of the longest streak.
 fn tap_counts(longest_streak: f64) -> (usize, usize) {
+    // `min` and `max` take a NaN streak to the most taps.
     let total = longest_streak
         .ceil()
-        .clamp(1.0, (MAX_SWEEP_TAPS * MAX_SWEEP_TAPS) as f64) as usize;
+        .min((MAX_SWEEP_TAPS * MAX_SWEEP_TAPS) as f64)
+        .max(1.0) as usize;
     let comb = total.isqrt() + usize::from(total.isqrt().pow(2) < total);
     (total.div_ceil(comb), comb)
 }
@@ -313,13 +318,16 @@ struct GpuSweepTap {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct GpuSweepParams {
-    /// Tap count, and 1 when reads clamp to the canvas.
+    /// Tap count, 1 when reads clamp to the canvas, and the comb's tap count for the one-pass
+    /// blur.
     header: [u32; 4],
     /// Canvas pixel of the input's first texel in `xy`, and the canvas size in `zw`.
     input: [i32; 4],
     /// Canvas pixel of the output's first texel in `xy`.
     output: [i32; 4],
     taps: [GpuSweepTap; MAX_SWEEP_TAPS],
+    /// The comb's taps, for the one-pass blur.
+    comb: [GpuSweepTap; MAX_SWEEP_TAPS],
 }
 
 const INNER_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
@@ -340,7 +348,8 @@ const OUTER_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
 
 fn programs(programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
     programs.compute("directional-blur", SHADER, "inner_main", INNER_LAYOUT)?;
-    programs.compute("directional-blur", SHADER, "outer_main", OUTER_LAYOUT)
+    programs.compute("directional-blur", SHADER, "outer_main", OUTER_LAYOUT)?;
+    programs.compute("directional-blur", SHADER, "direct_main", OUTER_LAYOUT)
 }
 
 fn rect_covering(bounds: Bounds) -> Option<lumen_gpu::RectI> {
@@ -358,7 +367,13 @@ fn bounds_of(rect: lumen_gpu::RectI) -> Bounds {
     [x, y, x + f64::from(rect.width), y + f64::from(rect.height)]
 }
 
-/// Records `sweep` of `source` as a box of short boxes along the path, then a comb of them.
+fn area(size: lumen_gpu::Size) -> u64 {
+    u64::from(size.width) * u64::from(size.height)
+}
+
+/// Records `sweep` of `source` as a box of short boxes along the path, then a comb of them, or
+/// as every tap at once. The choice depends only on the sweep and the canvas, so sources sized
+/// to their bounds take the same one as full-frame sources.
 fn record(
     cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     source: crate::gpu::frame_graph::Raster,
@@ -366,6 +381,9 @@ fn record(
 ) -> crate::Result<crate::gpu::frame_graph::Raster> {
     use lumen_gpu::Res;
 
+    if sweep.span <= 0.0 {
+        return Ok(source);
+    }
     let display = source.domain.display_size();
     let canvas = [
         0.0,
@@ -402,37 +420,89 @@ fn record(
         cx.bounds_of(Some(output_bounds.map(|value| value as f32))),
     );
 
-    // The first pass is stored where the comb reads it, which clamped reads keep on the canvas.
-    let mut read = grow(sweep.swept(bounds_of(domain.data_rect), comb_half), 1.0);
-    read = if clamps {
-        intersect(read, canvas)
-    } else {
-        intersect(read, grow(canvas, MAX_INNER_PAD))
-    };
-    let inner_rect = rect_covering(intersect(read, grow(inner_bounds, 1.0)))
-        .unwrap_or_else(|| lumen_gpu::RectI::from_size(display));
-    let inner_size = lumen_gpu::Size::new(inner_rect.width.max(1), inner_rect.height.max(1));
-
     let clamp_flag = u32::from(clamps);
-    let size = [display.width as i32, display.height as i32];
-    let inner_params = GpuSweepParams {
-        header: [inner as u32, clamp_flag, 0, 0],
-        input: [data.x, data.y, size[0], size[1]],
-        output: [inner_rect.x, inner_rect.y, 0, 0],
-        taps: taps(&sweep, inner, sweep.span / comb as f64),
-    };
-    let comb_params = GpuSweepParams {
-        header: [comb as u32, clamp_flag, 0, 0],
-        input: [inner_rect.x, inner_rect.y, size[0], size[1]],
-        output: [domain.data_rect.x, domain.data_rect.y, 0, 0],
-        taps: taps(&sweep, comb, sweep.span),
-    };
+    let canvas_size = [display.width as i32, display.height as i32];
+    let inner_taps = taps(&sweep, inner, sweep.span / comb as f64);
+    let comb_taps = taps(&sweep, comb, sweep.span);
     let sampler = Res::Sampler(cx.sampler(1, || lumen_gpu::wgpu::SamplerDescriptor {
         mag_filter: lumen_gpu::wgpu::FilterMode::Linear,
         min_filter: lumen_gpu::wgpu::FilterMode::Linear,
         ..Default::default()
     }));
 
+    // The first pass is stored wherever the comb reads it, off the canvas too: only the source's
+    // reads clamp, so a short box past the edge still averages what it covers. It is stored for
+    // at most what a full-frame output reads.
+    let read_of = |bounds: Bounds| grow(sweep.swept(bounds, comb_half), 1.0);
+    let max_extent = cx.rec.device().limits().max_texture_dimension_2d;
+    let two_pass = inner * comb > MAX_SWEEP_TAPS
+        && rect_covering(read_of(canvas)).is_some_and(|rect| {
+            let size = lumen_gpu::Size::new(
+                frame_graph::size_class(rect.width),
+                frame_graph::size_class(rect.height),
+            );
+            size.width <= max_extent
+                && size.height <= max_extent
+                && area(size) <= MAX_INNER_CANVASES * area(display)
+        });
+    let inner_rect = two_pass
+        .then(|| {
+            rect_covering(intersect(
+                read_of(bounds_of(domain.data_rect)),
+                grow(inner_bounds, 1.0),
+            ))
+        })
+        .flatten()
+        .map(|rect| {
+            let size = lumen_gpu::Size::new(
+                frame_graph::size_class(rect.width.max(1)).min(max_extent),
+                frame_graph::size_class(rect.height.max(1)).min(max_extent),
+            );
+            (rect, size)
+        });
+
+    let tex = cx.storage_target(domain.storage_size);
+    let Some((inner_rect, inner_size)) = inner_rect else {
+        let direct_params = GpuSweepParams {
+            header: [inner as u32, clamp_flag, comb as u32, 0],
+            input: [data.x, data.y, canvas_size[0], canvas_size[1]],
+            output: [domain.data_rect.x, domain.data_rect.y, 0, 0],
+            taps: inner_taps,
+            comb: comb_taps,
+        };
+        let uniform = cx.rec.uniform(&direct_params);
+        let program = cx.program("directional-blur", SHADER, "direct_main", OUTER_LAYOUT)?;
+        cx.dispatch(
+            program,
+            &[
+                (0, Res::Tex(source.tex)),
+                (1, uniform),
+                (2, sampler),
+                (4, Res::Tex(tex)),
+            ],
+            params::dispatch_for(domain.storage_size),
+        );
+        return Ok(frame_graph::Raster {
+            tex,
+            domain,
+            bounds: None,
+        });
+    };
+
+    let inner_params = GpuSweepParams {
+        header: [inner as u32, clamp_flag, 0, 0],
+        input: [data.x, data.y, canvas_size[0], canvas_size[1]],
+        output: [inner_rect.x, inner_rect.y, 0, 0],
+        taps: inner_taps,
+        comb: [GpuSweepTap::zeroed(); MAX_SWEEP_TAPS],
+    };
+    let comb_params = GpuSweepParams {
+        header: [comb as u32, 0, 0, 0],
+        input: [inner_rect.x, inner_rect.y, canvas_size[0], canvas_size[1]],
+        output: [domain.data_rect.x, domain.data_rect.y, 0, 0],
+        taps: comb_taps,
+        comb: [GpuSweepTap::zeroed(); MAX_SWEEP_TAPS],
+    };
     let inner_tex = cx.float_target(inner_size);
     let uniform = cx.rec.uniform(&inner_params);
     let program = cx.program("directional-blur", SHADER, "inner_main", INNER_LAYOUT)?;
@@ -446,7 +516,6 @@ fn record(
         ],
         params::dispatch_for(inner_size),
     );
-    let tex = cx.storage_target(domain.storage_size);
     let uniform = cx.rec.uniform(&comb_params);
     let program = cx.program("directional-blur", SHADER, "outer_main", OUTER_LAYOUT)?;
     cx.dispatch(
@@ -459,7 +528,7 @@ fn record(
         ],
         params::dispatch_for(domain.storage_size),
     );
-    Ok(crate::gpu::frame_graph::Raster {
+    Ok(frame_graph::Raster {
         tex,
         domain,
         bounds: None,
@@ -492,7 +561,8 @@ macro_rules! sweep_node {
 }
 
 fn center(center: (f64, f64)) -> [f64; 2] {
-    [center.0, center.1].map(finite_or_zero)
+    [center.0, center.1]
+        .map(|axis| finite_or_zero(axis).clamp(-MAX_BOUNDED_MAGNITUDE, MAX_BOUNDED_MAGNITUDE))
 }
 
 sweep_node!(DirectionalBlur, |params| {
