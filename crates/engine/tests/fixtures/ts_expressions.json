@@ -113,6 +113,11 @@
     "spring": { "expression": "=spring(0, 170, 26)", "expected": 0 },
     "noise": { "expression": "=noise(1, 0.5)", "expected": -0.37396682188384345 },
     "random": { "expression": "=random(7, 0.5)", "expected": 0.7553920660716886 },
+    "path_point": {
+      "expression": "=path_point('M 0 0 L 100 0 L 100 300', 0.5)",
+      "expected": [100, 100]
+    },
+    "path_angle": { "expression": "=path_angle('M 0 0 L 100 0 L 100 300', 0.5)", "expected": 90 },
     "prop": { "expression": "=prop('title')", "expected": "Lumen" },
     "issue_position": { "expression": "=(vec2(160, 900) + rise(570))", "expected": [160, 960] },
     "issue_opacity": { "expression": "=tween(0, 1, 1.5s, 300ms, 'out_expo')", "expected": 0 },

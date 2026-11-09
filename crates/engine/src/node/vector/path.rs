@@ -223,7 +223,7 @@ pub(super) fn parse_path_points(
     Err(format!("flattens to more than {max_points} points"))
 }
 
-fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
+pub(crate) fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
     use lyon_path::{
         builder::SvgPathBuilder,
         geom::{ArcFlags, SvgArc},

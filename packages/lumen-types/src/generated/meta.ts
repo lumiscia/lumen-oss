@@ -578,6 +578,40 @@ export const expressionBuiltins = [
   {
     "args": [
       {
+        "kind": "string",
+        "name": "path_data"
+      },
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "The point `t` of the way along path data by arc length, so that `t` moving steadily moves the point at a steady speed. `t` is clamped to `0..=1`. Moves between contours add no length, and a closed contour's closing segment does.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "path_point",
+    "returns": "vec2"
+  },
+  {
+    "args": [
+      {
+        "kind": "string",
+        "name": "path_data"
+      },
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "The direction in degrees that path data heads at `path_point(path_data, t)`, clockwise from +x like `rotation`. It counts whole turns along the path instead of wrapping, so a clockwise circle ends at 360.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "path_angle",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
         "kind": "number",
         "name": "t"
       }
@@ -861,6 +895,8 @@ export const expressionReservedNames = [
   "noise",
   "random",
   "spring",
+  "path_point",
+  "path_angle",
   "in_quad",
   "out_quad",
   "in_out_quad",
