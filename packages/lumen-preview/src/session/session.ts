@@ -229,10 +229,13 @@ export class LumenPreviewSession {
       }
       return;
     }
+    // Loading again replaces the resolution error with the loaded inputs' own outcome.
+    const recovering = this.#resolveFailure !== null;
     this.#resolveFailure = null;
 
     const previous = this.#loaded;
     if (
+      !recovering &&
       previous &&
       previous.compositionJson === next.compositionJson &&
       sameEntries(previous.media, next.media, sameRegistration) &&

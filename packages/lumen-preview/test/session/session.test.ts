@@ -698,7 +698,7 @@ describe("LumenPreviewSession", () => {
     expect(replaced).toHaveBeenCalledOnce();
   });
 
-  it("keeps a resolution error over an earlier load that finishes after it", async () => {
+  it("keeps a resolution error over an earlier load, then clears it when valid inputs load", async () => {
     const { preview, session, worker } = await started({});
     session.update({ composition: composition("first") });
     const first = worker.ofType("load").at(-1)?.loadId as number;
@@ -718,6 +718,20 @@ describe("LumenPreviewSession", () => {
     expect(preview.getSnapshot().errorCode).toBe("load_failed");
     session.update(unresolved);
     expect(preview.getSnapshot().errorCode).toBe("load_failed");
+
+    session.update({ composition: composition("first") });
+    const retry = worker.ofType("load").at(-1)?.loadId as number;
+    expect(retry).toBeGreaterThan(first);
+    worker.emit({
+      audioTimelineJson: null,
+      fps: 30,
+      height: 16,
+      loadId: retry,
+      totalFrames: 30,
+      type: "loaded",
+      width: 16,
+    });
+    expect(preview.getSnapshot().errorCode).toBeNull();
   });
 
   it("sends a source again if the worker never received it", async () => {
