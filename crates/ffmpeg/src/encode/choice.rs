@@ -1,6 +1,7 @@
 use std::{env, fmt::Display};
 
 use super::codec::{EncoderInfo, encoder_info};
+use super::quality::EncoderQuality;
 
 const ENCODER_ENV: &str = "LUMEN_VIDEO_ENCODER";
 const CPU_ENCODER: &str = "libx264";
@@ -48,6 +49,17 @@ impl VideoEncoderChoice {
             None
         };
         Ok((Self { name, fallback }, info))
+    }
+
+    /// Whether this choice can encode `quality`, without opening anything. The automatic default
+    /// passes when its fallback can, since opening falls back when the quality is unsupported.
+    pub fn check_quality(&self, quality: &EncoderQuality) -> Result<(), String> {
+        quality
+            .check_encoder(&self.name)
+            .or_else(|error| match self.fallback {
+                Some(fallback) => quality.check_encoder(fallback),
+                None => Err(error),
+            })
     }
 
     /// The choice to continue with after this encoder failed to open, and the warning to show for
@@ -186,6 +198,26 @@ mod tests {
             .look_up(|warning| panic!("unexpected warning: {warning}"))
             .unwrap_err();
         assert!(error.message.contains("missing_encoder"), "{error}");
+    }
+
+    #[test]
+    fn quality_checks_the_fallback_only_for_the_default() {
+        let crf = EncoderQuality {
+            rate_control: crate::RateControl::Crf(20),
+            preset: Some("slow".to_string()),
+        };
+        let named = VideoEncoderChoice::from_requests(None, Some("h264_vulkan"));
+        assert!(
+            named
+                .check_quality(&crf)
+                .unwrap_err()
+                .contains("h264_vulkan")
+        );
+        let default = VideoEncoderChoice {
+            name: "h264_vulkan".to_string(),
+            fallback: Some(CPU_ENCODER),
+        };
+        assert_eq!(default.check_quality(&crf), Ok(()));
     }
 
     #[test]
