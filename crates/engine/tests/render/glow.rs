@@ -109,6 +109,36 @@ fn glow_of_a_uniform_source() {
     ]);
 }
 
+/// A white canvas glows white to its edges where they clamp, and fades out towards them where
+/// they read as transparent.
+#[test]
+fn glow_edges_clamp_or_fade() {
+    let at = |edge: &str| {
+        glowing(
+            CANVAS,
+            fill([255; 4]),
+            json!({ "threshold": 0, "radius": 8, "glow_only": true, "edge": edge }),
+        )
+    };
+    check(vec![
+        Case::new("clamped edges", at("clamp"), Expect::Uniform([255; 4])),
+        Case::new(
+            "transparent edges",
+            at("transparent"),
+            Expect::Custom(Box::new(|frames| {
+                let frame = &frames[0];
+                let (centre, side, corner) =
+                    (frame.pixel(48, 32), frame.pixel(0, 32), frame.pixel(0, 0));
+                assert_eq!(centre, [255; 4]);
+                // Half of a Gaussian centred on the edge is on the canvas, and a quarter at a
+                // corner, with a little more for the texel's own width.
+                assert!((128..170).contains(&side[3]), "side {side:?}");
+                assert!((64..side[3]).contains(&corner[3]), "corner {corner:?}");
+            })),
+        ),
+    ]);
+}
+
 fn render_scene(scene: Scene) -> Frame {
     let gpu = gpu();
     render(

@@ -207,6 +207,57 @@ fn spins_and_zooms_keep_what_their_moves_keep() {
     ]);
 }
 
+/// Without a `center`, spins and zooms turn about the middle of the canvas, whatever its size: a
+/// zoom of a square on it is symmetric about it, and both draw what that centre given draws.
+#[test]
+fn sweeps_default_to_the_canvas_centre() {
+    let canvas = (96, 64);
+    let square = || rect([40.0, 26.0], [16.0, 12.0], [255, 200, 0, 255]);
+    let symmetric = Case::new(
+        "a zoom without a centre is symmetric about the canvas centre",
+        blurred(
+            canvas,
+            square(),
+            "zoom_blur",
+            json!({ "amount": 1, "edge": "transparent" }),
+        ),
+        Expect::Custom(Box::new(move |frames| {
+            let frame = &frames[0];
+            // Streaks reach past the square, which spans 8 pixels each way across and 6 down.
+            assert!(frame.pixel(37, 32)[3] > 0 && frame.pixel(48, 23)[3] > 0);
+            for y in 0..canvas.1 {
+                for x in 0..canvas.0 {
+                    let (pixel, mirrored) = (
+                        frame.pixel(x, y),
+                        frame.pixel(canvas.0 - 1 - x, canvas.1 - 1 - y),
+                    );
+                    assert!(
+                        pixel.iter().zip(mirrored).all(|(a, b)| a.abs_diff(b) <= 1),
+                        "({x}, {y}) is {pixel:?} but its mirror is {mirrored:?}"
+                    );
+                }
+            }
+        })),
+    );
+    let mut cases = vec![symmetric];
+    for (kind, amount) in [("zoom_blur", 0.5), ("radial_blur", 30.0)] {
+        cases.push(Case::new(
+            format!("{kind} without a centre"),
+            blurred(canvas, square(), kind, json!({ "amount": amount })),
+            Expect::Matches(
+                blurred(
+                    canvas,
+                    square(),
+                    kind,
+                    json!({ "center": [48, 32], "amount": amount }),
+                )
+                .into(),
+            ),
+        ));
+    }
+    check(cases);
+}
+
 /// Blurs at the edges and limits of what they can store: clamped streaks off the canvas keep
 /// their weights, streaks too long or too far out to store a first pass for still average every
 /// tap, and a blur of nothing is its source.

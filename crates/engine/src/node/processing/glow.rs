@@ -6,6 +6,7 @@ use crate::node::{
     DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, vector::paint::Paint,
 };
 
+use super::displacement_map::EdgeMode;
 use super::gaussian;
 
 const SHADER: &str = include_str!("glow.wgsl");
@@ -35,6 +36,9 @@ pub struct GlowParams {
     /// Outputs only the glow instead of adding it to the source.
     #[meta()]
     pub glow_only: bool,
+    /// What the source reads as beyond the canvas.
+    #[meta()]
+    pub edge: EdgeMode,
 }
 
 impl Default for GlowParams {
@@ -46,6 +50,7 @@ impl Default for GlowParams {
             tint_enabled: false,
             tint: Paint::solid([255, 255, 255, 255]),
             glow_only: false,
+            edge: EdgeMode::Clamp,
         }
     }
 }
@@ -184,7 +189,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
             false,
             &gaussian::GaussianSettings {
                 radius: evaluated.radius,
-                transparent_edge: false,
+                transparent_edge: evaluated.edge == EdgeMode::Transparent,
                 offset: [0.0; 2],
             },
         )?;
