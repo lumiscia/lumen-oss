@@ -59,10 +59,12 @@ pub(crate) struct PathUniforms {
     pub(crate) bounds_size: [f32; 2],
     pub(crate) stroke_width: f32,
     pub(crate) flags: u32,
-    pub(crate) _flags_pad: u32,
+    /// Untransformed distance the fill's edge moves outward by.
+    pub(crate) fill_offset: f32,
     pub(crate) trim_start: f32,
     pub(crate) trim_end: f32,
-    pub(crate) _pad: u32,
+    /// Untransformed width the fill's edge fades over.
+    pub(crate) fill_feather: f32,
     pub(crate) transform: GpuDrawableTransform,
     /// Canvas-space `[min_x, min_y, max_x, max_y]` outside which nothing is drawn.
     pub(crate) screen_bounds: [f32; 4],

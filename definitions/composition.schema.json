@@ -3515,6 +3515,24 @@
                     "title": "Edge Antialias",
                     "x-lumen-kind": "bool"
                   },
+                  "feather": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Width in untransformed pixels over which the fill's edge fades out, centred on the\nedge. 0 keeps a sharp edge.",
+                    "title": "Feather",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.5
+                    },
+                    "x-lumen-kind": "float"
+                  },
                   "fill_enabled": {
                     "anyOf": [
                       {
@@ -3559,6 +3577,23 @@
                       "max": 360.0,
                       "min": 0.0,
                       "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "offset": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Distance in untransformed pixels that the fill grows outward by, or shrinks inward by\nwhen negative, rounding the corners it grows around. A shape shrunk past its middle\nvanishes. The stroke stays on the outline in `data`.",
+                    "title": "Offset",
+                    "x-lumen-constraints": {
+                      "step": 0.5
                     },
                     "x-lumen-kind": "float"
                   },

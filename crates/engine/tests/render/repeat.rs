@@ -122,6 +122,28 @@ fn copies_match_separate_nodes() -> Vec<Case> {
             ),
         ),
         Case::new(
+            "offset and feathered path copies grow and fade as the path drawn once does",
+            repeated(
+                "path",
+                with(triangle(), json!({ "position": [26, 26], "offset": 14, "feather": 10 })),
+                json!({ "count": 2, "position_offset": [58, 4], "scale_offset": [0.5, -0.25] }),
+            ),
+            Expect::Matches(
+                separate(
+                    "path",
+                    with(triangle(), json!({ "position": [26, 26], "offset": 14, "feather": 10 })),
+                    (0..2).map(|i| {
+                        let i = f64::from(i);
+                        json!({
+                            "position": [26.0 + 58.0 * i, 26.0 + 4.0 * i],
+                            "scale": [1.0 + 0.5 * i, 1.0 - 0.25 * i]
+                        })
+                    }),
+                )
+                .into(),
+            ),
+        ),
+        Case::new(
             "a count of 0 draws nothing",
             repeated("shape", outlined_box(), json!({ "count": 0 })),
             Expect::Uniform(CLEAR),

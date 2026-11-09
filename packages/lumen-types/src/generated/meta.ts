@@ -1488,6 +1488,11 @@ export interface PathNode extends CompositionNodeBase<"path"> {
     readonly data?: ExpressionValue<string>;
     /** Enables analytic distance-based edge antialiasing. */
     readonly edge_antialias?: ExpressionValue<boolean>;
+    /**
+     * Width in untransformed pixels over which the fill's edge fades out, centred on the
+     * edge. 0 keeps a sharp edge.
+     */
+    readonly feather?: ExpressionValue<number>;
     /** Enables fill rendering. */
     readonly fill_enabled?: ExpressionValue<boolean>;
     /** Fill paint. Accepts a solid color or gradient. */
@@ -1497,6 +1502,12 @@ export interface PathNode extends CompositionNodeBase<"path"> {
      * usual film look and 360 smears over the whole frame.
      */
     readonly motion_blur?: ExpressionValue<number>;
+    /**
+     * Distance in untransformed pixels that the fill grows outward by, or shrinks inward by
+     * when negative, rounding the corners it grows around. A shape shrunk past its middle
+     * vanishes. The stroke stays on the outline in `data`.
+     */
+    readonly offset?: ExpressionValue<number>;
     /** Opacity multiplier. */
     readonly opacity?: ExpressionValue<number>;
     /** Path origin in pixels. */

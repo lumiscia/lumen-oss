@@ -650,6 +650,17 @@ fn rounded_rectangle(x: f64, y: f64) -> bool {
     (x - 5.0).max(0.0).hypot((y - 5.0).max(0.0)) <= 15.0
 }
 
+/// `rounded_rectangle`'s square, without its rounding, grown by 5.
+fn grown_square(x: f64, y: f64) -> bool {
+    let (x, y) = ((x - 70.3).abs(), (y - 60.2).abs());
+    (x - 20.0).max(0.0).hypot((y - 20.0).max(0.0)) <= 5.0
+}
+
+/// `rounded_rectangle`'s square, without its rounding, shrunk by 5.
+fn shrunk_square(x: f64, y: f64) -> bool {
+    (x - 70.3).abs() <= 15.0 && (y - 60.2).abs() <= 15.0
+}
+
 fn ellipse_outline(x: f64, y: f64) -> bool {
     let (x, y) = ((x - 70.3).abs(), (y - 60.2).abs());
     (x / 20.0).powi(2) + (y / 10.0).powi(2) <= 1.0
@@ -1011,6 +1022,42 @@ fn outline_rows() -> Vec<Case> {
                 Vec::new(),
                 12,
             ),
+            (
+                "path grown by its offset",
+                path(
+                    (SIZE as u32, SIZE as u32),
+                    with(
+                        json!({
+                            "data": "M 0 0 H 40 V 40 H 0 Z", "position": [50.3, 40.2],
+                            "fill_paint": WHITE, "offset": 5
+                        }),
+                        transform.clone(),
+                    ),
+                ),
+                (50.3, 40.2),
+                grown_square,
+                Vec::new(),
+                12,
+            ),
+            (
+                "path shrunk by its offset",
+                path(
+                    (SIZE as u32, SIZE as u32),
+                    with(
+                        json!({
+                            "data": "M 0 0 H 40 V 40 H 0 Z", "position": [50.3, 40.2],
+                            "fill_paint": WHITE, "offset": -5
+                        }),
+                        transform.clone(),
+                    ),
+                ),
+                (50.3, 40.2),
+                shrunk_square,
+                [(-15.0, -15.0), (15.0, -15.0), (-15.0, 15.0), (15.0, 15.0)]
+                    .map(|(x, y)| (70.3 + x, 60.2 + y))
+                    .to_vec(),
+                8,
+            ),
         ];
         for (name, drawing, pivot, inside, sharp_corners, tolerance) in drawn {
             let inner_corner_pixel =
@@ -1045,6 +1092,297 @@ fn outline_rows() -> Vec<Case> {
             ));
         }
     }
+    rows
+}
+
+/// A feathered or shrunk square, from 20 to 60 on both axes once drawn.
+fn soft_square(params: Value) -> Scene {
+    path(
+        (100, 80),
+        with(
+            json!({ "data": "M 20 20 H 60 V 60 H 20 Z", "fill_paint": WHITE }),
+            params,
+        ),
+    )
+}
+
+/// Checks that the left edge of `soft_square` fades over 20 canvas pixels plus one of
+/// antialiasing, centred on the edge, along a row away from its corners.
+fn fades_across_the_left_edge(frames: &[Frame]) {
+    let alpha: Vec<u8> = (0..=40).map(|x| alpha_of(&frames[0], x, 40)).collect();
+    assert_eq!(alpha[9], 0, "{alpha:?}");
+    assert!(alpha[8] == 0 && alpha[30] == 255, "{alpha:?}");
+    assert!(
+        alpha.windows(2).all(|pair| pair[0] <= pair[1]),
+        "the fade is not monotonic: {alpha:?}"
+    );
+    // Pixel centres either side of the edge are equally far from it.
+    let sum = u16::from(alpha[19]) + u16::from(alpha[20]);
+    assert!(sum.abs_diff(255) <= 1, "{alpha:?}");
+    assert!(
+        alpha[10..30].iter().all(|&value| value > 0 && value < 255),
+        "{alpha:?}"
+    );
+}
+
+fn soft_fill_rows() -> Vec<Case> {
+    let mut rows = vec![
+        Case::new(
+            "a feather fades the fill across its edge",
+            soft_square(json!({ "feather": 20 })),
+            Expect::Custom(Box::new(fades_across_the_left_edge)),
+        )
+        .bounded(true),
+        Case::new(
+            "a feather is measured in untransformed pixels",
+            path(
+                (100, 80),
+                json!({
+                    "data": "M 10 20 H 30 V 60 H 10 Z", "fill_paint": WHITE, "feather": 10,
+                    "scale": [2, 1]
+                }),
+            ),
+            Expect::Custom(Box::new(fades_across_the_left_edge)),
+        )
+        .bounded(true),
+        Case::new(
+            "a feathered offset fill keeps its fade outside the outline",
+            soft_square(json!({ "offset": 5, "feather": 20, "stroke_enabled": true })),
+            Expect::Custom(Box::new(|frames| {
+                // The fade is centred 5 pixels left of the outline at 20.
+                let alpha = |x| u16::from(alpha_of(&frames[0], x, 40));
+                assert_eq!((alpha(4), alpha(25)), (0, 255));
+                assert!((alpha(14) + alpha(15)).abs_diff(255) <= 1);
+            })),
+        ),
+        Case::new(
+            "a fill shrunk almost to its middle keeps its last pixels",
+            soft_square(json!({ "offset": -19 })),
+            Expect::Probes(vec![
+                (39, 39, WHITE),
+                (40, 40, WHITE),
+                (38, 40, CLEAR),
+                (41, 40, CLEAR),
+                (40, 38, CLEAR),
+            ]),
+        ),
+        Case::new(
+            "a fill grown by a huge offset covers the canvas",
+            soft_square(json!({ "offset": 1e30 })),
+            Expect::Uniform(WHITE),
+        ),
+        Case::new(
+            "a fill shrunk past its middle vanishes",
+            soft_square(json!({ "offset": -21, "feather": 0.5 })),
+            Expect::Uniform(CLEAR),
+        ),
+        Case::new(
+            "a fill shrunk away leaves its stroke",
+            soft_square(json!({ "offset": -40, "stroke_enabled": true, "stroke_paint": WHITE })),
+            Expect::Matches(
+                soft_square(
+                    json!({ "fill_enabled": false, "stroke_enabled": true, "stroke_paint": WHITE }),
+                )
+                .into(),
+            ),
+        )
+        .tolerance(0),
+    ];
+    // Offsets and feathers far past the path's size reach only as far as they say.
+    let tiny = |params: Value| {
+        path(
+            (300, 300),
+            with(
+                json!({ "data": "M 0 0 H 40 V 40 H 0 Z", "fill_paint": WHITE,
+                    "scale": [0.0001, 0.0001] }),
+                params,
+            ),
+        )
+    };
+    rows.extend([
+        Case::new(
+            "a huge offset grows the fill by just that much",
+            tiny(json!({ "offset": 2000000 })),
+            Expect::Probes(vec![(100, 100, WHITE), (150, 150, CLEAR)]),
+        ),
+        Case::new(
+            "a huge feather fades out by half its width",
+            tiny(json!({ "feather": 4000000 })),
+            Expect::Probes(vec![(150, 150, CLEAR)]),
+        ),
+    ]);
+    // A corner pixel under non-uniform scale, where the nearest edge in canvas pixels is not the
+    // nearest untransformed, draws the same as offsets and feathers go to 0.
+    for placement in [
+        json!({ "position": [20.04, 20.4], "scale": [10, 1] }),
+        json!({ "position": [50.3, 20.7], "scale": [3, 0.5], "rotation": 30 }),
+    ] {
+        let corner = |params: Value| {
+            let mut params = with(placement.clone(), params);
+            params["data"] = json!("M 0 0 H 40 V 40 H 0 Z");
+            params["fill_paint"] = json!(WHITE);
+            path((200, 120), params)
+        };
+        for params in [
+            json!({ "offset": 0.000001 }),
+            json!({ "offset": -0.000001 }),
+            json!({ "feather": 0.000001 }),
+        ] {
+            rows.push(Case::new(
+                format!("{params} at {placement} draws as a sharp fill"),
+                corner(params),
+                Expect::Matches(corner(json!({})).into()),
+            ));
+        }
+    }
+    // A vertex added along a straight edge changes nothing, however wide the offset and fade.
+    let rectangle = |data: &str, params: Value| {
+        let mut params = with(
+            json!({ "data": data, "fill_paint": WHITE, "scale": [3, 0.5] }),
+            params,
+        );
+        params["data"] = json!(data);
+        path((256, 256), params)
+    };
+    for position in [json!([40, 40]), json!([40.4, 40.5])] {
+        for mut params in [
+            json!({ "offset": 10, "feather": 10 }),
+            json!({ "offset": -10, "feather": 10 }),
+            json!({ "offset": 10, "feather": 60 }),
+            json!({ "offset": 0.1, "feather": 0.1 }),
+            json!({ "offset": 0.15 }),
+        ] {
+            params["position"] = position.clone();
+            rows.push(Case::new(
+                format!("a straight edge split in two draws as one with {params}"),
+                rectangle("M 0 0 H 50 V 100 V 200 H 0 Z", params.clone()),
+                Expect::Matches(rectangle("M 0 0 H 50 V 200 H 0 Z", params).into()),
+            ));
+        }
+    }
+    // Where the nearest edge of a shrunk corner changes, the coverage changes continuously with
+    // the scale.
+    let shrunk = |scale_x: f64| {
+        path(
+            (120, 80),
+            json!({ "data": "M 0 0 H 40 V 40 H 0 Z", "fill_paint": WHITE, "offset": -10,
+                "position": [20.2, 25.45], "scale": [scale_x, 0.5] }),
+        )
+    };
+    rows.push(Case::new(
+        "a shrunk corner under non-uniform scale draws continuously",
+        shrunk(3.00001),
+        Expect::Matches(shrunk(3.0).into()),
+    ));
+    // A pixel at a corner crossing the original outline changes continuously.
+    let crossing = |x: f64, params: &Value| {
+        path(
+            (120, 80),
+            with(
+                json!({ "data": "M 0 0 H 40 V 40 H 0 Z", "fill_paint": WHITE,
+                    "position": [x, 40.49], "scale": [3, 0.5] }),
+                params.clone(),
+            ),
+        )
+    };
+    for params in [
+        json!({ "offset": 0.15 }),
+        json!({ "offset": 0.15, "feather": 0.1 }),
+        json!({ "offset": -0.15 }),
+    ] {
+        rows.push(Case::new(
+            format!("a corner pixel crossing the outline draws continuously with {params}"),
+            crossing(40.5001, &params),
+            Expect::Matches(crossing(40.4999, &params).into()),
+        ));
+    }
+    // A pixel centred exactly on an edge draws as those either side of it, split or not.
+    let on_edge = |data: &str, x: f64, feather: f64| {
+        path(
+            (80, 60),
+            json!({ "data": data, "fill_paint": WHITE, "position": [x, 24.25],
+                "scale": [3, 0.5], "offset": -0.5, "feather": feather }),
+        )
+    };
+    // Near the end of a long edge, past it, a pixel draws continuously and as a split edge does.
+    let near_end = |data: &str, y: f64, feather: f64| {
+        path(
+            (80, 60),
+            json!({ "data": data, "fill_paint": WHITE, "position": [24.86, y],
+                "scale": [3, 0.5], "offset": 0.3, "feather": feather }),
+        )
+    };
+    for feather in [0.0, 0.1] {
+        rows.extend([
+            Case::new(
+                format!("a pixel near a long edge's end draws continuously with feather {feather}"),
+                near_end("M 0 0 H 40 V 200000 H 0 Z", 24.5799, feather),
+                Expect::Matches(near_end("M 0 0 H 40 V 200000 H 0 Z", 24.58, feather).into()),
+            ),
+            Case::new(
+                format!(
+                    "a pixel near a long edge's end draws as when it is split, feather {feather}"
+                ),
+                near_end("M 0 0 H 40 V 200000 H 0 V 20 Z", 24.5799, feather),
+                Expect::Matches(near_end("M 0 0 H 40 V 200000 H 0 Z", 24.5799, feather).into()),
+            ),
+        ]);
+    }
+    for feather in [0.0, 0.1] {
+        rows.extend([
+            Case::new(
+                format!(
+                    "a pixel exactly on a shrunk edge draws continuously with feather {feather}"
+                ),
+                on_edge("M 0 0 H 40 V 40 H 0 Z", 24.5, feather),
+                Expect::Matches(on_edge("M 0 0 H 40 V 40 H 0 Z", 24.4999, feather).into()),
+            ),
+            Case::new(
+                format!(
+                    "a pixel exactly on a split shrunk edge draws as unsplit with feather {feather}"
+                ),
+                on_edge("M 0 0 H 40 V 40 H 0 V 20 Z", 24.5, feather),
+                Expect::Matches(on_edge("M 0 0 H 40 V 40 H 0 Z", 24.5, feather).into()),
+            ),
+        ]);
+    }
+    // Edges that coincide cancel under the even-odd rule, and are no edge to offset from.
+    let cancelled = |data: &str, offset: f64| {
+        path(
+            (120, 80),
+            json!({ "data": data, "fill_paint": WHITE, "offset": offset }),
+        )
+    };
+    rows.extend([
+        Case::new(
+            "adjoining squares shrink as one",
+            cancelled("M 20 20 H 60 V 60 H 20 Z M 60 20 H 100 V 60 H 60 Z", -5.0),
+            Expect::Probes(vec![
+                (59, 40, WHITE),
+                (60, 40, WHITE),
+                (23, 40, CLEAR),
+                (26, 40, WHITE),
+            ]),
+        ),
+        Case::new(
+            "a square beside part of another's edge shrinks as one with it",
+            cancelled("M 20 20 H 60 V 60 H 20 Z M 60 30 H 80 V 50 H 60 Z", -3.0),
+            Expect::Probes(vec![(60, 40, WHITE), (58, 24, CLEAR), (56, 24, WHITE)]),
+        ),
+        Case::new(
+            "adjoining squares draw no seam along their shared side",
+            cancelled(
+                "M 20 20 H 60.3 V 60 H 20 Z M 60.3 20 H 100 V 60 H 60.3 Z",
+                0.0,
+            ),
+            Expect::Probes(vec![(59, 40, WHITE), (60, 40, WHITE)]),
+        ),
+        Case::new(
+            "a contour drawn twice fills nothing to grow",
+            cancelled("M 20 20 H 60 V 60 H 20 Z M 20 20 H 60 V 60 H 20 Z", 5.0),
+            Expect::Uniform(CLEAR),
+        ),
+    ]);
     rows
 }
 
@@ -1535,6 +1873,11 @@ fn transforms_and_scaling_equal_drawing_the_geometry_directly() {
 #[test]
 fn outlines_match_supersampling_under_scale_and_rotation() {
     check(outline_rows());
+}
+
+#[test]
+fn offset_and_feathered_fills_move_and_soften_their_edge() {
+    check(soft_fill_rows());
 }
 
 #[test]

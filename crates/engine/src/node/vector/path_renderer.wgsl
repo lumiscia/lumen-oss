@@ -6,10 +6,12 @@ struct PathUniforms {
     bounds_size: vec2<f32>,
     stroke_width: f32,
     flags: u32,
-    _flags_pad: u32,
+    // Untransformed distance the fill's edge moves outward by.
+    fill_offset: f32,
     trim_start: f32,
     trim_end: f32,
-    _pad: u32,
+    // Untransformed width the fill's edge fades over.
+    fill_feather: f32,
     transform: DrawableTransform,
     screen_bounds: vec4<f32>,
     band_origin: f32,
@@ -32,6 +34,9 @@ struct PathUniforms {
 // Bits of `flags` in `PathPoint`; unrelated to the style bits in `PathUniforms.flags`.
 const POINT_END: u32 = 1u;
 const POINT_CLOSED: u32 = 2u;
+// The segment from the point is no edge of the fill, as coincident pieces of the outline
+// cancel under the even-odd rule. It still counts toward the crossings, and is stroked.
+const POINT_FILL_HIDDEN: u32 = 4u;
 
 struct PathPoint {
     position: vec2<f32>,
@@ -252,13 +257,90 @@ fn fill_coverage(signed_distance: f32, inside: bool, edge_antialias: bool) -> f3
     );
 }
 
+// Whether the fill is offset or feathered, which measures its edges untransformed.
+fn fill_is_soft() -> bool {
+    return params.fill_offset != 0.0 || params.fill_feather > 0.0;
+}
+
+// No edge within reach: deep inside or far outside the fill.
+const SOFT_FILL_FAR: f32 = 1e30;
+
+// Coverage of the fill moved out by `fill_offset` and faded over `fill_feather`, centred on
+// its moved edge. Moving the edges by `r` adds or removes, along each of them, a capsule of
+// untransformed radius `r` around it, so the moved edge is where the untransformed distance to
+// the nearest edge is `r`.
+//
+// The fade is measured untransformed, from that distance. Antialiasing adds one canvas pixel
+// to it, converted to untransformed pixels by the ratio of the untransformed to the canvas
+// signed distance from the moved edge. Both distances depend only on the outline's shape, not
+// on how it is divided, and change continuously, so the ratio does too away from the edge,
+// and on the edge the distance it scales is 0. As the offset and feather go to 0, the canvas
+// distance is the sharp fill's, so the coverage meets it.
+fn soft_fill_coverage(edges: PathEdges, axis_scale: vec2<f32>, edge_antialias: bool) -> f32 {
+    if (edges.past >= SOFT_FILL_FAR) {
+        return select(0.0, 1.0, edges.inside);
+    }
+    let radius = abs(params.fill_offset);
+    let toward = (params.fill_offset >= 0.0) != edges.inside;
+    let local = select(edges.nearest + radius, edges.nearest - radius, toward);
+    // Inside the capsules, the depth is never past the capsules' far side either, which bounds
+    // it near the ends of edges and meets `past` across the original outline.
+    let within = -min(edges.past, max(edges.depth, -edges.capsule));
+    let canvas = select(edges.past, select(within, edges.capsule, edges.capsule > 0.0), toward);
+    let local_signed = select(local, -local, edges.inside);
+    let canvas_signed = select(canvas, -canvas, edges.inside);
+    // Untransformed pixels per canvas pixel across the moved edge, within the transform's range.
+    let ratio = local_signed / select(canvas_signed, 1.0, canvas_signed == 0.0);
+    let longest = max(axis_scale.x, axis_scale.y);
+    let shortest = max(min(axis_scale.x, axis_scale.y), 1e-20);
+    let per_canvas = select(1.0 / longest, clamp(ratio, 1.0 / longest, 1.0 / shortest), canvas_signed != 0.0);
+    let width = params.fill_feather + select(0.0, per_canvas, edge_antialias);
+    if (width <= 0.0) {
+        return select(0.0, 1.0, local_signed <= 0.0);
+    }
+    let t = clamp(0.5 - local_signed / width, 0.0, 1.0);
+    // The fade eases in and out like a blurred edge as it widens past the antialiasing.
+    return mix(t, t * t * (3.0 - 2.0 * t), params.fill_feather / width);
+}
+
 // Canvas-space distance to the nearest edge of the fill, the signed canvas-space distance
 // to the nearest edge of the trimmed stroke (negative inside it), both within reach, and
-// whether the point is inside the fill.
+// whether the point is inside the fill. A soft fill measures, instead of `full`, the
+// untransformed distance to its nearest edge and, in canvas pixels: the signed distance to the
+// nearest capsule around its edges, which is exact outside them; the distance past the nearest
+// edge's capsule, on the side its edge moves away from; and `depth`, how far inside the
+// capsules the point is, which `capsule` alone underestimates where they meet.
 struct PathEdges {
     full: f32,
     stroke: f32,
     inside: bool,
+    nearest: f32,
+    capsule: f32,
+    past: f32,
+    depth: f32,
+}
+
+// Takes in a piece of the fill's edge whose capsule is `capsule` canvas pixels from the point,
+// signed, whose capsule's far side, across the piece, is `past` from it, and inside whose
+// capsule the point is at least `depth` deep.
+fn soft_fill_piece(edges: PathEdges, capsule: f32, past: f32, depth: f32) -> PathEdges {
+    var next = edges;
+    next.capsule = min(next.capsule, capsule);
+    next.past = min(next.past, past);
+    next.depth = max(next.depth, depth);
+    return next;
+}
+
+// Takes in the elliptical end, under non-uniform scale, of the capsule around a piece of the
+// fill's edge that ends at `end`, unless it is too far to be nearer than the pieces so far. It
+// only bounds the capsules: past an edge, the moved edge beside it is always nearer.
+fn soft_fill_end(edges: PathEdges, p: vec2<f32>, end: vec2<f32>, radius: f32, scale: vec2<f32>) -> PathEdges {
+    let q = (p - end) * scale;
+    if (length(q) - radius * max(scale.x, scale.y) >= edges.capsule) {
+        return edges;
+    }
+    let capsule = ellipse_distance(q, vec2<f32>(radius) * scale).distance;
+    return soft_fill_piece(edges, capsule, SOFT_FILL_FAR, -SOFT_FILL_FAR);
 }
 
 // Visits only the segments listed in the band containing `p`, which is relative to
@@ -268,7 +350,17 @@ struct PathEdges {
 // segment, measured exactly in canvas pixels, so its caps and joins stay elliptical
 // under non-uniform scale.
 fn path_edges(transform: DrawableTransform, p: vec2<f32>, fill_enabled: bool, stroke_enabled: bool) -> PathEdges {
-    var edges = PathEdges(1000000.0, 1000000.0, false);
+    var edges = PathEdges(
+        1000000.0,
+        1000000.0,
+        false,
+        SOFT_FILL_FAR,
+        SOFT_FILL_FAR,
+        SOFT_FILL_FAR,
+        -SOFT_FILL_FAR,
+    );
+    let fill_radius = abs(params.fill_offset);
+    let soft_fill = fill_is_soft();
     let canvas_p = drawable_vector_to_canvas(transform, p);
     let stroke_half_width = params.stroke_width * 0.5;
     let axis_scale = drawable_axis_scale(transform);
@@ -298,7 +390,40 @@ fn path_edges(transform: DrawableTransform, p: vec2<f32>, fill_enabled: bool, st
         if (!segment_reaches(p, a, b)) {
             continue;
         }
-        if (fill_enabled) {
+        let fill_edge = fill_enabled && (current.flags & POINT_FILL_HIDDEN) == 0u;
+        if (fill_edge && soft_fill) {
+            let nearest = segment_offset(p, a, b);
+            let local_distance = length(nearest);
+            edges.nearest = min(edges.nearest, local_distance);
+            if (axis_scale.x == axis_scale.y) {
+                let distance = local_distance * axis_scale.x;
+                let width = fill_radius * axis_scale.x;
+                edges = soft_fill_piece(edges, distance - width, distance + width, width - distance);
+            } else {
+                let distance = length(segment_offset((p - a) * axis_scale, vec2<f32>(0.0), (b - a) * axis_scale));
+                let direction = b - a;
+                let normal = vec2<f32>(-direction.y, direction.x) / max(length(direction), 1e-20);
+                // Canvas pixels per untransformed pixel across the piece, so the capsule's sides
+                // are `width` canvas pixels either side of it.
+                let across = drawable_distance_scale(transform, normal);
+                let width = fill_radius * across;
+                // Beside the piece, the depth is measured across it, to the side of the capsule's
+                // strip. Past its ends it is first-order from the end, but never past that side,
+                // so pieces of one straight edge measure the depth the whole edge does. At the end
+                // itself the direction from it is undefined, so the normal stands in.
+                let strip = (fill_radius - abs(dot(p - a, normal))) * across;
+                let along = dot(p - a, direction) / max(dot(direction, direction), 1e-20);
+                let toward_end = select(nearest / local_distance, normal, local_distance == 0.0);
+                let end_depth = (fill_radius - local_distance) * drawable_distance_scale(transform, toward_end);
+                let depth = select(min(end_depth, strip), strip, along > 0.0 && along < 1.0);
+                let band = stroke_band_distance(p, a, b, fill_radius, axis_scale);
+                edges = soft_fill_piece(edges, band, distance + width, depth);
+                if (fill_radius > 0.0) {
+                    edges = soft_fill_end(edges, p, a, fill_radius, axis_scale);
+                    edges = soft_fill_end(edges, p, b, fill_radius, axis_scale);
+                }
+            }
+        } else if (fill_edge) {
             let canvas_a = drawable_vector_to_canvas(transform, a);
             let canvas_b = drawable_vector_to_canvas(transform, b);
             edges.full = min(edges.full, length(segment_offset(canvas_p, canvas_a, canvas_b)));
@@ -375,12 +500,13 @@ fn sample_path(pixel: vec2<f32>, transform: DrawableTransform) -> vec4<f32> {
     // antialiasing stays one canvas pixel wide at any scale.
     let local = drawable_to_local(transform, pixel);
     let edges = path_edges(transform, local - params.position, fill_enabled, stroke_enabled);
-    let signed_distance = select(edges.full, -edges.full, edges.inside);
-    let fill_alpha = select(
-        0.0,
-        fill_coverage(signed_distance, edges.inside, edge_antialias),
-        fill_enabled,
-    );
+    var fill_alpha = 0.0;
+    if (fill_enabled && fill_is_soft()) {
+        fill_alpha = soft_fill_coverage(edges, drawable_axis_scale(transform), edge_antialias);
+    } else if (fill_enabled) {
+        let signed_distance = select(edges.full, -edges.full, edges.inside);
+        fill_alpha = fill_coverage(signed_distance, edges.inside, edge_antialias);
+    }
     let stroke_alpha = select(
         0.0,
         stroke_coverage(edges.stroke, canvas_stroke_width(transform, params.stroke_width), edge_antialias),
