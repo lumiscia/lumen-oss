@@ -85,6 +85,7 @@ macro_rules! node_kinds {
 node_kinds! {
     MediaIn(source::media_in::MediaIn),
     Background(source::background::Background),
+    FractalNoise(source::fractal_noise::FractalNoise),
     Text(source::text::Text),
     Path(vector::path::Path),
     Shape(vector::shape::Shape),

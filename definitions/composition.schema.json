@@ -1921,6 +1921,230 @@
           },
           {
             "additionalProperties": false,
+            "description": "Generates opaque grey fractal noise, the same on every GPU for a given seed and evolution.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "brightness": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Added to every pixel after contrast.",
+                    "title": "Brightness",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": -1.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "contrast": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Contrast multiplier around mid grey.",
+                    "title": "Contrast",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "evolution": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Morphs the pattern smoothly, in turns: it repeats every whole turn, so `=time` loops once a\nsecond.",
+                    "title": "Evolution",
+                    "x-lumen-constraints": {
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "height": {
+                    "default": 0,
+                    "description": "Output height in pixels. Use 0 to match the composition height.",
+                    "minimum": 0.0,
+                    "title": "Height",
+                    "type": "integer",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "mode": {
+                    "anyOf": [
+                      {
+                        "enum": ["smooth", "turbulent"],
+                        "type": "string",
+                        "x-lumen-type": "NoiseMode"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "smooth",
+                    "description": "How the layers are summed.",
+                    "title": "Mode",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Smooth",
+                        "name": "smooth",
+                        "value": 0
+                      },
+                      {
+                        "label": "Turbulent",
+                        "name": "turbulent",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "octaves": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 4,
+                    "description": "Layers of detail, from 1 to 8. Each adds features half the size, at half the strength.",
+                    "title": "Octaves",
+                    "x-lumen-constraints": {
+                      "max": 8.0,
+                      "min": 1.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "offset_x": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Moves the pattern right by this many pixels.",
+                    "title": "Offset X",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "offset_y": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Moves the pattern down by this many pixels.",
+                    "title": "Offset Y",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 64.0,
+                    "description": "Size of the largest features in pixels.",
+                    "title": "Scale",
+                    "x-lumen-constraints": {
+                      "min": 1.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "seed": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0,
+                    "description": "Picks an unrelated pattern.",
+                    "title": "Seed",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "width": {
+                    "default": 0,
+                    "description": "Output width in pixels. Use 0 to match the composition width.",
+                    "minimum": 0.0,
+                    "title": "Width",
+                    "type": "integer",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "fractal_noise"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Fractal Noise",
+            "type": "object",
+            "x-lumen-category": "source",
+            "x-lumen-inputs": [],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster_frame",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Adjusts raster hue, saturation, and lightness.",
             "properties": {
               "id": {

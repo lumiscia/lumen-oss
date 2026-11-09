@@ -10,6 +10,7 @@ mod geometry;
 mod harness;
 mod media;
 mod motion;
+mod noise;
 mod operators;
 mod paint;
 mod shaders;
