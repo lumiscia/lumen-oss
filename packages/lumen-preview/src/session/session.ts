@@ -396,8 +396,8 @@ export class LumenPreviewSession {
       timelineFps: fps,
     });
     this.preview.update({
-      error: null,
-      errorCode: null,
+      // Newer inputs that didn't resolve keep their error over this earlier load.
+      ...(this.#resolveFailure === null && { error: null, errorCode: null }),
       frame,
       height: event.height,
       isLoaded: true,

@@ -698,6 +698,28 @@ describe("LumenPreviewSession", () => {
     expect(replaced).toHaveBeenCalledOnce();
   });
 
+  it("keeps a resolution error over an earlier load that finishes after it", async () => {
+    const { preview, session, worker } = await started({});
+    session.update({ composition: composition("first") });
+    const first = worker.ofType("load").at(-1)?.loadId as number;
+    const unresolved = { composition: composition("second"), media: { unused: "/image.png" } };
+    session.update(unresolved);
+    expect(preview.getSnapshot().errorCode).toBe("load_failed");
+
+    worker.emit({
+      audioTimelineJson: null,
+      fps: 30,
+      height: 16,
+      loadId: first,
+      totalFrames: 30,
+      type: "loaded",
+      width: 16,
+    });
+    expect(preview.getSnapshot().errorCode).toBe("load_failed");
+    session.update(unresolved);
+    expect(preview.getSnapshot().errorCode).toBe("load_failed");
+  });
+
   it("sends a source again if the worker never received it", async () => {
     const { session, worker } = await playable();
     const logo = new Blob(["i"], { type: "image/png" });
