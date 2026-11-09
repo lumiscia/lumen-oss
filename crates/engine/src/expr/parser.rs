@@ -8,10 +8,11 @@ use crate::{
             parse_hex_color,
         },
         builtins::{
-            handle_x_error, is_key_value, key_order_error, key_value_error, kind_error,
-            mixed_keys_error, param, range_error, unknown_easing, unusable_result,
+            FROM_TO, handle_x_error, is_key_value, key_name, key_order_error, key_value_error,
+            kind_error, mixed_keys_error, param, range_error, unknown_easing, unusable_result,
         },
         functions,
+        path::morph,
         spec::{BuiltinSpec, NamedEasing, ValueKind, builtin_for_name},
     },
     node::{NodeId, vector::path::build_lyon_path},
@@ -677,6 +678,13 @@ fn literal_key_time(node: &ExprNode) -> Option<(f64, &'static str)> {
     }
 }
 
+fn literal_string(node: &ExprNode) -> Option<&str> {
+    match node {
+        ExprNode::Literal(ExpressionValue::String(text)) => Some(text),
+        _ => None,
+    }
+}
+
 fn literal_number(node: &ExprNode) -> Option<f64> {
     match node {
         ExprNode::Literal(ExpressionValue::Number(value)) => Some(*value),
@@ -756,11 +764,20 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
                 }
             }
         },
+        BuiltinFn::Lerp | BuiltinFn::Tween => {
+            if let (Some(from), Some(to)) = (literal_string(&args[0]), literal_string(&args[1])) {
+                morph(from, to, 0.0).map_err(|morph| error(morph.describe(FROM_TO)))?;
+            }
+        }
         BuiltinFn::Key => {
             if let Some(kind) = static_kind(&args[1])
                 && !is_key_value(kind)
             {
                 return Err(error(key_value_error(kind)));
+            }
+            if let Some(data) = literal_string(&args[1]) {
+                let names = ["`value`"; 2];
+                morph(data, data, 0.0).map_err(|morph| error(morph.describe(names)))?;
             }
         }
         BuiltinFn::Keyframes => {
@@ -771,10 +788,25 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
             let keys = &args[if second_is_key { 1 } else { 2 }..];
             let mut first_kind = None;
             let (mut previous_frames, mut previous_seconds) = (None, None);
-            for key in keys {
+            let mut previous_path: Option<(&str, String)> = None;
+            for (index, key) in keys.iter().enumerate() {
                 let ExprNode::Builtin(BuiltinFn::Key, key) = key else {
                     continue;
                 };
+                // Every key of a track interpolates with its neighbours, so each literal path
+                // must match the one before it, even across keys the parser can't read.
+                if let Some(data) = literal_string(&key[1]) {
+                    let name = match literal_key_time(&key[0]) {
+                        Some((at, unit)) => key_name(format!("{at}{unit}")),
+                        None => format!("key {}", index + 1),
+                    };
+                    if let Some((previous, previous_name)) = &previous_path {
+                        morph(previous, data, 0.0).map_err(|morph| {
+                            error(morph.describe([previous_name.as_str(), name.as_str()]))
+                        })?;
+                    }
+                    previous_path = Some((data, name));
+                }
                 if let Some(kind) = static_kind(&key[1]) {
                     match first_kind {
                         Some(first) if first != kind => {

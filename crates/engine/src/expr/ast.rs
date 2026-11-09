@@ -23,7 +23,7 @@ pub enum ExpressionValue {
 #[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
 pub struct Key {
     pub at: f64,
-    /// A number, vec2 or colour.
+    /// A number, vec2, colour or path data.
     pub value: ExpressionValue,
     /// How the curve leaves this key, or `None` for the `keyframes` default.
     pub ease: Option<Easing>,

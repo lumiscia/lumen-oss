@@ -146,7 +146,7 @@ builtins! {
     Clamp "clamp" (3, Some(3)) [value: Number, min: Number, max: Number] -> Number,
         "Limits a value to `min..=max`.";
     Lerp "lerp" (3, Some(3)) [from: Any, to: Any, t: Number] -> Any,
-        "Interpolates two numbers, vec2 values or colours by `t`. Colours mix premultiplied.";
+        "Interpolates two numbers, vec2 values, colours or path data strings by `t`. Colours mix premultiplied. Path data strings must have the same commands in the same order, and interpolate point by point.";
     Pow "pow" (2, Some(2)) [base: Number, exponent: Number] -> Number, "Raises `base` to `exponent`.";
     Mod "mod" (2, Some(2)) [value: Number, divisor: Number] -> Number,
         "Remainder of `value / divisor`, keeping the sign of `value`.";
@@ -178,7 +178,7 @@ builtins! {
     CubicBezier "cubic_bezier" (2, Some(2)) [out: Vec2, in: Vec2] -> Easing,
         "The easing CSS writes `cubic-bezier(out.x, out.y, in.x, in.y)`. Both x components must be in `0..=1`.";
     Key "key" (2, Some(3)) [at: Number, value: Any, ease: Easing] -> Key,
-        "A keyframe for `keyframes`: `value` at `at`, a number, vec2 or colour. `ease` is how the curve leaves this key toward the next.";
+        "A keyframe for `keyframes`: `value` at `at`, a number, vec2, colour or path data. `ease` is how the curve leaves this key toward the next.";
     Keyframes "keyframes" (2, None) [t: Number, ease: Easing, keys: Key] -> Any,
         "The value of keys ordered by `at` at time `t`, usually `frame`. `ease` may be left out; it is the easing of keys without one and defaults to `'linear'`. Before the first key and after the last, the value holds. Keys at the same `at` jump.";
     Prop "prop" (1, Some(1)) [name: String] -> Any,

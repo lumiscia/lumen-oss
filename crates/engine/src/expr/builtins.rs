@@ -5,7 +5,7 @@ use crate::{
         ast::{BuiltinFn, Easing, ExpressionValue, Key},
         easing::{SPRING_DAMPING, SPRING_STIFFNESS, spring},
         noise::{noise, random},
-        path::sample_path,
+        path::{MorphError, morph, sample_path},
         spec::{BuiltinArg, BuiltinSpec, NamedEasing, ValueKind, easing_builtins},
     },
     node::{
@@ -32,7 +32,7 @@ pub fn evaluate_builtin(
     };
     let mismatch = |name: &str| {
         error(format!(
-            "`{name}` expects `from` and `to` of the same type: numbers, vec2 values or colours, got {} and {}",
+            "`{name}` expects `from` and `to` of the same type: numbers, vec2 values, colours or path data, got {} and {}",
             args[0].type_name(),
             args[1].type_name()
         ))
@@ -79,9 +79,9 @@ pub fn evaluate_builtin(
             }
             Ok(ExpressionValue::Number(value.clamp(min, max)))
         }
-        BuiltinFn::Lerp => {
-            interpolate(&args[0], &args[1], number(2)?).ok_or_else(|| mismatch(spec.name))
-        }
+        BuiltinFn::Lerp => interpolate(&args[0], &args[1], number(2)?)
+            .map_err(|error| named(error.describe(FROM_TO)))?
+            .ok_or_else(|| mismatch(spec.name)),
         BuiltinFn::Pow => Ok(ExpressionValue::Number(number(0)?.powf(number(1)?))),
         BuiltinFn::Mod => {
             let (lhs, rhs) = (number(0)?, number(1)?);
@@ -131,7 +131,9 @@ pub fn evaluate_builtin(
             let t = ease
                 .unwrap_or(Easing::LINEAR)
                 .apply(progress(ctx, start, start + number(3)?));
-            interpolate(&args[0], &args[1], t).ok_or_else(|| mismatch(spec.name))
+            interpolate(&args[0], &args[1], t)
+                .map_err(|error| named(error.describe(FROM_TO)))?
+                .ok_or_else(|| mismatch(spec.name))
         }
         easing_builtins!() => {
             let easing = NamedEasing::for_builtin(builtin).expect("easing builtin");
@@ -301,12 +303,15 @@ pub(crate) fn handle_x_error(x: f64) -> Option<&'static str> {
 }
 
 pub(crate) fn is_key_value(kind: ValueKind) -> bool {
-    matches!(kind, ValueKind::Number | ValueKind::Vec2 | ValueKind::Color)
+    matches!(
+        kind,
+        ValueKind::Number | ValueKind::Vec2 | ValueKind::Color | ValueKind::String
+    )
 }
 
 pub(crate) fn key_value_error(kind: ValueKind) -> String {
     format!(
-        "`value` must be a number, vec2 or colour, got {}",
+        "`value` must be a number, vec2, colour or path data, got {}",
         kind.name()
     )
 }
@@ -383,8 +388,17 @@ fn keyframes(t: f64, args: &[ExpressionValue]) -> Result<ExpressionValue, String
         .unwrap_or(default)
         .apply((t - key.at) / (next.at - key.at));
     interpolate(&key.value, &next.value, eased)
+        .map_err(|error| error.describe([&key_name(key.at), &key_name(next.at)]))?
         .ok_or_else(|| mixed_keys_error(key.value.kind(), next.value.kind()))
 }
+
+/// How errors name the key at `at`.
+pub(crate) fn key_name(at: impl std::fmt::Display) -> String {
+    format!("the key at {at}")
+}
+
+/// How errors name the sides of `lerp` and `tween`.
+pub(crate) const FROM_TO: [&str; 2] = ["`from`", "`to`"];
 
 /// Why `value` is out of range as argument `index` of `builtin`, if it is.
 pub(crate) fn range_error(builtin: BuiltinFn, index: usize, value: f64) -> Option<&'static str> {
@@ -417,9 +431,17 @@ fn progress(ctx: &ExpressionContext<'_>, start: f64, end: f64) -> f64 {
     ((frame - start) / (end - start)).clamp(0.0, 1.0)
 }
 
-fn interpolate(from: &ExpressionValue, to: &ExpressionValue, t: f64) -> Option<ExpressionValue> {
+/// `from` and `to` mixed by `t`, or `None` if they are values of kinds that don't mix.
+fn interpolate(
+    from: &ExpressionValue,
+    to: &ExpressionValue,
+    t: f64,
+) -> Result<Option<ExpressionValue>, MorphError> {
     let mix = |from: f64, to: f64| from + (to - from) * t;
-    match (from, to) {
+    Ok(match (from, to) {
+        (ExpressionValue::String(from), ExpressionValue::String(to)) => {
+            Some(ExpressionValue::String(morph(from, to, t)?))
+        }
         (ExpressionValue::Vec2(from), ExpressionValue::Vec2(to)) => Some(ExpressionValue::Vec2((
             mix(from.0, to.0),
             mix(from.1, to.1),
@@ -435,8 +457,11 @@ fn interpolate(from: &ExpressionValue, to: &ExpressionValue, t: f64) -> Option<E
                 [0.0; 4]
             }))
         }
-        _ => Some(ExpressionValue::Number(mix(from.as_f64()?, to.as_f64()?))),
-    }
+        _ => from
+            .as_f64()
+            .zip(to.as_f64())
+            .map(|(from, to)| ExpressionValue::Number(mix(from, to))),
+    })
 }
 
 /// `builtin`'s dimension of `measurement`.
