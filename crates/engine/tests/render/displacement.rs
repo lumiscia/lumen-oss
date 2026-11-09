@@ -88,6 +88,24 @@ fn displacement_moves_by_the_map() {
             moved(0),
         ),
         Case::new(
+            "128 stays neutral as the map fades",
+            displaced(
+                bar(),
+                solid_map([128, 128, 128, 128], 0, 0),
+                json!({ "amount_x": 500, "amount_y": 500 }),
+            ),
+            moved(0),
+        ),
+        Case::new(
+            "128 stays neutral when nearly transparent",
+            displaced(
+                bar(),
+                solid_map([128, 128, 128, 20], 0, 0),
+                json!({ "amount_x": 500, "amount_y": 500, "channel_x": "luma" }),
+            ),
+            moved(0),
+        ),
+        Case::new(
             "a transparent map leaves the source in place",
             displaced(bar(), solid_map(CLEAR, 0, 0), across(128)),
             moved(0),

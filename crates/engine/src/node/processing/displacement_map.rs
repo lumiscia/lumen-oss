@@ -111,8 +111,9 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
 
-/// Amounts beyond this move every pixel off any canvas, so they clamp to it.
-const MAX_AMOUNT: f64 = 1e6;
+/// The smallest displacement a map can ask for, a luma a few f32 ulps from 128, moves this far
+/// past any canvas, so clamping to it changes nothing visible while keeping the math finite.
+const MAX_AMOUNT: f64 = 1e30;
 
 fn amount(value: f64) -> f64 {
     if value.is_finite() {
