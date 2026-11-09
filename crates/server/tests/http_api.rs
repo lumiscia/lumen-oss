@@ -625,12 +625,13 @@ fn checks_say_what_is_wrong_and_invalid_renders_carry_the_same_diagnostics() {
     };
 
     let mut invalid = solid_composition();
-    invalid["nodes"][0]["params"]["paintt"] = json!("#fff");
+    // The trailing space is part of the key, so it stays in the pointer.
+    invalid["nodes"][0]["params"]["paintt "] = json!("#fff");
     invalid["nodes"][1]["type"] = json!("sparkle");
     let checked = check(&json!({ "composition": invalid }));
     assert_eq!(checked["ok"], json!(false));
     let expected = [
-        ("node.unknown_param", "/nodes/0/params/paintt"),
+        ("node.unknown_param", "/nodes/0/params/paintt "),
         ("node.unknown_type", "/nodes/1/type"),
     ]
     .map(|(code, path)| (code.to_string(), path.to_string()));

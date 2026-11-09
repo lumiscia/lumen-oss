@@ -101,14 +101,63 @@ pub(crate) fn scene_pointer(template: Option<&str>) -> String {
     })
 }
 
-/// The pointer of a param path such as `content[1].font_size`, as `/content/1/font_size`.
-fn param_pointer(path: &str) -> String {
+/// The pointer of a param path such as `content[1].font_size`, as `/content/1/font_size`. Keys may
+/// hold `.` and `[`, so each field is matched against the longest key of `params` it can be.
+fn param_pointer(params: Option<&Value>, path: &str) -> String {
     let mut pointer = String::new();
-    for segment in path.split(['.', '[']).filter(|segment| !segment.is_empty()) {
+    let mut value = params;
+    let mut rest = path;
+    while !rest.is_empty() {
+        if let Some((index, after)) = rest
+            .strip_prefix('[')
+            .and_then(|after| after.split_once(']'))
+        {
+            pointer.push('/');
+            pointer.push_str(&escape(index));
+            value = value.and_then(|value| value.get(index.parse::<usize>().ok()?));
+            rest = after;
+            continue;
+        }
+        let field = rest.strip_prefix('.').unwrap_or(rest);
+        let continues = |key: &str| {
+            field
+                .strip_prefix(key)
+                .is_some_and(|after| after.is_empty() || after.starts_with(['.', '[']))
+        };
+        let key = value
+            .and_then(Value::as_object)
+            .and_then(|object| {
+                object
+                    .keys()
+                    .filter(|key| continues(key))
+                    .max_by_key(|key| key.len())
+            })
+            .map_or_else(
+                || &field[..field.find(['.', '[']).unwrap_or(field.len())],
+                String::as_str,
+            );
+        if key.is_empty() {
+            pointer.push('/');
+            pointer.push_str(&escape(field));
+            break;
+        }
         pointer.push('/');
-        pointer.push_str(&escape(segment.strip_suffix(']').unwrap_or(segment)));
+        pointer.push_str(&escape(key));
+        value = value.and_then(|value| value.get(key));
+        rest = &field[key.len()..];
     }
     pointer
+}
+
+/// `path`, a param path, under node `id` of `scene`.
+fn at_param(scene: &Value, id: NodeId, path: &str) -> (String, Option<NodeId>) {
+    let params =
+        node_index(scene, id).and_then(|index| scene.get("nodes")?.get(index)?.get("params"));
+    at_node(
+        scene,
+        id,
+        &format!("/params{}", param_pointer(params, path)),
+    )
 }
 
 /// The index of node `id` in `scene`'s `nodes`.
@@ -138,11 +187,7 @@ fn locate(error: &LumenError, scene: &Value) -> (String, Option<NodeId>) {
             node_id,
             property_path,
             ..
-        }) => at_node(
-            scene,
-            *node_id,
-            &format!("/params{}", param_pointer(property_path)),
-        ),
+        }) => at_param(scene, *node_id, property_path),
         LumenError::Expression(error) => locate_expression(error, scene),
         LumenError::Media(_) => (String::new(), None),
         LumenError::Render(error) => match error {
@@ -242,9 +287,7 @@ fn locate_graph(error: &GraphValidationError, scene: &Value) -> (String, Option<
 
 fn locate_expression(error: &ExpressionError, scene: &Value) -> (String, Option<NodeId>) {
     match error {
-        ExpressionError::Located { node_id, path, .. } => {
-            at_node(scene, *node_id, &format!("/params{}", param_pointer(path)))
-        }
+        ExpressionError::Located { node_id, path, .. } => at_param(scene, *node_id, path),
         ExpressionError::Parse { .. } | ExpressionError::Evaluate { .. } => (String::new(), None),
     }
 }
@@ -266,25 +309,39 @@ mod tests {
 
     #[test]
     fn param_paths_become_pointers() {
-        assert_eq!(param_pointer(""), "");
-        assert_eq!(param_pointer("opacity"), "/opacity");
+        assert_eq!(param_pointer(None, ""), "");
+        assert_eq!(param_pointer(None, "opacity"), "/opacity");
         assert_eq!(
-            param_pointer("content[1].font_size"),
+            param_pointer(None, "content[1].font_size"),
             "/content/1/font_size"
         );
-        assert_eq!(param_pointer("uniforms.a/b"), "/uniforms/a~1b");
+        assert_eq!(param_pointer(None, "uniforms.a/b"), "/uniforms/a~1b");
+        // Keys holding `.` or `[` are found in the params themselves.
+        let params = serde_json::json!({ "props": { "a.b": 1, "a": { "b": 2 }, "c[0]": [3] } });
+        assert_eq!(param_pointer(Some(&params), "props.a.b"), "/props/a.b");
+        assert_eq!(
+            param_pointer(Some(&params), "props.c[0][0]"),
+            "/props/c[0]/0"
+        );
+        assert_eq!(param_pointer(Some(&params), "props.["), "/props/[");
     }
 
     #[test]
     fn every_code_is_unique_and_documented() {
-        let readme = include_str!("../README.md");
         let mut seen = std::collections::BTreeSet::new();
         for code in codes() {
             assert!(seen.insert(code), "`{code}` is used twice");
-            assert!(
-                readme.contains(&format!("| `{code}` |")),
-                "README.md doesn't document `{code}`"
-            );
         }
+        let documented = include_str!("../README.md")
+            .lines()
+            .filter_map(|line| {
+                let cell = line.strip_prefix('|')?.split('|').next()?.trim();
+                cell.strip_prefix('`')?.strip_suffix('`')
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            documented, seen,
+            "README.md's table of codes is out of date"
+        );
     }
 }

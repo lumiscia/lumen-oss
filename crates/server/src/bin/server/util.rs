@@ -57,7 +57,7 @@ pub(crate) fn input_hash(
 
 /// Long enough for an FFmpeg or expression error and the codec, stream, node or frame it ends
 /// with, which are what a client needs to act on.
-const MAX_ERROR_MESSAGE_CHARS: usize = 1024;
+pub(super) const MAX_ERROR_MESSAGE_CHARS: usize = 1024;
 
 pub(super) fn sanitize_error_message(message: &str) -> String {
     let trimmed = message.trim();

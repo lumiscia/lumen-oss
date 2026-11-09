@@ -266,7 +266,15 @@ impl CompositionBuilder {
             Ok(_) => {}
             Err(graph_errors) => errors.extend(graph_errors),
         }
+        let root_problems = settings_problems(&self.scene);
         for (name, template) in &self.compositions {
+            // A template that inherits a bad setting from the root is reported once, at the root.
+            let inherited = |field: &str| {
+                root_problems
+                    .iter()
+                    .any(|(root_field, _)| root_field == field)
+                    && setting(&template.scene, field) == setting(&self.scene, field)
+            };
             let defaults = template.props.iter().filter_map(|(prop, def)| {
                 let error = def.kind.check(def.default.clone()).err()?;
                 Some((
@@ -277,6 +285,7 @@ impl CompositionBuilder {
             errors.extend(
                 settings_problems(&template.scene)
                     .into_iter()
+                    .filter(|(field, _)| !inherited(field))
                     .chain(defaults)
                     .map(|(field, details)| {
                         GraphValidationError::InvalidSettings {
@@ -458,6 +467,17 @@ impl CompositionBuilder {
 
 /// What stops a timeline and canvas from rendering: a frame rate that isn't positive and finite,
 /// and no frames or pixels. Each comes with the JSON pointer of its setting.
+/// The setting at `field`, one of the pointers [`settings_problems`] reports.
+fn setting(scene: &Scene, field: &str) -> Option<f64> {
+    match field {
+        "/timeline/fps" => Some(f64::from(scene.timeline.fps)),
+        "/timeline/duration_frames" => Some(f64::from(scene.timeline.duration_frames)),
+        "/render_settings/width" => Some(f64::from(scene.render_settings.width)),
+        "/render_settings/height" => Some(f64::from(scene.render_settings.height)),
+        _ => None,
+    }
+}
+
 fn settings_problems(scene: &Scene) -> Vec<(String, String)> {
     let Scene {
         timeline,

@@ -1864,6 +1864,50 @@ mod tests {
     }
 
     #[test]
+    fn settings_a_template_inherits_are_reported_at_the_root() {
+        let template = |extra: serde_json::Value| {
+            let mut card = serde_json::json!({
+                "nodes": [{ "id": 5, "type": "media_output" }],
+                "connections": []
+            });
+            card.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            card
+        };
+        let document = serde_json::json!({
+            "timeline": { "fps": 0, "duration_frames": 10 },
+            "render_settings": { "width": 0, "height": 16 },
+            "compositions": {
+                "inherits": template(serde_json::json!({})),
+                "partial": template(serde_json::json!({ "timeline": { "duration_frames": 5 } })),
+                "own": template(serde_json::json!({
+                    "timeline": { "fps": 30, "duration_frames": 0 },
+                    "render_settings": { "width": 8, "height": 8 }
+                })),
+            },
+            "nodes": [{ "id": 2, "type": "media_output" }],
+            "connections": []
+        });
+        let settings = check_value(&document, None)
+            .into_iter()
+            .filter(|diagnostic| diagnostic.code == "settings.invalid")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            codes_and_paths(&settings),
+            [
+                ("settings.invalid", "/timeline/fps", None),
+                ("settings.invalid", "/render_settings/width", None),
+                (
+                    "settings.invalid",
+                    "/compositions/own/timeline/duration_frames",
+                    None
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn graph_and_build_errors_point_at_what_they_name() {
         let document = serde_json::json!({
             "timeline": { "fps": 0, "duration_frames": 10 },
@@ -1881,9 +1925,8 @@ mod tests {
         assert_eq!(
             codes_and_paths(&check_value(&document, None)),
             [
+                // The template takes the root's timeline, so the error is reported once.
                 ("settings.invalid", "/timeline/fps", None),
-                // The template takes the root's timeline.
-                ("settings.invalid", "/compositions/card/timeline/fps", None),
                 (
                     "graph.missing_required_input",
                     "/compositions/card/nodes/0",

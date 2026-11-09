@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::watch;
 
-use super::util::sanitize_error_message;
+use super::util::{MAX_ERROR_MESSAGE_CHARS, sanitize_error_message};
 
 #[derive(Debug, Deserialize)]
 pub struct RenderJobInput {
@@ -53,11 +53,29 @@ pub fn sanitized_diagnostics(
     diagnostics
         .iter()
         .map(|diagnostic| lumen_engine::diagnostic::Diagnostic {
-            path: sanitize_error_message(&diagnostic.path),
+            path: bounded_pointer(&diagnostic.path),
             message: sanitize_error_message(&diagnostic.message),
             ..diagnostic.clone()
         })
         .collect()
+}
+
+/// `pointer`, or past the error length limit the longest ancestor of it that fits, so every token
+/// it keeps is whole.
+fn bounded_pointer(pointer: &str) -> String {
+    if pointer.chars().count() <= MAX_ERROR_MESSAGE_CHARS {
+        return pointer.to_string();
+    }
+    let end = pointer
+        .char_indices()
+        .nth(MAX_ERROR_MESSAGE_CHARS)
+        .map_or(pointer.len(), |(index, _)| index);
+    let cut = if pointer[end..].starts_with('/') {
+        end
+    } else {
+        pointer[..end].rfind('/').unwrap_or(0)
+    };
+    pointer[..cut].to_string()
 }
 
 impl RenderJobError {
@@ -283,4 +301,21 @@ impl RenderQueueState {
 pub struct RenderProgressResponse {
     pub progress: RenderQueueState,
     pub render: ApiRenderJob,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_pointers_are_cut_back_to_a_whole_ancestor() {
+        assert_eq!(bounded_pointer("/nodes/0/params/a "), "/nodes/0/params/a ");
+        let long = format!("/nodes/0/params/{}", "k".repeat(MAX_ERROR_MESSAGE_CHARS));
+        assert_eq!(bounded_pointer(&long), "/nodes/0/params");
+        let exact = format!("/{}/b", "a".repeat(MAX_ERROR_MESSAGE_CHARS - 1));
+        assert_eq!(
+            bounded_pointer(&exact),
+            format!("/{}", "a".repeat(MAX_ERROR_MESSAGE_CHARS - 1))
+        );
+    }
 }
