@@ -222,9 +222,9 @@ type GraphNodeKey = (usize, NodeId);
 /// A node reached along one path, in one sample of the `motion_blur` that path samples, or in
 /// sample 0 outside one.
 type MemoKey = (InstanceKey, u32);
-/// A video frame a source showed this frame: the source's instance, the source frame, its size
-/// and whether its colour is premultiplied.
-type VideoFrameKey = (InstanceKey, u32, (u32, u32), bool);
+/// A video frame a `media_in` showed this frame: the node's instance, the ID of the resolver it
+/// read, the source frame, its size and whether its colour is premultiplied.
+type VideoFrameKey = (InstanceKey, String, u32, (u32, u32), bool);
 
 struct Slot {
     raster: Raster,
@@ -1594,11 +1594,12 @@ impl<'a> FrameCx<'a> {
         Ok(target)
     }
 
-    /// The texture video source `node_id` shows `source_frame` through, taking the frame from
-    /// `frame` the first time this frame shows it.
+    /// The texture `media_in` node `node_id` shows `source_frame` of the video `resolver` names
+    /// through, taking the frame from `frame` the first time this frame shows it.
     pub(crate) fn video_texture(
         &mut self,
         node_id: NodeId,
+        resolver: &str,
         source_frame: u32,
         frame: impl FnOnce() -> crate::Result<MediaFrame>,
         size: Size,
@@ -1607,6 +1608,7 @@ impl<'a> FrameCx<'a> {
         let instance = (self.graph_key(), self.path, node_id);
         let key = (
             instance,
+            resolver.to_string(),
             source_frame,
             (size.width, size.height),
             alpha == AlphaMode::Premultiplied,
@@ -1728,7 +1730,16 @@ impl<'a> FrameCx<'a> {
                 Some(kept) => kept.filter(|kept| *kept == this),
             });
             let last = index + 1 == offsets.len();
-            sum = Some(self.add_sample(sum, sample, last, offsets.len() as u32)?);
+            // A blank sample adds nothing, so the sum starts at the first sample that draws, and
+            // later blank samples count only towards the divisor.
+            let blank = Some(sample.tex) == self.st.transparent;
+            if blank && !last {
+                continue;
+            }
+            if blank && sum.is_none() {
+                return Ok(self.transparent(sample.domain.display_size()));
+            }
+            sum = Some(self.add_sample(sum, sample, blank, last, offsets.len() as u32)?);
         }
         let mut average = sum.expect("motion blur takes at least two samples");
         if let Some(Some((domain, bounds))) = shared
@@ -1739,36 +1750,28 @@ impl<'a> FrameCx<'a> {
         Ok(average)
     }
 
-    /// `sample` added to `sum`, over the union of their domains: a running sum, or the average of
-    /// `samples` once `last`.
+    /// `sample` added to `sum`, over the union of their domains or over the sum's alone when the
+    /// sample is `blank`: a running sum, or the average of `samples` once `last`.
     fn add_sample(
         &mut self,
         sum: Option<Raster>,
         sample: Raster,
+        blank: bool,
         last: bool,
         samples: u32,
     ) -> crate::Result<Raster> {
         use crate::node::processing::motion_blur as blur;
 
-        let display = sample.domain.display_size();
-        let blank = Some(sample.tex) == self.st.transparent;
         let (display, data) = match sum {
+            Some(sum) if blank => (sum.domain.display_size(), sum.domain.data_rect),
             Some(sum) => {
-                let held = sum.domain.display_size();
+                let [held, shown] = [sum, sample].map(|raster| raster.domain.display_size());
                 (
-                    Size::new(
-                        held.width.max(display.width),
-                        held.height.max(display.height),
-                    ),
-                    sum.domain.data_rect,
+                    Size::new(held.width.max(shown.width), held.height.max(shown.height)),
+                    sum.domain.data_rect.union(sample.domain.data_rect),
                 )
             }
-            None => (display, lumen_gpu::RectI::new(0, 0, 0, 0)),
-        };
-        let data = if blank {
-            data
-        } else {
-            data.union(sample.domain.data_rect)
+            None => (sample.domain.display_size(), sample.domain.data_rect),
         };
         let domain = quantized_domain(display, data);
         let origin = [domain.data_rect.x, domain.data_rect.y];

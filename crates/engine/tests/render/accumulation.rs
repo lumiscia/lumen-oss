@@ -118,6 +118,16 @@ fn video_blurs_across_the_source_frames_its_sub_frames_show() {
     let media = TestMedia::default().numbered_video("v");
     let required = collect_frame_requirements(&video().into(), &media, 0).unwrap();
     assert_eq!(required.videos[0].frames, [0, 1, 3]);
+    // Half the samples fall before frame 1, showing video `a`, and half show frame 0 of `b`.
+    let switching = scene(
+        (1, 1),
+        json!([
+            { "id": 1, "type": "media_in", "params": {
+                "kind": "video", "source": "=if(frame < 1, 'a', 'b')", "speed": 0 } },
+            motion_blur(2, 1, 8, 180.0),
+        ]),
+    )
+    .frames(4);
     check(vec![
         Case::new(
             "video at a frame whose sub-frames show several source frames",
@@ -126,5 +136,58 @@ fn video_blurs_across_the_source_frames_its_sub_frames_show() {
         )
         .media(media)
         .tolerance(0),
+        Case::new(
+            "video whose source changes across the shutter",
+            switching,
+            Expect::Uniform([128, 0, 128, 255]),
+        )
+        .media(
+            TestMedia::default()
+                .still_video("a", 1, 1, vec![255, 0, 0, 255])
+                .still_video("b", 1, 1, vec![0, 0, 255, 255]),
+        )
+        .frames([1.0])
+        .tolerance(0),
     ]);
+}
+
+#[test]
+fn blank_samples_leave_the_domain_where_the_source_draws() {
+    // The shape shows from frame 1, so the first half of the samples at frame 1 are blank, and all
+    // of them at frame 0.
+    let shape = json!({ "id": 1, "type": "shape", "params": {
+        "width": 8, "height": 8, "position": [224, 224], "fill_paint": ORANGE,
+    } });
+    let appearing = json!({ "id": 2, "type": "switch",
+        "params": { "selected_layer": "=if(frame < 1, -1, 0)" }, "in": { "layers": [1] } });
+    let blurred: Composition = scene(
+        (256, 256),
+        json!([shape.clone(), appearing, motion_blur(3, 2, 8, 180.0)]),
+    )
+    .frames(4)
+    .into();
+    let still: Composition = scene((256, 256), json!([shape])).frames(4).into();
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let media = TestMedia::default();
+    let frame = render(&mut renderer, &blurred, 1.0, &media);
+    let domain = renderer
+        .recorded_domain(&blurred, lumen_engine::node::NodeId::new(3))
+        .expect("the blur recorded");
+    let held = render(&mut renderer, &still, 1.0, &media);
+    let drawn = renderer
+        .recorded_domain(&still, lumen_engine::node::NodeId::new(1))
+        .expect("the shape recorded");
+    assert_eq!(domain, drawn, "the blur's domain is not the shape's");
+    let half: Vec<u8> = held
+        .rgba
+        .iter()
+        .map(|&channel| (f64::from(channel) * 4.0 / 8.0).round() as u8)
+        .collect();
+    assert!(frame.rgba == half, "the blur is not half the shape");
+    let hidden = render(&mut renderer, &blurred, 0.0, &media);
+    assert!(
+        hidden.rgba.iter().all(|&channel| channel == 0),
+        "samples that are all blank draw something"
+    );
 }

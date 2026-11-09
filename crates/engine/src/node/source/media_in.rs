@@ -273,6 +273,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
                 })?;
                 cx.video_texture(
                     self.id,
+                    resolver.id(),
                     source_frame,
                     || Ok(resolver.frame(source_frame)?),
                     size,
