@@ -166,16 +166,24 @@ impl PathMeasure {
         };
         let mut length = 0.0;
         let mut angle = None;
-        let mut push = |pieces: &mut Vec<Piece>, curve: Curve, chord: &LineSegment<f32>, t| {
+        // `build_lyon_path` ends each arc's quadratics with a line to the arc's exact end point,
+        // which rounding leaves a few ulps long and pointing anywhere. Such a line keeps the
+        // angle the path had before it.
+        let mut after_quadratic = false;
+        let mut push = |pieces: &mut Vec<Piece>,
+                        curve: Curve,
+                        chord: &LineSegment<f32>,
+                        t,
+                        may_be_sliver: bool| {
             let chord_length = f64::from(chord.length());
             if chord_length == 0.0 || pieces.len() > MAX_PATH_POINTS {
                 return;
             }
             length += chord_length;
-            // Rounding leaves chords a few ulps long where arcs end, pointing anywhere, so a
-            // chord that short keeps the angle the path had before it.
             let scale = chord.from.x.abs().max(chord.from.y.abs()).max(1.0);
-            let sliver = chord_length <= f64::from(scale * f32::EPSILON * 16.0) && angle.is_some();
+            let sliver = may_be_sliver
+                && angle.is_some()
+                && chord_length <= f64::from(scale * f32::EPSILON * 16.0);
             let mut piece = Piece {
                 curve,
                 t,
@@ -192,13 +200,23 @@ impl PathMeasure {
         };
         for event in path.iter() {
             let pieces = &mut measure.pieces;
+            let follows_quadratic = std::mem::replace(
+                &mut after_quadratic,
+                matches!(event, PathEvent::Quadratic { .. }),
+            );
             match event {
                 PathEvent::Begin { at } => {
                     measure.start.get_or_insert(at);
                 }
                 PathEvent::Line { from, to } => {
                     let line = LineSegment { from, to };
-                    push(pieces, Curve::Line(line), &line, 0.0..1.0);
+                    push(
+                        pieces,
+                        Curve::Line(line),
+                        &line,
+                        0.0..1.0,
+                        follows_quadratic,
+                    );
                 }
                 PathEvent::End { last, first, close } => {
                     if close {
@@ -206,13 +224,13 @@ impl PathMeasure {
                             from: last,
                             to: first,
                         };
-                        push(pieces, Curve::Line(line), &line, 0.0..1.0);
+                        push(pieces, Curve::Line(line), &line, 0.0..1.0, false);
                     }
                 }
                 PathEvent::Quadratic { from, ctrl, to } => {
                     let curve = QuadraticBezierSegment { from, ctrl, to };
                     curve.for_each_flattened_with_t(tolerance, &mut |chord, t| {
-                        push(pieces, Curve::Quadratic(curve), chord, t);
+                        push(pieces, Curve::Quadratic(curve), chord, t, false);
                     });
                 }
                 PathEvent::Cubic {
@@ -228,7 +246,7 @@ impl PathMeasure {
                         to,
                     };
                     curve.for_each_flattened_with_t(tolerance, &mut |chord, t| {
-                        push(pieces, Curve::Cubic(curve), chord, t);
+                        push(pieces, Curve::Cubic(curve), chord, t, false);
                     });
                 }
             }
@@ -345,10 +363,10 @@ mod tests {
     fn short_segments_far_from_the_origin_still_count() {
         assert_eq!(point("M 1000000 0 L 1000001 0", 1.0), (1000001.0, 0.0));
         assert_eq!(angle("M 1000000 0 L 1000000 1", 0.5), 90.0);
-        assert_eq!(
-            point("M 1000000 0 L 1000001 0 L 1000001 1", 0.75),
-            (1000001.0, 0.5)
-        );
+        let corner = "M 1000000 0 L 1000001 0 L 1000001 1";
+        assert_eq!(point(corner, 0.75), (1000001.0, 0.5));
+        assert_eq!(angle(corner, 0.75), 90.0);
+        assert_eq!(angle("M 1000000 0 L 1000001 0 M 0 0 L 0 1", 0.75), 90.0);
     }
 
     #[test]
