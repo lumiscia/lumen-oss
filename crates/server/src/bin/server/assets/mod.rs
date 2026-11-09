@@ -908,32 +908,35 @@ mod tests {
 
     use super::*;
 
+    /// Polls `upload` until its bytes are being checked, then drops it there, as a dropped
+    /// request is. Returns whether it was dropped: a check can finish before it is seen running.
+    async fn cancel_once_checking<F: Future>(store: &AssetStore, id: &str, upload: F) -> bool {
+        let mut upload = Box::pin(upload);
+        loop {
+            match std::future::poll_fn(|cx| Poll::Ready(upload.as_mut().poll(cx))).await {
+                Poll::Ready(_) => return false,
+                Poll::Pending if store.entries()[id].finishing => return true,
+                Poll::Pending => tokio::task::yield_now().await,
+            }
+        }
+    }
+
     #[tokio::test]
     async fn an_upload_whose_check_is_cancelled_can_be_sent_again() {
         let dir = tempfile::tempdir().unwrap();
         let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
-        let media = store
-            .create(NewUpload {
-                content_type: "image/png".to_string(),
-                file_name: "fake.png".to_string(),
-                size_bytes: 9,
-            })
-            .unwrap();
         let body = || stream_of(b"not media");
-
-        // Dropped at its first await once the bytes are being checked, as a dropped request is.
-        let mut upload = Box::pin(store.put_content(&media.id, body()));
-        loop {
-            match std::future::poll_fn(|cx| Poll::Ready(upload.as_mut().poll(cx))).await {
-                Poll::Ready(result) => panic!("the upload finished uncancelled: {result:?}"),
-                Poll::Pending if store.entries()[&media.id].finishing => break,
-                Poll::Pending => tokio::task::yield_now().await,
+        let mut cancelled = 0;
+        for _ in 0..20 {
+            let id = store.create(new_upload(9)).unwrap().id;
+            if !cancel_once_checking(&store, &id, store.put_content(&id, body())).await {
+                continue;
             }
+            cancelled += 1;
+            let retried = store.put_content(&id, body()).await.unwrap();
+            assert_eq!(retried.status, MediaStatus::Rejected);
         }
-        drop(upload);
-
-        let retried = store.put_content(&media.id, body()).await.unwrap();
-        assert_eq!(retried.status, MediaStatus::Rejected);
+        assert!(cancelled > 0, "no upload was cancelled while being checked");
     }
 
     #[tokio::test]
@@ -942,19 +945,14 @@ mod tests {
         let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
         // A file operation left running by the cancel may land before or after its cleanup, so
         // each round gives it another chance to land after.
+        let mut cancelled = 0;
         for round in 0..20 {
             let id = store.create(new_upload(9)).unwrap().id;
-
-            // Dropped at its first await once the bytes are being checked, as a dropped request is.
-            let mut upload = Box::pin(store.put_content(&id, stream_of(b"not media")));
-            loop {
-                match std::future::poll_fn(|cx| Poll::Ready(upload.as_mut().poll(cx))).await {
-                    Poll::Ready(result) => panic!("the upload finished uncancelled: {result:?}"),
-                    Poll::Pending if store.entries()[&id].finishing => break,
-                    Poll::Pending => tokio::task::yield_now().await,
-                }
+            let upload = store.put_content(&id, stream_of(b"not media"));
+            if !cancel_once_checking(&store, &id, upload).await {
+                continue;
             }
-            drop(upload);
+            cancelled += 1;
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             let upload_id = store.start_multipart(&id).unwrap();
@@ -969,6 +967,7 @@ mod tests {
                 "round {round}: {held} bytes held against a size of 9"
             );
         }
+        assert!(cancelled > 0, "no upload was cancelled while being checked");
     }
 
     const TINY_PNG: &[u8] = &[
