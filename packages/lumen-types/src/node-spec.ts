@@ -7,6 +7,7 @@ import type {
   NodeKind,
   NodeParamKind,
   NodePortKind,
+  Repeat,
   ShaderUniforms,
   TextContent,
   TextHighlight,
@@ -78,6 +79,7 @@ export type NodeLiteralValue =
   | FontFeatures
   | TextStroke
   | DashPattern
+  | Repeat
   | readonly [number, number]
   | readonly [number, number, number]
   | readonly [number, number, number, number]

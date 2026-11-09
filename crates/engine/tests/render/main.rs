@@ -13,6 +13,7 @@ mod motion;
 mod noise;
 mod operators;
 mod paint;
+mod repeat;
 mod shaders;
 mod support;
 mod text_atlas;

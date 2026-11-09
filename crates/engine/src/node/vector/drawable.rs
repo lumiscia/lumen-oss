@@ -269,7 +269,20 @@ impl DrawableMotion {
         let Some(shutter) = shutter else {
             return Self::default();
         };
-        let layout_position = shutter.frame.position;
+        Self::laid_out_at(Some(shutter), shutter.frame.position, min, max)
+    }
+
+    /// Taps for geometry within the untransformed box from `min` to `max`, laid out at
+    /// `layout_position` rather than at the frame's position.
+    pub(crate) fn laid_out_at(
+        shutter: Option<&Shutter<DrawableTransform>>,
+        layout_position: (f64, f64),
+        min: [f32; 2],
+        max: [f32; 2],
+    ) -> Self {
+        let Some(shutter) = shutter else {
+            return Self::default();
+        };
         let corners =
             [min, [max[0], min[1]], [min[0], max[1]], max].map(|corner| corner.map(f64::from));
         let taps = shutter.taps(&corners, |transform, point| {
@@ -332,7 +345,7 @@ impl DrawableMotion {
             .unwrap_or_default()
     }
 
-    fn gpu_taps(&self) -> impl Iterator<Item = GpuDrawableTransform> + '_ {
+    pub(super) fn gpu_taps(&self) -> impl Iterator<Item = GpuDrawableTransform> + '_ {
         self.taps
             .iter()
             .map(|tap| tap.to_gpu_from(self.layout_position))
@@ -459,7 +472,7 @@ impl DrawableMotion {
     }
 }
 
-fn union_bounds(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+pub(super) fn union_bounds(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     if a.iter().chain(&b).any(|value| value.is_nan()) {
         return [f32::NAN; 4];
     }

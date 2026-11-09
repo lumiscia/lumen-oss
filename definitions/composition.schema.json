@@ -534,6 +534,132 @@
       "type": "object",
       "x-lumen-type": "RenderSettings"
     },
+    "repeat": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": 0,
+          "description": "Copies per row, after which the next row starts. 0 puts every copy in one row.",
+          "title": "Columns",
+          "x-lumen-constraints": {
+            "min": 0.0,
+            "step": 1.0
+          }
+        },
+        "count": {
+          "anyOf": [
+            {
+              "maximum": 1024,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Copies to draw, from 0 to 1024. 0 draws nothing, and 1 draws the node alone.",
+          "title": "Count",
+          "x-lumen-constraints": {
+            "max": 1024.0,
+            "min": 0.0,
+            "step": 1.0
+          }
+        },
+        "opacity_offset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": 0.0,
+          "description": "Opacity added for each copy. Each copy's opacity is clamped to 0–1.",
+          "title": "Opacity Offset",
+          "x-lumen-constraints": {
+            "max": 1.0,
+            "min": -1.0,
+            "step": 0.01
+          },
+          "x-lumen-kind": "float"
+        },
+        "position_offset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/vec2"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": [0.0, 0.0],
+          "description": "Position in pixels added for each column.",
+          "title": "Position Offset",
+          "x-lumen-kind": "vec2"
+        },
+        "rotation_offset": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": 0.0,
+          "description": "Clockwise rotation in degrees added for each copy.",
+          "title": "Rotation Offset",
+          "x-lumen-constraints": {
+            "step": 1.0
+          },
+          "x-lumen-kind": "float"
+        },
+        "row_offset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/vec2"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": [0.0, 0.0],
+          "description": "Position in pixels added for each row.",
+          "title": "Row Offset",
+          "x-lumen-kind": "vec2"
+        },
+        "scale_offset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/vec2"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "default": [0.0, 0.0],
+          "description": "Scale added for each copy, per axis. A negative offset shrinks later copies through 0,\nwhere they draw nothing, into mirrored copies.",
+          "title": "Scale Offset",
+          "x-lumen-constraints": {
+            "step": 0.01
+          },
+          "x-lumen-kind": "vec2"
+        }
+      },
+      "required": ["count"],
+      "type": "object",
+      "x-lumen-type": "Repeat"
+    },
     "shaderUniformComponent": {
       "anyOf": [
         {
@@ -3022,6 +3148,12 @@
                     "title": "Position",
                     "x-lumen-kind": "vec2"
                   },
+                  "repeat": {
+                    "$ref": "#/$defs/repeat",
+                    "description": "Copies of the path drawn in one pass. Absent draws the path once.",
+                    "title": "Repeat",
+                    "x-lumen-kind": "repeat"
+                  },
                   "rotation": {
                     "anyOf": [
                       {
@@ -3818,6 +3950,12 @@
                     "description": "Shape origin in pixels.",
                     "title": "Position",
                     "x-lumen-kind": "vec2"
+                  },
+                  "repeat": {
+                    "$ref": "#/$defs/repeat",
+                    "description": "Copies of the shape drawn in one pass. Absent draws the shape once.",
+                    "title": "Repeat",
+                    "x-lumen-kind": "repeat"
                   },
                   "rotation": {
                     "anyOf": [

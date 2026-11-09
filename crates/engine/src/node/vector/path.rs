@@ -3,6 +3,7 @@ use super::drawable::{
     DrawableMotion, DrawablePlacement, DrawableStyle, DrawableTransform, largest_scale, peak_scale,
 };
 use super::renderer::{MAX_PATH_POINTS, PathPoint, PathUniforms, domain_origin, style_flags};
+use super::repeat::{Drawn, GpuCopies, Repeat, RepeatedTransform};
 use crate::error::RenderError;
 use crate::gpu::params;
 use crate::node::motion::Shutter;
@@ -53,6 +54,9 @@ pub struct PathParams {
     /// Increasing it moves the dashes toward the start of the contour.
     #[meta(name = "Stroke dash offset", step = 0.5)]
     pub stroke_dash_offset: f64,
+    /// Copies of the path drawn in one pass. Absent draws the path once.
+    #[meta()]
+    pub repeat: Option<Repeat>,
 }
 
 impl Default for PathParams {
@@ -65,6 +69,7 @@ impl Default for PathParams {
             trim_end: 1.0,
             stroke_dash: DashPattern::default(),
             stroke_dash_offset: 0.0,
+            repeat: None,
         }
     }
 }
@@ -89,17 +94,35 @@ fn path_frame(
     let shutter = params
         .placement
         .shutter(&evaluated.placement, node_id, expr)?;
-    // Curves are flattened for the largest scale that the shutter draws them at.
-    let mut points = parse_path_points(
-        &evaluated.data,
-        flattening_tolerance(peak_scale(evaluated.placement.scale, shutter.as_ref())),
-        MAX_PATH_POINTS,
-    )
-    .map_err(|details| RenderError::NodeEvaluation {
-        node_id,
-        node_kind: "Path",
-        details: format!("`data` {details}"),
-    })?;
+    let transform = evaluated.placement.transform();
+    let repeat = match (&evaluated.repeat, &params.repeat) {
+        (Some(repeat), Some(delegate)) if repeat.draws_copies() => Some((
+            repeat,
+            delegate.shutter(repeat, evaluated.placement.motion_blur, node_id, expr)?,
+        )),
+        _ => None,
+    };
+    let repeated = repeat
+        .as_ref()
+        .map(|(repeat, repeat_shutter)| RepeatedTransform {
+            base: &transform,
+            base_shutter: shutter.as_ref(),
+            repeat,
+            repeat_shutter: repeat_shutter.as_ref(),
+        });
+    // Curves are flattened for the largest scale that the shutter or a copy draws them at.
+    let peak = repeated.as_ref().map_or_else(
+        || peak_scale(evaluated.placement.scale, shutter.as_ref()),
+        RepeatedTransform::peak_scale,
+    );
+    let mut points =
+        parse_path_points(&evaluated.data, flattening_tolerance(peak), MAX_PATH_POINTS).map_err(
+            |details| RenderError::NodeEvaluation {
+                node_id,
+                node_kind: "Path",
+                details: format!("`data` {details}"),
+            },
+        )?;
     let (x, y) = evaluated.placement.position;
     let style = &evaluated.style;
     let (trim_start, trim_end) = normalized_trim_range(evaluated.trim_start, evaluated.trim_end);
@@ -134,17 +157,19 @@ fn path_frame(
     Ok(PathFrame::new(
         uniforms,
         points,
-        &evaluated.placement.transform(),
+        &transform,
         shutter.as_ref(),
+        repeated.as_ref(),
         band_capacity,
     ))
 }
 
-/// A frame's uniforms, points and bands for the path shader.
+/// A frame's uniforms, points and bands for the path shader, and its copies when it repeats.
 pub(super) struct PathFrame {
     pub(super) uniforms: PathUniforms,
     pub(super) points: Vec<PathPoint>,
     pub(super) bands: Vec<u32>,
+    pub(super) copies: Option<GpuCopies>,
 }
 
 impl PathFrame {
@@ -154,6 +179,7 @@ impl PathFrame {
         points: Vec<PathPoint>,
         transform: &DrawableTransform,
         shutter: Option<&Shutter<DrawableTransform>>,
+        repeated: Option<&RepeatedTransform<'_>>,
         band_capacity: usize,
     ) -> Self {
         let bounds = point_bounds(&points);
@@ -169,20 +195,48 @@ impl PathFrame {
             min[0] + uniforms.bounds_size[0],
             min[1] + uniforms.bounds_size[1],
         ];
-        let motion = DrawableMotion::new(shutter, min, max);
+        let Some(repeated) = repeated else {
+            let motion = DrawableMotion::new(shutter, min, max);
+            let bands = super::path_bands::bin_path(
+                &mut uniforms,
+                &points,
+                bounds,
+                &Drawn::Once(transform, &motion),
+                band_capacity,
+            );
+            uniforms.motion = motion.to_gpu();
+            return Self {
+                uniforms,
+                points,
+                bands,
+                copies: None,
+            };
+        };
+        let copies = repeated.copies(min, max);
         let bands = super::path_bands::bin_path(
             &mut uniforms,
             &points,
             bounds,
-            transform,
-            &motion,
+            &Drawn::Copies(&copies),
             band_capacity,
         );
-        uniforms.motion = motion.to_gpu();
+        // Each copy is culled like the path drawn once, by a segment's reach at its own scale.
+        let mut gpu = copies.to_gpu(
+            min,
+            max,
+            |scale| super::path_bands::segment_reach(&uniforms, scale) as f32,
+            0.0,
+        );
+        if bands.is_empty() {
+            gpu.copies.clear();
+        } else {
+            uniforms.screen_bounds = gpu.bounds;
+        }
         Self {
             uniforms,
             points,
             bands,
+            copies: Some(gpu),
         }
     }
 }
@@ -536,7 +590,16 @@ fn precise_distance(from: [f32; 2], to: [f32; 2]) -> f64 {
 
 impl crate::gpu::frame_graph::RecordNode for Path {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute("path", PATH_SHADER, "cs_main", RECORD_PATH_LAYOUT)
+        programs.compute("path", PATH_SHADER, "cs_main", RECORD_PATH_LAYOUT)?;
+        if self.params.repeat.is_some() {
+            programs.compute(
+                "path_repeat",
+                PATH_SHADER,
+                "cs_repeat",
+                RECORD_PATH_REPEAT_LAYOUT,
+            )?;
+        }
+        Ok(())
     }
 
     fn record(
@@ -560,7 +623,17 @@ const RECORD_PATH_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
 
-/// Records a vector path, sized to what it draws this frame.
+const RECORD_PATH_REPEAT_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Uniform),
+    lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
+    lumen_gpu::LayoutEntry::compute(4, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(5, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(6, lumen_gpu::LayoutKind::Storage),
+];
+
+/// Records a vector path, or its copies, sized to what it draws this frame.
 fn record_path_source(
     cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     frame: PathFrame,
@@ -571,20 +644,32 @@ fn record_path_source(
     uniforms.origin = domain_origin(domain);
     let size = domain.storage_size;
     let tex = cx.storage_target(size);
-    let program = cx.program("path", PATH_SHADER, "cs_main", RECORD_PATH_LAYOUT)?;
     let uniform = cx.rec.uniform(&uniforms);
     let points = cx.rec.storage_parts(&[bytemuck::cast_slice(&frame.points)]);
     let bands = cx.rec.storage_parts(&[bytemuck::cast_slice(&frame.bands)]);
-    cx.dispatch(
-        program,
-        &[
-            (0, uniform),
-            (1, points),
-            (2, bands),
-            (3, lumen_gpu::Res::Tex(tex)),
-        ],
-        params::dispatch_for(size),
-    );
+    let bindings = [
+        (0, uniform),
+        (1, points),
+        (2, bands),
+        (3, lumen_gpu::Res::Tex(tex)),
+    ];
+    if let Some(copies) = &frame.copies {
+        let program = cx.program(
+            "path_repeat",
+            PATH_SHADER,
+            "cs_repeat",
+            RECORD_PATH_REPEAT_LAYOUT,
+        )?;
+        let [copy_list, taps, tiles] = copies.storage(cx, domain);
+        cx.dispatch(
+            program,
+            &[&bindings[..], &[(4, copy_list), (5, taps), (6, tiles)]].concat(),
+            params::dispatch_for(size),
+        );
+    } else {
+        let program = cx.program("path", PATH_SHADER, "cs_main", RECORD_PATH_LAYOUT)?;
+        cx.dispatch(program, &bindings, params::dispatch_for(size));
+    }
     Ok(crate::gpu::frame_graph::Raster {
         tex,
         domain,

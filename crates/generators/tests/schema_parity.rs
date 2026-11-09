@@ -390,6 +390,43 @@ fn dash_pattern_schema_matches_engine_parsing() {
 }
 
 #[test]
+fn repeat_schema_matches_engine_parsing() {
+    let validator = schema_validator();
+    for (repeat, valid) in [
+        (json!({ "count": 0 }), true),
+        (
+            json!({ "count": 1024, "position_offset": [4, 0], "opacity_offset": "=-0.1" }),
+            true,
+        ),
+        (
+            json!({ "count": "=frame", "columns": 8, "row_offset": [0, 10] }),
+            true,
+        ),
+        (json!({ "count": 1025 }), false),
+        (json!({ "count": -1 }), false),
+        (json!({ "count": 4, "columns": -1 }), false),
+        (json!({ "position_offset": [4, 0] }), false),
+        (json!({ "count": 2, "offset": [4, 0] }), false),
+        (json!("=frame"), false),
+    ] {
+        for kind in ["shape", "path"] {
+            let composition =
+                composition_with_node(&node_schema(kind), json!({ "repeat": repeat }));
+            assert_eq!(
+                validator.is_valid(&composition),
+                valid,
+                "{kind} {repeat} schema"
+            );
+            assert_eq!(
+                lumen_engine::json::parse_value(&composition).is_ok(),
+                valid,
+                "{kind} {repeat} engine"
+            );
+        }
+    }
+}
+
+#[test]
 fn compositions_schema_matches_engine_parsing() {
     let validator = schema_validator();
     let demo: Value = serde_json::from_str(include_str!("../../local/demo/clips.json")).unwrap();

@@ -14,6 +14,7 @@ use crate::node::{
         paint::GpuPaint,
         path::PATH_SHADER,
         renderer::{PathPoint, PathUniforms},
+        repeat::GpuRepeatCopy,
     },
 };
 
@@ -80,6 +81,14 @@ fn path_layouts() -> Vec<Layout> {
             flags,
             offset,
             dash_phase,
+        ),
+        layout!(
+            "RepeatCopy",
+            GpuRepeatCopy,
+            transform,
+            bounds,
+            first_tap,
+            tap_count,
         ),
     ]
 }
