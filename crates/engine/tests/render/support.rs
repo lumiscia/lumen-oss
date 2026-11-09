@@ -321,7 +321,13 @@ impl MediaStore for TestMedia {
         family: &str,
     ) -> Result<Option<Box<dyn FontResolver>>, lumen_engine::error::MediaError> {
         let Some((id, data)) = self.fonts.get(family) else {
-            return Ok(None);
+            // As an asset store does, an id it doesn't hold is an error rather than a fallback.
+            return match lumen_engine::media::asset_id(family) {
+                Some(id) => {
+                    Err(lumen_engine::error::MediaError::AssetNotFound { id: id.to_string() })
+                }
+                None => Ok(None),
+            };
         };
         self.font_requests.fetch_add(1, Ordering::Relaxed);
         Ok(Some(Box::new(TestFont {

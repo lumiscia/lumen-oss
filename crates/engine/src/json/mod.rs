@@ -680,10 +680,14 @@ fn asset_errors(
         };
         let error = match expected {
             Some(kind) => resolve_asset(assets, id, kind).err(),
-            None => assets
-                .resolve(id)
-                .is_none()
-                .then(|| MediaError::AssetNotFound { id: id.to_string() }),
+            // A kind set by an expression is an image or a video, and either reads an asset of its kind.
+            None => match resolve_asset(assets, id, AssetKind::Image) {
+                Err(MediaError::AssetWrongKind {
+                    actual: AssetKind::Video,
+                    ..
+                }) => None,
+                result => result.err(),
+            },
         };
         if let Some(error) = error {
             errors.push(Diagnostic::from_located_error(&error.into(), at));
@@ -694,7 +698,6 @@ fn asset_errors(
             match node {
                 NodeKind::MediaIn(media) => {
                     if let Deferred::Value(source) = &media.params.source {
-                        // A kind set by an expression could be either, so only the id is checked.
                         let kind = match &media.params.kind {
                             MediaInSourceKindDelegate::Image => Some(AssetKind::Image),
                             MediaInSourceKindDelegate::Video => Some(AssetKind::Video),
@@ -2157,7 +2160,11 @@ mod tests {
                     "font_family": "asset:brand",
                     "content": [{ "text": "a", "font_family": "asset:photo" }, { "text": "b" }]
                 } },
-                { "id": 6, "type": "media_output" }
+                { "id": 6, "type": "media_output" },
+                media(7, "=if(frame < 5, 0, 1)", "asset:clip"),
+                media(8, "=if(frame < 5, 0, 1)", "asset:photo"),
+                media(9, "=if(frame < 5, 0, 1)", "asset:brand"),
+                media(10, "=if(frame < 5, 0, 1)", "asset:voice")
             ],
             "connections": [{ "from_node": 5, "to_node": 6, "to_port": "source" }],
             "audio": {
@@ -2178,6 +2185,8 @@ mod tests {
                     "/nodes/4/params/content/0/font_family",
                     Some(5)
                 ),
+                ("asset.wrong_kind", "/nodes/8/params/source", Some(9)),
+                ("asset.wrong_kind", "/nodes/9/params/source", Some(10)),
                 (
                     "asset.wrong_kind",
                     "/compositions/card/nodes/0/params/source",
@@ -2189,7 +2198,7 @@ mod tests {
         // Without the asset store, references aren't checked, nor taken for families.
         assert!(check_value(&document, Some(&unknown), None).is_empty());
         let no_assets = check_value(&document, None, Some(&crate::media::NoAssets));
-        assert_eq!(no_assets.len(), 8);
+        assert_eq!(no_assets.len(), 12);
         assert!(
             no_assets
                 .iter()

@@ -1408,13 +1408,7 @@ pub(crate) fn load_font_families(
     media: Option<&dyn MediaStore>,
     layout: &TextLayoutParams,
 ) -> crate::Result<()> {
-    load_font_family(text_system, media, &layout.font_family)?;
-    for family in layout
-        .content
-        .0
-        .iter()
-        .filter_map(|span| span.font_family.as_deref())
-    {
+    for family in used_font_families(layout) {
         load_font_family(text_system, media, family)?;
     }
     Ok(())

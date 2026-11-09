@@ -729,6 +729,22 @@ fn a_font_staged_under_another_name_draws_as_under_its_own() {
 }
 
 #[test]
+fn a_node_family_every_span_overrides_is_not_loaded() {
+    let gpu = gpu();
+    let spans = |base: &str| -> Composition {
+        one_text(json!({
+            "font_family": base, "font_size": 64, "position": [16, 40],
+            "content": [{ "text": "Rag", "font_family": "Roboto" }, { "text": " Wave", "font_family": "Roboto" }]
+        }))
+        .into()
+    };
+    let media = TestMedia::default();
+    let expected = render(&mut gpu.renderer(), &spans("Roboto"), 0.0, &media).rgba;
+    let pixels = render(&mut gpu.renderer(), &spans("asset:missing"), 0.0, &media).rgba;
+    assert!(pixels == expected);
+}
+
+#[test]
 fn replacing_a_font_mid_job_leaves_no_stale_glyph_on_screen() {
     let gpu = gpu();
     let glyph: Composition = one_text(json!({
