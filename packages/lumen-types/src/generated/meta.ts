@@ -1367,13 +1367,14 @@ export interface GlowNode extends CompositionNodeBase<"glow"> {
   readonly params?: {
     /** Outputs only the glow instead of adding it to the source. */
     readonly glow_only?: ExpressionValue<boolean>;
-    /** Multiplies the glow's brightness. */
+    /** Multiplies the glow's brightness, up to 1000. */
     readonly intensity?: ExpressionValue<number>;
     /** Glow blur radius in pixels, as on `blur`. Radii above about 588 look the same. */
     readonly radius?: ExpressionValue<number>;
     /**
      * Luminance from 0 to 1 where the glow starts. Brighter pixels glow more, white at full
-     * strength, and 1 lets nothing glow.
+     * strength, and 1 lets nothing glow. Past 254/255 white dims too, so the glow fades out
+     * continuously as the threshold reaches 1.
      */
     readonly threshold?: ExpressionValue<number>;
     /**

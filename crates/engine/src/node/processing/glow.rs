@@ -9,18 +9,21 @@ use crate::node::{
 use super::gaussian;
 
 const SHADER: &str = include_str!("glow.wgsl");
+/// Keeps the brightest light well inside the half-float range the bright pass stores it in.
+const MAX_INTENSITY: f64 = 1000.0;
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct GlowParams {
     /// Luminance from 0 to 1 where the glow starts. Brighter pixels glow more, white at full
-    /// strength, and 1 lets nothing glow.
+    /// strength, and 1 lets nothing glow. Past 254/255 white dims too, so the glow fades out
+    /// continuously as the threshold reaches 1.
     #[meta(min = 0, max = 1, step = 0.01)]
     pub threshold: f64,
     /// Glow blur radius in pixels, as on `blur`. Radii above about 588 look the same.
     #[meta(min = 0, step = 0.5)]
     pub radius: f64,
-    /// Multiplies the glow's brightness.
-    #[meta(min = 0, step = 0.05)]
+    /// Multiplies the glow's brightness, up to 1000.
+    #[meta(min = 0, max = 1000, step = 0.05)]
     pub intensity: f64,
     /// Colours the glow with `tint` instead of the colours that cast it.
     #[meta()]
@@ -143,7 +146,7 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
             tint: [tint[0], tint[1], tint[2], 0.0],
             values: [
                 finite_or(evaluated.threshold, 1.0).clamp(0.0, 1.0) as f32,
-                finite_or(evaluated.intensity, 0.0).max(0.0) as f32,
+                finite_or(evaluated.intensity, 0.0).clamp(0.0, MAX_INTENSITY) as f32,
                 f32::from(u8::from(evaluated.tint_enabled)),
                 0.0,
             ],

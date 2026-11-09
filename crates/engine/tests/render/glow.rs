@@ -171,6 +171,22 @@ fn glow_is_deterministic_and_continuous_in_threshold() {
     assert!(jump <= Some(3), "a small threshold step jumps {jump:?}");
 }
 
+/// Intensity is capped where a single white pixel's light still fits the bright pass's half
+/// floats, so the blur spreads all of it.
+#[test]
+fn intensity_past_the_cap_glows_as_the_cap() {
+    let at = |intensity: f64| {
+        render_scene(glowing(
+            (32, 32),
+            square(json!([8, 8]), 1, [255; 4]),
+            json!({ "threshold": 0, "radius": 4, "intensity": intensity, "glow_only": true }),
+        ))
+    };
+    let capped = at(1000.0);
+    assert!(capped.rgba.iter().any(|&byte| byte > 0 && byte < 255));
+    assert_eq!(capped.rgba, at(1e300).rgba);
+}
+
 /// Sources sized to their bounds, grown by the blur's reach, draw what full-frame sources draw.
 #[test]
 fn glow_bounds_match_reference() {
