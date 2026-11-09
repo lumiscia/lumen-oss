@@ -853,7 +853,7 @@ mod tests {
             ("keyframes(frame, 'linear')", "expects at least one key"),
             (
                 "key(0, 'a')",
-                "`value` must be a number, vec2 or colour, got string",
+                "strings interpolate only as path data, and `value` is malformed path data",
             ),
             (
                 "abs(cubic_bezier(vec2(0, 0), vec2(1, 1)))",
@@ -935,8 +935,8 @@ mod tests {
                 "text_width expects numeric arguments",
             ),
             (
-                "lerp('0', '1', 0.5)",
-                "expects `from` and `to` of the same type",
+                "lerp(lowercase('0'), '1', 0.5)",
+                "strings interpolate only as path data, and `from` is malformed path data",
             ),
         ] {
             let error = evaluate(source, 0).unwrap_err().to_string();

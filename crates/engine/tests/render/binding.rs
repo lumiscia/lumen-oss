@@ -307,15 +307,31 @@ fn expressions_on_path_data_draw_like_their_values() {
             .tolerance(0)
     };
     let bar = "M 0 0 H 6 V 2 H 0 Z";
-    check(vec![row(
-        "a path placed by path_point and path_angle",
-        json!({
-            "data": bar,
-            "position": "=path_point('M 2 2 L 2 22', frame / 10)",
-            "rotation": "=path_angle('M 2 2 L 2 22', frame / 10)",
-        }),
-        json!({ "data": bar, "position": [2, 12], "rotation": 90 }),
-    )]);
+    let (from, to) = ("M 2 2 L 22 2 L 12 18 Z", "M 2 12 L 22 12 L 12 6 Z");
+    let halfway = json!({ "data": "M 2 7 L 22 7 L 12 12 Z" });
+    check(vec![
+        row(
+            "a path placed by path_point and path_angle",
+            json!({
+                "data": bar,
+                "position": "=path_point('M 2 2 L 2 22', frame / 10)",
+                "rotation": "=path_angle('M 2 2 L 2 22', frame / 10)",
+            }),
+            json!({ "data": bar, "position": [2, 12], "rotation": 90 }),
+        ),
+        row(
+            "a path whose data lerps",
+            json!({ "data": format!("=lerp('{from}', '{to}', frame / 10)") }),
+            halfway.clone(),
+        ),
+        row(
+            "a path whose data is keyframed",
+            json!({ "data": format!(
+                "=keyframes(frame, key(0, '{from}'), key(10, '{to}', 'in_out_cubic'))"
+            ) }),
+            halfway,
+        ),
+    ]);
 }
 
 /// Only the selected branch is drawn, so a frame records one pass for its one solid.

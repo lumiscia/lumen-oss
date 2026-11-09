@@ -141,6 +141,14 @@ const cases: Readonly<Record<string, Case>> = {
   random: { expression: random(7, 0.5), expected: 0.7553920660716886 },
   path_point: { expression: pathPoint("M 0 0 L 100 0 L 100 300", 0.5), expected: [100, 100] },
   path_angle: { expression: pathAngle("M 0 0 L 100 0 L 100 300", 0.5), expected: 90 },
+  path_lerp: {
+    expression: lerp("M 0 0 L 100 0 Z", "M 0 40 L 100 40 Z", 0.25),
+    expected: "M 0 10 L 100 10 Z",
+  },
+  path_keys: {
+    expression: keyframes(frame, key(30, "M 0 0 H 10"), key(60, "M 0 20 H 30", ease.inQuad)),
+    expected: "M 0 10 H 20",
+  },
   prop: { expression: prop("title"), expected: "Lumen" },
   issue_position: { expression: vec2(160, 900).add(rise(570)), expected: [160, 960] },
   issue_opacity: { expression: tween(0, 1, sec(1.5), ms(300), ease.outExpo), expected: 0 },

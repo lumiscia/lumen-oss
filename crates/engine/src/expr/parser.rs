@@ -8,10 +8,11 @@ use crate::{
             parse_hex_color,
         },
         builtins::{
-            handle_x_error, is_key_value, key_order_error, key_value_error, kind_error,
-            mixed_keys_error, param, range_error, unknown_easing, unusable_result,
+            FROM_TO, handle_x_error, is_key_value, key_name, key_order_error, key_value_error,
+            kind_error, mixed_keys_error, param, range_error, unknown_easing, unusable_result,
         },
         functions,
+        path::morph,
         spec::{BuiltinSpec, NamedEasing, ValueKind, builtin_for_name},
     },
     node::{NodeId, vector::path::build_lyon_path},
@@ -677,6 +678,13 @@ fn literal_key_time(node: &ExprNode) -> Option<(f64, &'static str)> {
     }
 }
 
+fn literal_string(node: &ExprNode) -> Option<&str> {
+    match node {
+        ExprNode::Literal(ExpressionValue::String(text)) => Some(text),
+        _ => None,
+    }
+}
+
 fn literal_number(node: &ExprNode) -> Option<f64> {
     match node {
         ExprNode::Literal(ExpressionValue::Number(value)) => Some(*value),
@@ -756,11 +764,20 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
                 }
             }
         },
+        BuiltinFn::Lerp | BuiltinFn::Tween => {
+            if let (Some(from), Some(to)) = (literal_string(&args[0]), literal_string(&args[1])) {
+                morph(from, to, 0.0).map_err(|morph| error(morph.describe(FROM_TO)))?;
+            }
+        }
         BuiltinFn::Key => {
             if let Some(kind) = static_kind(&args[1])
                 && !is_key_value(kind)
             {
                 return Err(error(key_value_error(kind)));
+            }
+            if let Some(data) = literal_string(&args[1]) {
+                let names = ["`value`"; 2];
+                morph(data, data, 0.0).map_err(|morph| error(morph.describe(names)))?;
             }
         }
         BuiltinFn::Keyframes => {
@@ -771,10 +788,38 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
             let keys = &args[if second_is_key { 1 } else { 2 }..];
             let mut first_kind = None;
             let (mut previous_frames, mut previous_seconds) = (None, None);
+            let default_ease = (!second_is_key).then(|| args.get(1)).flatten();
+            // The previous key's literal path, time and name, while it's known to interpolate
+            // into the next key.
+            let mut previous_path: Option<(&str, (f64, &str), String)> = None;
             for key in keys {
                 let ExprNode::Builtin(BuiltinFn::Key, key) = key else {
+                    previous_path = None;
                     continue;
                 };
+                // Neighbouring literal paths must match where the parser can tell they
+                // interpolate: at different literal times in the same unit, with an easing
+                // other than a hold.
+                // Anything else is checked when it interpolates.
+                let path = literal_string(&key[1]).zip(literal_key_time(&key[0]));
+                if let (Some((data, at)), Some((previous, previous_at, previous_name))) =
+                    (path, &previous_path)
+                    && at.1 == previous_at.1
+                    && at.0 != previous_at.0
+                {
+                    let name = key_name(format!("{}{}", at.0, at.1));
+                    morph(previous, data, 0.0).map_err(|morph| {
+                        error(morph.describe([previous_name.as_str(), name.as_str()]))
+                    })?;
+                }
+                let interpolates = match key.get(2).or(default_ease) {
+                    None => true,
+                    Some(ExprNode::Literal(ExpressionValue::String(name))) => name != "hold",
+                    Some(_) => false,
+                };
+                previous_path = path
+                    .filter(|_| interpolates)
+                    .map(|(data, at)| (data, at, key_name(format!("{}{}", at.0, at.1))));
                 if let Some(kind) = static_kind(&key[1]) {
                     match first_kind {
                         Some(first) if first != kind => {

@@ -151,7 +151,7 @@ export const expressionBuiltins = [
         "name": "t"
       }
     ],
-    "doc": "Interpolates two numbers, vec2 values or colours by `t`. Colours mix premultiplied.",
+    "doc": "Interpolates two numbers, vec2 values, colours or path data strings by `t`. Colours mix premultiplied. Path data strings must have the same commands in the same order, and interpolate point by point.",
     "maxArgs": 3,
     "minArgs": 3,
     "name": "lerp",
@@ -480,7 +480,7 @@ export const expressionBuiltins = [
         "name": "ease"
       }
     ],
-    "doc": "A keyframe for `keyframes`: `value` at `at`, a number, vec2 or colour. `ease` is how the curve leaves this key toward the next.",
+    "doc": "A keyframe for `keyframes`: `value` at `at`, a number, vec2, colour or path data. `ease` is how the curve leaves this key toward the next.",
     "maxArgs": 3,
     "minArgs": 2,
     "name": "key",

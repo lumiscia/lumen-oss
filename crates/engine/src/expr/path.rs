@@ -1,12 +1,14 @@
-//! Sampling path data by arc length for `path_point` and `path_angle`.
+//! Path data in expressions: sampled by arc length for `path_point` and `path_angle`, and
+//! interpolated by `lerp`, `tween` and `keyframes`.
 
-use std::{cell::RefCell, collections::VecDeque, ops::Range, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, fmt::Write, ops::Range, rc::Rc};
 
 use lyon_path::{
     PathEvent,
     geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment},
     math::{Point, Vector},
 };
+use svgtypes::PathSegment;
 
 use crate::node::vector::{path::build_lyon_path, renderer::MAX_PATH_POINTS};
 
@@ -262,6 +264,181 @@ fn unwrap_angle(angle: f64, near: f64) -> f64 {
     near + (angle - near + 180.0).rem_euclid(360.0) - 180.0
 }
 
+/// Why two path data strings don't interpolate.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum MorphError {
+    /// The side `side`, 0 for `from` and 1 for `to`, isn't path data.
+    Malformed {
+        side: usize,
+        details: String,
+    },
+    /// Command `command`, counting from 1, is described on each side, or `None` where that side
+    /// has no more commands.
+    Differs {
+        command: usize,
+        from: Option<String>,
+        to: Option<String>,
+    },
+    NotFinite,
+}
+
+impl MorphError {
+    /// The error, naming the sides `names`.
+    pub(super) fn describe(&self, names: [&str; 2]) -> String {
+        match self {
+            Self::Malformed { side, details } => format!(
+                "strings interpolate only as path data, and {} is malformed path data: {details}",
+                names[*side]
+            ),
+            Self::Differs { command, from, to } => {
+                format!(
+                    "path data differs at command {command}: {} has {} where {} has {}; only \
+                     paths with the same commands in the same order interpolate",
+                    names[0],
+                    from.as_deref().unwrap_or("no command"),
+                    names[1],
+                    to.as_deref().unwrap_or("no command"),
+                )
+            }
+            Self::NotFinite => {
+                "path data interpolates to a coordinate that isn't finite".to_string()
+            }
+        }
+    }
+}
+
+/// Interpolates two path data strings with the same commands in the same order, point by point.
+/// The result is path data with each command written out, its numbers rounded to the `f32` that
+/// the path node draws with. Numbers equal on both sides aren't mixed, so they don't jitter from
+/// frame to frame.
+pub(super) fn morph(from: &str, to: &str, t: f64) -> Result<String, MorphError> {
+    let commands = |data: &str, side| {
+        svgtypes::PathParser::from(data)
+            .map(|segment| segment.map(Command::new))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| MorphError::Malformed {
+                side,
+                details: error.to_string(),
+            })
+    };
+    let (from, to) = (commands(from, 0)?, commands(to, 1)?);
+    let mut data = String::new();
+    for index in 0..from.len().max(to.len()) {
+        let (from, to) = match (from.get(index), to.get(index)) {
+            (Some(from), Some(to))
+                if from.letter == to.letter && from.arc_flags == to.arc_flags =>
+            {
+                (from, to)
+            }
+            (from, to) => {
+                return Err(MorphError::Differs {
+                    command: index + 1,
+                    from: from.map(Command::describe),
+                    to: to.map(Command::describe),
+                });
+            }
+        };
+        if index > 0 {
+            data.push(' ');
+        }
+        data.push(from.letter);
+        for (value, (&from_value, &to_value)) in from.values().iter().zip(to.values()).enumerate() {
+            if let (Some((large_arc, sweep)), 3) = (from.arc_flags, value) {
+                let _ = write!(data, " {} {}", u8::from(large_arc), u8::from(sweep));
+            }
+            let mixed = if from_value == to_value {
+                from_value
+            } else {
+                from_value * (1.0 - t) + to_value * t
+            };
+            let mixed = mixed as f32;
+            if !mixed.is_finite() {
+                return Err(MorphError::NotFinite);
+            }
+            let _ = write!(data, " {mixed}");
+        }
+    }
+    Ok(data)
+}
+
+/// A path command and its numbers, with an arc's flags apart from them.
+struct Command {
+    /// The command's letter, lowercase when relative.
+    letter: char,
+    values: [f64; 7],
+    count: usize,
+    /// An arc's large-arc and sweep flags, which go between its rotation and end point.
+    arc_flags: Option<(bool, bool)>,
+}
+
+impl Command {
+    fn new(segment: PathSegment) -> Self {
+        let command = |abs: bool, letter: char, numbers: &[f64]| {
+            let mut values = [0.0; 7];
+            values[..numbers.len()].copy_from_slice(numbers);
+            Self {
+                letter: if abs {
+                    letter
+                } else {
+                    letter.to_ascii_lowercase()
+                },
+                values,
+                count: numbers.len(),
+                arc_flags: None,
+            }
+        };
+        match segment {
+            PathSegment::MoveTo { abs, x, y } => command(abs, 'M', &[x, y]),
+            PathSegment::LineTo { abs, x, y } => command(abs, 'L', &[x, y]),
+            PathSegment::HorizontalLineTo { abs, x } => command(abs, 'H', &[x]),
+            PathSegment::VerticalLineTo { abs, y } => command(abs, 'V', &[y]),
+            PathSegment::CurveTo {
+                abs,
+                x1,
+                y1,
+                x2,
+                y2,
+                x,
+                y,
+            } => command(abs, 'C', &[x1, y1, x2, y2, x, y]),
+            PathSegment::SmoothCurveTo { abs, x2, y2, x, y } => command(abs, 'S', &[x2, y2, x, y]),
+            PathSegment::Quadratic { abs, x1, y1, x, y } => command(abs, 'Q', &[x1, y1, x, y]),
+            PathSegment::SmoothQuadratic { abs, x, y } => command(abs, 'T', &[x, y]),
+            PathSegment::EllipticalArc {
+                abs,
+                rx,
+                ry,
+                x_axis_rotation,
+                large_arc,
+                sweep,
+                x,
+                y,
+            } => Self {
+                arc_flags: Some((large_arc, sweep)),
+                ..command(abs, 'A', &[rx, ry, x_axis_rotation, x, y])
+            },
+            // `z` and `Z` both close the contour.
+            PathSegment::ClosePath { .. } => command(true, 'Z', &[]),
+        }
+    }
+
+    fn values(&self) -> &[f64] {
+        &self.values[..self.count]
+    }
+
+    fn describe(&self) -> String {
+        match self.arc_flags {
+            Some((large_arc, sweep)) => format!(
+                "`{}` with large-arc flag {} and sweep flag {}",
+                self.letter,
+                u8::from(large_arc),
+                u8::from(sweep)
+            ),
+            None => format!("`{}`", self.letter),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +558,178 @@ mod tests {
         ] {
             let error = evaluate(source).unwrap_err();
             assert!(error.contains(expected), "{source}: {error}");
+        }
+    }
+
+    fn string(source: &str, frame: f64) -> Result<String, String> {
+        let ctx = ExpressionContext {
+            frame,
+            ..ExpressionContext::default()
+        };
+        match Expression::parse(source)
+            .map_err(|error| error.to_string())?
+            .evaluate(&ctx)
+            .map_err(|error| error.to_string())?
+        {
+            ExpressionValue::String(data) => Ok(data),
+            other => panic!("{source} is not a string: {other:?}"),
+        }
+    }
+
+    const TRIANGLE: &str = "M 0 0 L 100 0 L 50 80 Z";
+    const FLIPPED: &str = "M 0 40 L 100 40 L 50 0 Z";
+
+    #[test]
+    fn lerp_morphs_path_data_point_by_point() {
+        let lerp = |t: f64| string(&format!("lerp('{TRIANGLE}', '{FLIPPED}', {t})"), 0.0);
+        assert_eq!(lerp(0.0).unwrap(), TRIANGLE);
+        assert_eq!(lerp(1.0).unwrap(), FLIPPED);
+        assert_eq!(lerp(0.5).unwrap(), "M 0 20 L 100 20 L 50 40 Z");
+        assert_eq!(
+            string(&format!("tween('{TRIANGLE}', '{FLIPPED}', 0, 10)"), 5.0).unwrap(),
+            "M 0 20 L 100 20 L 50 40 Z"
+        );
+
+        // Every command keeps its letter and case, implicit commands are written out, and an
+        // arc's flags stay put.
+        let from = "M 0 0 10 0 h 5 v 5 C 0 0 1 1 2 2 s 3 3 4 4 Q 1 1 2 2 t 4 4 A 5 5 0 1 0 9 9 z";
+        let to = "M 0 2 10 2 h 7 v 7 C 2 2 3 3 4 4 s 5 5 6 6 Q 3 3 4 4 t 6 6 A 7 7 90 1 0 11 11 Z";
+        let mid = string(&format!("lerp('{from}', '{to}', 0.5)"), 0.0).unwrap();
+        assert_eq!(
+            mid,
+            "M 0 1 L 10 1 h 6 v 6 C 1 1 2 2 3 3 s 4 4 5 5 Q 2 2 3 3 t 5 5 A 6 6 45 1 0 10 10 Z"
+        );
+        build_lyon_path(&mid).unwrap();
+    }
+
+    #[test]
+    fn morphed_numbers_are_as_precise_as_the_path_node_draws() {
+        // f64 mixing gives 0.15000000000000002 and 0.30000000000000004, which draw as the f32
+        // nearest 0.15 and 0.3. Numbers the paths share aren't mixed.
+        assert_eq!(
+            morph(
+                "M 0.1 7.123456789 L 0.1 0",
+                "M 0.2 7.123456789 L 0.5 0",
+                0.5
+            )
+            .unwrap(),
+            "M 0.15 7.123457 L 0.3 0"
+        );
+        for step in 0..=10 {
+            let data = morph("M 0 0.1 L 3 3", "M 30 0.1 L 3 9", f64::from(step) / 10.0).unwrap();
+            assert!(
+                data.starts_with(&format!("M {} 0.1 L 3 ", step * 3)),
+                "{data}"
+            );
+        }
+        assert_eq!(
+            morph("M 0 0", "M 1 0", f64::NAN),
+            Err(MorphError::NotFinite)
+        );
+        assert_eq!(morph("M 0 0", "M 1 0", 1e40), Err(MorphError::NotFinite));
+    }
+
+    #[test]
+    fn keyframes_morph_path_data() {
+        let track =
+            format!("keyframes(frame, key(0, '{TRIANGLE}', 'in_quad'), key(30, '{FLIPPED}'))");
+        assert_eq!(string(&track, -5.0).unwrap(), TRIANGLE);
+        assert_eq!(string(&track, 15.0).unwrap(), "M 0 10 L 100 10 L 50 60 Z");
+        assert_eq!(string(&track, 30.0).unwrap(), FLIPPED);
+        let track =
+            format!("keyframes(frame, key(0, '{TRIANGLE}'), key(30, '{FLIPPED}', 'in_out_cubic'))");
+        assert_eq!(string(&track, 15.0).unwrap(), "M 0 20 L 100 20 L 50 40 Z");
+    }
+
+    #[test]
+    fn keys_that_dont_interpolate_may_differ_in_structure() {
+        const CURVE: &str = "M 0 0 Q 5 10 10 0";
+        // A hold switches shapes at the next key.
+        for track in [
+            format!("keyframes(frame, key(0, '{TRIANGLE}', 'hold'), key(10, '{CURVE}'))"),
+            format!("keyframes(frame, 'hold', key(0, '{TRIANGLE}'), key(10, '{CURVE}'))"),
+            format!(
+                "keyframes(frame, key(0, '{TRIANGLE}', 'hold'), key(10, if(frame > 0, '{CURVE}', '')))"
+            ),
+        ] {
+            assert_eq!(string(&track, 5.0).unwrap(), TRIANGLE, "{track}");
+            assert_eq!(string(&track, 10.0).unwrap(), CURVE, "{track}");
+        }
+        // An easing that is 0 partway still interpolates, so the structures must match.
+        let track = format!(
+            "keyframes(frame, cubic_bezier(vec2(0, 0), vec2(1, -1 / 3)), key(0, '{TRIANGLE}'), key(10, '{CURVE}'))"
+        );
+        assert!(
+            string(&track, 5.0)
+                .unwrap_err()
+                .contains("path data differs")
+        );
+        // Keys at the same time jump, whatever their units.
+        let track = format!("keyframes(frame, key(0, '{TRIANGLE}'), key(0s, '{CURVE}'))");
+        assert_eq!(string(&track, 0.0).unwrap(), CURVE);
+        let track = format!(
+            "keyframes(frame, key(0, '{TRIANGLE}'), key(10, '{TRIANGLE}'), key(10, '{CURVE}'))"
+        );
+        assert_eq!(string(&track, 10.0).unwrap(), CURVE);
+        // Only neighbouring keys interpolate, so a key the parser can't read separates the
+        // literal paths around it.
+        let track = format!(
+            "keyframes(frame, key(0, 'M 0 0 L 10 0'), key(10, if(frame < 10, 'M 0 0 L 20 0', '{CURVE}')), key(20, 'M 0 0 Q 10 20 20 0'))"
+        );
+        assert_eq!(string(&track, 5.0).unwrap(), "M 0 0 L 15 0");
+        assert_eq!(string(&track, 15.0).unwrap(), "M 0 0 Q 7.5 15 15 0");
+    }
+
+    #[test]
+    fn paths_of_different_structure_name_the_first_command_that_differs() {
+        let differs = "path data differs at command";
+        for (source, expected) in [
+            (
+                "lerp('M 0 0 L 1 1 L 2 2', 'M 0 0 L 1 1 C 1 1 2 2 3 3', 0.5)".to_string(),
+                format!("`lerp`: {differs} 3: `from` has `L` where `to` has `C`"),
+            ),
+            (
+                "lerp('M 0 0 L 1 1', 'M 0 0 l 1 1', 0.5)".to_string(),
+                format!("{differs} 2: `from` has `L` where `to` has `l`"),
+            ),
+            (
+                "tween('M 0 0 L 1 1', 'M 0 0', 0, 10)".to_string(),
+                format!("{differs} 2: `from` has `L` where `to` has no command"),
+            ),
+            (
+                "lerp('M 0 0 A 1 1 0 0 1 2 2', 'M 0 0 A 1 1 0 1 1 2 2', 0.5)".to_string(),
+                format!(
+                    "{differs} 2: `from` has `A` with large-arc flag 0 and sweep flag 1 where \
+                     `to` has `A` with large-arc flag 1 and sweep flag 1"
+                ),
+            ),
+            (
+                format!("keyframes(frame, key(0s, '{TRIANGLE}'), key(1s, 'M 0 0 Z'))"),
+                format!("{differs} 2: the key at 0s has `L` where the key at 1s has `Z`"),
+            ),
+            // Paths the parser can't see are checked when they interpolate.
+            (
+                format!(
+                    "keyframes(frame, key(0, '{TRIANGLE}'), key(10, if(frame > 0, 'M 0 0 Z', '')))"
+                ),
+                format!("{differs} 2: the key at 0 has `L` where the key at 10 has `Z`"),
+            ),
+            (
+                "lerp('M 0 0', lowercase('hello'), 0.5)".to_string(),
+                "`lerp`: strings interpolate only as path data, and `to` is malformed path data"
+                    .to_string(),
+            ),
+            (
+                "lerp('hello', 'M 0 0', 0.5)".to_string(),
+                "and `from` is malformed path data".to_string(),
+            ),
+            (
+                "lerp('M 0 0', 1, 0.5)".to_string(),
+                "numbers, vec2 values, colours or path data, got string and number".to_string(),
+            ),
+        ] {
+            let error = string(&source, 5.0).unwrap_err();
+            assert!(error.contains(&expected), "{source}: {error}");
         }
     }
 

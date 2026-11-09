@@ -26,7 +26,8 @@ export interface Easing {
 /** An easing name such as `ease.outExpo`, or an easing such as `cubicBezier(..)`. */
 export type EasingArg = EasingName | Expr<Easing> | Expr<string>;
 
-export type KeyValue = number | Vec2 | Color;
+/** Strings are path data, which interpolate when their commands match. */
+export type KeyValue = number | Vec2 | Color | string;
 
 /** What `key` evaluates to: a keyframe holding a `T`. Only `keyframes` takes it. */
 export interface Key<T extends KeyValue = KeyValue> {
@@ -251,18 +252,21 @@ export interface Interpolate {
   (from: Num, to: Num, t: Num): Expr<number>;
   (from: Arg<Vec2>, to: Arg<Vec2>, t: Num): Expr<Vec2>;
   (from: Arg<Color>, to: Arg<Color>, t: Num): Expr<Color>;
+  (from: Arg<string>, to: Arg<string>, t: Num): Expr<string>;
 }
 
 export interface Tween {
   (from: Num, to: Num, start: Num, duration: Num, ease?: EasingArg): Expr<number>;
   (from: Arg<Vec2>, to: Arg<Vec2>, start: Num, duration: Num, ease?: EasingArg): Expr<Vec2>;
   (from: Arg<Color>, to: Arg<Color>, start: Num, duration: Num, ease?: EasingArg): Expr<Color>;
+  (from: Arg<string>, to: Arg<string>, start: Num, duration: Num, ease?: EasingArg): Expr<string>;
 }
 
 export interface MakeKey {
   (at: Num, value: Num, ease?: EasingArg): Expr<Key<number>>;
   (at: Num, value: Arg<Vec2>, ease?: EasingArg): Expr<Key<Vec2>>;
   (at: Num, value: Arg<Color>, ease?: EasingArg): Expr<Key<Color>>;
+  (at: Num, value: Arg<string>, ease?: EasingArg): Expr<Key<string>>;
 }
 
 type Keys<T extends KeyValue> = readonly [Expr<Key<T>>, ...Expr<Key<T>>[]];
