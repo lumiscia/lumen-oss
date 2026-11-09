@@ -404,6 +404,7 @@ fn repeat_schema_matches_engine_parsing() {
         ),
         (json!({ "count": 1025 }), false),
         (json!({ "count": -1 }), false),
+        (json!({ "count": 4, "columns": -1 }), false),
         (json!({ "position_offset": [4, 0] }), false),
         (json!({ "count": 2, "offset": [4, 0] }), false),
         (json!("=frame"), false),

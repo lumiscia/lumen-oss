@@ -67,7 +67,6 @@ fn path_layouts() -> Vec<Layout> {
             band_count,
             reach,
             origin,
-            copy_count,
             dash_count,
             dash_period,
             dash_start_phase,

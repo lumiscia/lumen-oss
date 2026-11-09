@@ -1061,7 +1061,10 @@ export type Repeat = {
   readonly rotation_offset?: ExpressionValue<number>;
   /** Position in pixels added for each row. */
   readonly row_offset?: ExpressionValue<Vec2>;
-  /** Scale added for each copy, per axis. */
+  /**
+   * Scale added for each copy, per axis. A negative offset shrinks later copies through 0,
+   * where they draw nothing, into mirrored copies.
+   */
   readonly scale_offset?: ExpressionValue<Vec2>;
 };
 export type ResizeMode = "stretch" | "fit" | "fill";

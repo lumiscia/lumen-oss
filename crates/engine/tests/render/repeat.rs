@@ -227,3 +227,51 @@ fn a_repeat_records_around_its_visible_copies() {
     assert_eq!(repeated.data_rect, union.data_rect);
     assert_eq!(repeated.storage_size, union.storage_size);
 }
+
+/// Tiling only skips copies that cannot reach a texel, so a repeat drawn from its tiles is
+/// byte-identical to one drawn from a single tile, here with copies straddling tile borders and
+/// overlapping across them.
+#[test]
+fn tiled_repeats_match_one_tile() {
+    let grid = json!({
+        "count": 96, "columns": 12, "position_offset": [9, 2], "row_offset": [5, 11],
+        "rotation_offset": 13, "scale_offset": [0.01, 0.02], "opacity_offset": -0.004
+    });
+    let scenes = [
+        ("shape", outlined_box()),
+        ("path", triangle()),
+        (
+            "shape",
+            with(
+                outlined_box(),
+                json!({ "position": "=vec2(8 + frame * 6, 20)", "motion_blur": 180 }),
+            ),
+        ),
+    ]
+    .map(|(kind, params)| -> Composition {
+        scene(
+            (160, 120),
+            json!([{ "id": 1, "type": kind, "params": with(params, json!({ "repeat": grid })) }]),
+        )
+        .frames(2)
+        .into()
+    });
+    let gpu = gpu();
+    let media = TestMedia::default();
+    for (index, composition) in scenes.iter().enumerate() {
+        let draw = |single_tile: bool| {
+            let mut renderer = gpu.renderer();
+            renderer.set_single_tile_repeats(single_tile);
+            render(&mut renderer, composition, 1.0, &media)
+        };
+        let tiled = draw(false);
+        assert!(
+            tiled.rgba.iter().any(|&byte| byte != 0),
+            "scene {index} draws nothing"
+        );
+        assert!(
+            tiled.rgba == draw(true).rgba,
+            "scene {index} differs from one tile"
+        );
+    }
+}

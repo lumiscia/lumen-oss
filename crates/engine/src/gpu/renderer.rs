@@ -135,6 +135,7 @@ pub struct GpuCompositionRenderer {
     output_format: lumen_gpu::wgpu::TextureFormat,
     reuse_static_output: bool,
     full_frame_sources: bool,
+    single_tile_repeats: bool,
     media_texture_cache: MediaTextureCache,
     #[cfg(feature = "ffmpeg")]
     gpu_media_importer: GpuMediaFrameImporter,
@@ -167,6 +168,7 @@ impl GpuCompositionRenderer {
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             reuse_static_output: true,
             full_frame_sources: false,
+            single_tile_repeats: false,
             media_texture_cache: MediaTextureCache::new(),
             #[cfg(feature = "ffmpeg")]
             gpu_media_importer: GpuMediaFrameImporter::default(),
@@ -259,6 +261,17 @@ impl GpuCompositionRenderer {
     pub fn set_full_frame_sources(&mut self, enabled: bool) {
         if self.full_frame_sources != enabled {
             self.full_frame_sources = enabled;
+            self.reset_recorded(self.output_format);
+        }
+    }
+
+    /// Sets whether repeated shapes and paths draw their copies from one tile covering their
+    /// texture instead of from tiles that each list the copies reaching them, which gives tests
+    /// an untiled reference. Drops what frames recorded so far when it changes.
+    #[doc(hidden)]
+    pub fn set_single_tile_repeats(&mut self, enabled: bool) {
+        if self.single_tile_repeats != enabled {
+            self.single_tile_repeats = enabled;
             self.reset_recorded(self.output_format);
         }
     }
@@ -432,6 +445,7 @@ impl GpuCompositionRenderer {
             media: Some(media),
             output_format: self.output_format,
             full_frame_sources: self.full_frame_sources,
+            single_tile_repeats: self.single_tile_repeats,
             retain_static: self.reuse_static_output,
             media_cache: &mut self.media_texture_cache,
             text_atlas: &self.text_atlas,

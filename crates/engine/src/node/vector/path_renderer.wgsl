@@ -18,9 +18,7 @@ struct PathUniforms {
     reach: f32,
     // Canvas pixel of the output's first texel.
     origin: vec2<i32>,
-    // Copies in `repeat_copies`, read by `cs_repeat` alone.
-    copy_count: u32,
-    _origin_pad: u32,
+    _origin_pad: vec2<i32>,
     // Lengths in `dash` that the stroke alternately draws and skips, or 0 for a solid stroke.
     dash_count: u32,
     dash_period: f32,
@@ -61,6 +59,7 @@ struct PathBands {
 @group(0) @binding(3) var output_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(4) var<storage, read> repeat_copies: array<RepeatCopy>;
 @group(0) @binding(5) var<storage, read> repeat_taps: array<DrawableTransform>;
+@group(0) @binding(6) var<storage, read> repeat_tiles: array<u32>;
 
 // Vector from the nearest point of segment `a`-`b` to `p`.
 fn segment_offset(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
@@ -423,11 +422,16 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(output_tex, vec2<i32>(id.xy), path_color(pixel_origin + vec2<f32>(0.5)));
 }
 
-// Draws each copy over the ones before it.
-fn repeat_color(pixel: vec2<f32>) -> vec4<f32> {
+// Draws each copy that the tile of `texel` lists over the ones before it. `repeat_tiles`
+// starts with the tile side and column count, then a `(start, count)` pair per tile.
+fn repeat_color(texel: vec2<u32>, pixel: vec2<f32>) -> vec4<f32> {
+    let tile = texel / repeat_tiles[0];
+    let entry = 2u + 2u * (tile.y * repeat_tiles[1] + tile.x);
+    let start = repeat_tiles[entry];
+    let end = start + repeat_tiles[entry + 1u];
     var color = vec4<f32>(0.0);
-    for (var index = 0u; index < params.copy_count; index = index + 1u) {
-        let copy = repeat_copies[index];
+    for (var at = start; at < end; at = at + 1u) {
+        let copy = repeat_copies[repeat_tiles[at]];
         if (any(pixel < copy.bounds.xy) || any(pixel > copy.bounds.zw)) {
             continue;
         }
@@ -453,5 +457,5 @@ fn cs_repeat(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     let pixel_origin = vec2<f32>(vec2<i32>(id.xy) + params.origin);
-    textureStore(output_tex, vec2<i32>(id.xy), repeat_color(pixel_origin + vec2<f32>(0.5)));
+    textureStore(output_tex, vec2<i32>(id.xy), repeat_color(id.xy, pixel_origin + vec2<f32>(0.5)));
 }

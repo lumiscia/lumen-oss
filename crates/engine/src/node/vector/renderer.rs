@@ -45,9 +45,7 @@ pub(crate) struct ShapeUniforms {
     pub(crate) screen_bounds: [f32; 4],
     /// Canvas pixel of the output's first texel.
     pub(crate) origin: [i32; 2],
-    /// Copies the repeat entry point draws.
-    pub(crate) copy_count: u32,
-    pub(crate) _origin_pad: u32,
+    pub(crate) _origin_pad: [i32; 2],
     pub(crate) motion: GpuDrawableMotion,
 }
 
@@ -77,9 +75,7 @@ pub(crate) struct PathUniforms {
     pub(crate) reach: f32,
     /// Canvas pixel of the output's first texel.
     pub(crate) origin: [i32; 2],
-    /// Copies the repeat entry point draws.
-    pub(crate) copy_count: u32,
-    pub(crate) _origin_pad: u32,
+    pub(crate) _origin_pad: [i32; 2],
     /// Lengths in `dash` that the stroke alternately draws and skips, or 0 for a solid stroke.
     pub(crate) dash_count: u32,
     /// Sum of the dash lengths.

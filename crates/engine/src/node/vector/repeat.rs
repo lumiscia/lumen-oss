@@ -12,6 +12,14 @@ use crate::node::{
 /// Most copies a repeat may draw.
 pub const MAX_REPEAT_COUNT: u32 = 1024;
 
+/// Side in texels of the smallest tiles that a repeat's copies are binned into.
+const MIN_TILE_SIZE: u32 = 16;
+/// Most tiles a repeat's texture is split into.
+const MAX_TILES: u64 = 4096;
+/// Most copy indices that a repeat's tiles list in all. One tile listing every copy fits.
+const MAX_TILE_ENTRIES: u64 = 1 << 16;
+const _: () = assert!(MAX_TILE_ENTRIES >= MAX_REPEAT_COUNT as u64);
+
 /// How many copies a repeat draws, from 0 to [`MAX_REPEAT_COUNT`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::StructuralHash)]
 pub struct RepeatCount(pub u32);
@@ -84,7 +92,8 @@ pub struct Repeat {
     /// Clockwise rotation in degrees added for each copy.
     #[meta(step = 1)]
     pub rotation_offset: f64,
-    /// Scale added for each copy, per axis.
+    /// Scale added for each copy, per axis. A negative offset shrinks later copies through 0,
+    /// where they draw nothing, into mirrored copies.
     #[meta(step = 0.01)]
     pub scale_offset: (f64, f64),
     /// Opacity added for each copy. Each copy's opacity is clamped to 0–1.
@@ -351,9 +360,121 @@ pub(crate) struct GpuCopies {
 }
 
 impl GpuCopies {
-    pub(crate) fn copy_count(&self) -> u32 {
-        self.copies.len() as u32
+    /// Writes the copies, their taps and their tiles for a repeat entry point drawing into a
+    /// texture of `domain`.
+    pub(crate) fn storage(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+        domain: lumen_gpu::TextureDomain,
+    ) -> [lumen_gpu::Res; 3] {
+        let size = [domain.storage_size.width, domain.storage_size.height];
+        let tiles = self.tiles(
+            [domain.data_rect.x, domain.data_rect.y],
+            size,
+            cx.single_tile_repeats,
+        );
+        [
+            bytemuck::cast_slice(&self.copies),
+            bytemuck::cast_slice(&self.taps),
+            bytemuck::cast_slice(&tiles),
+        ]
+        .map(|data| cx.rec.storage_parts(&[data]))
     }
+
+    /// The copies that each tile of a texture `size` texels across may draw, where its first
+    /// texel is canvas pixel `origin`.
+    ///
+    /// The buffer starts with the tile side in texels and the number of tile columns, followed
+    /// by a `(start, count)` pair per tile, row by row, and then the copy indices that each tile
+    /// lists from `start`, in index order. A tile lists every copy whose bounds may hold one of
+    /// its texel centres. Tiles start [`MIN_TILE_SIZE`] texels across and double until the tiles
+    /// and their indices fit their caps, which one tile always does. `single_tile` starts with
+    /// one tile.
+    pub(crate) fn tiles(&self, origin: [i32; 2], size: [u32; 2], single_tile: bool) -> Vec<u32> {
+        let spans: Vec<Option<[u32; 4]>> = self
+            .copies
+            .iter()
+            .map(|copy| texel_span(copy.bounds, origin, size))
+            .collect();
+        let mut tile_size = if single_tile {
+            size[0].max(size[1]).max(1)
+        } else {
+            MIN_TILE_SIZE
+        };
+        loop {
+            let tiles_over = |span: &[u32; 4]| {
+                let [x0, y0, x1, y1] = span.map(|texel| u64::from(texel / tile_size));
+                (x1 - x0 + 1) * (y1 - y0 + 1)
+            };
+            let [columns, rows] = size.map(|side| side.div_ceil(tile_size));
+            let entries: u64 = spans.iter().flatten().map(tiles_over).sum();
+            if u64::from(columns) * u64::from(rows) <= MAX_TILES && entries <= MAX_TILE_ENTRIES {
+                return bin_spans(&spans, tile_size, columns, rows, entries as usize);
+            }
+            tile_size *= 2;
+        }
+    }
+}
+
+/// The inclusive `[x0, y0, x1, y1]` texels whose centres may lie within canvas `bounds`, for a
+/// texture `size` texels across whose first texel is canvas pixel `origin`, or `None` when
+/// none do. It reaches a texel further each way than the exact span, against f32 rounding in
+/// the shader. NaN bounds hold every texel, as the shader's bounds test passes them.
+fn texel_span(bounds: [f32; 4], origin: [i32; 2], size: [u32; 2]) -> Option<[u32; 4]> {
+    if size.contains(&0) {
+        return None;
+    }
+    let axis = |min: f32, max: f32, origin: i32, size: u32| {
+        let start = f64::from(origin) + 0.5;
+        let first = (f64::from(min) - start).ceil() - 1.0;
+        let last = (f64::from(max) - start).floor() + 1.0;
+        let first = first.max(0.0);
+        let last = last.min(f64::from(size - 1));
+        (first <= last).then_some([first as u32, last as u32])
+    };
+    let [x0, x1] = axis(bounds[0], bounds[2], origin[0], size[0])?;
+    let [y0, y1] = axis(bounds[1], bounds[3], origin[1], size[1])?;
+    Some([x0, y0, x1, y1])
+}
+
+/// The tile buffer described at [`GpuCopies::tiles`], for copies covering `spans` of texels.
+fn bin_spans(
+    spans: &[Option<[u32; 4]>],
+    tile_size: u32,
+    columns: u32,
+    rows: u32,
+    entries: usize,
+) -> Vec<u32> {
+    let tile_count = (columns * rows) as usize;
+    let tiles_of = |[x0, y0, x1, y1]: [u32; 4]| {
+        (y0 / tile_size..=y1 / tile_size).flat_map(move |row| {
+            (x0 / tile_size..=x1 / tile_size).map(move |column| (row * columns + column) as usize)
+        })
+    };
+    let mut counts = vec![0u32; tile_count];
+    for &span in spans.iter().flatten() {
+        for tile in tiles_of(span) {
+            counts[tile] += 1;
+        }
+    }
+    let header = 2 + 2 * tile_count;
+    let mut buffer = vec![0; header + entries];
+    buffer[0] = tile_size;
+    buffer[1] = columns;
+    let mut start = header as u32;
+    for (tile, count) in counts.iter().enumerate() {
+        buffer[2 + 2 * tile] = start;
+        start += count;
+    }
+    for (index, span) in spans.iter().enumerate() {
+        let Some(span) = *span else { continue };
+        for tile in tiles_of(span) {
+            let [start, filled] = [buffer[2 + 2 * tile], buffer[3 + 2 * tile]];
+            buffer[(start + filled) as usize] = index as u32;
+            buffer[3 + 2 * tile] += 1;
+        }
+    }
+    buffer
 }
 
 #[repr(C)]
@@ -420,7 +541,7 @@ mod tests {
         .copies([10.0, 20.0], [20.0, 30.0]);
         let gpu = copies.to_gpu([10.0, 20.0], [20.0, 30.0], 0.0);
         // Opacities 1, 0.5, 0 and -0.5: the last two draw nothing.
-        assert_eq!(gpu.copy_count(), 2);
+        assert_eq!(gpu.copies.len(), 2);
         assert_eq!(gpu.copies[1].transform.opacity, 0.5);
         let [x0, y0, x1, y1] = gpu.bounds;
         assert!(
@@ -431,6 +552,59 @@ mod tests {
             (y0 - 20.0).abs() < 0.01 && (y1 - 30.0).abs() < 0.01,
             "{y0} {y1}"
         );
+    }
+
+    fn copies_within(bounds: &[[f32; 4]]) -> GpuCopies {
+        GpuCopies {
+            copies: bounds
+                .iter()
+                .map(|&bounds| GpuRepeatCopy {
+                    bounds,
+                    ..GpuRepeatCopy::zeroed()
+                })
+                .collect(),
+            taps: Vec::new(),
+            bounds: [0.0; 4],
+        }
+    }
+
+    /// The copies that the tile at `column` and `row` of `tiles` lists.
+    fn listed(tiles: &[u32], column: u32, row: u32) -> &[u32] {
+        let entry = (2 + 2 * (row * tiles[1] + column)) as usize;
+        let start = tiles[entry] as usize;
+        &tiles[start..start + tiles[entry + 1] as usize]
+    }
+
+    #[test]
+    fn tiles_list_the_copies_reaching_them_in_index_order() {
+        // The second copy straddles the border between the second and third tile columns.
+        let copies = copies_within(&[
+            [100.0, 50.0, 110.0, 60.0],
+            [120.0, 50.0, 140.0, 60.0],
+            [100.0, 50.0, 164.0, 82.0],
+        ]);
+        let tiles = copies.tiles([100, 50], [64, 32], false);
+        assert_eq!(tiles[..2], [MIN_TILE_SIZE, 4]);
+        assert_eq!(listed(&tiles, 0, 0), [0, 2]);
+        assert_eq!(listed(&tiles, 1, 0), [1, 2]);
+        assert_eq!(listed(&tiles, 2, 0), [1, 2]);
+        assert_eq!(listed(&tiles, 3, 0), [2]);
+        assert_eq!(listed(&tiles, 0, 1), [2]);
+        let single = copies.tiles([100, 50], [64, 32], true);
+        assert_eq!(single[..2], [64, 1]);
+        assert_eq!(listed(&single, 0, 0), [0, 1, 2]);
+    }
+
+    #[test]
+    fn tiles_coarsen_until_every_copy_fits() {
+        let copies = copies_within(&vec![[0.0, 0.0, 1920.0, 1080.0]; MAX_REPEAT_COUNT as usize]);
+        let tiles = copies.tiles([0, 0], [1920, 1080], false);
+        let [tile_size, columns] = [tiles[0], tiles[1]];
+        let tile_count = columns * 1080u32.div_ceil(tile_size);
+        assert!(u64::from(tile_count) <= MAX_TILES);
+        assert!((tiles.len() - 2 - 2 * tile_count as usize) as u64 <= MAX_TILE_ENTRIES);
+        let every: Vec<u32> = (0..MAX_REPEAT_COUNT).collect();
+        assert_eq!(listed(&tiles, columns - 1, 0), every);
     }
 
     #[test]

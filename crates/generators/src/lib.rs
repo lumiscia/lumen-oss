@@ -358,10 +358,13 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
     insert_object_def::<RepeatDelegate>(
         &mut defs,
         "Repeat",
-        &[(
-            "count",
-            json!({ "type": "integer", "minimum": 0, "maximum": MAX_REPEAT_COUNT }),
-        )],
+        &[
+            (
+                "count",
+                json!({ "type": "integer", "minimum": 0, "maximum": MAX_REPEAT_COUNT }),
+            ),
+            ("columns", json!({ "type": "integer", "minimum": 0 })),
+        ],
     )?;
     insert_def(
         &mut defs,

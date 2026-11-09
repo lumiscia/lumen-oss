@@ -222,16 +222,14 @@ impl PathFrame {
         );
         // Each copy is culled like the path drawn once: a segment's reach beyond the box.
         let reach = uniforms.reach;
-        let gpu = copies.to_gpu(
+        let mut gpu = copies.to_gpu(
             [min[0] - reach, min[1] - reach],
             [max[0] + reach, max[1] + reach],
             0.0,
         );
-        uniforms.copy_count = if bands.is_empty() {
-            0
-        } else {
-            gpu.copy_count()
-        };
+        if bands.is_empty() {
+            gpu.copies.clear();
+        }
         Self {
             uniforms,
             points,
@@ -630,6 +628,7 @@ const RECORD_PATH_REPEAT_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
     lumen_gpu::LayoutEntry::compute(4, lumen_gpu::LayoutKind::Storage),
     lumen_gpu::LayoutEntry::compute(5, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(6, lumen_gpu::LayoutKind::Storage),
 ];
 
 /// Records a vector path, or its copies, sized to what it draws this frame.
@@ -659,13 +658,10 @@ fn record_path_source(
             "cs_repeat",
             RECORD_PATH_REPEAT_LAYOUT,
         )?;
-        let copy_list = cx
-            .rec
-            .storage_parts(&[bytemuck::cast_slice(&copies.copies)]);
-        let taps = cx.rec.storage_parts(&[bytemuck::cast_slice(&copies.taps)]);
+        let [copy_list, taps, tiles] = copies.storage(cx, domain);
         cx.dispatch(
             program,
-            &[&bindings[..], &[(4, copy_list), (5, taps)]].concat(),
+            &[&bindings[..], &[(4, copy_list), (5, taps), (6, tiles)]].concat(),
             params::dispatch_for(size),
         );
     } else {

@@ -540,6 +540,7 @@
         "columns": {
           "anyOf": [
             {
+              "minimum": 0,
               "type": "integer"
             },
             {
@@ -552,8 +553,7 @@
           "x-lumen-constraints": {
             "min": 0.0,
             "step": 1.0
-          },
-          "x-lumen-kind": "int"
+          }
         },
         "count": {
           "anyOf": [
@@ -648,7 +648,7 @@
             }
           ],
           "default": [0.0, 0.0],
-          "description": "Scale added for each copy, per axis.",
+          "description": "Scale added for each copy, per axis. A negative offset shrinks later copies through 0,\nwhere they draw nothing, into mirrored copies.",
           "title": "Scale Offset",
           "x-lumen-constraints": {
             "step": 0.01

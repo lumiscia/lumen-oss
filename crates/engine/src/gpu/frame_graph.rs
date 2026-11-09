@@ -316,6 +316,7 @@ pub(crate) struct RecordInput<'a> {
     pub(crate) media: Option<&'a dyn MediaStore>,
     pub(crate) output_format: wgpu::TextureFormat,
     pub(crate) full_frame_sources: bool,
+    pub(crate) single_tile_repeats: bool,
     pub(crate) retain_static: bool,
     pub(crate) media_cache: &'a mut MediaTextureCache,
     pub(crate) text_atlas: &'a Arc<Mutex<lumen_text::GlyphAtlas>>,
@@ -393,6 +394,7 @@ impl FrameGraph {
             media,
             output_format,
             full_frame_sources,
+            single_tile_repeats,
             retain_static,
             media_cache,
             text_atlas,
@@ -433,6 +435,7 @@ impl FrameGraph {
                 media,
                 output_format,
                 full_frame_sources,
+                single_tile_repeats,
                 retain_static,
                 static_depth: 0,
                 bound: BoundFrame::new(),
@@ -872,6 +875,8 @@ pub(crate) struct FrameCx<'a> {
     media: Option<&'a dyn MediaStore>,
     output_format: wgpu::TextureFormat,
     full_frame_sources: bool,
+    /// Whether repeats draw from one tile, as `set_single_tile_repeats` sets.
+    pub(crate) single_tile_repeats: bool,
     retain_static: bool,
     /// How many static nodes the walk is inside, whose readers retain them rather than this.
     static_depth: u32,

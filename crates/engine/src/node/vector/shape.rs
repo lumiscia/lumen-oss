@@ -109,7 +109,6 @@ fn shape_frame(
     // Antialiasing reaches a canvas pixel beyond each copy's box.
     .to_gpu(min, max, 1.0);
     uniforms.screen_bounds = copies.bounds;
-    uniforms.copy_count = copies.copy_count();
     Ok((uniforms, Some(copies)))
 }
 
@@ -170,8 +169,7 @@ fn shape_uniforms(
         // Antialiasing reaches a canvas pixel beyond the box.
         screen_bounds: [min_x - 1.0, min_y - 1.0, max_x + 1.0, max_y + 1.0],
         origin: [0, 0],
-        copy_count: 0,
-        _origin_pad: 0,
+        _origin_pad: [0, 0],
         motion: motion.to_gpu(),
     }
 }
@@ -217,6 +215,7 @@ const RECORD_SHAPE_REPEAT_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(1, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Storage),
     lumen_gpu::LayoutEntry::compute(3, lumen_gpu::LayoutKind::Storage),
+    lumen_gpu::LayoutEntry::compute(4, lumen_gpu::LayoutKind::Storage),
 ];
 
 /// Records a rectangle or ellipse, sized to what its uniforms draw this frame, or its copies.
@@ -238,10 +237,7 @@ fn record_shape_source(
             "cs_repeat",
             RECORD_SHAPE_REPEAT_LAYOUT,
         )?;
-        let copy_list = cx
-            .rec
-            .storage_parts(&[bytemuck::cast_slice(&copies.copies)]);
-        let taps = cx.rec.storage_parts(&[bytemuck::cast_slice(&copies.taps)]);
+        let [copy_list, taps, tiles] = copies.storage(cx, domain);
         cx.dispatch(
             program,
             &[
@@ -249,6 +245,7 @@ fn record_shape_source(
                 (1, lumen_gpu::Res::Tex(tex)),
                 (2, copy_list),
                 (3, taps),
+                (4, tiles),
             ],
             params::dispatch_for(size),
         );
