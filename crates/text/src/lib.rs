@@ -68,11 +68,28 @@ struct Registration {
 }
 
 /// A database of every registered face, latest first and the bundled ones last. Faces tying for a
-/// request go to the earliest in a database, so the latest load wins.
+/// request go to the earliest in a database, so the latest load wins. When no face of a
+/// registration answers to its name, as with a file asked for by an alias or asset id, every one
+/// of them answers to that name instead of their own.
 fn font_database(registrations: &[Registration]) -> fontdb::Database {
     let mut db = fontdb::Database::new();
-    for file in registrations.iter().flat_map(|loaded| &loaded.files) {
-        db.load_font_source(fontdb::Source::Binary(file.clone()));
+    for loaded in registrations {
+        let mut faces = fontdb::Database::new();
+        for file in &loaded.files {
+            faces.load_font_source(fontdb::Source::Binary(file.clone()));
+        }
+        let rename = loaded.family.as_ref().filter(|family| {
+            !faces
+                .faces()
+                .any(|face| face.families.iter().any(|(name, _)| name == *family))
+        });
+        for face in faces.faces() {
+            let mut face = face.clone();
+            if let Some(family) = rename {
+                face.families = vec![(family.clone(), fontdb::Language::English_UnitedStates)];
+            }
+            db.push_face_info(face);
+        }
     }
     db.load_font_source(fontdb::Source::Binary(Arc::new(ROBOTO_REGULAR_BYTES)));
     db
@@ -287,27 +304,45 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn replacing_a_family_outranks_faces_another_name_brought() {
+    fn a_font_loaded_under_a_name_its_faces_lack_goes_by_that_name() {
         let mut system = TextSystem::new();
         let request = TextLayoutRequest::new("WWW");
         let bundled = system.measure(&request).width;
 
-        // A font asked for by path goes by its internal name, not the one it was asked for by.
+        // A font asked for by path goes by the name it was asked for by, not its internal one.
         system
             .load_family(DEFAULT_FONT_FAMILY, "half", vec![scaled_roboto(2)])
             .unwrap();
         system
             .load_family("fonts/Roboto.ttf", "third", vec![scaled_roboto(3)])
             .unwrap();
-        assert!((system.measure(&request).width * 3.0 - bundled).abs() < 1.0);
+        assert!((system.measure(&request).width * 2.0 - bundled).abs() < 1.0);
+        let by_path = in_family("WWW", "fonts/Roboto.ttf", 400);
+        assert!((system.measure(&by_path).width * 3.0 - bundled).abs() < 1.0);
         system
             .load_family(DEFAULT_FONT_FAMILY, "quarter", vec![scaled_roboto(4)])
             .unwrap();
         assert!((system.measure(&request).width * 4.0 - bundled).abs() < 1.0);
+        assert!((system.measure(&by_path).width * 3.0 - bundled).abs() < 1.0);
 
         // What was loaded under another name stays, as does the resolver it remembers.
         assert_eq!(system.font_system.db().len(), 3);
         assert_eq!(system.family_resolver("fonts/Roboto.ttf"), Some("third"));
+    }
+
+    #[test]
+    fn weight_picks_among_the_faces_of_a_renamed_family() {
+        let mut system = TextSystem::new();
+        let bundled = system.measure(&in_family("WWW", "Roboto", 400)).width;
+        let regular = scaled_roboto(2);
+        let bold = with_weight(&scaled(ROBOTO_REGULAR_BYTES, 4), 700);
+        system
+            .load_family("asset:brand", "brand", vec![regular, bold])
+            .unwrap();
+        let mut width = |family, weight| system.measure(&in_family("WWW", family, weight)).width;
+        assert!((width("asset:brand", 400) * 2.0 - bundled).abs() < 1.0);
+        assert!((width("asset:brand", 700) * 4.0 - bundled).abs() < 1.0);
+        assert_eq!(width("Roboto", 400), bundled);
     }
 
     /// `fonts` as one font collection.
@@ -473,16 +508,21 @@ pub(crate) mod tests {
             (bundled / width).round() as u16
         };
 
+        // Collections that hold a face of their own name and one of the default family's.
+        let holding_roboto = |family: &str, scale| {
+            let roboto = scaled_roboto(scale);
+            vec![collection(&[&renamed(&roboto, family), &roboto])]
+        };
         system
-            .load_family("Half", "half", vec![scaled_roboto(2)])
+            .load_family("Half", "half", holding_roboto("Half", 2))
             .unwrap();
         assert_eq!(drawn_at(&mut system), 2);
         system
-            .load_family("Quarter", "quarter", vec![scaled_roboto(4)])
+            .load_family("Quarter", "quarter", holding_roboto("Quarter", 4))
             .unwrap();
         assert_eq!(drawn_at(&mut system), 4);
         system
-            .load_family("Half", "half again", vec![scaled_roboto(2)])
+            .load_family("Half", "half again", holding_roboto("Half", 2))
             .unwrap();
         assert_eq!(drawn_at(&mut system), 2);
         system.remove_family("Half");

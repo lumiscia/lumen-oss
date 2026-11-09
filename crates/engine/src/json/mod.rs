@@ -25,10 +25,11 @@ use crate::{
         PropKind, RenderSettings, Scene, TimelineSettings,
     },
     diagnostic::{Diagnostic, MAX_DIAGNOSTICS},
-    error::{DocumentError, GraphValidationError, LumenError, Warning},
+    error::{DocumentError, GraphValidationError, LumenError, MediaError, Warning},
     expr::FunctionScope,
     graph::{Connection, Graph},
-    node::{NodeId, NodeKind},
+    media::{AssetKind, AssetResolver, asset_id, resolve_asset},
+    node::{Deferred, Node, NodeId, NodeKind, source::media_in::MediaInSourceKindDelegate},
 };
 
 pub(crate) use property::{
@@ -358,24 +359,37 @@ pub fn parse_value(root: &Value) -> Result<Composition, ParseError> {
 }
 
 /// Everything wrong with a composition that can be told without rendering it: its errors, or the
-/// warnings of one that parses. `known_font` says whether the host can resolve a font family;
-/// without it, fonts aren't checked. Families set by expressions, and anything that only
-/// rendering finds, aren't covered.
-pub fn check(json: &str, known_font: Option<&dyn Fn(&str) -> bool>) -> Vec<Diagnostic> {
+/// warnings of one that parses. `known_font` says whether the host can resolve a font family, and
+/// `assets` is the host's asset store, which `asset:` references are checked against; without
+/// them, fonts and asset references aren't checked. Values set by expressions, and anything that
+/// only rendering finds, aren't covered.
+pub fn check(
+    json: &str,
+    known_font: Option<&dyn Fn(&str) -> bool>,
+    assets: Option<&dyn AssetResolver>,
+) -> Vec<Diagnostic> {
     match read_json(json) {
-        Ok(root) => check_value(&root, known_font),
+        Ok(root) => check_value(&root, known_font, assets),
         Err(error) => vec![Diagnostic::from_error(&error, &Value::Null)],
     }
 }
 
 /// [`check`] for a [`serde_json::Value`].
-pub fn check_value(root: &Value, known_font: Option<&dyn Fn(&str) -> bool>) -> Vec<Diagnostic> {
+pub fn check_value(
+    root: &Value,
+    known_font: Option<&dyn Fn(&str) -> bool>,
+    assets: Option<&dyn AssetResolver>,
+) -> Vec<Diagnostic> {
     match load(root) {
-        Ok(composition) => known_font.map_or_else(Vec::new, |known_font| {
-            let mut warnings = font_fallbacks(&composition, root, known_font);
-            warnings.truncate(MAX_DIAGNOSTICS);
-            warnings
-        }),
+        Ok(composition) => {
+            let mut diagnostics =
+                assets.map_or_else(Vec::new, |assets| asset_errors(&composition, root, assets));
+            if let Some(known_font) = known_font {
+                diagnostics.extend(font_fallbacks(&composition, root, known_font));
+            }
+            diagnostics.truncate(MAX_DIAGNOSTICS);
+            diagnostics
+        }
         Err(errors) => ParseError::new(root, errors).into_diagnostics(),
     }
 }
@@ -634,56 +648,126 @@ fn build_template(
     }
 }
 
+/// The root's scene and each template's, with the template's name, and each one's nodes in id
+/// order.
+fn scenes_and_nodes(composition: &Composition) -> Vec<(Option<&str>, Vec<&NodeKind>)> {
+    std::iter::once((None, composition.scene()))
+        .chain(
+            composition
+                .compositions()
+                .iter()
+                .map(|(name, template)| (Some(name.as_str()), &template.scene)),
+        )
+        .map(|(template, scene)| {
+            let mut nodes: Vec<_> = scene.graph.nodes.values().collect();
+            nodes.sort_by_key(|node| node.id());
+            (template, nodes)
+        })
+        .collect()
+}
+
+/// An error for each asset a source names as a literal that `assets` doesn't have, or has as
+/// another kind than the source reads.
+fn asset_errors(
+    composition: &Composition,
+    root: &Value,
+    assets: &dyn AssetResolver,
+) -> Vec<Diagnostic> {
+    let mut errors = Vec::new();
+    let mut check = |source: &str, expected: Option<AssetKind>, at: (String, Option<NodeId>)| {
+        let Some(id) = asset_id(source) else {
+            return;
+        };
+        let error = match expected {
+            Some(kind) => resolve_asset(assets, id, kind).err(),
+            // A kind set by an expression is an image or a video, and either reads an asset of its kind.
+            None => match resolve_asset(assets, id, AssetKind::Image) {
+                Err(MediaError::AssetWrongKind {
+                    actual: AssetKind::Video,
+                    ..
+                }) => None,
+                result => result.err(),
+            },
+        };
+        if let Some(error) = error {
+            errors.push(Diagnostic::from_located_error(&error.into(), at));
+        }
+    };
+    for (template, nodes) in scenes_and_nodes(composition) {
+        for node in nodes {
+            match node {
+                NodeKind::MediaIn(media) => {
+                    if let Deferred::Value(source) = &media.params.source {
+                        let kind = match &media.params.kind {
+                            MediaInSourceKindDelegate::Image => Some(AssetKind::Image),
+                            MediaInSourceKindDelegate::Video => Some(AssetKind::Video),
+                            MediaInSourceKindDelegate::Expr(_) => None,
+                        };
+                        check(
+                            source,
+                            kind,
+                            crate::diagnostic::at_param(root, template, media.id, "source"),
+                        );
+                    }
+                }
+                NodeKind::Text(text) => {
+                    for (param, family) in crate::node::source::text::literal_font_families(text) {
+                        check(
+                            family,
+                            Some(AssetKind::Font),
+                            crate::diagnostic::at_param(root, template, text.id, &param),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for (index, clip) in composition
+        .audio()
+        .map_or(&[][..], |audio| audio.clips.as_slice())
+        .iter()
+        .enumerate()
+    {
+        check(
+            &clip.source_id,
+            Some(AssetKind::Audio),
+            (format!("/audio/clips/{index}/source_id"), None),
+        );
+    }
+    errors
+}
+
 /// A warning for each family a text node names as a literal that `known_font` can't resolve. The
-/// bundled family always resolves.
+/// bundled family always resolves, and asset references are checked against the asset store
+/// instead.
 fn font_fallbacks(
     composition: &Composition,
     root: &Value,
     known_font: &dyn Fn(&str) -> bool,
 ) -> Vec<Diagnostic> {
-    let scenes = std::iter::once((None, composition.scene())).chain(
-        composition
-            .compositions()
-            .iter()
-            .map(|(name, template)| (Some(name.as_str()), &template.scene)),
-    );
     let mut warnings = Vec::new();
-    for (template, scene) in scenes {
-        let scene_json = match template {
-            Some(name) => &root["compositions"][name],
-            None => root,
-        };
-        let mut texts = scene
-            .graph
-            .nodes
-            .values()
-            .filter_map(|node| match node {
-                NodeKind::Text(text) => Some(text),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        texts.sort_by_key(|text| text.id);
+    for (template, nodes) in scenes_and_nodes(composition) {
+        let texts = nodes.into_iter().filter_map(|node| match node {
+            NodeKind::Text(text) => Some(text),
+            _ => None,
+        });
         for text in texts {
             for (param, family) in crate::node::source::text::literal_font_families(text) {
                 if family.is_empty()
                     || family == lumen_text::DEFAULT_FONT_FAMILY
+                    || asset_id(family).is_some()
                     || known_font(family)
                 {
                     continue;
                 }
-                let node = crate::diagnostic::node_index(scene_json, text.id).map_or_else(
-                    || "/nodes".to_string(),
-                    |index| format!("/nodes/{index}/params{param}"),
-                );
                 let warning = Warning::FontFallback {
                     template: template.map(str::to_string),
                     node_id: text.id,
                     family: family.to_string(),
                 };
-                warnings.push(Diagnostic::from_warning(
-                    &warning,
-                    format!("{}{node}", crate::diagnostic::scene_pointer(template)),
-                ));
+                let (path, _) = crate::diagnostic::at_param(root, template, text.id, &param);
+                warnings.push(Diagnostic::from_warning(&warning, path));
             }
         }
     }
@@ -1834,7 +1918,7 @@ mod tests {
             // Not reported: connections are checked once every node reads.
             "connections": [{ "from_node": 7, "to_node": 2, "to_port": "source" }]
         });
-        let diagnostics = check_value(&document, None);
+        let diagnostics = check_value(&document, None, None);
         assert_eq!(
             codes_and_paths(&diagnostics),
             [
@@ -1889,7 +1973,7 @@ mod tests {
             "nodes": [{ "id": 2, "type": "media_output" }],
             "connections": []
         });
-        let settings = check_value(&document, None)
+        let settings = check_value(&document, None, None)
             .into_iter()
             .filter(|diagnostic| diagnostic.code == "settings.invalid")
             .collect::<Vec<_>>();
@@ -1923,7 +2007,7 @@ mod tests {
             "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
         });
         assert_eq!(
-            codes_and_paths(&check_value(&document, None)),
+            codes_and_paths(&check_value(&document, None, None)),
             [
                 // The template takes the root's timeline, so the error is reported once.
                 ("settings.invalid", "/timeline/fps", None),
@@ -1944,7 +2028,7 @@ mod tests {
             { "from_node": 1, "from_port": "mask", "to_node": 2, "to_port": "source" }
         ]);
         assert_eq!(
-            codes_and_paths(&check_value(&connections, None)),
+            codes_and_paths(&check_value(&connections, None, None)),
             [
                 (
                     "connection.missing_source_node",
@@ -1960,13 +2044,13 @@ mod tests {
         );
 
         assert_eq!(
-            codes_and_paths(&check("{ \"nodes\": ", None)),
+            codes_and_paths(&check("{ \"nodes\": ", None, None)),
             [("document.syntax", "", None)]
         );
         let mut shape = document;
         shape["timeline"]["fpss"] = serde_json::json!(30);
         assert_eq!(
-            codes_and_paths(&check_value(&shape, None)),
+            codes_and_paths(&check_value(&shape, None, None)),
             [("document.invalid", "/timeline/fpss", None)]
         );
     }
@@ -1982,7 +2066,7 @@ mod tests {
             "nodes": nodes,
             "connections": []
         });
-        assert_eq!(check_value(&document, None).len(), MAX_DIAGNOSTICS);
+        assert_eq!(check_value(&document, None, None).len(), MAX_DIAGNOSTICS);
     }
 
     #[test]
@@ -2010,7 +2094,7 @@ mod tests {
             "connections": [{ "from_node": 3, "to_node": 6, "to_port": "source" }]
         });
         let known = |family: &str| family == "Known";
-        let diagnostics = check_value(&document, Some(&known));
+        let diagnostics = check_value(&document, Some(&known), None);
         assert_eq!(
             codes_and_paths(&diagnostics),
             [
@@ -2031,7 +2115,94 @@ mod tests {
             "{}",
             diagnostics[1].message
         );
-        assert!(check_value(&document, None).is_empty());
+        assert!(check_value(&document, None, None).is_empty());
         parse_value(&document).unwrap();
+    }
+
+    #[derive(Debug)]
+    struct Assets;
+
+    impl AssetResolver for Assets {
+        fn resolve(&self, id: &str) -> Option<crate::media::Asset> {
+            use crate::media::Asset;
+            let path = std::path::PathBuf::from(id);
+            match id {
+                "photo" => Some(Asset::Image(path)),
+                "clip" => Some(Asset::Video(path)),
+                "voice" => Some(Asset::Audio(path)),
+                "brand" => Some(Asset::Font(vec![path])),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn check_finds_asset_references_the_host_lacks_or_holds_as_another_kind() {
+        let media = |id: u64, kind: &str, source: &str| serde_json::json!({ "id": id, "type": "media_in", "params": { "kind": kind, "source": source } });
+        let document = serde_json::json!({
+            "timeline": { "duration_frames": 1 },
+            "render_settings": { "width": 16, "height": 16 },
+            "compositions": {
+                "card": {
+                    "nodes": [
+                        media(1, "image", "asset:clip"),
+                        { "id": 2, "type": "media_output" }
+                    ],
+                    "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+                }
+            },
+            "nodes": [
+                media(1, "image", "asset:photo"),
+                media(2, "video", "asset:clip"),
+                media(3, "video", "asset:gone"),
+                media(4, "image", "photo.png"),
+                { "id": 5, "type": "text", "params": {
+                    "font_family": "asset:brand",
+                    "content": [{ "text": "a", "font_family": "asset:photo" }, { "text": "b" }]
+                } },
+                { "id": 6, "type": "media_output" },
+                media(7, "=if(frame < 5, 0, 1)", "asset:clip"),
+                media(8, "=if(frame < 5, 0, 1)", "asset:photo"),
+                media(9, "=if(frame < 5, 0, 1)", "asset:brand"),
+                media(10, "=if(frame < 5, 0, 1)", "asset:voice")
+            ],
+            "connections": [{ "from_node": 5, "to_node": 6, "to_port": "source" }],
+            "audio": {
+                "tracks": [{ "id": "t", "name": "T", "muted": false, "solo": false, "volume": 1 }],
+                "clips": [
+                    { "id": "a", "source_id": "asset:voice", "track_id": "t", "start_ms": 0, "duration_ms": 10 },
+                    { "id": "b", "source_id": "asset:brand", "track_id": "t", "start_ms": 0, "duration_ms": 10 }
+                ]
+            }
+        });
+        let unknown = |_: &str| false;
+        assert_eq!(
+            codes_and_paths(&check_value(&document, Some(&unknown), Some(&Assets))),
+            [
+                ("asset.not_found", "/nodes/2/params/source", Some(3)),
+                (
+                    "asset.wrong_kind",
+                    "/nodes/4/params/content/0/font_family",
+                    Some(5)
+                ),
+                ("asset.wrong_kind", "/nodes/8/params/source", Some(9)),
+                ("asset.wrong_kind", "/nodes/9/params/source", Some(10)),
+                (
+                    "asset.wrong_kind",
+                    "/compositions/card/nodes/0/params/source",
+                    Some(1)
+                ),
+                ("asset.wrong_kind", "/audio/clips/1/source_id", None),
+            ]
+        );
+        // Without the asset store, references aren't checked, nor taken for families.
+        assert!(check_value(&document, Some(&unknown), None).is_empty());
+        let no_assets = check_value(&document, None, Some(&crate::media::NoAssets));
+        assert_eq!(no_assets.len(), 12);
+        assert!(
+            no_assets
+                .iter()
+                .all(|diagnostic| diagnostic.code == "asset.not_found")
+        );
     }
 }

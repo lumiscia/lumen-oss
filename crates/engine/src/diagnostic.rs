@@ -54,6 +54,20 @@ impl Diagnostic {
         }
     }
 
+    /// `error` as a diagnostic at `path`, about `node`.
+    pub(crate) fn from_located_error(
+        error: &LumenError,
+        (path, node): (String, Option<NodeId>),
+    ) -> Self {
+        Self {
+            severity: Severity::Error,
+            code: error.code(),
+            path,
+            node,
+            message: error.to_string(),
+        }
+    }
+
     /// `warning` as a diagnostic about the value at `path`.
     pub fn from_warning(warning: &Warning, path: String) -> Self {
         let node = match warning {
@@ -151,8 +165,19 @@ fn param_pointer(params: Option<&Value>, path: &str) -> String {
     pointer
 }
 
+/// `path`, a param path, under node `id` of `template` in `root`, or of the root.
+pub(crate) fn at_param(
+    root: &Value,
+    template: Option<&str>,
+    id: NodeId,
+    path: &str,
+) -> (String, Option<NodeId>) {
+    let (pointer, node) = at_scene_param(template_scene(root, template), id, path);
+    (format!("{}{pointer}", scene_pointer(template)), node)
+}
+
 /// `path`, a param path, under node `id` of `scene`.
-fn at_param(scene: &Value, id: NodeId, path: &str) -> (String, Option<NodeId>) {
+fn at_scene_param(scene: &Value, id: NodeId, path: &str) -> (String, Option<NodeId>) {
     let params =
         node_index(scene, id).and_then(|index| scene.get("nodes")?.get(index)?.get("params"));
     at_node(
@@ -189,7 +214,7 @@ fn locate(error: &LumenError, scene: &Value) -> (String, Option<NodeId>) {
             node_id,
             property_path,
             ..
-        }) => at_param(scene, *node_id, property_path),
+        }) => at_scene_param(scene, *node_id, property_path),
         LumenError::Expression(error) => locate_expression(error, scene),
         LumenError::Media(_) => (String::new(), None),
         LumenError::Render(error) => match error {
@@ -289,7 +314,7 @@ fn locate_graph(error: &GraphValidationError, scene: &Value) -> (String, Option<
 
 fn locate_expression(error: &ExpressionError, scene: &Value) -> (String, Option<NodeId>) {
     match error {
-        ExpressionError::Located { node_id, path, .. } => at_param(scene, *node_id, path),
+        ExpressionError::Located { node_id, path, .. } => at_scene_param(scene, *node_id, path),
         ExpressionError::Parse { .. } | ExpressionError::Evaluate { .. } => (String::new(), None),
     }
 }

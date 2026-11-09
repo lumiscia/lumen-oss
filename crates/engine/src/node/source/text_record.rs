@@ -8,7 +8,9 @@ use crate::node::vector::{
 };
 use crate::node::{Deferred, DelegateEvalContext, Override};
 
-use super::text::{Stable, Text, TextInstance, TextState, decoration_paints, stroked};
+use super::text::{
+    Stable, Text, TextInstance, TextState, decoration_paints, literal_font_families, stroked,
+};
 use super::text_content::{TextContentDelegate, TextLineDelegate, TextSpanDelegate};
 
 fn text_shader() -> String {
@@ -247,17 +249,8 @@ pub(crate) fn record_text(
             state: std::sync::Arc::new(std::sync::Mutex::new(TextState::default())),
         })
     })?;
-    for family in std::iter::once(&text.params.layout.font_family).chain(
-        match &text.params.layout.content {
-            TextContentDelegate::Spans(spans) => spans.as_slice(),
-            TextContentDelegate::Text(_) => &[],
-        }
-        .iter()
-        .filter_map(|span| span.layout.font_family.as_ref()),
-    ) {
-        if let Deferred::Value(family) = family {
-            cx.note_font(family);
-        }
+    for (_, family) in literal_font_families(text) {
+        cx.note_font(family);
     }
     let drawn = cx.bind_text(&instance)?;
 

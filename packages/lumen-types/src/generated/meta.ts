@@ -1446,7 +1446,7 @@ export interface MediaInNode extends CompositionNodeBase<"media_in"> {
     readonly range_end?: ExpressionValue<number>;
     /** First source frame to include. */
     readonly range_start?: ExpressionValue<number>;
-    /** External media source identifier. */
+    /** External media source: a path or `media` alias, or `asset:<id>` for an asset of the host's. */
     readonly source?: ExpressionValue<string>;
     /** Playback speed multiplier. */
     readonly speed?: ExpressionValue<number>;
@@ -1693,7 +1693,7 @@ export interface TextNode extends CompositionNodeBase<"text"> {
      * factor up to 1 that fits.
      */
     readonly fit?: TextFit;
-    /** Font family name. */
+    /** Font family name, or `asset:<id>` for a font asset of the host's. */
     readonly font_family?: ExpressionValue<string>;
     /**
      * OpenType features by four-character tag, such as `{ "tnum": 1, "liga": 0 }`. 0 turns a

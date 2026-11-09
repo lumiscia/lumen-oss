@@ -3108,7 +3108,7 @@
                       }
                     ],
                     "default": "",
-                    "description": "External media source identifier.",
+                    "description": "External media source: a path or `media` alias, or `asset:<id>` for an asset of the host's.",
                     "title": "Source",
                     "x-lumen-constraints": {
                       "role": "source_id"
@@ -4881,7 +4881,7 @@
                       }
                     ],
                     "default": "Roboto",
-                    "description": "Font family name.",
+                    "description": "Font family name, or `asset:<id>` for a font asset of the host's.",
                     "title": "Font Family",
                     "x-lumen-constraints": {
                       "format": "font_family"

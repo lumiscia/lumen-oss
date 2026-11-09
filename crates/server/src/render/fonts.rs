@@ -167,7 +167,7 @@ pub struct ResolvedFont {
 }
 
 impl ResolvedFont {
-    fn new(family: &str, files: Vec<PathBuf>) -> Self {
+    pub(super) fn new(family: &str, files: Vec<PathBuf>) -> Self {
         let identities: Vec<String> = files
             .iter()
             .map(|file| {

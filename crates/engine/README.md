@@ -17,6 +17,35 @@ Browser/WASM preview paths are separate and use WebGPU-facing code.
 
 JSON composition parsing is always available. In JSON params, a string starting with `=` is an expression (`"=frame * 2"`); a leading `==` escapes a literal string starting with `=` (`"==wow"` is the text `=wow`).
 
+## Asset references
+
+A source field can name a file in the host's asset store as `asset:<id>`: `media_in`'s `source`,
+an audio clip's `source_id`, and a text node's or span's `font_family`. The prefix is a scheme, so
+it can't be mistaken for a relative path. Each asset has a kind, image, video, audio or font, and
+a reference must name one of the kind its field reads. An id only resolves on the host that issued
+it.
+
+A host gives the engine its store as an `AssetResolver`, and its `MediaStore` resolves references
+with `media::resolve_asset`:
+
+```rust
+pub trait AssetResolver: Send + Sync + Debug {
+    fn resolve(&self, id: &str) -> Option<Asset>;
+}
+
+pub enum Asset {
+    Image(PathBuf),
+    Video(PathBuf),
+    Audio(PathBuf),
+    Font(Vec<PathBuf>), // one family; weight and style choose among its faces
+}
+```
+
+Fonts load into the text session of the job's store, under the name the composition uses, such
+as `asset:<id>` or a `media` alias. Faces that don't carry that name answer to it in place of their
+own, so a font asset or a renamed file shapes as asked, and can't be picked by its internal family
+name instead of another font of that name.
+
 ## Diagnostics
 
 `json::check` reads a composition the way a render would, without rendering it, and returns every
@@ -34,7 +63,7 @@ pub struct Diagnostic {
 
 ```rust
 let fonts = |family: &str| my_fonts.contains(family);
-for diagnostic in lumen_engine::json::check(&json, Some(&fonts)) {
+for diagnostic in lumen_engine::json::check(&json, Some(&fonts), Some(&my_assets)) {
     eprintln!("{} at {}: {}", diagnostic.code, diagnostic.path, diagnostic.message);
 }
 ```
@@ -71,7 +100,9 @@ rendering:
 - encoders that won't open;
 - fonts that fall back at shaping time, including families set by expressions.
 
-A host that stores assets can check references to them against its store before rendering.
+Passing the host's asset store also checks each `asset:` reference a source field holds as a
+literal: one the store doesn't have is `asset.not_found`, and one of another kind is
+`asset.wrong_kind`. Rendering raises the same errors.
 
 ### Codes
 
@@ -106,6 +137,8 @@ A host that stores assets can check references to them against its store before 
 | `expression.parse`                   | error    | render        | An expression built at render time doesn't parse.                                                                                                                                           |
 | `expression.evaluate`                | error    | render        | An expression failed to evaluate.                                                                                                                                                           |
 | `media.not_found`                    | error    | render        | A media source isn't available.                                                                                                                                                             |
+| `asset.not_found`                    | error    | check, render | An `asset:` reference names an id the host's asset store doesn't have.                                                                                                                      |
+| `asset.wrong_kind`                   | error    | check, render | An `asset:` reference names an asset of another kind than its field reads, such as a font as an image.                                                                                      |
 | `media.decode`                       | error    | render        | Media or font data couldn't be decoded.                                                                                                                                                     |
 | `media.frame_out_of_range`           | error    | render        | A video frame past the end of its source was asked for.                                                                                                                                     |
 | `audio.unknown_track`                | error    | render        | An audio clip names a track that doesn't exist.                                                                                                                                             |

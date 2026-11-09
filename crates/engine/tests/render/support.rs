@@ -316,13 +316,24 @@ impl MediaStore for TestMedia {
         Some(self.fonts.get(family)?.0.clone())
     }
 
-    fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
-        let (id, data) = self.fonts.get(family)?;
+    fn get_font_resolver(
+        &self,
+        family: &str,
+    ) -> Result<Option<Box<dyn FontResolver>>, lumen_engine::error::MediaError> {
+        let Some((id, data)) = self.fonts.get(family) else {
+            // As an asset store does, an id it doesn't hold is an error rather than a fallback.
+            return match lumen_engine::media::asset_id(family) {
+                Some(id) => {
+                    Err(lumen_engine::error::MediaError::AssetNotFound { id: id.to_string() })
+                }
+                None => Ok(None),
+            };
+        };
         self.font_requests.fetch_add(1, Ordering::Relaxed);
-        Some(Box::new(TestFont {
+        Ok(Some(Box::new(TestFont {
             id: id.clone(),
             data: Arc::clone(data),
-        }))
+        })))
     }
 
     fn text_session(&self) -> Option<&TextSession> {

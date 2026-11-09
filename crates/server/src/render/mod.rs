@@ -64,7 +64,7 @@ pub fn resolve_encoder(
 
 /// What [`lumen_engine::json::check`] finds in `payload`, with fonts resolved as a render on this
 /// machine resolves them: from `LUMEN_FONT_DIR`, the system, or the media `staged` says the render
-/// will stage under that name.
+/// will stage under that name. Renders here have no asset store, so no `asset:` reference resolves.
 pub fn check_composition(
     payload: &serde_json::Value,
     staged: &dyn Fn(&str) -> bool,
@@ -72,7 +72,11 @@ pub fn check_composition(
     let font_dir = font_dir_from_env().ok().flatten();
     let fonts = FontCatalog::without_media(font_dir.as_deref());
     let known_font = |family: &str| staged(family) || fonts.resolve(family, || None).is_some();
-    lumen_engine::json::check_value(payload, Some(&known_font))
+    lumen_engine::json::check_value(
+        payload,
+        Some(&known_font),
+        Some(&lumen_engine::media::NoAssets),
+    )
 }
 
 pub fn parse_composition(payload: &serde_json::Value) -> Result<Composition, RenderError> {

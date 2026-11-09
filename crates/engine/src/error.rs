@@ -273,6 +273,16 @@ pub enum MediaError {
     #[code("audio.unknown_track")]
     #[error("audio clip `{clip}` names unknown track `{track}`")]
     UnknownAudioTrack { clip: String, track: String },
+    #[code("asset.not_found")]
+    #[error("asset `{id}` is not one this host has")]
+    AssetNotFound { id: String },
+    #[code("asset.wrong_kind")]
+    #[error("asset `{id}` is {actual}, not {expected}")]
+    AssetWrongKind {
+        id: String,
+        expected: crate::media::AssetKind,
+        actual: crate::media::AssetKind,
+    },
 }
 
 impl MediaError {

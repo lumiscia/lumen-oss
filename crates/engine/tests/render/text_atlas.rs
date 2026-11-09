@@ -314,12 +314,17 @@ impl FontBounds {
 
 #[test]
 fn text_bounds_hold_the_ink_of_a_font_loaded_after_they_were_measured() {
-    // `served` is the family the media names the font by, and `internal` the family inside it.
+    let font = |family: &str, scale| {
+        let id = format!("{family}:{scale}");
+        TestMedia::default().font(family, &id, roboto_scaled(family, scale))
+    };
     // Text is bounded only in a family its media names or in the default one, so the last two rows
-    // widen "Roboto" itself, in a text session no other test reads.
-    let font = |served: &str, internal: &str, scale| {
-        let id = format!("{served}:{scale}");
-        TestMedia::default().font(served, &id, roboto_scaled(internal, scale))
+    // widen "Roboto" itself, in a text session no other test reads, with a font served as `family`
+    // that also holds a face of "Roboto".
+    let holding_roboto = |family: &str, scale| {
+        let id = format!("{family}:{scale}");
+        let faces = [roboto_scaled(family, scale), roboto_scaled("Roboto", scale)];
+        TestMedia::default().font(family, &id, font_collection(&faces))
     };
     let wide = |family: &str| {
         scene(
@@ -335,7 +340,7 @@ fn text_bounds_hold_the_ink_of_a_font_loaded_after_they_were_measured() {
                     (640, 360),
                     json!([small_text("WWW", "WideIn", 1.2, [10, 90])]),
                 ),
-                media: font("WideIn", "WideIn", 2),
+                media: font("WideIn", 2),
                 before: |_, renderer, composition, media| {
                     renderer.compile(composition).unwrap();
                     media.clone()
@@ -349,7 +354,7 @@ fn text_bounds_hold_the_ink_of_a_font_loaded_after_they_were_measured() {
                     (640, 360),
                     json!([small_text("WWW", "TallIn", 1.0, [10, 90])]),
                 ),
-                media: font("TallIn", "TallIn", 8),
+                media: font("TallIn", 8),
                 before: |_, renderer, composition, media| {
                     let format = wgpu::TextureFormat::Rgba8Unorm;
                     renderer
@@ -373,7 +378,7 @@ fn text_bounds_hold_the_ink_of_a_font_loaded_after_they_were_measured() {
                         } },
                     ]),
                 ),
-                media: font("Loader", "Roboto", 2),
+                media: holding_roboto("Loader", 2),
                 before: |_, _, _, media| media.clone(),
             },
         ),
@@ -381,7 +386,7 @@ fn text_bounds_hold_the_ink_of_a_font_loaded_after_they_were_measured() {
             "loaded by another renderer",
             FontBounds {
                 scene: wide("Roboto"),
-                media: font("Remote", "Roboto", 2),
+                media: holding_roboto("Remote", 2),
                 before: |gpu, renderer, composition, media| {
                     // The renderer's media never serves the font, so only the font generation
                     // tells it that another renderer loaded one.
@@ -535,6 +540,26 @@ fn measuring_text_through_a_time_remap_loads_the_family_it_names_once_per_id() {
 const ROBOTO: &[u8] = lumen_text::ROBOTO_REGULAR_BYTES;
 const INTER: &[u8] = include_bytes!("../../../text/assets/inter/InterVariable-Latin.ttf");
 
+/// `fonts` as one font collection.
+fn font_collection(fonts: &[Vec<u8>]) -> Vec<u8> {
+    let mut data = b"ttcf\0\x01\0\0".to_vec();
+    data.extend((fonts.len() as u32).to_be_bytes());
+    data.resize(12 + fonts.len() * 4, 0);
+    for (index, font) in fonts.iter().enumerate() {
+        data.resize(data.len().next_multiple_of(4), 0);
+        let start = data.len() as u32;
+        data[12 + index * 4..16 + index * 4].copy_from_slice(&start.to_be_bytes());
+        data.extend_from_slice(font);
+        let tables = u16::from_be_bytes([font[4], font[5]]) as usize;
+        for table in 0..tables {
+            let at = start as usize + 12 + table * 16 + 8;
+            let offset = u32::from_be_bytes(data[at..at + 4].try_into().unwrap());
+            data[at..at + 4].copy_from_slice(&(offset + start).to_be_bytes());
+        }
+    }
+    data
+}
+
 /// `font` with the family name `family`, which fits in its names' space.
 fn font_named(font: &[u8], family: &str) -> Vec<u8> {
     let mut font = font.to_vec();
@@ -671,6 +696,52 @@ fn jobs_draw_one_family_name_with_their_own_font_files() {
             });
         }
     });
+}
+
+#[test]
+fn a_font_staged_under_another_name_draws_as_under_its_own() {
+    let gpu = gpu();
+    let composition = |family: &str| -> Composition {
+        one_text(json!({
+            "content": "Rag Wave 28", "font_family": family, "font_size": 64, "position": [16, 40]
+        }))
+        .into()
+    };
+    let own_name = TestMedia::default().font("Inter", "alias-own-inter", INTER.to_vec());
+    let inter = render(&mut gpu.renderer(), &composition("Inter"), 0.0, &own_name).rgba;
+    let roboto = render(
+        &mut gpu.renderer(),
+        &composition("Roboto"),
+        0.0,
+        &TestMedia::default(),
+    )
+    .rgba;
+    assert_ne!(inter, roboto);
+
+    // As a `media` alias or an asset id names a file, whatever family its faces carry.
+    for name in ["brand", "asset:01JCA2QX"] {
+        let job = TestMedia::default().font(name, &format!("alias-{name}"), INTER.to_vec());
+        let mut renderer = gpu.renderer();
+        let pixels = render(&mut renderer, &composition(name), 0.0, &job).rgba;
+        assert!(pixels == inter, "`{name}` fell back");
+        assert!(renderer.take_diagnostics().is_empty(), "`{name}` warned");
+    }
+}
+
+#[test]
+fn a_node_family_every_span_overrides_is_not_loaded() {
+    let gpu = gpu();
+    let spans = |base: &str| -> Composition {
+        one_text(json!({
+            "font_family": base, "font_size": 64, "position": [16, 40],
+            "content": [{ "text": "Rag", "font_family": "Roboto" }, { "text": " Wave", "font_family": "Roboto" }]
+        }))
+        .into()
+    };
+    let media = TestMedia::default();
+    let expected = render(&mut gpu.renderer(), &spans("Roboto"), 0.0, &media).rgba;
+    let pixels = render(&mut gpu.renderer(), &spans("asset:missing"), 0.0, &media).rgba;
+    assert!(pixels == expected);
 }
 
 #[test]
@@ -826,9 +897,10 @@ impl MediaStore for ChurningFont {
         (family == "Churn").then(|| format!("churn-{}", self.asked.fetch_add(1, Ordering::Relaxed)))
     }
 
-    fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
-        let id = self.font_resolver_id(family)?;
-        Some(Box::new(ChurningResolver(id)))
+    fn get_font_resolver(&self, family: &str) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
+        Ok(self
+            .font_resolver_id(family)
+            .map(|id| Box::new(ChurningResolver(id)) as _))
     }
 
     fn text_session(&self) -> Option<&TextSession> {

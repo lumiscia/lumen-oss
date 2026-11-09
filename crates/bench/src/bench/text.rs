@@ -177,9 +177,9 @@ impl MediaStore for BenchMedia {
     fn font_resolver_id(&self, _: &str) -> Option<String> {
         (!self.fonts.is_empty()).then(|| "bench".to_string())
     }
-    fn get_font_resolver(&self, _: &str) -> Option<Box<dyn FontResolver>> {
-        (!self.fonts.is_empty())
-            .then(|| Box::new(BenchFonts(self.fonts.clone())) as Box<dyn FontResolver>)
+    fn get_font_resolver(&self, _: &str) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
+        Ok((!self.fonts.is_empty())
+            .then(|| Box::new(BenchFonts(self.fonts.clone())) as Box<dyn FontResolver>))
     }
 }
 
