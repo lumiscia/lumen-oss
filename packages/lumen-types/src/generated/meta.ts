@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2 } from "../values.js";
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
 export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
-export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 
 export const schemaVersion = 1 as const;
 
@@ -983,6 +983,7 @@ export type Connection = {
 };
 /** Lengths that a stroke alternately draws and skips, starting with a dash. Each takes a literal or an expression. */
 export type DashPattern = readonly ExpressionValue<number>[];
+export type DirectionalBlurEdge = EdgeMode;
 export type DisplacementChannel = "red" | "green" | "blue" | "luma";
 export type DisplacementMapChannelX = DisplacementChannel;
 export type DisplacementMapChannelY = DisplacementChannel;
@@ -1043,6 +1044,7 @@ export type NoiseMode = "smooth" | "turbulent";
 /** A solid color or a gradient. */
 export type Paint = Color | GradientPaint;
 export type PaintKind = "linear_gradient" | "radial_gradient" | "conic_gradient" | "linear" | "radial" | "conic";
+export type RadialBlurEdge = EdgeMode;
 export type RasterMultimergeBlendMode = BlendMode;
 export type RasterSampling = "nearest" | "linear";
 /** The canvas, and how the host that renders the video encodes it. Previews ignore `codec` and `quality`. */
@@ -1201,6 +1203,7 @@ export type Timeline = {
 };
 export type TransformSampling = RasterSampling;
 export type VideoCodec = "h264" | "hevc" | "av1";
+export type ZoomBlurEdge = EdgeMode;
 
 export interface CompositionNodeBase<TKind extends NodeKind> {
   readonly id: number;
@@ -1285,6 +1288,18 @@ export interface CropNode extends CompositionNodeBase<"crop"> {
     readonly x?: ExpressionValue<number>;
     /** Top edge of the crop region in pixels. */
     readonly y?: ExpressionValue<number>;
+  };
+}
+
+/** Blurs a raster along a line, as a straight motion blur. */
+export interface DirectionalBlurNode extends CompositionNodeBase<"directional_blur"> {
+  readonly params?: {
+    /** Direction of the blur in degrees, clockwise from horizontal. */
+    readonly angle?: ExpressionValue<number>;
+    /** Length in pixels of the line each pixel is spread along, centred on it. */
+    readonly distance?: ExpressionValue<number>;
+    /** What the source reads as beyond the canvas. */
+    readonly edge?: ExpressionValue<EdgeMode>;
   };
 }
 
@@ -1518,6 +1533,18 @@ export interface PathNode extends CompositionNodeBase<"path"> {
     readonly trim_end?: ExpressionValue<number>;
     /** Normalized start of the visible stroke range for each contour. */
     readonly trim_start?: ExpressionValue<number>;
+  };
+}
+
+/** Blurs a raster along circles about a centre, as a spin. */
+export interface RadialBlurNode extends CompositionNodeBase<"radial_blur"> {
+  readonly params?: {
+    /** Arc in degrees each pixel is spread along about `center`, centred on it, up to 360. */
+    readonly amount?: ExpressionValue<number>;
+    /** Centre of the spin in canvas pixels. */
+    readonly center?: ExpressionValue<Vec2>;
+    /** What the source reads as beyond the canvas. */
+    readonly edge?: ExpressionValue<EdgeMode>;
   };
 }
 
@@ -1803,6 +1830,21 @@ export interface WgslShaderNode extends CompositionNodeBase<"wgsl_shader"> {
   };
 }
 
+/** Blurs a raster along rays from a centre, as a zoom. */
+export interface ZoomBlurNode extends CompositionNodeBase<"zoom_blur"> {
+  readonly params?: {
+    /**
+     * Length of the streak through each pixel, as a fraction of its distance from `center`.
+     * The streak runs both ways along the ray, in equal steps of scale.
+     */
+    readonly amount?: ExpressionValue<number>;
+    /** Centre of the zoom in canvas pixels. */
+    readonly center?: ExpressionValue<Vec2>;
+    /** What the source reads as beyond the canvas. */
+    readonly edge?: ExpressionValue<EdgeMode>;
+  };
+}
+
 export interface CompositionNodeByKind {
   readonly "background": BackgroundNode;
   readonly "blur": BlurNode;
@@ -1810,6 +1852,7 @@ export interface CompositionNodeByKind {
   readonly "clip": ClipNode;
   readonly "color_grade": ColorGradeNode;
   readonly "crop": CropNode;
+  readonly "directional_blur": DirectionalBlurNode;
   readonly "displacement_map": DisplacementMapNode;
   readonly "exposure": ExposureNode;
   readonly "fractal_noise": FractalNoiseNode;
@@ -1821,6 +1864,7 @@ export interface CompositionNodeByKind {
   readonly "merge": MergeNode;
   readonly "opacity": OpacityNode;
   readonly "path": PathNode;
+  readonly "radial_blur": RadialBlurNode;
   readonly "raster_multimerge": RasterMultimergeNode;
   readonly "resize": ResizeNode;
   readonly "shadow": ShadowNode;
@@ -1830,6 +1874,7 @@ export interface CompositionNodeByKind {
   readonly "time_remap": TimeRemapNode;
   readonly "transform": TransformNode;
   readonly "wgsl_shader": WgslShaderNode;
+  readonly "zoom_blur": ZoomBlurNode;
 }
 
 export interface CompositionNodeInputByKind {
@@ -1849,6 +1894,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "crop": Omit<CropNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "directional_blur": Omit<DirectionalBlurNode, "id"> & {
     readonly id?: number;
   };
   readonly "displacement_map": Omit<DisplacementMapNode, "id"> & {
@@ -1884,6 +1932,9 @@ export interface CompositionNodeInputByKind {
   readonly "path": Omit<PathNode, "id"> & {
     readonly id?: number;
   };
+  readonly "radial_blur": Omit<RadialBlurNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "raster_multimerge": Omit<RasterMultimergeNode, "id"> & {
     readonly id?: number;
   };
@@ -1911,6 +1962,9 @@ export interface CompositionNodeInputByKind {
   readonly "wgsl_shader": Omit<WgslShaderNode, "id"> & {
     readonly id?: number;
   };
+  readonly "zoom_blur": Omit<ZoomBlurNode, "id"> & {
+    readonly id?: number;
+  };
 }
 
 export interface NodeInputPortNameByKind {
@@ -1920,6 +1974,7 @@ export interface NodeInputPortNameByKind {
   readonly "clip": "source";
   readonly "color_grade": "source";
   readonly "crop": "source";
+  readonly "directional_blur": "source";
   readonly "displacement_map": "map" | "source";
   readonly "exposure": "source";
   readonly "fractal_noise": never;
@@ -1931,6 +1986,7 @@ export interface NodeInputPortNameByKind {
   readonly "merge": "base" | "mask" | "overlay";
   readonly "opacity": "source";
   readonly "path": never;
+  readonly "radial_blur": "source";
   readonly "raster_multimerge": "layers";
   readonly "resize": "source";
   readonly "shadow": "source";
@@ -1940,6 +1996,7 @@ export interface NodeInputPortNameByKind {
   readonly "time_remap": "source";
   readonly "transform": "source";
   readonly "wgsl_shader": "source";
+  readonly "zoom_blur": "source";
 }
 
 export interface NodeVariadicInputPortNameByKind {
@@ -1949,6 +2006,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "clip": never;
   readonly "color_grade": never;
   readonly "crop": never;
+  readonly "directional_blur": never;
   readonly "displacement_map": never;
   readonly "exposure": never;
   readonly "fractal_noise": never;
@@ -1960,6 +2018,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "merge": never;
   readonly "opacity": never;
   readonly "path": never;
+  readonly "radial_blur": never;
   readonly "raster_multimerge": "layers";
   readonly "resize": never;
   readonly "shadow": never;
@@ -1969,6 +2028,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "time_remap": never;
   readonly "transform": never;
   readonly "wgsl_shader": "source";
+  readonly "zoom_blur": never;
 }
 
 export type CompositionNode<TKind extends NodeKind = NodeKind> = CompositionNodeByKind[TKind];

@@ -62,7 +62,10 @@ fn every_program() -> Scene {
             { "id": 19, "type": "media_output" },
             { "id": 20, "type": "fractal_noise", "params": { "evolution": "=frame / 30" } },
             { "id": 21, "type": "displacement_map", "params": { "amount_x": "=frame" } },
-            { "id": 22, "type": "glow", "params": { "radius": "=frame * 2", "threshold": 0.3 } }
+            { "id": 22, "type": "glow", "params": { "radius": "=frame * 2", "threshold": 0.3 } },
+            { "id": 23, "type": "directional_blur", "params": { "distance": "=frame" } },
+            { "id": 24, "type": "radial_blur", "params": { "center": [32, 16], "amount": "=frame" } },
+            { "id": 25, "type": "zoom_blur", "params": { "center": [32, 16], "amount": "=frame / 30" } }
         ],
         "connections": [
             { "from_node": 2, "to_node": 6, "to_port": "source" },
@@ -86,6 +89,10 @@ fn every_program() -> Scene {
             { "from_node": 21, "to_node": 18, "to_port": "layers" },
             { "from_node": 2, "to_node": 22, "to_port": "source" },
             { "from_node": 22, "to_node": 18, "to_port": "layers" },
+            { "from_node": 3, "to_node": 23, "to_port": "source" },
+            { "from_node": 23, "to_node": 24, "to_port": "source" },
+            { "from_node": 24, "to_node": 25, "to_port": "source" },
+            { "from_node": 25, "to_node": 18, "to_port": "layers" },
             { "from_node": 15, "to_node": 18, "to_port": "layers" },
             { "from_node": 17, "to_node": 18, "to_port": "layers" },
             { "from_node": 5, "to_node": 18, "to_port": "layers" },

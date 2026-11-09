@@ -1958,6 +1958,106 @@
           },
           {
             "additionalProperties": false,
+            "description": "Blurs a raster along a line, as a straight motion blur.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "angle": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Direction of the blur in degrees, clockwise from horizontal.",
+                    "title": "Angle",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "distance": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 20.0,
+                    "description": "Length in pixels of the line each pixel is spread along, centred on it.",
+                    "title": "Distance",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "edge": {
+                    "anyOf": [
+                      {
+                        "enum": ["clamp", "transparent"],
+                        "type": "string",
+                        "x-lumen-type": "EdgeMode"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "clamp",
+                    "description": "What the source reads as beyond the canvas.",
+                    "title": "Edge",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Clamp",
+                        "name": "clamp",
+                        "value": 0
+                      },
+                      {
+                        "label": "Transparent",
+                        "name": "transparent",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "directional_blur"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Directional Blur",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster_frame",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster_frame",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. Map bytes are\npremultiplied by alpha, so transparent areas of the map, and everything outside it, leave\nthe source in place.",
             "properties": {
               "id": {
@@ -3652,6 +3752,104 @@
             "type": "object",
             "x-lumen-category": "vector",
             "x-lumen-inputs": [],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster_frame",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "Blurs a raster along circles about a centre, as a spin.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 10.0,
+                    "description": "Arc in degrees each pixel is spread along about `center`, centred on it, up to 360.",
+                    "title": "Amount",
+                    "x-lumen-constraints": {
+                      "max": 360.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "center": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [960.0, 540.0],
+                    "description": "Centre of the spin in canvas pixels.",
+                    "title": "Center",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "edge": {
+                    "anyOf": [
+                      {
+                        "enum": ["clamp", "transparent"],
+                        "type": "string",
+                        "x-lumen-type": "EdgeMode"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "clamp",
+                    "description": "What the source reads as beyond the canvas.",
+                    "title": "Edge",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Clamp",
+                        "name": "clamp",
+                        "value": 0
+                      },
+                      {
+                        "label": "Transparent",
+                        "name": "transparent",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "radial_blur"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Radial Blur",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster_frame",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
             "x-lumen-outputs": [
               {
                 "kind": "raster_frame",
@@ -5513,6 +5711,103 @@
                 "name": "source",
                 "optional": false,
                 "variadic": true
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster_frame",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
+            "description": "Blurs a raster along rays from a centre, as a zoom.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.2,
+                    "description": "Length of the streak through each pixel, as a fraction of its distance from `center`.\nThe streak runs both ways along the ray, in equal steps of scale.",
+                    "title": "Amount",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "center": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec2"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [960.0, 540.0],
+                    "description": "Centre of the zoom in canvas pixels.",
+                    "title": "Center",
+                    "x-lumen-kind": "vec2"
+                  },
+                  "edge": {
+                    "anyOf": [
+                      {
+                        "enum": ["clamp", "transparent"],
+                        "type": "string",
+                        "x-lumen-type": "EdgeMode"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "clamp",
+                    "description": "What the source reads as beyond the canvas.",
+                    "title": "Edge",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Clamp",
+                        "name": "clamp",
+                        "value": 0
+                      },
+                      {
+                        "label": "Transparent",
+                        "name": "transparent",
+                        "value": 1
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "zoom_blur"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Zoom Blur",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster_frame",
+                "name": "source",
+                "optional": false,
+                "variadic": false
               }
             ],
             "x-lumen-outputs": [
