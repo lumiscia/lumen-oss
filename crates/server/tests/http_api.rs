@@ -4,6 +4,7 @@
 //! `*_with_gpu` tests, which skip like the engine's GPU tests when no adapter is available.
 
 use std::{
+    fs,
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::Path,
@@ -154,6 +155,7 @@ fn server_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_lumen-server"));
     for name in [
         "LUMEN_FONT_DIR",
+        "LUMEN_QUALITY_CONFIG",
         "LUMEN_SERVER_ALLOW_MEDIA_HOSTS",
         "LUMEN_SERVER_BIND",
         "LUMEN_SERVER_TOKEN",
@@ -626,63 +628,122 @@ fn rejects_bad_requests_before_downloading_anything() {
     assert_eq!(media.requests.load(Ordering::SeqCst), 0);
 }
 
-#[test]
-fn rejects_conflicting_or_invalid_encode_quality() {
-    let server = Server::start(&[]);
-    for (quality, code) in [
-        (json!({ "crf": 23, "qp": 20 }), "invalid_quality"),
-        (json!({ "bitrate": "8M", "crf": 23 }), "invalid_quality"),
-        (json!({ "bitrate": "0" }), "invalid_quality"),
-        (json!({ "crf": 300 }), "invalid_request_body"),
-    ] {
-        let response = server.post(&json!({
-            "composition": solid_composition(),
-            "quality": quality,
-        }));
-        assert_eq!(
-            response.status(),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{quality}"
-        );
-        assert_eq!(error_code(response), code, "{quality}");
-    }
+fn invalid_quality_message(response: Response) -> String {
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body: Value = response.json().expect("error body");
+    assert_eq!(body["code"], "invalid_quality", "{body}");
+    body["error"].as_str().unwrap_or_default().to_string()
 }
 
 #[test]
-fn rejects_quality_the_configured_encoder_cannot_use() {
-    for (encoder, quality, status) in [
-        (
-            "h264_vulkan",
-            json!({ "crf": 20, "preset": "slow" }),
-            StatusCode::UNPROCESSABLE_ENTITY,
-        ),
-        ("h264_vulkan", json!({ "qp": 20 }), StatusCode::ACCEPTED),
-        (
-            "libx264",
-            json!({ "crf": 20, "preset": "slow" }),
-            StatusCode::ACCEPTED,
-        ),
-    ] {
-        let server = Server::start_with(&[], |command| {
-            command.env("LUMEN_VIDEO_ENCODER", encoder);
-        });
-        let response = server.post(&json!({
-            "composition": solid_composition(),
-            "quality": quality,
-        }));
-        assert_eq!(response.status(), status, "{encoder} {quality}");
-        if status == StatusCode::UNPROCESSABLE_ENTITY {
-            let body: Value = response.json().expect("error body");
-            assert_eq!(body["code"], "invalid_quality");
-            assert!(
-                body["error"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .contains("h264_vulkan"),
-                "{body}"
-            );
-        }
-    }
+fn rejects_quality_this_host_cannot_resolve() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("quality.json");
+    fs::write(
+        &config,
+        json!({
+            "codecs": { "h264": { "encoders": ["libx264"] } },
+            "presets": { "archive": { "encoders": { "libx264": { "crf": 16 } } } }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let server = Server::start_with(&[], |command| {
+        command.env("LUMEN_QUALITY_CONFIG", &config);
+    });
+    let post = |quality: Value, codec: Value, render_settings: Value| {
+        let mut composition = solid_composition();
+        composition["render_settings"] = render_settings;
+        server.post(&json!({ "composition": composition, "quality": quality, "codec": codec }))
+    };
+    let canvas = json!({ "width": 16, "height": 16 });
+
+    let unknown = invalid_quality_message(post(json!("cinema"), Value::Null, canvas.clone()));
+    assert!(
+        unknown.contains("`cinema`") && unknown.contains("draft, standard, high, lossless"),
+        "{unknown}"
+    );
+    let no_encoder = invalid_quality_message(post(json!("lossless"), json!("av1"), canvas.clone()));
+    assert!(no_encoder.contains("av1"), "{no_encoder}");
+    let from_composition = invalid_quality_message(post(
+        Value::Null,
+        Value::Null,
+        json!({ "width": 16, "height": 16, "quality": "cinema" }),
+    ));
+    assert!(from_composition.contains("`cinema`"), "{from_composition}");
+    let composition_codec = invalid_quality_message(post(
+        json!("lossless"),
+        Value::Null,
+        json!({ "width": 16, "height": 16, "codec": "av1" }),
+    ));
+    assert!(composition_codec.contains("av1"), "{composition_codec}");
+    let bad_codec = invalid_quality_message(post(json!("high"), json!("vp9"), canvas.clone()));
+    assert!(bad_codec.contains("vp9"), "{bad_codec}");
+
+    assert_eq!(
+        post(json!("archive"), json!("h264"), canvas.clone()).status(),
+        StatusCode::ACCEPTED
+    );
+    // The request's preset wins over the composition's.
+    assert_eq!(
+        post(
+            json!("archive"),
+            Value::Null,
+            json!({ "width": 16, "height": 16, "quality": "cinema" })
+        )
+        .status(),
+        StatusCode::ACCEPTED
+    );
+}
+
+#[test]
+fn rejects_quality_the_pinned_encoder_cannot_serve() {
+    let server = Server::start_with(&[], |command| {
+        command.env("LUMEN_VIDEO_ENCODER", "libx264");
+    });
+    let post = |body: Value| {
+        let mut body = body;
+        body["composition"] = solid_composition();
+        server.post(&body)
+    };
+    let codec = invalid_quality_message(post(json!({ "codec": "hevc" })));
+    assert!(
+        codec.contains("libx264") && codec.contains("hevc"),
+        "{codec}"
+    );
+    assert_eq!(
+        post(json!({ "quality": "lossless", "codec": "h264" })).status(),
+        StatusCode::ACCEPTED
+    );
+
+    let vulkan = Server::start_with(&[], |command| {
+        command.env("LUMEN_VIDEO_ENCODER", "h264_vulkan");
+    });
+    let lossless = invalid_quality_message(vulkan.post(&json!({
+        "composition": solid_composition(),
+        "quality": "lossless",
+    })));
+    assert!(lossless.contains("h264_vulkan"), "{lossless}");
+}
+
+#[test]
+fn an_invalid_quality_config_stops_the_server_starting() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("quality.json");
+    fs::write(
+        &config,
+        json!({ "presets": { "x": { "encoders": { "libx264": { "options": { "not_an_option": "1" } } } } } })
+            .to_string(),
+    )
+    .unwrap();
+    let output = server_command()
+        .args(["--bind", "127.0.0.1:0"])
+        .env("LUMEN_QUALITY_CONFIG", &config)
+        .output()
+        .expect("run lumen-server");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not_an_option"), "{stderr}");
 }
 
 #[test]

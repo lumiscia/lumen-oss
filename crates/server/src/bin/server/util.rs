@@ -41,13 +41,11 @@ fn rfc3339(unix_seconds: u64) -> String {
 pub(crate) fn input_hash(
     composition: &serde_json::Value,
     media: &std::collections::HashMap<String, String>,
-    quality: Option<&lumen_ffmpeg::EncoderQuality>,
+    encoder: &lumen_ffmpeg::VideoEncoderChoice,
 ) -> String {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     composition.to_string().hash(&mut hash);
-    if let Some(quality) = quality {
-        quality.hash(&mut hash);
-    }
+    encoder.hash(&mut hash);
     let mut media_entries = media.iter().collect::<Vec<_>>();
     media_entries.sort_by(|a, b| a.0.cmp(b.0));
     for (key, value) in media_entries {

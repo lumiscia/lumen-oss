@@ -1638,6 +1638,8 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-video",
  "objc2-metal",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

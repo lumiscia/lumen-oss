@@ -936,7 +936,7 @@ export type CompositionTemplate = {
   readonly nodes: readonly CompositionNode[];
   /** Props that `prop('name')` reads inside the template, set per `clip`. */
   readonly props?: Readonly<Record<string, CompositionPropDeclaration>>;
-  readonly render_settings?: RenderSettings;
+  readonly render_settings?: TemplateRenderSettings;
   readonly timeline?: Timeline;
 };
 export type Connection = {
@@ -1001,8 +1001,13 @@ export type Paint = Color | GradientPaint;
 export type PaintKind = "linear_gradient" | "radial_gradient" | "conic_gradient" | "linear" | "radial" | "conic";
 export type RasterMultimergeBlendMode = BlendMode;
 export type RasterSampling = "nearest" | "linear";
+/** The canvas, and how the host that renders the video encodes it. Previews ignore `codec` and `quality`. */
 export type RenderSettings = {
+  /** Video codec of the rendered file. A render request's `codec` wins over it. */
+  readonly codec?: VideoCodec;
   readonly height: number;
+  /** Quality preset name. Every host defines `draft`, `standard`, `high` and `lossless`; operators can add others. A render request's `quality` wins over it. */
+  readonly quality?: string;
   readonly width: number;
 };
 export type ResizeMode = "stretch" | "fit" | "fill";
@@ -1013,6 +1018,10 @@ export type ShaderUniformValue = ExpressionValue<number | readonly [ShaderUnifor
 /** Shader uniform values by field name, checked against the shader's uniform struct when the node compiles. */
 export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
 export type ShapeGeometryKind = "rectangle" | "ellipse";
+export type TemplateRenderSettings = {
+  readonly height: number;
+  readonly width: number;
+};
 export type TextAlignmentHorizontal = "left" | "center" | "right" | "justify";
 export type TextAlignmentVertical = "top" | "middle" | "bottom";
 /** Text to render: a string, or spans that each override the node's text style. */
@@ -1128,6 +1137,7 @@ export type Timeline = {
   readonly fps?: number;
 };
 export type TransformSampling = RasterSampling;
+export type VideoCodec = "h264" | "hevc" | "av1";
 
 export interface CompositionNodeBase<TKind extends NodeKind> {
   readonly id: number;

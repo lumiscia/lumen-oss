@@ -57,6 +57,11 @@ pub struct Args {
         value_parser = parse_fraction
     )]
     pub progress_min_delta: f32,
+
+    /// JSON file of quality presets and encoder orders, checked at startup. Without it the
+    /// built-in presets apply.
+    #[arg(long, env = "LUMEN_QUALITY_CONFIG", value_name = "PATH")]
+    pub quality_config: Option<std::path::PathBuf>,
 }
 
 fn parse_fraction(raw: &str) -> Result<f32, String> {

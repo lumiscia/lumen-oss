@@ -8,9 +8,13 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgGroup, Parser};
 use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen_engine::composition::Composition;
-use lumen_ffmpeg::{EncoderQuality, parse_bitrate};
+use lumen_ffmpeg::{
+    EncodeCodec, EncoderQuality, QUALITY_CONFIG_ENV, QualityConfig, QualityRequest,
+    VideoEncoderChoice, parse_bitrate,
+};
 use lumen_server::render::{
     FONT_DIR_ENV, LocalMediaStore, Mp4Render, RenderReport, create_gpu_renderer, existing_font_dir,
+    resolve_encoder,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -27,12 +31,18 @@ directory. Fonts come from --font-dir, which must exist, then <media-root>/asset
 system, matched by the family name inside each font file. A family none of them has warns once \
 and renders in the bundled font.
 
-On .mp4 output, --encoder or LUMEN_VIDEO_ENCODER names the encoder, and a named encoder that \
-won't open fails the render. With neither set, Linux uses h264_vulkan and falls back to libx264 \
-with a warning when it won't open, which includes --crf and --preset, as h264_vulkan supports \
-neither. macOS uses h264_videotoolbox. The default is a 14 Mb/s target. --bitrate, --crf, --qp \
-and --preset override it where the encoder supports them (--crf: libx264, NVENC; --qp: libx264, \
-NVENC, Vulkan; --preset: libx264 ultrafast..placebo, NVENC p1..p7) and fail otherwise.
+On .mp4 output, --quality names a preset: draft, standard (the default), high, lossless, or one \
+--quality-config defines. --codec picks h264 (the default), hevc or av1. Both win over the \
+composition's render_settings, which win over the config's defaults. Each codec tries its encoders \
+in order, warning when one won't open: on Linux the Vulkan encoder, then libx264, libx265 or \
+libsvtav1, and on macOS VideoToolbox, then the same CPU encoders. A preset with no settings for an encoder skips it, so \
+lossless uses libx264 or libx265. --encoder or LUMEN_VIDEO_ENCODER pins one encoder, which either \
+opens or fails the render.
+
+--bitrate, --crf, --qp and --preset replace the preset with those settings on every encoder tried, \
+and can't be combined with --quality. A preset alone targets 14 Mb/s. Each fails on an encoder that \
+doesn't support it (--crf: libx264, libx265, libsvtav1, NVENC; --qp: those and Vulkan; --preset: \
+libx264 and libx265 ultrafast..placebo, NVENC p1..p7, libsvtav1 0..13), which moves on to the next.
 
 LUMEN_HARDWARE_DECODE=1 decodes video on the GPU when the hardware supports it. RUST_LOG sets the \
 log filter (default lumen_engine=warn,lumen_server=warn)."
@@ -57,6 +67,18 @@ struct Cli {
     /// Video encoder name, defaulting to LUMEN_VIDEO_ENCODER. .mp4 only
     #[arg(long, value_name = "NAME")]
     encoder: Option<String>,
+
+    /// Quality preset name. .mp4 only
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["bitrate", "crf", "qp", "preset"])]
+    quality: Option<String>,
+
+    /// Video codec: h264, hevc or av1. .mp4 only
+    #[arg(long, value_name = "CODEC")]
+    codec: Option<EncodeCodec>,
+
+    /// JSON file of quality presets and encoder orders, checked before rendering
+    #[arg(long, env = QUALITY_CONFIG_ENV, value_name = "PATH")]
+    quality_config: Option<PathBuf>,
 
     /// Target bits per second, as 14000000, 14000k or 14M. .mp4 only
     #[arg(long, value_name = "BPS|Nk|NM", value_parser = parse_bitrate)]
@@ -98,6 +120,22 @@ impl Cli {
             .expect("clap allows at most one rate control")
     }
 
+    /// The encoders an .mp4 render of `composition` tries.
+    fn encoder_choice(&self, composition: &Composition) -> Result<VideoEncoderChoice> {
+        let config_path = self
+            .quality_config
+            .as_deref()
+            .filter(|path| !path.as_os_str().is_empty());
+        let config = QualityConfig::load(config_path).map_err(|error| anyhow!(error))?;
+        let request = QualityRequest {
+            preset: self.quality.clone(),
+            codec: self.codec,
+            settings: self.quality(),
+            encoder: self.encoder.clone(),
+        };
+        resolve_encoder(&config, composition, request).map_err(|error| anyhow!(error))
+    }
+
     /// The kind of output asked for, after checking that no flag only the other kind supports was
     /// given. `LUMEN_VIDEO_ENCODER` is a default, so only `--encoder` conflicts with .png.
     fn output_kind(&self) -> Result<OutputKind> {
@@ -109,9 +147,13 @@ impl Cli {
             .unwrap_or_default();
         match extension.as_str() {
             "png" => {
-                if self.encoder.is_some() || self.quality().is_some() {
+                if self.encoder.is_some()
+                    || self.quality.is_some()
+                    || self.codec.is_some()
+                    || self.quality().is_some()
+                {
                     bail!(
-                        "--encoder, --bitrate, --crf, --qp and --preset are only supported when output is .mp4"
+                        "--encoder, --quality, --codec, --bitrate, --crf, --qp and --preset are only supported when output is .mp4"
                     );
                 }
                 Ok(OutputKind::Png)
@@ -158,15 +200,9 @@ fn run(cli: Cli) -> Result<()> {
             render_single_png(&composition, &mut media_store, &cli.output, cli.frame)
         }
         OutputKind::Mp4 => {
-            let quality = cli.quality().unwrap_or_default();
+            let choice = cli.encoder_choice(&composition)?;
             render_to_partial(&cli.output, |partial| {
-                render_mp4(
-                    &composition,
-                    media_store,
-                    partial,
-                    cli.encoder.as_deref(),
-                    &quality,
-                )
+                render_mp4(&composition, media_store, partial, choice)
             })
         }
     }
@@ -280,10 +316,9 @@ fn render_mp4(
     composition: &Composition,
     media_store: LocalMediaStore,
     output: &Path,
-    encoder: Option<&str>,
-    quality: &EncoderQuality,
+    choice: VideoEncoderChoice,
 ) -> Result<()> {
-    let render = Mp4Render::open(composition, media_store, encoder, quality, output)?;
+    let render = Mp4Render::open(composition, media_store, choice, output)?;
     println!(
         "video_encoder name={} path={}",
         render.encoder(),
@@ -549,17 +584,18 @@ mod tests {
         assert_eq!(
             quality(&[&output[..], &["--crf", "23", "--preset", "fast"]].concat()),
             EncoderQuality {
-                rate_control: RateControl::Crf(23),
+                rate_control: Some(RateControl::Crf(23)),
                 preset: Some("fast".into()),
+                options: Vec::new(),
             }
         );
         assert_eq!(
             quality(&[&output[..], &["--bitrate", "8M"]].concat()).rate_control,
-            RateControl::Bitrate(8_000_000)
+            Some(RateControl::Bitrate(8_000_000))
         );
         assert_eq!(
             quality(&[&output[..], &["--qp", "30"]].concat()).rate_control,
-            RateControl::Qp(30)
+            Some(RateControl::Qp(30))
         );
 
         for pair in [
@@ -579,6 +615,21 @@ mod tests {
             .unwrap_err();
             assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
         }
+        for flag in [
+            ["--crf", "20"],
+            ["--qp", "20"],
+            ["--bitrate", "1M"],
+            ["--preset", "fast"],
+        ] {
+            let error =
+                parse(&["--output", "o.mp4", "--quality", "high", flag[0], flag[1]]).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{flag:?}"
+            );
+        }
+        assert!(parse(&["--output", "o.mp4", "--codec", "vp9"]).is_err());
         assert!(parse(&["--output", "o.mp4", "--crf", "300"]).is_err());
         assert!(parse(&["--output", "o.mp4", "--bitrate", "0"]).is_err());
     }
@@ -597,7 +648,13 @@ mod tests {
                 .to_string()
                 .contains("only supported when output is .mp4")
         );
-        for quality in [["--bitrate", "14M"], ["--crf", "23"], ["--preset", "fast"]] {
+        for quality in [
+            ["--bitrate", "14M"],
+            ["--crf", "23"],
+            ["--preset", "fast"],
+            ["--quality", "high"],
+            ["--codec", "hevc"],
+        ] {
             let error = kind(&["--output", "o.png", quality[0], quality[1]])
                 .err()
                 .unwrap();
@@ -616,6 +673,43 @@ mod tests {
         );
         let error = kind(&["--output", "o.gif"]).err().unwrap();
         assert!(error.to_string().contains("unsupported output extension"));
+    }
+
+    #[test]
+    fn quality_config_presets_resolve_against_the_composition() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = dir.path().join("quality.json");
+        fs::write(
+            &config,
+            r#"{ "presets": { "archive": { "encoders": { "libx264": { "crf": 16 } } } } }"#,
+        )
+        .expect("write config");
+        let composition = lumen_engine::json::parse_value(&serde_json::json!({
+            "timeline": { "duration_frames": 1 },
+            "render_settings": { "width": 16, "height": 16, "quality": "archive" },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255], "width": 16, "height": 16 } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+        }))
+        .expect("composition");
+        let choice = |flags: &[&str]| {
+            let config = config.to_str().unwrap();
+            let base = ["--output", "o.mp4", "--quality-config", config];
+            parse(&[&base[..], flags].concat())
+                .unwrap()
+                .encoder_choice(&composition)
+        };
+
+        let archive = choice(&[]).expect("archive resolves");
+        assert_eq!(archive.candidates().len(), 1);
+        assert_eq!(
+            archive.first().quality.rate_control,
+            Some(RateControl::Crf(16))
+        );
+        let error = choice(&["--quality", "cinema"]).unwrap_err();
+        assert!(error.to_string().contains("`cinema`"), "{error}");
     }
 
     /// Runs `parsed_font_dir` in a child process, since clap reads `LUMEN_FONT_DIR` from the real

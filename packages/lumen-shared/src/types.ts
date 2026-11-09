@@ -10,7 +10,7 @@ import type {
   NodeInputPortName,
   NodeKind,
   NodeVariadicInputPortName,
-  RenderSettings,
+  TemplateRenderSettings,
   TextContent,
   Vec2,
 } from "@lumiscia/lumen-types";
@@ -102,7 +102,7 @@ export interface ConnectOptions<TKind extends NodeKind = NodeKind> {
   readonly toPort: NodeInputPortName<TKind>;
 }
 
-export type Size = RenderSettings;
+export type Size = TemplateRenderSettings;
 
 export type RenderSettingsInput = Partial<LumenComposition["render_settings"]>;
 

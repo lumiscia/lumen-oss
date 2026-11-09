@@ -3,4 +3,4 @@
 "@lumiscia/lumen-bindings": minor
 ---
 
-`POST /renders` on `lumen-server` accepts `quality: { bitrate, crf, qp, preset }`, with the same meanings and rules as `lumen-local`'s flags: at most one of `bitrate` (a number or text such as `"14M"`), `crf` and `qp`. Invalid combinations or values return `422`. `RenderOptions.quality` in the SDK sends it. For Rust users of `lumen-engine-ffmpeg`, `EncoderQuality::from_options` and `parse_bitrate` hold the checks `lumen-local` and `lumen-server` share.
+`POST /renders` on `lumen-server` accepts `quality`, a quality preset name such as `"high"`, and `codec`, `"h264"`, `"hevc"` or `"av1"`. Both win over the composition's `render_settings`. `RenderOptions.quality` and `RenderOptions.codec` in the SDK send them, and `QualityPreset` types the preset name.

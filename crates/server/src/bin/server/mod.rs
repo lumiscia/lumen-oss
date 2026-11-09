@@ -6,12 +6,12 @@ mod util;
 use std::{collections::HashMap, path::Path, time::Instant};
 
 pub use types::{
-    ApiRenderJob, Artifact, CreateRenderResponse, GetRenderResponse, QualityInput, RenderJobError,
+    ApiRenderJob, Artifact, CreateRenderResponse, GetRenderResponse, RenderJobError,
     RenderJobInput, RenderProgressResponse, RenderQueueState, RenderRecord, RenderStatus,
 };
 
 use lumen_engine::composition::Composition;
-use lumen_ffmpeg::EncoderQuality;
+use lumen_ffmpeg::VideoEncoderChoice;
 use lumen_server::render::{
     RenderError as RenderPipelineError, RenderOptions, RenderProgress, render_project_mp4,
 };
@@ -25,7 +25,7 @@ pub struct RenderJob {
     pub id: String,
     pub composition: Composition,
     pub media: HashMap<String, String>,
-    pub quality: EncoderQuality,
+    pub encoder: VideoEncoderChoice,
 }
 
 pub struct CompletedRender {
@@ -46,7 +46,7 @@ where
         id: job_id,
         composition,
         media,
-        quality,
+        encoder,
     } = job;
     tracing::info!(job_id, media_count = media.len(), "starting render request");
     let staged_media = stage_remote_media(media_client, media).await?;
@@ -56,8 +56,7 @@ where
     let staged_path = staged_media.path().to_path_buf();
     let options = RenderOptions {
         media_root: Some(staged_path.clone()),
-        quality,
-        ..RenderOptions::default()
+        encoder: Some(encoder),
     };
 
     let output_width = composition.render_settings().width;

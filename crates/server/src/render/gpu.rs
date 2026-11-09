@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Context;
 use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, media::MediaStore};
-use lumen_ffmpeg::{EncoderQuality, VideoEncoderChoice};
+use lumen_ffmpeg::{QualityConfig, QualityRequest, VideoEncoderChoice};
 
 use super::{
     RenderError, RenderOptions, RenderProgress,
@@ -14,6 +14,7 @@ use super::{
     encode_target::{EncodeTarget, OpenedTarget},
     fonts::font_dir_from_env,
     media::{LocalMediaStore, media_root},
+    resolve_encoder,
 };
 
 pub(super) const MEDIA_PREFETCH_LOOKAHEAD_FRAMES: u32 = 30;
@@ -42,13 +43,20 @@ pub fn render_project_mp4(
     })?;
     let output_path = tmp.path().join("output.mp4");
 
-    let render = Mp4Render::open(
-        composition,
-        media_store,
-        options.video_encoder.as_deref(),
-        &options.quality,
-        &output_path,
-    )?;
+    let choice = match &options.encoder {
+        Some(choice) => choice.clone(),
+        None => resolve_encoder(
+            &QualityConfig::built_in(),
+            composition,
+            QualityRequest::default(),
+        )
+        .map_err(|message| RenderError {
+            code: "invalid_quality",
+            message,
+            retryable: false,
+        })?,
+    };
+    let render = Mp4Render::open(composition, media_store, choice, &output_path)?;
     render.run(on_progress)?;
 
     fs::read(&output_path).map_err(|err| RenderError {
@@ -95,19 +103,18 @@ pub struct Mp4Render<'a> {
 }
 
 impl<'a> Mp4Render<'a> {
-    /// Opens `encoder`, or `LUMEN_VIDEO_ENCODER`, or the platform default, on the path that keeps
-    /// frames on the GPU when it has one.
+    /// Opens the first of `choice`'s encoders that starts, on the path that keeps frames on the
+    /// GPU when it has one.
     pub fn open(
         composition: &'a Composition,
         mut media_store: LocalMediaStore,
-        encoder: Option<&str>,
-        quality: &EncoderQuality,
+        choice: VideoEncoderChoice,
         output: &Path,
     ) -> Result<Self, RenderError> {
-        let (choice, info) = VideoEncoderChoice::resolve(encoder)
+        let (choice, info) = choice
             .look_up(|warning| tracing::warn!("{warning}"))
             .map_err(invalid_render_profile)?;
-        tracing::info!(encoder = choice.name, codec = ?info.codec, "selected video encoder");
+        tracing::info!(encoder = choice.first().encoder, codec = ?info.codec, "selected video encoder");
 
         let OpenedTarget {
             renderer,
@@ -115,14 +122,7 @@ impl<'a> Mp4Render<'a> {
             encoder,
             path,
             devices,
-        } = EncodeTarget::open(
-            &choice,
-            info.family,
-            composition,
-            &mut media_store,
-            output,
-            quality,
-        )?;
+        } = EncodeTarget::open(&choice, composition, &mut media_store, output)?;
         tracing::info!(encoder, path, "opened video encoder");
         if let Some(adapter) = renderer.gpu_renderer().adapter_info() {
             tracing::info!(
@@ -156,7 +156,7 @@ impl<'a> Mp4Render<'a> {
         Ok(render)
     }
 
-    /// The encoder that opened, which is the fallback if the automatic default wouldn't.
+    /// The encoder that opened, which is a later candidate when an earlier one wouldn't.
     pub fn encoder(&self) -> &str {
         &self.encoder
     }
@@ -264,6 +264,8 @@ pub fn create_gpu_renderer(
 
 #[cfg(test)]
 mod tests {
+    use lumen_ffmpeg::EncoderQuality;
+
     use super::*;
 
     #[cfg(target_os = "linux")]
@@ -280,8 +282,14 @@ mod tests {
         }))
         .unwrap();
         let options = RenderOptions {
-            // Registered in every FFmpeg build, and refuses the frames lumen gives a video encoder.
-            video_encoder: Some("bmp".to_string()),
+            // libx264 only checks `tune` when it opens.
+            encoder: Some(VideoEncoderChoice::single(
+                "libx264",
+                EncoderQuality {
+                    options: vec![("tune".to_string(), "not-a-tune".to_string())],
+                    ..EncoderQuality::default()
+                },
+            )),
             ..RenderOptions::default()
         };
 
@@ -304,7 +312,10 @@ mod tests {
         }))
         .unwrap();
         let options = RenderOptions {
-            video_encoder: Some("definitely_not_an_encoder".to_string()),
+            encoder: Some(VideoEncoderChoice::single(
+                "definitely_not_an_encoder",
+                EncoderQuality::default(),
+            )),
             ..RenderOptions::default()
         };
 

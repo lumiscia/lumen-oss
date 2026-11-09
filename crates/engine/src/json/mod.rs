@@ -22,8 +22,8 @@ use serde_json::{Number, Value};
 use crate::{
     audio::{AudioClip, AudioTimeline, AudioTrack, default_volume, deserialize_gain},
     composition::{
-        Composition, CompositionBuilder, CompositionTemplate, PropDef, PropKind, RenderSettings,
-        Scene, TimelineSettings,
+        Composition, CompositionBuilder, CompositionTemplate, OutputCodec, OutputSettings, PropDef,
+        PropKind, RenderSettings, Scene, TimelineSettings,
     },
     expr::FunctionScope,
     graph::{Connection, Graph},
@@ -75,7 +75,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
 #[derive(Deserialize)]
 struct DocumentJson {
     timeline: Object<TimelineJson>,
-    render_settings: Object<RenderSettingsJson>,
+    render_settings: Object<RootRenderSettingsJson>,
     #[serde(default)]
     functions: BTreeMap<String, String>,
     #[serde(default)]
@@ -135,6 +135,39 @@ impl RenderSettingsJson {
             background_color: (),
         } = *self;
         RenderSettings { width, height }
+    }
+}
+
+/// The root's settings, which also say how to encode it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RootRenderSettingsJson {
+    #[serde(deserialize_with = "whole_u32")]
+    width: u32,
+    #[serde(deserialize_with = "whole_u32")]
+    height: u32,
+    #[serde(default, deserialize_with = "retired_background_color")]
+    background_color: (),
+    #[serde(default, deserialize_with = "present")]
+    codec: Option<OutputCodec>,
+    #[serde(default, deserialize_with = "present")]
+    quality: Option<String>,
+}
+
+impl RootRenderSettingsJson {
+    fn settings(&self) -> (RenderSettings, OutputSettings) {
+        let Self {
+            width,
+            height,
+            background_color: (),
+            codec,
+            ref quality,
+        } = *self;
+        let output = OutputSettings {
+            codec,
+            quality: quality.clone(),
+        };
+        (RenderSettings { width, height }, output)
     }
 }
 
@@ -283,7 +316,7 @@ pub fn parse_value(root: &Value) -> Result<Composition> {
     check_schema_version(root)?;
     let Object(document): Object<DocumentJson> = serde_path_to_error::deserialize(root)?;
     let timeline = document.timeline.settings(DEFAULT_FPS);
-    let render_settings = document.render_settings.settings();
+    let (render_settings, output) = document.render_settings.settings();
 
     let function_scope = FunctionScope::enter(&document.functions)?;
     let graph = build_graph(&document.nodes, &document.connections)?;
@@ -313,6 +346,7 @@ pub fn parse_value(root: &Value) -> Result<Composition> {
             render_settings,
         },
         audio,
+        output,
         compositions,
     }
     .build()

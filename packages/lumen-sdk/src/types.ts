@@ -1,3 +1,5 @@
+import type { VideoCodec } from "@lumiscia/lumen-types";
+
 export interface LumenOptions {
   readonly apiKey: string;
   /** API base URL. Defaults to the hosted Lumiscia API, `https://api.lumiscia.com/v1`. */
@@ -6,19 +8,10 @@ export interface LumenOptions {
 }
 
 /**
- * Encode quality for the MP4. Set at most one of `bitrate`, `crf` and `qp`; `preset` goes with any
- * of them. Which settings an encoder supports is checked when the render runs.
+ * A quality preset name. Every host defines `draft`, `standard`, `high` and `lossless`; operators
+ * can define others.
  */
-export interface RenderQuality {
-  /** Target bits per second: a number, or text such as `"14M"` or `"500k"`. */
-  readonly bitrate?: number | string;
-  /** Constant rate factor; lower is higher quality. */
-  readonly crf?: number;
-  /** Constant quantizer. */
-  readonly qp?: number;
-  /** Encoder speed preset, such as `"fast"` for libx264 or `"p4"` for NVENC. */
-  readonly preset?: string;
-}
+export type QualityPreset = "draft" | "standard" | "high" | "lossless" | (string & {});
 
 export interface RenderOptions {
   readonly signal?: AbortSignal;
@@ -26,8 +19,10 @@ export interface RenderOptions {
   /** Media by the alias the composition uses: a URL, or an upload to reference. */
   readonly media?: RenderMediaManifest;
   readonly webhookUrl?: string;
-  /** Sent only when set, so it is the encoder's default otherwise. */
-  readonly quality?: RenderQuality;
+  /** Wins over the composition's `render_settings.quality`. Unset, the host's default applies. */
+  readonly quality?: QualityPreset;
+  /** Wins over the composition's `render_settings.codec`. Unset, the host's default applies. */
+  readonly codec?: VideoCodec;
 }
 
 export type RenderStatus = "queued" | "processing" | "succeeded" | "failed";

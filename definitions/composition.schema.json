@@ -202,7 +202,7 @@
           "type": "object"
         },
         "render_settings": {
-          "$ref": "#/$defs/renderSettings"
+          "$ref": "#/$defs/templateRenderSettings"
         },
         "timeline": {
           "$ref": "#/$defs/timeline"
@@ -507,11 +507,22 @@
     },
     "renderSettings": {
       "additionalProperties": false,
+      "description": "The canvas, and how the host that renders the video encodes it. Previews ignore `codec` and `quality`.",
       "properties": {
+        "codec": {
+          "description": "Video codec of the rendered file. A render request's `codec` wins over it.",
+          "enum": ["h264", "hevc", "av1"],
+          "type": "string",
+          "x-lumen-type": "VideoCodec"
+        },
         "height": {
           "maximum": 4294967295,
           "minimum": 1,
           "type": "integer"
+        },
+        "quality": {
+          "description": "Quality preset name. Every host defines `draft`, `standard`, `high` and `lossless`; operators can add others. A render request's `quality` wins over it.",
+          "type": "string"
         },
         "width": {
           "maximum": 4294967295,
@@ -565,6 +576,24 @@
       "description": "Shader uniform values by field name, checked against the shader's uniform struct when the node compiles.",
       "type": "object",
       "x-lumen-type": "ShaderUniforms"
+    },
+    "templateRenderSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "width": {
+          "maximum": 4294967295,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": ["width", "height"],
+      "type": "object",
+      "x-lumen-type": "TemplateRenderSettings"
     },
     "textContent": {
       "description": "Text to render: a string, or spans that each override the node's text style.",

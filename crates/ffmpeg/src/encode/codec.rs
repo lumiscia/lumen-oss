@@ -18,6 +18,8 @@ pub struct EncoderInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncoderFamily {
     X264,
+    X265,
+    SvtAv1,
     Nvenc,
     Vulkan,
     VideoToolbox,
@@ -25,9 +27,14 @@ pub enum EncoderFamily {
 }
 
 impl EncoderFamily {
-    pub(crate) fn of(encoder: &str) -> Self {
+    /// The family of an encoder by its FFmpeg name.
+    pub fn of(encoder: &str) -> Self {
         if encoder == "libx264" {
             Self::X264
+        } else if encoder == "libx265" {
+            Self::X265
+        } else if encoder == "libsvtav1" {
+            Self::SvtAv1
         } else if encoder.ends_with("_nvenc") {
             Self::Nvenc
         } else if encoder.ends_with("_vulkan") {
@@ -73,7 +80,62 @@ pub(crate) fn video_encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
             format!("`{name}` is not a video encoder"),
         ));
     }
+    // Vulkan encoders take frames from their own hardware frames context.
+    if EncoderFamily::of(name) != EncoderFamily::Vulkan && !takes_yuv420p(codec) {
+        return Err(FfmpegError::new(
+            "encoder_info",
+            format!("`{name}` doesn't take the YUV 4:2:0 frames lumen encodes from"),
+        ));
+    }
     Ok(codec)
+}
+
+/// Whether `codec` lists `yuv420p` among its input formats. One that lists none takes any.
+fn takes_yuv420p(codec: *const sys::AVCodec) -> bool {
+    pixel_formats(codec)
+        .is_none_or(|formats| formats.contains(&sys::AVPixelFormat::AV_PIX_FMT_YUV420P))
+}
+
+#[cfg(ffmpeg_supported_config)]
+fn pixel_formats(codec: *const sys::AVCodec) -> Option<&'static [sys::AVPixelFormat]> {
+    use std::ffi::{c_int, c_void};
+
+    let mut formats: *const c_void = std::ptr::null();
+    let mut count: c_int = 0;
+    let result = unsafe {
+        sys::avcodec_get_supported_config(
+            std::ptr::null(),
+            codec,
+            sys::AVCodecConfig::AV_CODEC_CONFIG_PIX_FORMAT,
+            0,
+            &mut formats,
+            &mut count,
+        )
+    };
+    if result < 0 || formats.is_null() {
+        return None;
+    }
+    // The list is static data of the codec.
+    Some(unsafe {
+        std::slice::from_raw_parts(
+            formats.cast::<sys::AVPixelFormat>(),
+            usize::try_from(count).unwrap_or(0),
+        )
+    })
+}
+
+#[cfg(not(ffmpeg_supported_config))]
+fn pixel_formats(codec: *const sys::AVCodec) -> Option<&'static [sys::AVPixelFormat]> {
+    let formats = unsafe { (*codec).pix_fmts };
+    if formats.is_null() {
+        return None;
+    }
+    let mut count = 0;
+    while unsafe { *formats.add(count) } != sys::AVPixelFormat::AV_PIX_FMT_NONE {
+        count += 1;
+    }
+    // The list is static data of the codec, ended by `AV_PIX_FMT_NONE`.
+    Some(unsafe { std::slice::from_raw_parts(formats, count) })
 }
 
 pub(crate) fn encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {

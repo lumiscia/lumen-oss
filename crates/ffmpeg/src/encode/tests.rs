@@ -179,7 +179,7 @@ fn finishing_a_vulkan_encoder_that_got_no_frames_does_not_crash() {
 fn unsupported_rate_control_errors_at_create() {
     let path = temp_path("unsupported_crf", "mp4");
     let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
-    config.quality.rate_control = RateControl::Crf(23);
+    config.quality.rate_control = Some(RateControl::Crf(23));
     config.quality.preset = Some("p4".to_string());
 
     let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
@@ -224,4 +224,55 @@ fn vulkan_encode_unavailable(error: &FfmpegError) -> bool {
     error.operation == "avcodec_find_encoder_by_name"
         || error.operation == "av_hwdevice_ctx_create"
         || error.code == Some(sys::AVERROR(libc::ENOSYS))
+}
+
+/// Encodes a few frames with each software encoder's `standard` settings, where this build has it.
+#[test]
+fn software_encoders_encode_through_a_preset() {
+    use crate::{EncodeCodec, QualityConfig, QualityRequest};
+
+    for (codec, encoder) in [
+        (EncodeCodec::Hevc, "libx265"),
+        (EncodeCodec::Av1, "libsvtav1"),
+    ] {
+        if super::codec::encoder_info(encoder).is_err() {
+            eprintln!("{encoder} not in this FFmpeg build; skipping");
+            continue;
+        }
+        let choice = QualityConfig::built_in()
+            .resolve(&QualityRequest {
+                codec: Some(codec),
+                encoder: Some(encoder.to_string()),
+                ..QualityRequest::default()
+            })
+            .expect("standard has an entry");
+        let path = temp_path(encoder, "mp4");
+        let mut config = VideoEncoderConfig::cpu_rgba(64, 64, 30, encoder);
+        config.quality = choice.first().quality.clone();
+        let mut muxed =
+            MuxedEncoder::create(path.to_string_lossy().to_string(), config).expect(encoder);
+        for seed in 0..5 {
+            muxed
+                .write_video_frame(&noisy_frame(64, 64, seed))
+                .expect("write frame");
+        }
+        muxed.finish().expect("finish encode");
+        assert!(fs::metadata(&path).expect("output").len() > 0);
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
+fn a_container_that_cannot_hold_the_codec_errors_at_create() {
+    let path = temp_path("h264_in_webm", "webm");
+    let config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
+    let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+        Ok(_) => panic!("webm can't hold H.264"),
+        Err(error) => error,
+    };
+    assert!(
+        error.message.contains("webm container can't hold") && error.message.contains("libx264"),
+        "{error}"
+    );
+    let _ = fs::remove_file(path);
 }
