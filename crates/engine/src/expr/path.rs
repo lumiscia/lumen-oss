@@ -72,7 +72,7 @@ impl MeasureCache {
 }
 
 fn entry_bytes(data: &str, measure: &PathMeasure) -> usize {
-    data.len() + measure.pieces.len() * size_of::<Piece>()
+    data.len() + size_of::<PathMeasure>() + measure.pieces.capacity() * size_of::<Piece>()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,6 +109,9 @@ struct Piece {
     end: f64,
     /// The unwrapped angle at the start of this piece.
     angle: f64,
+    /// Whether the piece is too short for its direction to mean anything, so its angle stays
+    /// `angle` throughout.
+    sliver: bool,
 }
 
 impl Piece {
@@ -124,6 +127,9 @@ impl Piece {
 
     /// The angle at `t`, the closest to `self.angle` of the angles a whole turn apart.
     fn angle_at(&self, t: f32) -> f64 {
+        if self.sliver {
+            return self.angle;
+        }
         unwrap_angle(degrees(self.direction(t)), self.angle)
     }
 }
@@ -144,7 +150,8 @@ impl PathMeasure {
         let path = build_lyon_path(data)?;
         let mut tolerance = MEASURE_TOLERANCE;
         for _ in 0..MAX_MEASURE_ATTEMPTS {
-            if let Some(measure) = Self::flatten(&path, tolerance) {
+            if let Some(mut measure) = Self::flatten(&path, tolerance) {
+                measure.pieces.shrink_to_fit();
                 return Ok(measure);
             }
             tolerance *= 2.0;
@@ -161,22 +168,25 @@ impl PathMeasure {
         let mut angle = None;
         let mut push = |pieces: &mut Vec<Piece>, curve: Curve, chord: &LineSegment<f32>, t| {
             let chord_length = f64::from(chord.length());
-            // Rounding leaves chords a few ulps long where arcs end, pointing anywhere.
-            let scale = chord.from.x.abs().max(chord.from.y.abs()).max(1.0);
-            if chord_length <= f64::from(scale * f32::EPSILON * 16.0)
-                || pieces.len() > MAX_PATH_POINTS
-            {
+            if chord_length == 0.0 || pieces.len() > MAX_PATH_POINTS {
                 return;
             }
             length += chord_length;
+            // Rounding leaves chords a few ulps long where arcs end, pointing anywhere, so a
+            // chord that short keeps the angle the path had before it.
+            let scale = chord.from.x.abs().max(chord.from.y.abs()).max(1.0);
+            let sliver = chord_length <= f64::from(scale * f32::EPSILON * 16.0) && angle.is_some();
             let mut piece = Piece {
                 curve,
                 t,
                 end: length,
-                angle: 0.0,
+                angle: angle.unwrap_or(0.0),
+                sliver,
             };
-            let start = degrees(piece.direction(piece.t.start));
-            piece.angle = angle.map_or(start, |previous| unwrap_angle(start, previous));
+            if !sliver {
+                let start = degrees(piece.direction(piece.t.start));
+                piece.angle = angle.map_or(start, |previous| unwrap_angle(start, previous));
+            }
             angle = Some(piece.angle_at(piece.t.end));
             pieces.push(piece);
         };
@@ -332,6 +342,16 @@ mod tests {
     }
 
     #[test]
+    fn short_segments_far_from_the_origin_still_count() {
+        assert_eq!(point("M 1000000 0 L 1000001 0", 1.0), (1000001.0, 0.0));
+        assert_eq!(angle("M 1000000 0 L 1000000 1", 0.5), 90.0);
+        assert_eq!(
+            point("M 1000000 0 L 1000001 0 L 1000001 1", 0.75),
+            (1000001.0, 0.5)
+        );
+    }
+
+    #[test]
     fn angles_follow_the_tangent_in_clockwise_degrees() {
         assert_eq!(angle("M 0 0 L 0 100", 0.5), 90.0);
         // The upper half of a circle of radius 100 drawn clockwise on screen from (0, 100):
@@ -389,5 +409,12 @@ mod tests {
                 .map(|(data, measure)| entry_bytes(data, measure))
                 .sum::<usize>()
         );
+    }
+
+    #[test]
+    fn measured_pieces_hold_no_spare_capacity() {
+        let data = format!("M 0 0{}", " l 1 1".repeat(8193));
+        let measure = PathMeasure::new(&data).unwrap();
+        assert_eq!(measure.pieces.capacity(), measure.pieces.len());
     }
 }
