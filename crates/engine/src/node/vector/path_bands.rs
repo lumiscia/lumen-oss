@@ -31,6 +31,16 @@ pub(super) fn bin_path(
 ) -> Vec<u32> {
     uniforms.screen_bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
     uniforms.band_count = 0;
+    // Untransformed size of a canvas pixel, at its largest.
+    let pixel = 1.0 / drawn.smallest_scale();
+    let offset = f64::from(uniforms.fill_offset);
+    let half_feather = f64::from(uniforms.fill_feather) * 0.5;
+    // No point inside the fill is deeper than half the box's smaller side, so a fill shrunk
+    // by more, past its fade and a pixel, covers nothing.
+    let max_depth = f64::from((max[0] - min[0]).min(max[1] - min[1])) * 0.5;
+    if offset + half_feather + pixel <= -max_depth {
+        uniforms.flags &= !STYLE_FILL_ENABLED;
+    }
     let fill = uniforms.flags & STYLE_FILL_ENABLED != 0;
     let stroke = uniforms.flags & STYLE_STROKE_ENABLED != 0;
     // The open end of a contour joins its start only for the fill's crossing count.
@@ -54,13 +64,28 @@ pub(super) fn bin_path(
         return Vec::new();
     }
 
-    let reach = segment_reach(uniforms, drawn.smallest_scale());
+    // The depth inside the outline within which the fill's coverage still varies.
+    let fill_depth = if fill {
+        (half_feather - offset).min(max_depth)
+    } else {
+        f64::NEG_INFINITY
+    };
+    let stroke_extent = if stroke {
+        f64::from(uniforms.stroke_width).max(0.0) * 0.5
+    } else {
+        0.0
+    };
+    let extent = segment_extent(uniforms, drawn.smallest_scale());
+    let reach = extent.max(pixel + fill_depth);
     // Covers rounding differences between this binning and the shader's band lookup.
     let pad = reach + 1e-4 * (1.0 + f64::from(min[1].abs().max(max[1].abs())));
     let origin = f64::from(min[1]) - pad;
     let height = f64::from(max[1]) + pad - origin;
 
-    let mut band_count = (height / reach)
+    // A wide fill offset or feather pads bands more than it makes them taller, which would add
+    // segments to every pixel's band, and thinner bands list each segment more often.
+    let band_height = (pixel + stroke_extent).max(reach * 0.25);
+    let mut band_count = (height / band_height)
         .floor()
         .clamp(1.0, segments.len().min(MAX_PATH_BANDS) as f64) as usize;
     let band_range = |band_count: usize, [low, high]: [f64; 2]| {
@@ -100,32 +125,37 @@ pub(super) fn bin_path(
         }
     }
 
-    let reach = reach as f32;
     if let Drawn::Once(_, motion) = drawn {
+        let extent = extent as f32;
         let [x, y] = uniforms.position;
         uniforms.screen_bounds = motion.canvas_bounds(
             uniforms.transform,
-            [min[0] - reach + x, min[1] - reach + y],
-            [max[0] + reach + x, max[1] + reach + y],
+            [min[0] - extent + x, min[1] - extent + y],
+            [max[0] + extent + x, max[1] + extent + y],
         );
     }
     uniforms.band_origin = origin as f32;
     uniforms.band_scale = (band_count as f64 / height) as f32;
     uniforms.band_count = band_count as u32;
-    uniforms.reach = reach;
+    uniforms.reach = reach as f32;
     data
 }
 
-/// Untransformed distance within which a segment can still cover part of a pixel when drawn at
-/// a smallest absolute scale component of `scale`: a canvas pixel of antialiasing, plus half the
-/// stroke.
-pub(super) fn segment_reach(uniforms: &PathUniforms, scale: f64) -> f64 {
-    let stroke_reach = if uniforms.flags & STYLE_STROKE_ENABLED != 0 {
+/// Untransformed distance past the outline within which a segment can still cover part of a
+/// pixel when drawn at a smallest absolute scale component of `scale`: a canvas pixel of
+/// antialiasing past the farther of the stroke's half width and the fill's offset edge and fade.
+pub(super) fn segment_extent(uniforms: &PathUniforms, scale: f64) -> f64 {
+    let stroke = if uniforms.flags & STYLE_STROKE_ENABLED != 0 {
         f64::from(uniforms.stroke_width).max(0.0) * 0.5
     } else {
-        0.0
+        f64::NEG_INFINITY
     };
-    1.0 / scale + stroke_reach
+    let fill = if uniforms.flags & STYLE_FILL_ENABLED != 0 {
+        f64::from(uniforms.fill_offset) + f64::from(uniforms.fill_feather) * 0.5
+    } else {
+        f64::NEG_INFINITY
+    };
+    1.0 / scale + stroke.max(fill)
 }
 
 #[cfg(test)]
@@ -150,9 +180,20 @@ mod tests {
     }
 
     fn bin(data: &str, capacity: usize) -> (PathUniforms, Vec<u32>) {
+        bin_soft(data, capacity, 0.0, 0.0)
+    }
+
+    fn bin_soft(
+        data: &str,
+        capacity: usize,
+        offset: f32,
+        feather: f32,
+    ) -> (PathUniforms, Vec<u32>) {
         let transform = identity();
         let mut uniforms = PathUniforms::zeroed();
         uniforms.flags = STYLE_FILL_ENABLED;
+        uniforms.fill_offset = offset;
+        uniforms.fill_feather = feather;
         uniforms.transform = transform.to_gpu();
         let points = points_of(data);
         let data = bin_path(
@@ -188,6 +229,33 @@ mod tests {
                 "{bound} is not near {expected}"
             );
         }
+    }
+
+    #[test]
+    fn offset_and_feather_move_the_drawn_bounds() {
+        // A 40 by 20 box, drawn a pixel past its fill's faded edge.
+        let bounds = |offset: f32, feather: f32| {
+            let (uniforms, data) = bin_soft("M 0 0 H 40 V 20 H 0 Z", 4096, offset, feather);
+            (!data.is_empty()).then_some(uniforms.screen_bounds)
+        };
+        let near = |bounds: Option<[f32; 4]>, expected: [f32; 4]| {
+            let bounds = bounds.expect("something is drawn");
+            assert!(
+                bounds
+                    .iter()
+                    .zip(expected)
+                    .all(|(a, b)| (a - b).abs() < 0.01),
+                "{bounds:?} is not near {expected:?}"
+            );
+        };
+        near(bounds(0.0, 0.0), [-1.0, -1.0, 41.0, 21.0]);
+        near(bounds(6.0, 4.0), [-9.0, -9.0, 49.0, 29.0]);
+        near(bounds(-4.0, 0.0), [3.0, 3.0, 37.0, 17.0]);
+        // Shrunk by its half height and a pixel, nothing is left to draw.
+        assert!(bounds(-10.5, 0.0).is_some());
+        assert_eq!(bounds(-11.0, 0.0), None);
+        assert!(bounds(-12.5, 4.0).is_some());
+        assert_eq!(bounds(-13.0, 4.0), None);
     }
 
     #[test]

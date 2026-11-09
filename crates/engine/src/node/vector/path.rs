@@ -54,6 +54,15 @@ pub struct PathParams {
     /// Increasing it moves the dashes toward the start of the contour.
     #[meta(name = "Stroke dash offset", step = 0.5)]
     pub stroke_dash_offset: f64,
+    /// Distance in untransformed pixels that the fill grows outward by, or shrinks inward by
+    /// when negative, rounding the corners it grows around. A shape shrunk past its middle
+    /// vanishes. The stroke stays on the outline in `data`.
+    #[meta(step = 0.5)]
+    pub offset: f64,
+    /// Width in untransformed pixels over which the fill's edge fades out, centred on the
+    /// edge. 0 keeps a sharp edge.
+    #[meta(min = 0, step = 0.5)]
+    pub feather: f64,
     /// Copies of the path drawn in one pass. Absent draws the path once.
     #[meta()]
     pub repeat: Option<Repeat>,
@@ -69,6 +78,8 @@ impl Default for PathParams {
             trim_end: 1.0,
             stroke_dash: DashPattern::default(),
             stroke_dash_offset: 0.0,
+            offset: 0.0,
+            feather: 0.0,
             repeat: None,
         }
     }
@@ -134,7 +145,20 @@ fn path_frame(
                 details,
             }
         })?;
+    if style.fill_enabled {
+        hide_cancelled_edges(&mut points, MAX_PATH_POINTS);
+    }
     set_dash_phases(&mut points, &dash);
+    let fill_length = |name: &str, value: f64, min: f64| {
+        if value.is_nan() {
+            return Err(RenderError::NodeEvaluation {
+                node_id,
+                node_kind: "Path",
+                details: format!("`{name}` is not a number"),
+            });
+        }
+        Ok(value.clamp(min, MAX_PATH_COORDINATE) as f32)
+    };
 
     let uniforms = PathUniforms {
         fill_paint: style.fill_paint.to_gpu(),
@@ -152,6 +176,8 @@ fn path_frame(
         dash_period: dash.period(),
         dash_start_phase: dash.phase(0.0),
         dash: dash.lengths,
+        fill_offset: fill_length("offset", evaluated.offset, -MAX_PATH_COORDINATE)?,
+        fill_feather: fill_length("feather", evaluated.feather, 0.0)?,
         ..bytemuck::Zeroable::zeroed()
     };
     Ok(PathFrame::new(
@@ -220,11 +246,11 @@ impl PathFrame {
             &Drawn::Copies(&copies),
             band_capacity,
         );
-        // Each copy is culled like the path drawn once, by a segment's reach at its own scale.
+        // Each copy is culled like the path drawn once, by how far it draws at its own scale.
         let mut gpu = copies.to_gpu(
             min,
             max,
-            |scale| super::path_bands::segment_reach(&uniforms, scale) as f32,
+            |scale| super::path_bands::segment_extent(&uniforms, scale) as f32,
             0.0,
         );
         if bands.is_empty() {
@@ -246,11 +272,13 @@ impl PathFrame {
 const PATH_FLATTENING_TOLERANCE: f32 = 0.25;
 const PATH_MAX_FLATTENING_ATTEMPTS: usize = 12;
 /// f32 loses whole pixels above this, and the limit keeps relative sums and arc arithmetic
-/// finite without tracking the current point.
+/// finite without tracking the current point. Fill offsets and feathers are clamped to it.
 const MAX_PATH_COORDINATE: f64 = 1e7;
 // Bits of `PathPoint::flags`; keep in sync with `path_renderer.wgsl`.
 pub(super) const POINT_END: u32 = 1;
 pub(super) const POINT_CLOSED: u32 = 2;
+/// The segment from the point is no edge of the fill, though it counts toward its crossings.
+pub(super) const POINT_FILL_HIDDEN: u32 = 4;
 
 fn flattening_tolerance(scale: (f64, f64)) -> f32 {
     (f64::from(PATH_FLATTENING_TOLERANCE) / largest_scale(scale)) as f32
@@ -491,6 +519,126 @@ fn flatten_path(
         }
     }
     Some(points)
+}
+
+/// Index of the point that the segment from point `index` runs to.
+fn segment_end(points: &[PathPoint], index: usize) -> usize {
+    if points[index].flags & POINT_END != 0 {
+        points[index].contour_start as usize
+    } else {
+        index + 1
+    }
+}
+
+/// The horizontal or vertical line that segment `a`-`b` lies along, as the axis it runs along
+/// and the bits of its other coordinate.
+fn axis_line(a: [f32; 2], b: [f32; 2]) -> Option<(usize, u32)> {
+    if a[1] == b[1] && a[0] != b[0] {
+        Some((0, (a[1] + 0.0).to_bits()))
+    } else if a[0] == b[0] && a[1] != b[1] {
+        Some((1, (a[0] + 0.0).to_bits()))
+    } else {
+        None
+    }
+}
+
+/// Flags the pieces of the outline that the even-odd rule cancels as no edge of the fill, so
+/// that its antialiasing, offset and feather measure only its real boundary. Pieces cancel
+/// where an even number of them coincide: identical segments, and the overlaps of horizontal
+/// or vertical ones on the same line, which are split where the others end first. Segments
+/// that only close an open contour for the fill are not split, as splitting them would stroke
+/// them. Splitting is skipped if it would take the path past `max_points`.
+fn hide_cancelled_edges(points: &mut Vec<PathPoint>, max_points: usize) {
+    use std::collections::HashMap;
+
+    let closes_open = |flags: u32| flags & (POINT_END | POINT_CLOSED) == POINT_END;
+    let mut stops: HashMap<(usize, u32), Vec<f32>> = HashMap::new();
+    for index in 0..points.len() {
+        let [a, b] = [index, segment_end(points, index)].map(|i| points[i].position);
+        if let Some(line) = axis_line(a, b) {
+            stops
+                .entry(line)
+                .or_default()
+                .extend([a[line.0] + 0.0, b[line.0] + 0.0]);
+        }
+    }
+    // A line with one segment has its two ends as stops, which split nothing.
+    stops.retain(|_, stops| stops.len() > 2);
+    for stops in stops.values_mut() {
+        stops.sort_by(f32::total_cmp);
+        stops.dedup();
+    }
+    // The stops strictly inside the segment from point `index`, if it may be split.
+    let inner_stops = |points: &[PathPoint], index: usize| -> Option<(usize, &[f32])> {
+        let [a, b] = [index, segment_end(points, index)].map(|i| points[i].position);
+        let line = axis_line(a, b).filter(|_| !closes_open(points[index].flags))?;
+        let stops = stops.get(&line)?;
+        let (low, high) = (a[line.0].min(b[line.0]), a[line.0].max(b[line.0]));
+        let first = stops.partition_point(|&stop| stop <= low);
+        let end = stops.partition_point(|&stop| stop < high);
+        Some((line.0, &stops[first..end.max(first)]))
+    };
+    let added: usize = (0..points.len())
+        .filter_map(|index| inner_stops(points, index))
+        .map(|(_, stops)| stops.len())
+        .sum();
+    if added > 0 && points.len() + added <= max_points {
+        let mut split = Vec::with_capacity(points.len() + added);
+        let mut contour_start = 0;
+        for (index, point) in points.iter().enumerate() {
+            if point.contour_start as usize == index {
+                contour_start = split.len() as u32;
+            }
+            let end_flags = point.flags & (POINT_END | POINT_CLOSED);
+            split.push(PathPoint {
+                contour_start,
+                flags: point.flags & !end_flags,
+                ..*point
+            });
+            if let Some((axis, inner)) = inner_stops(points, index) {
+                let forward =
+                    point.position[axis] < points[segment_end(points, index)].position[axis];
+                let mut place = |&stop: &f32| {
+                    let mut position = point.position;
+                    position[axis] = stop;
+                    split.push(PathPoint {
+                        position,
+                        contour_start,
+                        flags: 0,
+                        offset: 0.0,
+                        dash_phase: 0.0,
+                    });
+                };
+                if forward {
+                    inner.iter().for_each(&mut place);
+                } else {
+                    inner.iter().rev().for_each(&mut place);
+                }
+            }
+            if let Some(last) = split.last_mut() {
+                last.flags |= end_flags;
+            }
+        }
+        *points = split;
+        normalize_contour_offsets(points);
+    }
+
+    let key = |[x, y]: [f32; 2]| [(x + 0.0).to_bits(), (y + 0.0).to_bits()];
+    let pieces: Vec<_> = (0..points.len())
+        .map(|index| {
+            let [a, b] = [index, segment_end(points, index)].map(|i| key(points[i].position));
+            (a.min(b), a.max(b))
+        })
+        .collect();
+    let mut counts: HashMap<_, u32> = HashMap::new();
+    for &piece in &pieces {
+        *counts.entry(piece).or_default() += 1;
+    }
+    for (point, piece) in points.iter_mut().zip(&pieces) {
+        if piece.0 != piece.1 && counts[piece] % 2 == 0 {
+            point.flags |= POINT_FILL_HIDDEN;
+        }
+    }
 }
 
 fn push_path_point(
@@ -897,6 +1045,45 @@ mod tests {
     fn degenerate_contour_offsets_remain_finite() {
         let points = parse_path_points("M 5 5 L 5 5", PATH_FLATTENING_TOLERANCE, 128).unwrap();
         assert!(points.iter().all(|point| point.offset.is_finite()));
+    }
+
+    #[test]
+    fn splits_shared_edges_and_hides_the_pieces_that_cancel() {
+        // A square beside part of another's right edge, from 30 to 50.
+        let mut points = parse_path_points(
+            "M 20 20 H 60 V 60 H 20 Z M 60 30 H 80 V 50 H 60 Z",
+            PATH_FLATTENING_TOLERANCE,
+            128,
+        )
+        .unwrap();
+        hide_cancelled_edges(&mut points, MAX_PATH_POINTS);
+        let hidden: Vec<_> = (0..points.len())
+            .filter(|&index| points[index].flags & POINT_FILL_HIDDEN != 0)
+            .map(|index| {
+                [
+                    points[index].position,
+                    points[segment_end(&points, index)].position,
+                ]
+            })
+            .collect();
+        assert_eq!(
+            hidden,
+            [[[60.0, 30.0], [60.0, 50.0]], [[60.0, 50.0], [60.0, 30.0]]],
+            "{points:?}"
+        );
+        assert_eq!(points.len(), 10);
+    }
+
+    #[test]
+    fn splitting_past_the_point_limit_is_skipped_before_it_is_built() {
+        // Nested segments on one line, each split at every other's ends: 2n² points in all.
+        let data: String = (0..4000)
+            .map(|i| format!("M {i} 0 H {} Z ", 8000 - i))
+            .collect();
+        let mut points = parse_path_points(&data, PATH_FLATTENING_TOLERANCE, 65536).unwrap();
+        let count = points.len();
+        hide_cancelled_edges(&mut points, MAX_PATH_POINTS);
+        assert_eq!(points.len(), count);
     }
 
     #[test]
