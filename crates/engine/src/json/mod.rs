@@ -12,7 +12,6 @@ mod property;
 
 use std::{collections::BTreeMap, fmt, marker::PhantomData, ops::Deref};
 
-use anyhow::{Context, Result, bail};
 use serde::{
     Deserialize, Deserializer,
     de::{Error as _, MapAccess, Visitor, value::MapAccessDeserializer},
@@ -25,6 +24,8 @@ use crate::{
         Composition, CompositionBuilder, CompositionTemplate, OutputCodec, OutputSettings, PropDef,
         PropKind, RenderSettings, Scene, TimelineSettings,
     },
+    diagnostic::{Diagnostic, MAX_DIAGNOSTICS},
+    error::{DocumentError, GraphValidationError, LumenError, Warning},
     expr::FunctionScope,
     graph::{Connection, Graph},
     node::{NodeId, NodeKind},
@@ -34,7 +35,7 @@ pub(crate) use property::{
     StringParam, classify_string, expression_unsupported, integer_mismatch, integral_i64,
     reject_expression,
 };
-pub use property::{parse_color, try_parse_color, unknown_param_error};
+pub use property::{parse_color, try_parse_color};
 
 const DEFAULT_FPS: f32 = 30.0;
 const SCHEMA_VERSION: &str = "0.1.0";
@@ -305,31 +306,149 @@ fn retired_clip_time<'de, D: Deserializer<'de>>(_: D) -> Result<(), D::Error> {
     ))
 }
 
+/// Why a document isn't a composition: its errors, at most [`MAX_DIAGNOSTICS`] of them, each
+/// with its path in the document.
+#[derive(Debug, Clone)]
+pub struct ParseError {
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl ParseError {
+    fn new(document: &Value, mut errors: Vec<LumenError>) -> Self {
+        errors.truncate(MAX_DIAGNOSTICS);
+        Self {
+            diagnostics: errors
+                .iter()
+                .map(|error| Diagnostic::from_error(error, document))
+                .collect(),
+        }
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    pub fn into_diagnostics(self) -> Vec<Diagnostic> {
+        self.diagnostics
+    }
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, diagnostic) in self.diagnostics.iter().enumerate() {
+            if index > 0 {
+                f.write_str("; ")?;
+            }
+            f.write_str(&diagnostic.message)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ParseError {}
+
 /// Parse a JSON string into a [`Composition`].
-pub fn parse(json: &str) -> Result<Composition> {
-    let root: Value = serde_json::from_str(json).context("invalid JSON")?;
-    parse_value(&root)
+pub fn parse(json: &str) -> Result<Composition, ParseError> {
+    parse_value(&read_json(json).map_err(|error| ParseError::new(&Value::Null, vec![error]))?)
 }
 
 /// Parse a [`serde_json::Value`] into a [`Composition`].
-pub fn parse_value(root: &Value) -> Result<Composition> {
-    check_schema_version(root)?;
-    let Object(document): Object<DocumentJson> = serde_path_to_error::deserialize(root)?;
+pub fn parse_value(root: &Value) -> Result<Composition, ParseError> {
+    load(root).map_err(|errors| ParseError::new(root, errors))
+}
+
+/// Everything wrong with a composition that can be told without rendering it: its errors, or the
+/// warnings of one that parses. `known_font` says whether the host can resolve a font family;
+/// without it, fonts aren't checked. Families set by expressions, and anything that only
+/// rendering finds, aren't covered.
+pub fn check(json: &str, known_font: Option<&dyn Fn(&str) -> bool>) -> Vec<Diagnostic> {
+    match read_json(json) {
+        Ok(root) => check_value(&root, known_font),
+        Err(error) => vec![Diagnostic::from_error(&error, &Value::Null)],
+    }
+}
+
+/// [`check`] for a [`serde_json::Value`].
+pub fn check_value(root: &Value, known_font: Option<&dyn Fn(&str) -> bool>) -> Vec<Diagnostic> {
+    match load(root) {
+        Ok(composition) => known_font.map_or_else(Vec::new, |known_font| {
+            let mut warnings = font_fallbacks(&composition, root, known_font);
+            warnings.truncate(MAX_DIAGNOSTICS);
+            warnings
+        }),
+        Err(errors) => ParseError::new(root, errors).into_diagnostics(),
+    }
+}
+
+fn read_json(json: &str) -> Result<Value, LumenError> {
+    serde_json::from_str(json).map_err(|error| {
+        DocumentError::Syntax {
+            details: error.to_string(),
+        }
+        .into()
+    })
+}
+
+/// Reads `root` in phases, each reporting every error it finds: the document's shape, the
+/// functions, every graph's nodes, every graph's connections, then [`CompositionBuilder::build`].
+/// A phase with errors ends the load, since later phases would only repeat them.
+fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
+    check_schema_version(root).map_err(|error| vec![error])?;
+    let Object(document): Object<DocumentJson> =
+        serde_path_to_error::deserialize(root).map_err(|error| {
+            let pointer = error
+                .path()
+                .iter()
+                .filter_map(|segment| match segment {
+                    serde_path_to_error::Segment::Seq { index } => Some(format!("/{index}")),
+                    serde_path_to_error::Segment::Map { key } => {
+                        Some(format!("/{}", crate::diagnostic::escape(key)))
+                    }
+                    serde_path_to_error::Segment::Enum { .. }
+                    | serde_path_to_error::Segment::Unknown => None,
+                })
+                .collect();
+            vec![
+                DocumentError::Invalid {
+                    pointer,
+                    details: error.to_string(),
+                }
+                .into(),
+            ]
+        })?;
     let timeline = document.timeline.settings(DEFAULT_FPS);
     let (render_settings, output) = document.render_settings.settings();
 
-    let function_scope = FunctionScope::enter(&document.functions)?;
-    let graph = build_graph(&document.nodes, &document.connections)?;
-    let compositions = document
-        .compositions
-        .iter()
-        .map(|(name, template)| {
-            build_template(template, &timeline, &render_settings)
-                .with_context(|| format!("composition `{name}`"))
-                .map(|template| (name.clone(), template))
-        })
-        .collect::<Result<_>>()?;
+    let function_scope = FunctionScope::enter(&document.functions)
+        .map_err(|error| vec![DocumentError::Function { error }.into()])?;
+    let mut errors = Vec::new();
+    let mut graph = build_nodes(&document.nodes, &mut errors);
+    let mut templates = BTreeMap::new();
+    for (name, template) in &document.compositions {
+        let mut template_errors = Vec::new();
+        let built = build_template(template, &timeline, &render_settings, &mut template_errors);
+        errors.extend(
+            template_errors
+                .into_iter()
+                .map(|error| in_template(name, error)),
+        );
+        templates.insert(name.clone(), built);
+    }
     drop(function_scope);
+    end_phase(&mut errors)?;
+
+    connect(&mut graph, &document.connections, &mut errors);
+    for (name, template) in &document.compositions {
+        let mut template_errors = Vec::new();
+        let graph = &mut templates.get_mut(name).expect("built above").scene.graph;
+        connect(graph, &template.connections, &mut template_errors);
+        errors.extend(
+            template_errors
+                .into_iter()
+                .map(|error| in_template(name, error)),
+        );
+    }
+    end_phase(&mut errors)?;
 
     let audio = document.audio.map(|Object(audio)| AudioTimeline {
         tracks: audio.tracks.into_iter().map(|track| track.0).collect(),
@@ -347,26 +466,36 @@ pub fn parse_value(root: &Value) -> Result<Composition> {
         },
         audio,
         output,
-        compositions,
+        compositions: templates,
     }
     .build()
-    .map_err(|errors| {
-        let details = errors
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("; ");
-        anyhow::anyhow!("composition structure validation failed: {details}")
-    })
 }
 
-fn check_schema_version(root: &Value) -> Result<()> {
-    match root.get("lumenSchemaVersion") {
-        None => Ok(()),
-        Some(Value::String(version)) if version == SCHEMA_VERSION => Ok(()),
-        Some(Value::String(version)) => bail!("unsupported Lumen schema version `{version}`"),
-        Some(_) => bail!("`lumenSchemaVersion` must be a string"),
+fn end_phase(errors: &mut Vec<LumenError>) -> Result<(), Vec<LumenError>> {
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(std::mem::take(errors))
     }
+}
+
+/// `error` found in template `name`, with its message and path in the template.
+fn in_template(name: &str, error: LumenError) -> LumenError {
+    GraphValidationError::InTemplate {
+        template: name.to_string(),
+        error: Box::new(error),
+    }
+    .into()
+}
+
+fn check_schema_version(root: &Value) -> Result<(), LumenError> {
+    let details = match root.get("lumenSchemaVersion") {
+        None => return Ok(()),
+        Some(Value::String(version)) if version == SCHEMA_VERSION => return Ok(()),
+        Some(Value::String(version)) => format!("unsupported Lumen schema version `{version}`"),
+        Some(_) => "`lumenSchemaVersion` must be a string".to_string(),
+    };
+    Err(DocumentError::SchemaVersion { details }.into())
 }
 
 fn json_type(value: &Value) -> &'static str {
@@ -380,57 +509,91 @@ fn json_type(value: &Value) -> &'static str {
     }
 }
 
-/// Builds the nodes and connections of the root or of a template.
-fn build_graph(
-    nodes: &[Object<NodeJson>],
-    connections: &[Object<ConnectionJson>],
-) -> Result<Graph> {
+/// Builds the nodes of the root or of a template, adding what's wrong with each to `errors`.
+fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Graph {
     let mut graph = Graph::new();
-
-    // First pass: create all nodes
-    for node in nodes {
+    let mut ids = std::collections::HashSet::new();
+    for (index, node) in nodes.iter().enumerate() {
         let id = NodeId::new(node.id);
+        if !ids.insert(id) {
+            errors.push(DocumentError::DuplicateNodeId { node_id: id, index }.into());
+            continue;
+        }
         let params = match &node.params {
             None => None,
             Some(Value::Object(params)) => Some(params),
-            Some(other) => bail!(
-                "node {id} (`{}`): `params` must be an object, got {}",
-                node.kind,
-                json_type(other)
-            ),
+            Some(other) => {
+                errors.push(
+                    DocumentError::ParamsNotObject {
+                        node_id: id,
+                        kind: node.kind.clone(),
+                        got: json_type(other),
+                    }
+                    .into(),
+                );
+                continue;
+            }
         };
-        let node_kind = NodeKind::from_json(&node.kind, id, params)?;
-        if graph.nodes.insert(id, node_kind).is_some() {
-            bail!("duplicate node id {id}");
-        }
+        let node_kind = match NodeKind::from_json(&node.kind, id, params) {
+            Ok(node_kind) => node_kind,
+            Err(node_errors) => {
+                errors.extend(node_errors.into_iter().map(LumenError::from));
+                continue;
+            }
+        };
+        graph.nodes.insert(id, node_kind);
     }
+    graph
+}
 
-    // Second pass: write each connection into its target node
+/// Writes each connection into its target node, adding the ones that can't be made to `errors`.
+fn connect(
+    graph: &mut Graph,
+    connections: &[Object<ConnectionJson>],
+    errors: &mut Vec<LumenError>,
+) {
     for (index, connection) in connections.iter().enumerate() {
         if let Some(from_port) = &connection.from_port
             && from_port != "output"
         {
-            bail!("connection {index}: `from_port` must be `output`, got {from_port:?}");
+            errors.push(
+                DocumentError::InvalidFromPort {
+                    index,
+                    port: from_port.clone(),
+                }
+                .into(),
+            );
+            continue;
         }
         let from_node = NodeId::new(connection.from_node);
         let to_node = NodeId::new(connection.to_node);
         let to_port = &connection.to_port;
-        graph
-            .connect(Connection {
-                from_node,
-                to_node,
-                to_port: to_port.clone(),
-            })
-            .with_context(|| format!("connecting {from_node} -> {to_node}:{to_port}"))?;
+        let connected = graph.connect(Connection {
+            from_node,
+            to_node,
+            to_port: to_port.clone(),
+        });
+        if let Err(LumenError::GraphValidation(error)) = connected {
+            errors.push(
+                DocumentError::Connection {
+                    index,
+                    from_node,
+                    to_node,
+                    to_port: to_port.clone(),
+                    error,
+                }
+                .into(),
+            );
+        }
     }
-    Ok(graph)
 }
 
 fn build_template(
     template: &TemplateJson,
     root_timeline: &TimelineSettings,
     root_settings: &RenderSettings,
-) -> Result<CompositionTemplate> {
+    errors: &mut Vec<LumenError>,
+) -> CompositionTemplate {
     let timeline = template.timeline.as_ref().map_or_else(
         || root_timeline.clone(),
         |timeline| timeline.settings(root_timeline.fps),
@@ -444,25 +607,87 @@ fn build_template(
         .iter()
         .map(|(name, def)| {
             let default = match &def.default {
-                Some(value) => def
-                    .kind
-                    .literal(value)
-                    .map_err(|error| anyhow::anyhow!("prop `{name}` default: {error}"))?,
+                Some(value) => def.kind.literal(value).unwrap_or_else(|error| {
+                    errors.push(
+                        GraphValidationError::InvalidSettings {
+                            template: None,
+                            field: format!("/props/{}/default", crate::diagnostic::escape(name)),
+                            details: format!("prop `{name}` default: {error}"),
+                        }
+                        .into(),
+                    );
+                    def.kind.zero()
+                }),
                 None => def.kind.zero(),
             };
             let kind = def.kind;
-            Ok((name.clone(), PropDef { kind, default }))
+            (name.clone(), PropDef { kind, default })
         })
-        .collect::<Result<_>>()?;
-    let graph = build_graph(&template.nodes, &template.connections)?;
-    Ok(CompositionTemplate {
+        .collect();
+    CompositionTemplate {
         scene: Scene {
-            graph,
+            graph: build_nodes(&template.nodes, errors),
             timeline,
             render_settings,
         },
         props,
-    })
+    }
+}
+
+/// A warning for each family a text node names as a literal that `known_font` can't resolve. The
+/// bundled family always resolves.
+fn font_fallbacks(
+    composition: &Composition,
+    root: &Value,
+    known_font: &dyn Fn(&str) -> bool,
+) -> Vec<Diagnostic> {
+    let scenes = std::iter::once((None, composition.scene())).chain(
+        composition
+            .compositions()
+            .iter()
+            .map(|(name, template)| (Some(name.as_str()), &template.scene)),
+    );
+    let mut warnings = Vec::new();
+    for (template, scene) in scenes {
+        let scene_json = match template {
+            Some(name) => &root["compositions"][name],
+            None => root,
+        };
+        let mut texts = scene
+            .graph
+            .nodes
+            .values()
+            .filter_map(|node| match node {
+                NodeKind::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        texts.sort_by_key(|text| text.id);
+        for text in texts {
+            for (param, family) in crate::node::source::text::literal_font_families(text) {
+                if family.is_empty()
+                    || family == lumen_text::DEFAULT_FONT_FAMILY
+                    || known_font(family)
+                {
+                    continue;
+                }
+                let node = crate::diagnostic::node_index(scene_json, text.id).map_or_else(
+                    || "/nodes".to_string(),
+                    |index| format!("/nodes/{index}/params{param}"),
+                );
+                let warning = Warning::FontFallback {
+                    template: template.map(str::to_string),
+                    node_id: text.id,
+                    family: family.to_string(),
+                };
+                warnings.push(Diagnostic::from_warning(
+                    &warning,
+                    format!("{}{node}", crate::diagnostic::scene_pointer(template)),
+                ));
+            }
+        }
+    }
+    warnings
 }
 
 #[cfg(test)]
@@ -520,7 +745,7 @@ mod tests {
         assert_eq!(audio.clips[0].source_start_ms, 50);
     }
 
-    fn audio_composition(audio: Value) -> Result<Composition> {
+    fn audio_composition(audio: Value) -> Result<Composition, ParseError> {
         parse_value(&serde_json::json!({
             "timeline": { "fps": 30, "duration_frames": 90 },
             "render_settings": { "width": 16, "height": 16 },
@@ -1574,5 +1799,239 @@ mod tests {
             error.contains("node 1 `props.index`: expected a number, got string"),
             "{error}"
         );
+    }
+
+    fn codes_and_paths(diagnostics: &[Diagnostic]) -> Vec<(&'static str, &str, Option<u64>)> {
+        diagnostics
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic.code,
+                    diagnostic.path.as_str(),
+                    diagnostic.node.map(|node| node.0),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_phase_reports_every_error_with_its_path_and_stops_the_check() {
+        let document = serde_json::json!({
+            "timeline": { "fps": 30, "duration_frames": 10 },
+            "render_settings": { "width": 16, "height": 16 },
+            "compositions": { "card/a": {
+                "nodes": [
+                    { "id": 1, "type": "shape", "params": { "opacity": "=1 +" } },
+                    { "id": 2, "type": "media_output" }
+                ],
+                "connections": []
+            } },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "paintt": "#fff", "width": "wide" } },
+                { "id": 2, "type": "sparkle" },
+                { "id": 2, "type": "media_output" }
+            ],
+            // Not reported: connections are checked once every node reads.
+            "connections": [{ "from_node": 7, "to_node": 2, "to_port": "source" }]
+        });
+        let diagnostics = check_value(&document, None);
+        assert_eq!(
+            codes_and_paths(&diagnostics),
+            [
+                ("node.unknown_param", "/nodes/0/params/paintt", Some(1)),
+                ("node.invalid_param", "/nodes/0/params/width", Some(1)),
+                ("node.unknown_type", "/nodes/1/type", Some(2)),
+                ("graph.duplicate_node_id", "/nodes/2", Some(2)),
+                (
+                    "node.invalid_param",
+                    "/compositions/card~1a/nodes/0/params/opacity",
+                    Some(1)
+                ),
+            ]
+        );
+        assert!(diagnostics.iter().all(Diagnostic::is_error));
+        assert!(
+            diagnostics[4]
+                .message
+                .starts_with("composition `card/a`: node 1: "),
+            "{}",
+            diagnostics[4].message
+        );
+        assert_eq!(
+            parse_value(&document).unwrap_err().diagnostics(),
+            diagnostics.as_slice()
+        );
+    }
+
+    #[test]
+    fn settings_a_template_inherits_are_reported_at_the_root() {
+        let template = |extra: serde_json::Value| {
+            let mut card = serde_json::json!({
+                "nodes": [{ "id": 5, "type": "media_output" }],
+                "connections": []
+            });
+            card.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            card
+        };
+        let document = serde_json::json!({
+            "timeline": { "fps": 0, "duration_frames": 10 },
+            "render_settings": { "width": 0, "height": 16 },
+            "compositions": {
+                "inherits": template(serde_json::json!({})),
+                "partial": template(serde_json::json!({ "timeline": { "duration_frames": 5 } })),
+                "own": template(serde_json::json!({
+                    "timeline": { "fps": 30, "duration_frames": 0 },
+                    "render_settings": { "width": 8, "height": 8 }
+                })),
+            },
+            "nodes": [{ "id": 2, "type": "media_output" }],
+            "connections": []
+        });
+        let settings = check_value(&document, None)
+            .into_iter()
+            .filter(|diagnostic| diagnostic.code == "settings.invalid")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            codes_and_paths(&settings),
+            [
+                ("settings.invalid", "/timeline/fps", None),
+                ("settings.invalid", "/render_settings/width", None),
+                (
+                    "settings.invalid",
+                    "/compositions/own/timeline/duration_frames",
+                    None
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn graph_and_build_errors_point_at_what_they_name() {
+        let document = serde_json::json!({
+            "timeline": { "fps": 0, "duration_frames": 10 },
+            "render_settings": { "width": 16, "height": 16 },
+            "compositions": { "card": {
+                "nodes": [{ "id": 4, "type": "opacity" }, { "id": 5, "type": "media_output" }],
+                "connections": [{ "from_node": 4, "to_node": 5, "to_port": "source" }]
+            } },
+            "nodes": [
+                { "id": 1, "type": "clip", "params": { "composition": "missing" } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+        });
+        assert_eq!(
+            codes_and_paths(&check_value(&document, None)),
+            [
+                // The template takes the root's timeline, so the error is reported once.
+                ("settings.invalid", "/timeline/fps", None),
+                (
+                    "graph.missing_required_input",
+                    "/compositions/card/nodes/0",
+                    Some(4)
+                ),
+                ("clip.invalid", "/nodes/0/params", Some(1)),
+            ]
+        );
+
+        let mut connections = document.clone();
+        connections["timeline"]["fps"] = serde_json::json!(30);
+        connections["connections"] = serde_json::json!([
+            { "from_node": 1, "to_node": 2, "to_port": "source" },
+            { "from_node": 9, "to_node": 2, "to_port": "source" },
+            { "from_node": 1, "from_port": "mask", "to_node": 2, "to_port": "source" }
+        ]);
+        assert_eq!(
+            codes_and_paths(&check_value(&connections, None)),
+            [
+                (
+                    "connection.missing_source_node",
+                    "/connections/1/from_node",
+                    Some(2)
+                ),
+                (
+                    "connection.invalid_from_port",
+                    "/connections/2/from_port",
+                    None
+                ),
+            ]
+        );
+
+        assert_eq!(
+            codes_and_paths(&check("{ \"nodes\": ", None)),
+            [("document.syntax", "", None)]
+        );
+        let mut shape = document;
+        shape["timeline"]["fpss"] = serde_json::json!(30);
+        assert_eq!(
+            codes_and_paths(&check_value(&shape, None)),
+            [("document.invalid", "/timeline/fpss", None)]
+        );
+    }
+
+    #[test]
+    fn diagnostics_are_capped() {
+        let nodes = (0..80)
+            .map(|id| serde_json::json!({ "id": id, "type": "sparkle" }))
+            .collect::<Vec<_>>();
+        let document = serde_json::json!({
+            "timeline": { "duration_frames": 1 },
+            "render_settings": { "width": 1, "height": 1 },
+            "nodes": nodes,
+            "connections": []
+        });
+        assert_eq!(check_value(&document, None).len(), MAX_DIAGNOSTICS);
+    }
+
+    #[test]
+    fn check_warns_of_literal_families_the_host_cannot_resolve() {
+        let document = serde_json::json!({
+            "timeline": { "duration_frames": 1 },
+            "render_settings": { "width": 16, "height": 16 },
+            "nodes": [
+                { "id": 3, "type": "text", "params": {
+                    "font_family": "Brand",
+                    "content": [
+                        { "text": "a", "font_family": "Known" },
+                        { "text": "b", "font_family": "Display" },
+                        { "text": "c" }
+                    ]
+                } },
+                { "id": 4, "type": "text", "params": {
+                    "font_family": "Unused",
+                    "content": [{ "text": "a", "font_family": "Roboto" }]
+                } },
+                // Only rendering knows what an expression names.
+                { "id": 5, "type": "text", "params": { "font_family": "=uppercase('brand')" } },
+                { "id": 6, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 3, "to_node": 6, "to_port": "source" }]
+        });
+        let known = |family: &str| family == "Known";
+        let diagnostics = check_value(&document, Some(&known));
+        assert_eq!(
+            codes_and_paths(&diagnostics),
+            [
+                ("font.fallback", "/nodes/0/params/font_family", Some(3)),
+                (
+                    "font.fallback",
+                    "/nodes/0/params/content/1/font_family",
+                    Some(3)
+                ),
+            ]
+        );
+        assert_eq!(
+            diagnostics[1].severity,
+            crate::diagnostic::Severity::Warning
+        );
+        assert!(
+            diagnostics[1].message.contains("`Display`"),
+            "{}",
+            diagnostics[1].message
+        );
+        assert!(check_value(&document, None).is_empty());
+        parse_value(&document).unwrap();
     }
 }

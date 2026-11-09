@@ -250,29 +250,47 @@ impl CompositionBuilder {
     fn validate(&self) -> Result<(), Vec<LumenError>> {
         let mut errors = Vec::new();
 
-        errors.extend(settings_problems(&self.scene).into_iter().map(|details| {
-            GraphValidationError::InvalidSettings {
-                template: None,
-                details,
-            }
-            .into()
-        }));
+        errors.extend(
+            settings_problems(&self.scene)
+                .into_iter()
+                .map(|(field, details)| {
+                    GraphValidationError::InvalidSettings {
+                        template: None,
+                        field,
+                        details,
+                    }
+                    .into()
+                }),
+        );
         match self.scene.graph.validate() {
             Ok(_) => {}
             Err(graph_errors) => errors.extend(graph_errors),
         }
+        let root_problems = settings_problems(&self.scene);
         for (name, template) in &self.compositions {
+            // A template that inherits a bad setting from the root is reported once, at the root.
+            let inherited = |field: &str| {
+                root_problems
+                    .iter()
+                    .any(|(root_field, _)| root_field == field)
+                    && setting(&template.scene, field) == setting(&self.scene, field)
+            };
             let defaults = template.props.iter().filter_map(|(prop, def)| {
                 let error = def.kind.check(def.default.clone()).err()?;
-                Some(format!("prop `{prop}` default: {error}"))
+                Some((
+                    format!("/props/{}/default", crate::diagnostic::escape(prop)),
+                    format!("prop `{prop}` default: {error}"),
+                ))
             });
             errors.extend(
                 settings_problems(&template.scene)
                     .into_iter()
+                    .filter(|(field, _)| !inherited(field))
                     .chain(defaults)
-                    .map(|details| {
+                    .map(|(field, details)| {
                         GraphValidationError::InvalidSettings {
                             template: Some(name.clone()),
+                            field,
                             details,
                         }
                         .into()
@@ -448,8 +466,19 @@ impl CompositionBuilder {
 }
 
 /// What stops a timeline and canvas from rendering: a frame rate that isn't positive and finite,
-/// and no frames or pixels.
-fn settings_problems(scene: &Scene) -> Vec<String> {
+/// and no frames or pixels. Each comes with the JSON pointer of its setting.
+/// The setting at `field`, one of the pointers [`settings_problems`] reports.
+fn setting(scene: &Scene, field: &str) -> Option<f64> {
+    match field {
+        "/timeline/fps" => Some(f64::from(scene.timeline.fps)),
+        "/timeline/duration_frames" => Some(f64::from(scene.timeline.duration_frames)),
+        "/render_settings/width" => Some(f64::from(scene.render_settings.width)),
+        "/render_settings/height" => Some(f64::from(scene.render_settings.height)),
+        _ => None,
+    }
+}
+
+fn settings_problems(scene: &Scene) -> Vec<(String, String)> {
     let Scene {
         timeline,
         render_settings: settings,
@@ -457,9 +486,12 @@ fn settings_problems(scene: &Scene) -> Vec<String> {
     } = scene;
     let mut problems = Vec::new();
     if !(timeline.fps.is_finite() && timeline.fps > 0.0) {
-        problems.push(format!(
-            "`timeline.fps` must be a positive, finite number, got {}",
-            timeline.fps
+        problems.push((
+            "/timeline/fps".to_string(),
+            format!(
+                "`timeline.fps` must be a positive, finite number, got {}",
+                timeline.fps
+            ),
         ));
     }
     let counts = [
@@ -469,7 +501,10 @@ fn settings_problems(scene: &Scene) -> Vec<String> {
     ];
     for (name, count) in counts {
         if count == 0 {
-            problems.push(format!("`{name}` must be at least 1"));
+            problems.push((
+                format!("/{}", name.replace('.', "/")),
+                format!("`{name}` must be at least 1"),
+            ));
         }
     }
     problems

@@ -1,9 +1,11 @@
 use std::borrow::Cow;
 
-use anyhow::anyhow;
 use serde_json::{Map, Value};
 
-use crate::expr::{Expression, ExpressionValue};
+use crate::{
+    error::DocumentError,
+    expr::{Expression, ExpressionValue},
+};
 
 use super::{ids::NodeId, schema::PropertyDef};
 
@@ -86,24 +88,48 @@ pub trait NodeParams: DelegateEvaluable + Default {
     fn required_ids() -> Vec<&'static str>;
     /// Sets the params present in `fields`, with errors naming them under `path`. Others keep
     /// their value, so a group flattened into params keeps the defaults those params give it.
-    fn set_json_fields(&mut self, fields: &Map<String, Value>, path: &str) -> Result<(), String>;
+    /// Each field that fails is added to `errors` with its key in `fields`.
+    fn set_json_fields(
+        &mut self,
+        fields: &Map<String, Value>,
+        path: &str,
+        errors: &mut Vec<(&'static str, String)>,
+    );
 
-    /// Parses the fields present in `fields` over the defaults, with errors naming them under
-    /// `path`.
+    /// Parses the fields present in `fields` over the defaults, failing with the first error,
+    /// which names its field under `path`.
     fn from_json_fields(fields: &Map<String, Value>, path: &str) -> Result<Self, String> {
         let mut params = Self::default();
-        params.set_json_fields(fields, path)?;
-        Ok(params)
+        let mut errors = Vec::new();
+        params.set_json_fields(fields, path, &mut errors);
+        match errors.into_iter().next() {
+            Some((_, error)) => Err(error),
+            None => Ok(params),
+        }
     }
 
-    fn from_json(node_id: NodeId, params: Option<&Map<String, Value>>) -> anyhow::Result<Self> {
-        params.map_or_else(
-            || Ok(Self::default()),
-            |params| {
-                Self::from_json_fields(params, "")
-                    .map_err(|error| anyhow!("node {node_id}: {error}"))
-            },
-        )
+    /// Parses a node's params, failing with an error for each param that is wrong.
+    fn from_json(
+        node_id: NodeId,
+        params: Option<&Map<String, Value>>,
+    ) -> Result<Self, Vec<DocumentError>> {
+        let mut parsed = Self::default();
+        let Some(params) = params else {
+            return Ok(parsed);
+        };
+        let mut errors = Vec::new();
+        parsed.set_json_fields(params, "", &mut errors);
+        if errors.is_empty() {
+            return Ok(parsed);
+        }
+        Err(errors
+            .into_iter()
+            .map(|(param, details)| DocumentError::InvalidParam {
+                node_id,
+                param: param.to_string(),
+                details,
+            })
+            .collect())
     }
 }
 

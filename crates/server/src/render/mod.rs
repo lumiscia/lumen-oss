@@ -62,6 +62,19 @@ pub fn resolve_encoder(
     config.resolve(&request)
 }
 
+/// What [`lumen_engine::json::check`] finds in `payload`, with fonts resolved as a render on this
+/// machine resolves them: from `LUMEN_FONT_DIR`, the system, or the media `staged` says the render
+/// will stage under that name.
+pub fn check_composition(
+    payload: &serde_json::Value,
+    staged: &dyn Fn(&str) -> bool,
+) -> Vec<lumen_engine::diagnostic::Diagnostic> {
+    let font_dir = font_dir_from_env().ok().flatten();
+    let fonts = FontCatalog::without_media(font_dir.as_deref());
+    let known_font = |family: &str| staged(family) || fonts.resolve(family, || None).is_some();
+    lumen_engine::json::check_value(payload, Some(&known_font))
+}
+
 pub fn parse_composition(payload: &serde_json::Value) -> Result<Composition, RenderError> {
     lumen_engine::json::parse_value(payload).map_err(|err| RenderError {
         code: "invalid_project_payload",

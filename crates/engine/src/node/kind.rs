@@ -4,7 +4,10 @@ use super::{
     JsonNode, Node, PropertyEval, PropertyRead, compositing, ids::NodeId, media_output, processing,
     source, vector,
 };
-use crate::{error::GraphValidationError, expr::Expression};
+use crate::{
+    error::{DocumentError, GraphValidationError},
+    expr::Expression,
+};
 
 /// Declares the node kinds. Each line names a variant and its type, which derives
 /// `lumen_macros::Node`. The generated definitions list the kinds in this order.
@@ -27,10 +30,13 @@ macro_rules! node_kinds {
                 kind: &str,
                 id: NodeId,
                 params: Option<&serde_json::Map<String, serde_json::Value>>,
-            ) -> anyhow::Result<Self> {
+            ) -> Result<Self, Vec<DocumentError>> {
                 match kind {
                     $(<$node as JsonNode>::KIND => Ok(Self::$variant(<$node>::from_json(id, params)?)),)+
-                    other => anyhow::bail!("unknown or unsupported node type `{other}`"),
+                    other => Err(vec![DocumentError::UnknownNodeType {
+                        node_id: id,
+                        kind: other.to_string(),
+                    }]),
                 }
             }
 

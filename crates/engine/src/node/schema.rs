@@ -112,7 +112,7 @@ pub trait JsonNode: Default {
     fn from_json(
         id: NodeId,
         params: Option<&serde_json::Map<String, serde_json::Value>>,
-    ) -> anyhow::Result<Self>
+    ) -> Result<Self, Vec<crate::error::DocumentError>>
     where
         Self: Sized;
 

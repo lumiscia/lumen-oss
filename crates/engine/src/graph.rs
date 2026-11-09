@@ -73,7 +73,9 @@ impl Graph {
 
         // The sources each node reads, which are the edges of the graph.
         let mut sources: HashMap<NodeId, Vec<NodeId>> = HashMap::with_capacity(self.nodes.len());
-        for (key, node) in &self.nodes {
+        let mut nodes = self.nodes.iter().collect::<Vec<_>>();
+        nodes.sort_unstable_by_key(|(key, _)| **key);
+        for (key, node) in nodes {
             if node.id() != *key {
                 errors.push(
                     GraphValidationError::NodeIdMismatch {

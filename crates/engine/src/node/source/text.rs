@@ -423,13 +423,15 @@ impl TextInstance {
     }
 
     /// Evaluates the text with `expr`, placing its glyphs in the atlas and writing what it draws
-    /// to `rec`'s buffers.
+    /// to `rec`'s buffers. When it shapes again, the families it asks for that no font answers to
+    /// are added to `fallbacks`.
     pub(crate) fn bind(
         &self,
         mut expr: ExpressionContext<'_>,
         media: Option<&dyn MediaStore>,
         bound: &mut BoundFrame,
         rec: &mut lumen_gpu::Recorder,
+        fallbacks: &mut Vec<String>,
     ) -> crate::Result<TextDraw> {
         let trace_started =
             tracing::enabled!(target: "lumen_text", tracing::Level::TRACE).then(trace_now_ms);
@@ -466,6 +468,11 @@ impl TextInstance {
             .is_none_or(|(key, _)| !key.holds(&layout, &span_styles, font_generation))
         {
             let layout_started = trace_started.map(|_| trace_now_ms());
+            fallbacks.extend(
+                used_font_families(&layout)
+                    .filter(|family| !family.is_empty() && !text_system.has_family(family))
+                    .map(str::to_string),
+            );
             let shaped = text_system.shape_changed(&layout.request(&span_styles));
             let key = TextShapeKey {
                 layout: match layout {
@@ -1411,6 +1418,39 @@ pub(crate) fn load_font_families(
         load_font_family(text_system, media, family)?;
     }
     Ok(())
+}
+
+/// The families text in `layout` is shaped in: each span's, and the node's when a span leaves its
+/// own unset.
+fn used_font_families(layout: &TextLayoutParams) -> impl Iterator<Item = &str> {
+    let spans = &layout.content.0;
+    let inherits = spans.is_empty() || spans.iter().any(|span| span.font_family.is_none());
+    inherits
+        .then_some(layout.font_family.as_str())
+        .into_iter()
+        .chain(spans.iter().filter_map(|span| span.font_family.as_deref()))
+}
+
+/// The families `text` names as literals, each with its pointer under the node's `params`. The
+/// node's own is left out when every span names its own.
+pub(crate) fn literal_font_families(text: &Text) -> Vec<(String, &str)> {
+    let layout = &text.params.layout;
+    let spans = match &layout.content {
+        TextContentDelegate::Spans(spans) => spans.as_slice(),
+        TextContentDelegate::Text(_) => &[],
+    };
+    let mut families = Vec::new();
+    if (spans.is_empty() || spans.iter().any(|span| span.layout.font_family.is_none()))
+        && let Deferred::Value(family) = &layout.font_family
+    {
+        families.push(("/font_family".to_string(), family.as_str()));
+    }
+    for (index, span) in spans.iter().enumerate() {
+        if let Some(Deferred::Value(family)) = &span.layout.font_family {
+            families.push((format!("/content/{index}/font_family"), family.as_str()));
+        }
+    }
+    families
 }
 
 /// The text system of `media`'s fonts, which rendering and text measurement share so both see

@@ -6,8 +6,9 @@ mod util;
 use std::{collections::HashMap, path::Path, time::Instant};
 
 pub use types::{
-    ApiRenderJob, Artifact, CreateRenderResponse, GetRenderResponse, RenderJobError,
-    RenderJobInput, RenderProgressResponse, RenderQueueState, RenderRecord, RenderStatus,
+    ApiRenderJob, Artifact, CheckInput, CheckResponse, CreateRenderResponse, GetRenderResponse,
+    RenderJobError, RenderJobInput, RenderProgressResponse, RenderQueueState, RenderRecord,
+    RenderStatus, sanitized_diagnostics,
 };
 
 use lumen_engine::composition::Composition;

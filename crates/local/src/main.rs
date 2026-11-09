@@ -5,9 +5,13 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{ArgGroup, Parser};
+use clap::{ArgGroup, Parser, ValueEnum};
 use image::{ImageEncoder, codecs::png::PngEncoder};
-use lumen_engine::composition::Composition;
+use lumen_engine::{
+    composition::Composition,
+    diagnostic::{Diagnostic, Severity},
+    media::MediaStore,
+};
 use lumen_ffmpeg::{
     EncodeCodec, EncoderQuality, QUALITY_CONFIG_ENV, QualityConfig, QualityRequest,
     VideoEncoderChoice, parse_bitrate,
@@ -44,6 +48,9 @@ and can't be combined with --quality. A preset alone targets 14 Mb/s. Each fails
 doesn't support it (--crf: libx264, libx265, libsvtav1, NVENC; --qp: those and Vulkan; --preset: \
 libx264 and libx265 ultrafast..placebo, NVENC p1..p7, libsvtav1 0..13), which moves on to the next.
 
+--check reads the composition without rendering it and prints what is wrong with it, with fonts \
+resolved as a render would resolve them. It exits 1 when there are errors; warnings alone exit 0.
+
 LUMEN_HARDWARE_DECODE=1 decodes video on the GPU when the hardware supports it. RUST_LOG sets the \
 log filter (default lumen_engine=warn,lumen_server=warn)."
 )]
@@ -53,8 +60,16 @@ struct Cli {
     composition: PathBuf,
 
     /// Where to write the render: .mp4 renders every frame, .png renders one
-    #[arg(long, value_name = "PATH.[png|mp4]")]
-    output: PathBuf,
+    #[arg(long, value_name = "PATH.[png|mp4]", required_unless_present = "check")]
+    output: Option<PathBuf>,
+
+    /// Check the composition without rendering it, exiting 1 if it has errors
+    #[arg(long, conflicts_with_all = ["output", "frame"])]
+    check: bool,
+
+    /// How --check prints what it finds
+    #[arg(long, value_enum, default_value_t = Format::Text, requires = "check")]
+    format: Format,
 
     /// Directory that media sources must stay inside [default: the current directory]
     #[arg(long, value_name = "PATH")]
@@ -106,7 +121,22 @@ enum OutputKind {
     Mp4,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Format {
+    /// One line per problem
+    Text,
+    /// `{ "ok", "diagnostics" }`, as `POST /renders/check` answers
+    Json,
+}
+
 impl Cli {
+    /// Where to write the render, which clap requires unless checking.
+    fn output(&self) -> &Path {
+        self.output
+            .as_deref()
+            .expect("clap requires --output to render")
+    }
+
     /// An empty `LUMEN_FONT_DIR` counts as unset.
     fn font_dir(&self) -> Option<PathBuf> {
         self.font_dir
@@ -139,8 +169,8 @@ impl Cli {
     /// The kind of output asked for, after checking that no flag only the other kind supports was
     /// given. `LUMEN_VIDEO_ENCODER` is a default, so only `--encoder` conflicts with .png.
     fn output_kind(&self) -> Result<OutputKind> {
-        let extension = self
-            .output
+        let output = self.output();
+        let extension = output
             .extension()
             .and_then(|value| value.to_str())
             .map(|value| value.to_ascii_lowercase())
@@ -166,7 +196,7 @@ impl Cli {
             }
             _ => bail!(
                 "unsupported output extension; use .png or .mp4 (got `{}`)",
-                self.output.display()
+                output.display()
             ),
         }
     }
@@ -181,13 +211,83 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
     lumen_ffmpeg::raise_open_file_limit();
-    if let Err(error) = run(Cli::parse()) {
-        eprintln!("lumen-local failed: {error:#}");
-        std::process::exit(1);
+    let cli = Cli::parse();
+    let result = if cli.check {
+        check(&cli)
+    } else {
+        run(&cli).map(|()| true)
+    };
+    match result {
+        Ok(true) => {}
+        Ok(false) => std::process::exit(1),
+        Err(error) => {
+            eprintln!("lumen-local failed: {error:#}");
+            std::process::exit(1);
+        }
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
+/// Prints what is wrong with the composition, and whether it renders.
+fn check(cli: &Cli) -> Result<bool> {
+    let raw = fs::read_to_string(&cli.composition).with_context(|| {
+        format!(
+            "failed to read composition file {}",
+            cli.composition.display()
+        )
+    })?;
+    let media_store = LocalMediaStore::new(
+        media_root(cli.media_root.as_deref())?,
+        cli.font_dir().as_deref(),
+    );
+    let known_font = |family: &str| media_store.font_resolver_id(family).is_some();
+    let diagnostics = lumen_engine::json::check(&raw, Some(&known_font));
+    let ok = !diagnostics.iter().any(Diagnostic::is_error);
+    match cli.format {
+        Format::Json => println!(
+            "{}",
+            serde_json::json!({ "ok": ok, "diagnostics": diagnostics })
+        ),
+        Format::Text => {
+            for diagnostic in &diagnostics {
+                println!("{}", diagnostic_line(diagnostic));
+            }
+            let errors = diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.is_error())
+                .count();
+            println!(
+                "{}: {errors} errors, {} warnings",
+                cli.composition.display(),
+                diagnostics.len() - errors
+            );
+        }
+    }
+    Ok(ok)
+}
+
+fn diagnostic_line(diagnostic: &Diagnostic) -> String {
+    let severity = match diagnostic.severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+    };
+    let path = if diagnostic.path.is_empty() {
+        "/"
+    } else {
+        &diagnostic.path
+    };
+    format!(
+        "{severity} {} at {path}: {}",
+        diagnostic.code, diagnostic.message
+    )
+}
+
+fn print_warnings(diagnostics: &[Diagnostic]) {
+    for diagnostic in diagnostics {
+        eprintln!("{}", diagnostic_line(diagnostic));
+    }
+}
+
+fn run(cli: &Cli) -> Result<()> {
     let kind = cli.output_kind()?;
     let composition = load_composition(&cli.composition)?;
     let media_root = media_root(cli.media_root.as_deref())?;
@@ -197,11 +297,11 @@ fn run(cli: Cli) -> Result<()> {
 
     match kind {
         OutputKind::Png => {
-            render_single_png(&composition, &mut media_store, &cli.output, cli.frame)
+            render_single_png(&composition, &mut media_store, cli.output(), cli.frame)
         }
         OutputKind::Mp4 => {
             let choice = cli.encoder_choice(&composition)?;
-            render_to_partial(&cli.output, |partial| {
+            render_to_partial(cli.output(), |partial| {
                 render_mp4(&composition, media_store, partial, choice)
             })
         }
@@ -299,6 +399,7 @@ fn render_single_png(
     let rendered = renderer
         .render_frame(composition, frame, &*media_store)
         .with_context(|| format!("render failed at frame {frame}"))?;
+    print_warnings(&renderer.take_diagnostics());
     let size = rendered.domain.storage_size;
     let mut pixels = renderer
         .gpu_renderer()
@@ -335,6 +436,7 @@ fn render_mp4(
             );
         }
     })?;
+    print_warnings(&report.diagnostics);
     println!("{}", render_summary(&report));
     Ok(())
 }

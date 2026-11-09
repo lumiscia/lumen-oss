@@ -306,16 +306,23 @@ fn auth_runs_before_parsing_on_every_route_but_health() {
     let server = Server::start(&[]);
     let url = |path: &str| format!("{}{path}", server.base);
 
-    for token in [None, Some("wrong")] {
+    for (path, token) in ["/renders", "/renders/check"]
+        .into_iter()
+        .flat_map(|path| [(path, None), (path, Some("wrong"))])
+    {
         let mut malformed = server
             .http
-            .post(url("/renders"))
+            .post(url(path))
             .header("content-type", "application/json")
             .body("{");
         if let Some(token) = token {
             malformed = malformed.bearer_auth(token);
         }
-        assert_eq!(malformed.send().unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            malformed.send().unwrap().status(),
+            StatusCode::UNAUTHORIZED,
+            "{path}"
+        );
     }
     for path in [
         "/renders/x",
@@ -586,6 +593,78 @@ fn errors_axum_answers_itself_carry_the_same_body() {
             "{path}: {body}"
         );
     }
+}
+
+fn codes_and_paths(diagnostics: &Value) -> Vec<(String, String)> {
+    diagnostics
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .map(|diagnostic| {
+            (
+                diagnostic["code"].as_str().unwrap().to_string(),
+                diagnostic["path"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn checks_say_what_is_wrong_and_invalid_renders_carry_the_same_diagnostics() {
+    let server = Server::start(&[]);
+    let check = |body: &Value| -> Value {
+        let response = server
+            .http
+            .post(format!("{}/renders/check", server.base))
+            .bearer_auth(TOKEN)
+            .json(body)
+            .send()
+            .expect("POST /renders/check");
+        assert_eq!(response.status(), StatusCode::OK);
+        response.json().expect("check body")
+    };
+
+    let mut invalid = solid_composition();
+    // The trailing space is part of the key, so it stays in the pointer.
+    invalid["nodes"][0]["params"]["paintt "] = json!("#fff");
+    invalid["nodes"][1]["type"] = json!("sparkle");
+    let checked = check(&json!({ "composition": invalid }));
+    assert_eq!(checked["ok"], json!(false));
+    let expected = [
+        ("node.unknown_param", "/nodes/0/params/paintt "),
+        ("node.unknown_type", "/nodes/1/type"),
+    ]
+    .map(|(code, path)| (code.to_string(), path.to_string()));
+    assert_eq!(codes_and_paths(&checked["diagnostics"]), expected);
+    assert_eq!(checked["diagnostics"][0]["severity"], json!("error"));
+    assert_eq!(checked["diagnostics"][0]["node"], json!(1));
+
+    let rejected = server.post(&json!({ "composition": invalid }));
+    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let rejected: Value = rejected.json().expect("error body");
+    assert_eq!(rejected["code"], json!("invalid_project_payload"));
+    assert_eq!(codes_and_paths(&rejected["diagnostics"]), expected);
+    assert_eq!(rejected["diagnostics"], checked["diagnostics"]);
+
+    let mut text = solid_composition();
+    text["nodes"][0] = json!({ "id": 1, "type": "text", "params": { "content": [
+        { "text": "a", "font_family": "No Such Family 272" },
+        { "text": "b", "font_family": "brand.ttf" }
+    ] } });
+    let checked = check(&json!({
+        "composition": text,
+        "media": { "brand.ttf": "https://example.com/brand.ttf" },
+        "quality": "ignored by a check",
+    }));
+    assert_eq!(checked["ok"], json!(true));
+    assert_eq!(
+        codes_and_paths(&checked["diagnostics"]),
+        [(
+            "font.fallback".to_string(),
+            "/nodes/0/params/content/0/font_family".to_string()
+        )]
+    );
+    assert_eq!(checked["diagnostics"][0]["severity"], json!("warning"));
 }
 
 #[test]

@@ -9,6 +9,7 @@ compile_error!("Lumen's ffmpeg feature is native-only; use browser media APIs on
 
 pub mod audio;
 pub mod composition;
+pub mod diagnostic;
 pub mod error;
 pub mod expr;
 #[doc(hidden)]
