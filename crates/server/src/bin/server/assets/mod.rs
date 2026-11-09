@@ -560,7 +560,8 @@ impl AssetStore {
             content: self.entry_dir(id).join(CONTENT_FILE),
             done: false,
         };
-        tokio::fs::rename(&temp, &finishing.content).await?;
+        // Not awaited, so a cancel can't leave it running after the guard has cleaned up.
+        fs::rename(&temp, &finishing.content)?;
         let probed = probe_blocking(finishing.content.clone()).await;
 
         // Recorded and then published under the lock a delete takes, so nothing can lease the
@@ -594,7 +595,8 @@ impl AssetStore {
         let (mut media, expires_at_ms) = self.new_media(SourceType::Url, Some(source_url), upload);
         media.id = target.id.clone();
         let content = target.dir.join(CONTENT_FILE);
-        tokio::fs::rename(&target.file, &content).await?;
+        // Not awaited, so a cancel can't leave it running while the guard removes the directory.
+        fs::rename(&target.file, &content)?;
         let probed = probe_blocking(content).await;
         apply_probe(&mut media, probed);
         let media = self.insert(media, expires_at_ms)?;
@@ -934,6 +936,41 @@ mod tests {
         assert_eq!(retried.status, MediaStatus::Rejected);
     }
 
+    #[tokio::test]
+    async fn a_check_cancelled_as_its_bytes_move_into_place_leaves_nothing_uncounted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
+        // A file operation left running by the cancel may land before or after its cleanup, so
+        // each round gives it another chance to land after.
+        for round in 0..20 {
+            let id = store.create(new_upload(9)).unwrap().id;
+
+            // Dropped at its first await once the bytes are being checked, as a dropped request is.
+            let mut upload = Box::pin(store.put_content(&id, stream_of(b"not media")));
+            loop {
+                match std::future::poll_fn(|cx| Poll::Ready(upload.as_mut().poll(cx))).await {
+                    Poll::Ready(result) => panic!("the upload finished uncancelled: {result:?}"),
+                    Poll::Pending if store.entries()[&id].finishing => break,
+                    Poll::Pending => tokio::task::yield_now().await,
+                }
+            }
+            drop(upload);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            let upload_id = store.start_multipart(&id).unwrap();
+            store
+                .put_part(&id, &upload_id, 1, stream_of(b"not media"))
+                .await
+                .unwrap();
+            let entry = dir.path().canonicalize().unwrap().join(&id);
+            let held = bytes_under(&entry) - bytes_under(&entry.join(RECORD_FILE));
+            assert!(
+                held <= 9,
+                "round {round}: {held} bytes held against a size of 9"
+            );
+        }
+    }
+
     const TINY_PNG: &[u8] = &[
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
         0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
@@ -977,8 +1014,13 @@ mod tests {
         // racing the completion would.
         let deleter = {
             let (store, id) = (store.clone(), id.clone());
+            let started = std::time::Instant::now();
             std::thread::spawn(move || {
                 loop {
+                    assert!(
+                        started.elapsed() < Duration::from_secs(60),
+                        "the media never read as checked"
+                    );
                     if store
                         .get(&id)
                         .is_ok_and(|media| media.status == MediaStatus::Validated)
