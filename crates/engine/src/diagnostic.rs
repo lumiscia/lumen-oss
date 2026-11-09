@@ -102,12 +102,32 @@ pub(crate) fn scene_pointer(template: Option<&str>) -> String {
 }
 
 /// The pointer of a param path such as `content[1].font_size`, as `/content/1/font_size`. Keys may
-/// hold `.` and `[`, so each field is matched against the longest key of `params` it can be.
+/// hold `.` and `[`, so where `params` has an object, each field is matched against the longest of
+/// its keys the path can continue from, and `[n]` is an index only where it can't.
 fn param_pointer(params: Option<&Value>, path: &str) -> String {
     let mut pointer = String::new();
     let mut value = params;
     let mut rest = path;
     while !rest.is_empty() {
+        let field = rest.strip_prefix('.').unwrap_or(rest);
+        let continues = |key: &str| {
+            field
+                .strip_prefix(key)
+                .is_some_and(|after| after.is_empty() || after.starts_with(['.', '[']))
+        };
+        let key = value.and_then(Value::as_object).and_then(|object| {
+            object
+                .keys()
+                .filter(|key| !key.is_empty() && continues(key))
+                .max_by_key(|key| key.len())
+        });
+        if let Some(key) = key {
+            pointer.push('/');
+            pointer.push_str(&escape(key));
+            value = value.and_then(|value| value.get(key));
+            rest = &field[key.len()..];
+            continue;
+        }
         if let Some((index, after)) = rest
             .strip_prefix('[')
             .and_then(|after| after.split_once(']'))
@@ -118,30 +138,12 @@ fn param_pointer(params: Option<&Value>, path: &str) -> String {
             rest = after;
             continue;
         }
-        let field = rest.strip_prefix('.').unwrap_or(rest);
-        let continues = |key: &str| {
-            field
-                .strip_prefix(key)
-                .is_some_and(|after| after.is_empty() || after.starts_with(['.', '[']))
-        };
-        let key = value
-            .and_then(Value::as_object)
-            .and_then(|object| {
-                object
-                    .keys()
-                    .filter(|key| continues(key))
-                    .max_by_key(|key| key.len())
-            })
-            .map_or_else(
-                || &field[..field.find(['.', '[']).unwrap_or(field.len())],
-                String::as_str,
-            );
+        let key = &field[..field.find(['.', '[']).unwrap_or(field.len())];
+        pointer.push('/');
         if key.is_empty() {
-            pointer.push('/');
             pointer.push_str(&escape(field));
             break;
         }
-        pointer.push('/');
         pointer.push_str(&escape(key));
         value = value.and_then(|value| value.get(key));
         rest = &field[key.len()..];
@@ -324,6 +326,11 @@ mod tests {
             "/props/c[0]/0"
         );
         assert_eq!(param_pointer(Some(&params), "props.["), "/props/[");
+        let params = serde_json::json!({ "content": [{ "font_features": { "[00]": "=1" } }] });
+        assert_eq!(
+            param_pointer(Some(&params), "content[0].font_features[00]"),
+            "/content/0/font_features/[00]"
+        );
     }
 
     #[test]
