@@ -31,4 +31,22 @@ document.querySelector("button")?.addEventListener("click", () => {
 
 Pass `media` and `fonts` (name to URL) when the composition uses them. The preview renders in a worker; `@lumiscia/lumen-bindings/urls` names that worker and the wasm it loads, and a page that serves copies of them elsewhere passes those URLs instead. Either can be on another origin that sends CORS headers. A worker on another origin starts from a `blob:` URL that imports it, so a Content Security Policy must allow `blob:` and that origin in `worker-src`. With Vite 6 or 7, the `@lumiscia/lumen-bindings` README has the dev server setting these URLs need.
 
+`onError` is called with each failure the state's `error` shows. When the engine rejects the composition, its `diagnostics` say what is wrong and where:
+
+```ts
+mountPreview(document.body, {
+  preview,
+  composition,
+  wasmUrl,
+  workerUrl,
+  onError: ({ code, message, diagnostics }) => {
+    for (const { severity, code, path, message } of diagnostics) {
+      console.warn(`${severity} ${code} at ${path || "/"}: ${message}`);
+    }
+  },
+});
+```
+
+Diagnostic codes are public API, and new ones can appear in a patch release, so handle codes you don't know by their `severity`. The [engine README](https://github.com/lumiscia/lumen-oss/tree/main/crates/engine#diagnostics) lists them.
+
 See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.

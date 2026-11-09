@@ -3,7 +3,7 @@ import type { LumenComposition } from "@lumiscia/lumen-types";
 import type { LumenAudioEngineOptions } from "../audio-engine.js";
 import type { LumenLogLevel } from "../index.js";
 import type { MediaSourceInput, VideoSourceRegistration } from "../media/index.js";
-import type { LumenPreviewContext } from "../preview.js";
+import type { LumenPreviewContext, LumenPreviewError } from "../preview.js";
 import type { LumenPreviewStatsCallback } from "./stats.js";
 
 export type LumenPreviewComposition = LumenComposition | { toJSON(): LumenComposition };
@@ -30,6 +30,8 @@ export interface LumenPreviewSessionInputs {
   /** Defaults to "off". */
   logLevel?: LumenLogLevel | undefined;
   media?: LumenPreviewMedia | undefined;
+  /** Called with each failure the preview state's `error` also shows. */
+  onError?: ((error: LumenPreviewError) => void) | null | undefined;
   onStats?: LumenPreviewStatsCallback | null | undefined;
 }
 

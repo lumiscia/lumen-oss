@@ -13,12 +13,21 @@
         lookaheadCount,
         logLevel,
         media,
+        onError,
         onStats,
         class: className,
         style,
     }: PlayerProps = $props();
 
-    const inputs = () => ({ composition, fonts, lookaheadCount, logLevel, media, onStats });
+    const inputs = () => ({
+        composition,
+        fonts,
+        lookaheadCount,
+        logLevel,
+        media,
+        onError,
+        onStats,
+    });
 
     const wasm = $derived(String(wasmUrl ?? defaults.wasmUrl));
     const worker = $derived(String(workerUrl ?? defaults.workerUrl));

@@ -572,6 +572,7 @@ describe("LumenPreviewSession", () => {
 
       session.update({ composition: composition("broken") });
       worker.emit({
+        diagnostics: [],
         loadId: worker.ofType("load").at(-1)?.loadId as number,
         message: "bad",
         type: "load-failed",
@@ -603,7 +604,7 @@ describe("LumenPreviewSession", () => {
     const staleLoadId = worker.ofType("load").at(-1)?.loadId as number;
     session.update({ composition: composition("second") });
 
-    worker.emit({ loadId: staleLoadId, message: "too late", type: "load-failed" });
+    worker.emit({ diagnostics: [], loadId: staleLoadId, message: "too late", type: "load-failed" });
     expect(preview.getSnapshot().error).toBeNull();
   });
 
@@ -646,13 +647,29 @@ describe("LumenPreviewSession", () => {
   });
 
   it("doesn't retry a failed load until an input really changes", async () => {
-    const { preview, session, worker } = await started();
+    const onError = vi.fn();
+    const { preview, session, worker } = await started({ onError });
+    const diagnostics = [
+      {
+        code: "node.unknown_type",
+        message: "node 1: unknown or unsupported node type `blur2`",
+        node: 1,
+        path: "/nodes/0/type",
+        severity: "error" as const,
+      },
+    ];
     worker.emit({
+      diagnostics,
       loadId: worker.ofType("load").at(-1)?.loadId as number,
       message: "bad composition",
       type: "load-failed",
     });
     expect(preview.getSnapshot().errorCode).toBe("load_failed");
+    expect(onError).toHaveBeenCalledExactlyOnceWith({
+      code: "load_failed",
+      diagnostics,
+      message: "bad composition",
+    });
 
     session.update({ composition: composition("first") });
     expect(worker.ofType("load")).toHaveLength(1);

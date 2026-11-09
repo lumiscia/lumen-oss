@@ -4,6 +4,7 @@ export type { PlayerProps } from "./types.js";
 export type {
   LumenLogLevel,
   LumenPreviewComposition,
+  LumenPreviewError,
   LumenPreviewErrorCode,
   LumenPreviewFonts,
   LumenPreviewMedia,

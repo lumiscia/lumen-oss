@@ -1,3 +1,5 @@
+import type { LumenDiagnostic } from "@lumiscia/lumen-types";
+
 export type LumenPreviewErrorCode =
   /** A source named in the composition's audio couldn't be decoded. The video keeps playing. */
   | "audio_failed"
@@ -8,6 +10,17 @@ export type LumenPreviewErrorCode =
   | "webgpu_unavailable"
   /** The worker or its wasm couldn't start, or the worker later crashed. */
   | "worker_failed";
+
+/** What `onError` receives when the preview fails. */
+export interface LumenPreviewError {
+  code: LumenPreviewErrorCode;
+  message: string;
+  /**
+   * What is wrong with the composition, when it didn't load because the engine rejected it. Empty
+   * for every other failure.
+   */
+  diagnostics: readonly LumenDiagnostic[];
+}
 
 export interface LumenPreviewState {
   frame: number;

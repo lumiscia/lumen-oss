@@ -1,3 +1,5 @@
+import type { LumenDiagnostic } from "@lumiscia/lumen-types";
+
 import { LumenAudioEngine } from "../audio-engine.js";
 import { clockPositionMs, epochNow, fitClock, type PreviewClock } from "../clock.js";
 import type { MediaRegistration, MediaSourceInput } from "../media/index.js";
@@ -290,13 +292,13 @@ export class LumenPreviewSession {
     }
   }
 
-  #loadFailed(error: unknown): void {
+  #loadFailed(error: unknown, diagnostics: readonly LumenDiagnostic[] = []): void {
     this.#loading = false;
     this.#pause();
     this.#timeline = null;
     this.#inputs.onStats?.(EMPTY_PREVIEW_STATS);
     this.preview.update({ isLoaded: false });
-    this.#reportError("load_failed", "load", error);
+    this.#reportError("load_failed", "load", error, diagnostics);
   }
 
   #receive(event: LumenPreviewWorkerEvent): void {
@@ -306,7 +308,7 @@ export class LumenPreviewSession {
         break;
       case "load-failed":
         if (event.loadId === this.#loadId) {
-          this.#loadFailed(event.message);
+          this.#loadFailed(event.message, event.diagnostics);
         }
         break;
       case "frame":
@@ -532,9 +534,16 @@ export class LumenPreviewSession {
     this.#reportError("worker_failed", "worker", `the preview worker stopped: ${message}`);
   }
 
-  #reportError(code: LumenPreviewErrorCode, scope: string, error: unknown): void {
+  #reportError(
+    code: LumenPreviewErrorCode,
+    scope: string,
+    error: unknown,
+    diagnostics: readonly LumenDiagnostic[] = [],
+  ): void {
     reportConsoleError(scope, error);
-    this.preview.update({ error: describeError(error), errorCode: code });
+    const message = describeError(error);
+    this.preview.update({ error: message, errorCode: code });
+    this.#inputs.onError?.({ code, message, diagnostics });
   }
 
   #post(message: LumenPreviewWorkerCommand, transfer: Transferable[] = []): void {

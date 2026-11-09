@@ -9,6 +9,7 @@ export {
 export type {
   LumenLogLevel,
   LumenPreviewComposition,
+  LumenPreviewError,
   LumenPreviewFonts,
   LumenPreviewMedia,
   LumenPreviewMediaEntry,
