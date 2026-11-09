@@ -356,19 +356,27 @@ pub(crate) fn build_lyon_path(data: &str) -> Result<lyon_path::Path, String> {
                     builder.line_to(to);
                 } else {
                     let mut finite = true;
+                    // Each curve is drawn once the next arrives, so the last can end exactly at
+                    // `to` rather than where rounding put it.
+                    let mut pending = None;
                     arc.for_each_quadratic_bezier(&mut |curve| {
                         finite &= curve.ctrl.x.is_finite()
                             && curve.ctrl.y.is_finite()
                             && curve.to.x.is_finite()
                             && curve.to.y.is_finite();
-                        if finite {
-                            builder.quadratic_bezier_to(curve.ctrl, curve.to);
+                        if let Some((ctrl, end)) = pending.replace((curve.ctrl, curve.to))
+                            && finite
+                        {
+                            builder.quadratic_bezier_to(ctrl, end);
                         }
                     });
                     if !finite {
                         return Err("has an arc too extreme to flatten".to_string());
                     }
-                    builder.line_to(to);
+                    match pending {
+                        Some((ctrl, _)) => builder.quadratic_bezier_to(ctrl, to),
+                        None => builder.line_to(to),
+                    };
                 }
             }
             PathSegment::ClosePath { .. } => builder.close(),

@@ -109,9 +109,6 @@ struct Piece {
     end: f64,
     /// The unwrapped angle at the start of this piece.
     angle: f64,
-    /// Whether the piece is too short for its direction to mean anything, so its angle stays
-    /// `angle` throughout.
-    sliver: bool,
 }
 
 impl Piece {
@@ -127,9 +124,6 @@ impl Piece {
 
     /// The angle at `t`, the closest to `self.angle` of the angles a whole turn apart.
     fn angle_at(&self, t: f32) -> f64 {
-        if self.sliver {
-            return self.angle;
-        }
         unwrap_angle(degrees(self.direction(t)), self.angle)
     }
 }
@@ -166,57 +160,32 @@ impl PathMeasure {
         };
         let mut length = 0.0;
         let mut angle = None;
-        // `build_lyon_path` ends each arc's quadratics with a line to the arc's exact end point,
-        // which rounding leaves a few ulps long and pointing anywhere. Such a line keeps the
-        // angle the path had before it.
-        let mut after_quadratic = false;
-        let mut push = |pieces: &mut Vec<Piece>,
-                        curve: Curve,
-                        chord: &LineSegment<f32>,
-                        t,
-                        may_be_sliver: bool| {
+        let mut push = |pieces: &mut Vec<Piece>, curve: Curve, chord: &LineSegment<f32>, t| {
             let chord_length = f64::from(chord.length());
             if chord_length == 0.0 || pieces.len() > MAX_PATH_POINTS {
                 return;
             }
             length += chord_length;
-            let scale = chord.from.x.abs().max(chord.from.y.abs()).max(1.0);
-            let sliver = may_be_sliver
-                && angle.is_some()
-                && chord_length <= f64::from(scale * f32::EPSILON * 16.0);
             let mut piece = Piece {
                 curve,
                 t,
                 end: length,
-                angle: angle.unwrap_or(0.0),
-                sliver,
+                angle: 0.0,
             };
-            if !sliver {
-                let start = degrees(piece.direction(piece.t.start));
-                piece.angle = angle.map_or(start, |previous| unwrap_angle(start, previous));
-            }
+            let start = degrees(piece.direction(piece.t.start));
+            piece.angle = angle.map_or(start, |previous| unwrap_angle(start, previous));
             angle = Some(piece.angle_at(piece.t.end));
             pieces.push(piece);
         };
         for event in path.iter() {
             let pieces = &mut measure.pieces;
-            let follows_quadratic = std::mem::replace(
-                &mut after_quadratic,
-                matches!(event, PathEvent::Quadratic { .. }),
-            );
             match event {
                 PathEvent::Begin { at } => {
                     measure.start.get_or_insert(at);
                 }
                 PathEvent::Line { from, to } => {
                     let line = LineSegment { from, to };
-                    push(
-                        pieces,
-                        Curve::Line(line),
-                        &line,
-                        0.0..1.0,
-                        follows_quadratic,
-                    );
+                    push(pieces, Curve::Line(line), &line, 0.0..1.0);
                 }
                 PathEvent::End { last, first, close } => {
                     if close {
@@ -224,13 +193,13 @@ impl PathMeasure {
                             from: last,
                             to: first,
                         };
-                        push(pieces, Curve::Line(line), &line, 0.0..1.0, false);
+                        push(pieces, Curve::Line(line), &line, 0.0..1.0);
                     }
                 }
                 PathEvent::Quadratic { from, ctrl, to } => {
                     let curve = QuadraticBezierSegment { from, ctrl, to };
                     curve.for_each_flattened_with_t(tolerance, &mut |chord, t| {
-                        push(pieces, Curve::Quadratic(curve), chord, t, false);
+                        push(pieces, Curve::Quadratic(curve), chord, t);
                     });
                 }
                 PathEvent::Cubic {
@@ -246,7 +215,7 @@ impl PathMeasure {
                         to,
                     };
                     curve.for_each_flattened_with_t(tolerance, &mut |chord, t| {
-                        push(pieces, Curve::Cubic(curve), chord, t, false);
+                        push(pieces, Curve::Cubic(curve), chord, t);
                     });
                 }
             }
@@ -367,6 +336,8 @@ mod tests {
         assert_eq!(point(corner, 0.75), (1000001.0, 0.5));
         assert_eq!(angle(corner, 0.75), 90.0);
         assert_eq!(angle("M 1000000 0 L 1000001 0 M 0 0 L 0 1", 0.75), 90.0);
+        let after_curve = "M 1000000 0 Q 1000000.5 0 1000001 0 L 1000001 1";
+        assert_eq!(angle(after_curve, 0.75), 90.0);
     }
 
     #[test]
