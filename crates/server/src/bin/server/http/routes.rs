@@ -48,6 +48,13 @@ pub(super) async fn create_render(
         .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?;
     let composition = lumen_engine::json::parse_value(&input.composition)
         .map_err(|error| ApiError::invalid_composition(&error))?;
+    // Resolving leases each asset, so the sweep keeps it until the render ends.
+    let assets = Arc::new(state.assets.job_assets());
+    let asset_errors =
+        lumen_engine::json::check_value(&input.composition, None, Some(assets.as_ref()));
+    if asset_errors.iter().any(|diagnostic| diagnostic.is_error()) {
+        return Err(ApiError::invalid_diagnostics(&asset_errors));
+    }
 
     // Resolved now with the resolver the render uses, so a request it would fail is refused here.
     let invalid_quality = |message: String| {
@@ -86,6 +93,7 @@ pub(super) async fn create_render(
             composition,
             media: input.media,
             encoder,
+            assets,
         },
     );
 
@@ -100,15 +108,21 @@ pub(super) async fn create_render(
 }
 
 /// What is wrong with a composition, without rendering it. Fonts resolve as a render's would,
-/// counting the manifest's media.
+/// counting the manifest's media, and `asset:` references resolve in the media store.
 pub(super) async fn check_render(
+    State(state): State<AppState>,
     input: Result<Json<CheckInput>, JsonRejection>,
 ) -> Result<Json<CheckResponse>, ApiError> {
     let Json(input) = input?;
     validate_media_manifest(&input.media)
         .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let assets = state.assets;
     let diagnostics = tokio::task::spawn_blocking(move || {
-        check_composition(&input.composition, &|name| input.media.contains_key(name))
+        check_composition(
+            &input.composition,
+            &|name| input.media.contains_key(name),
+            &assets,
+        )
     })
     .await
     .map_err(|error| {

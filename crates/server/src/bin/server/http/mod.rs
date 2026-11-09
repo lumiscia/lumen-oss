@@ -1,17 +1,27 @@
 mod auth;
 mod errors;
+mod media;
 mod routes;
 mod state;
 mod ws;
 
-use std::{net::SocketAddr, num::NonZeroUsize};
+use std::{net::SocketAddr, num::NonZeroUsize, path::PathBuf, time::Duration};
 
 use anyhow::bail;
-use axum::{Router, extract::DefaultBodyLimit, middleware, routing::get, routing::post};
+use axum::{
+    Router,
+    extract::DefaultBodyLimit,
+    middleware,
+    routing::{get, post, put},
+};
 use clap::Parser;
 
 use self::{
     auth::require_token,
+    media::{
+        complete_multipart, create_media, create_url_media, delete_media, get_content, get_media,
+        put_content, put_part, start_multipart,
+    },
     routes::{
         check_render, create_render, get_render, get_render_artifact, get_render_progress, health,
         render_socket,
@@ -19,8 +29,8 @@ use self::{
     state::AppState,
 };
 
-/// Largest `POST /renders` body. Compositions reference media through the manifest, so they stay
-/// small.
+/// Largest JSON body. Compositions reference media by id or through the manifest, so they stay
+/// small. Media bytes have their own limit, `--media-max-bytes`.
 pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
@@ -62,7 +72,59 @@ pub struct Args {
     /// JSON file of quality presets and encoder orders, checked at startup. Without it the
     /// built-in presets apply.
     #[arg(long, env = "LUMEN_QUALITY_CONFIG", value_name = "PATH")]
-    pub quality_config: Option<std::path::PathBuf>,
+    pub quality_config: Option<PathBuf>,
+
+    /// Directory uploaded media is kept in, created if missing. Media in it survives a restart
+    /// until it expires.
+    #[arg(
+        long,
+        env = "LUMEN_SERVER_MEDIA_DIR",
+        value_name = "PATH",
+        default_value_os_t = std::env::temp_dir().join("lumen-server-media")
+    )]
+    pub media_dir: PathBuf,
+
+    /// How long uploaded media is kept, as a number of seconds or with an `s`, `m`, `h` or `d`
+    /// suffix. Expired media is deleted, except while a render that references it is queued or
+    /// running.
+    #[arg(
+        long,
+        env = "LUMEN_SERVER_MEDIA_TTL",
+        default_value = "24h",
+        value_parser = parse_duration
+    )]
+    pub media_ttl: Duration,
+
+    /// Largest uploaded or imported media file, in bytes.
+    #[arg(
+        long,
+        env = "LUMEN_SERVER_MEDIA_MAX_BYTES",
+        default_value_t = 2 * 1024 * 1024 * 1024
+    )]
+    pub media_max_bytes: u64,
+}
+
+fn parse_duration(raw: &str) -> Result<Duration, String> {
+    let invalid =
+        || format!("expected a duration such as `90s`, `30m`, `24h` or `7d`, got `{raw}`");
+    let (number, unit) = match raw.find(|ch: char| !ch.is_ascii_digit()) {
+        Some(index) => raw.split_at(index),
+        None => (raw, "s"),
+    };
+    let seconds_per_unit = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        _ => return Err(invalid()),
+    };
+    match number.parse::<u64>() {
+        Ok(count) if count > 0 => count
+            .checked_mul(seconds_per_unit)
+            .map(Duration::from_secs)
+            .ok_or_else(invalid),
+        _ => Err(invalid()),
+    }
 }
 
 fn parse_fraction(raw: &str) -> Result<f32, String> {
@@ -82,7 +144,9 @@ pub async fn run(mut args: Args) -> anyhow::Result<()> {
         );
     }
     let bind = args.bind;
-    let app = router(AppState::new(args)?);
+    let state = AppState::new(args)?;
+    spawn_media_sweep(&state);
+    let app = router(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(address = %listener.local_addr()?, "lumen render server listening");
@@ -91,8 +155,33 @@ pub async fn run(mut args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn spawn_media_sweep(state: &AppState) {
+    let assets = state.assets.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(assets.sweep_interval());
+        loop {
+            interval.tick().await;
+            let assets = assets.clone();
+            let _ = tokio::task::spawn_blocking(move || assets.sweep()).await;
+        }
+    });
+}
+
 fn router(state: AppState) -> Router {
     Router::new()
+        .route("/media", post(create_media))
+        .route("/media/url", post(create_url_media))
+        .route("/media/{id}", get(get_media).delete(delete_media))
+        .route("/media/{id}/content", put(put_content).get(get_content))
+        .route("/media/{id}/multipart", post(start_multipart))
+        .route(
+            "/media/{id}/multipart/{upload_id}/parts/{part_number}",
+            put(put_part),
+        )
+        .route(
+            "/media/{id}/multipart/{upload_id}/complete",
+            post(complete_multipart),
+        )
         .route("/renders", post(create_render))
         .route("/renders/check", post(check_render))
         .route("/renders/{id}", get(get_render))

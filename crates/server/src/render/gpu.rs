@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::Path,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -35,7 +36,10 @@ pub fn render_project_mp4(
         message: err.to_string(),
         retryable: false,
     })?;
-    let media_store = LocalMediaStore::new(media_root, font_dir.as_deref());
+    let mut media_store = LocalMediaStore::new(media_root, font_dir.as_deref());
+    if let Some(assets) = &options.assets {
+        media_store = media_store.with_assets(Arc::clone(assets));
+    }
     let tmp = tempfile::tempdir().map_err(|err| RenderError {
         code: "encode_failed",
         message: format!("failed to create temp dir: {err}"),

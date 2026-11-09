@@ -74,13 +74,16 @@ impl MediaClient {
         })
     }
 
-    async fn download(
+    /// Downloads `url` to `path`, up to `limit` bytes, counting them in `staged_bytes` too when a
+    /// job total applies. `alias` names the file in errors.
+    pub(super) async fn download(
         &self,
         alias: &str,
         url: &str,
         path: &Path,
-        staged_bytes: &AtomicU64,
-    ) -> Result<(), RenderJobError> {
+        limit: u64,
+        staged_bytes: Option<&AtomicU64>,
+    ) -> Result<Downloaded, RenderJobError> {
         let parsed = Url::parse(url).map_err(|err| {
             media_error(
                 "media_download_failed",
@@ -114,16 +117,21 @@ impl MediaClient {
         let too_large = || {
             failed(
                 "media_download_too_large",
-                &format!("file exceeds the {MAX_REMOTE_MEDIA_BYTES} byte limit"),
+                &format!("file exceeds the {limit} byte limit"),
                 false,
             )
         };
         if response
             .content_length()
-            .is_some_and(|length| length > MAX_REMOTE_MEDIA_BYTES)
+            .is_some_and(|length| length > limit)
         {
             return Err(too_large());
         }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
 
         let write_failed = |err: std::io::Error| {
             failed("media_stage_failed", &format!("write failed: {err}"), true)
@@ -137,10 +145,13 @@ impl MediaClient {
         {
             let length = chunk.len() as u64;
             downloaded += length;
-            if downloaded > MAX_REMOTE_MEDIA_BYTES {
+            if downloaded > limit {
                 return Err(too_large());
             }
-            if staged_bytes.fetch_add(length, Ordering::Relaxed) + length > MAX_STAGED_MEDIA_BYTES {
+            if let Some(staged_bytes) = staged_bytes
+                && staged_bytes.fetch_add(length, Ordering::Relaxed) + length
+                    > MAX_STAGED_MEDIA_BYTES
+            {
                 return Err(failed(
                     "media_download_too_large",
                     &format!("job exceeds the {MAX_STAGED_MEDIA_BYTES} byte total media limit"),
@@ -155,10 +166,18 @@ impl MediaClient {
             media_url_host = host,
             total_ms = started.elapsed().as_millis(),
             bytes = downloaded,
-            "downloaded render media source"
+            "downloaded media source"
         );
-        Ok(())
+        Ok(Downloaded {
+            bytes: downloaded,
+            content_type,
+        })
     }
+}
+
+pub(super) struct Downloaded {
+    pub bytes: u64,
+    pub content_type: Option<String>,
 }
 
 struct PublicAddressResolver {
@@ -202,7 +221,18 @@ pub(super) async fn stage_remote_media(
         .try_for_each_concurrent(MEDIA_DOWNLOAD_CONCURRENCY, |(alias, url)| {
             let path = dir.path().join(&alias);
             let staged_bytes = &staged_bytes;
-            async move { client.download(&alias, &url, &path, staged_bytes).await }
+            async move {
+                client
+                    .download(
+                        &alias,
+                        &url,
+                        &path,
+                        MAX_REMOTE_MEDIA_BYTES,
+                        Some(staged_bytes),
+                    )
+                    .await
+                    .map(drop)
+            }
         })
         .await?;
     Ok(dir)
@@ -273,6 +303,11 @@ fn media_error(
         message: sanitize_error_message(&message),
         retryable,
     }
+}
+
+/// Whether a download failed because its host resolved only to non-public addresses.
+pub(crate) fn refused_non_public_host(error: &RenderJobError) -> bool {
+    error.code == "media_download_failed" && error.message.contains(NON_PUBLIC_HOST)
 }
 
 /// The URL is dropped because it may carry signed query parameters. The cause is only in the source

@@ -46,6 +46,7 @@ struct Server {
     child: Child,
     http: Client,
     log: Arc<Mutex<String>>,
+    media_dir: tempfile::TempDir,
 }
 
 impl Server {
@@ -54,10 +55,12 @@ impl Server {
     }
 
     fn start_with(args: &[&str], configure: impl FnOnce(&mut Command)) -> Self {
+        let media_dir = tempfile::tempdir().expect("media directory");
         let mut command = server_command();
         command
             .args(["--bind", "127.0.0.1:0", "--token", TOKEN])
             .args(args)
+            .env("LUMEN_SERVER_MEDIA_DIR", media_dir.path())
             .env("RUST_LOG", "lumen_server=info")
             .env("NO_COLOR", "1")
             .stdout(Stdio::null())
@@ -90,6 +93,7 @@ impl Server {
             child,
             http: Client::new(),
             log,
+            media_dir,
         }
     }
 
@@ -108,6 +112,30 @@ impl Server {
             .json(body)
             .send()
             .expect("POST /renders")
+    }
+
+    fn post_to(&self, path: &str, body: &Value) -> Response {
+        self.http
+            .post(format!("{}{path}", self.base))
+            .bearer_auth(TOKEN)
+            .json(body)
+            .send()
+            .expect("POST request")
+    }
+
+    fn put_bytes(&self, path: &str, bytes: &[u8]) -> Response {
+        self.http
+            .put(format!("{}{path}", self.base))
+            .bearer_auth(TOKEN)
+            .body(bytes.to_vec())
+            .send()
+            .expect("PUT request")
+    }
+
+    fn check(&self, body: &Value) -> Value {
+        let response = self.post_to("/renders/check", body);
+        assert_eq!(response.status(), StatusCode::OK);
+        response.json().expect("check body")
     }
 
     fn submit(&self, body: &Value) -> String {
@@ -158,6 +186,9 @@ fn server_command() -> Command {
         "LUMEN_QUALITY_CONFIG",
         "LUMEN_SERVER_ALLOW_MEDIA_HOSTS",
         "LUMEN_SERVER_BIND",
+        "LUMEN_SERVER_MEDIA_DIR",
+        "LUMEN_SERVER_MEDIA_MAX_BYTES",
+        "LUMEN_SERVER_MEDIA_TTL",
         "LUMEN_SERVER_TOKEN",
     ] {
         command.env_remove(name);
@@ -1213,4 +1244,265 @@ fn serving_from(directory: &Path, args: &[&str]) -> Server {
             .current_dir(directory)
             .env("LUMEN_FONT_DIR", directory);
     })
+}
+
+const MISSING_MEDIA_ID: &str = "m_00000000000000000000000000000000";
+
+fn roboto() -> Vec<u8> {
+    fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../text/assets/roboto/Roboto-Regular.ttf"
+    ))
+    .expect("read Roboto")
+}
+
+fn create_upload(server: &Server, file_name: &str, content_type: &str, size: usize) -> Value {
+    let created = server.post_to(
+        "/media",
+        &json!({ "contentType": content_type, "fileName": file_name, "sizeBytes": size }),
+    );
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: Value = created.json().expect("create body");
+    assert_eq!(created["media"]["status"], "pending", "{created}");
+    created
+}
+
+/// Creates media and sends `bytes` in one body, returning the media the upload answers with.
+fn upload(server: &Server, file_name: &str, content_type: &str, bytes: &[u8]) -> Value {
+    let created = create_upload(server, file_name, content_type, bytes.len());
+    let uploaded = server.put_bytes(created["uploadUrl"].as_str().expect("upload url"), bytes);
+    assert_eq!(uploaded.status(), StatusCode::OK);
+    let uploaded: Value = uploaded.json().expect("upload body");
+    uploaded["media"].clone()
+}
+
+fn media_id(media: &Value) -> String {
+    media["id"].as_str().expect("media id").to_string()
+}
+
+fn asset_source_error(code: &str) -> [(String, String); 1] {
+    [(code.to_string(), "/nodes/0/params/source".to_string())]
+}
+
+#[test]
+fn media_uploads_are_probed_once_their_bytes_are_complete() {
+    let server = Server::start(&[]);
+
+    // The probe decides the kind, whatever the name and declared type say.
+    let image = upload(&server, "pixel.bin", "application/octet-stream", TINY_PNG);
+    assert_eq!(image["status"], "validated", "{image}");
+    assert_eq!(image["kind"], "image");
+    assert_eq!(image["metadata"], json!({ "width": 1, "height": 1 }));
+    let id = media_id(&image);
+    let read: Value = server
+        .get(&format!("/media/{id}"))
+        .json()
+        .expect("media body");
+    assert_eq!(read["media"], image);
+    let content = server.get(&format!("/media/{id}/content"));
+    assert_eq!(content.status(), StatusCode::OK);
+    assert_eq!(
+        content.headers()["content-type"],
+        "application/octet-stream"
+    );
+    assert_eq!(content.bytes().expect("content").as_ref(), TINY_PNG);
+
+    let font = upload(&server, "brand.png", "image/png", &roboto());
+    assert_eq!(font["kind"], "font", "{font}");
+    assert_eq!(font["metadata"]["families"], json!(["Roboto"]));
+
+    let fake = upload(&server, "fake.png", "image/png", b"not media");
+    assert_eq!(fake["status"], "rejected", "{fake}");
+    assert!(fake["rejectionReason"].is_string(), "{fake}");
+    let content = server.get(&format!("/media/{}/content", media_id(&fake)));
+    assert_eq!(content.status(), StatusCode::CONFLICT);
+    assert_eq!(error_code(content), "media_not_validated");
+
+    // Media bodies aren't held to the JSON body limit.
+    let large = upload(
+        &server,
+        "large.bin",
+        "application/octet-stream",
+        &vec![0; 3 << 20],
+    );
+    assert_eq!(large["status"], "rejected", "{large}");
+}
+
+#[test]
+fn media_multipart_uploads_join_the_listed_parts_in_order() {
+    let server = Server::start(&[]);
+    let jpeg = normal_sized_jpeg();
+    let created = create_upload(&server, "photo.jpg", "image/jpeg", jpeg.len());
+    let id = media_id(&created["media"]);
+    let started = server.post_to(&format!("/media/{id}/multipart"), &json!({}));
+    assert_eq!(started.status(), StatusCode::CREATED);
+    let started: Value = started.json().expect("multipart body");
+    let upload_id = started["uploadId"].as_str().expect("upload id").to_string();
+
+    let part = |number: u32, bytes: &[u8]| -> Value {
+        let response = server.put_bytes(
+            &format!("/media/{id}/multipart/{upload_id}/parts/{number}"),
+            bytes,
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let part: Value = response.json().expect("part body");
+        assert_eq!(part["partNumber"], number);
+        json!({ "etag": part["etag"], "partNumber": number })
+    };
+    let complete = |parts: Value| {
+        server.post_to(
+            &format!("/media/{id}/multipart/{upload_id}/complete"),
+            &json!({ "parts": parts }),
+        )
+    };
+    let (first, second) = jpeg.split_at(jpeg.len() / 2);
+    // Parts arrive in any order, and a part sent again replaces the earlier one.
+    let second = part(2, second);
+    let stale = part(1, b"stale");
+    let first = part(1, first);
+
+    let refused = complete(json!([stale, second]));
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(refused), "invalid_upload_parts");
+
+    let completed = complete(json!([first, second]));
+    assert_eq!(completed.status(), StatusCode::OK);
+    let completed: Value = completed.json().expect("complete body");
+    assert_eq!(completed["media"]["status"], "validated", "{completed}");
+    assert_eq!(completed["media"]["kind"], "image");
+    assert_eq!(
+        completed["media"]["metadata"],
+        json!({ "width": 1280, "height": 720 })
+    );
+}
+
+#[test]
+fn media_url_imports_download_once_through_the_media_host_checks() {
+    let media = MediaServer::start();
+    let server = Server::start(&["--allow-media-host", "localhost"]);
+
+    let imported = server.post_to(
+        "/media/url",
+        &json!({ "url": media.url("localhost", "/photo.jpg") }),
+    );
+    assert_eq!(imported.status(), StatusCode::CREATED);
+    let imported: Value = imported.json().expect("import body");
+    let imported = &imported["media"];
+    assert_eq!(imported["status"], "validated", "{imported}");
+    assert_eq!(imported["sourceType"], "url");
+    assert_eq!(imported["fileName"], "photo.jpg");
+    assert_eq!(
+        imported["metadata"],
+        json!({ "width": 1280, "height": 720 })
+    );
+    assert_eq!(media.requests.load(Ordering::SeqCst), 1);
+
+    // A private address is refused like an unlisted host: a request this server won't serve.
+    let refused = server.post_to(
+        "/media/url",
+        &json!({ "url": media.url("127.0.0.1", "/image.png") }),
+    );
+    assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let refused: Value = refused.json().expect("error body");
+    let error = refused["error"].as_str().unwrap_or_default();
+    assert!(error.contains("host has no public address"), "{refused}");
+    assert_eq!(
+        media.requests.load(Ordering::SeqCst),
+        1,
+        "the refused host is never contacted"
+    );
+    let kept = fs::read_dir(server.media_dir.path())
+        .expect("media directory")
+        .count();
+    assert_eq!(kept, 1, "a refused import leaves nothing behind");
+}
+
+#[test]
+fn renders_and_checks_resolve_asset_ids() {
+    let server = Server::start(&[]);
+    let image = media_id(&upload(&server, "pixel.png", "image/png", TINY_PNG));
+    let font = media_id(&upload(&server, "Roboto.ttf", "font/ttf", &roboto()));
+    let pending =
+        media_id(&create_upload(&server, "later.png", "image/png", TINY_PNG.len())["media"]);
+    let rejected = media_id(&upload(&server, "fake.png", "image/png", b"not media"));
+
+    let mut text = solid_composition();
+    text["nodes"][0] = json!({ "id": 1, "type": "text", "params": { "content": [
+        { "text": "a", "font_family": format!("asset:{font}") }
+    ] } });
+    for composition in [image_composition(&format!("asset:{image}")), text] {
+        let checked = server.check(&json!({ "composition": composition }));
+        assert_eq!(checked, json!({ "ok": true, "diagnostics": [] }));
+    }
+    server.submit(&json!({ "composition": image_composition(&format!("asset:{image}")) }));
+
+    for (composition, code) in [
+        (
+            image_composition(&format!("asset:{MISSING_MEDIA_ID}")),
+            "asset.not_found",
+        ),
+        (
+            image_composition(&format!("asset:{pending}")),
+            "asset.not_found",
+        ),
+        (
+            image_composition(&format!("asset:{rejected}")),
+            "asset.not_found",
+        ),
+        (
+            media_composition("video", &format!("asset:{image}")),
+            "asset.wrong_kind",
+        ),
+    ] {
+        let body = json!({ "composition": composition });
+        let checked = server.check(&body);
+        assert_eq!(checked["ok"], false, "{checked}");
+        assert_eq!(
+            codes_and_paths(&checked["diagnostics"]),
+            asset_source_error(code)
+        );
+        let refused = server.post(&body);
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let refused: Value = refused.json().expect("error body");
+        assert_eq!(refused["code"], "invalid_project_payload");
+        assert_eq!(refused["diagnostics"], checked["diagnostics"]);
+    }
+}
+
+#[test]
+fn media_expires_after_its_ttl_except_while_a_render_holds_it() {
+    let media = MediaServer::start();
+    let server = Server::start(&["--media-ttl", "2s", "--allow-media-host", "localhost"]);
+    let held = media_id(&upload(&server, "held.png", "image/png", TINY_PNG));
+    let free = media_id(&upload(&server, "free.png", "image/png", TINY_PNG));
+    // Staging waits on `/held`, so the render holds its asset until the test releases it.
+    let render = server.submit(&json!({
+        "composition": image_composition(&format!("asset:{held}")),
+        "media": { "gate": media.url("localhost", "/held") },
+    }));
+    let dir = |id: &str| server.media_dir.path().join(id);
+    let wait_until_swept = |id: &str| {
+        let started = Instant::now();
+        while dir(id).exists() {
+            assert!(started.elapsed() < TIMEOUT, "{id} was never swept");
+            thread::sleep(Duration::from_millis(50));
+        }
+    };
+
+    // `free` expires after `held`, so the sweep that removed it passed over `held`.
+    wait_until_swept(&free);
+    assert!(dir(&held).exists(), "a held asset outlives its expiry");
+    let expired = server.get(&format!("/media/{held}"));
+    assert_eq!(expired.status(), StatusCode::NOT_FOUND);
+    assert_eq!(error_code(expired), "media_not_found");
+    let checked =
+        server.check(&json!({ "composition": image_composition(&format!("asset:{held}")) }));
+    assert_eq!(
+        codes_and_paths(&checked["diagnostics"]),
+        asset_source_error("asset.not_found")
+    );
+
+    media.release.send(()).expect("release staging");
+    server.wait_for_state(&render, &["failed", "succeeded"]);
+    wait_until_swept(&held);
 }

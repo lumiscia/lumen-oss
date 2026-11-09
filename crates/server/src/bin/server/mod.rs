@@ -1,9 +1,10 @@
+mod assets;
 pub mod http;
 mod media_staging;
 mod types;
 mod util;
 
-use std::{collections::HashMap, path::Path, time::Instant};
+use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
 
 pub use types::{
     ApiRenderJob, Artifact, CheckInput, CheckResponse, CreateRenderResponse, GetRenderResponse,
@@ -17,16 +18,18 @@ use lumen_server::render::{
     RenderError as RenderPipelineError, RenderOptions, RenderProgress, render_project_mp4,
 };
 
-pub(super) use media_staging::{MediaClient, validate_media_manifest};
+pub(super) use media_staging::{MediaClient, refused_non_public_host, validate_media_manifest};
 pub(super) use util::{current_timestamp, input_hash, new_render_id};
 
-use self::{media_staging::stage_remote_media, util::sanitize_error_message};
+use self::{assets::JobAssets, media_staging::stage_remote_media, util::sanitize_error_message};
 
 pub struct RenderJob {
     pub id: String,
     pub composition: Composition,
     pub media: HashMap<String, String>,
     pub encoder: VideoEncoderChoice,
+    /// The `asset:` references this render resolves, held until it ends.
+    pub assets: Arc<JobAssets>,
 }
 
 pub struct CompletedRender {
@@ -48,6 +51,7 @@ where
         composition,
         media,
         encoder,
+        assets,
     } = job;
     tracing::info!(job_id, media_count = media.len(), "starting render request");
     let staged_media = stage_remote_media(media_client, media).await?;
@@ -58,6 +62,7 @@ where
     let options = RenderOptions {
         media_root: Some(staged_path.clone()),
         encoder: Some(encoder),
+        assets: Some(assets),
     };
 
     let output_width = composition.render_settings().width;
