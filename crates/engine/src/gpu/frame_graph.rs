@@ -839,6 +839,17 @@ fn font_generation(media: Option<&dyn MediaStore>) -> Option<u64> {
         .map(|text_system| text_system.font_generation())
 }
 
+/// `extent` rounded up to the next size class that textures are pooled by.
+pub(crate) fn size_class(extent: u32) -> u32 {
+    let step = match extent {
+        0..256 => 16,
+        256..512 => 32,
+        512..1024 => 64,
+        _ => 128,
+    };
+    extent.next_multiple_of(step)
+}
+
 /// A raster's domain within `display`, rounded out to a size class so that bounds moving from
 /// frame to frame keep finding the same textures, and the bind groups cached on them.
 pub(crate) fn quantized_domain(display: Size, data: lumen_gpu::RectI) -> TextureDomain {
@@ -847,15 +858,7 @@ pub(crate) fn quantized_domain(display: Size, data: lumen_gpu::RectI) -> Texture
     if data.is_empty() {
         return domain;
     }
-    let class = |extent: u32, limit: u32| {
-        let step = match extent {
-            0..256 => 16,
-            256..512 => 32,
-            512..1024 => 64,
-            _ => 128,
-        };
-        extent.next_multiple_of(step).min(limit.max(1))
-    };
+    let class = |extent: u32, limit: u32| size_class(extent).min(limit.max(1));
     let width = class(rect.width, display.width);
     let height = class(rect.height, display.height);
     let x = rect.x.min(display.width.saturating_sub(width) as i32);
@@ -1715,6 +1718,9 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
         NodeKind::Resize(node) => node.programs(programs),
         NodeKind::Shadow(node) => node.programs(programs),
         NodeKind::Glow(node) => node.programs(programs),
+        NodeKind::DirectionalBlur(node) => node.programs(programs),
+        NodeKind::RadialBlur(node) => node.programs(programs),
+        NodeKind::ZoomBlur(node) => node.programs(programs),
         NodeKind::DisplacementMap(node) => node.programs(programs),
         NodeKind::WgslShader(node) => node.programs(programs),
         NodeKind::Switch(node) => node.programs(programs),
@@ -1746,6 +1752,9 @@ fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
         NodeKind::Resize(node) => node.record(cx),
         NodeKind::Shadow(node) => node.record(cx),
         NodeKind::Glow(node) => node.record(cx),
+        NodeKind::DirectionalBlur(node) => node.record(cx),
+        NodeKind::RadialBlur(node) => node.record(cx),
+        NodeKind::ZoomBlur(node) => node.record(cx),
         NodeKind::DisplacementMap(node) => node.record(cx),
         NodeKind::WgslShader(node) => node.record(cx),
         NodeKind::Switch(node) => node.record(cx),

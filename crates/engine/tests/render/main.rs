@@ -18,6 +18,7 @@ mod paint;
 mod repeat;
 mod shaders;
 mod support;
+mod sweep_blurs;
 mod text_atlas;
 mod text_pixels;
 mod text_style;
