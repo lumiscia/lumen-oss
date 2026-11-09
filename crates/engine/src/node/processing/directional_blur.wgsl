@@ -1,5 +1,5 @@
-// A blur along a path: each texel averages its input at the taps' moves of it, in one pass of
-// the two, or at every comb tap's move of those in the one-pass blur.
+// A blur along a path: the average of the source at the taps' moves of each pixel. The short box
+// is `taps`, the comb `comb`, and every tap at once is the short box at each of the comb's moves.
 
 struct SweepTap {
     // `M` as `(m00, m01, m10, m11)`: a tap reads `M p + t.xy` for canvas position `p`.
@@ -8,22 +8,27 @@ struct SweepTap {
 }
 
 struct SweepParams {
-    // `x`: tap count, `y`: 1 when reads clamp to the canvas, `z`: the comb's tap count for the
-    // one-pass blur.
+    // `x`: taps of the short box, `y`: 1 when reads of the source clamp to the canvas, `z`: taps
+    // of the comb.
     header: vec4<u32>,
-    // Canvas pixel of the input's first texel in `xy`, and the canvas size in `zw`.
-    input: vec4<i32>,
-    // Canvas pixel of the output's first texel in `xy`.
-    output: vec4<i32>,
+    // Canvas pixel of the source's first texel in `xy`, and the canvas size in `zw`.
+    source: vec4<i32>,
+    // Canvas pixel of the first texel of the stored short boxes in `xy`, and of the output in
+    // `zw`.
+    origins: vec4<i32>,
+    // `x`: how much of the output the comb of stored short boxes makes, against every tap at
+    // once.
+    blend: vec4<f32>,
     taps: array<SweepTap, 64>,
     comb: array<SweepTap, 64>,
 }
 
-@group(0) @binding(0) var input_tex: texture_2d<f32>;
+@group(0) @binding(0) var source_tex: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> params: SweepParams;
 @group(0) @binding(2) var linear_sampler: sampler;
-@group(0) @binding(3) var inner_tex: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(3) var boxes_out: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(4) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(5) var boxes_tex: texture_2d<f32>;
 
 fn sweep_inside(index: f32, extent: f32) -> f32 {
     return select(0.0, 1.0, index >= 0.0 && index < extent);
@@ -39,62 +44,63 @@ fn sweep_coverage(pos: vec2<f32>, dims: vec2<f32>) -> f32 {
     return x * y;
 }
 
-// The input at canvas position `pos`, transparent where it stores nothing. Scaling the sampler's
-// clamped read by the footprint's coverage reads the texels outside as transparent.
-fn sweep_read(pos: vec2<f32>) -> vec4<f32> {
-    var at = pos;
-    if (params.header.y == 1u) {
-        at = clamp(at, vec2<f32>(0.5), vec2<f32>(params.input.zw) - vec2<f32>(0.5));
-    }
-    let local = at - vec2<f32>(params.input.xy);
-    let dims = vec2<f32>(textureDimensions(input_tex));
-    return textureSampleLevel(input_tex, linear_sampler, local / dims, 0.0) * sweep_coverage(local, dims);
+// `tex`, whose first texel is at canvas pixel `origin`, at canvas position `pos`, transparent
+// where it stores nothing. Scaling the sampler's clamped read by the footprint's coverage reads
+// the texels outside as transparent.
+fn sweep_read(tex: texture_2d<f32>, origin: vec2<i32>, pos: vec2<f32>) -> vec4<f32> {
+    let local = pos - vec2<f32>(origin);
+    let dims = vec2<f32>(textureDimensions(tex));
+    return textureSampleLevel(tex, linear_sampler, local / dims, 0.0) * sweep_coverage(local, dims);
 }
 
 fn sweep_move(tap: SweepTap, pos: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(dot(tap.m.xy, pos), dot(tap.m.zw, pos)) + tap.t.xy;
 }
 
-fn sweep_pos(id: vec2<u32>) -> vec2<f32> {
-    return vec2<f32>(id) + vec2<f32>(0.5) + vec2<f32>(params.output.xy);
-}
-
-fn sweep(pos: vec2<f32>) -> vec4<f32> {
+// The short box of the source about `pos`. Only reads of the source clamp, so a box past the
+// canvas still averages what it covers.
+fn sweep_box(pos: vec2<f32>) -> vec4<f32> {
     var sum = vec4<f32>(0.0);
     for (var index = 0u; index < params.header.x; index = index + 1u) {
-        sum += sweep_read(sweep_move(params.taps[index], pos));
+        var at = sweep_move(params.taps[index], pos);
+        if (params.header.y == 1u) {
+            at = clamp(at, vec2<f32>(0.5), vec2<f32>(params.source.zw) - vec2<f32>(0.5));
+        }
+        sum += sweep_read(source_tex, params.source.xy, at);
     }
     return sum / f32(params.header.x);
 }
 
 @compute @workgroup_size(8, 8, 1)
-fn inner_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let size = textureDimensions(inner_tex);
+fn boxes_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = textureDimensions(boxes_out);
     if (id.x >= size.x || id.y >= size.y) {
         return;
     }
-    textureStore(inner_tex, vec2<i32>(id.xy), sweep(sweep_pos(id.xy)));
+    let pos = vec2<f32>(id.xy) + vec2<f32>(0.5) + vec2<f32>(params.origins.xy);
+    textureStore(boxes_out, vec2<i32>(id.xy), sweep_box(pos));
 }
 
+// The comb of the stored short boxes, which their bilinear reads soften, crossfaded with the
+// short box taken directly at each of the comb's moves.
 @compute @workgroup_size(8, 8, 1)
-fn outer_main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn comb_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = textureDimensions(output_tex);
     if (id.x >= size.x || id.y >= size.y) {
         return;
     }
-    textureStore(output_tex, vec2<i32>(id.xy), sweep(sweep_pos(id.xy)));
-}
-
-@compute @workgroup_size(8, 8, 1)
-fn direct_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let size = textureDimensions(output_tex);
-    if (id.x >= size.x || id.y >= size.y) {
-        return;
-    }
-    let pos = sweep_pos(id.xy);
-    var sum = vec4<f32>(0.0);
+    let pos = vec2<f32>(id.xy) + vec2<f32>(0.5) + vec2<f32>(params.origins.zw);
+    let blend = params.blend.x;
+    var stored = vec4<f32>(0.0);
+    var direct = vec4<f32>(0.0);
     for (var index = 0u; index < params.header.z; index = index + 1u) {
-        sum += sweep(sweep_move(params.comb[index], pos));
+        let at = sweep_move(params.comb[index], pos);
+        if (blend > 0.0) {
+            stored += sweep_read(boxes_tex, params.origins.xy, at);
+        }
+        if (blend < 1.0) {
+            direct += sweep_box(at);
+        }
     }
-    textureStore(output_tex, vec2<i32>(id.xy), sum / f32(params.header.z));
+    textureStore(output_tex, vec2<i32>(id.xy), mix(direct, stored, blend) / f32(params.header.z));
 }

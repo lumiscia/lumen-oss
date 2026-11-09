@@ -325,6 +325,46 @@ fn sweeps_are_deterministic_and_smooth_across_tap_counts() {
     }
 }
 
+/// Fine noise, whose detail the comb of stored short boxes softens most against every tap at
+/// once, moves only as far as a tiny step of the blur does, through where one takes over from
+/// the other: streaks from 64 to 256 pixels, and stored boxes of 2 to 3 canvases.
+#[test]
+fn sweeps_crossfade_between_two_passes_and_every_tap() {
+    let noise =
+        || json!({ "id": 1, "type": "fractal_noise", "params": { "scale": 1, "contrast": 3 } });
+    let at = |center: [f64; 2], amount: f64| {
+        render_scene(blurred(
+            (256, 256),
+            noise(),
+            "zoom_blur",
+            json!({ "center": center, "amount": amount, "edge": "transparent" }),
+        ))
+    };
+    // The longest streak is `amount` times the distance to the farthest corner. Each one is
+    // chosen 0.4 pixels past a whole number, so that the step leaves the tap count as it is. About
+    // the middle, the stored boxes take `(1 + amount² / 4)^½ + amount / 2` squared canvases.
+    let streak = |center: [f64; 2], amount: f64| {
+        let farthest = (256.0 - center[0]).hypot(256.0 - center[1]);
+        (center, ((amount * farthest).round() + 0.4) / farthest)
+    };
+    let streaks = [0.1768, 0.3, 0.45, 0.6, 0.705].map(|amount| streak([0.0, 0.0], amount));
+    let canvases = [0.71, 0.85, 1.0, 1.1547].map(|amount| streak([128.0, 128.0], amount));
+    // Where four canvases of stored boxes once switched to every tap at once.
+    let switched = ([128.0, 128.0], 1.490226715686);
+    for (center, amount) in streaks.into_iter().chain(canvases).chain([switched]) {
+        let jump = (at(center, amount)
+            .rgba
+            .iter()
+            .zip(&at(center, amount * 1.0001).rgba))
+        .map(|(a, b)| a.abs_diff(*b))
+        .max();
+        assert!(
+            jump <= Some(3),
+            "zoom {amount} about {center:?} jumps {jump:?}"
+        );
+    }
+}
+
 /// Sources sized to their bounds, grown by each blur's reach, draw what full-frame sources draw.
 #[test]
 fn sweep_bounds_match_reference() {
