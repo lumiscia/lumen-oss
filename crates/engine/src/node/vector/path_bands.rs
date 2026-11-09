@@ -1,6 +1,6 @@
-use super::drawable::{DrawableMotion, DrawableTransform};
 use super::path::{POINT_CLOSED, POINT_END};
 use super::renderer::{PathPoint, PathUniforms, STYLE_FILL_ENABLED, STYLE_STROKE_ENABLED};
+use super::repeat::Drawn;
 
 /// Most bands a path is split into.
 const MAX_PATH_BANDS: usize = 1024;
@@ -18,15 +18,14 @@ pub(super) fn band_capacity(point_capacity: usize) -> usize {
 /// all of which are listed in its band, so the fill rule needs no other bands.
 ///
 /// The buffer starts with a `(start, count)` pair per band, followed by the index of the
-/// first point of each listed segment. An empty buffer means nothing is drawn. A blurred
-/// path's culling covers every tap of its `motion`. `min` and `max` are the box around
+/// first point of each listed segment. An empty buffer means nothing is drawn. The culling
+/// covers every transform the path is `drawn` under. `min` and `max` are the box around
 /// `points`.
 pub(super) fn bin_path(
     uniforms: &mut PathUniforms,
     points: &[PathPoint],
     (min, max): ([f32; 2], [f32; 2]),
-    transform: &DrawableTransform,
-    motion: &DrawableMotion,
+    drawn: &Drawn<'_>,
     capacity: usize,
 ) -> Vec<u32> {
     uniforms.screen_bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
@@ -50,7 +49,7 @@ pub(super) fn bin_path(
                 .then(|| (index as u32, [f64::from(y0.min(y1)), f64::from(y0.max(y1))]))
         })
         .collect();
-    if segments.is_empty() || !(fill || stroke) || !motion.is_visible(transform) {
+    if segments.is_empty() || !(fill || stroke) || !drawn.is_visible() {
         return Vec::new();
     }
 
@@ -61,7 +60,7 @@ pub(super) fn bin_path(
     } else {
         0.0
     };
-    let reach = 1.0 / motion.smallest_scale(transform) + stroke_reach;
+    let reach = 1.0 / drawn.smallest_scale() + stroke_reach;
     // Covers rounding differences between this binning and the shader's band lookup.
     let pad = reach + 1e-4 * (1.0 + f64::from(min[1].abs().max(max[1].abs())));
     let origin = f64::from(min[1]) - pad;
@@ -109,7 +108,7 @@ pub(super) fn bin_path(
 
     let reach = reach as f32;
     let [x, y] = uniforms.position;
-    uniforms.screen_bounds = motion.canvas_bounds(
+    uniforms.screen_bounds = drawn.canvas_bounds(
         uniforms.transform,
         [min[0] - reach + x, min[1] - reach + y],
         [max[0] + reach + x, max[1] + reach + y],
@@ -123,6 +122,7 @@ pub(super) fn bin_path(
 
 #[cfg(test)]
 mod tests {
+    use super::super::drawable::{DrawableMotion, DrawableTransform};
     use super::super::path::{parse_path_points, point_bounds};
     use super::*;
     use bytemuck::Zeroable;
@@ -151,8 +151,7 @@ mod tests {
             &mut uniforms,
             &points,
             point_bounds(&points),
-            &transform,
-            &DrawableMotion::default(),
+            &Drawn::Once(&transform, &DrawableMotion::default()),
             capacity,
         );
         (uniforms, data)
@@ -206,8 +205,7 @@ mod tests {
                 &mut uniforms,
                 &points,
                 point_bounds(&points),
-                &transform,
-                &DrawableMotion::default(),
+                &Drawn::Once(&transform, &DrawableMotion::default()),
                 4096
             )
             .is_empty()

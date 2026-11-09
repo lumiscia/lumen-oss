@@ -11,12 +11,16 @@ struct ShapeUniforms {
     screen_bounds: vec4<f32>,
     // Canvas pixel of the output's first texel.
     origin: vec2<i32>,
-    _origin_pad: vec2<i32>,
+    // Copies in `repeat_copies`, read by `cs_repeat` alone.
+    copy_count: u32,
+    _origin_pad: u32,
     motion: DrawableMotion,
 }
 
 @group(0) @binding(0) var<uniform> params: ShapeUniforms;
 @group(0) @binding(1) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var<storage, read> repeat_copies: array<RepeatCopy>;
+@group(0) @binding(3) var<storage, read> repeat_taps: array<DrawableTransform>;
 
 // Signed canvas distances to the fill and to the stroke, negative inside.
 struct ShapeDistance {
@@ -121,4 +125,37 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let pixel_origin = vec2<f32>(vec2<i32>(id.xy) + params.origin);
     textureStore(output_tex, vec2<i32>(id.xy), shape_color(pixel_origin + vec2<f32>(0.5)));
+}
+
+// Draws each copy over the ones before it.
+fn repeat_color(pixel: vec2<f32>) -> vec4<f32> {
+    var color = vec4<f32>(0.0);
+    for (var index = 0u; index < params.copy_count; index = index + 1u) {
+        let copy = repeat_copies[index];
+        if (any(pixel < copy.bounds.xy) || any(pixel > copy.bounds.zw)) {
+            continue;
+        }
+        var copy_color = vec4<f32>(0.0);
+        if (copy.tap_count == 0u) {
+            copy_color = sample_shape(pixel, copy.transform);
+        } else {
+            for (var tap = 0u; tap < copy.tap_count; tap = tap + 1u) {
+                copy_color += sample_shape(pixel, repeat_taps[copy.first_tap + tap]);
+            }
+            copy_color /= f32(copy.tap_count);
+        }
+        color = copy_color + color * (1.0 - copy_color.a);
+    }
+    return color;
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_repeat(@builtin(global_invocation_id) id: vec3<u32>) {
+    let dims = textureDimensions(output_tex);
+    if (id.x >= dims.x || id.y >= dims.y) {
+        return;
+    }
+
+    let pixel_origin = vec2<f32>(vec2<i32>(id.xy) + params.origin);
+    textureStore(output_tex, vec2<i32>(id.xy), repeat_color(pixel_origin + vec2<f32>(0.5)));
 }

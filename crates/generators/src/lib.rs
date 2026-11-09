@@ -274,6 +274,7 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
         vector::{
             dash::{MAX_DASH_LENGTH, MAX_DASH_LENGTHS},
             paint::{GradientPaintDelegate, GradientStopDelegate, MAX_GRADIENT_STOPS},
+            repeat::{MAX_REPEAT_COUNT, RepeatDelegate},
         },
     };
 
@@ -354,6 +355,14 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
             }
         }),
     );
+    insert_object_def::<RepeatDelegate>(
+        &mut defs,
+        "Repeat",
+        &[(
+            "count",
+            json!({ "type": "integer", "minimum": 0, "maximum": MAX_REPEAT_COUNT }),
+        )],
+    )?;
     insert_def(
         &mut defs,
         "FontFeatures",
@@ -613,6 +622,7 @@ fn value_schema_json(property: &PropertyDef) -> Value {
         PropertyKind::FontFeatures => json!({ "$ref": "#/$defs/fontFeatures" }),
         PropertyKind::TextStroke => json!({ "$ref": "#/$defs/textStroke" }),
         PropertyKind::DashPattern => json!({ "$ref": "#/$defs/dashPattern" }),
+        PropertyKind::Repeat => json!({ "$ref": "#/$defs/repeat" }),
         PropertyKind::Enum => enum_schema_json(property),
     }
 }
@@ -749,6 +759,7 @@ fn property_kind_name(kind: PropertyKind) -> &'static str {
         PropertyKind::FontFeatures => "font_features",
         PropertyKind::TextStroke => "text_stroke",
         PropertyKind::DashPattern => "dash_pattern",
+        PropertyKind::Repeat => "repeat",
     }
 }
 

@@ -21,6 +21,16 @@ struct DrawableMotion {
     taps: array<DrawableTransform, 32>,
 }
 
+// One copy of a repeated shape or path. It is drawn under `transform`, or averaged over its
+// `tap_count` taps from `first_tap` when it moves, and draws nothing outside `bounds`.
+struct RepeatCopy {
+    transform: DrawableTransform,
+    bounds: vec4<f32>,
+    first_tap: u32,
+    tap_count: u32,
+    _pad: vec2<u32>,
+}
+
 // Bit of `DrawableTransform.flags`, set when scale or rotation differ from the identity.
 // Without it, points pass through unchanged so untransformed output stays exact.
 const TRANSFORM_LINEAR: u32 = 1u;

@@ -5,7 +5,7 @@ import type { Color, ExpressionValue, HexColor, Vec2 } from "../values.js";
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
-export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
+export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
 export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "exposure" | "fractal_noise" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
@@ -1048,6 +1048,22 @@ export type RenderSettings = {
   readonly quality?: string;
   readonly width: number;
 };
+export type Repeat = {
+  /** Copies per row, after which the next row starts. 0 puts every copy in one row. */
+  readonly columns?: ExpressionValue<number>;
+  /** Copies to draw, from 0 to 1024. 0 draws nothing, and 1 draws the node alone. */
+  readonly count: ExpressionValue<number>;
+  /** Opacity added for each copy. Each copy's opacity is clamped to 0–1. */
+  readonly opacity_offset?: ExpressionValue<number>;
+  /** Position in pixels added for each column. */
+  readonly position_offset?: ExpressionValue<Vec2>;
+  /** Clockwise rotation in degrees added for each copy. */
+  readonly rotation_offset?: ExpressionValue<number>;
+  /** Position in pixels added for each row. */
+  readonly row_offset?: ExpressionValue<Vec2>;
+  /** Scale added for each copy, per axis. */
+  readonly scale_offset?: ExpressionValue<Vec2>;
+};
 export type ResizeMode = "stretch" | "fit" | "fill";
 export type ResizeSampling = RasterSampling;
 export type ShaderUniformComponent = ExpressionValue<number>;
@@ -1405,6 +1421,8 @@ export interface PathNode extends CompositionNodeBase<"path"> {
     readonly opacity?: ExpressionValue<number>;
     /** Path origin in pixels. */
     readonly position?: ExpressionValue<Vec2>;
+    /** Copies of the path drawn in one pass. Absent draws the path once. */
+    readonly repeat?: Repeat;
     /** Clockwise rotation in degrees, about the anchor. */
     readonly rotation?: ExpressionValue<number>;
     /** Scale multiplier per axis, about the anchor. */
@@ -1511,6 +1529,8 @@ export interface ShapeNode extends CompositionNodeBase<"shape"> {
     readonly opacity?: ExpressionValue<number>;
     /** Shape origin in pixels. */
     readonly position?: ExpressionValue<Vec2>;
+    /** Copies of the shape drawn in one pass. Absent draws the shape once. */
+    readonly repeat?: Repeat;
     /** Clockwise rotation in degrees, about the anchor. */
     readonly rotation?: ExpressionValue<number>;
     /** Scale multiplier per axis, about the anchor. */
