@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2 } from "../values.js";
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
 export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
-export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "displacement_map" | "exposure" | "fractal_noise" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
+export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader";
 
 export const schemaVersion = 1 as const;
 
@@ -1359,6 +1359,33 @@ export interface FractalNoiseNode extends CompositionNodeBase<"fractal_noise"> {
   };
 }
 
+/**
+ * Adds a blurred copy of a raster's brightest pixels to it, as light: the glow's alpha is its
+ * brightest channel, so dark pixels add nothing.
+ */
+export interface GlowNode extends CompositionNodeBase<"glow"> {
+  readonly params?: {
+    /** Outputs only the glow instead of adding it to the source. */
+    readonly glow_only?: ExpressionValue<boolean>;
+    /** Multiplies the glow's brightness. */
+    readonly intensity?: ExpressionValue<number>;
+    /** Glow blur radius in pixels, as on `blur`. Radii above about 588 look the same. */
+    readonly radius?: ExpressionValue<number>;
+    /**
+     * Luminance from 0 to 1 where the glow starts. Brighter pixels glow more, white at full
+     * strength, and 1 lets nothing glow.
+     */
+    readonly threshold?: ExpressionValue<number>;
+    /**
+     * Glow colour when `tint_enabled` is set, at the brightness of the light that casts it. Must
+     * be a solid color; a gradient is an error.
+     */
+    readonly tint?: ExpressionValue<Paint>;
+    /** Colours the glow with `tint` instead of the colours that cast it. */
+    readonly tint_enabled?: ExpressionValue<boolean>;
+  };
+}
+
 /** Adjusts raster hue, saturation, and lightness. */
 export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation"> {
   readonly params?: {
@@ -1785,6 +1812,7 @@ export interface CompositionNodeByKind {
   readonly "displacement_map": DisplacementMapNode;
   readonly "exposure": ExposureNode;
   readonly "fractal_noise": FractalNoiseNode;
+  readonly "glow": GlowNode;
   readonly "hue_saturation": HueSaturationNode;
   readonly "levels": LevelsNode;
   readonly "media_in": MediaInNode;
@@ -1829,6 +1857,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "fractal_noise": Omit<FractalNoiseNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "glow": Omit<GlowNode, "id"> & {
     readonly id?: number;
   };
   readonly "hue_saturation": Omit<HueSaturationNode, "id"> & {
@@ -1891,6 +1922,7 @@ export interface NodeInputPortNameByKind {
   readonly "displacement_map": "map" | "source";
   readonly "exposure": "source";
   readonly "fractal_noise": never;
+  readonly "glow": "source";
   readonly "hue_saturation": "source";
   readonly "levels": "source";
   readonly "media_in": never;
@@ -1919,6 +1951,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "displacement_map": never;
   readonly "exposure": never;
   readonly "fractal_noise": never;
+  readonly "glow": never;
   readonly "hue_saturation": never;
   readonly "levels": never;
   readonly "media_in": never;

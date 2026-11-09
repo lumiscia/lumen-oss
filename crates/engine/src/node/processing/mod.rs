@@ -4,6 +4,7 @@ pub mod crop;
 pub mod displacement_map;
 pub mod exposure;
 pub(crate) mod gaussian;
+pub mod glow;
 pub mod hue_saturation;
 pub mod levels;
 pub mod opacity;

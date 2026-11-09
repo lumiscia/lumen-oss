@@ -2480,6 +2480,143 @@
           },
           {
             "additionalProperties": false,
+            "description": "Adds a blurred copy of a raster's brightest pixels to it, as light: the glow's alpha is its\nbrightest channel, so dark pixels add nothing.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "glow_only": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Outputs only the glow instead of adding it to the source.",
+                    "title": "Glow Only",
+                    "x-lumen-kind": "bool"
+                  },
+                  "intensity": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Multiplies the glow's brightness.",
+                    "title": "Intensity",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "radius": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 12.0,
+                    "description": "Glow blur radius in pixels, as on `blur`. Radii above about 588 look the same.",
+                    "title": "Radius",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.5
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "threshold": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.6,
+                    "description": "Luminance from 0 to 1 where the glow starts. Brighter pixels glow more, white at full\nstrength, and 1 lets nothing glow.",
+                    "title": "Threshold",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "tint": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [255, 255, 255, 255],
+                    "description": "Glow colour when `tint_enabled` is set, at the brightness of the light that casts it. Must\nbe a solid color; a gradient is an error.",
+                    "title": "Tint",
+                    "x-lumen-constraints": {
+                      "role": "color"
+                    },
+                    "x-lumen-kind": "paint"
+                  },
+                  "tint_enabled": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Colours the glow with `tint` instead of the colours that cast it.",
+                    "title": "Tint Enabled",
+                    "x-lumen-kind": "bool"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "glow"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Glow",
+            "type": "object",
+            "x-lumen-category": "processing",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster_frame",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "raster_frame",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Adjusts raster hue, saturation, and lightness.",
             "properties": {
               "id": {
