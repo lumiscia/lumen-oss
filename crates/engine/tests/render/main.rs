@@ -8,6 +8,7 @@ mod edits;
 mod effects;
 mod frame_graph;
 mod geometry;
+mod glow;
 mod harness;
 mod media;
 mod motion;

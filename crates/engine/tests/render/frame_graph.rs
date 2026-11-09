@@ -61,7 +61,8 @@ fn every_program() -> Scene {
             { "id": 18, "type": "raster_multimerge" },
             { "id": 19, "type": "media_output" },
             { "id": 20, "type": "fractal_noise", "params": { "evolution": "=frame / 30" } },
-            { "id": 21, "type": "displacement_map", "params": { "amount_x": "=frame" } }
+            { "id": 21, "type": "displacement_map", "params": { "amount_x": "=frame" } },
+            { "id": 22, "type": "glow", "params": { "radius": "=frame * 2", "threshold": 0.3 } }
         ],
         "connections": [
             { "from_node": 2, "to_node": 6, "to_port": "source" },
@@ -83,6 +84,8 @@ fn every_program() -> Scene {
             { "from_node": 1, "to_node": 21, "to_port": "source" },
             { "from_node": 20, "to_node": 21, "to_port": "map" },
             { "from_node": 21, "to_node": 18, "to_port": "layers" },
+            { "from_node": 2, "to_node": 22, "to_port": "source" },
+            { "from_node": 22, "to_node": 18, "to_port": "layers" },
             { "from_node": 15, "to_node": 18, "to_port": "layers" },
             { "from_node": 17, "to_node": 18, "to_port": "layers" },
             { "from_node": 5, "to_node": 18, "to_port": "layers" },
