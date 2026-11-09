@@ -708,8 +708,14 @@ impl MediaStore for Fixture {
         self.fonts.as_ref()?.resolver_id(font_family)
     }
 
-    fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
-        self.fonts.as_ref()?.resolver(font_family)
+    fn get_font_resolver(
+        &self,
+        font_family: &str,
+    ) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
+        Ok(self
+            .fonts
+            .as_ref()
+            .and_then(|fonts| fonts.resolver(font_family)))
     }
 }
 

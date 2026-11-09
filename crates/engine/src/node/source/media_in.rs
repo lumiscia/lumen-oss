@@ -64,7 +64,7 @@ pub struct MediaInParams {
     /// Type of external media source.
     #[meta(kind = "enum", name = "Media type", enum_type = MediaInSourceKind)]
     pub kind: MediaInSourceKind,
-    /// External media source identifier.
+    /// External media source: a path or `media` alias, or `asset:<id>` for an asset of the host's.
     #[meta(role = "source_id")]
     pub source: String,
     /// First source frame to include.

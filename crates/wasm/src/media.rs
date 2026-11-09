@@ -492,12 +492,18 @@ impl MediaStore for WasmMediaStore {
         Some(format!("wasm-font:{font_family}:{}", font.version))
     }
 
-    fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
-        let fonts = self.inner.fonts.read().ok()?;
-        let font = fonts.get(font_family)?;
-        Some(Box::new(WasmFontResolver {
-            id: format!("wasm-font:{font_family}:{}", font.version),
-            data: Arc::clone(&font.data),
+    fn get_font_resolver(
+        &self,
+        font_family: &str,
+    ) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
+        let Ok(fonts) = self.inner.fonts.read() else {
+            return Ok(None);
+        };
+        Ok(fonts.get(font_family).map(|font| {
+            Box::new(WasmFontResolver {
+                id: format!("wasm-font:{font_family}:{}", font.version),
+                data: Arc::clone(&font.data),
+            }) as _
         }))
     }
 
@@ -850,6 +856,7 @@ mod tests {
 
         let first = store
             .get_font_resolver("Inter")
+            .unwrap()
             .expect("font resolver should exist");
         assert_eq!(first.data().expect("font data"), vec![vec![1, 2, 3]]);
         assert_eq!(store.font_resolver_id("Inter").as_deref(), Some(first.id()));
@@ -859,6 +866,7 @@ mod tests {
             .expect("replace font");
         let second = store
             .get_font_resolver("Inter")
+            .unwrap()
             .expect("font resolver should still exist");
         assert_ne!(first.id(), second.id());
         assert_eq!(

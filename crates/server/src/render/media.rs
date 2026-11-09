@@ -11,7 +11,10 @@ use lumen_engine::{
     error::MediaError,
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
-    media::{FontResolver, ImageResolver, MediaStore, TextSession, VideoFrameResolver},
+    media::{
+        Asset, AssetKind, AssetResolver, FontResolver, ImageResolver, MediaStore, NoAssets,
+        TextSession, VideoFrameResolver, asset_id, resolve_asset,
+    },
 };
 
 use super::fonts::{FontCatalog, ResolvedFont};
@@ -19,9 +22,11 @@ use super::fonts::{FontCatalog, ResolvedFont};
 pub const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
 pub const HARDWARE_DECODE_ENV: &str = "LUMEN_HARDWARE_DECODE";
 
-/// Serves one render's media from under `root`, with its fonts.
+/// Serves one render's media from under `root`, with its fonts, and the assets `asset:` sources
+/// reference from its asset store.
 pub struct LocalMediaStore {
     root: PathBuf,
+    assets: Arc<dyn AssetResolver>,
     explain_missing_sources: bool,
     pub(super) video_options: FfmpegResolverOptions,
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
@@ -43,6 +48,7 @@ impl LocalMediaStore {
         );
         Self {
             root,
+            assets: Arc::new(NoAssets),
             explain_missing_sources: false,
             video_options,
             audios: RwLock::new(HashMap::new()),
@@ -60,7 +66,27 @@ impl LocalMediaStore {
         self
     }
 
-    fn stored_source(&self, source: &str) -> Result<String, MediaError> {
+    /// Resolves `asset:` sources from `assets`. Without one, they don't resolve.
+    pub fn with_assets(mut self, assets: Arc<dyn AssetResolver>) -> Self {
+        self.assets = assets;
+        self
+    }
+
+    pub fn assets(&self) -> &dyn AssetResolver {
+        &*self.assets
+    }
+
+    /// The file `source` names: the asset it references, which must be of kind `kind`, or a path
+    /// under the root.
+    fn stored_source(&self, source: &str, kind: AssetKind) -> Result<String, MediaError> {
+        if let Some(id) = asset_id(source) {
+            return match resolve_asset(&*self.assets, id, kind)? {
+                Asset::Image(path) | Asset::Video(path) | Asset::Audio(path) => {
+                    Ok(path.to_string_lossy().to_string())
+                }
+                Asset::Font(_) => unreachable!("resolve_asset returns the kind it is asked for"),
+            };
+        }
         resolve_local_path_with_root(source, &self.root)
             .map(|path| path.to_string_lossy().to_string())
             .map_err(|error| {
@@ -73,10 +99,17 @@ impl LocalMediaStore {
             })
     }
 
-    fn resolved_font(&self, font_family: &str) -> Option<ResolvedFont> {
-        self.fonts.resolve(font_family, || {
+    /// The fonts `font_family` names: the font asset it references, or the family's files.
+    fn resolved_font(&self, font_family: &str) -> Result<Option<ResolvedFont>, MediaError> {
+        if let Some(id) = asset_id(font_family) {
+            return match resolve_asset(&*self.assets, id, AssetKind::Font)? {
+                Asset::Font(files) => Ok(Some(ResolvedFont::new(font_family, files))),
+                _ => unreachable!("resolve_asset returns the kind it is asked for"),
+            };
+        }
+        Ok(self.fonts.resolve(font_family, || {
             resolve_local_path_with_root(font_family, &self.root).ok()
-        })
+        }))
     }
 
     fn image_resolver(&self, source: &str) -> Result<Arc<ImageFileResolver>, MediaError> {
@@ -172,7 +205,7 @@ fn matches_env_flag(value: &str) -> bool {
 
 impl MediaStore for LocalMediaStore {
     fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
-        let resolved = self.stored_source(source)?;
+        let resolved = self.stored_source(source, AssetKind::Image)?;
         Ok(Box::new(self.image_resolver(&resolved)?))
     }
 
@@ -180,27 +213,33 @@ impl MediaStore for LocalMediaStore {
         &self,
         stream_id: &str,
     ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
-        let resolved = self.stored_source(stream_id)?;
+        let resolved = self.stored_source(stream_id, AssetKind::Video)?;
         Ok(Box::new(self.video_resolver(&resolved)?))
     }
 
     fn get_audio_resolver(&self, source_id: &str) -> Result<Box<dyn AudioResolver>, MediaError> {
-        let resolved = self.stored_source(source_id)?;
+        let resolved = self.stored_source(source_id, AssetKind::Audio)?;
         Ok(Box::new(self.audio_resolver(&resolved)?))
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {
-        Some(self.resolved_font(font_family)?.id().to_string())
+        let font = self.resolved_font(font_family).ok().flatten()?;
+        Some(font.id().to_string())
     }
 
-    fn get_font_resolver(&self, font_family: &str) -> Option<Box<dyn FontResolver>> {
-        let font = self.resolved_font(font_family)?;
+    fn get_font_resolver(
+        &self,
+        font_family: &str,
+    ) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
+        let Some(font) = self.resolved_font(font_family)? else {
+            return Ok(None);
+        };
         tracing::info!(
             font_family,
             sources = font.files().len(),
             "opened font media resolver"
         );
-        Some(Box::new(font))
+        Ok(Some(Box::new(font)))
     }
 
     fn text_session(&self) -> Option<&TextSession> {
@@ -400,8 +439,59 @@ mod tests {
         std::fs::write(root.path().join("brand"), ROBOTO).unwrap();
         let store = LocalMediaStore::new(root.path().canonicalize().unwrap(), None);
 
-        let resolver = store.get_font_resolver("brand").unwrap();
+        let resolver = store.get_font_resolver("brand").unwrap().unwrap();
         assert_eq!(resolver.data().unwrap(), vec![ROBOTO.to_vec()]);
-        assert!(store.get_font_resolver("other").is_none());
+        assert!(store.get_font_resolver("other").unwrap().is_none());
+    }
+
+    #[derive(Debug)]
+    struct Assets(HashMap<&'static str, Asset>);
+
+    impl AssetResolver for Assets {
+        fn resolve(&self, id: &str) -> Option<Asset> {
+            self.0.get(id).cloned()
+        }
+    }
+
+    #[test]
+    fn asset_sources_resolve_through_the_asset_store_wherever_it_keeps_them() {
+        let assets = tempfile::tempdir().unwrap();
+        let image = assets.path().join("logo");
+        std::fs::write(&image, b"not a png").unwrap();
+        let font = assets.path().join("brand");
+        std::fs::write(&font, ROBOTO).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let store = LocalMediaStore::new(root.clone(), None).with_assets(Arc::new(Assets(
+            HashMap::from([
+                ("logo", Asset::Image(image.clone())),
+                ("brand", Asset::Font(vec![font])),
+            ]),
+        )));
+        let image_error = |source: &str| match store.get_image_resolver(source) {
+            Ok(_) => panic!("{source} should not open"),
+            Err(error) => error,
+        };
+
+        let decode = image_error("asset:logo");
+        assert_eq!(decode.code(), "media.decode");
+        assert!(decode.to_string().contains(&image.display().to_string()));
+        assert_eq!(image_error("asset:other").code(), "asset.not_found");
+        assert_eq!(image_error("asset:brand").code(), "asset.wrong_kind");
+        let font = store.get_font_resolver("asset:brand").unwrap().unwrap();
+        assert_eq!(font.data().unwrap(), vec![ROBOTO.to_vec()]);
+        assert_eq!(
+            store.font_resolver_id("asset:brand").as_deref(),
+            Some(font.id())
+        );
+        let wrong_font = store.get_font_resolver("asset:logo").err().unwrap();
+        assert_eq!(wrong_font.code(), "asset.wrong_kind");
+
+        let without_assets = LocalMediaStore::new(root, None);
+        let missing = without_assets
+            .get_font_resolver("asset:brand")
+            .err()
+            .unwrap();
+        assert_eq!(missing.code(), "asset.not_found");
     }
 }

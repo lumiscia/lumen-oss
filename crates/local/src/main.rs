@@ -240,7 +240,8 @@ fn check(cli: &Cli) -> Result<bool> {
         cli.font_dir().as_deref(),
     );
     let known_font = |family: &str| media_store.font_resolver_id(family).is_some();
-    let diagnostics = lumen_engine::json::check(&raw, Some(&known_font));
+    let diagnostics =
+        lumen_engine::json::check(&raw, Some(&known_font), Some(media_store.assets()));
     let ok = !diagnostics.iter().any(Diagnostic::is_error);
     match cli.format {
         Format::Json => println!(

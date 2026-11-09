@@ -154,7 +154,7 @@ pub struct TextLayoutParams {
     /// once; whitespace is not drawn, and more is a render error.
     #[meta(multiline, recommended_rows = 4)]
     pub content: TextContent,
-    /// Font family name.
+    /// Font family name, or `asset:<id>` for a font asset of the host's.
     #[meta(format = "font_family")]
     pub font_family: String,
     /// Font size in pixels.
@@ -1431,8 +1431,8 @@ fn used_font_families(layout: &TextLayoutParams) -> impl Iterator<Item = &str> {
         .chain(spans.iter().filter_map(|span| span.font_family.as_deref()))
 }
 
-/// The families `text` names as literals, each with its pointer under the node's `params`. The
-/// node's own is left out when every span names its own.
+/// The families `text` names as literals, each with its param path, such as
+/// `content[1].font_family`. The node's own is left out when every span names its own.
 pub(crate) fn literal_font_families(text: &Text) -> Vec<(String, &str)> {
     let layout = &text.params.layout;
     let spans = match &layout.content {
@@ -1443,11 +1443,11 @@ pub(crate) fn literal_font_families(text: &Text) -> Vec<(String, &str)> {
     if (spans.is_empty() || spans.iter().any(|span| span.layout.font_family.is_none()))
         && let Deferred::Value(family) = &layout.font_family
     {
-        families.push(("/font_family".to_string(), family.as_str()));
+        families.push(("font_family".to_string(), family.as_str()));
     }
     for (index, span) in spans.iter().enumerate() {
         if let Some(Deferred::Value(family)) = &span.layout.font_family {
-            families.push((format!("/content/{index}/font_family"), family.as_str()));
+            families.push((format!("content[{index}].font_family"), family.as_str()));
         }
     }
     families
@@ -1480,7 +1480,9 @@ pub(crate) fn load_font_family(
     if current_id.is_some() && text_system.family_resolver(font_family) == current_id.as_deref() {
         return Ok(());
     }
-    let resolver = store.get_font_resolver(font_family);
+    let resolver = store
+        .get_font_resolver(font_family)
+        .map_err(LumenError::Media)?;
     // An ID that no resolver comes with is remembered too, so later binds do not ask again.
     let Some(resolver_id) = resolver
         .as_ref()
@@ -1504,13 +1506,6 @@ pub(crate) fn load_font_family(
                 details: "its font data holds no readable face".to_string(),
             })
         })?;
-    if !text_system.has_family(font_family) {
-        tracing::warn!(
-            target: "lumen_text",
-            font_family,
-            "no face of the font loaded for this family goes by its name; text falls back to other fonts"
-        );
-    }
     Ok(())
 }
 
@@ -1617,13 +1612,14 @@ mod tests {
             (family == "Known").then(|| "counting-store-test-font".to_string())
         }
 
-        fn get_font_resolver(&self, _: &str) -> Option<Box<dyn FontResolver>> {
+        fn get_font_resolver(&self, _: &str) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
             self.resolvers.fetch_add(1, Ordering::Relaxed);
-            let data = self.data.clone()?;
-            Some(Box::new(CountingResolver {
-                id: "counting-store-test-font",
-                data,
-                reads: Arc::clone(&self.reads),
+            Ok(self.data.clone().map(|data| {
+                Box::new(CountingResolver {
+                    id: "counting-store-test-font",
+                    data,
+                    reads: Arc::clone(&self.reads),
+                }) as _
             }))
         }
     }
@@ -1643,14 +1639,17 @@ mod tests {
     struct NoIdStore(Arc<AtomicU64>);
 
     impl MediaStore for NoIdStore {
-        fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
-            (family == "Known").then(|| {
+        fn get_font_resolver(
+            &self,
+            family: &str,
+        ) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
+            Ok((family == "Known").then(|| {
                 Box::new(CountingResolver {
                     id: "no-id-store-test-font",
                     data: lumen_text::ROBOTO_REGULAR_BYTES.to_vec(),
                     reads: Arc::clone(&self.0),
                 }) as _
-            })
+            }))
         }
     }
 
@@ -1679,16 +1678,19 @@ mod tests {
             Some("one-id-store-test-font".to_string())
         }
 
-        fn get_font_resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
+        fn get_font_resolver(
+            &self,
+            family: &str,
+        ) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
             let data: &[u8] = match family {
                 "Inter" => include_bytes!("../../../../text/assets/inter/InterVariable-Latin.ttf"),
                 _ => lumen_text::ROBOTO_REGULAR_BYTES,
             };
-            Some(Box::new(CountingResolver {
+            Ok(Some(Box::new(CountingResolver {
                 id: "one-id-store-test-font",
                 data: data.to_vec(),
                 reads: Arc::clone(&self.0),
-            }))
+            })))
         }
     }
 

@@ -41,6 +41,9 @@ impl Default for TextSession {
     }
 }
 
+/// Where a render's media and fonts come from. A source or family may be an asset reference,
+/// `asset:<id>`, which a store with an asset store resolves with [`super::resolve_asset`] and any
+/// other store fails as [`MediaError::AssetNotFound`].
 pub trait MediaStore: Send + Sync + Debug {
     /// The resolver for `source`. A source this store doesn't have fails with
     /// `MediaError::SourceNotFound`, and one it has but can't open fails with why.
@@ -76,8 +79,14 @@ pub trait MediaStore: Send + Sync + Debug {
         None
     }
 
-    fn get_font_resolver(&self, _source: &str) -> Option<Box<dyn FontResolver>> {
-        None
+    /// The resolver for the fonts of `family`, or `None` if this store has none, so its text falls
+    /// back to another family. A family this store can't serve as asked, such as an asset
+    /// reference it doesn't know, fails with why.
+    fn get_font_resolver(
+        &self,
+        _family: &str,
+    ) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
+        Ok(None)
     }
 
     /// Where this store's fonts load. A store whose fonts can differ from another's under one
