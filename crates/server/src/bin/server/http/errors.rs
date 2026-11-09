@@ -58,6 +58,27 @@ impl ApiError {
         rejected
     }
 
+    /// A `422` for a composition that parses but can't render here, such as one naming an asset
+    /// this server doesn't have, listing every error in `diagnostics`.
+    pub fn invalid_diagnostics(diagnostics: &[Diagnostic]) -> Self {
+        let errors: Vec<Diagnostic> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.is_error())
+            .cloned()
+            .collect();
+        let message = errors
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let mut rejected = Self::rejected(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            RenderJobError::invalid_composition(&message),
+        );
+        rejected.diagnostics = sanitized_diagnostics(&errors);
+        rejected
+    }
+
     pub fn not_found() -> Self {
         Self::new(
             StatusCode::NOT_FOUND,

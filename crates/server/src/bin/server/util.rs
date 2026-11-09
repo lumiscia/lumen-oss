@@ -6,14 +6,17 @@ pub(crate) fn new_render_id() -> String {
 
 /// The current time as RFC 3339 in UTC, to the second.
 pub(crate) fn current_timestamp() -> String {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
-    rfc3339(seconds)
+    rfc3339(unix_now())
 }
 
-fn rfc3339(unix_seconds: u64) -> String {
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+pub(crate) fn rfc3339(unix_seconds: u64) -> String {
     let (days, time) = (unix_seconds / 86_400, unix_seconds % 86_400);
     // Civil date from days since 1970-01-01, counting years from March so leap days come last.
     let shifted = days as i64 + 719_468;

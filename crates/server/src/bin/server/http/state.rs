@@ -3,17 +3,18 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use lumen_ffmpeg::QualityConfig;
 use tokio::sync::Semaphore;
 
-use crate::server::{MediaClient, RenderJobError, RenderRecord, RenderStatus};
+use crate::server::{MediaClient, RenderJobError, RenderRecord, RenderStatus, assets::AssetStore};
 
 use super::Args;
 
 #[derive(Clone)]
 pub(super) struct AppState {
     pub api_token: Option<String>,
+    pub assets: AssetStore,
     pub media_client: MediaClient,
     pub progress_min_delta: f32,
     pub quality: Arc<QualityConfig>,
@@ -23,8 +24,20 @@ pub(super) struct AppState {
 }
 
 impl AppState {
-    /// Fails when the quality config doesn't load.
+    /// Fails when the quality config doesn't load or the media directory can't be opened.
     pub fn new(args: Args) -> anyhow::Result<Self> {
+        let assets = AssetStore::open(
+            &args.media_dir,
+            args.media_ttl,
+            args.media_max_bytes,
+            args.media_max_pending.get(),
+        )
+        .with_context(|| {
+            format!(
+                "failed to open the media directory `{}`",
+                args.media_dir.display()
+            )
+        })?;
         let quality = QualityConfig::load(
             args.quality_config
                 .as_deref()
@@ -33,6 +46,7 @@ impl AppState {
         .map_err(|error| anyhow!(error))?;
         Ok(Self {
             api_token: args.token,
+            assets,
             media_client: MediaClient::new(args.allowed_media_hosts)?,
             progress_min_delta: args.progress_min_delta,
             quality: Arc::new(quality),
@@ -97,8 +111,12 @@ mod tests {
     use super::*;
 
     fn state(args: &[&str]) -> AppState {
+        let media = tempfile::tempdir().unwrap();
+        let media = media.path().to_str().unwrap();
         AppState::new(Args::parse_from(
-            ["lumen-server"].into_iter().chain(args.iter().copied()),
+            ["lumen-server", "--media-dir", media]
+                .into_iter()
+                .chain(args.iter().copied()),
         ))
         .unwrap()
     }

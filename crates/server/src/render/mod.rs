@@ -5,9 +5,12 @@ mod fonts;
 mod gpu;
 mod media;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
-use lumen_engine::composition::{Composition, OutputCodec};
+use lumen_engine::{
+    composition::{Composition, OutputCodec},
+    media::AssetResolver,
+};
 use lumen_ffmpeg::{EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoice};
 
 pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir, font_dir_from_env};
@@ -43,6 +46,8 @@ pub struct RenderOptions {
     /// The encoders to try. `None` resolves the composition's settings against the built-in
     /// presets, with `LUMEN_VIDEO_ENCODER` pinning one.
     pub encoder: Option<VideoEncoderChoice>,
+    /// Where `asset:` sources resolve. Without one, they don't.
+    pub assets: Option<Arc<dyn AssetResolver>>,
 }
 
 /// The encoders a render of `composition` tries: `request`'s preset and codec where it names them,
@@ -64,19 +69,16 @@ pub fn resolve_encoder(
 
 /// What [`lumen_engine::json::check`] finds in `payload`, with fonts resolved as a render on this
 /// machine resolves them: from `LUMEN_FONT_DIR`, the system, or the media `staged` says the render
-/// will stage under that name. Renders here have no asset store, so no `asset:` reference resolves.
+/// will stage under that name. `asset:` references resolve in `assets`.
 pub fn check_composition(
     payload: &serde_json::Value,
     staged: &dyn Fn(&str) -> bool,
+    assets: &dyn AssetResolver,
 ) -> Vec<lumen_engine::diagnostic::Diagnostic> {
     let font_dir = font_dir_from_env().ok().flatten();
     let fonts = FontCatalog::without_media(font_dir.as_deref());
     let known_font = |family: &str| staged(family) || fonts.resolve(family, || None).is_some();
-    lumen_engine::json::check_value(
-        payload,
-        Some(&known_font),
-        Some(&lumen_engine::media::NoAssets),
-    )
+    lumen_engine::json::check_value(payload, Some(&known_font), Some(assets))
 }
 
 pub fn parse_composition(payload: &serde_json::Value) -> Result<Composition, RenderError> {
