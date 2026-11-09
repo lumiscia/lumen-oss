@@ -81,7 +81,7 @@ impl Default for FractalNoiseParams {
     }
 }
 
-/// Generates opaque grey fractal noise, the same on every GPU for a given seed and evolution.
+/// Generates opaque grey fractal noise, the same for a given seed and evolution.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "fractal_noise", name = "Fractal Noise", category = "source")]
 pub struct FractalNoise {
@@ -152,7 +152,13 @@ fn gpu_params(params: &FractalNoiseParams) -> GpuNoiseParams {
         finite_or_zero(params.offset_x),
         finite_or_zero(params.offset_y),
     ];
-    let seed = params.seed as u32;
+    // Both halves of the seed count, so seeds a multiple of 2^32 apart differ.
+    let (low, high) = (params.seed as u32, (params.seed >> 32) as u32);
+    let seed = if high == 0 {
+        low
+    } else {
+        low ^ noise_hash(high)
+    };
     let mut octaves = [GpuNoiseOctave::zeroed(); MAX_NOISE_OCTAVES];
     for (octave, slot) in (0..count).zip(&mut octaves) {
         let seed = noise_hash(seed ^ noise_hash(octave.wrapping_add(0x9e37_79b9)));
@@ -168,8 +174,8 @@ fn gpu_params(params: &FractalNoiseParams) -> GpuNoiseParams {
                 frequency as f32,
                 (0.5f64.powi(octave as i32) / total) as f32,
             ],
-            // Lattice coordinates wrap, so a cell index past the `i64` range only repeats them.
-            cell: [x.floor() as i64 as u32, y.floor() as i64 as u32],
+            // Lattice cells wrap at 2^32, so a coordinate that far out only repeats them.
+            cell: [x, y].map(|value| value.floor().rem_euclid(4_294_967_296.0) as u32),
             seed,
             _pad: 0,
         };

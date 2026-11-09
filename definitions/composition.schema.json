@@ -1921,7 +1921,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Generates opaque grey fractal noise, the same on every GPU for a given seed and evolution.",
+            "description": "Generates opaque grey fractal noise, the same for a given seed and evolution.",
             "properties": {
               "id": {
                 "minimum": 0,

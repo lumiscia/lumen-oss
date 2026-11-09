@@ -1275,7 +1275,7 @@ export interface ExposureNode extends CompositionNodeBase<"exposure"> {
   };
 }
 
-/** Generates opaque grey fractal noise, the same on every GPU for a given seed and evolution. */
+/** Generates opaque grey fractal noise, the same for a given seed and evolution. */
 export interface FractalNoiseNode extends CompositionNodeBase<"fractal_noise"> {
   readonly params?: {
     /** Added to every pixel after contrast. */

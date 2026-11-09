@@ -87,7 +87,9 @@ impl Reference {
             .sum();
         let mut sum = 0.0;
         for octave in 0..self.octaves {
-            let seed = hash(self.seed as u32 ^ hash(octave.wrapping_add(0x9e37_79b9)));
+            let (low, high) = (self.seed as u32, (self.seed >> 32) as u32);
+            let public = if high == 0 { low } else { low ^ hash(high) };
+            let seed = hash(public ^ hash(octave.wrapping_add(0x9e37_79b9)));
             let shift = [1, 2].map(|salt| f64::from(hash(seed ^ salt) >> 8) / f64::from(1 << 24));
             let frequency = f64::from(1u32 << octave) / self.scale;
             let pixel = [f64::from(x), f64::from(y)];
@@ -175,6 +177,7 @@ fn noise_is_deterministic_and_loops_every_turn() {
     assert_eq!(base.rgba, render_noise(params(-4.8, 3)).rgba);
     assert_ne!(base.rgba, render_noise(params(0.7, 3)).rgba);
     assert_ne!(base.rgba, render_noise(params(0.2, 4)).rgba);
+    assert_ne!(base.rgba, render_noise(params(0.2, 3 + (1 << 32))).rgba);
 }
 
 #[test]
