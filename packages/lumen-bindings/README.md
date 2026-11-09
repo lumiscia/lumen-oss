@@ -42,4 +42,16 @@ export default defineConfig({
 });
 ```
 
+`check` finds what is wrong with a composition without loading or rendering it, on any entry point but `/urls`. It returns diagnostics, each with a `severity`, a public `code`, a JSON pointer `path`, the `node` it's about when there is one, and a `message`. Given the font families the page provides, it also warns of text in any other family, which renders in the default font:
+
+```ts
+import { createLumenBindings } from "@lumiscia/lumen-bindings/node";
+
+const { check } = await createLumenBindings().preview();
+const diagnostics = check(JSON.stringify(composition), ["Inter"]);
+const ok = diagnostics.every((diagnostic) => diagnostic.severity !== "error");
+```
+
+Warnings never stop a composition from loading. Codes are public API, and new ones can appear in a patch release, so handle codes you don't know by their `severity`. The [engine README](https://github.com/lumiscia/lumen-oss/tree/main/crates/engine#diagnostics) lists them, along with the problems only rendering finds. A composition `loadComposition` rejects throws an `Error` with the same `diagnostics`.
+
 See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.
