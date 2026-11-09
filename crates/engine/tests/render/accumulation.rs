@@ -1,7 +1,9 @@
 //! The `motion_blur` node, which renders its source at sub-frames across its shutter and averages
 //! them.
 
-use lumen_engine::{composition::Composition, media::collect_frame_requirements};
+use lumen_engine::{
+    composition::Composition, gpu::GpuCompositionRenderer, media::collect_frame_requirements,
+};
 use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
@@ -33,6 +35,46 @@ fn blurred(samples: i64, shutter: f64, source: Value) -> Scene {
     canvas(json!([source, motion_blur(2, 1, samples, shutter)]))
 }
 
+/// A shape or path that stays put while the copies it repeats spread apart, with an analytic
+/// shutter of `motion_blur`.
+fn spreading(kind: &str, motion_blur: f64) -> Value {
+    let mut params = match kind {
+        "shape" => json!({ "width": 8, "height": 8 }),
+        _ => json!({ "data": "M 0 0 L 8 0 L 4 8 Z" }),
+    };
+    params.as_object_mut().unwrap().extend(
+        json!({
+            "position": [4, 28],
+            "fill_paint": ORANGE,
+            "motion_blur": motion_blur,
+            "repeat": { "count": 4, "position_offset": "=vec2(4 + frame * 3, 0)" },
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    json!({ "id": 1, "type": kind, "params": params })
+}
+
+/// The mean of `source` rendered at the 8 sub-frames of a 180° shutter around `at`.
+fn sub_frame_average(
+    renderer: &mut GpuCompositionRenderer,
+    source: &Composition,
+    at: f64,
+) -> Vec<u8> {
+    let media = TestMedia::default();
+    let sub_frames: Vec<Frame> = (0..8)
+        .map(|sample| at + ((2 * sample + 1) as f64 / 8.0 - 1.0) * 0.25)
+        .map(|sub_frame| render(renderer, source, sub_frame, &media))
+        .collect();
+    (0..sub_frames[0].rgba.len())
+        .map(|index| {
+            let sum: u32 = sub_frames.iter().map(|f| u32::from(f.rgba[index])).sum();
+            (f64::from(sum) / 8.0).round() as u8
+        })
+        .collect()
+}
+
 #[test]
 fn an_animated_width_blurs_to_the_average_of_its_sub_frames() {
     let gpu = gpu();
@@ -46,22 +88,39 @@ fn an_animated_width_blurs_to_the_average_of_its_sub_frames() {
         &media,
     );
     let source: Composition = canvas(json!([growing(0.0)])).into();
-    let sub_frames: Vec<Frame> = (0..8)
-        .map(|sample| at + ((2 * sample + 1) as f64 / 8.0 - 1.0) * 0.25)
-        .map(|sub_frame| render(&mut renderer, &source, sub_frame, &media))
-        .collect();
-    let average: Vec<u8> = (0..blurred.rgba.len())
-        .map(|index| {
-            let sum: u32 = sub_frames.iter().map(|f| u32::from(f.rgba[index])).sum();
-            (f64::from(sum) / 8.0).round() as u8
-        })
-        .collect();
     assert!(
-        blurred.rgba == average,
+        blurred.rgba == sub_frame_average(&mut renderer, &source, at),
         "the blur is not the average of its sub-frames"
     );
     let held = render(&mut renderer, &source, at, &media);
     assert!(blurred.rgba != held.rgba, "the blur matches the held shape");
+}
+
+#[test]
+fn repeated_copies_blur_once_across_the_sub_frames() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let media = TestMedia::default();
+    let at = 3.0;
+    for kind in ["shape", "path"] {
+        // The copies' own shutter would blur each sample again on top of the average.
+        let blurred = render(
+            &mut renderer,
+            &blurred(8, 180.0, spreading(kind, 180.0)).into(),
+            at,
+            &media,
+        );
+        let source: Composition = canvas(json!([spreading(kind, 0.0)])).into();
+        assert!(
+            blurred.rgba == sub_frame_average(&mut renderer, &source, at),
+            "the {kind}'s blurred copies are not the average of their sub-frames"
+        );
+        let held = render(&mut renderer, &source, at, &media);
+        assert!(
+            blurred.rgba != held.rgba,
+            "the {kind}'s blurred copies match the held copies"
+        );
+    }
 }
 
 #[test]
