@@ -332,14 +332,15 @@ fn sweeps_are_deterministic_and_smooth_across_tap_counts() {
 fn sweeps_crossfade_between_two_passes_and_every_tap() {
     let noise =
         || json!({ "id": 1, "type": "fractal_noise", "params": { "scale": 1, "contrast": 3 } });
-    let at = |center: [f64; 2], amount: f64| {
+    let on = |canvas: (u32, u32), center: [f64; 2], amount: f64| {
         render_scene(blurred(
-            (256, 256),
+            canvas,
             noise(),
             "zoom_blur",
             json!({ "center": center, "amount": amount, "edge": "transparent" }),
         ))
     };
+    let at = |center: [f64; 2], amount: f64| on((256, 256), center, amount);
     // The longest streak is `amount` times the distance to the farthest corner. Each one is
     // chosen 0.4 pixels past a whole number, so that the step leaves the tap count as it is. About
     // the middle, the stored boxes take `(1 + amount² / 4)^½ + amount / 2` squared canvases.
@@ -363,6 +364,27 @@ fn sweeps_crossfade_between_two_passes_and_every_tap() {
             "zoom {amount} about {center:?} jumps {jump:?}"
         );
     }
+    // On a thin canvas, the stored boxes grow a whole texel taller at this amount, here blurring
+    // sharp white columns.
+    let columns: String = [(551, 554), (556, 558), (560, 562), (563, 565), (566, 568)]
+        .into_iter()
+        .chain([(569, 570), (571, 572), (573, 575), (576, 577)])
+        .map(|(from, to)| format!("M {from} 0 H {to} V 4 H {from} Z "))
+        .collect();
+    let amount = 32.0 / 63.0;
+    let thin = |amount: f64| {
+        render_scene(blurred(
+            (1024, 4),
+            json!({ "id": 1, "type": "path", "params": { "data": columns, "fill_paint": [255, 255, 255, 255] } }),
+            "zoom_blur",
+            json!({ "center": [512.5, 0.5], "amount": amount }),
+        ))
+    };
+    let jump = (thin(amount * (1.0 - 1e-6)).rgba.iter())
+        .zip(&thin(amount * (1.0 + 1e-6)).rgba)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max();
+    assert!(jump <= Some(1), "a thin canvas jumps {jump:?}");
 }
 
 /// Sources sized to their bounds, grown by each blur's reach, draw what full-frame sources draw.

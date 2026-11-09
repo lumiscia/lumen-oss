@@ -361,20 +361,17 @@ fn programs(programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Resu
 /// How much of a blur the comb of stored short boxes takes, against every tap at once: none for
 /// streaks up to the first of `TWO_PASS_STREAKS` pixels long, all from the second, and back to
 /// none as `read`, the first pass a full-frame output reads, grows through `TWO_PASS_CANVASES`
-/// canvases or `TWO_PASS_EXTENTS` of the largest texture side. It is continuous in the blur's
-/// params, and depends only on them and the canvas.
-fn two_pass_weight(
-    longest: f64,
-    read: Option<lumen_gpu::RectI>,
-    display: lumen_gpu::Size,
-    max_extent: u32,
-) -> f32 {
+/// canvases or `TWO_PASS_EXTENTS` of the largest texture side, measured unrounded. It is
+/// continuous in the blur's params, and depends only on them and the canvas.
+fn two_pass_weight(longest: f64, read: Bounds, display: lumen_gpu::Size, max_extent: u32) -> f32 {
     let rise = |value: f64, [from, to]: [f64; 2]| ((value - from) / (to - from)).clamp(0.0, 1.0);
-    let Some(read) = read else {
+    let [width, height] = [read[2] - read[0], read[3] - read[1]];
+    if !(width.abs() < MAX_BOUNDED_MAGNITUDE && height.abs() < MAX_BOUNDED_MAGNITUDE) {
         return 0.0;
-    };
-    let canvases = area(read.size()) as f64 / area(display).max(1) as f64;
-    let extent = f64::from(read.width.max(read.height)) / f64::from(max_extent);
+    }
+    let canvases = width.max(0.0) * height.max(0.0) / area(display).max(1) as f64;
+    // Stored boxes are rounded out to whole texels, by up to 2 a side.
+    let extent = (width.max(height) + 2.0) / f64::from(max_extent);
     let weight = rise(longest, TWO_PASS_STREAKS)
         * (1.0 - rise(canvases, TWO_PASS_CANVASES))
         * (1.0 - rise(extent, TWO_PASS_EXTENTS));
@@ -454,7 +451,7 @@ fn record(
     // source's reads clamp.
     let read_of = |bounds: Bounds| grow(sweep.swept(bounds, comb_half), 1.0);
     let max_extent = cx.rec.device().limits().max_texture_dimension_2d;
-    let blend = two_pass_weight(longest, rect_covering(read_of(canvas)), display, max_extent);
+    let blend = two_pass_weight(longest, read_of(canvas), display, max_extent);
     let boxes = (blend > 0.0)
         .then(|| {
             rect_covering(intersect(
