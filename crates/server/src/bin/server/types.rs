@@ -31,7 +31,44 @@ pub struct RenderJobError {
     pub retryable: bool,
 }
 
+/// The body of `POST /renders/check`. A `POST /renders` body is one too.
+#[derive(Debug, Deserialize)]
+pub struct CheckInput {
+    pub composition: Value,
+    #[serde(default)]
+    pub media: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CheckResponse {
+    /// Whether the composition has no errors. Warnings don't count.
+    pub ok: bool,
+    pub diagnostics: Vec<lumen_engine::diagnostic::Diagnostic>,
+}
+
+/// `diagnostics` with messages and paths bounded like every other error sent.
+pub fn sanitized_diagnostics(
+    diagnostics: &[lumen_engine::diagnostic::Diagnostic],
+) -> Vec<lumen_engine::diagnostic::Diagnostic> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| lumen_engine::diagnostic::Diagnostic {
+            path: sanitize_error_message(&diagnostic.path),
+            message: sanitize_error_message(&diagnostic.message),
+            ..diagnostic.clone()
+        })
+        .collect()
+}
+
 impl RenderJobError {
+    pub fn invalid_composition(message: &str) -> Self {
+        Self {
+            code: "invalid_project_payload".to_string(),
+            message: sanitize_error_message(message),
+            retryable: false,
+        }
+    }
+
     pub fn invalid_quality(message: &str) -> Self {
         Self {
             code: "invalid_quality".to_string(),

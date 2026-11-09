@@ -13,7 +13,8 @@ use clap::Parser;
 use self::{
     auth::require_token,
     routes::{
-        create_render, get_render, get_render_artifact, get_render_progress, health, render_socket,
+        check_render, create_render, get_render, get_render_artifact, get_render_progress, health,
+        render_socket,
     },
     state::AppState,
 };
@@ -93,6 +94,7 @@ pub async fn run(mut args: Args) -> anyhow::Result<()> {
 fn router(state: AppState) -> Router {
     Router::new()
         .route("/renders", post(create_render))
+        .route("/renders/check", post(check_render))
         .route("/renders/{id}", get(get_render))
         .route("/renders/{id}/progress", get(get_render_progress))
         .route("/renders/{id}/socket", get(render_socket))

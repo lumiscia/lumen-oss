@@ -91,10 +91,18 @@ impl FontCatalog {
     /// `assets/fonts` if there is one.
     pub fn new(configured: Option<&Path>, media_root: &Path) -> Self {
         let bundled = media_root.join("assets/fonts");
-        let directories = [
+        Self::in_directories([
             configured,
             (configured != Some(bundled.as_path())).then_some(bundled.as_path()),
-        ];
+        ])
+    }
+
+    /// A catalog of `configured` and the system fonts, for families no media root holds.
+    pub fn without_media(configured: Option<&Path>) -> Self {
+        Self::in_directories([configured])
+    }
+
+    fn in_directories<'a>(directories: impl IntoIterator<Item = Option<&'a Path>>) -> Self {
         let mut tiers: Vec<FontTier> = directories
             .into_iter()
             .flatten()

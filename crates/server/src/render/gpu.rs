@@ -70,6 +70,8 @@ pub fn render_project_mp4(
 #[derive(Debug, Clone, Default)]
 pub struct RenderReport {
     pub frames: u32,
+    /// Warnings rendering raised, such as fonts that fell back.
+    pub diagnostics: Vec<lumen_engine::diagnostic::Diagnostic>,
     pub held_bytes: u64,
     pub submitted_passes: u64,
     pub skipped_passes: u64,
@@ -201,6 +203,7 @@ impl<'a> Mp4Render<'a> {
         timing.total = started.elapsed();
         Ok(RenderReport {
             frames: total_frames,
+            diagnostics: self.renderer.take_diagnostics(),
             held_bytes: self.renderer.held_bytes(),
             submitted_passes: self.renderer.submitted_pass_count(),
             skipped_passes: self.renderer.skipped_pass_count(),

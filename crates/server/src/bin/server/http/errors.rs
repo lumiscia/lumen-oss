@@ -10,22 +10,28 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::server::RenderJobError;
+use lumen_engine::{diagnostic::Diagnostic, json::ParseError};
+
+use crate::server::{RenderJobError, sanitized_diagnostics};
 
 use super::MAX_REQUEST_BODY_BYTES;
 
-/// A request that failed, answered with the status and a `{ "code", "error" }` body.
+/// A request that failed, answered with the status and a `{ "code", "error" }` body, which holds
+/// `diagnostics` too when the composition was invalid.
 #[derive(Debug)]
 pub(super) struct ApiError {
     status: StatusCode,
     code: String,
     message: String,
+    diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(serde::Serialize)]
 struct ApiErrorBody {
     code: String,
     error: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl ApiError {
@@ -34,15 +40,22 @@ impl ApiError {
             status,
             code: code.to_string(),
             message: message.into(),
+            diagnostics: Vec::new(),
         }
     }
 
     pub fn rejected(status: StatusCode, error: RenderJobError) -> Self {
-        Self {
-            status,
-            code: error.code,
-            message: error.message,
-        }
+        Self::new(status, &error.code, error.message)
+    }
+
+    /// A `422` for a composition that doesn't parse, listing what is wrong with it.
+    pub fn invalid_composition(error: &ParseError) -> Self {
+        let mut rejected = Self::rejected(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            RenderJobError::invalid_composition(&error.to_string()),
+        );
+        rejected.diagnostics = sanitized_diagnostics(error.diagnostics());
+        rejected
     }
 
     pub fn not_found() -> Self {
@@ -76,6 +89,7 @@ impl IntoResponse for ApiError {
             Json(ApiErrorBody {
                 code: self.code,
                 error: self.message,
+                diagnostics: self.diagnostics,
             }),
         )
             .into_response()

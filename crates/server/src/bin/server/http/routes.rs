@@ -8,13 +8,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use lumen_ffmpeg::QualityRequest;
-use lumen_server::render::{parse_composition, resolve_encoder};
+use lumen_server::render::{check_composition, resolve_encoder};
 
 use crate::server::{
-    ApiRenderJob, Artifact, CreateRenderResponse, GetRenderResponse, RenderJob, RenderJobError,
-    RenderJobInput, RenderProgressResponse, RenderQueueState, RenderRecord, RenderStatus,
-    current_timestamp, execute_render_job, input_hash, map_execution_error, new_render_id,
-    validate_media_manifest,
+    ApiRenderJob, Artifact, CheckInput, CheckResponse, CreateRenderResponse, GetRenderResponse,
+    RenderJob, RenderJobError, RenderJobInput, RenderProgressResponse, RenderQueueState,
+    RenderRecord, RenderStatus, current_timestamp, execute_render_job, input_hash, new_render_id,
+    sanitized_diagnostics, validate_media_manifest,
 };
 
 use super::{errors::ApiError, state::AppState, ws::render_socket_session};
@@ -46,9 +46,8 @@ pub(super) async fn create_render(
     }
     validate_media_manifest(&input.media)
         .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    let composition = parse_composition(&input.composition).map_err(|error| {
-        ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, map_execution_error(error))
-    })?;
+    let composition = lumen_engine::json::parse_value(&input.composition)
+        .map_err(|error| ApiError::invalid_composition(&error))?;
 
     // Resolved now with the resolver the render uses, so a request it would fail is refused here.
     let invalid_quality = |message: String| {
@@ -98,6 +97,31 @@ pub(super) async fn create_render(
         }),
     )
         .into_response())
+}
+
+/// What is wrong with a composition, without rendering it. Fonts resolve as a render's would,
+/// counting the manifest's media.
+pub(super) async fn check_render(
+    input: Result<Json<CheckInput>, JsonRejection>,
+) -> Result<Json<CheckResponse>, ApiError> {
+    let Json(input) = input?;
+    validate_media_manifest(&input.media)
+        .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?;
+    let diagnostics = tokio::task::spawn_blocking(move || {
+        check_composition(&input.composition, &|name| input.media.contains_key(name))
+    })
+    .await
+    .map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "check_failed",
+            format!("check worker join failed: {error}"),
+        )
+    })?;
+    Ok(Json(CheckResponse {
+        ok: !diagnostics.iter().any(|diagnostic| diagnostic.is_error()),
+        diagnostics: sanitized_diagnostics(&diagnostics),
+    }))
 }
 
 pub(super) async fn get_render(
