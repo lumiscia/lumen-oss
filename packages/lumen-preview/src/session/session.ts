@@ -68,6 +68,9 @@ export class LumenPreviewSession {
   #pendingSeek: number | null = null;
   #pendingSeeks = new Map<number, (presented: boolean) => void>();
   #playing = false;
+  // Why the inputs last failed to resolve. The same failure isn't reported again, so a callback that
+  // re-renders with the same inputs can't loop.
+  #resolveFailure: string | null = null;
   #seekId = 0;
   #startup: AbortController | null = null;
   #sentFonts: ReadonlyMap<string, MediaSourceInput> = new Map();
@@ -187,6 +190,7 @@ export class LumenPreviewSession {
     this.#loading = false;
     this.#pendingSeek = null;
     this.#playing = false;
+    this.#resolveFailure = null;
     // The next worker counts its seeks from zero.
     this.#seekId = 0;
     this.#sentFonts = new Map();
@@ -218,9 +222,14 @@ export class LumenPreviewSession {
     try {
       next = resolvePreviewInputs(this.#inputs.composition, this.#inputs.media, this.#inputs.fonts);
     } catch (error) {
-      this.#reportError("load_failed", "load", error);
+      const message = describeError(error);
+      if (message !== this.#resolveFailure) {
+        this.#resolveFailure = message;
+        this.#reportError("load_failed", "load", error);
+      }
       return;
     }
+    this.#resolveFailure = null;
 
     const previous = this.#loaded;
     if (

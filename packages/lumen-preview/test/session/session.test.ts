@@ -678,6 +678,26 @@ describe("LumenPreviewSession", () => {
     expect(worker.ofType("load")).toHaveLength(2);
   });
 
+  it("reports inputs that don't resolve once, until they change", async () => {
+    const onError = vi.fn();
+    const { session } = await started({ onError });
+    const unresolved = { composition: composition("first"), media: { unused: "/image.png" } };
+    session.update({ ...unresolved, onError });
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError.mock.calls[0]?.[0]).toMatchObject({ code: "load_failed", diagnostics: [] });
+
+    // A callback that re-renders with the same inputs doesn't hear the same failure again.
+    const replaced = vi.fn();
+    session.update({ ...unresolved, onError: replaced });
+    session.update({ ...unresolved, media: { unused: "/image.png" }, onError: replaced });
+    expect(onError).toHaveBeenCalledOnce();
+    expect(replaced).not.toHaveBeenCalled();
+
+    session.update({ composition: composition("first"), onError: replaced });
+    session.update({ ...unresolved, onError: replaced });
+    expect(replaced).toHaveBeenCalledOnce();
+  });
+
   it("sends a source again if the worker never received it", async () => {
     const { session, worker } = await playable();
     const logo = new Blob(["i"], { type: "image/png" });
