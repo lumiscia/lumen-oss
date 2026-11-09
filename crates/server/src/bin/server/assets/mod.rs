@@ -549,23 +549,19 @@ impl AssetStore {
             }
             entry.finishing = true;
         }
-        let content = self.entry_dir(id).join(CONTENT_FILE);
-        let probed = match tokio::fs::rename(&temp, &content).await {
-            Ok(()) => Ok(probe_blocking(content).await),
-            Err(error) => Err(error),
+        let mut finishing = Finishing {
+            store: self.clone(),
+            id: id.to_string(),
+            content: self.entry_dir(id).join(CONTENT_FILE),
+            done: false,
         };
+        tokio::fs::rename(&temp, &finishing.content).await?;
+        let probed = probe_blocking(finishing.content.clone()).await;
 
         let mut entries = self.entries();
         let entry = entries.get_mut(id).ok_or(StoreError::NotFound)?;
         entry.finishing = false;
-        let probed = match probed {
-            Ok(probed) => probed,
-            Err(error) => {
-                drop(entries);
-                let _ = fs::remove_file(&temp);
-                return Err(error.into());
-            }
-        };
+        finishing.done = true;
         apply_probe(&mut entry.media, probed);
         entry.uploads.clear();
         entry.staged_bytes = 0;
@@ -782,6 +778,27 @@ impl Drop for Staging {
     }
 }
 
+/// A media's complete bytes at `content`, being checked. Dropping it before `done`, even with its
+/// request, removes them and lets the media take its upload again.
+struct Finishing {
+    store: AssetStore,
+    id: String,
+    content: PathBuf,
+    done: bool,
+}
+
+impl Drop for Finishing {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        let _ = fs::remove_file(&self.content);
+        if let Some(entry) = self.store.entries().get_mut(&self.id) {
+            entry.finishing = false;
+        }
+    }
+}
+
 /// A multipart upload's parts being joined into `temp`. Dropping it removes `temp` and lets the
 /// upload take parts again, which a checked media no longer has.
 struct Joining {
@@ -869,4 +886,43 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{future::Future, task::Poll};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn an_upload_whose_check_is_cancelled_can_be_sent_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
+        let media = store
+            .create(NewUpload {
+                content_type: "image/png".to_string(),
+                file_name: "fake.png".to_string(),
+                size_bytes: 9,
+            })
+            .unwrap();
+        let body = || stream_of(b"not media");
+
+        // Dropped at its first await once the bytes are being checked, as a dropped request is.
+        let mut upload = Box::pin(store.put_content(&media.id, body()));
+        loop {
+            match std::future::poll_fn(|cx| Poll::Ready(upload.as_mut().poll(cx))).await {
+                Poll::Ready(result) => panic!("the upload finished uncancelled: {result:?}"),
+                Poll::Pending if store.entries()[&media.id].finishing => break,
+                Poll::Pending => tokio::task::yield_now().await,
+            }
+        }
+        drop(upload);
+
+        let retried = store.put_content(&media.id, body()).await.unwrap();
+        assert_eq!(retried.status, MediaStatus::Rejected);
+    }
+
+    fn stream_of(bytes: &'static [u8]) -> impl Stream<Item = Result<Bytes, io::Error>> + Unpin {
+        futures_util::stream::iter([Ok(Bytes::from_static(bytes))])
+    }
 }
