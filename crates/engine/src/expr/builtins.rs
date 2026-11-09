@@ -387,6 +387,10 @@ fn keyframes(t: f64, args: &[ExpressionValue]) -> Result<ExpressionValue, String
         .ease
         .unwrap_or(default)
         .apply((t - key.at) / (next.at - key.at));
+    // Path data that doesn't move needn't match the next key, so a hold can switch shapes.
+    if eased == 0.0 && matches!(key.value, ExpressionValue::String(_)) {
+        return Ok(key.value.clone());
+    }
     interpolate(&key.value, &next.value, eased)
         .map_err(|error| error.describe([&key_name(key.at), &key_name(next.at)]))?
         .ok_or_else(|| mixed_keys_error(key.value.kind(), next.value.kind()))

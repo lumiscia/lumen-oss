@@ -788,25 +788,36 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
             let keys = &args[if second_is_key { 1 } else { 2 }..];
             let mut first_kind = None;
             let (mut previous_frames, mut previous_seconds) = (None, None);
-            let mut previous_path: Option<(&str, String)> = None;
-            for (index, key) in keys.iter().enumerate() {
+            let default_ease = (!second_is_key).then(|| args.get(1)).flatten();
+            // The previous key's literal path, time and name, while it's known to interpolate
+            // into the next key.
+            let mut previous_path: Option<(&str, (f64, &str), String)> = None;
+            for key in keys {
                 let ExprNode::Builtin(BuiltinFn::Key, key) = key else {
+                    previous_path = None;
                     continue;
                 };
-                // Every key of a track interpolates with its neighbours, so each literal path
-                // must match the one before it, even across keys the parser can't read.
-                if let Some(data) = literal_string(&key[1]) {
-                    let name = match literal_key_time(&key[0]) {
-                        Some((at, unit)) => key_name(format!("{at}{unit}")),
-                        None => format!("key {}", index + 1),
-                    };
-                    if let Some((previous, previous_name)) = &previous_path {
-                        morph(previous, data, 0.0).map_err(|morph| {
-                            error(morph.describe([previous_name.as_str(), name.as_str()]))
-                        })?;
-                    }
-                    previous_path = Some((data, name));
+                // Neighbouring literal paths must match where the parser can tell they
+                // interpolate: at different literal times, with an easing other than a hold.
+                // Anything else is checked when it interpolates.
+                let path = literal_string(&key[1]).zip(literal_key_time(&key[0]));
+                if let (Some((data, at)), Some((previous, previous_at, previous_name))) =
+                    (path, &previous_path)
+                    && at != *previous_at
+                {
+                    let name = key_name(format!("{}{}", at.0, at.1));
+                    morph(previous, data, 0.0).map_err(|morph| {
+                        error(morph.describe([previous_name.as_str(), name.as_str()]))
+                    })?;
                 }
+                let interpolates = match key.get(2).or(default_ease) {
+                    None => true,
+                    Some(ExprNode::Literal(ExpressionValue::String(name))) => name != "hold",
+                    Some(_) => false,
+                };
+                previous_path = path
+                    .filter(|_| interpolates)
+                    .map(|(data, at)| (data, at, key_name(format!("{}{}", at.0, at.1))));
                 if let Some(kind) = static_kind(&key[1]) {
                     match first_kind {
                         Some(first) if first != kind => {

@@ -309,7 +309,8 @@ impl MorphError {
 
 /// Interpolates two path data strings with the same commands in the same order, point by point.
 /// The result is path data with each command written out, its numbers rounded to the `f32` that
-/// the path node draws with. Numbers equal on both sides are kept exactly.
+/// the path node draws with. Numbers equal on both sides aren't mixed, so they don't jitter from
+/// frame to frame.
 pub(super) fn morph(from: &str, to: &str, t: f64) -> Result<String, MorphError> {
     let commands = |data: &str, side| {
         svgtypes::PathParser::from(data)
@@ -350,10 +351,11 @@ pub(super) fn morph(from: &str, to: &str, t: f64) -> Result<String, MorphError> 
             } else {
                 from_value * (1.0 - t) + to_value * t
             };
+            let mixed = mixed as f32;
             if !mixed.is_finite() {
                 return Err(MorphError::NotFinite);
             }
-            let _ = write!(data, " {}", mixed as f32);
+            let _ = write!(data, " {mixed}");
         }
     }
     Ok(data)
@@ -603,7 +605,7 @@ mod tests {
     #[test]
     fn morphed_numbers_are_as_precise_as_the_path_node_draws() {
         // f64 mixing gives 0.15000000000000002 and 0.30000000000000004, which draw as the f32
-        // nearest 0.15 and 0.3. Numbers the paths share stay exactly as written.
+        // nearest 0.15 and 0.3. Numbers the paths share aren't mixed.
         assert_eq!(
             morph(
                 "M 0.1 7.123456789 L 0.1 0",
@@ -624,6 +626,7 @@ mod tests {
             morph("M 0 0", "M 1 0", f64::NAN),
             Err(MorphError::NotFinite)
         );
+        assert_eq!(morph("M 0 0", "M 1 0", 1e40), Err(MorphError::NotFinite));
     }
 
     #[test]
@@ -636,6 +639,34 @@ mod tests {
         let track =
             format!("keyframes(frame, key(0, '{TRIANGLE}'), key(30, '{FLIPPED}', 'in_out_cubic'))");
         assert_eq!(string(&track, 15.0).unwrap(), "M 0 20 L 100 20 L 50 40 Z");
+    }
+
+    #[test]
+    fn keys_that_dont_interpolate_may_differ_in_structure() {
+        const CURVE: &str = "M 0 0 Q 5 10 10 0";
+        // A hold switches shapes at the next key.
+        for track in [
+            format!("keyframes(frame, key(0, '{TRIANGLE}', 'hold'), key(10, '{CURVE}'))"),
+            format!("keyframes(frame, 'hold', key(0, '{TRIANGLE}'), key(10, '{CURVE}'))"),
+            format!(
+                "keyframes(frame, key(0, '{TRIANGLE}', 'hold'), key(10, if(frame > 0, '{CURVE}', '')))"
+            ),
+        ] {
+            assert_eq!(string(&track, 5.0).unwrap(), TRIANGLE, "{track}");
+            assert_eq!(string(&track, 10.0).unwrap(), CURVE, "{track}");
+        }
+        // Keys at the same time jump.
+        let track = format!(
+            "keyframes(frame, key(0, '{TRIANGLE}'), key(10, '{TRIANGLE}'), key(10, '{CURVE}'))"
+        );
+        assert_eq!(string(&track, 10.0).unwrap(), CURVE);
+        // Only neighbouring keys interpolate, so a key the parser can't read separates the
+        // literal paths around it.
+        let track = format!(
+            "keyframes(frame, key(0, 'M 0 0 L 10 0'), key(10, if(frame < 10, 'M 0 0 L 20 0', '{CURVE}')), key(20, 'M 0 0 Q 10 20 20 0'))"
+        );
+        assert_eq!(string(&track, 5.0).unwrap(), "M 0 0 L 15 0");
+        assert_eq!(string(&track, 15.0).unwrap(), "M 0 0 Q 7.5 15 15 0");
     }
 
     #[test]
