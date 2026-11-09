@@ -18,7 +18,7 @@ use lumen_server::render::{
     RenderError as RenderPipelineError, RenderOptions, RenderProgress, render_project_mp4,
 };
 
-pub(super) use media_staging::{MediaClient, refused_non_public_host, validate_media_manifest};
+pub(super) use media_staging::{MediaClient, validate_media_manifest};
 pub(super) use util::{current_timestamp, input_hash, new_render_id};
 
 use self::{assets::JobAssets, media_staging::stage_remote_media, util::sanitize_error_message};

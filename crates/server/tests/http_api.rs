@@ -46,7 +46,7 @@ struct Server {
     child: Child,
     http: Client,
     log: Arc<Mutex<String>>,
-    media_dir: tempfile::TempDir,
+    media_dir: Arc<tempfile::TempDir>,
 }
 
 impl Server {
@@ -55,7 +55,22 @@ impl Server {
     }
 
     fn start_with(args: &[&str], configure: impl FnOnce(&mut Command)) -> Self {
-        let media_dir = tempfile::tempdir().expect("media directory");
+        let media_dir = Arc::new(tempfile::tempdir().expect("media directory"));
+        Self::start_in(media_dir, args, configure)
+    }
+
+    /// Stops this server and starts another on the same media directory.
+    fn restart(self, args: &[&str]) -> Self {
+        let media_dir = Arc::clone(&self.media_dir);
+        drop(self);
+        Self::start_in(media_dir, args, |_| {})
+    }
+
+    fn start_in(
+        media_dir: Arc<tempfile::TempDir>,
+        args: &[&str],
+        configure: impl FnOnce(&mut Command),
+    ) -> Self {
         let mut command = server_command();
         command
             .args(["--bind", "127.0.0.1:0", "--token", TOKEN])
@@ -1356,10 +1371,10 @@ fn media_multipart_uploads_join_the_listed_parts_in_order() {
         )
     };
     let (first, second) = jpeg.split_at(jpeg.len() / 2);
-    // Parts arrive in any order, and a part sent again replaces the earlier one.
-    let second = part(2, second);
+    // A part sent again replaces the earlier one, and parts are joined in the order listed.
     let stale = part(1, b"stale");
     let first = part(1, first);
+    let second = part(2, second);
 
     let refused = complete(json!([stale, second]));
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
@@ -1404,12 +1419,21 @@ fn media_url_imports_download_once_through_the_media_host_checks() {
     );
     assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let refused: Value = refused.json().expect("error body");
+    assert_eq!(refused["code"], "media_download_forbidden_host");
     let error = refused["error"].as_str().unwrap_or_default();
     assert!(error.contains("host has no public address"), "{refused}");
+    // So is a name the resolver finds only private addresses for.
+    let unlisted = Server::start(&[]);
+    let resolved = unlisted.post_to(
+        "/media/url",
+        &json!({ "url": media.url("localhost", "/image.png") }),
+    );
+    assert_eq!(resolved.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(error_code(resolved), "media_download_failed");
     assert_eq!(
         media.requests.load(Ordering::SeqCst),
         1,
-        "the refused host is never contacted"
+        "the refused hosts are never contacted"
     );
     let kept = fs::read_dir(server.media_dir.path())
         .expect("media directory")
@@ -1505,4 +1529,198 @@ fn media_expires_after_its_ttl_except_while_a_render_holds_it() {
     media.release.send(()).expect("release staging");
     server.wait_for_state(&render, &["failed", "succeeded"]);
     wait_until_swept(&held);
+}
+
+/// Bytes held by the temporary files directly in `dir`.
+fn temp_bytes(dir: &Path) -> u64 {
+    fs::read_dir(dir)
+        .map(|items| {
+            items
+                .flatten()
+                .filter(|item| item.file_name().to_string_lossy().starts_with(".tmp-"))
+                .filter_map(|item| item.metadata().ok())
+                .map(|metadata| metadata.len())
+                .sum()
+        })
+        .unwrap_or_default()
+}
+
+fn bytes_under(dir: &Path) -> u64 {
+    fs::read_dir(dir)
+        .map(|items| {
+            items
+                .flatten()
+                .map(|item| match item.metadata() {
+                    Ok(metadata) if metadata.is_dir() => bytes_under(&item.path()),
+                    Ok(metadata) => metadata.len(),
+                    Err(_) => 0,
+                })
+                .sum()
+        })
+        .unwrap_or_default()
+}
+
+/// Sends `head` and `body` on a connection of its own, which the caller drops to disconnect.
+fn send_raw(server: &Server, head: &str, body: &[u8]) -> TcpStream {
+    let mut stream =
+        TcpStream::connect(server.base.trim_start_matches("http://")).expect("connect to server");
+    write!(
+        stream,
+        "{head}\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
+    )
+    .expect("write request head");
+    stream.write_all(body).expect("write request body");
+    stream
+}
+
+fn wait_until(what: &str, deadline: Duration, mut done: impl FnMut() -> bool) {
+    let started = Instant::now();
+    while !done() {
+        assert!(started.elapsed() < deadline, "{what}");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn media_uploads_never_hold_more_than_their_size_on_disk() {
+    let server = Server::start(&["--media-max-bytes", "1024"]);
+    let created = create_upload(&server, "parts.bin", "application/octet-stream", 1024);
+    let id = media_id(&created["media"]);
+    let started: Value = server
+        .post_to(&format!("/media/{id}/multipart"), &json!({}))
+        .json()
+        .expect("multipart body");
+    let upload_id = started["uploadId"].as_str().expect("upload id");
+    let part = |number: u32, size: usize| {
+        server.put_bytes(
+            &format!("/media/{id}/multipart/{upload_id}/parts/{number}"),
+            &vec![0; size],
+        )
+    };
+
+    assert_eq!(part(1, 1024).status(), StatusCode::OK);
+    // Sending part 1 again would hold both copies until the new one replaced the old.
+    for (number, size) in [(2, 1), (3, 1024), (1, 1024)] {
+        let refused = part(number, size);
+        assert_eq!(
+            refused.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "part {number}"
+        );
+        assert_eq!(error_code(refused), "media_too_large");
+    }
+    assert_eq!(
+        bytes_under(&server.media_dir.path().join(&id).join("parts")),
+        1024
+    );
+
+    // A single upload in flight counts too, and stops counting once its client goes away.
+    let single =
+        media_id(&create_upload(&server, "one.bin", "application/octet-stream", 1024)["media"]);
+    let content = format!("/media/{single}/content");
+    let entry = server.media_dir.path().join(&single);
+    let partial = send_raw(
+        &server,
+        &format!("PUT {content} HTTP/1.1\r\nContent-Length: 1024"),
+        &[0; 1000],
+    );
+    wait_until("the partial upload never arrived", TIMEOUT, || {
+        temp_bytes(&entry) >= 1000
+    });
+    let refused = server.put_bytes(&content, &[0; 1024]);
+    assert_eq!(refused.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    drop(partial);
+    wait_until("a dropped upload kept its bytes counted", TIMEOUT, || {
+        let response = server.put_bytes(&content, &[0; 1024]);
+        assert_ne!(response.status(), StatusCode::CONFLICT);
+        response.status() == StatusCode::OK
+    });
+    assert_eq!(temp_bytes(&entry), 0);
+}
+
+#[test]
+fn media_url_imports_cancelled_mid_download_leave_nothing_behind() {
+    let media = MediaServer::start();
+    let server = Server::start(&["--allow-media-host", "localhost"]);
+    let body = json!({ "url": media.url("localhost", "/held") }).to_string();
+    let request = send_raw(
+        &server,
+        &format!(
+            "POST /media/url HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {}",
+            body.len()
+        ),
+        body.as_bytes(),
+    );
+    let stored = || {
+        fs::read_dir(server.media_dir.path())
+            .expect("media directory")
+            .count()
+    };
+    wait_until("the import never started", TIMEOUT, || {
+        media.requests.load(Ordering::SeqCst) == 1 && stored() == 1
+    });
+
+    drop(request);
+    wait_until(
+        "a cancelled import left its directory behind",
+        Duration::from_secs(10),
+        || stored() == 0,
+    );
+    let _ = media.release.send(());
+}
+
+#[test]
+fn deleted_media_a_render_holds_stays_deleted_after_a_restart() {
+    let media = MediaServer::start();
+    let args = ["--allow-media-host", "localhost"];
+    let server = Server::start(&args);
+    let held = media_id(&upload(&server, "held.png", "image/png", TINY_PNG));
+    // Staging waits on `/held`, so the render holds its asset until the server stops.
+    server.submit(&json!({
+        "composition": image_composition(&format!("asset:{held}")),
+        "media": { "gate": media.url("localhost", "/held") },
+    }));
+
+    let deleted = server
+        .http
+        .delete(format!("{}/media/{held}", server.base))
+        .bearer_auth(TOKEN)
+        .send()
+        .expect("DELETE media");
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        server.get(&format!("/media/{held}")).status(),
+        StatusCode::NOT_FOUND
+    );
+    let dir = server.media_dir.path().join(&held);
+    assert!(dir.join("content").exists(), "the render still reads it");
+
+    let server = server.restart(&args);
+    let read = server.get(&format!("/media/{held}"));
+    assert_eq!(read.status(), StatusCode::NOT_FOUND);
+    assert_eq!(error_code(read), "media_not_found");
+    assert!(!dir.exists());
+    let _ = media.release.send(());
+}
+
+#[test]
+fn media_url_import_failures_are_told_apart_by_cause_not_message() {
+    let closed = TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .expect("free port")
+        .port();
+    let server = Server::start(&["--allow-media-host", "localhost"]);
+    let response = server.post_to(
+        "/media/url",
+        &json!({
+            "url": format!("http://localhost:{closed}/clip.mp4"),
+            "fileName": "host has no public address; allow it with --allow-media-host if this is intended",
+        }),
+    );
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_GATEWAY,
+        "a refused connection is transient, whatever the file is called"
+    );
+    assert_eq!(error_code(response), "media_download_failed");
 }

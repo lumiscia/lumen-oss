@@ -9,10 +9,7 @@ use futures_util::stream;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 
-use crate::server::{
-    assets::{Media, MediaKind, NewUpload, StoreError},
-    refused_non_public_host,
-};
+use crate::server::assets::{Media, MediaKind, NewUpload, StoreError};
 
 use super::{errors::ApiError, state::AppState};
 
@@ -94,6 +91,11 @@ impl From<StoreError> for ApiError {
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "media_too_large",
                 format!("media exceeds the {limit} byte limit"),
+            ),
+            StoreError::ExceedsSize(size) => Self::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "media_too_large",
+                format!("the bytes sent would hold more than sizeBytes, {size}"),
             ),
             StoreError::SizeMismatch { expected, received } => Self::new(
                 StatusCode::BAD_REQUEST,
@@ -219,25 +221,26 @@ pub(super) async fn create_url_media(
         Some(name) => bounded("fileName", name, MAX_FILE_NAME_CHARS)?,
         None => file_name_of(&input.url),
     };
-    let (dir, temp) = state.assets.import_dir().map_err(StoreError::from)?;
+    // Removed when this request ends, including when its client goes away, unless imported.
+    let target = state.assets.import_dir().map_err(StoreError::from)?;
     let downloaded = state
         .media_client
         .download(
             &file_name,
             &input.url,
-            &temp,
+            &target.file,
             state.assets.max_bytes(),
             None,
         )
         .await;
     let downloaded = match downloaded {
         Ok(downloaded) => downloaded,
-        Err(error) => {
-            let _ = tokio::fs::remove_dir_all(&dir).await;
+        Err(failure) => {
+            let error = failure.error;
             let status = match error.code.as_str() {
                 "media_download_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
                 // A host this server won't fetch from isn't a transient failure.
-                _ if refused_non_public_host(&error) => StatusCode::UNPROCESSABLE_ENTITY,
+                _ if failure.non_public_host => StatusCode::UNPROCESSABLE_ENTITY,
                 _ if error.retryable => StatusCode::BAD_GATEWAY,
                 _ => StatusCode::UNPROCESSABLE_ENTITY,
             };
@@ -252,14 +255,7 @@ pub(super) async fn create_url_media(
         file_name,
         size_bytes: downloaded.bytes,
     };
-    let imported = state.assets.import(&dir, temp, input.url, upload).await;
-    let media = match imported {
-        Ok(media) => media,
-        Err(error) => {
-            let _ = tokio::fs::remove_dir_all(&dir).await;
-            return Err(error.into());
-        }
-    };
+    let media = state.assets.import(target, input.url, upload).await?;
     Ok((StatusCode::CREATED, Json(MediaResponse { media })).into_response())
 }
 

@@ -83,7 +83,7 @@ impl MediaClient {
         path: &Path,
         limit: u64,
         staged_bytes: Option<&AtomicU64>,
-    ) -> Result<Downloaded, RenderJobError> {
+    ) -> Result<Downloaded, DownloadError> {
         let parsed = Url::parse(url).map_err(|err| {
             media_error(
                 "media_download_failed",
@@ -102,9 +102,14 @@ impl MediaClient {
             .map_err(|cause| failed("media_download_forbidden_host", &cause, false))?;
 
         let started = Instant::now();
-        let mut response =
-            self.client.get(parsed).send().await.map_err(|err| {
-                failed("media_download_failed", &request_failure_cause(err), true)
+        let mut response = self
+            .client
+            .get(parsed)
+            .send()
+            .await
+            .map_err(|err| DownloadError {
+                non_public_host: is_non_public_host(&err),
+                error: failed("media_download_failed", &request_failure_cause(err), true),
             })?;
         let status = response.status();
         if !status.is_success() {
@@ -112,7 +117,8 @@ impl MediaClient {
                 "media_download_failed",
                 &format!("server returned status {status}"),
                 status.is_server_error() || status.as_u16() == 429,
-            ));
+            )
+            .into());
         }
         let too_large = || {
             failed(
@@ -125,7 +131,7 @@ impl MediaClient {
             .content_length()
             .is_some_and(|length| length > limit)
         {
-            return Err(too_large());
+            return Err(too_large().into());
         }
         let content_type = response
             .headers()
@@ -146,7 +152,7 @@ impl MediaClient {
             let length = chunk.len() as u64;
             downloaded += length;
             if downloaded > limit {
-                return Err(too_large());
+                return Err(too_large().into());
             }
             if let Some(staged_bytes) = staged_bytes
                 && staged_bytes.fetch_add(length, Ordering::Relaxed) + length
@@ -156,7 +162,8 @@ impl MediaClient {
                     "media_download_too_large",
                     &format!("job exceeds the {MAX_STAGED_MEDIA_BYTES} byte total media limit"),
                     false,
-                ));
+                )
+                .into());
             }
             file.write_all(&chunk).await.map_err(write_failed)?;
         }
@@ -180,6 +187,46 @@ pub(super) struct Downloaded {
     pub content_type: Option<String>,
 }
 
+/// A failed download: the error a render keeps, and whether it failed because the host resolved
+/// only to non-public addresses.
+pub(crate) struct DownloadError {
+    pub error: RenderJobError,
+    pub non_public_host: bool,
+}
+
+impl From<RenderJobError> for DownloadError {
+    fn from(error: RenderJobError) -> Self {
+        Self {
+            error,
+            non_public_host: false,
+        }
+    }
+}
+
+/// The resolver's refusal of a host with no public address, recognised in a request's errors by
+/// its type.
+#[derive(Debug)]
+struct NonPublicHost;
+
+impl Display for NonPublicHost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(NON_PUBLIC_HOST)
+    }
+}
+
+impl Error for NonPublicHost {}
+
+fn is_non_public_host(error: &reqwest::Error) -> bool {
+    let mut source = error.source();
+    while let Some(next) = source {
+        if next.is::<NonPublicHost>() {
+            return true;
+        }
+        source = next.source();
+    }
+    false
+}
+
 struct PublicAddressResolver {
     allowed_hosts: Arc<HashSet<String>>,
 }
@@ -195,7 +242,7 @@ impl Resolve for PublicAddressResolver {
                 .filter(|address| allowed || !is_non_public_ip(address.ip()))
                 .collect::<Vec<SocketAddr>>();
             if addresses.is_empty() {
-                return Err(NON_PUBLIC_HOST.into());
+                return Err(Box::new(NonPublicHost) as Box<dyn Error + Send + Sync>);
             }
             Ok(Box::new(addresses.into_iter()) as Addrs)
         })
@@ -232,6 +279,7 @@ pub(super) async fn stage_remote_media(
                     )
                     .await
                     .map(drop)
+                    .map_err(|failure| failure.error)
             }
         })
         .await?;
@@ -303,11 +351,6 @@ fn media_error(
         message: sanitize_error_message(&message),
         retryable,
     }
-}
-
-/// Whether a download failed because its host resolved only to non-public addresses.
-pub(crate) fn refused_non_public_host(error: &RenderJobError) -> bool {
-    error.code == "media_download_failed" && error.message.contains(NON_PUBLIC_HOST)
 }
 
 /// The URL is dropped because it may carry signed query parameters. The cause is only in the source

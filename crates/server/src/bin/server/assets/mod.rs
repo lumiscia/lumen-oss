@@ -78,11 +78,26 @@ struct Entry {
     deleted: bool,
     /// Whether completed bytes are being checked, which no other write may race.
     finishing: bool,
-    /// Multipart uploads by id, each with the etag of every part received.
-    uploads: HashMap<String, BTreeMap<u32, String>>,
+    /// Multipart uploads by id.
+    uploads: HashMap<String, Upload>,
+    /// Bytes this media's uploads hold on disk before it is checked: stored parts and bodies still
+    /// being written, across every upload. Never more than its `size_bytes`.
+    staged_bytes: u64,
 }
 
 impl Entry {
+    fn new(media: Media, expires_at_ms: u64) -> Self {
+        Self {
+            media,
+            expires_at_ms,
+            leases: 0,
+            deleted: false,
+            finishing: false,
+            uploads: HashMap::new(),
+            staged_bytes: 0,
+        }
+    }
+
     fn visible(&self, now_ms: u64) -> bool {
         !self.deleted && now_ms < self.expires_at_ms
     }
@@ -95,13 +110,30 @@ impl Entry {
     }
 }
 
+/// A multipart upload: the parts received, and whether they are being joined.
+#[derive(Default)]
+struct Upload {
+    parts: BTreeMap<u32, Part>,
+    completing: bool,
+}
+
+struct Part {
+    etag: String,
+    bytes: u64,
+}
+
 #[derive(Debug)]
 pub enum StoreError {
     NotFound,
     NotPending,
     Busy,
     TooLarge(u64),
-    SizeMismatch { expected: u64, received: u64 },
+    /// The bytes sent would hold more than the media's `size_bytes` on disk.
+    ExceedsSize(u64),
+    SizeMismatch {
+        expected: u64,
+        received: u64,
+    },
     UploadNotFound,
     InvalidParts(String),
     NotValidated,
@@ -171,14 +203,7 @@ impl AssetStore {
             remove_temp_files(&path);
             entries.insert(
                 id.to_string(),
-                Entry {
-                    media: stored.media,
-                    expires_at_ms: stored.expires_at_ms,
-                    leases: 0,
-                    deleted: false,
-                    finishing: false,
-                    uploads: HashMap::new(),
-                },
+                Entry::new(stored.media, stored.expires_at_ms),
             );
         }
         tracing::info!(media_dir = %dir.display(), media = entries.len(), "opened media store");
@@ -242,14 +267,7 @@ impl AssetStore {
     }
 
     fn insert(&self, media: Media, expires_at_ms: u64) -> Result<Media, StoreError> {
-        let entry = Entry {
-            media: media.clone(),
-            expires_at_ms,
-            leases: 0,
-            deleted: false,
-            finishing: false,
-            uploads: HashMap::new(),
-        };
+        let entry = Entry::new(media.clone(), expires_at_ms);
         self.persist(&entry.stored())?;
         self.entries().insert(media.id.clone(), entry);
         Ok(media)
@@ -291,7 +309,8 @@ impl AssetStore {
         Ok((self.entry_dir(id).join(CONTENT_FILE), media))
     }
 
-    /// Removes `id` now, or once the renders holding it finish.
+    /// Removes `id`'s record now, so it stays gone after a restart, and its files now or once the
+    /// renders holding it finish.
     pub fn delete(&self, id: &str) -> Result<(), StoreError> {
         let now = now_ms();
         let mut entries = self.entries();
@@ -299,13 +318,35 @@ impl AssetStore {
             .get_mut(id)
             .filter(|entry| entry.visible(now))
             .ok_or(StoreError::NotFound)?;
-        entry.deleted = true;
-        if entry.leases == 0 {
-            entries.remove(id);
-            drop(entries);
-            fs::remove_dir_all(self.entry_dir(id))?;
+        fs::remove_file(self.entry_dir(id).join(RECORD_FILE))?;
+        if entry.leases > 0 {
+            entry.deleted = true;
+            return Ok(());
+        }
+        entries.remove(id);
+        drop(entries);
+        if let Err(error) = fs::remove_dir_all(self.entry_dir(id)) {
+            tracing::warn!(media_id = id, %error, "failed to delete media files");
         }
         Ok(())
+    }
+
+    /// Counts `bytes` more toward what `id`'s uploads hold on disk, refusing to pass its size.
+    fn stage(&self, id: &str, bytes: u64) -> Result<(), StoreError> {
+        let mut entries = self.entries();
+        let entry = entries.get_mut(id).ok_or(StoreError::NotFound)?;
+        let staged = entry.staged_bytes.saturating_add(bytes);
+        if staged > entry.media.size_bytes {
+            return Err(StoreError::ExceedsSize(entry.media.size_bytes));
+        }
+        entry.staged_bytes = staged;
+        Ok(())
+    }
+
+    fn unstage(&self, id: &str, bytes: u64) {
+        if let Some(entry) = self.entries().get_mut(id) {
+            entry.staged_bytes = entry.staged_bytes.saturating_sub(bytes);
+        }
     }
 
     /// The declared size of a pending upload that isn't being checked.
@@ -332,22 +373,15 @@ impl AssetStore {
         E: fmt::Display,
     {
         let size = self.pending_size(id)?;
-        let temp = temp_path(&self.entry_dir(id));
-        let received = match write_body(&temp, body, size).await {
-            Ok(received) => received,
-            Err(error) => {
-                let _ = fs::remove_file(&temp);
-                return Err(error);
-            }
-        };
+        let mut staging = Staging::new(self, id, &self.entry_dir(id));
+        let received = staging.write(body).await?;
         if received != size {
-            let _ = fs::remove_file(&temp);
             return Err(StoreError::SizeMismatch {
                 expected: size,
                 received,
             });
         }
-        self.finish(id, temp, |_| {}).await
+        self.finish(id, staging.temp.clone()).await
     }
 
     pub fn start_multipart(&self, id: &str) -> Result<String, StoreError> {
@@ -356,7 +390,7 @@ impl AssetStore {
         fs::create_dir_all(self.entry_dir(id).join(PARTS_DIR).join(&upload_id))?;
         let mut entries = self.entries();
         let entry = entries.get_mut(id).ok_or(StoreError::NotFound)?;
-        entry.uploads.insert(upload_id.clone(), BTreeMap::new());
+        entry.uploads.insert(upload_id.clone(), Upload::default());
         Ok(upload_id)
     }
 
@@ -364,20 +398,22 @@ impl AssetStore {
         self.entry_dir(id).join(PARTS_DIR).join(upload_id)
     }
 
-    fn check_upload(&self, id: &str, upload_id: &str) -> Result<u64, StoreError> {
-        let size = self.pending_size(id)?;
-        let has_upload = self
+    /// Whether `upload_id` is an upload of pending `id` that is taking parts.
+    fn check_upload(&self, id: &str, upload_id: &str) -> Result<(), StoreError> {
+        self.pending_size(id)?;
+        match self
             .entries()
             .get(id)
-            .is_some_and(|entry| entry.uploads.contains_key(upload_id));
-        if has_upload {
-            Ok(size)
-        } else {
-            Err(StoreError::UploadNotFound)
+            .and_then(|entry| entry.uploads.get(upload_id))
+        {
+            Some(upload) if upload.completing => Err(StoreError::Busy),
+            Some(_) => Ok(()),
+            None => Err(StoreError::UploadNotFound),
         }
     }
 
     /// Stores part `number` of a multipart upload, replacing an earlier one, and returns its etag.
+    /// A part being replaced counts until its replacement is stored.
     pub async fn put_part<S, E>(
         &self,
         id: &str,
@@ -394,26 +430,34 @@ impl AssetStore {
                 "part numbers run from 1 to {MAX_PART_NUMBER}"
             )));
         }
-        let size = self.check_upload(id, upload_id)?;
+        self.check_upload(id, upload_id)?;
         let dir = self.upload_dir(id, upload_id);
-        let temp = temp_path(&dir);
-        let written = async {
-            write_body(&temp, body, size).await?;
-            tokio::fs::rename(&temp, dir.join(number.to_string())).await?;
-            Ok::<_, StoreError>(())
-        }
-        .await;
-        if let Err(error) = written {
-            let _ = fs::remove_file(&temp);
-            return Err(error);
-        }
+        let mut staging = Staging::new(self, id, &dir);
+        let bytes = staging.write(body).await?;
+
         let etag = format!("\"{}\"", uuid::Uuid::new_v4().simple());
         let mut entries = self.entries();
-        let parts = entries
-            .get_mut(id)
-            .and_then(|entry| entry.uploads.get_mut(upload_id))
+        let entry = entries.get_mut(id).ok_or(StoreError::UploadNotFound)?;
+        let upload = entry
+            .uploads
+            .get_mut(upload_id)
             .ok_or(StoreError::UploadNotFound)?;
-        parts.insert(number, etag.clone());
+        if upload.completing {
+            return Err(StoreError::Busy);
+        }
+        // Renamed under the lock, so the file and its recorded size and etag always agree.
+        fs::rename(&staging.temp, dir.join(number.to_string()))?;
+        staging.kept = true;
+        let replaced = upload.parts.insert(
+            number,
+            Part {
+                etag: etag.clone(),
+                bytes,
+            },
+        );
+        if let Some(replaced) = replaced {
+            entry.staged_bytes = entry.staged_bytes.saturating_sub(replaced.bytes);
+        }
         Ok(etag)
     }
 
@@ -424,7 +468,7 @@ impl AssetStore {
         upload_id: &str,
         parts: &[(u32, String)],
     ) -> Result<Media, StoreError> {
-        let size = self.check_upload(id, upload_id)?;
+        let size = self.pending_size(id)?;
         if parts.is_empty() {
             return Err(StoreError::InvalidParts("no parts were listed".to_string()));
         }
@@ -434,57 +478,62 @@ impl AssetStore {
             ));
         }
         {
-            let entries = self.entries();
-            let received = entries
-                .get(id)
-                .and_then(|entry| entry.uploads.get(upload_id))
+            let mut entries = self.entries();
+            let upload = entries
+                .get_mut(id)
+                .and_then(|entry| entry.uploads.get_mut(upload_id))
                 .ok_or(StoreError::UploadNotFound)?;
-            if let Some((number, _)) = parts
-                .iter()
-                .find(|(number, etag)| received.get(number) != Some(etag))
-            {
-                return Err(StoreError::InvalidParts(format!(
-                    "part {number} was not uploaded with that etag"
-                )));
+            if upload.completing {
+                return Err(StoreError::Busy);
             }
+            let mut received = 0_u64;
+            for (number, etag) in parts {
+                match upload.parts.get(number) {
+                    Some(part) if &part.etag == etag => received += part.bytes,
+                    _ => {
+                        return Err(StoreError::InvalidParts(format!(
+                            "part {number} was not uploaded with that etag"
+                        )));
+                    }
+                }
+            }
+            if received != size {
+                return Err(StoreError::SizeMismatch {
+                    expected: size,
+                    received,
+                });
+            }
+            upload.completing = true;
         }
 
+        let joining = Joining {
+            store: self.clone(),
+            id: id.to_string(),
+            upload_id: upload_id.to_string(),
+            temp: temp_path(&self.entry_dir(id)),
+        };
+        // Created here, so the guard removes it even when the join outlives a dropped request.
+        let output = fs::File::create(&joining.temp)?;
         let dir = self.upload_dir(id, upload_id);
-        let temp = temp_path(&self.entry_dir(id));
         let files: Vec<PathBuf> = parts
             .iter()
             .map(|(number, _)| dir.join(number.to_string()))
             .collect();
-        let joined_temp = temp.clone();
-        let received = tokio::task::spawn_blocking(move || join_files(&files, &joined_temp))
+        let received = tokio::task::spawn_blocking(move || join_files(&files, output, size))
             .await
-            .map_err(|error| StoreError::Io(io::Error::other(error)))?;
-        let received = match received {
-            Ok(received) => received,
-            Err(error) => {
-                let _ = fs::remove_file(&temp);
-                return Err(error.into());
-            }
-        };
+            .map_err(|error| StoreError::Io(io::Error::other(error)))??;
         if received != size {
-            let _ = fs::remove_file(&temp);
             return Err(StoreError::SizeMismatch {
                 expected: size,
                 received,
             });
         }
-        let media = self.finish(id, temp, |entry| entry.uploads.clear()).await?;
-        let _ = fs::remove_dir_all(self.entry_dir(id).join(PARTS_DIR));
-        Ok(media)
+        self.finish(id, joining.temp.clone()).await
     }
 
-    /// Moves complete bytes at `temp` into place and checks them, applying `on_done` to the entry.
-    async fn finish(
-        &self,
-        id: &str,
-        temp: PathBuf,
-        on_done: impl FnOnce(&mut Entry),
-    ) -> Result<Media, StoreError> {
+    /// Moves complete bytes at `temp` into place and checks them. The media's uploads end, and
+    /// their parts are deleted, once it is checked.
+    async fn finish(&self, id: &str, temp: PathBuf) -> Result<Media, StoreError> {
         {
             let mut entries = self.entries();
             let entry = entries.get_mut(id).ok_or(StoreError::NotFound)?;
@@ -518,42 +567,44 @@ impl AssetStore {
             }
         };
         apply_probe(&mut entry.media, probed);
-        on_done(entry);
+        entry.uploads.clear();
+        entry.staged_bytes = 0;
         let stored = entry.stored();
         drop(entries);
+        let _ = fs::remove_dir_all(self.entry_dir(id).join(PARTS_DIR));
         self.persist(&stored)?;
         Ok(stored.media)
     }
 
-    /// A file downloaded to `downloaded` in `dir`, which [`Self::import_dir`] made, checked and kept
-    /// as media from `source_url`.
+    /// The file downloaded to `target.file`, checked and kept as media from `source_url`.
     pub async fn import(
         &self,
-        dir: &Path,
-        downloaded: PathBuf,
+        mut target: ImportDir,
         source_url: String,
         upload: NewUpload,
     ) -> Result<Media, StoreError> {
-        let id = dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_string();
         let (mut media, expires_at_ms) = self.new_media(SourceType::Url, Some(source_url), upload);
-        media.id = id;
-        let content = dir.join(CONTENT_FILE);
-        tokio::fs::rename(&downloaded, &content).await?;
+        media.id = target.id.clone();
+        let content = target.dir.join(CONTENT_FILE);
+        tokio::fs::rename(&target.file, &content).await?;
         let probed = probe_blocking(content).await;
         apply_probe(&mut media, probed);
-        self.insert(media, expires_at_ms)
+        let media = self.insert(media, expires_at_ms)?;
+        target.registered = true;
+        Ok(media)
     }
 
     /// A directory for a URL import under a fresh id, with a temporary file in it to download to.
-    pub fn import_dir(&self) -> io::Result<(PathBuf, PathBuf)> {
-        let dir = self.entry_dir(&format!("m_{}", uuid::Uuid::new_v4().simple()));
+    pub fn import_dir(&self) -> io::Result<ImportDir> {
+        let id = format!("m_{}", uuid::Uuid::new_v4().simple());
+        let dir = self.entry_dir(&id);
         fs::create_dir_all(&dir)?;
-        let temp = temp_path(&dir);
-        Ok((dir, temp))
+        Ok(ImportDir {
+            file: temp_path(&dir),
+            id,
+            dir,
+            registered: false,
+        })
     }
 
     /// Leases `id` for a render, so it stays on disk until [`Self::release`].
@@ -681,31 +732,108 @@ async fn probe_blocking(path: PathBuf) -> Result<(MediaKind, MediaMetadata), Str
         .unwrap_or_else(|error| Err(format!("the file could not be checked: {error}")))
 }
 
-/// Writes `body` to `path`, refusing more than `limit` bytes, and returns how many it wrote.
-async fn write_body<S, E>(path: &Path, mut body: S, limit: u64) -> Result<u64, StoreError>
-where
-    S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: fmt::Display,
-{
-    let mut file = tokio::fs::File::create(path).await?;
-    let mut written = 0_u64;
-    while let Some(chunk) = body.next().await {
-        let chunk = chunk.map_err(|error| StoreError::Body(error.to_string()))?;
-        written += chunk.len() as u64;
-        if written > limit {
-            return Err(StoreError::TooLarge(limit));
-        }
-        file.write_all(&chunk).await?;
-    }
-    file.flush().await?;
-    Ok(written)
+/// A body being written for `id` to a temporary file, its bytes counted toward what `id`'s uploads
+/// hold on disk as they arrive. Dropping it, even with its request, removes the file and stops
+/// counting them, unless `kept` says a stored part now owns both.
+struct Staging {
+    store: AssetStore,
+    id: String,
+    temp: PathBuf,
+    bytes: u64,
+    kept: bool,
 }
 
-fn join_files(files: &[PathBuf], into: &Path) -> io::Result<u64> {
-    let mut output = io::BufWriter::new(fs::File::create(into)?);
+impl Staging {
+    fn new(store: &AssetStore, id: &str, dir: &Path) -> Self {
+        Self {
+            store: store.clone(),
+            id: id.to_string(),
+            temp: temp_path(dir),
+            bytes: 0,
+            kept: false,
+        }
+    }
+
+    /// Writes `body`, refusing a chunk that would take `id` past its size, and returns its length.
+    async fn write<S, E>(&mut self, mut body: S) -> Result<u64, StoreError>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Unpin,
+        E: fmt::Display,
+    {
+        let mut file = tokio::fs::File::create(&self.temp).await?;
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(|error| StoreError::Body(error.to_string()))?;
+            let length = chunk.len() as u64;
+            self.store.stage(&self.id, length)?;
+            self.bytes += length;
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        Ok(self.bytes)
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if !self.kept {
+            let _ = fs::remove_file(&self.temp);
+            self.store.unstage(&self.id, self.bytes);
+        }
+    }
+}
+
+/// A multipart upload's parts being joined into `temp`. Dropping it removes `temp` and lets the
+/// upload take parts again, which a checked media no longer has.
+struct Joining {
+    store: AssetStore,
+    id: String,
+    upload_id: String,
+    temp: PathBuf,
+}
+
+impl Drop for Joining {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.temp);
+        if let Some(upload) = self
+            .store
+            .entries()
+            .get_mut(&self.id)
+            .and_then(|entry| entry.uploads.get_mut(&self.upload_id))
+        {
+            upload.completing = false;
+        }
+    }
+}
+
+/// A URL import's directory under a fresh id, with `file` to download to. Dropping it, even with
+/// its request, removes the directory unless [`AssetStore::import`] registered it.
+pub struct ImportDir {
+    id: String,
+    dir: PathBuf,
+    pub file: PathBuf,
+    registered: bool,
+}
+
+impl Drop for ImportDir {
+    fn drop(&mut self) {
+        if !self.registered {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
+/// Copies `files` in order into `output`, refusing more than `limit` bytes in all.
+fn join_files(files: &[PathBuf], output: fs::File, limit: u64) -> io::Result<u64> {
+    let mut output = io::BufWriter::new(output);
     let mut total = 0;
     for file in files {
-        total += io::copy(&mut fs::File::open(file)?, &mut output)?;
+        let mut part = io::Read::take(fs::File::open(file)?, limit - total + 1);
+        total += io::copy(&mut part, &mut output)?;
+        if total > limit {
+            return Err(io::Error::other(format!(
+                "the parts hold more than {limit} bytes"
+            )));
+        }
     }
     io::Write::flush(&mut output)?;
     Ok(total)
