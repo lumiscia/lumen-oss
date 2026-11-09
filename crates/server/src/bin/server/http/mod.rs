@@ -102,6 +102,11 @@ pub struct Args {
         default_value_t = 2 * 1024 * 1024 * 1024
     )]
     pub media_max_bytes: u64,
+
+    /// Most media waiting for its content at once: created with `POST /media` and not yet
+    /// checked, deleted or expired. Past it, `POST /media` answers `503` until one of them ends.
+    #[arg(long, env = "LUMEN_SERVER_MEDIA_MAX_PENDING", default_value = "100")]
+    pub media_max_pending: NonZeroUsize,
 }
 
 fn parse_duration(raw: &str) -> Result<Duration, String> {

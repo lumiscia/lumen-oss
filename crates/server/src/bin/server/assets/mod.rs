@@ -128,6 +128,8 @@ pub enum StoreError {
     NotPending,
     Busy,
     TooLarge(u64),
+    /// As many media as the store allows are already waiting for their bytes.
+    TooManyPending(usize),
     /// The bytes sent would hold more than the media's `size_bytes` on disk.
     ExceedsSize(u64),
     SizeMismatch {
@@ -164,6 +166,7 @@ struct Inner {
     dir: PathBuf,
     ttl: Duration,
     max_bytes: u64,
+    max_pending: usize,
     entries: Mutex<HashMap<String, Entry>>,
 }
 
@@ -177,8 +180,9 @@ impl fmt::Debug for AssetStore {
 
 impl AssetStore {
     /// Opens `dir`, creating it if needed, with the media a previous run left there. Multipart
-    /// uploads in progress don't survive a restart.
-    pub fn open(dir: &Path, ttl: Duration, max_bytes: u64) -> io::Result<Self> {
+    /// uploads in progress don't survive a restart. At most `max_pending` media wait for their
+    /// bytes at once.
+    pub fn open(dir: &Path, ttl: Duration, max_bytes: u64, max_pending: usize) -> io::Result<Self> {
         fs::create_dir_all(dir)?;
         let dir = dir.canonicalize()?;
         let mut entries = HashMap::new();
@@ -217,6 +221,7 @@ impl AssetStore {
                 dir,
                 ttl,
                 max_bytes,
+                max_pending,
                 entries: Mutex::new(entries),
             }),
         })
@@ -287,13 +292,28 @@ impl AssetStore {
         fs::rename(&temp, dir.join(RECORD_FILE))
     }
 
-    /// A pending upload, waiting for its bytes.
+    /// A pending upload, waiting for its bytes, unless `max_pending` media already are. A media
+    /// stops counting once its bytes are checked, or it is deleted or expires.
     pub fn create(&self, upload: NewUpload) -> Result<Media, StoreError> {
         if upload.size_bytes > self.inner.max_bytes {
             return Err(StoreError::TooLarge(self.inner.max_bytes));
         }
         let (media, expires_at_ms) = self.new_media(SourceType::Upload, None, upload);
-        self.insert(media, expires_at_ms)
+        // Counted from the entries and inserted under one lock, so no path can leave a slot taken
+        // and concurrent creates can't pass the cap together.
+        let now = now_ms();
+        let mut entries = self.entries();
+        let pending = entries
+            .values()
+            .filter(|entry| entry.media.status == MediaStatus::Pending && entry.visible(now))
+            .count();
+        if pending >= self.inner.max_pending {
+            return Err(StoreError::TooManyPending(self.inner.max_pending));
+        }
+        let entry = Entry::new(media.clone(), expires_at_ms);
+        self.persist(&entry.stored())?;
+        entries.insert(media.id.clone(), entry);
+        Ok(media)
     }
 
     pub fn get(&self, id: &str) -> Result<Media, StoreError> {
@@ -924,7 +944,8 @@ mod tests {
     #[tokio::test]
     async fn an_upload_whose_check_is_cancelled_can_be_sent_again() {
         let dir = tempfile::tempdir().unwrap();
-        let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
+        let store =
+            AssetStore::open(dir.path(), Duration::from_secs(60), 1024, usize::MAX).unwrap();
         let body = || stream_of(b"not media");
         let mut cancelled = 0;
         for _ in 0..20 {
@@ -940,9 +961,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_pending_upload_holds_its_slot_until_checked_deleted_or_expired() {
+        let full = |store: &AssetStore| {
+            matches!(
+                store.create(new_upload(9)),
+                Err(StoreError::TooManyPending(1))
+            )
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024, 1).unwrap();
+        // Each round's create needs the last round's media to have been checked.
+        let mut cancelled = 0;
+        for _ in 0..20 {
+            let id = store.create(new_upload(9)).unwrap().id;
+            let upload = store.put_content(&id, stream_of(b"not media"));
+            if cancel_once_checking(&store, &id, upload).await {
+                cancelled += 1;
+                assert!(full(&store), "a cancelled check left its media pending");
+                store
+                    .put_content(&id, stream_of(b"not media"))
+                    .await
+                    .unwrap();
+            }
+        }
+        assert!(cancelled > 0, "no upload was cancelled while being checked");
+
+        let id = store.create(new_upload(9)).unwrap().id;
+        assert!(full(&store));
+        store.delete(&id).unwrap();
+        store.create(new_upload(9)).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = AssetStore::open(dir.path(), Duration::from_millis(50), 1024, 1).unwrap();
+        store.create(new_upload(9)).unwrap();
+        assert!(full(&store));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        store.create(new_upload(9)).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_check_cancelled_as_its_bytes_move_into_place_leaves_nothing_uncounted() {
         let dir = tempfile::tempdir().unwrap();
-        let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
+        let store =
+            AssetStore::open(dir.path(), Duration::from_secs(60), 1024, usize::MAX).unwrap();
         // A file operation left running by the cancel may land before or after its cleanup, so
         // each round gives it another chance to land after.
         let mut cancelled = 0;
@@ -993,7 +1054,8 @@ mod tests {
     #[tokio::test]
     async fn a_delete_during_completion_stays_deleted_after_a_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
+        let store =
+            AssetStore::open(dir.path(), Duration::from_secs(60), 1024, usize::MAX).unwrap();
         let id = store.create(new_upload(TINY_PNG.len())).unwrap().id;
         let upload_id = store.start_multipart(&id).unwrap();
         let etag = store
@@ -1046,14 +1108,15 @@ mod tests {
         );
         assert!(!entry.join(RECORD_FILE).exists(), "the delete was undone");
         drop(render);
-        let reopened = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
+        let reopened =
+            AssetStore::open(dir.path(), Duration::from_secs(60), 1024, usize::MAX).unwrap();
         assert!(matches!(reopened.get(&id), Err(StoreError::NotFound)));
     }
 
     #[tokio::test]
     async fn unchecked_bytes_a_crash_left_behind_do_not_count_against_a_new_upload() {
         let dir = tempfile::tempdir().unwrap();
-        let id = AssetStore::open(dir.path(), Duration::from_secs(60), 1024)
+        let id = AssetStore::open(dir.path(), Duration::from_secs(60), 1024, usize::MAX)
             .unwrap()
             .create(new_upload(1024))
             .unwrap()
@@ -1062,7 +1125,8 @@ mod tests {
         let entry = dir.path().canonicalize().unwrap().join(&id);
         fs::write(entry.join(CONTENT_FILE), [0; 1024]).unwrap();
 
-        let store = AssetStore::open(dir.path(), Duration::from_secs(60), 1024).unwrap();
+        let store =
+            AssetStore::open(dir.path(), Duration::from_secs(60), 1024, usize::MAX).unwrap();
         assert_eq!(store.get(&id).unwrap().status, MediaStatus::Pending);
         let upload_id = store.start_multipart(&id).unwrap();
         static PART: [u8; 1024] = [0; 1024];

@@ -26,13 +26,18 @@ pub(super) struct AppState {
 impl AppState {
     /// Fails when the quality config doesn't load or the media directory can't be opened.
     pub fn new(args: Args) -> anyhow::Result<Self> {
-        let assets = AssetStore::open(&args.media_dir, args.media_ttl, args.media_max_bytes)
-            .with_context(|| {
-                format!(
-                    "failed to open the media directory `{}`",
-                    args.media_dir.display()
-                )
-            })?;
+        let assets = AssetStore::open(
+            &args.media_dir,
+            args.media_ttl,
+            args.media_max_bytes,
+            args.media_max_pending.get(),
+        )
+        .with_context(|| {
+            format!(
+                "failed to open the media directory `{}`",
+                args.media_dir.display()
+            )
+        })?;
         let quality = QualityConfig::load(
             args.quality_config
                 .as_deref()

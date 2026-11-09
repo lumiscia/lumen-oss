@@ -92,6 +92,14 @@ impl From<StoreError> for ApiError {
                 "media_too_large",
                 format!("media exceeds the {limit} byte limit"),
             ),
+            // The whole server's limit, not this client's rate, which frees as other uploads end.
+            StoreError::TooManyPending(limit) => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "media_upload_limit",
+                format!(
+                    "{limit} uploads are already waiting for their content; send, delete or let one expire first"
+                ),
+            ),
             StoreError::ExceedsSize(size) => Self::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "media_too_large",

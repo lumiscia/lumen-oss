@@ -1344,6 +1344,22 @@ fn media_uploads_are_probed_once_their_bytes_are_complete() {
 }
 
 #[test]
+fn media_waiting_for_its_content_is_capped_until_one_is_checked() {
+    let server = Server::start(&["--media-max-pending", "1"]);
+    let created = create_upload(&server, "pixel.png", "image/png", TINY_PNG.len());
+    let refused = server.post_to(
+        "/media",
+        &json!({ "contentType": "image/png", "fileName": "next.png", "sizeBytes": 1 }),
+    );
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_code(refused), "media_upload_limit");
+
+    let uploaded = server.put_bytes(created["uploadUrl"].as_str().expect("upload url"), TINY_PNG);
+    assert_eq!(uploaded.status(), StatusCode::OK);
+    create_upload(&server, "next.png", "image/png", 1);
+}
+
+#[test]
 fn media_multipart_uploads_join_the_listed_parts_in_order() {
     let server = Server::start(&[]);
     let jpeg = normal_sized_jpeg();
