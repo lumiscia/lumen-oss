@@ -655,7 +655,18 @@ mod tests {
             assert_eq!(string(&track, 5.0).unwrap(), TRIANGLE, "{track}");
             assert_eq!(string(&track, 10.0).unwrap(), CURVE, "{track}");
         }
-        // Keys at the same time jump.
+        // An easing that is 0 partway still interpolates, so the structures must match.
+        let track = format!(
+            "keyframes(frame, cubic_bezier(vec2(0, 0), vec2(1, -1 / 3)), key(0, '{TRIANGLE}'), key(10, '{CURVE}'))"
+        );
+        assert!(
+            string(&track, 5.0)
+                .unwrap_err()
+                .contains("path data differs")
+        );
+        // Keys at the same time jump, whatever their units.
+        let track = format!("keyframes(frame, key(0, '{TRIANGLE}'), key(0s, '{CURVE}'))");
+        assert_eq!(string(&track, 0.0).unwrap(), CURVE);
         let track = format!(
             "keyframes(frame, key(0, '{TRIANGLE}'), key(10, '{TRIANGLE}'), key(10, '{CURVE}'))"
         );
@@ -693,8 +704,8 @@ mod tests {
                 ),
             ),
             (
-                format!("keyframes(frame, key(0, '{TRIANGLE}'), key(1s, 'M 0 0 Z'))"),
-                format!("{differs} 2: the key at 0 has `L` where the key at 1s has `Z`"),
+                format!("keyframes(frame, key(0s, '{TRIANGLE}'), key(1s, 'M 0 0 Z'))"),
+                format!("{differs} 2: the key at 0s has `L` where the key at 1s has `Z`"),
             ),
             // Paths the parser can't see are checked when they interpolate.
             (

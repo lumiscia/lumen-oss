@@ -798,12 +798,14 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
                     continue;
                 };
                 // Neighbouring literal paths must match where the parser can tell they
-                // interpolate: at different literal times, with an easing other than a hold.
+                // interpolate: at different literal times in the same unit, with an easing
+                // other than a hold.
                 // Anything else is checked when it interpolates.
                 let path = literal_string(&key[1]).zip(literal_key_time(&key[0]));
                 if let (Some((data, at)), Some((previous, previous_at, previous_name))) =
                     (path, &previous_path)
-                    && at != *previous_at
+                    && at.1 == previous_at.1
+                    && at.0 != previous_at.0
                 {
                     let name = key_name(format!("{}{}", at.0, at.1));
                     morph(previous, data, 0.0).map_err(|morph| {
