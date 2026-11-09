@@ -1876,6 +1876,7 @@ mod tests {
             &comp.graph().nodes[&NodeId::new(1)],
             0.0.into(),
             None,
+            false,
         )
         .unwrap_err()
         .to_string();

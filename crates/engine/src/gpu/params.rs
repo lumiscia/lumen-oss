@@ -153,7 +153,7 @@ pub(crate) struct OpacityParams {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
 pub(crate) struct CropParams {
     pub(crate) origin: [i32; 2],
     pub(crate) size: [u32; 2],

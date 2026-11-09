@@ -330,10 +330,13 @@ impl crate::gpu::frame_graph::RecordNode for Transform {
         };
         let (evaluated, taps) = {
             let expr = cx.expr();
-            let evaluated = self.params.eval(&DelegateEvalContext {
+            let mut evaluated = self.params.eval(&DelegateEvalContext {
                 node_id: self.id,
                 expr: &expr,
             })?;
+            if !cx.analytic_motion_blur() {
+                evaluated.motion_blur = 0.0;
+            }
             let taps = motion.taps(&evaluated, &expr)?;
             (evaluated, taps)
         };

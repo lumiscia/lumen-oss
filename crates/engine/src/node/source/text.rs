@@ -374,6 +374,8 @@ pub(crate) struct TextInstance {
     pub(crate) layer_size: lumen_gpu::Size,
     /// Whether binding measures where the text draws, to size its output.
     pub(crate) measure_ink: bool,
+    /// Whether the text's own motion is blurred. It is not on a path a `motion_blur` samples.
+    pub(crate) motion_blur: bool,
     pub(crate) state: Arc<Mutex<TextState>>,
 }
 
@@ -440,7 +442,10 @@ impl TextInstance {
             expr: &expr,
         };
         let draw = self.draw.eval(&fields)?;
-        let placement = self.placement.eval(&fields)?;
+        let mut placement = self.placement.eval(&fields)?;
+        if !self.motion_blur {
+            placement.motion_blur = 0.0;
+        }
         let (position_x, position_y) = placement.position;
         let drawable = placement.transform();
         let shutter = self.placement.shutter(&placement, self.node_id, &expr)?;
