@@ -17,14 +17,17 @@ struct DisplacementParams {
 const DISPLACE_LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
 // A map byte's distance from 128, scaled by the map's alpha so that transparent areas, and
-// everything outside the map, displace nothing. Channels are unpremultiplied and rounded back to
-// whole bytes first, so a neutral grey stays neutral as it fades.
+// everything outside the map, displace nothing. Channels are unpremultiplied back to whole bytes
+// first. Premultiplying loses precision, so the byte 128 premultiplies to is read back as exactly
+// 128, which keeps a neutral grey neutral at any alpha; bytes next to it may read a step off.
 fn map_offset(bytes: vec4<f32>, channel: u32) -> f32 {
     if (bytes.a <= 0.0) {
         return 0.0;
     }
+    let neutral = round(128.0 * bytes.a / 255.0);
     // Whole bytes times 255 over a whole byte, which f32 divides exactly enough for `round`.
-    let rgb = min(round(bytes.rgb * 255.0 / bytes.a), vec3<f32>(255.0));
+    let unpremultiplied = min(round(bytes.rgb * 255.0 / bytes.a), vec3<f32>(255.0));
+    let rgb = select(unpremultiplied, vec3<f32>(128.0), bytes.rgb == vec3<f32>(neutral));
     let alpha = bytes.a / 255.0;
     var value: f32;
     switch (channel) {

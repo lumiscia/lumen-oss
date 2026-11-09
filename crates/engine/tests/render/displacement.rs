@@ -97,6 +97,60 @@ fn displacement_moves_by_the_map() {
             moved(0),
         ),
         Case::new(
+            "128 stays neutral at alpha 127",
+            displaced(
+                bar(),
+                solid_map([128, 128, 128, 127], 0, 0),
+                json!({ "amount_x": 500, "amount_y": 500, "channel_x": "red" }),
+            ),
+            moved(0),
+        ),
+        Case::new(
+            "128 stays neutral at alpha 127",
+            displaced(
+                bar(),
+                solid_map([128, 128, 128, 127], 0, 0),
+                json!({ "amount_x": 500, "amount_y": 500, "channel_x": "luma" }),
+            ),
+            moved(0),
+        ),
+        Case::new(
+            "128 stays neutral at alpha 1",
+            displaced(
+                bar(),
+                solid_map([128, 128, 128, 1], 0, 0),
+                json!({ "amount_x": 500, "amount_y": 500, "channel_x": "red" }),
+            ),
+            moved(0),
+        ),
+        Case::new(
+            "128 stays neutral at alpha 3",
+            displaced(
+                bar(),
+                solid_map([128, 128, 128, 3], 0, 0),
+                json!({ "amount_x": 500, "amount_y": 500, "channel_x": "luma" }),
+            ),
+            moved(0),
+        ),
+        Case::new(
+            "128 stays neutral at alpha 19",
+            displaced(
+                bar(),
+                solid_map([128, 128, 128, 19], 0, 0),
+                json!({ "amount_x": 500, "amount_y": 500, "channel_x": "red" }),
+            ),
+            moved(0),
+        ),
+        Case::new(
+            "128 stays neutral at alpha 21",
+            displaced(
+                bar(),
+                solid_map([128, 128, 128, 21], 0, 0),
+                json!({ "amount_x": 500, "amount_y": 500, "channel_x": "luma" }),
+            ),
+            moved(0),
+        ),
+        Case::new(
             "128 stays neutral when nearly transparent",
             displaced(
                 bar(),
