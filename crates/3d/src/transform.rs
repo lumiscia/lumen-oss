@@ -1,4 +1,4 @@
-use glam::{EulerRot, Mat3, Mat4, Quat, Vec3};
+use glam::{DMat3, EulerRot, Mat3, Mat4, Quat, Vec3};
 
 /// Where something sits in its parent's space.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -55,23 +55,38 @@ pub fn look_at(eye: Vec3, target: Vec3) -> Mat4 {
 /// Whether `world` turns things inside out, as a negative scale on one axis does, so that each
 /// face's vertices wind the other way round.
 pub fn mirrors(world: &Mat4) -> bool {
-    Mat3::from_mat4(*world).determinant() < 0.0
+    // In f64, where the product of three f32s can't overflow or underflow to zero.
+    Mat3::from_mat4(*world).as_dmat3().determinant() < 0.0
 }
 
 /// What takes a mesh's normals to world space under `world`: the inverse transpose up to a
-/// positive factor, so the normals it gives need normalising. Unlike the inverse transpose, it
-/// stays defined when `world` flattens one axis, which leaves the faces across that axis their
-/// area. `None` when `world` is not finite or leaves no face any area.
+/// positive factor, scaled so that its largest entry is 1, so the normals it gives need
+/// normalising. Unlike the inverse transpose, it stays defined when `world` flattens one axis,
+/// which leaves the faces across that axis their area. `None` when `world` is not finite or leaves
+/// no face any area.
 pub fn normal_matrix(world: &Mat4) -> Option<Mat3> {
-    let Mat3 {
+    if !world.is_finite() {
+        return None;
+    }
+    // The cofactor matrix, which is the determinant times the inverse transpose, in f64, where
+    // products of two f32s can't overflow or underflow to zero.
+    let DMat3 {
         x_axis: x,
         y_axis: y,
         z_axis: z,
-    } = Mat3::from_mat4(*world);
-    // The cofactor matrix, which is the determinant times the inverse transpose.
-    let cofactor = Mat3::from_cols(y.cross(z), z.cross(x), x.cross(y));
-    let normal = if mirrors(world) { -cofactor } else { cofactor };
-    (world.is_finite() && normal != Mat3::ZERO).then_some(normal)
+    } = Mat3::from_mat4(*world).as_dmat3();
+    let cofactor = DMat3::from_cols(y.cross(z), z.cross(x), x.cross(y));
+    let largest = cofactor
+        .abs()
+        .to_cols_array()
+        .into_iter()
+        .fold(0.0, f64::max);
+    if largest == 0.0 {
+        return None;
+    }
+    let determinant = x.dot(cofactor.x_axis);
+    let sign = if determinant < 0.0 { -1.0 } else { 1.0 };
+    Some((cofactor * (sign / largest)).as_mat3())
 }
 
 #[cfg(test)]
@@ -117,8 +132,11 @@ mod tests {
         assert_eq!(look_at(eye, eye), Mat4::from_translation(eye));
     }
 
+    /// `normal` in world space under `world`, at unit length as the scene shader takes it.
     fn turned(world: Mat4, normal: Vec3) -> Vec3 {
-        (normal_matrix(&world).expect("a surface with area") * normal).normalize()
+        let turned = normal_matrix(&world).expect("a surface with area") * normal;
+        assert!(turned.is_finite(), "{turned}");
+        (turned / turned.abs().max_element()).normalize()
     }
 
     #[test]
@@ -155,5 +173,37 @@ mod tests {
             None
         );
         assert_eq!(normal_matrix(&Mat4::from_translation(Vec3::NAN)), None);
+    }
+
+    #[test]
+    fn normals_keep_their_direction_at_any_scale() {
+        let normals = [Vec3::X, Vec3::Z, Vec3::new(1.0, -2.0, 0.5).normalize()];
+        let rotated = |scale: Vec3| {
+            Transform {
+                position: Vec3::ZERO,
+                rotation: Vec3::new(20.0, 30.0, 40.0),
+                scale,
+            }
+            .matrix()
+        };
+        for scale in [1e-20, 1e20] {
+            for normal in normals {
+                let expected = turned(rotated(Vec3::ONE), normal);
+                let got = turned(rotated(Vec3::splat(scale)), normal);
+                assert!(close(got, expected), "{scale}: {normal} turned to {got}");
+            }
+        }
+        let uneven = rotated(Vec3::new(1e-12, 1.0, 1e12));
+        let inverse_transpose = Mat3::from_mat4(uneven).as_dmat3().inverse().transpose();
+        for normal in normals {
+            let expected = (inverse_transpose * normal.as_dvec3())
+                .normalize()
+                .as_vec3();
+            let got = turned(uneven, normal);
+            assert!(
+                close(got, expected),
+                "{normal} turned to {got}, not {expected}"
+            );
+        }
     }
 }

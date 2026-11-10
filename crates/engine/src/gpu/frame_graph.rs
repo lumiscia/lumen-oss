@@ -1866,21 +1866,46 @@ impl<'a> FrameCx<'a> {
         tex
     }
 
+    /// Whether `node` and everything it reads are static candidates. Walks its inputs depth first
+    /// with a stack of its own, so a long chain of nodes can't run out of call stack.
     fn is_static(&mut self, node: &NodeKind) -> bool {
-        let key = (self.graph_key(), node.id());
-        if let Some(known) = self.st.statics.get(&key) {
-            return *known;
-        }
-        self.st.statics.insert(key, false);
-        let result = is_static_candidate(node)
-            && !matches!(node, NodeKind::Clip(_) | NodeKind::TimeRemap(_))
-            && node.input_ports().into_iter().flatten().all(|input| {
-                self.scope
-                    .node(input)
-                    .is_some_and(|input| self.is_static(input))
+        let graph = self.graph_key();
+        let mut pending = vec![node.id()];
+        // Nodes whose inputs have been put on `pending`, which are decided when next reached.
+        let mut entered = HashSet::default();
+        while let Some(&id) = pending.last() {
+            if self.st.statics.contains_key(&(graph, id)) {
+                pending.pop();
+                continue;
+            }
+            let candidate = self.scope.node(id).filter(|node| {
+                is_static_candidate(node)
+                    && !matches!(node, NodeKind::Clip(_) | NodeKind::TimeRemap(_))
             });
-        self.st.statics.insert(key, result);
-        result
+            let Some(node) = candidate else {
+                self.st.statics.insert((graph, id), false);
+                pending.pop();
+                continue;
+            };
+            let inputs = node.input_ports().into_iter().flatten();
+            if entered.insert(id) {
+                let undecided = inputs
+                    .clone()
+                    .filter(|input| !self.st.statics.contains_key(&(graph, *input)));
+                let before = pending.len();
+                pending.extend(undecided);
+                if pending.len() > before {
+                    continue;
+                }
+            }
+            // An input still undecided here is part of a cycle, which validation rejects.
+            let result = inputs
+                .into_iter()
+                .all(|input| self.st.statics.get(&(graph, input)) == Some(&true));
+            self.st.statics.insert((graph, id), result);
+            pending.pop();
+        }
+        self.st.statics.get(&(graph, node.id())) == Some(&true)
     }
 
     fn record_routed(&mut self, routed: Routed<'a>) -> crate::Result<Raster> {

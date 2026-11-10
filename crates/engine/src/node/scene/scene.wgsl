@@ -178,12 +178,22 @@ fn specular_environment(direction: vec3<f32>, roughness: f32) -> vec3<f32> {
     return sky(direction) + studio(direction, roughness * roughness * 1.5) * globals.environment;
 }
 
+// `v` at unit length, scaled first so that its squared length neither overflows nor underflows.
+// Zero stays zero.
+fn unit(v: vec3<f32>) -> vec3<f32> {
+    let largest = max(max(abs(v.x), abs(v.y)), abs(v.z));
+    if (largest == 0.0) {
+        return v;
+    }
+    return normalize(v / largest);
+}
+
 // The direction from `world` towards the viewer.
 fn view_direction(world: vec3<f32>) -> vec3<f32> {
     if (globals.orthographic != 0u) {
         return globals.camera_back;
     }
-    return normalize(globals.camera_position - world);
+    return unit(globals.camera_position - world);
 }
 
 @fragment
@@ -200,8 +210,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     let v = view_direction(in.world);
     // A normal the world matrix flattened away, on a face it left without area, faces the viewer.
     var n = v;
-    if (dot(in.normal, in.normal) > 0.0) {
-        n = normalize(in.normal);
+    let normal = unit(in.normal);
+    if (any(normal != vec3<f32>(0.0))) {
+        n = normal;
         let mirrored = (o.flags & FLAG_MIRRORED) != 0u;
         if (front == mirrored) {
             n = -n;

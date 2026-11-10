@@ -13,9 +13,9 @@ mod transform;
 
 pub use camera::{Camera, Projection};
 pub use color::srgb_to_linear;
-pub use draws::{DrawError, DrawKey, Draws, MAX_OBJECTS, Row, Run};
+pub use draws::{DrawError, DrawKey, Draws, Row, Run};
 pub use glam;
 pub use light::{Light, LightKind, Lighting};
 pub use mesh::{Mesh, Primitive, Vertex};
-pub use scene::{Blending, Object, Scene, Surface};
+pub use scene::{Blending, MAX_SCENE_NODES, Object, Scene, Surface};
 pub use transform::{Transform, look_at, mirrors, normal_matrix, rotation};

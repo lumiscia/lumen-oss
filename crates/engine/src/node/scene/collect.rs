@@ -3,8 +3,8 @@
 use foldhash::HashMap;
 use lumen_3d::glam::{Mat4, Vec3};
 use lumen_3d::{
-    Blending, Camera, DrawError, Light, LightKind, MAX_OBJECTS, Mesh, Object, Primitive,
-    Projection, Scene, Surface, Transform,
+    Blending, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive, Projection,
+    Scene, Surface, Transform,
 };
 use lumen_gpu::{BufRef, Recorder, wgpu};
 
@@ -144,22 +144,38 @@ impl Collected {
         }
     }
 
-    /// Adds the scene `node_id` outputs, placed by `parent`. A scene that reaches more than
-    /// [`MAX_OBJECTS`] nodes fails as soon as it does, before a node wired in many times over
-    /// can expand much further.
-    pub(super) fn add(
+    /// Adds the scene `node_id` outputs, walking its nodes depth first in input order. A scene
+    /// that reaches more than [`MAX_SCENE_NODES`] nodes fails as soon as it does, before a node
+    /// wired in many times over can expand much further.
+    pub(super) fn add(&mut self, cx: &mut FrameCx<'_>, node_id: NodeId) -> crate::Result<()> {
+        // Each node still to walk, with the transform its parents place it by.
+        let mut pending = vec![(node_id, Mat4::IDENTITY)];
+        while let Some((node_id, parent)) = pending.pop() {
+            self.reached += 1;
+            if self.reached > MAX_SCENE_NODES {
+                return Err(super::render::render_error(
+                    self.render_id,
+                    format!(
+                        "the scene expands to more than {MAX_SCENE_NODES} nodes, counting a \
+                         node each time it is reached"
+                    ),
+                ));
+            }
+            if let Some(children) = self.add_node(cx, node_id, parent)? {
+                pending.extend(children.into_iter().rev());
+            }
+        }
+        Ok(())
+    }
+
+    /// Adds what `node_id`, placed by `parent`, outputs itself, and returns the nodes a group
+    /// places, with the transform it places them by.
+    fn add_node(
         &mut self,
         cx: &mut FrameCx<'_>,
         node_id: NodeId,
         parent: Mat4,
-    ) -> crate::Result<()> {
-        self.reached += 1;
-        if self.reached > MAX_OBJECTS {
-            return Err(super::render::render_error(
-                self.render_id,
-                DrawError::TooManyObjects.to_string(),
-            ));
-        }
+    ) -> crate::Result<Option<Vec<(NodeId, Mat4)>>> {
         let node = cx
             .node(node_id)
             .ok_or(RenderError::MissingNode { node_id })?;
@@ -171,9 +187,13 @@ impl Collected {
         match node {
             NodeKind::Merge3d(merge) => {
                 let world = parent * placement(&merge.params.eval(&ctx)?.placement).matrix();
-                for &object in &merge.objects {
-                    self.add(cx, object, world)?;
-                }
+                return Ok(Some(
+                    merge
+                        .objects
+                        .iter()
+                        .map(|&object| (object, world))
+                        .collect(),
+                ));
             }
             NodeKind::Shape3d(shape) => {
                 let params = shape.params.eval(&ctx)?;
@@ -238,6 +258,6 @@ impl Collected {
                 }));
             }
         }
-        Ok(())
+        Ok(None)
     }
 }

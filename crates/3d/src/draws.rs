@@ -8,11 +8,7 @@ use std::hash::Hash;
 
 use glam::{Mat3, Mat4};
 
-use crate::{Blending, Object, mirrors, normal_matrix};
-
-/// The most objects one frame may draw. Whoever expands a scene into objects should stop once it
-/// has reached this many of its parts, counting a part each time it is reached.
-pub const MAX_OBJECTS: usize = 100_000;
+use crate::{Blending, MAX_SCENE_NODES, Object, mirrors, normal_matrix};
 
 /// What objects drawn together share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -71,7 +67,7 @@ pub enum DrawError {
 impl fmt::Display for DrawError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TooManyObjects => write!(f, "the scene has more than {MAX_OBJECTS} objects"),
+            Self::TooManyObjects => write!(f, "the scene has more than {MAX_SCENE_NODES} objects"),
             Self::TooManyVertices => write!(f, "the scene has too many vertices to draw"),
         }
     }
@@ -84,7 +80,7 @@ impl<M: Copy + Eq + Hash> Draws<M> {
     /// ones from back to front as `view` sees them. Objects that draw nothing are left out: those
     /// without indices, and those whose world matrix has no [`normal_matrix`].
     pub fn new(objects: &[Object<M>], view: &Mat4) -> Result<Self, DrawError> {
-        if objects.len() > MAX_OBJECTS {
+        if objects.len() > MAX_SCENE_NODES {
             return Err(DrawError::TooManyObjects);
         }
         let keys: Vec<DrawKey<M>> = objects.iter().map(DrawKey::of).collect();

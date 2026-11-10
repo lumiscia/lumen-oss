@@ -28,6 +28,10 @@ pub struct Surface {
     pub double_sided: bool,
 }
 
+/// The most nodes one frame's scene may expand to, counting a node each time it is reached, which
+/// also bounds the objects it draws.
+pub const MAX_SCENE_NODES: usize = 100_000;
+
 /// One mesh drawn somewhere in a scene. `M` names the mesh to whoever draws it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Object<M> {

@@ -2,7 +2,6 @@
 //! target, then a resolve into the node's raster.
 
 use bytemuck::{Pod, Zeroable};
-use lumen_3d::glam::Mat4;
 use lumen_3d::{Camera, Draws, LightKind, Lighting, Object, Projection, Row};
 use lumen_gpu::{
     DEPTH_FORMAT, DepthTest, LayoutEntry, LayoutKind, RenderTargetSpec, Res, Size, TargetLoad,
@@ -213,11 +212,7 @@ impl RecordNode for Render3d {
             ));
         }
         let mut collected = Collected::new(self.id);
-        collected.add(
-            cx,
-            required_input(self.id, "scene", self.scene)?,
-            Mat4::IDENTITY,
-        )?;
+        collected.add(cx, required_input(self.id, "scene", self.scene)?)?;
         let scene = collected.scene;
         let fog = solid_linear(self.id, "Render3d", &params.fog_color)?;
         let camera = scene.camera.unwrap_or_default();

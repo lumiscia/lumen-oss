@@ -180,49 +180,96 @@ fn facing_plane(params: Value) -> Value {
     json!({ "id": 1, "type": "shape_3d", "params": plane })
 }
 
+/// Rows that `nodes`, under a `render_3d`, render the plain facing plane: pixel for pixel, and
+/// as a lit plane on its own, so that two blank renders can't pass.
+fn like_the_plain_plane(name: &str, nodes: Vec<Value>) -> [Case; 2] {
+    [
+        Case::new(
+            format!("{name} matches the plain plane"),
+            render_3d(nodes.clone()),
+            Expect::Matches(render_3d(vec![facing_plane(json!({}))]).into()),
+        ),
+        Case::new(
+            format!("{name} shows a lit plane"),
+            render_3d(nodes),
+            Expect::Custom(Box::new(|frames| {
+                lit_at(&frames[0], CENTER, CENTER);
+                // A unit plane at the origin is about 17.6 pixels across.
+                let across = covered(&frames[0], CENTER, 0..SIZE.0);
+                assert!((17..=19).contains(&across), "{across} pixels across");
+            })),
+        ),
+    ]
+}
+
 #[test]
 fn a_mirrored_object_shows_and_is_lit_as_its_unmirrored_twin() {
-    let plane = || render_3d(vec![facing_plane(json!({}))]).into();
-    check(vec![
-        Case::new(
-            "single-sided",
-            render_3d(vec![facing_plane(json!({ "scale": [-1, 1, 1] }))]),
-            Expect::Matches(plane()),
-        ),
-        Case::new(
-            "double-sided",
-            render_3d(vec![facing_plane(
-                json!({ "scale": [-1, 1, 1], "double_sided": true }),
-            )]),
-            Expect::Matches(plane()),
-        ),
-        Case::new(
-            "mirrored by its merge_3d",
-            render_3d(vec![
-                facing_plane(json!({})),
-                merge(2, &[1], json!({ "scale": [-1, 1, 1] })),
-            ]),
-            Expect::Matches(plane()),
-        ),
-    ]);
+    check(
+        [
+            like_the_plain_plane(
+                "single-sided",
+                vec![facing_plane(json!({ "scale": [-1, 1, 1] }))],
+            ),
+            like_the_plain_plane(
+                "double-sided",
+                vec![facing_plane(
+                    json!({ "scale": [-1, 1, 1], "double_sided": true }),
+                )],
+            ),
+            like_the_plain_plane(
+                "mirrored by its merge_3d",
+                vec![
+                    facing_plane(json!({})),
+                    merge(2, &[1], json!({ "scale": [-1, 1, 1] })),
+                ],
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    );
 }
 
 #[test]
 fn a_plane_without_thickness_is_lit_as_one_with_it() {
     // A plane has no extent across Y, so flattening Y leaves it as it was.
-    let plane = || render_3d(vec![facing_plane(json!({}))]).into();
-    check(vec![
-        Case::new(
-            "zero size",
-            render_3d(vec![facing_plane(json!({ "size": [1, 0, 1] }))]),
-            Expect::Matches(plane()),
-        ),
-        Case::new(
-            "zero scale",
-            render_3d(vec![facing_plane(json!({ "scale": [1, 0, 1] }))]),
-            Expect::Matches(plane()),
-        ),
-    ]);
+    check(
+        [
+            like_the_plain_plane(
+                "zero size",
+                vec![facing_plane(json!({ "size": [1, 0, 1] }))],
+            ),
+            like_the_plain_plane(
+                "zero scale",
+                vec![facing_plane(json!({ "scale": [1, 0, 1] }))],
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    );
+}
+
+#[test]
+fn a_plane_scaled_up_with_its_camera_is_lit_as_a_unit_one() {
+    let scaled = |scale: f64| {
+        vec![
+            facing_plane(json!({ "size": [scale, 1, scale] })),
+            json!({ "id": 2, "type": "camera_3d", "params": {
+                "position": [0, 0, 5.0 * scale], "near": 0.05 * scale, "far": 1000.0 * scale
+            } }),
+            merge(3, &[1, 2], json!({})),
+        ]
+    };
+    check(
+        [
+            like_the_plain_plane("1e10 times", scaled(1e10)),
+            like_the_plain_plane("1e20 times", scaled(1e20)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    );
 }
 
 #[test]
@@ -423,9 +470,25 @@ fn a_scene_that_expands_past_the_object_limit_fails_before_expanding_it() {
     }
     let error = render_error(&render_3d(nodes).into());
     assert!(
-        error.contains("the scene has more than 100000 objects"),
+        error.contains(
+            "the scene expands to more than 100000 nodes, counting a node each time it is reached"
+        ),
         "{error}"
     );
+}
+
+#[test]
+fn a_long_chain_of_merge_3d_renders() {
+    // Ids from 1000, clear of the render_3d's.
+    let mut nodes = vec![json!({ "id": 1000, "type": "shape_3d" })];
+    for id in 1001..=6000 {
+        nodes.push(merge(id, &[id - 1], json!({})));
+    }
+    check(vec![Case::new(
+        "5000 merge_3d above a box",
+        render_3d(nodes),
+        Expect::Custom(Box::new(|frames| lit_at(&frames[0], CENTER, CENTER))),
+    )]);
 }
 
 #[test]
