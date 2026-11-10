@@ -84,7 +84,7 @@ export async function errorFromResponse(
 }
 
 /** The well-formed diagnostics in `value`, dropping anything else. */
-function readDiagnostics(value: unknown): LumenDiagnostic[] {
+export function readDiagnostics(value: unknown): LumenDiagnostic[] {
   if (!Array.isArray(value)) {
     return [];
   }

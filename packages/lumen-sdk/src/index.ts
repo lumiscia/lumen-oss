@@ -12,11 +12,14 @@ export type {
   WebhookHeaders,
 } from "./webhooks.js";
 export type {
+  CheckOptions,
+  CheckResult,
   CreateUrlMediaOptions,
   LumenMediaReference,
   LumenOptions,
   MediaKind,
   MediaMetadata,
+  MediaRequestOptions,
   QualityPreset,
   Render,
   RenderFailure,

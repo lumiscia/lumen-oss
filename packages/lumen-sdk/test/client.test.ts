@@ -551,3 +551,124 @@ describe("Lumen media uploads", () => {
     });
   });
 });
+
+describe("Lumen check", () => {
+  test("posts the composition and media manifest and returns the diagnostics", async () => {
+    const warning = { severity: "warning", code: "font.fallback", path: "/nodes/1", message: "x" };
+    const { requests, stub } = recordingFetch(() => ({
+      ok: true,
+      diagnostics: [warning, { code: "malformed" }],
+    }));
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    const result = await lumen.check({ nodes: [] } as never, { media: { hero: "lumen:m1" } });
+
+    expect(result).toEqual({ ok: true, diagnostics: [warning] });
+    expect(requests[0]?.url).toBe("https://api.test/v1/renders/check");
+    expect(requests[0]?.init.method).toBe("POST");
+    expect(JSON.parse(String(requests[0]?.init.body))).toEqual({
+      composition: { nodes: [] },
+      media: { hero: "lumen:m1" },
+    });
+  });
+
+  test("a response without ok is malformed", async () => {
+    const { stub } = recordingFetch(() => ({ diagnostics: [] }));
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await expect(lumen.check({} as never)).rejects.toMatchObject({ code: "invalid_response" });
+  });
+});
+
+describe("Lumen media", () => {
+  test("getMedia reads the media by its escaped id", async () => {
+    const media = { id: "media 1" };
+    const { requests, stub } = recordingFetch(() => ({ media }));
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await expect(lumen.getMedia("media 1")).resolves.toEqual(media);
+    expect(requests[0]?.url).toBe("https://api.test/v1/media/media%201");
+    expect(requests[0]?.init.method).toBe("GET");
+  });
+
+  test("deleteMedia accepts an empty 204 and rejects a missing media", async () => {
+    const calls: string[] = [];
+    const lumen = new Lumen({
+      apiKey: "test-key",
+      baseUrl: "https://api.test/v1",
+      fetch: (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        calls.push(`${init.method} ${String(input)}`);
+        return calls.length === 1
+          ? new Response(null, { status: 204 })
+          : Response.json({ code: "media_not_found", error: "gone" }, { status: 404 });
+      }) as typeof fetch,
+    });
+
+    await expect(lumen.deleteMedia("m1")).resolves.toBeUndefined();
+    await expect(lumen.deleteMedia("m1")).rejects.toMatchObject({
+      code: "media_not_found",
+      status: 404,
+    });
+    expect(calls[0]).toBe("DELETE https://api.test/v1/media/m1");
+  });
+});
+
+describe("Lumen multipart part retries", () => {
+  type Step = "network" | 500 | 429 | 400 | "ok";
+
+  function uploadWith(steps: Step[]) {
+    let partRequests = 0;
+    const stub = (async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/v1/media") {
+        return Response.json({ media: { id: "m" }, uploadUrl: "/v1/media/m/content" });
+      }
+      if (path.endsWith("/multipart")) return Response.json({ uploadId: "u" });
+      if (path.includes("/parts/")) {
+        const step = steps[partRequests] ?? "ok";
+        partRequests += 1;
+        if (step === "network") throw new TypeError("socket hang up");
+        if (step !== "ok") {
+          return Response.json(
+            { code: "part_failed", error: "no" },
+            { status: step, headers: { "retry-after": "0" } },
+          );
+        }
+        return Response.json({ etag: "e", partNumber: 1 });
+      }
+      return Response.json({ media: { id: "m" } });
+    }) as typeof fetch;
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+    const upload = () =>
+      lumen.uploadMedia({
+        body: new Blob(["abc"]).stream(),
+        contentType: "video/mp4",
+        sizeBytes: 3,
+      });
+    return { partRequests: () => partRequests, upload };
+  }
+
+  test("a part is sent again after a network error, a server error or a rate limit", async () => {
+    const mixed = uploadWith(["network", 500, "ok"]);
+    await expect(mixed.upload()).resolves.toMatchObject({ id: "m" });
+    expect(mixed.partRequests()).toBe(3);
+
+    const limited = uploadWith([429, "ok"]);
+    await expect(limited.upload()).resolves.toMatchObject({ id: "m" });
+    expect(limited.partRequests()).toBe(2);
+  });
+
+  test("a part fails with its last error after three attempts", async () => {
+    const { partRequests, upload } = uploadWith([500, 500, 500, "ok"]);
+
+    await expect(upload()).rejects.toMatchObject({ code: "part_failed", status: 500 });
+    expect(partRequests()).toBe(3);
+  });
+
+  test("a client error other than 429 is not retried", async () => {
+    const { partRequests, upload } = uploadWith([400, "ok"]);
+
+    await expect(upload()).rejects.toMatchObject({ status: 400 });
+    expect(partRequests()).toBe(1);
+  });
+});

@@ -1,4 +1,5 @@
 import type {
+  LumenDiagnostic,
   LumenModelAnimation,
   LumenModelCamera,
   LumenModelMaterial,
@@ -165,4 +166,20 @@ export interface CreateUrlMediaOptions {
   readonly fileName?: string;
   readonly signal?: AbortSignal;
   readonly url: string | URL;
+}
+
+export interface CheckOptions {
+  /** Media by the alias the composition uses, as for `render`. */
+  readonly media?: RenderMediaManifest;
+  readonly signal?: AbortSignal;
+}
+
+export interface CheckResult {
+  /** Whether the composition has no errors. Warnings don't count. */
+  readonly ok: boolean;
+  readonly diagnostics: readonly LumenDiagnostic[];
+}
+
+export interface MediaRequestOptions {
+  readonly signal?: AbortSignal;
 }

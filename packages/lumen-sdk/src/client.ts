@@ -1,14 +1,17 @@
 import { Composition, type LumenComposition } from "@lumiscia/lumen-shared";
 
-import { LumenError, errorFromResponse, isRecord, readBody } from "./errors.js";
+import { LumenError, errorFromResponse, isRecord, readBody, readDiagnostics } from "./errors.js";
 import { outputBody } from "./output.js";
 import { parseMedia, parsePart, parseUploadId, parseUploadTarget } from "./media.js";
 import { isTerminal, parseProgress, parseRender, renderError, resolveUrl } from "./render.js";
 import { watchRender, type SocketUpdate } from "./socket.js";
 import type {
+  CheckOptions,
+  CheckResult,
   CreateUrlMediaOptions,
   LumenMediaReference,
   LumenOptions,
+  MediaRequestOptions,
   Render,
   RenderMediaManifest,
   RenderOptions,
@@ -30,6 +33,9 @@ const maxSocketGapMs = 30_000;
 const giveUpAfterMs = 10 * 60_000;
 const maxBackoffMs = 30_000;
 const maxRateLimitBackoffMs = 60_000;
+/** A multipart upload sends each part this many times before giving up on it. */
+const maxPartAttempts = 3;
+const partRetryBaseMs = 500;
 /** Spreads waits that started together: a delay grows by up to this fraction. */
 const jitter = 0.25;
 
@@ -107,6 +113,28 @@ export class Lumen {
   async cancelRender(id: string, options: { signal?: AbortSignal } = {}): Promise<Render> {
     const body = await this.#request("POST", `/renders/${encodeURIComponent(id)}/cancel`, options);
     return parseRender(body.render, this.#baseUrl);
+  }
+
+  /**
+   * Checks a composition without rendering it. `ok` is false when any diagnostic is an error;
+   * warnings don't count. Fonts and `asset:` references resolve as a render's would, so pass the
+   * same `media` you would pass to `render`.
+   */
+  async check(
+    composition: Composition | LumenComposition,
+    options: CheckOptions = {},
+  ): Promise<CheckResult> {
+    const body = await this.#request("POST", "/renders/check", {
+      body: {
+        composition: composition instanceof Composition ? composition.toJSON() : composition,
+        media: mediaManifest(options.media ?? {}),
+      },
+      signal: options.signal,
+    });
+    if (typeof body.ok !== "boolean") {
+      throw new LumenError("invalid_response", "Lumen API returned a malformed check result.");
+    }
+    return { ok: body.ok, diagnostics: readDiagnostics(body.diagnostics) };
   }
 
   /**
@@ -271,6 +299,20 @@ export class Lumen {
     return parseMedia(body.media);
   }
 
+  /** Reads media, such as to see whether its upload has been validated. */
+  async getMedia(id: string, options: MediaRequestOptions = {}): Promise<TemporaryMedia> {
+    const body = await this.#request("GET", `/media/${encodeURIComponent(id)}`, options);
+    return parseMedia(body.media);
+  }
+
+  /** Deletes media so renders can no longer use it. Rejects with a `LumenError` if it is not found. */
+  async deleteMedia(id: string, options: MediaRequestOptions = {}): Promise<void> {
+    await this.#send(this.#apiUrl(`/media/${encodeURIComponent(id)}`), {
+      method: "DELETE",
+      signal: options.signal,
+    });
+  }
+
   async #uploadParts(
     id: string,
     body: UploadMediaOptions["body"],
@@ -283,12 +325,9 @@ export class Lumen {
 
     const parts: { etag: string; partNumber: number }[] = [];
     for await (const part of partsOf(body, sizeBytes, signal)) {
-      const response = await this.#send(this.#apiUrl(`${uploadPath}/parts/${parts.length + 1}`), {
-        body: part,
-        method: "PUT",
-        signal,
-      });
-      parts.push(parsePart(await readJson(response, signal)));
+      parts.push(
+        await this.#putPart(this.#apiUrl(`${uploadPath}/parts/${parts.length + 1}`), part, signal),
+      );
     }
 
     const done = await this.#request("POST", `${uploadPath}/complete`, {
@@ -296,6 +335,25 @@ export class Lumen {
       signal,
     });
     return parseMedia(done.media);
+  }
+
+  /** Sends one part, again after a network error, a server error or a rate limit. */
+  async #putPart(
+    url: URL,
+    part: Blob | Uint8Array<ArrayBuffer>,
+    signal: AbortSignal | undefined,
+  ): Promise<{ readonly etag: string; readonly partNumber: number }> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const response = await this.#send(url, { body: part, method: "PUT", signal });
+        return parsePart(await readJson(response, signal));
+      } catch (error) {
+        if (attempt >= maxPartAttempts || !isTransient(error)) {
+          throw error;
+        }
+        await sleep(jittered(error.retryAfterMs ?? partRetryBaseMs * 2 ** (attempt - 1)), signal);
+      }
+    }
   }
 
   /**
