@@ -205,6 +205,24 @@ fn at_node(scene: &Value, id: NodeId, rest: &str) -> (String, Option<NodeId>) {
     (path, Some(id))
 }
 
+/// The connection in `scene` from `from` into `port` of `to`, or node `to` when no connection
+/// names it.
+fn at_connection(scene: &Value, from: NodeId, to: NodeId, port: &str) -> (String, Option<NodeId>) {
+    let is_it = |connection: &Value| {
+        connection.get("from_node").and_then(Value::as_u64) == Some(from.0)
+            && connection.get("to_node").and_then(Value::as_u64) == Some(to.0)
+            && connection.get("to_port").and_then(Value::as_str) == Some(port)
+    };
+    let index = scene
+        .get("connections")
+        .and_then(Value::as_array)
+        .and_then(|connections| connections.iter().position(is_it));
+    match index {
+        Some(index) => (format!("/connections/{index}"), Some(to)),
+        None => at_node(scene, to, ""),
+    }
+}
+
 /// Where in `scene` the problem `error` describes is, and which node it's about.
 fn locate(error: &LumenError, scene: &Value) -> (String, Option<NodeId>) {
     match error {
@@ -290,6 +308,12 @@ fn locate_graph(error: &GraphValidationError, scene: &Value) -> (String, Option<
         | GraphValidationError::InputAlreadyConnected { node_id, .. } => {
             at_node(scene, *node_id, "")
         }
+        GraphValidationError::WrongInputKind {
+            node_id,
+            port,
+            source_node,
+            ..
+        } => at_connection(scene, *source_node, *node_id, port),
         GraphValidationError::MissingMediaOutput
         | GraphValidationError::MultipleMediaOutputs { .. } => ("/nodes".to_string(), None),
         GraphValidationError::InvalidClip {
@@ -356,6 +380,24 @@ mod tests {
             param_pointer(Some(&params), "content[0].font_features[00]"),
             "/content/0/font_features/[00]"
         );
+    }
+
+    #[test]
+    fn a_wrong_kind_points_at_its_connection() {
+        let document = serde_json::json!({ "connections": [
+            { "from_node": 1, "to_node": 3, "to_port": "source" },
+            { "from_node": 2, "to_node": 3, "to_port": "source" },
+        ] });
+        let error = LumenError::from(GraphValidationError::WrongInputKind {
+            node_id: NodeId::new(3),
+            port: "source".to_string(),
+            source_node: NodeId::new(2),
+            expected: crate::node::PortKind::Scene,
+            actual: crate::node::PortKind::Raster,
+        });
+        let diagnostic = Diagnostic::from_error(&error, &document);
+        assert_eq!(diagnostic.path, "/connections/1");
+        assert_eq!(diagnostic.node, Some(NodeId::new(3)));
     }
 
     #[test]

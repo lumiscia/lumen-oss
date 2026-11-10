@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::node::NodeId;
+use crate::node::{NodeId, PortKind};
 
 #[derive(Debug, Error, Clone, lumen_macros::DiagnosticCode)]
 pub enum LumenError {
@@ -166,6 +166,16 @@ pub enum GraphValidationError {
     #[code("connection.input_already_connected")]
     #[error("input `{port}` of node {node_id} is already connected")]
     InputAlreadyConnected { node_id: NodeId, port: String },
+    /// A connection whose source outputs another kind than the input takes.
+    #[code("connection.wrong_kind")]
+    #[error("node {source_node} outputs {actual}, but input `{port}` of node {node_id} takes {expected}: {}", wrong_kind_hint(*.expected))]
+    WrongInputKind {
+        node_id: NodeId,
+        port: String,
+        source_node: NodeId,
+        expected: PortKind,
+        actual: PortKind,
+    },
     #[code("graph.missing_required_input")]
     #[error("node {node_id} is missing required input `{port}`")]
     MissingRequiredInput { node_id: NodeId, port: String },
@@ -215,6 +225,16 @@ pub enum GraphValidationError {
         template: String,
         error: Box<LumenError>,
     },
+}
+
+/// What to do about wiring a node of the wrong kind into an input that takes `expected`.
+fn wrong_kind_hint(expected: PortKind) -> &'static str {
+    match expected {
+        PortKind::Raster => "render the scene to a raster first, and wire that in",
+        PortKind::Scene => {
+            "show the raster in the scene through a scene node that takes a raster input"
+        }
+    }
 }
 
 #[derive(Debug, Error, Clone, lumen_macros::DiagnosticCode)]

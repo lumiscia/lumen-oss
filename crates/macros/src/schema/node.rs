@@ -20,6 +20,12 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
         }
     }
 
+    if let Some(second) = inputs.iter().filter(|input| input.variadic).nth(1) {
+        return Err(syn::Error::new(
+            second.field.span(),
+            "Node derive supports at most one variadic input",
+        ));
+    }
     if metas.len() > 1 {
         return Err(syn::Error::new(
             metas[1].0.span(),
@@ -30,11 +36,13 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let input_static = format_ident!("__LUMEN_{}_INPUTS", ident.to_string().to_uppercase());
     let input_defs = inputs.iter().map(|input| {
         let name = &input.name;
+        let kind = port_kind_tokens(input.scene);
         let optional = input.optional;
         let variadic = input.variadic;
         quote! {
             ::lumen_engine::node::InputPortDef {
                 name: #name,
+                kind: #kind,
                 optional: #optional,
                 variadic: #variadic,
             }
@@ -107,6 +115,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
     let node_name = node.name;
     let description = doc_string(&node.docs);
     let category = category_tokens(&node.category);
+    let output = output_kind_tokens(node.output.as_ref());
 
     Ok(quote! {
         #structural_hash
@@ -123,6 +132,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
                     description: #description,
                     category: #category,
                     inputs: #input_static,
+                    output: #output,
                     properties: {
                         let mut properties = ::std::vec::Vec::new();
                         #(properties.extend(#metas_property_defs);)*
@@ -190,6 +200,10 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
 
             fn input_port_defs(&self) -> &'static [::lumen_engine::node::InputPortDef] {
                 #input_static
+            }
+
+            fn output_kind(&self) -> ::lumen_engine::node::PortKind {
+                #output
             }
 
             fn input_ports(&self) -> ::std::vec::Vec<::core::option::Option<::lumen_engine::node::NodeId>> {

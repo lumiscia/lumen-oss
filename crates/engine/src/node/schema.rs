@@ -1,5 +1,5 @@
 use super::ids::NodeId;
-use super::ports::InputPortDef;
+use super::ports::{InputPortDef, PortKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -96,6 +96,7 @@ pub struct NodeSchemaDef {
     pub description: &'static str,
     pub category: NodeCategory,
     pub inputs: &'static [InputPortDef],
+    pub output: PortKind,
     pub properties: Vec<PropertyDef>,
     pub default_properties: Vec<(&'static str, serde_json::Value)>,
 }

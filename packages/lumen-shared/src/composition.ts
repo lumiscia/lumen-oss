@@ -3,6 +3,8 @@ import type {
   CompositionTemplate,
   Connection,
   LumenComposition,
+  NodeInputPortKind,
+  NodeInputPortName,
   NodeKind,
 } from "@lumiscia/lumen-types";
 
@@ -193,10 +195,13 @@ export class Composition {
     return existing === undefined;
   }
 
-  connect<TKind extends NodeKind>(
-    from: NodeReference,
+  connect<
+    TKind extends NodeKind,
+    TPort extends NodeInputPortName<TKind> = NodeInputPortName<TKind>,
+  >(
+    from: NodeReference<NodeInputPortKind<NoInfer<TKind>, NoInfer<TPort>>>,
     to: number | { readonly id: number; readonly type?: TKind },
-    options: ConnectOptions<TKind>,
+    options: ConnectOptions<NoInfer<TKind>, TPort>,
   ): this {
     this.#connections.push({
       from_node: this.#ownedNodeId(from),
