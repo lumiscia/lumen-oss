@@ -21,7 +21,6 @@ tracing = "0.1.44"
 wgpu = { version = "30.0.1", default-features = false, features = [
   "std",
   "webgpu",
-  "webgl",
   "wgsl",
 ] }
 wgpu-hal = { version = "30.0.1", default-features = false, optional = true }
