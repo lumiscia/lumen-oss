@@ -519,6 +519,16 @@ impl GpuCompositionRenderer {
     pub fn gpu_renderer(&self) -> &lumen_gpu::Renderer {
         &self.renderer
     }
+
+    /// Fails with the error a render of `composition` gives when its canvas is larger than the
+    /// device's texture limit, for callers that create the output texture themselves.
+    pub fn check_output_size(&self, composition: &Composition) -> crate::Result<()> {
+        let settings = composition.render_settings();
+        let canvas = lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1));
+        let output = &composition.graph().nodes[&composition.output()];
+        let max = self.renderer.device.limits().max_texture_dimension_2d;
+        super::frame_graph::ensure_texture_fits(output, canvas, canvas, max)
+    }
 }
 
 /// Times a frame is bound again after fonts load during binding, before binding fails rather

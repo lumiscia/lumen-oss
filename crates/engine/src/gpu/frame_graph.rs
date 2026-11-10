@@ -1993,7 +1993,41 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
     }
 }
 
+/// Fails, blaming `node`, when `size` is larger than the device's `max` texture dimension.
+pub(crate) fn ensure_texture_fits(
+    node: &NodeKind,
+    size: Size,
+    canvas: Size,
+    max: u32,
+) -> crate::Result<()> {
+    if size.width <= max && size.height <= max {
+        return Ok(());
+    }
+    let what = if size == canvas { "canvas" } else { "texture" };
+    Err(RenderError::NodeEvaluation {
+        node_id: node.id(),
+        node_kind: node.kind_name(),
+        details: format!(
+            "a {}x{} {what} is larger than this device's {max}-pixel texture limit",
+            size.width, size.height
+        ),
+    }
+    .into())
+}
+
+/// Records `node`, or fails when the textures it acquires itself are larger than the device
+/// allows. The textures its inputs acquire are theirs to check.
 fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
+    let outer = cx.rec.replace_largest_acquired_texture(Size::new(0, 0));
+    let raster = record_kind(node, cx);
+    let largest = cx.rec.replace_largest_acquired_texture(outer);
+    let raster = raster?;
+    let max = cx.rec.device().limits().max_texture_dimension_2d;
+    ensure_texture_fits(node, largest, cx.canvas_size(), max)?;
+    Ok(raster)
+}
+
+fn record_kind(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
     match node {
         NodeKind::MediaIn(node) => node.record(cx),
         NodeKind::Background(node) => node.record(cx),
