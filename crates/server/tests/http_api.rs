@@ -1882,6 +1882,52 @@ fn media_multipart_part_takes_one_request_at_a_time() {
     });
 }
 
+#[test]
+fn media_multipart_late_duplicate_of_a_part_does_not_crowd_out_the_next_part() {
+    let server = Server::start(&[]);
+    let created = create_upload(&server, "parts.bin", "application/octet-stream", 1024);
+    let id = media_id(&created["media"]);
+    let started: Value = server
+        .post_to(&format!("/media/{id}/multipart"), &json!({}))
+        .json()
+        .expect("multipart body");
+    let upload_id = started["uploadId"].as_str().expect("upload id");
+    let path = |number: u32| format!("/media/{id}/multipart/{upload_id}/parts/{number}");
+    let parts = server
+        .media_dir
+        .path()
+        .join(&id)
+        .join("parts")
+        .join(upload_id);
+    let etag = |response: reqwest::blocking::Response| {
+        assert_eq!(response.status(), StatusCode::OK);
+        let part: Value = response.json().expect("part body");
+        part["etag"].clone()
+    };
+
+    let first = etag(server.put_bytes(&path(1), &[0; 512]));
+    // The same bytes sent again, still arriving when the next part does.
+    let late = send_raw(
+        &server,
+        &format!("PUT {} HTTP/1.1\r\nContent-Length: 512", path(1)),
+        &[0; 500],
+    );
+    wait_until("the late duplicate never arrived", TIMEOUT, || {
+        temp_bytes(&parts) >= 500
+    });
+    let second = etag(server.put_bytes(&path(2), &[1; 512]));
+
+    let completed = server.post_to(
+        &format!("/media/{id}/multipart/{upload_id}/complete"),
+        &json!({ "parts": [
+            { "etag": first, "partNumber": 1 },
+            { "etag": second, "partNumber": 2 },
+        ] }),
+    );
+    assert_eq!(completed.status(), StatusCode::OK);
+    drop(late);
+}
+
 fn wait_until(what: &str, deadline: Duration, mut done: impl FnMut() -> bool) {
     let started = Instant::now();
     while !done() {
@@ -1890,7 +1936,7 @@ fn wait_until(what: &str, deadline: Duration, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// Uploads hold at most their size on disk, plus, while a stored part is being replaced, that part.
+/// Uploads hold at most their size on disk, plus the stored parts being replaced.
 #[test]
 fn media_uploads_hold_at_most_their_size_plus_a_part_being_replaced() {
     let server = Server::start(&["--media-max-bytes", "1024"]);
@@ -1923,8 +1969,8 @@ fn media_uploads_hold_at_most_their_size_plus_a_part_being_replaced() {
         1024
     );
 
-    // A part being replaced doesn't count against its replacement, which may hold up to its
-    // size on top of sizeBytes until it replaces the stored part.
+    // A replacement counts only beyond the part it replaces, so it may hold up to its size on
+    // top of sizeBytes until it replaces the stored part.
     assert_eq!(part(1, 1024).status(), StatusCode::OK);
     assert_eq!(
         bytes_under(&server.media_dir.path().join(&id).join("parts")),

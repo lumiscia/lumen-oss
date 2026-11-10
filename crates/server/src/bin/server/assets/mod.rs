@@ -82,8 +82,9 @@ struct Entry {
     /// Multipart uploads by id.
     uploads: HashMap<String, Upload>,
     /// Bytes this media's uploads hold on disk before it is checked: stored parts and bodies still
-    /// being written, across every upload. Never more than its `size_bytes` plus the largest stored
-    /// part a replacement is being received for.
+    /// being written, across every upload. A replacement counts only beyond the stored part it
+    /// replaces, so this never passes `size_bytes`; what is on disk never passes `size_bytes` plus
+    /// the stored parts being replaced.
     staged_bytes: u64,
 }
 
@@ -362,13 +363,12 @@ impl AssetStore {
         Ok(())
     }
 
-    /// Counts `bytes` more toward what `id`'s uploads hold on disk, refusing to pass its size plus
-    /// `allowance`.
-    fn stage(&self, id: &str, bytes: u64, allowance: u64) -> Result<(), StoreError> {
+    /// Counts `bytes` more toward what `id`'s uploads hold on disk, refusing to pass its size.
+    fn stage(&self, id: &str, bytes: u64) -> Result<(), StoreError> {
         let mut entries = self.entries();
         let entry = entries.get_mut(id).ok_or(StoreError::NotFound)?;
         let staged = entry.staged_bytes.saturating_add(bytes);
-        if staged > entry.media.size_bytes.saturating_add(allowance) {
+        if staged > entry.media.size_bytes {
             return Err(StoreError::ExceedsSize(entry.media.size_bytes));
         }
         entry.staged_bytes = staged;
@@ -447,7 +447,8 @@ impl AssetStore {
     /// Stores part `number` of a multipart upload, replacing an earlier one, and returns its etag,
     /// which the part's bytes decide, so the same bytes sent again keep an etag already returned.
     /// One request at a time sends a part number. An earlier part stays until its replacement is
-    /// stored, and doesn't count against the replacement, so a part sent again at full size fits.
+    /// stored, and a replacement counts toward the media's size only beyond the earlier part, so a
+    /// part sent again at full size fits however much else is being received.
     pub async fn put_part<S, E>(
         &self,
         id: &str,
@@ -515,9 +516,11 @@ impl AssetStore {
                 bytes,
             },
         );
-        if let Some(replaced) = replaced {
-            entry.staged_bytes = entry.staged_bytes.saturating_sub(replaced.bytes);
-        }
+        // The replacement now counts in full, and the part it replaced not at all.
+        entry.staged_bytes = entry
+            .staged_bytes
+            .saturating_add(bytes - staging.charged)
+            .saturating_sub(replaced.map_or(0, |replaced| replaced.bytes));
         Ok(etag)
     }
 
@@ -800,15 +803,18 @@ async fn probe_blocking(path: PathBuf) -> Result<(MediaKind, MediaMetadata), Str
 }
 
 /// A body being written for `id` to a temporary file, its bytes counted toward what `id`'s uploads
-/// hold on disk as they arrive. Dropping it, even with its request, removes the file and stops
-/// counting them, unless `kept` says a stored part now owns both.
+/// hold on disk as they arrive, beyond the stored part it replaces. Dropping it, even with its
+/// request, removes the file and stops counting them, unless `kept` says a stored part now owns
+/// both.
 struct Staging {
     store: AssetStore,
     id: String,
     temp: PathBuf,
     bytes: u64,
-    /// Bytes past `id`'s size it may hold: those of the stored part it replaces.
+    /// Bytes of the stored part it replaces, which `bytes` count toward only past them.
     allowance: u64,
+    /// Bytes counted toward what `id`'s uploads hold: those of `bytes` past `allowance`.
+    charged: u64,
     kept: bool,
 }
 
@@ -820,12 +826,12 @@ impl Staging {
             temp: temp_path(dir),
             bytes: 0,
             allowance,
+            charged: 0,
             kept: false,
         }
     }
 
-    /// Writes `body`, refusing a chunk that would take `id` past its size and allowance, and
-    /// returns its length.
+    /// Writes `body`, refusing a chunk that would take `id` past its size, and returns its length.
     async fn write<S, E>(&mut self, mut body: S) -> Result<u64, StoreError>
     where
         S: Stream<Item = Result<Bytes, E>> + Unpin,
@@ -835,7 +841,9 @@ impl Staging {
         while let Some(chunk) = body.next().await {
             let chunk = chunk.map_err(|error| StoreError::Body(error.to_string()))?;
             let length = chunk.len() as u64;
-            self.store.stage(&self.id, length, self.allowance)?;
+            let charged = (self.bytes + length).saturating_sub(self.allowance);
+            self.store.stage(&self.id, charged - self.charged)?;
+            self.charged = charged;
             self.bytes += length;
             file.write_all(&chunk).await?;
         }
@@ -848,7 +856,7 @@ impl Drop for Staging {
     fn drop(&mut self) {
         if !self.kept {
             let _ = fs::remove_file(&self.temp);
-            self.store.unstage(&self.id, self.bytes);
+            self.store.unstage(&self.id, self.charged);
         }
     }
 }
