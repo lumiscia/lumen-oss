@@ -189,6 +189,20 @@ impl Clip {
         })
     }
 
+    /// The size of the canvas the clip's content is drawn on: its template's, or `scope`'s when it
+    /// plays its source.
+    #[cfg(feature = "3d")]
+    pub(crate) fn content_canvas(&self, scope: &Scope<'_>) -> crate::Result<lumen_gpu::Size> {
+        let settings = match self.template(scope)? {
+            Some((template, _)) => &template.scene.render_settings,
+            None => &scope.scene.render_settings,
+        };
+        Ok(lumen_gpu::Size::new(
+            settings.width.max(1),
+            settings.height.max(1),
+        ))
+    }
+
     /// When the clip shows in `scope`, evaluated at `ctx`'s frame.
     pub fn window(
         &self,

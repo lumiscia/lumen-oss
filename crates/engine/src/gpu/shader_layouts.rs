@@ -282,6 +282,7 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
                 fog_density,
                 tone_mapping,
                 exposure,
+                supersample,
             ),
             layout!(
                 "Object",

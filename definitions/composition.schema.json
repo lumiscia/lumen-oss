@@ -3056,7 +3056,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by\ndefault, so it looks as it does in 2D while it faces the camera, and is always blended, so its\ntransparent parts show what is behind it. The source is sampled with bilinear filtering and no\nmipmaps; a plane framed to map its pixels one to one stays exact only with `render_3d`'s\n`supersample` at 1.",
+            "description": "Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by\ndefault, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,\nordered by its centre among blended objects, so its transparent parts show what is behind it.\nPlanes that intersect, or overlap while crossing in depth, can show in the wrong order; layers\nseparated in depth, and opaque shapes in front of or behind planes, are ordered correctly.",
             "properties": {
               "id": {
                 "minimum": 0,

@@ -1129,17 +1129,20 @@ impl<'a> FrameCx<'a> {
         Ok(full)
     }
 
-    /// `node_id` stored at its full display size, where a clip keeps its content's own canvas
-    /// rather than being cropped to this one, for readers that place it anywhere, such as 3D.
+    /// `node_id` stored at its full display size, where a clip keeps the canvas its content is
+    /// drawn on rather than being cropped to this one, for readers that place it anywhere, such
+    /// as 3D. Content that draws less than its canvas is padded with transparency to it, and
+    /// content that draws more is cropped.
     #[cfg(feature = "3d")]
     pub(crate) fn input_native(&mut self, node_id: NodeId) -> crate::Result<Raster> {
         if let Some(NodeKind::Clip(clip)) = self.scope.node(node_id) {
+            let canvas = clip.content_canvas(&self.scope)?;
             return match clip.route(&self.scope, self.frame, self.media)? {
                 Some(routed) => {
-                    let raster = self.record_routed(routed)?;
+                    let raster = self.place_routed(routed, canvas)?;
                     Ok(self.full_frame(raster))
                 }
-                None => Ok(self.transparent(self.canvas_size())),
+                None => Ok(self.transparent(canvas)),
             };
         }
         self.input_full(node_id)
@@ -1954,10 +1957,14 @@ impl<'a> FrameCx<'a> {
         let Some(routed) = routed else {
             return Ok(self.transparent(self.canvas_size()));
         };
+        self.place_routed(routed, self.canvas_size())
+    }
+
+    /// What a clip's content shows, cropped to its canvas and the `canvas` it is placed on.
+    fn place_routed(&mut self, routed: Routed<'a>, canvas: Size) -> crate::Result<Raster> {
         let settings = &routed.scope.scene.render_settings;
         let content = Size::new(settings.width.max(1), settings.height.max(1));
         let raster = self.record_routed(routed)?;
-        let canvas = self.canvas_size();
         let canvas_rect = lumen_gpu::RectI::from_size(canvas);
         let data = raster.domain.data_rect;
         let visible = canvas_rect

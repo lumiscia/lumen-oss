@@ -182,10 +182,10 @@ impl Default for ImagePlane3dParams {
 }
 
 /// Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by
-/// default, so it looks as it does in 2D while it faces the camera, and is always blended, so its
-/// transparent parts show what is behind it. The source is sampled with bilinear filtering and no
-/// mipmaps; a plane framed to map its pixels one to one stays exact only with `render_3d`'s
-/// `supersample` at 1.
+/// default, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,
+/// ordered by its centre among blended objects, so its transparent parts show what is behind it.
+/// Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers
+/// separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "image_plane_3d",

@@ -591,35 +591,122 @@ fn an_unlit_plane_filling_the_frame_reproduces_its_source_whatever_the_tone_mapp
             "with AgX and a stop less",
             json!({ "supersample": 1, "tone_mapping": "agx", "exposure": -1 }),
         ),
-        // Supersampling blends a texel with its neighbours, which a ramp's straight edges survive.
         exact(
             "with the default supersampling and ACES",
             json!({ "tone_mapping": "aces", "exposure": 1 }),
+        ),
+    ]);
+}
+
+/// A checkerboard of one-pixel squares on the left, and on the right one-pixel white strokes
+/// across black.
+fn fine_detail() -> TestMedia {
+    image(|x, y| {
+        let white = if x < CENTER {
+            (x + y) % 2 == 0
+        } else {
+            x == 48 || y == 20
+        };
+        if white { [255; 4] } else { [0, 0, 0, 255] }
+    })
+}
+
+#[test]
+fn a_plane_drawn_pixel_for_pixel_keeps_one_pixel_detail_at_any_supersample() {
+    let seen = |supersample: u32| {
+        let mut nodes = vec![plate(10)];
+        nodes.extend(framed(10));
+        render_3d_with(json!({ "supersample": supersample }), nodes)
+    };
+    check(
+        [1, 2, 4]
+            .map(|supersample| {
+                Case::new(
+                    format!("supersample {supersample}"),
+                    seen(supersample),
+                    Expect::Matches(scene(SIZE, json!([plate(1)])).into()),
+                )
+                .media(fine_detail())
+            })
+            .into(),
+    );
+}
+
+#[test]
+fn a_planes_silhouette_is_antialiased_without_a_seam_at_the_default_supersample() {
+    // A blue square turned 20° and not filling the frame has partly covered edge pixels, each
+    // blue scaled by its coverage like any other blended edge.
+    let mut nodes = vec![plate(10)];
+    nodes.extend([
+        plane(1, 10, json!({ "width": 2, "rotation": [0, 0, 20] })),
+        ortho(2, json!({})),
+        merge(3, &[1, 2], json!({})),
+    ]);
+    check(vec![
+        Case::new(
+            "a rotated plane",
+            render_3d(nodes),
+            Expect::Custom(Box::new(|frames| {
+                let edges: Vec<[u8; 4]> = frames[0]
+                    .rgba
+                    .chunks(4)
+                    .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+                    .filter(|pixel| (1..255).contains(&pixel[3]))
+                    .collect();
+                assert!(edges.len() > 40, "{} edge pixels", edges.len());
+                for edge in edges {
+                    assert!(
+                        edge[0] == 0 && edge[1] == 0 && edge[2].abs_diff(edge[3]) <= 2,
+                        "an edge pixel is blue scaled by coverage, got {edge:?}"
+                    );
+                }
+                assert_eq!(frames[0].pixel(CENTER, CENTER), BLUE);
+            })),
         )
-        .tolerance(2),
+        .media(image(|_, _| BLUE)),
     ]);
 }
 
 #[test]
-fn a_planes_height_follows_the_canvas_of_its_source() {
-    // A clip of a 128 x 64 composition keeps that canvas on a 64 x 64 one, so a plane 4 units wide
-    // is 2 high: 64 x 32 pixels at 16 pixels to a unit.
+fn opacity_scales_the_alpha_of_a_source() {
+    let mut nodes = vec![plate(10)];
+    nodes.extend([
+        plane(1, 10, json!({ "width": 4, "opacity": 0.5 })),
+        ortho(2, json!({})),
+        merge(3, &[1, 2], json!({})),
+    ]);
+    check(vec![
+        Case::new(
+            "half-transparent blue at half opacity",
+            render_3d(nodes),
+            Expect::Probes(vec![(CENTER, CENTER, [0, 0, 64, 64])]),
+        )
+        .media(image(|_, _| [0, 0, 255, 128])),
+    ]);
+}
+
+/// A plane 4 units wide showing the clip of a 128 x 64 composition whose output `output`, which
+/// is 64 x 32 pixels of the 64 x 64 frame.
+fn wide_clip(output: Value) -> Scene {
     let mut wide = render_3d(framed(10));
     wide.0["compositions"] = json!({ "wide": {
         "render_settings": { "width": 128, "height": 64 },
         "timeline": { "fps": 30, "duration_frames": 1 },
-        "nodes": [
-            { "id": 1, "type": "background", "params": { "paint": RED } },
-            { "id": 2, "type": "media_output" },
-        ],
+        "nodes": [output, { "id": 2, "type": "media_output" }],
         "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }],
     } });
     wide.0["nodes"].as_array_mut().expect("nodes").push(json!({
         "id": 10, "type": "clip", "params": { "composition": "wide" }
     }));
+    wide
+}
+
+#[test]
+fn a_planes_height_follows_the_canvas_of_its_source() {
+    let background = json!({ "id": 1, "type": "background", "params": { "paint": RED } });
     check(vec![Case::new(
         "a clip whose canvas is twice as wide as tall",
-        wide,
+        wide_clip(background),
         Expect::Custom(Box::new(|frames| {
             let frame = &frames[0];
             let tall = (0..SIZE.1)
@@ -631,6 +718,50 @@ fn a_planes_height_follows_the_canvas_of_its_source() {
             assert_eq!(frame.pixel(CENTER, 10), CLEAR);
         })),
     )]);
+}
+
+#[test]
+fn a_clip_content_is_padded_or_cropped_to_the_canvas_it_declares() {
+    let image_out =
+        json!({ "id": 1, "type": "media_in", "params": { "kind": "image", "source": "plate" } });
+    let image_of = |width: u32, color: fn(u32) -> [u8; 4]| {
+        let pixels = (0..64)
+            .flat_map(|_| (0..width).flat_map(color))
+            .collect::<Vec<u8>>();
+        TestMedia::default().image("plate", width, 64, pixels)
+    };
+    check(vec![
+        // Half the declared 128 pixels across, so the right half of the plane is padding.
+        Case::new(
+            "a 64 x 64 image on a 128 x 64 canvas",
+            wide_clip(image_out.clone()),
+            Expect::Custom(Box::new(|frames| {
+                let frame = &frames[0];
+                for (x, y, color) in [
+                    (16, 20, RED),
+                    (16, 44, RED),
+                    (16, 10, CLEAR),
+                    (16, 54, CLEAR),
+                    (48, 32, CLEAR),
+                ] {
+                    assert_eq!(frame.pixel(x, y), color, "({x}, {y})");
+                }
+            })),
+        )
+        .media(image_of(64, |_| RED)),
+        // Red for the declared 128 pixels, then green beyond them.
+        Case::new(
+            "a 256 x 64 image on a 128 x 64 canvas",
+            wide_clip(image_out),
+            Expect::Custom(Box::new(|frames| {
+                let frame = &frames[0];
+                for (x, y, color) in [(8, 20, RED), (56, 20, RED), (56, 44, RED), (56, 10, CLEAR)] {
+                    assert_eq!(frame.pixel(x, y), color, "({x}, {y})");
+                }
+            })),
+        )
+        .media(image_of(256, |x| if x < 128 { RED } else { GREEN })),
+    ]);
 }
 
 /// Opaque blue on the left half, nothing on the right.
@@ -685,13 +816,18 @@ fn a_planes_transparent_texels_show_what_is_behind_without_hiding_it() {
         Case::new(
             "an edge that is half covered keeps its colour",
             render_3d_with(json!({}), {
+                // Half a pixel to the right puts the source's edge in the middle of pixel 32.
                 let mut nodes = vec![plate(10)];
-                nodes.extend(framed(10));
+                nodes.extend([
+                    plane(1, 10, json!({ "width": 4, "position": [0.03125, 0, 0] })),
+                    ortho(2, json!({})),
+                    merge(3, &[1, 2], json!({})),
+                ]);
                 nodes
             }),
             Expect::Custom(Box::new(|frames| {
                 let frame = &frames[0];
-                let edge = frame.pixel(CENTER - 1, CENTER);
+                let edge = frame.pixel(CENTER, CENTER);
                 assert!(
                     (1..255).contains(&edge[3]),
                     "the edge is partly covered, got {edge:?}"

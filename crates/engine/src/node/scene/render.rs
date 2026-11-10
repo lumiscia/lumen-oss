@@ -57,7 +57,8 @@ pub(crate) struct GpuGlobals {
     pub(crate) fog_density: f32,
     pub(crate) tone_mapping: u32,
     pub(crate) exposure: f32,
-    _pad: [u32; 2],
+    pub(crate) supersample: u32,
+    _pad: u32,
 }
 
 /// Keep in sync with `Light` in `scene.wgsl`.
@@ -260,6 +261,7 @@ impl RecordNode for Render3d {
             &lighting,
             &params,
             fog,
+            supersample,
         ));
         let lights = cx.rec.storage_parts(&[bytemuck::cast_slice(&lights)]);
         let objects: Vec<GpuObject> = draws
@@ -368,6 +370,7 @@ fn globals(
     lighting: &Lighting,
     params: &super::Render3dParams,
     fog: [f32; 4],
+    supersample: u32,
 ) -> GpuGlobals {
     GpuGlobals {
         view_proj: (camera.projection_matrix(aspect) * camera.view()).to_cols_array_2d(),
@@ -381,6 +384,7 @@ fn globals(
         fog_density: params.fog_density.max(0.0) as f32,
         tone_mapping: params.tone_mapping as u32,
         exposure: (params.exposure as f32).exp2(),
-        _pad: [0; 2],
+        supersample,
+        _pad: 0,
     }
 }

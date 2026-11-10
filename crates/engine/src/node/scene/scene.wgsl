@@ -32,6 +32,8 @@ struct Globals {
     tone_mapping: u32,
     // A multiplier.
     exposure: f32,
+    // Samples per output pixel along each axis.
+    supersample: u32,
 }
 
 struct Object {
@@ -210,6 +212,20 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(high, low, c <= vec3<f32>(0.04045));
 }
 
+// Where a sample of the raster belongs: at `uv`, moved to the centre of the output pixel the
+// sample is part of, so that the samples averaged into a pixel all read the same place and a
+// raster drawn pixel for pixel isn't filtered twice. Minified rasters keep each sample's own
+// place, since averaging distinct samples is what filters them. `dx` and `dy` are the change in
+// `uv` over a sample, and `position` the sample's place in the supersampled target.
+fn pixel_centre_uv(position: vec2<f32>, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec2<f32> {
+    let scale = f32(max(globals.supersample, 1u));
+    let to_centre = (floor(position / scale) + vec2<f32>(0.5)) * scale - position;
+    let size = vec2<f32>(textureDimensions(raster_tex));
+    let texels_per_pixel = max(length(dx * size), length(dy * size)) * scale;
+    let weight = clamp((3.0 - texels_per_pixel) / 1.5, 0.0, 1.0);
+    return uv + weight * (dx * to_centre.x + dy * to_centre.y);
+}
+
 // The raster at `uv` as linear colour with straight alpha.
 fn raster_texel(uv: vec2<f32>) -> vec4<f32> {
     let texel = textureSampleLevel(raster_tex, raster_sampler, uv, 0.0);
@@ -219,11 +235,14 @@ fn raster_texel(uv: vec2<f32>) -> vec4<f32> {
 
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    // Derivatives need uniform control flow, so they come before anything branches.
+    let uv_dx = dpdx(in.uv);
+    let uv_dy = dpdy(in.uv);
     let o = objects[in.object];
     let raster = (o.flags & FLAG_RASTER) != 0u;
     var texel = vec4<f32>(1.0);
     if (raster) {
-        texel = raster_texel(in.uv);
+        texel = raster_texel(pixel_centre_uv(in.clip.xy, in.uv, uv_dx, uv_dy));
     }
     var base = o.base_color * texel;
     let emissive = o.emissive * texel.rgb;
