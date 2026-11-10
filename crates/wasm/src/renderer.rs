@@ -48,6 +48,9 @@ impl SurfaceCompositionRenderer {
         media: &M,
     ) -> Result<lumen_gpu::Size, JsValue> {
         let format = self.gpu.config.format;
+        self.renderer
+            .check_output_size(composition)
+            .map_err(|e| render_error(frame, e))?;
         self.gpu.prepare(
             canvas,
             composition.render_settings().width,
