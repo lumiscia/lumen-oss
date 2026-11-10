@@ -343,6 +343,41 @@ fn images_sharing_bytes_decode_once() {
 }
 
 #[test]
+fn images_count_by_their_bytes_whatever_buffer_views_name_them() {
+    // 128 buffer views over one PNG followed by 64 KiB the decoder never reaches.
+    let views = |identical: bool| {
+        let image = png(1, 1, [0, 255, 0, 255]);
+        let length = image.len() + (64 << 10);
+        let mut glb = textured(Glb::triangle(), &[image, vec![0; 64 << 10]].concat());
+        let start = glb.json["bufferViews"][2]["byteOffset"].as_u64().unwrap();
+        let shorter = |view: usize| if identical { 0 } else { 4 * view };
+        glb.json["bufferViews"]
+            .as_array_mut()
+            .unwrap()
+            .extend((0..128).map(|view| {
+                json!({ "buffer": 0, "byteOffset": start, "byteLength": length - shorter(view) })
+            }));
+        glb.json["images"] = (3..131)
+            .map(|view| json!({ "bufferView": view, "mimeType": "image/png" }))
+            .collect();
+        glb.json["textures"] = (0..128).map(|source| json!({ "source": source })).collect();
+        glb.json["materials"] = (0..128)
+            .map(|index| json!({ "pbrMetallicRoughness": { "baseColorTexture": { "index": index } } }))
+            .collect();
+        glb
+    };
+    let identical = views(true).read().unwrap();
+    assert_eq!(identical.textures.len(), 1);
+    let file = views(false).bytes().len();
+    assert_eq!(
+        views(false).read().unwrap_err(),
+        ModelError::TooLarge(format!(
+            "the model's images take more than the {file} bytes of its file"
+        ))
+    );
+}
+
+#[test]
 fn a_png_decodes_from_its_still_image_chunks_alone() {
     // Each chunk beside the still image has a bad checksum, which the decoder would refuse.
     let image = png(1, 1, [10, 20, 30, 255]);

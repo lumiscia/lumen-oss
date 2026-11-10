@@ -27,9 +27,29 @@ pub(super) fn size(value: u64, what: &str) -> Result<usize, ModelError> {
     usize::try_from(value).map_err(|_| invalid(format!("{what} is out of range")))
 }
 
+/// Where a buffer view's bytes are: a buffer, and the offset and length within it, which reading
+/// the view checked are in range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct ByteRange {
+    buffer: usize,
+    offset: usize,
+    pub(super) length: usize,
+}
+
 /// The bytes of a base64 `data:` URI, or an error for any other URI, which names a file outside
 /// the model.
 pub(super) fn data_uri(uri: &str) -> Result<Vec<u8>, ModelError> {
+    base64::engine::general_purpose::STANDARD
+        .decode(base64_payload(uri)?)
+        .map_err(|error| invalid(format!("a data URI in the model is corrupt: {error}")))
+}
+
+/// The most bytes the `data:` URI `uri` decodes to.
+pub(super) fn data_uri_length(uri: &str) -> Result<usize, ModelError> {
+    Ok(base64::decoded_len_estimate(base64_payload(uri)?.len()))
+}
+
+fn base64_payload(uri: &str) -> Result<&str, ModelError> {
     let Some((header, payload)) = uri
         .strip_prefix("data:")
         .and_then(|rest| rest.split_once(','))
@@ -41,9 +61,7 @@ pub(super) fn data_uri(uri: &str) -> Result<Vec<u8>, ModelError> {
     if !header.ends_with(";base64") {
         return Err(unsupported("a data URI in the model isn't base64"));
     }
-    base64::engine::general_purpose::STANDARD
-        .decode(payload)
-        .map_err(|error| invalid(format!("a data URI in the model is corrupt: {error}")))
+    Ok(payload)
 }
 
 impl<'a> Buffers<'a> {
@@ -90,27 +108,48 @@ impl<'a> Buffers<'a> {
         })
     }
 
-    /// The bytes of buffer view `view`.
+    /// The bytes of buffer view `view`, and its stride.
     pub(super) fn view(
         &self,
         view: Index<gltf_json::buffer::View>,
     ) -> Result<(&[u8], Option<usize>), ModelError> {
+        let range = self.view_range(view)?;
+        let stride = self.root.buffer_views[view.value()].byte_stride;
+        Ok((self.bytes(range), stride.map(|stride| stride.0)))
+    }
+
+    /// Where the bytes of buffer view `view` are.
+    pub(super) fn view_range(
+        &self,
+        view: Index<gltf_json::buffer::View>,
+    ) -> Result<ByteRange, ModelError> {
         let json = self
             .root
             .buffer_views
             .get(view.value())
             .ok_or_else(|| invalid("a buffer view index is out of range"))?;
-        let buffer = self
+        let buffer = json.buffer.value();
+        let data = self
             .buffers
-            .get(json.buffer.value())
+            .get(buffer)
             .ok_or_else(|| invalid("a buffer view names a buffer the model lacks"))?;
         let offset = size(json.byte_offset.map_or(0, |offset| offset.0), "an offset")?;
         let length = size(json.byte_length.0, "a buffer view's length")?;
-        let bytes = offset
+        if offset
             .checked_add(length)
-            .and_then(|end| buffer.get(offset..end))
-            .ok_or_else(|| invalid("a buffer view reaches past the end of its buffer"))?;
-        Ok((bytes, json.byte_stride.map(|stride| stride.0)))
+            .is_none_or(|end| end > data.len())
+        {
+            return Err(invalid("a buffer view reaches past the end of its buffer"));
+        }
+        Ok(ByteRange {
+            buffer,
+            offset,
+            length,
+        })
+    }
+
+    pub(super) fn bytes(&self, range: ByteRange) -> &[u8] {
+        &self.buffers[range.buffer][range.offset..][..range.length]
     }
 
     pub(super) fn accessor(&self, index: Index<Accessor>) -> Result<&'a Accessor, ModelError> {

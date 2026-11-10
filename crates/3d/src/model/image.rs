@@ -18,27 +18,27 @@ const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n
 /// animated PNG, of which only the still image is read.
 const PNG_PIXEL_CHUNKS: [[u8; 4]; 5] = [*b"IHDR", *b"PLTE", *b"tRNS", *b"IDAT", *b"IEND"];
 
-/// An image whose header has been read, and whose size is within [`MAX_IMAGE_SIDE`].
-pub(super) struct Source<'a> {
+/// The header of an image, whose size is within [`MAX_IMAGE_SIDE`].
+#[derive(Clone, Copy)]
+pub(super) struct Header {
     format: ImageFormat,
-    /// For a PNG, only its [`PNG_PIXEL_CHUNKS`].
-    bytes: Cow<'a, [u8]>,
     pub(super) width: u32,
     pub(super) height: u32,
 }
 
-/// Reads the header of the PNG or JPEG in `bytes`.
-pub(super) fn source(bytes: &[u8]) -> Result<Source<'_>, ModelError> {
-    let format = match image::guess_format(bytes) {
-        Ok(format @ (ImageFormat::Png | ImageFormat::Jpeg)) => format,
-        _ => {
-            return Err(unsupported("an image in the model is neither PNG nor JPEG"));
-        }
-    };
-    let bytes = match format {
-        ImageFormat::Png => Cow::Owned(png_pixel_chunks(bytes)?),
-        _ => Cow::Borrowed(bytes),
-    };
+/// The PNG or JPEG in `bytes` and the bytes its decoder reads: for a PNG, only its
+/// [`PNG_PIXEL_CHUNKS`], copied.
+fn pixel_bytes(bytes: &[u8]) -> Result<(ImageFormat, Cow<'_, [u8]>), ModelError> {
+    match image::guess_format(bytes) {
+        Ok(ImageFormat::Png) => Ok((ImageFormat::Png, Cow::Owned(png_pixel_chunks(bytes)?))),
+        Ok(ImageFormat::Jpeg) => Ok((ImageFormat::Jpeg, Cow::Borrowed(bytes))),
+        _ => Err(unsupported("an image in the model is neither PNG nor JPEG")),
+    }
+}
+
+/// Reads the header of the PNG or JPEG in `bytes`, keeping nothing of them.
+pub(super) fn header(bytes: &[u8]) -> Result<Header, ModelError> {
+    let (format, bytes) = pixel_bytes(bytes)?;
     // A JPEG's header segments are copied as they are, without decompressing anything, so
     // reading them takes memory and time in proportion to the file.
     let (width, height) = guarded(|| {
@@ -52,9 +52,8 @@ pub(super) fn source(bytes: &[u8]) -> Result<Source<'_>, ModelError> {
     if width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE {
         return Err(too_large("pixels across one image", MAX_IMAGE_SIDE));
     }
-    Ok(Source {
+    Ok(Header {
         format,
-        bytes,
         width,
         height,
     })
@@ -97,25 +96,31 @@ fn guarded<T>(decode: impl FnOnce() -> Result<T, ModelError>) -> Result<T, Model
         .unwrap_or_else(|_| Err(invalid("an image in the model is corrupt")))
 }
 
-/// Decodes `source` to RGBA8 rows, top first. What the decoder writes, in its own pixel format,
-/// is checked against [`MAX_IMAGE_DECODE_BYTES`] from the size the header gave before anything is
-/// decoded. The decoder's own limits are set as a second line, though on this path they don't
-/// bound every allocation it makes.
-pub(super) fn decode(source: &Source<'_>) -> Result<Vec<u8>, ModelError> {
+/// Decodes the image in `bytes`, whose header is `header`, to RGBA8 rows, top first. What the
+/// decoder writes, in its own pixel format, is checked against [`MAX_IMAGE_DECODE_BYTES`] from the
+/// header's size before anything is decoded. The decoder's own limits are set as a second line,
+/// though on this path they don't bound every allocation it makes.
+pub(super) fn decode(bytes: &[u8], header: Header) -> Result<Vec<u8>, ModelError> {
+    let (format, bytes) = pixel_bytes(bytes)?;
+    if format != header.format {
+        return Err(invalid(
+            "an image in the model changed format between reads",
+        ));
+    }
     guarded(|| {
-        let mut reader = ImageReader::with_format(Cursor::new(&*source.bytes), source.format);
+        let mut reader = ImageReader::with_format(Cursor::new(&*bytes), header.format);
         let mut limits = Limits::default();
         limits.max_image_width = Some(MAX_IMAGE_SIDE);
         limits.max_image_height = Some(MAX_IMAGE_SIDE);
         limits.max_alloc = Some(MAX_IMAGE_DECODE_BYTES);
         reader.limits(limits);
         let decoder = reader.into_decoder().map_err(corrupt)?;
-        if decoder.dimensions() != (source.width, source.height) {
+        if decoder.dimensions() != (header.width, header.height) {
             return Err(invalid("an image in the model changed size between reads"));
         }
         let native = u64::from(decoder.color_type().bytes_per_pixel())
-            * u64::from(source.width)
-            * u64::from(source.height);
+            * u64::from(header.width)
+            * u64::from(header.height);
         if native > MAX_IMAGE_DECODE_BYTES {
             return Err(too_large(
                 "bytes in one decoded image",

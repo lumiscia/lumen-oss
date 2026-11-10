@@ -12,7 +12,7 @@ use gltf_json::validation::Checked;
 use gltf_json::{Index, Root};
 
 use super::animation::{Animation, Channel, Interpolation, Values, unit};
-use super::buffers::{Buffers, data_uri, size};
+use super::buffers::{Buffers, ByteRange, data_uri, data_uri_length, size};
 use super::image;
 use super::{
     Geometry, MAX_DRAWS, MAX_INDICES, MAX_JOINTS, MAX_SKIN_JOINTS, MAX_TEXTURE_PIXELS,
@@ -72,7 +72,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Model, ModelError> {
         }
     }
     let draws = count_draws(&nodes, &reached, &meshes)?;
-    let (materials, textures) = read_materials(&root, &buffers)?;
+    let (materials, textures) = read_materials(&root, &buffers, bytes.len())?;
     if meshes.iter().flatten().any(|primitive| {
         primitive
             .material
@@ -515,11 +515,11 @@ fn factor(value: f32) -> Result<f32, ModelError> {
     }
 }
 
-/// Where an image's bytes are: a buffer view, which any number of images may share, or the data
-/// URI of the image at this index.
+/// Where an image's bytes are: a range of a buffer, which any number of images and buffer views
+/// may share, or the data URI of the image at this index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ImageBytes {
-    View(usize),
+    Range(ByteRange),
     DataUri(usize),
 }
 
@@ -531,6 +531,7 @@ type Pending = (ImageBytes, bool);
 /// other than the first, which isn't supported.
 fn pending_map(
     root: &Root,
+    buffers: &Buffers<'_>,
     info: Option<(Index<gltf_json::Texture>, u32)>,
     srgb: bool,
 ) -> Result<Option<Map<Pending>>, ModelError> {
@@ -557,7 +558,7 @@ fn pending_map(
         Some(gltf_json::Image {
             buffer_view: Some(view),
             ..
-        }) => ImageBytes::View(view.value()),
+        }) => ImageBytes::Range(buffers.view_range(*view)?),
         Some(gltf_json::Image { uri: Some(_), .. }) => ImageBytes::DataUri(image),
         Some(_) => return Err(invalid("an image in the model has no data")),
         None => return Err(invalid("a texture names an image the model lacks")),
@@ -569,11 +570,14 @@ fn pending_map(
 }
 
 /// The textures `pending` names, in order of first use. Each image's bytes are read once however
-/// many images and slots name them, and every texture's mip levels are counted against
-/// [`MAX_TEXTURE_PIXELS`] before any image is decoded.
+/// many images, buffer views and slots name them. Before any is read, the distinct images' encoded
+/// bytes together are checked against the `file_bytes` the file holds, and every texture's mip
+/// levels against [`MAX_TEXTURE_PIXELS`]; then each image is decoded in turn, with only its own
+/// bytes copied.
 fn decode_textures(
     root: &Root,
     buffers: &Buffers<'_>,
+    file_bytes: usize,
     pending: &[Pending],
 ) -> Result<(Vec<Texture>, HashMap<Pending, usize>), ModelError> {
     let mut order: Vec<Pending> = Vec::new();
@@ -594,32 +598,41 @@ fn decode_textures(
         });
         images[image].1.push(texture);
     }
-    let data = images
-        .iter()
-        .map(|&(bytes, _)| {
-            Ok(match bytes {
-                ImageBytes::View(view) => Cow::Borrowed(buffers.view(Index::new(view as u32))?.0),
-                ImageBytes::DataUri(image) => Cow::Owned(data_uri(
-                    root.images[image].uri.as_deref().unwrap_or_default(),
-                )?),
-            })
+    let uri = |image: usize| root.images[image].uri.as_deref().unwrap_or_default();
+    let mut encoded = 0usize;
+    for &(bytes, _) in &images {
+        let length = match bytes {
+            ImageBytes::Range(range) => range.length,
+            ImageBytes::DataUri(image) => data_uri_length(uri(image))?,
+        };
+        encoded = encoded.saturating_add(length);
+        if encoded > file_bytes {
+            return Err(ModelError::TooLarge(format!(
+                "the model's images take more than the {file_bytes} bytes of its file"
+            )));
+        }
+    }
+    let data = |bytes: ImageBytes| -> Result<Cow<'_, [u8]>, ModelError> {
+        Ok(match bytes {
+            ImageBytes::Range(range) => Cow::Borrowed(buffers.bytes(range)),
+            ImageBytes::DataUri(image) => Cow::Owned(data_uri(uri(image))?),
         })
-        .collect::<Result<Vec<Cow<'_, [u8]>>, ModelError>>()?;
-    let mut sources = Vec::with_capacity(images.len());
+    };
+    let mut headers = Vec::with_capacity(images.len());
     let mut pixels = 0u64;
-    for ((_, textures), data) in images.iter().zip(&data) {
-        let source = image::source(data)?;
-        pixels = image::mip_pixels(source.width, source.height)
+    for (bytes, textures) in &images {
+        let header = image::header(&data(*bytes)?)?;
+        pixels = image::mip_pixels(header.width, header.height)
             .checked_mul(textures.len() as u64)
             .and_then(|charge| pixels.checked_add(charge))
             .filter(|&total| total <= MAX_TEXTURE_PIXELS)
             .ok_or_else(|| too_large("texture pixels", MAX_TEXTURE_PIXELS))?;
-        sources.push(source);
+        headers.push(header);
     }
 
     let mut textures: Vec<Option<Texture>> = vec![None; order.len()];
-    for ((_, uses), source) in images.iter().zip(&sources) {
-        let mut rgba = image::decode(source)?;
+    for ((bytes, uses), &header) in images.iter().zip(&headers) {
+        let mut rgba = image::decode(&data(*bytes)?, header)?;
         for (count, &texture) in uses.iter().enumerate() {
             // The last texture read from the image takes the decoded pixels themselves.
             let pixels = if count + 1 == uses.len() {
@@ -628,7 +641,7 @@ fn decode_textures(
                 rgba.clone()
             };
             let srgb = order[texture].1;
-            textures[texture] = Some(image::texture(pixels, source.width, source.height, srgb));
+            textures[texture] = Some(image::texture(pixels, header.width, header.height, srgb));
         }
     }
     Ok((textures.into_iter().flatten().collect(), indices))
@@ -670,6 +683,7 @@ fn sampler_of(sampler: &gltf_json::texture::Sampler) -> Sampler {
 fn read_materials(
     root: &Root,
     buffers: &Buffers<'_>,
+    file_bytes: usize,
 ) -> Result<(Vec<Material>, Vec<Texture>), ModelError> {
     let mut materials = Vec::with_capacity(root.materials.len());
     let mut maps = Vec::with_capacity(root.materials.len());
@@ -715,19 +729,26 @@ fn read_materials(
             maps: Maps::default(),
         });
         maps.push(Maps {
-            base_color: pending_map(root, info(&pbr.base_color_texture), true)?,
-            metallic_roughness: pending_map(root, info(&pbr.metallic_roughness_texture), false)?,
+            base_color: pending_map(root, buffers, info(&pbr.base_color_texture), true)?,
+            metallic_roughness: pending_map(
+                root,
+                buffers,
+                info(&pbr.metallic_roughness_texture),
+                false,
+            )?,
             normal: pending_map(
                 root,
+                buffers,
                 material
                     .normal_texture
                     .as_ref()
                     .map(|normal| (normal.index, normal.tex_coord)),
                 false,
             )?,
-            emissive: pending_map(root, info(&material.emissive_texture), true)?,
+            emissive: pending_map(root, buffers, info(&material.emissive_texture), true)?,
             occlusion: pending_map(
                 root,
+                buffers,
                 material
                     .occlusion_texture
                     .as_ref()
@@ -750,7 +771,7 @@ fn read_materials(
         .flatten()
         .map(|map| map.texture)
         .collect();
-    let (textures, indices) = decode_textures(root, buffers, &pending)?;
+    let (textures, indices) = decode_textures(root, buffers, file_bytes, &pending)?;
     for (material, maps) in materials.iter_mut().zip(&maps) {
         material.maps = maps.map(|texture| indices[texture]);
     }
