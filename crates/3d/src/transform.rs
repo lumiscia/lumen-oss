@@ -60,11 +60,15 @@ pub fn mirrors(world: &Mat4) -> bool {
 }
 
 /// What takes a mesh's normals to world space under `world`: the inverse transpose up to a
-/// positive factor, scaled so that its largest entry is 1, so the normals it gives need
-/// normalising. Unlike the inverse transpose, it stays defined when `world` flattens one axis,
+/// positive factor, scaled so that its largest entry is 2^100, so the normals it gives
+/// need normalising. Unlike the inverse transpose, it stays defined when `world` flattens one axis,
 /// which leaves the faces across that axis their area. `None` when `world` is not finite or leaves
 /// no face any area.
 pub fn normal_matrix(world: &Mat4) -> Option<Mat3> {
+    // High in f32's range, so entries far smaller than the largest still fit, with room left to
+    // add three of them.
+    const NORMAL_SCALE: f64 = (1u128 << 100) as f64;
+
     if !world.is_finite() {
         return None;
     }
@@ -86,7 +90,7 @@ pub fn normal_matrix(world: &Mat4) -> Option<Mat3> {
     }
     let determinant = x.dot(cofactor.x_axis);
     let sign = if determinant < 0.0 { -1.0 } else { 1.0 };
-    Some((cofactor * (sign / largest)).as_mat3())
+    Some((cofactor * (sign * NORMAL_SCALE / largest)).as_mat3())
 }
 
 #[cfg(test)]
@@ -205,5 +209,9 @@ mod tests {
                 "{normal} turned to {got}, not {expected}"
             );
         }
+        // The face across the axis scaled least keeps its normal, though it is 48 decades smaller
+        // than the largest.
+        let extreme = Mat4::from_scale(Vec3::new(1e-24, 1e14, 1e24));
+        assert!(close(turned(extreme, Vec3::Z), Vec3::Z));
     }
 }
