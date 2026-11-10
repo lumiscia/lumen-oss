@@ -249,6 +249,14 @@ impl LumenPreviewController {
         self.reset_renderer()
     }
 
+    /// Forgets the model `source` names. The next render frees the GPU copy of every model and
+    /// loads again those it still draws.
+    #[wasm_bindgen(js_name = "removeModelSource")]
+    pub fn remove_model_source(&self, source: &str) -> Result<(), JsValue> {
+        self.change_media(|media| media.remove_model(source))?;
+        self.reset_renderer()
+    }
+
     #[wasm_bindgen(js_name = "removeVideoSource")]
     pub fn remove_video_source(&self, stream_id: &str) -> Result<(), JsValue> {
         self.change_media(|media| media.remove_video(stream_id))?;
@@ -264,6 +272,11 @@ impl LumenPreviewController {
     #[wasm_bindgen(js_name = "hasImage")]
     pub fn has_image(&self, image_id: &str) -> bool {
         self.media.has_image(image_id)
+    }
+
+    #[wasm_bindgen(js_name = "hasModel")]
+    pub fn has_model(&self, source: &str) -> bool {
+        self.media.has_model(source)
     }
 
     #[wasm_bindgen(js_name = "hasVideoFrame")]
@@ -300,6 +313,14 @@ impl LumenPreviewController {
         let frame =
             image_frame_from_rgba(width, height, rgba).map_err(|e| JsValue::from_str(&e))?;
         self.change_media(|media| media.set_image(image_id.to_string(), frame))?;
+        self.reset_renderer()
+    }
+
+    /// Stores a binary glTF (`.glb`) file under the `source` a `model_3d` names. It is read when a
+    /// render first draws it, so a file that isn't a model fails that render.
+    #[wasm_bindgen(js_name = "setModel")]
+    pub fn set_model(&self, source: &str, data: Vec<u8>) -> Result<(), JsValue> {
+        self.change_media(|media| media.set_model(source.to_string(), data))?;
         self.reset_renderer()
     }
 
