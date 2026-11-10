@@ -123,7 +123,8 @@ fn load_composition(
 ) -> Result<Composition, ApiError> {
     let composition = lumen_engine::json::parse_value(value)
         .map_err(|error| ApiError::invalid_composition(&error))?;
-    let asset_errors = lumen_engine::json::check_value(value, None, Some(assets));
+    let asset_errors =
+        lumen_engine::json::check_composition(&composition, value, None, Some(assets));
     if asset_errors.iter().any(|diagnostic| diagnostic.is_error()) {
         return Err(ApiError::invalid_diagnostics(&asset_errors));
     }
