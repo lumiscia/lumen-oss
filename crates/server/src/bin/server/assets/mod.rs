@@ -4,7 +4,7 @@
 mod probe;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt, fs, io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
@@ -15,6 +15,7 @@ use axum::body::Bytes;
 use futures_util::{Stream, StreamExt};
 use lumen_engine::media::{Asset, AssetResolver};
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 use tokio::io::AsyncWriteExt;
 
 use super::util::rfc3339;
@@ -81,7 +82,8 @@ struct Entry {
     /// Multipart uploads by id.
     uploads: HashMap<String, Upload>,
     /// Bytes this media's uploads hold on disk before it is checked: stored parts and bodies still
-    /// being written, across every upload. Never more than its `size_bytes`.
+    /// being written, across every upload. Never more than its `size_bytes` plus the largest stored
+    /// part a replacement is being received for.
     staged_bytes: u64,
 }
 
@@ -110,10 +112,12 @@ impl Entry {
     }
 }
 
-/// A multipart upload: the parts received, and whether they are being joined.
+/// A multipart upload: the parts received, the part numbers being received, and whether they are
+/// being joined.
 #[derive(Default)]
 struct Upload {
     parts: BTreeMap<u32, Part>,
+    receiving: HashSet<u32>,
     completing: bool,
 }
 
@@ -127,6 +131,8 @@ pub enum StoreError {
     NotFound,
     NotPending,
     Busy,
+    /// Another request is already sending this part number.
+    PartBusy(u32),
     TooLarge(u64),
     /// As many media as the store allows are already waiting for their bytes.
     TooManyPending(usize),
@@ -356,12 +362,13 @@ impl AssetStore {
         Ok(())
     }
 
-    /// Counts `bytes` more toward what `id`'s uploads hold on disk, refusing to pass its size.
-    fn stage(&self, id: &str, bytes: u64) -> Result<(), StoreError> {
+    /// Counts `bytes` more toward what `id`'s uploads hold on disk, refusing to pass its size plus
+    /// `allowance`.
+    fn stage(&self, id: &str, bytes: u64, allowance: u64) -> Result<(), StoreError> {
         let mut entries = self.entries();
         let entry = entries.get_mut(id).ok_or(StoreError::NotFound)?;
         let staged = entry.staged_bytes.saturating_add(bytes);
-        if staged > entry.media.size_bytes {
+        if staged > entry.media.size_bytes.saturating_add(allowance) {
             return Err(StoreError::ExceedsSize(entry.media.size_bytes));
         }
         entry.staged_bytes = staged;
@@ -398,7 +405,7 @@ impl AssetStore {
         E: fmt::Display,
     {
         let size = self.pending_size(id)?;
-        let mut staging = Staging::new(self, id, &self.entry_dir(id));
+        let mut staging = Staging::new(self, id, &self.entry_dir(id), 0);
         let received = staging.write(body).await?;
         if received != size {
             return Err(StoreError::SizeMismatch {
@@ -437,9 +444,10 @@ impl AssetStore {
         }
     }
 
-    /// Stores part `number` of a multipart upload, replacing an earlier one, and returns its etag.
-    /// An earlier part is dropped as its replacement starts, so a part sent again after a lost
-    /// response fits, and one whose replacement fails has to be sent once more.
+    /// Stores part `number` of a multipart upload, replacing an earlier one, and returns its etag,
+    /// which the part's bytes decide, so the same bytes sent again keep an etag already returned.
+    /// One request at a time sends a part number. An earlier part stays until its replacement is
+    /// stored, and doesn't count against the replacement, so a part sent again at full size fits.
     pub async fn put_part<S, E>(
         &self,
         id: &str,
@@ -457,26 +465,37 @@ impl AssetStore {
             )));
         }
         self.check_upload(id, upload_id)?;
-        let dir = self.upload_dir(id, upload_id);
-        {
+        let earlier_bytes = {
             let mut entries = self.entries();
-            let entry = entries.get_mut(id).ok_or(StoreError::UploadNotFound)?;
-            let upload = entry
-                .uploads
-                .get_mut(upload_id)
+            let upload = entries
+                .get_mut(id)
+                .and_then(|entry| entry.uploads.get_mut(upload_id))
                 .ok_or(StoreError::UploadNotFound)?;
             if upload.completing {
                 return Err(StoreError::Busy);
             }
-            if let Some(earlier) = upload.parts.remove(&number) {
-                entry.staged_bytes = entry.staged_bytes.saturating_sub(earlier.bytes);
-                let _ = fs::remove_file(dir.join(number.to_string()));
+            if !upload.receiving.insert(number) {
+                return Err(StoreError::PartBusy(number));
             }
-        }
-        let mut staging = Staging::new(self, id, &dir);
+            upload.parts.get(&number).map_or(0, |part| part.bytes)
+        };
+        let _receiving = Receiving {
+            store: self.clone(),
+            id: id.to_string(),
+            upload_id: upload_id.to_string(),
+            number,
+        };
+        let dir = self.upload_dir(id, upload_id);
+        let mut staging = Staging::new(self, id, &dir, earlier_bytes);
+        let mut hasher = Sha1::new();
+        let body = body.inspect(|chunk| {
+            if let Ok(chunk) = chunk {
+                hasher.update(chunk);
+            }
+        });
         let bytes = staging.write(body).await?;
+        let etag = format!("\"{:x}\"", hasher.finalize());
 
-        let etag = format!("\"{}\"", uuid::Uuid::new_v4().simple());
         let mut entries = self.entries();
         let entry = entries.get_mut(id).ok_or(StoreError::UploadNotFound)?;
         let upload = entry
@@ -788,21 +807,25 @@ struct Staging {
     id: String,
     temp: PathBuf,
     bytes: u64,
+    /// Bytes past `id`'s size it may hold: those of the stored part it replaces.
+    allowance: u64,
     kept: bool,
 }
 
 impl Staging {
-    fn new(store: &AssetStore, id: &str, dir: &Path) -> Self {
+    fn new(store: &AssetStore, id: &str, dir: &Path, allowance: u64) -> Self {
         Self {
             store: store.clone(),
             id: id.to_string(),
             temp: temp_path(dir),
             bytes: 0,
+            allowance,
             kept: false,
         }
     }
 
-    /// Writes `body`, refusing a chunk that would take `id` past its size, and returns its length.
+    /// Writes `body`, refusing a chunk that would take `id` past its size and allowance, and
+    /// returns its length.
     async fn write<S, E>(&mut self, mut body: S) -> Result<u64, StoreError>
     where
         S: Stream<Item = Result<Bytes, E>> + Unpin,
@@ -812,7 +835,7 @@ impl Staging {
         while let Some(chunk) = body.next().await {
             let chunk = chunk.map_err(|error| StoreError::Body(error.to_string()))?;
             let length = chunk.len() as u64;
-            self.store.stage(&self.id, length)?;
+            self.store.stage(&self.id, length, self.allowance)?;
             self.bytes += length;
             file.write_all(&chunk).await?;
         }
@@ -826,6 +849,28 @@ impl Drop for Staging {
         if !self.kept {
             let _ = fs::remove_file(&self.temp);
             self.store.unstage(&self.id, self.bytes);
+        }
+    }
+}
+
+/// Part `number` of an upload being received. Dropping it, even with its request, lets another
+/// request send that part.
+struct Receiving {
+    store: AssetStore,
+    id: String,
+    upload_id: String,
+    number: u32,
+}
+
+impl Drop for Receiving {
+    fn drop(&mut self) {
+        if let Some(upload) = self
+            .store
+            .entries()
+            .get_mut(&self.id)
+            .and_then(|entry| entry.uploads.get_mut(&self.upload_id))
+        {
+            upload.receiving.remove(&self.number);
         }
     }
 }

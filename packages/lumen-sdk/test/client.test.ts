@@ -614,7 +614,7 @@ describe("Lumen media", () => {
 });
 
 describe("Lumen multipart part retries", () => {
-  type Step = "network" | "body" | 500 | 429 | 400 | "ok";
+  type Step = "network" | "body" | "busy" | 500 | 429 | 409 | 400 | "ok";
 
   function uploadWith(steps: Step[]) {
     let partRequests = 0;
@@ -633,6 +633,12 @@ describe("Lumen multipart part retries", () => {
             new ReadableStream({
               start: (controller) => controller.error(new TypeError("terminated")),
             }),
+          );
+        }
+        if (step === "busy") {
+          return Response.json(
+            { code: "upload_part_in_progress", error: "busy" },
+            { status: 409, headers: { "retry-after": "0" } },
           );
         }
         if (step !== "ok") {
@@ -663,6 +669,13 @@ describe("Lumen multipart part retries", () => {
     const limited = uploadWith([429, "ok"]);
     await expect(limited.upload()).resolves.toMatchObject({ id: "m" });
     expect(limited.partRequests()).toBe(2);
+  });
+
+  test("a part is sent again while an earlier attempt at it is still being received", async () => {
+    const { partRequests, upload } = uploadWith(["busy", "ok"]);
+
+    await expect(upload()).resolves.toMatchObject({ id: "m" });
+    expect(partRequests()).toBe(2);
   });
 
   test("a part is sent again when the connection drops while its response is read", async () => {
@@ -702,10 +715,12 @@ describe("Lumen multipart part retries", () => {
     expect(partRequests()).toBe(3);
   });
 
-  test("a client error other than 429 is not retried", async () => {
-    const { partRequests, upload } = uploadWith([400, "ok"]);
+  test("a client error other than 429 or a busy part is not retried", async () => {
+    for (const status of [400, 409] as const) {
+      const { partRequests, upload } = uploadWith([status, "ok"]);
 
-    await expect(upload()).rejects.toMatchObject({ status: 400 });
-    expect(partRequests()).toBe(1);
+      await expect(upload()).rejects.toMatchObject({ status });
+      expect(partRequests()).toBe(1);
+    }
   });
 });

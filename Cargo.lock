@@ -1752,6 +1752,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha1",
  "subtle",
  "tempfile",
  "tokio",

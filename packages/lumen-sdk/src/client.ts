@@ -337,7 +337,10 @@ export class Lumen {
     return parseMedia(done.media);
   }
 
-  /** Sends one part, again after a network error, a server error or a rate limit. */
+  /**
+   * Sends one part, again after a network error, a server error, a rate limit or while an earlier
+   * attempt at it is still being received.
+   */
   async #putPart(
     url: URL,
     part: Blob | Uint8Array<ArrayBuffer>,
@@ -348,7 +351,7 @@ export class Lumen {
         const response = await this.#send(url, { body: part, method: "PUT", signal });
         return parsePart(await readJson(response, signal));
       } catch (error) {
-        if (attempt >= maxPartAttempts || !isTransient(error)) {
+        if (attempt >= maxPartAttempts || !isRetryablePartError(error)) {
           throw error;
         }
         await sleep(jittered(error.retryAfterMs ?? partRetryBaseMs * 2 ** (attempt - 1)), signal);
@@ -521,6 +524,12 @@ function isTransient(error: unknown): error is LumenError {
     (error.code === "network_error" ||
       error.status === 429 ||
       (error.status !== undefined && error.status >= 500))
+  );
+}
+
+function isRetryablePartError(error: unknown): error is LumenError {
+  return (
+    isTransient(error) || (error instanceof LumenError && error.code === "upload_part_in_progress")
   );
 }
 

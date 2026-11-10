@@ -87,6 +87,11 @@ impl From<StoreError> for ApiError {
                 "media_upload_in_progress",
                 "media content is already being checked",
             ),
+            StoreError::PartBusy(number) => Self::new(
+                StatusCode::CONFLICT,
+                "upload_part_in_progress",
+                format!("part {number} is already being received; send it again once that ends"),
+            ),
             StoreError::TooLarge(limit) => Self::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "media_too_large",
