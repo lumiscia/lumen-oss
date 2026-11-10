@@ -389,7 +389,7 @@ pub struct Recorder {
     adopted_bytes: u64,
     budget: u64,
     frame_textures: Vec<FrameTexture>,
-    /// The widest or tallest texture this frame has acquired.
+    /// The widest or tallest texture acquired since it was last replaced.
     largest_texture: Size,
     programs: Vec<Option<ProgramEntry>>,
     program_keys: foldhash::HashMap<ProgramKey, ProgramRef>,
@@ -515,9 +515,10 @@ impl Recorder {
         TexRef(FRAME_TEXTURE | (self.frame_textures.len() as u32 - 1))
     }
 
-    /// The widest or tallest texture acquired since `begin_frame`, or zero by zero if none was.
-    pub fn largest_acquired_texture(&self) -> Size {
-        self.largest_texture
+    /// Sets the widest or tallest texture acquired so far to `size` and returns what it was.
+    /// `begin_frame` resets it to zero by zero.
+    pub fn replace_largest_acquired_texture(&mut self, size: Size) -> Size {
+        std::mem::replace(&mut self.largest_texture, size)
     }
 
     /// `acquire` for a texture written between `resolve` and the passes running.
