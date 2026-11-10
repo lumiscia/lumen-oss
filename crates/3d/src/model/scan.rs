@@ -1,8 +1,8 @@
 //! A pass over the JSON chunk before it is deserialised. It walks the document without keeping
 //! any of it, so it can bound what deserialising allocates: every value counts toward
 //! [`MAX_JSON_VALUES`], and each collection toward its own limit. It also rejects integers wider
-//! than 32 bits outside `extras` and `extensions`, which no index or size can hold and which
-//! deserialising would truncate.
+//! than 32 bits where `gltf-json` reads 32 bits by truncating: indices and the enumerated codes
+//! such as component types. Sizes and counts are read as 64 bits and bounded later.
 
 use std::fmt;
 
@@ -30,6 +30,42 @@ pub const COLLECTION_LIMITS: &[(&str, usize)] = &[
 pub const MAX_PRIMITIVES: usize = 100_000;
 /// The most channels, and the most samplers, one animation may hold.
 pub const MAX_ANIMATION_CHANNELS: usize = 100_000;
+
+/// Keys whose integers, or the integers of whose arrays, `gltf-json` truncates to 32 bits: the
+/// indices, then the enumerated codes. Under some of them other places hold objects instead,
+/// such as the sparse `indices` of an accessor or a channel's `target`, whose own keys are then
+/// told apart in turn.
+const NARROW_KEYS: &[&str] = &[
+    "bufferView",
+    "buffer",
+    "camera",
+    "children",
+    "index",
+    "indices",
+    "input",
+    "inverseBindMatrices",
+    "joints",
+    "material",
+    "mesh",
+    "node",
+    "nodes",
+    "output",
+    "sampler",
+    "scene",
+    "skeleton",
+    "skin",
+    "source",
+    "componentType",
+    "magFilter",
+    "minFilter",
+    "mode",
+    "target",
+    "wrapS",
+    "wrapT",
+];
+/// Keys of objects every value of which is an index, or of arrays of them: a primitive's
+/// `attributes` and morph `targets`.
+const INDEX_MAP_KEYS: &[&str] = &["attributes", "targets"];
 
 /// Checks `json` as the module comment says, before it is deserialised.
 pub(super) fn check(json: &[u8]) -> Result<(), ModelError> {
@@ -71,7 +107,11 @@ enum Place {
         item: Item,
     },
     Item(Item),
-    /// Core glTF, whose integers must fit in 32 bits.
+    /// Where an integer is read as 32 bits, truncated.
+    Narrow,
+    /// An object whose values are [`Place::Narrow`], or an array of them.
+    NarrowValues,
+    /// Anywhere else in core glTF.
     Core,
     /// Within `extras` or `extensions`, where nothing is read as an index or size.
     Free,
@@ -106,20 +146,23 @@ impl Walk<'_> {
 
     /// Where the value under `key` of an object at this place is.
     fn child(&self, key: &str) -> Place {
+        if matches!(self.place, Place::Free) || matches!(key, "extras" | "extensions") {
+            return Place::Free;
+        }
+        if matches!(self.place, Place::NarrowValues) {
+            return Place::Narrow;
+        }
+        if matches!(self.place, Place::Document)
+            && let Some(&(what, limit)) = COLLECTION_LIMITS.iter().find(|(name, _)| *name == key)
+        {
+            let item = match key {
+                "meshes" => Item::Mesh,
+                "animations" => Item::Animation,
+                _ => Item::Other,
+            };
+            return Place::Collection { what, limit, item };
+        }
         match (self.place, key) {
-            (Place::Free, _) | (_, "extras" | "extensions") => Place::Free,
-            (Place::Document, key) => COLLECTION_LIMITS
-                .iter()
-                .find(|(name, _)| *name == key)
-                .map_or(Place::Core, |&(what, limit)| Place::Collection {
-                    what,
-                    limit,
-                    item: match key {
-                        "meshes" => Item::Mesh,
-                        "animations" => Item::Animation,
-                        _ => Item::Other,
-                    },
-                }),
             (Place::Item(Item::Mesh), "primitives") => Place::Collection {
                 what: "primitives",
                 limit: MAX_PRIMITIVES,
@@ -135,6 +178,8 @@ impl Walk<'_> {
                 limit: MAX_ANIMATION_CHANNELS,
                 item: Item::Other,
             },
+            (_, key) if INDEX_MAP_KEYS.contains(&key) => Place::NarrowValues,
+            (_, key) if NARROW_KEYS.contains(&key) => Place::Narrow,
             _ => Place::Core,
         }
     }
@@ -165,9 +210,10 @@ impl<'de> Visitor<'de> for Walk<'_> {
 
     fn visit_u64<E: de::Error>(mut self, value: u64) -> Result<(), E> {
         self.count()?;
-        if value > u64::from(u32::MAX) && !matches!(self.place, Place::Free) {
+        if value > u64::from(u32::MAX) && matches!(self.place, Place::Narrow) {
             return Err(self.fail(invalid(format!(
-                "the model's JSON holds {value}, larger than any index or size in a model"
+                "the model's JSON holds {value} where an index or code belongs, which 32 bits \
+                 can't hold"
             ))));
         }
         Ok(())
@@ -189,7 +235,7 @@ impl<'de> Visitor<'de> for Walk<'_> {
         self.count()?;
         let (limit, item) = match self.place {
             Place::Collection { what, limit, item } => (Some((what, limit)), Place::Item(item)),
-            Place::Free => (None, Place::Free),
+            place @ (Place::Free | Place::Narrow | Place::NarrowValues) => (None, place),
             _ => (None, Place::Core),
         };
         let mut elements = 0usize;
@@ -256,7 +302,12 @@ impl Visitor<'_> for Key {
         Ok(COLLECTION_LIMITS
             .iter()
             .map(|(name, _)| *name)
-            .chain(KEYS.iter().copied())
+            .chain(
+                KEYS.iter()
+                    .chain(NARROW_KEYS)
+                    .chain(INDEX_MAP_KEYS)
+                    .copied(),
+            )
             .find(|name| *name == key)
             .unwrap_or(""))
     }

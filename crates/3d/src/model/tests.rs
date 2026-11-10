@@ -73,9 +73,14 @@ impl Glb {
     }
 
     fn bytes(&self) -> Vec<u8> {
+        self.bytes_with(|json| json)
+    }
+
+    /// The `.glb`, with `edit` applied to the text of its JSON.
+    fn bytes_with(&self, edit: impl FnOnce(String) -> String) -> Vec<u8> {
         let mut json = self.json.clone();
         json["buffers"][0]["byteLength"] = json!(self.bin.len());
-        let mut json = serde_json::to_vec(&json).unwrap();
+        let mut json = edit(serde_json::to_string(&json).unwrap()).into_bytes();
         json.resize(json.len().next_multiple_of(4), b' ');
         let mut bin = self.bin.clone();
         bin.resize(bin.len().next_multiple_of(4), 0);
@@ -625,16 +630,10 @@ fn posed_matrices(scene: &ModelScene, seconds: f32) -> Vec<Mat4> {
 
 #[test]
 fn values_too_large_or_degenerate_never_reach_a_pose() {
-    let cases: [(&str, Edit); 2] = [
-        (
-            "a material's factor isn't a finite number",
-            Box::new(|json| json["materials"] = json!([{ "emissiveFactor": [1e39, 0, 0] }])),
-        ),
-        (
-            "the model's JSON holds 4294967296, larger than any index or size in a model",
-            Box::new(|json| json["nodes"][0]["mesh"] = json!(4_294_967_296u64)),
-        ),
-    ];
+    let cases: [(&str, Edit); 1] = [(
+        "a material's factor isn't a finite number",
+        Box::new(|json| json["materials"] = json!([{ "emissiveFactor": [1e39, 0, 0] }])),
+    )];
     for (expected, edit) in cases {
         assert_eq!(error_with(edit), ModelError::Invalid(expected.to_string()));
     }
@@ -694,6 +693,59 @@ fn values_too_large_or_degenerate_never_reach_a_pose() {
         assert_eq!(matrices.len(), 2, "the overflowing primitive is left out");
         assert!(matrices.iter().all(Mat4::is_finite), "{matrices:?}");
     }
+}
+
+#[test]
+fn integers_past_32_bits_are_rejected_only_where_they_would_be_truncated() {
+    let held = |value: u64| {
+        format!(
+            "the model's JSON holds {value} where an index or code belongs, which 32 bits can't hold"
+        )
+    };
+    let cases: [(u64, Edit); 4] = [
+        (
+            4_294_967_296,
+            Box::new(|json| json["nodes"][0]["mesh"] = json!(4_294_967_296u64)),
+        ),
+        (
+            4_294_967_296,
+            Box::new(|json| json["nodes"] = json!([{ "mesh": 0, "children": [4_294_967_296u64] }])),
+        ),
+        (
+            4_294_967_296,
+            Box::new(|json| {
+                json["meshes"][0]["primitives"][0]["attributes"]["POSITION"] =
+                    json!(4_294_967_296u64);
+            }),
+        ),
+        (
+            4_294_972_422,
+            Box::new(|json| json["accessors"][0]["componentType"] = json!(4_294_972_422u64)),
+        ),
+    ];
+    for (value, edit) in cases {
+        assert_eq!(error_with(edit), ModelError::Invalid(held(value)));
+    }
+    // A float written without a decimal point, beside an index map whose key isn't an index.
+    let mut glb = Glb::triangle();
+    glb.json["accessors"][0]["max"] = json!([5_000_000_000u64, 1, 0]);
+    glb.json["accessors"][0]["min"] = json!([0, 0, 0]);
+    glb.json["extras"] = json!({ "mesh": 5_000_000_000u64 });
+    glb.read().expect("a large float bound is not an index");
+}
+
+#[test]
+fn deeply_nested_json_is_an_error() {
+    let mut glb = Glb::triangle();
+    glb.json["extras"] = json!("nested");
+    let depth = 100_000;
+    let nested = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+    let bytes = glb.bytes_with(|json| json.replace("\"nested\"", &nested));
+    let error = Model::from_glb(&bytes).unwrap_err();
+    let ModelError::Invalid(message) = error else {
+        panic!("{error:?}");
+    };
+    assert!(message.contains("recursion limit exceeded"), "{message}");
 }
 
 #[test]
