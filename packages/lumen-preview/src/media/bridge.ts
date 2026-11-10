@@ -3,7 +3,7 @@ import { ALL_FORMATS, type InputFormat } from "mediabunny";
 import { closeVideoFrame, syncVideoFrameToTarget, takesYuvPlanes } from "./canvas.js";
 import { LumenMediaError } from "./errors.js";
 import { ImageSession } from "./image-session.js";
-import { ModelSession } from "./model-session.js";
+import { readModel } from "./model.js";
 import {
   DEFAULT_BLOB_CACHE_BYTES,
   DEFAULT_URL_CACHE_BYTES,
@@ -40,8 +40,9 @@ type ImageEntry = {
 };
 
 type ModelEntry = {
-  session: ModelSession;
   source: MediaSourceInput;
+  /** The read and hand-over in flight, which loads of the same entry join. */
+  upload: Promise<void> | null;
 };
 
 type VideoEntry = {
@@ -199,7 +200,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     }
 
     this.removeModelSource(modelId);
-    this.models.set(modelId, { session: new ModelSession(modelId, source), source });
+    this.models.set(modelId, { source, upload: null });
     await this.loadModelSource(modelId);
   }
 
@@ -267,10 +268,16 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
       return;
     }
 
-    const bytes = await entry.session.load();
-    if (this.models.get(modelId) === entry) {
-      this.target.setModel?.(modelId, bytes);
-    }
+    entry.upload ??= readModel(modelId, entry.source)
+      .then((bytes) => {
+        if (this.models.get(modelId) === entry) {
+          this.target.setModel?.(modelId, bytes);
+        }
+      })
+      .finally(() => {
+        entry.upload = null;
+      });
+    await entry.upload;
   }
 
   async loadVideoMetadata(streamId: string): Promise<VideoFrameMetadata> {

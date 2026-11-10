@@ -570,6 +570,18 @@ describe("LumenMediaBridge", () => {
       expect(target.removeModelSource).toHaveBeenCalledWith("fox");
     });
 
+    it("hands over a model once when the same source is registered twice at a time", async () => {
+      const { target } = fakeTarget();
+      const bridge = new LumenMediaBridge(target);
+      const source = new Uint8Array([0x67, 0x6c, 0x54, 0x46]);
+
+      await Promise.all([
+        bridge.registerModelSource("fox", source),
+        bridge.registerModelSource("fox", source),
+      ]);
+      expect(target.setModel).toHaveBeenCalledOnce();
+    });
+
     it("names the model in a failed fetch", async () => {
       vi.stubGlobal(
         "fetch",
