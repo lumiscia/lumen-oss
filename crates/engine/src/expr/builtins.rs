@@ -32,7 +32,7 @@ pub fn evaluate_builtin(
     };
     let mismatch = |name: &str| {
         error(format!(
-            "`{name}` expects `from` and `to` of the same type: numbers, vec2 values, colours or path data, got {} and {}",
+            "`{name}` expects `from` and `to` of the same type: numbers, vec2 or vec3 values, colours or path data, got {} and {}",
             args[0].type_name(),
             args[1].type_name()
         ))
@@ -113,6 +113,7 @@ pub fn evaluate_builtin(
         BuiltinFn::Uppercase => Ok(ExpressionValue::String(args[0].as_string().to_uppercase())),
         BuiltinFn::Lowercase => Ok(ExpressionValue::String(args[0].as_string().to_lowercase())),
         BuiltinFn::Vec2 => Ok(ExpressionValue::Vec2((number(0)?, number(1)?))),
+        BuiltinFn::Vec3 => Ok(ExpressionValue::Vec3([number(0)?, number(1)?, number(2)?])),
         BuiltinFn::Rgb | BuiltinFn::Rgba => {
             let mut color = [1.0; 4];
             for (index, component) in color.iter_mut().take(args.len()).enumerate() {
@@ -305,13 +306,17 @@ pub(crate) fn handle_x_error(x: f64) -> Option<&'static str> {
 pub(crate) fn is_key_value(kind: ValueKind) -> bool {
     matches!(
         kind,
-        ValueKind::Number | ValueKind::Vec2 | ValueKind::Color | ValueKind::String
+        ValueKind::Number
+            | ValueKind::Vec2
+            | ValueKind::Vec3
+            | ValueKind::Color
+            | ValueKind::String
     )
 }
 
 pub(crate) fn key_value_error(kind: ValueKind) -> String {
     format!(
-        "`value` must be a number, vec2, colour or path data, got {}",
+        "`value` must be a number, vec2, vec3, colour or path data, got {}",
         kind.name()
     )
 }
@@ -448,6 +453,11 @@ fn interpolate(
             mix(from.0, to.0),
             mix(from.1, to.1),
         ))),
+        (ExpressionValue::Vec3(from), ExpressionValue::Vec3(to)) => {
+            Some(ExpressionValue::Vec3(std::array::from_fn(|index| {
+                mix(from[index], to[index])
+            })))
+        }
         // Premultiplied, like CSS, so a fade to transparent doesn't darken.
         (ExpressionValue::Color(from), ExpressionValue::Color(to)) => {
             let premultiply = |[r, g, b, a]: [f64; 4]| [r * a, g * a, b * a, a];

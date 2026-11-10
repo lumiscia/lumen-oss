@@ -64,6 +64,7 @@ import {
   tween,
   uppercase,
   vec2,
+  vec3,
   width,
   type Arg,
   type Expr,
@@ -103,6 +104,7 @@ const cases: Readonly<Record<string, Case>> = {
   uppercase: { expression: uppercase("it's a\\b\n"), expected: "IT'S A\\B\n" },
   lowercase: { expression: lowercase("ABC"), expected: "abc" },
   vec2: { expression: vec2(1, -2), expected: [1, -2] },
+  vec3: { expression: vec3(1, -2, 3), expected: [1, -2, 3] },
   rgb: { expression: rgb(255, 128, 0), expected: "#ff8000ff" },
   rgba: { expression: rgba(0, 0, 255, 51), expected: "#0000ff33" },
   progress: { expression: progress(30, 60), expected: 0.5 },
@@ -156,6 +158,12 @@ const cases: Readonly<Record<string, Case>> = {
   vec2_arithmetic: {
     expression: vec2(1, 2).add([10, 20]).mul(2).sub(vec2(2, 4)),
     expected: [20, 40],
+  },
+  vec3_arithmetic: {
+    expression: lerp(vec3(0, 0, 0), vec3(10, 20, 30), 0.5)
+      .add(vec3(1, 1, 1))
+      .mul(2),
+    expected: [12, 22, 32],
   },
   scalar_vec2: { expression: frame.mul(vec2(1, 2)).div(fps.div([3, 2])), expected: [4.5, 6] },
   one_minus_clamp: { expression: progress(30, 60).oneMinus().clamp(0, 0.25), expected: 0.25 },

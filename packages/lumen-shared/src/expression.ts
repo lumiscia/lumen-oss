@@ -14,9 +14,18 @@ import { quote } from "./quote.js";
 declare const valueType: unique symbol;
 declare const easingType: unique symbol;
 declare const keyType: unique symbol;
+declare const vec3Type: unique symbol;
 
 /** A type an expression can evaluate to. Params take all but `Easing` and `Key`. */
-export type Value = number | Vec2 | Color | string | Easing | Key;
+export type Value = number | Vec2 | Vec3Value | Color | string | Easing | Key;
+
+/**
+ * What `vec3(..)` evaluates to. It is its own type rather than the `Vec3` tuple, which is also an
+ * RGB `Color`, so vec3 and colour expressions don't mix.
+ */
+export interface Vec3Value {
+  readonly [vec3Type]: true;
+}
 
 /** What `cubicBezier` evaluates to. `ease`, `tween`, `key` and `keyframes` take it; params don't. */
 export interface Easing {
@@ -27,7 +36,7 @@ export interface Easing {
 export type EasingArg = EasingName | Expr<Easing> | Expr<string>;
 
 /** Strings are path data, which interpolate when their commands match. */
-export type KeyValue = number | Vec2 | Color | string;
+export type KeyValue = number | Vec2 | Vec3Value | Color | string;
 
 /** What `key` evaluates to: a keyframe holding a `T`. Only `keyframes` takes it. */
 export interface Key<T extends KeyValue = KeyValue> {
@@ -36,7 +45,10 @@ export interface Key<T extends KeyValue = KeyValue> {
 
 export type Num = number | Expr<number>;
 
-/** An expression, or a literal of the same type. Tuples lower to `vec2(..)`, `rgb(..)` or `rgba(..)`. */
+/**
+ * An expression, or a literal of the same type. Tuples lower to `vec2(..)`, `rgb(..)` or
+ * `rgba(..)`, so a vec3 has no tuple form; write `vec3(x, y, z)`.
+ */
 export type Arg<T extends Value> =
   | Expr<T>
   | ([T] extends [number]
@@ -53,8 +65,8 @@ export type AnyArg = Expr | Arg<number> | Arg<Vec2> | Arg<Color> | Arg<string>;
 
 /**
  * An expression that evaluates to `T`. Arithmetic follows the evaluator: numbers combine freely,
- * vec2 values add and subtract with each other and scale by numbers or vec2 values, and colours
- * have no arithmetic.
+ * vec2 and vec3 values add and subtract with their own kind and scale by numbers or their own
+ * kind, and colours have no arithmetic.
  */
 export class Expr<T extends Value = Value> {
   declare readonly [valueType]: T;
@@ -66,12 +78,14 @@ export class Expr<T extends Value = Value> {
 
   add(this: Expr<number>, other: Num): Expr<number>;
   add(this: Expr<Vec2>, other: Arg<Vec2>): Expr<Vec2>;
+  add(this: Expr<Vec3Value>, other: Arg<Vec3Value>): Expr<Vec3Value>;
   add(other: AnyArg): Expr {
     return binary(this, "+", other);
   }
 
   sub(this: Expr<number>, other: Num): Expr<number>;
   sub(this: Expr<Vec2>, other: Arg<Vec2>): Expr<Vec2>;
+  sub(this: Expr<Vec3Value>, other: Arg<Vec3Value>): Expr<Vec3Value>;
   sub(other: AnyArg): Expr {
     return binary(this, "-", other);
   }
@@ -79,6 +93,8 @@ export class Expr<T extends Value = Value> {
   mul(this: Expr<number>, other: Num): Expr<number>;
   mul(this: Expr<number>, other: Arg<Vec2>): Expr<Vec2>;
   mul(this: Expr<Vec2>, other: Num | Arg<Vec2>): Expr<Vec2>;
+  mul(this: Expr<number>, other: Arg<Vec3Value>): Expr<Vec3Value>;
+  mul(this: Expr<Vec3Value>, other: Num | Arg<Vec3Value>): Expr<Vec3Value>;
   mul(other: AnyArg): Expr {
     return binary(this, "*", other);
   }
@@ -86,6 +102,8 @@ export class Expr<T extends Value = Value> {
   div(this: Expr<number>, other: Num): Expr<number>;
   div(this: Expr<number>, other: Arg<Vec2>): Expr<Vec2>;
   div(this: Expr<Vec2>, other: Num | Arg<Vec2>): Expr<Vec2>;
+  div(this: Expr<number>, other: Arg<Vec3Value>): Expr<Vec3Value>;
+  div(this: Expr<Vec3Value>, other: Num | Arg<Vec3Value>): Expr<Vec3Value>;
   div(other: AnyArg): Expr {
     return binary(this, "/", other);
   }
@@ -153,29 +171,33 @@ type KindArg<K> = K extends "number"
   ? Num
   : K extends "vec2"
     ? Arg<Vec2>
-    : K extends "color"
-      ? Arg<Color>
-      : K extends "string"
-        ? Arg<string>
-        : K extends "easing"
-          ? EasingArg
-          : K extends "key"
-            ? Expr<Key>
-            : AnyArg;
+    : K extends "vec3"
+      ? Arg<Vec3Value>
+      : K extends "color"
+        ? Arg<Color>
+        : K extends "string"
+          ? Arg<string>
+          : K extends "easing"
+            ? EasingArg
+            : K extends "key"
+              ? Expr<Key>
+              : AnyArg;
 
 type KindValue<K> = K extends "number"
   ? number
   : K extends "vec2"
     ? Vec2
-    : K extends "color"
-      ? Color
-      : K extends "string"
-        ? string
-        : K extends "easing"
-          ? Easing
-          : K extends "key"
-            ? Key
-            : Value;
+    : K extends "vec3"
+      ? Vec3Value
+      : K extends "color"
+        ? Color
+        : K extends "string"
+          ? string
+          : K extends "easing"
+            ? Easing
+            : K extends "key"
+              ? Key
+              : Value;
 
 /** Skipped arguments must be `undefined` through to the end, so an interior hole is a type error. */
 type SkippedArgs<A> = A extends readonly [SpecArg, ...infer Tail]
@@ -251,6 +273,7 @@ const builtins = Object.fromEntries(
 export interface Interpolate {
   (from: Num, to: Num, t: Num): Expr<number>;
   (from: Arg<Vec2>, to: Arg<Vec2>, t: Num): Expr<Vec2>;
+  (from: Arg<Vec3Value>, to: Arg<Vec3Value>, t: Num): Expr<Vec3Value>;
   (from: Arg<Color>, to: Arg<Color>, t: Num): Expr<Color>;
   (from: Arg<string>, to: Arg<string>, t: Num): Expr<string>;
 }
@@ -258,6 +281,13 @@ export interface Interpolate {
 export interface Tween {
   (from: Num, to: Num, start: Num, duration: Num, ease?: EasingArg): Expr<number>;
   (from: Arg<Vec2>, to: Arg<Vec2>, start: Num, duration: Num, ease?: EasingArg): Expr<Vec2>;
+  (
+    from: Arg<Vec3Value>,
+    to: Arg<Vec3Value>,
+    start: Num,
+    duration: Num,
+    ease?: EasingArg,
+  ): Expr<Vec3Value>;
   (from: Arg<Color>, to: Arg<Color>, start: Num, duration: Num, ease?: EasingArg): Expr<Color>;
   (from: Arg<string>, to: Arg<string>, start: Num, duration: Num, ease?: EasingArg): Expr<string>;
 }
@@ -265,6 +295,7 @@ export interface Tween {
 export interface MakeKey {
   (at: Num, value: Num, ease?: EasingArg): Expr<Key<number>>;
   (at: Num, value: Arg<Vec2>, ease?: EasingArg): Expr<Key<Vec2>>;
+  (at: Num, value: Arg<Vec3Value>, ease?: EasingArg): Expr<Key<Vec3Value>>;
   (at: Num, value: Arg<Color>, ease?: EasingArg): Expr<Key<Color>>;
   (at: Num, value: Arg<string>, ease?: EasingArg): Expr<Key<string>>;
 }
@@ -318,6 +349,7 @@ export const {
   textWidth,
   uppercase,
   vec2,
+  vec3,
 } = builtins;
 // `from` and `to`, and the values of keys, share a type, which the table can only describe as
 // `any`. It also can't say that the `ease` of `keyframes` is optional.
@@ -447,7 +479,7 @@ export function fn<A extends readonly AnyArg[], R extends Value>(
   });
 }
 
-export interface Move<T extends number | Vec2> {
+export interface Move<T extends number | Vec2 | Vec3Value> {
   readonly by: Arg<T>;
   readonly start: Num;
   readonly duration: Num;
@@ -457,9 +489,10 @@ export interface Move<T extends number | Vec2> {
 /** `base` plus `by * tween(0, 1, ..)` per move, so moves can overlap. */
 export function moves(base: Num, steps: readonly Move<number>[]): Expr<number>;
 export function moves(base: Arg<Vec2>, steps: readonly Move<Vec2>[]): Expr<Vec2>;
+export function moves(base: Arg<Vec3Value>, steps: readonly Move<Vec3Value>[]): Expr<Vec3Value>;
 export function moves(
-  base: Num | Arg<Vec2>,
-  steps: readonly Move<number>[] | readonly Move<Vec2>[],
+  base: Num | Arg<Vec2> | Arg<Vec3Value>,
+  steps: readonly Move<number>[] | readonly Move<Vec2>[] | readonly Move<Vec3Value>[],
 ): Expr {
   const initial = base instanceof Expr ? base : new Expr(lower(base));
   const untypedTween = tween as (...args: readonly AnyArg[]) => Expr;

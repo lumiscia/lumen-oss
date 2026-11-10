@@ -1,4 +1,4 @@
-import { frame, hex, progress, rgb, uppercase, vec2 } from "../src/expression.js";
+import { frame, hex, progress, rgb, uppercase, vec2, vec3 } from "../src/expression.js";
 import { defineComposition, prop } from "../src/template.js";
 
 const titleCard = defineComposition({
@@ -9,6 +9,7 @@ const titleCard = defineComposition({
     accent: prop.color("#ee5b24"),
     index: prop.number(1),
     offset: prop.vec2(),
+    spot: prop.vec3([0, 0, 0]),
   },
   build(c, p) {
     const label = c.addNode({
@@ -17,6 +18,8 @@ const titleCard = defineComposition({
     });
     // @ts-expect-error a string prop is not a number
     c.addNode({ type: "text", params: { font_size: p.title } });
+    // @ts-expect-error a vec3 prop is not a colour
+    c.addNode({ type: "text", params: { color: p.spot } });
     return label;
   },
 });
@@ -25,6 +28,8 @@ titleCard.clip({ start: 30, props: { title: "Shapes", accent: [255, 0, 0], index
 titleCard.clip({ start: frame.mul(2), props: { title: uppercase("x"), accent: hex("#22d3ee") } });
 titleCard.clip({ props: { accent: rgb(1, 2, 3), index: progress(0, 10), offset: vec2(1, 2) } });
 titleCard.clip({ end: "hold", speed: 1.5, offset: 10, duration: 60 });
+titleCard.clip({ props: { spot: [1, 2, 3] } });
+titleCard.clip({ props: { spot: vec3(frame, 0, 1) } });
 
 // @ts-expect-error unknown prop
 titleCard.clip({ props: { titel: "Shapes" } });
@@ -34,6 +39,10 @@ titleCard.clip({ props: { index: "two" } });
 titleCard.clip({ props: { index: uppercase("two") } });
 // @ts-expect-error a colour prop takes a colour
 titleCard.clip({ props: { accent: [1, 2] } });
+// @ts-expect-error a vec3 prop doesn't take a colour expression
+titleCard.clip({ props: { spot: rgb(1, 2, 3) } });
+// @ts-expect-error a colour prop doesn't take a vec3 expression
+titleCard.clip({ props: { accent: vec3(1, 2, 3) } });
 // @ts-expect-error unknown end mode
 titleCard.clip({ end: "freeze" });
 const plain = defineComposition({ name: "plain", build: (c) => c.addNode({ type: "background" }) });

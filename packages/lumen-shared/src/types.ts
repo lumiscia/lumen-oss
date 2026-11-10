@@ -15,10 +15,11 @@ import type {
   TemplateRenderSettings,
   TextContent,
   Vec2,
+  Vec3,
 } from "@lumiscia/lumen-types";
 
 import type { Composition } from "./composition.js";
-import type { Expr } from "./expression.js";
+import type { Expr, Vec3Value } from "./expression.js";
 
 export interface CompositionOptions {
   readonly audio?: LumenComposition["audio"];
@@ -77,19 +78,22 @@ type NestedInput<T> = T extends ExpressionString
     ? { [K in keyof T]: ExpressionInput<T[K]> }
     : T;
 
+/** The `Expr` a param of type `T` takes. A vec3 param takes `vec3(..)`, never a colour. */
 type ParamExpr<T> = [T] extends [boolean]
   ? never
   : [T] extends [number]
     ? Expr<number>
     : [T] extends [Vec2]
       ? Expr<Vec2>
-      : [T] extends [string]
-        ? Expr<string>
-        : [T] extends [TextContent]
+      : [T] extends [Vec3]
+        ? Expr<Vec3Value>
+        : [T] extends [string]
           ? Expr<string>
-          : [T] extends [Color]
-            ? Expr<Color>
-            : MemberExpr<T>;
+          : [T] extends [TextContent]
+            ? Expr<string>
+            : [T] extends [Color]
+              ? Expr<Color>
+              : MemberExpr<T>;
 
 /** The `Expr`s a union such as `Paint` or `ShaderUniformValue` takes, one per kind of member. */
 type MemberExpr<T> = T extends number
@@ -180,15 +184,16 @@ export type WgslUniforms = Readonly<Record<string, WgslUniformType>>;
 type WgslComponent = number | ExpressionString | Expr<number>;
 
 /**
- * The values a field of `TType` accepts. Vectors other than vec2 take components rather than a
- * whole expression, and `vec3<f32>`/`vec4<f32>` also take a hex colour (`#rrggbb` for vec3) or a
- * colour `Expr`.
+ * The values a field of `TType` accepts. A vec2 field takes a whole expression and a vec3 field a
+ * vec3 `Expr`; other vectors take components. `vec3<f32>`/`vec4<f32>` also take a hex colour
+ * (`#rrggbb` for vec3) or a colour `Expr`.
  */
 export type WgslUniformValue<TType extends WgslUniformType> = TType extends `vec2<${string}>`
   ? readonly [WgslComponent, WgslComponent] | ExpressionString | Expr<Vec2>
   : TType extends `vec3<${infer TScalar}>`
     ?
         | readonly [WgslComponent, WgslComponent, WgslComponent]
+        | Expr<Vec3Value>
         | (TScalar extends "f32" ? HexColor | Expr<Color> : never)
     : TType extends `vec4<${infer TScalar}>`
       ?
@@ -215,7 +220,10 @@ export interface WgslShader<TUniforms extends WgslUniforms> {
 /** The value types a template prop can declare. */
 export type PropType = CompositionPropDeclaration["type"];
 
-/** A template prop, declared with `prop.string(..)`, `prop.number(..)`, `prop.color(..)` or `prop.vec2(..)`. */
+/**
+ * A template prop, declared with `prop.string(..)`, `prop.number(..)`, `prop.color(..)`,
+ * `prop.vec2(..)` or `prop.vec3(..)`.
+ */
 export type PropDeclaration<TType extends PropType = PropType> = Extract<
   CompositionPropDeclaration,
   { readonly type: TType }
@@ -231,7 +239,7 @@ export type PropDeclarations = Readonly<
 
 /** A typed `prop('name')` read for each declared prop. */
 export type PropReads<TProps extends PropDeclarations> = {
-  readonly [TName in keyof TProps]: Expr<PropValueByType[TProps[TName]["type"]]>;
+  readonly [TName in keyof TProps]: ParamExpr<PropValueByType[TProps[TName]["type"]]>;
 };
 
 /** Prop values for a clip. Strings are literal text; pass an `Expr` for an expression. */
@@ -240,7 +248,7 @@ export type ClipPropInputs<TProps extends PropDeclarations> = [keyof TProps] ext
   : {
       readonly [TName in keyof TProps]?:
         | PropValueByType[TProps[TName]["type"]]
-        | Expr<PropValueByType[TProps[TName]["type"]]>;
+        | ParamExpr<PropValueByType[TProps[TName]["type"]]>;
     };
 
 export interface CompositionDefinitionOptions<TProps extends PropDeclarations> {

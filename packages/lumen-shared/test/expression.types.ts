@@ -17,8 +17,10 @@ import {
   lowercase,
   tween,
   vec2,
+  vec3,
   type Expr,
   type Num,
+  type Vec3Value,
 } from "../src/index.js";
 
 const color: Expr<Color> = hex("#ff0000");
@@ -43,6 +45,38 @@ const curve: Expr<number> = ease(bezier, 0.5);
 const bent: Expr<number> = tween(0, 1, 0, 12, bezier);
 void [scalar, position, tint, slid, composition, spring(1), rgb(1, 2, 3)];
 void [keyed, eased, curve, bent];
+
+const spot: Expr<Vec3Value> = vec3(frame, 0, 1);
+const flown: Expr<Vec3Value> = tween(spot, vec3(0, 0, 100), 0, 12, ease.outExpo)
+  .mul(2)
+  .add(spot);
+const tracked: Expr<Vec3Value> = keyframes(frame, key(0, spot), key(30, vec3(1, 2, 3)));
+void [flown, tracked];
+
+// @ts-expect-error vec2 and vec3 values don't combine
+point.add(spot);
+
+// @ts-expect-error a vec3 expression is not a colour
+const vec3AsColor: Expr<Color> = vec3(1, 2, 3);
+
+// @ts-expect-error a colour expression is not a vec3
+const colorAsVec3: Expr<Vec3Value> = rgb(1, 2, 3);
+void [vec3AsColor, colorAsVec3];
+
+// @ts-expect-error `lerp` can't mix a vec3 and a colour
+lerp(vec3(1, 2, 3), rgb(1, 2, 3), 0.5);
+
+// @ts-expect-error a three-number tuple lowers to `rgb(..)`, so it is a colour
+lerp([0, 0, 0], spot, 0.5);
+
+// @ts-expect-error vec3 and colour keys don't share a track
+keyframes(frame, key(0, vec3(1, 2, 3)), key(10, rgb(1, 2, 3)));
+
+new Composition().addNode({
+  type: "path",
+  // @ts-expect-error a vec3 expression can't paint
+  params: { fill_paint: spot },
+});
 
 // @ts-expect-error every key holds the same kind of value
 keyframes(frame, key(0, 0), key(30, point));

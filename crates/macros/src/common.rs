@@ -123,6 +123,7 @@ pub(crate) fn property_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
         "string" | "String" => quote!(::lumen_engine::node::PropertyKind::String),
         "color" | "Color" => quote!(::lumen_engine::node::PropertyKind::Color),
         "vec2" | "Vec2" => quote!(::lumen_engine::node::PropertyKind::Vec2),
+        "vec3" | "Vec3" => quote!(::lumen_engine::node::PropertyKind::Vec3),
         "enum" | "Enum" => quote!(::lumen_engine::node::PropertyKind::Enum),
         "paint" | "Paint" => quote!(::lumen_engine::node::PropertyKind::Paint),
         "shader_uniforms" | "ShaderUniforms" => {

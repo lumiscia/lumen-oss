@@ -1,4 +1,4 @@
-import type { ClipProps, Color, CompositionTemplate, Vec2 } from "@lumiscia/lumen-types";
+import type { ClipProps, Color, CompositionTemplate, Vec2, Vec3 } from "@lumiscia/lumen-types";
 
 import { Composition, captureClipTemplate, clipTemplate } from "./composition.js";
 import { Expr, literal } from "./expression.js";
@@ -16,14 +16,15 @@ import type {
 
 /**
  * Reads a template prop by name, as `prop('title')`. `prop.string(..)`, `prop.number(..)`,
- * `prop.color(..)` and `prop.vec2(..)` declare props for `defineComposition`, with an optional
- * default.
+ * `prop.color(..)`, `prop.vec2(..)` and `prop.vec3(..)` declare props for `defineComposition`,
+ * with an optional default.
  */
 export const prop = Object.assign((name: string): Expr => readProp(name), {
   string: (defaultValue?: string) => declaration("string", defaultValue),
   number: (defaultValue?: number) => declaration("number", defaultValue),
   color: (defaultValue?: Color) => declaration("color", defaultValue),
   vec2: (defaultValue?: Vec2) => declaration("vec2", defaultValue),
+  vec3: (defaultValue?: Vec3) => declaration("vec3", defaultValue),
 });
 
 function readProp<T extends Value = Value>(name: string): Expr<T> {

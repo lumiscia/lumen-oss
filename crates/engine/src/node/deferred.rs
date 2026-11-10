@@ -216,6 +216,10 @@ fn vec2(value: ExpressionValue) -> crate::Result<(f64, f64)> {
     value.as_vec2().ok_or_else(|| wrong_type("a vec2", &value))
 }
 
+fn vec3(value: ExpressionValue) -> crate::Result<[f64; 3]> {
+    value.as_vec3().ok_or_else(|| wrong_type("a vec3", &value))
+}
+
 fn color(value: ExpressionValue) -> crate::Result<[u8; 4]> {
     value
         .as_color_u8()
@@ -543,6 +547,60 @@ impl ParamValue for [f32; 2] {
     }
 }
 
+impl ParamValue for [f64; 3] {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        let items = value
+            .as_array()
+            .ok_or_else(|| format!("`{path}` expected [x, y, z]"))?;
+        if items.len() != 3 {
+            return Err(format!(
+                "`{path}` expected [x, y, z], got array of length {}",
+                items.len()
+            ));
+        }
+        let component = |index: usize| {
+            items[index]
+                .as_f64()
+                .ok_or_else(|| format!("`{path}[{index}]` expected number"))
+        };
+        Ok([component(0)?, component(1)?, component(2)?])
+    }
+
+    fn to_json_value(&self) -> Value {
+        Value::from(self.to_vec())
+    }
+
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        vec3(value)
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::Vec3(*self))
+    }
+}
+
+impl ParamValue for [f32; 3] {
+    const ACCEPTS_EXPRESSIONS: bool = true;
+
+    fn from_json_value(value: &Value, path: &str) -> Result<Self, String> {
+        <[f64; 3]>::from_json_value(value, path).map(|vector| vector.map(|x| x as f32))
+    }
+
+    fn to_json_value(&self) -> Value {
+        self.map(f64::from).to_json_value()
+    }
+
+    fn from_expression(value: ExpressionValue) -> crate::Result<Self> {
+        vec3(value).map(|vector| vector.map(|x| x as f32))
+    }
+
+    fn to_expression(&self) -> Option<ExpressionValue> {
+        Some(ExpressionValue::Vec3(self.map(f64::from)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -611,6 +669,42 @@ mod tests {
                 .eval(NodeId::new(4), "position", &context())
                 .unwrap(),
             [6.0, 0.75]
+        );
+    }
+
+    #[test]
+    fn vec3_params_read_json_and_expressions() {
+        let parse = |json: serde_json::Value| <[f64; 3]>::from_json_value(&json, "position");
+        assert_eq!(
+            parse(serde_json::json!([1, -2.5, 3])).unwrap(),
+            [1.0, -2.5, 3.0]
+        );
+        assert_eq!(
+            parse(serde_json::json!([1, 2])).unwrap_err(),
+            "`position` expected [x, y, z], got array of length 2"
+        );
+        assert_eq!(
+            parse(serde_json::json!([1, "2", 3])).unwrap_err(),
+            "`position[1]` expected number"
+        );
+        assert_eq!(
+            parse(serde_json::json!(1)).unwrap_err(),
+            "`position` expected [x, y, z]"
+        );
+
+        let expression = Expression::parse("vec3(frame / 2, time + 0.25, -1)").unwrap();
+        assert_eq!(
+            Deferred::<[f32; 3]>::Expr(expression)
+                .eval(NodeId::new(4), "position", &context())
+                .unwrap(),
+            [6.0, 0.75, -1.0]
+        );
+        let error = Deferred::<[f64; 3]>::Expr(Expression::parse("vec2(1, 2)").unwrap())
+            .eval(NodeId::new(4), "position", &context())
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "node 4 `position`: expected a vec3, got vec2 `[1, 2]`"
         );
     }
 

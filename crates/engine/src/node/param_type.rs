@@ -69,6 +69,18 @@ impl NodeParamType for [f32; 2] {
     }
 }
 
+impl NodeParamType for [f64; 3] {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Vec3
+    }
+}
+
+impl NodeParamType for [f32; 3] {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Vec3
+    }
+}
+
 impl NodeParamType for super::ShaderUniforms {
     fn property_kind() -> PropertyKind {
         PropertyKind::ShaderUniforms

@@ -5,6 +5,7 @@
 pub enum ValueKind {
     Number,
     Vec2,
+    Vec3,
     Color,
     String,
     Easing,
@@ -18,6 +19,7 @@ impl ValueKind {
         match self {
             Self::Number => "number",
             Self::Vec2 => "vec2",
+            Self::Vec3 => "vec3",
             Self::Color => "color",
             Self::String => "string",
             Self::Easing => "easing",
@@ -146,7 +148,7 @@ builtins! {
     Clamp "clamp" (3, Some(3)) [value: Number, min: Number, max: Number] -> Number,
         "Limits a value to `min..=max`.";
     Lerp "lerp" (3, Some(3)) [from: Any, to: Any, t: Number] -> Any,
-        "Interpolates two numbers, vec2 values, colours or path data strings by `t`. Colours mix premultiplied. Path data strings must have the same commands in the same order, and interpolate point by point.";
+        "Interpolates two numbers, vec2 or vec3 values, colours or path data strings by `t`. Colours mix premultiplied. Path data strings must have the same commands in the same order, and interpolate point by point.";
     Pow "pow" (2, Some(2)) [base: Number, exponent: Number] -> Number, "Raises `base` to `exponent`.";
     Mod "mod" (2, Some(2)) [value: Number, divisor: Number] -> Number,
         "Remainder of `value / divisor`, keeping the sign of `value`.";
@@ -164,6 +166,7 @@ builtins! {
     Uppercase "uppercase" (1, Some(1)) [text: String] -> String, "Uppercases a string.";
     Lowercase "lowercase" (1, Some(1)) [text: String] -> String, "Lowercases a string.";
     Vec2 "vec2" (2, Some(2)) [x: Number, y: Number] -> Vec2, "Builds a 2D vector.";
+    Vec3 "vec3" (3, Some(3)) [x: Number, y: Number, z: Number] -> Vec3, "Builds a 3D vector.";
     Rgb "rgb" (3, Some(3)) [r: Number, g: Number, b: Number] -> Color,
         "Opaque colour from components in `0..=255`.";
     Rgba "rgba" (4, Some(4)) [r: Number, g: Number, b: Number, a: Number] -> Color,
@@ -178,7 +181,7 @@ builtins! {
     CubicBezier "cubic_bezier" (2, Some(2)) [out: Vec2, in: Vec2] -> Easing,
         "The easing CSS writes `cubic-bezier(out.x, out.y, in.x, in.y)`. Both x components must be in `0..=1`.";
     Key "key" (2, Some(3)) [at: Number, value: Any, ease: Easing] -> Key,
-        "A keyframe for `keyframes`: `value` at `at`, a number, vec2, colour or path data. `ease` is how the curve leaves this key toward the next.";
+        "A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour or path data. `ease` is how the curve leaves this key toward the next.";
     Keyframes "keyframes" (2, None) [t: Number, ease: Easing, keys: Key] -> Any,
         "The value of keys ordered by `at` at time `t`, usually `frame`. `ease` may be left out; it is the easing of keys without one and defaults to `'linear'`. Before the first key and after the last, the value holds. Keys at the same `at` jump.";
     Prop "prop" (1, Some(1)) [name: String] -> Any,

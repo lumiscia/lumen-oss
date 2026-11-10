@@ -12,6 +12,7 @@ pub enum ExpressionValue {
     Boolean(bool),
     String(String),
     Vec2((f64, f64)),
+    Vec3([f64; 3]),
     /// Straight-alpha RGBA with components in `0..=1`.
     Color([f64; 4]),
     /// Only builtins take easings and keys; no param does.
@@ -23,7 +24,7 @@ pub enum ExpressionValue {
 #[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
 pub struct Key {
     pub at: f64,
-    /// A number, vec2, colour or path data.
+    /// A number, vec2, vec3, colour or path data.
     pub value: ExpressionValue,
     /// How the curve leaves this key, or `None` for the `keyframes` default.
     pub ease: Option<Easing>,
@@ -52,6 +53,7 @@ impl ExpressionValue {
             Self::Boolean(_) => "boolean",
             Self::String(_) => "string",
             Self::Vec2(_) => "vec2",
+            Self::Vec3(_) => "vec3",
             Self::Color(_) => "color",
             Self::Easing(_) => "easing",
             Self::Key(_) => "key",
@@ -64,6 +66,7 @@ impl ExpressionValue {
             Self::Number(_) | Self::Boolean(_) => ValueKind::Number,
             Self::String(_) => ValueKind::String,
             Self::Vec2(_) => ValueKind::Vec2,
+            Self::Vec3(_) => ValueKind::Vec3,
             Self::Color(_) => ValueKind::Color,
             Self::Easing(_) => ValueKind::Easing,
             Self::Key(_) => ValueKind::Key,
@@ -74,9 +77,12 @@ impl ExpressionValue {
         match self {
             Self::Number(n) => Some(*n),
             Self::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
-            Self::String(_) | Self::Vec2(_) | Self::Color(_) | Self::Easing(_) | Self::Key(_) => {
-                None
-            }
+            Self::String(_)
+            | Self::Vec2(_)
+            | Self::Vec3(_)
+            | Self::Color(_)
+            | Self::Easing(_)
+            | Self::Key(_) => None,
         }
     }
 
@@ -86,6 +92,7 @@ impl ExpressionValue {
             Self::Number(n) => is_truthy(*n),
             Self::String(s) => !s.is_empty(),
             Self::Vec2((x, y)) => is_truthy(*x) || is_truthy(*y),
+            Self::Vec3(vector) => vector.iter().copied().any(is_truthy),
             Self::Color(color) => color.iter().copied().any(is_truthy),
             Self::Easing(_) | Self::Key(_) => true,
         }
@@ -97,6 +104,7 @@ impl ExpressionValue {
             Self::Number(n) => n.to_string(),
             Self::Boolean(b) => b.to_string(),
             Self::Vec2((x, y)) => format!("[{x}, {y}]"),
+            Self::Vec3([x, y, z]) => format!("[{x}, {y}, {z}]"),
             Self::Color(_) => {
                 let [r, g, b, a] = self.as_color_u8().expect("colour value");
                 format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
@@ -112,6 +120,13 @@ impl ExpressionValue {
     pub fn as_vec2(&self) -> Option<(f64, f64)> {
         match self {
             Self::Vec2(value) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn as_vec3(&self) -> Option<[f64; 3]> {
+        match self {
+            Self::Vec3(value) => Some(*value),
             _ => None,
         }
     }
@@ -335,6 +350,18 @@ mod tests {
         assert!(!ExpressionValue::Vec2((0.0, 0.0)).as_bool());
         assert!(ExpressionValue::Vec2((f64::EPSILON, 0.0)).as_bool());
         assert!(!ExpressionValue::Vec2((f64::NAN, -0.0)).as_bool());
+    }
+
+    #[test]
+    fn vec3_value_conversions_are_explicit() {
+        let value = ExpressionValue::Vec3([12.5, -3.0, 0.0]);
+
+        assert_eq!(value.type_name(), "vec3");
+        assert_eq!(value.as_vec2(), None);
+        assert_eq!(value.as_vec3(), Some([12.5, -3.0, 0.0]));
+        assert_eq!(value.as_string(), "[12.5, -3, 0]");
+        assert!(value.as_bool());
+        assert!(!ExpressionValue::Vec3([0.0, f64::NAN, -0.0]).as_bool());
     }
 
     #[test]

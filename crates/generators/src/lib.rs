@@ -172,12 +172,13 @@ fn render_schema() -> Result<String> {
             },
             "compositionProp": {
                 "x-lumen-type": "CompositionPropDeclaration",
-                "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent or [0, 0].",
+                "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent, [0, 0] or [0, 0, 0].",
                 "oneOf": [
                     prop_declaration_json("string", json!({ "type": "string" })),
                     prop_declaration_json("number", json!({ "type": "number" })),
                     prop_declaration_json("color", json!({ "$ref": "#/$defs/color" })),
-                    prop_declaration_json("vec2", json!({ "$ref": "#/$defs/vec2" }))
+                    prop_declaration_json("vec2", json!({ "$ref": "#/$defs/vec2" })),
+                    prop_declaration_json("vec3", json!({ "$ref": "#/$defs/vec3" }))
                 ]
             },
             "expression": {
@@ -205,6 +206,13 @@ fn render_schema() -> Result<String> {
                 "items": false,
                 "minItems": 2,
                 "maxItems": 2
+            },
+            "vec3": {
+                "type": "array",
+                "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }],
+                "items": false,
+                "minItems": 3,
+                "maxItems": 3
             },
             "connection": {
                 "x-lumen-type": "Connection",
@@ -423,6 +431,7 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
                 { "type": "number" },
                 { "type": "string" },
                 { "$ref": "#/$defs/vec2" },
+                { "$ref": "#/$defs/vec3" },
                 { "$ref": "#/$defs/color" }
             ]
         }),
@@ -618,6 +627,7 @@ fn value_schema_json(property: &PropertyDef) -> Value {
         PropertyKind::Color => json!({ "$ref": "#/$defs/color" }),
         PropertyKind::Paint => json!({ "$ref": "#/$defs/paint" }),
         PropertyKind::Vec2 => json!({ "$ref": "#/$defs/vec2" }),
+        PropertyKind::Vec3 => json!({ "$ref": "#/$defs/vec3" }),
         PropertyKind::ShaderUniforms => json!({ "$ref": "#/$defs/shaderUniforms" }),
         PropertyKind::ClipProps => json!({ "$ref": "#/$defs/clipProps" }),
         PropertyKind::TextContent => json!({ "$ref": "#/$defs/textContent" }),
@@ -754,6 +764,7 @@ fn property_kind_name(kind: PropertyKind) -> &'static str {
         PropertyKind::Color => "color",
         PropertyKind::Paint => "paint",
         PropertyKind::Vec2 => "vec2",
+        PropertyKind::Vec3 => "vec3",
         PropertyKind::Enum => "enum",
         PropertyKind::ShaderUniforms => "shader_uniforms",
         PropertyKind::ClipProps => "clip_props",

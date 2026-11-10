@@ -357,6 +357,7 @@ fn uniform_components(
             };
             match expr.evaluate(ctx).map_err(located)? {
                 ExpressionValue::Vec2((x, y)) => vec![x, y],
+                ExpressionValue::Vec3(vector) => vector.to_vec(),
                 ExpressionValue::Color(rgba) => {
                     color_field()?;
                     if field.lanes == 3 && rgba[3] != 1.0 {
@@ -842,6 +843,15 @@ mod tests {
             .unwrap();
         let floats: &[f32] = bytemuck::cast_slice(&bytes);
         assert_eq!(&floats[4..7], &[1.0, 0.0, 0.2]);
+        let bytes = interface
+            .uniform_bytes(
+                node_id,
+                &uniforms(json!({ "tint": "=vec3(0.5, 0.25, 2)" })),
+                &ctx,
+            )
+            .unwrap();
+        let floats: &[f32] = bytemuck::cast_slice(&bytes);
+        assert_eq!(&floats[4..7], &[0.5, 0.25, 2.0]);
 
         for (value, expected) in [
             (

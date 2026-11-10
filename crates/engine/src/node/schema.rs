@@ -21,6 +21,7 @@ pub enum PropertyKind {
     TextStroke = 14,
     DashPattern = 15,
     Repeat = 16,
+    Vec3 = 17,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
