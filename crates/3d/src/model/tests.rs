@@ -1081,3 +1081,18 @@ fn corrupted_files_return_without_panicking() {
     );
     assert!(split[2] > 300 && split[3] > 300, "{split:?}");
 }
+
+#[test]
+fn each_joints_bounds_hold_the_vertices_it_moves_before_posing() {
+    let model = skinned().read().unwrap();
+    // The first joint moves the corner at the origin and shares the top one; the second moves
+    // the corner along X and shares the top one.
+    assert_eq!(
+        model.scene.joint_bounds(&model.geometry),
+        [vec![
+            crate::Bounds::of([Vec3::ZERO, Vec3::Y]),
+            crate::Bounds::of([Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0)]),
+        ]]
+    );
+    assert_eq!(model.scene.pose(None).skins, [(0, 0)]);
+}
