@@ -1586,7 +1586,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "lumen-bench"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "fontdb",
@@ -1601,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-engine"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-engine-ffmpeg"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "ash",
  "cudarc",
@@ -1644,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-engine-gpu"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "ash",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-engine-macros"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-engine-text"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -1685,7 +1685,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-generators"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "jsonschema",
@@ -1695,7 +1695,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-local"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-server"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1736,7 +1736,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-wasm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "js-sys",
  "lumen-engine",
