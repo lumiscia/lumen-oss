@@ -8,7 +8,10 @@ use crate::{
     error::RenderError,
     gpu::{BoundFrame, MediaTextureKey, RasterHandle, frame_graph::FrameGraph},
     media::{CpuMediaFrame, MediaStore},
-    node::NodeId,
+    node::{
+        NodeId,
+        source::text::{load_literal_font_families, text_system},
+    },
 };
 
 #[cfg(feature = "ffmpeg")]
@@ -137,6 +140,9 @@ pub struct GpuCompositionRenderer {
     full_frame_sources: bool,
     single_tile_repeats: bool,
     media_texture_cache: MediaTextureCache,
+    /// The composition fingerprint and font generation its literal fonts were last loaded for.
+    literal_fonts_loaded: Option<(u64, u64)>,
+    font_rerecorded_frames: u64,
     #[cfg(feature = "ffmpeg")]
     gpu_media_importer: GpuMediaFrameImporter,
 }
@@ -170,6 +176,8 @@ impl GpuCompositionRenderer {
             full_frame_sources: false,
             single_tile_repeats: false,
             media_texture_cache: MediaTextureCache::new(),
+            literal_fonts_loaded: None,
+            font_rerecorded_frames: 0,
             #[cfg(feature = "ffmpeg")]
             gpu_media_importer: GpuMediaFrameImporter::default(),
         }
@@ -303,6 +311,13 @@ impl GpuCompositionRenderer {
     /// in.
     pub fn take_diagnostics(&mut self) -> Vec<crate::diagnostic::Diagnostic> {
         self.graph.take_diagnostics()
+    }
+
+    /// Number of frames recorded again because fonts loaded while they were recorded, as fonts
+    /// that expressions name do.
+    #[doc(hidden)]
+    pub fn font_rerecorded_frame_count(&self) -> u64 {
+        self.font_rerecorded_frames
     }
 
     /// Number of image textures kept in the media cache.
@@ -446,6 +461,7 @@ impl GpuCompositionRenderer {
             .into());
         }
         self.bind_sequence += 1;
+        let generation = self.load_literal_fonts(composition, media)?;
         let bound = self.graph.record(super::frame_graph::RecordInput {
             composition,
             frame,
@@ -467,8 +483,27 @@ impl GpuCompositionRenderer {
             self.graph.abandon_frame();
             self.media_texture_cache.evict();
         })?;
+        if text_system(Some(media))?.font_generation() != generation {
+            self.font_rerecorded_frames += 1;
+        }
         bound.sequence = self.bind_sequence;
         Ok(bound)
+    }
+
+    /// Loads the fonts `composition` names as literals, once per composition and font
+    /// generation, and returns the generation they leave.
+    fn load_literal_fonts(
+        &mut self,
+        composition: &Composition,
+        media: &dyn MediaStore,
+    ) -> crate::Result<u64> {
+        let mut text_system = text_system(Some(media))?;
+        let fingerprint = composition.fingerprint();
+        if self.literal_fonts_loaded != Some((fingerprint, text_system.font_generation())) {
+            load_literal_font_families(&mut text_system, Some(media), composition);
+            self.literal_fonts_loaded = Some((fingerprint, text_system.font_generation()));
+        }
+        Ok(text_system.font_generation())
     }
 
     pub fn submit_bound_frame(
