@@ -3,7 +3,7 @@
 "@lumiscia/lumen-types": minor
 ---
 
-`model_3d` puts a glTF model in a 3D scene. Its `source` is a binary glTF (`.glb`) file, a path or `asset:<id>`, with its buffers and images packed inside it. It draws the model's default scene with its materials, and plays one of its animation clips: `animation` names the clip, by its name or its index, and empty plays none. `animation_speed` multiplies the clip's speed, `animation_offset` starts it that many seconds in, and `animation_loop`, on by default, plays it again from its start once it ends; off, the model holds the clip's last pose. `position`, `rotation` and `scale` place the model like any other scene node. A clip or material the model lacks fails the render with a message listing the ones it has. A model that doesn't animate is drawn once and kept across frames, like a still shape.
+`model_3d` puts a glTF model in a 3D scene. Its `source` is a binary glTF (`.glb`) file, a path or `asset:<id>`, with its buffers and images packed inside it. It draws the model's default scene with its materials, and plays one of its animation clips: `animation` names the clip, by its name or its index, and empty plays none. `animation_speed` multiplies the clip's speed, `animation_offset` starts it that many seconds in, and `animation_loop`, on by default, plays it again from its start once it ends; off, the model holds the clip's last pose. `position`, `rotation` and `scale` place the model like any other scene node. A clip or material the model lacks fails the render with a message listing the ones it has. A model that plays no clip, or plays one at speed 0, is drawn once and kept across frames, like a still shape.
 
 ```json
 {

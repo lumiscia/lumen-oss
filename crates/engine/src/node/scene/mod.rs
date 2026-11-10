@@ -263,12 +263,14 @@ pub struct Model3d {
 }
 
 impl Model3d {
-    /// Whether the model may pose differently from frame to frame.
+    /// Whether the model may pose differently from frame to frame: it plays a clip, at a speed
+    /// other than 0.
     pub(crate) fn animates(&self) -> bool {
-        match &self.params.animation {
+        let plays = match &self.params.animation {
             Deferred::Value(clip) => !clip.is_empty(),
             Deferred::Expr(_) => true,
-        }
+        };
+        plays && !matches!(self.params.animation_speed, Deferred::Value(speed) if speed == 0.0)
     }
 }
 

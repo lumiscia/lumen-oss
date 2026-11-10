@@ -1364,11 +1364,8 @@ fn a_textured_model_shows_its_base_colour_map() {
 #[test]
 fn a_skinned_model_playing_a_clip_poses_anew_each_frame_and_a_still_one_is_kept() {
     let gpu = gpu();
-    let frames = |animation: &str| {
-        let composition: Composition = render_3d(vec![fox(1, json!({ "animation": animation }))])
-            .frames(4)
-            .fps(4.0)
-            .into();
+    let frames = |params: Value| {
+        let composition: Composition = render_3d(vec![fox(1, params)]).frames(4).fps(4.0).into();
         let media = fox_media();
         let mut renderer = gpu.renderer();
         let frames: Vec<Vec<u8>> = (0..4)
@@ -1378,14 +1375,20 @@ fn a_skinned_model_playing_a_clip_poses_anew_each_frame_and_a_still_one_is_kept(
         (frames, renderer.skipped_pass_count())
     };
 
-    let (still, skipped) = frames("");
+    let (still, skipped) = frames(json!({}));
     assert!(still.iter().all(|frame| *frame == still[0]));
     assert!(
         skipped >= 3 * 2,
         "frames after the first read the kept draw and resolve, skipping {skipped} passes"
     );
+    let (paused, skipped) = frames(json!({ "animation": "Walk", "animation_speed": 0 }));
+    assert!(paused.iter().all(|frame| *frame == paused[0]));
+    assert!(
+        skipped >= 3 * 2,
+        "a clip at speed 0 is kept too, skipping {skipped} passes"
+    );
 
-    let (walking, skipped) = frames("Walk");
+    let (walking, skipped) = frames(json!({ "animation": "Walk" }));
     assert_eq!(skipped, 0, "a model playing a clip renders every frame");
     for pair in walking.windows(2) {
         assert!(pair[0] != pair[1], "the fox walks");
@@ -1393,6 +1396,59 @@ fn a_skinned_model_playing_a_clip_poses_anew_each_frame_and_a_still_one_is_kept(
     assert!(
         walking[0] != still[0],
         "walking moves the fox from its rest pose"
+    );
+}
+
+#[test]
+fn two_models_sharing_a_source_load_it_once_and_play_their_own_clips() {
+    let gpu = gpu();
+    // A walking fox on the left, and one playing `right` on the right.
+    let pair = |right: &str| {
+        let fox_at = |id: u32, x: f64, animation: &str| {
+            fox(
+                id,
+                json!({ "animation": animation, "position": [x, -0.4, 0], "scale": [0.008, 0.008, 0.008] }),
+            )
+        };
+        let composition: Composition = render_3d(vec![
+            fox_at(1, -0.9, "Walk"),
+            fox_at(2, 0.9, right),
+            merge(3, &[1, 2], json!({})),
+        ])
+        .frames(4)
+        .fps(4.0)
+        .into();
+        let media = fox_media();
+        let frame = render(&mut gpu.renderer(), &composition, 1.0, &media).rgba;
+        assert_eq!(
+            media.model_loads(),
+            1,
+            "both foxes draw one load of the model"
+        );
+        frame
+    };
+    let half = |rgba: &[u8], right: bool| -> Vec<u8> {
+        rgba.chunks(SIZE.0 as usize * 4)
+            .flat_map(|row| {
+                let (left, rest) = row.split_at(row.len() / 2);
+                if right { rest } else { left }.to_vec()
+            })
+            .collect()
+    };
+    let (walking, running) = (pair("Walk"), pair("Run"));
+    assert!(
+        half(&walking, false).iter().any(|&value| value != 0),
+        "the left fox shows"
+    );
+    assert_eq!(
+        half(&walking, false),
+        half(&running, false),
+        "the left fox walks in both"
+    );
+    assert_ne!(
+        half(&walking, true),
+        half(&running, true),
+        "the right fox runs in one"
     );
 }
 
