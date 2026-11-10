@@ -487,10 +487,10 @@ fn a_template_canvas_over_the_texture_limit_fails_a_full_frame_read() {
     let mut renderer = gpu.renderer();
 
     let error = renderer
-        .render_frame_at(&wide_template_scene(width, "color_grade"), 0.0, &media)
+        .render_frame_at(&wide_template_scene(width, "resize"), 0.0, &media)
         .unwrap_err()
         .to_string();
-    assert!(error.contains("ColorGrade"), "{error}");
+    assert!(error.contains("Resize"), "{error}");
     assert!(
         error.contains(&format!(
             "a {width}x64 canvas is larger than this device's {max}-pixel texture limit"

@@ -159,6 +159,23 @@ pub(crate) struct CropParams {
     pub(crate) size: [u32; 2],
 }
 
+/// A crop over a source stored from `source_origin`, which is where its first texel sits in the
+/// display.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct CropPassParams {
+    pub(crate) origin: [i32; 2],
+    pub(crate) size: [u32; 2],
+    pub(crate) source_origin: [i32; 2],
+}
+
+/// Where a bounded source's first texel sits in the display.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct SourceOriginParams {
+    pub(crate) origin: [i32; 2],
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ResizeParams {

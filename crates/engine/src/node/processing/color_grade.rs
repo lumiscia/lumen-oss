@@ -71,7 +71,7 @@ impl crate::gpu::frame_graph::RecordNode for ColorGrade {
         &self,
         cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
-        let source = cx.required_full(self.id, "source", self.source)?;
+        let source = cx.required(self.id, "source", self.source)?;
         self.grade(cx, source)
     }
 }
