@@ -2,15 +2,15 @@
 //! target, then a resolve into the node's raster.
 
 use bytemuck::{Pod, Zeroable};
-use lumen_3d::glam::{Mat3, Mat4};
-use lumen_3d::{Camera, Draws, LightKind, Lighting, Object, Projection, Scene};
+use lumen_3d::glam::Mat4;
+use lumen_3d::{Camera, Draws, LightKind, Lighting, Object, Projection, Row};
 use lumen_gpu::{
     DEPTH_FORMAT, DepthTest, LayoutEntry, LayoutKind, RenderTargetSpec, Res, Size, TargetLoad,
     TextureDomain, wgpu,
 };
 
 use super::Render3d;
-use super::collect::{GpuMesh, collect, solid_linear};
+use super::collect::{Collected, GpuMesh, solid_linear};
 use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::{FrameCx, Programs, Raster, RecordNode};
 use crate::node::{DelegateEvalContext, DelegateEvaluable, required_input};
@@ -32,6 +32,7 @@ const LAYOUT: &[LayoutEntry] = &[
 
 pub(crate) const FLAG_UNLIT: u32 = 1;
 pub(crate) const FLAG_BLEND: u32 = 2;
+pub(crate) const FLAG_MIRRORED: u32 = 4;
 pub(crate) const LIGHT_DIRECTIONAL: u32 = 0;
 pub(crate) const LIGHT_POINT: u32 = 1;
 pub(crate) const LIGHT_SPOT: u32 = 2;
@@ -110,16 +111,18 @@ fn spec(depth: DepthTest, cull: Option<wgpu::Face>) -> RenderTargetSpec {
     }
 }
 
-/// Opaque runs test and write depth, blended ones only test it; single-sided runs cull back
-/// faces.
-const VARIANTS: [(DepthTest, Option<wgpu::Face>); 4] = [
+/// Opaque runs test and write depth, blended ones only test it. Single-sided runs cull the faces
+/// that point away, which wind clockwise, or counterclockwise once mirrored.
+const VARIANTS: [(DepthTest, Option<wgpu::Face>); 6] = [
     (DepthTest::Write, Some(wgpu::Face::Back)),
+    (DepthTest::Write, Some(wgpu::Face::Front)),
     (DepthTest::Write, None),
     (DepthTest::Read, Some(wgpu::Face::Back)),
+    (DepthTest::Read, Some(wgpu::Face::Front)),
     (DepthTest::Read, None),
 ];
 
-fn gpu_object(object: &Object<GpuMesh>, first_vertex: u32) -> GpuObject {
+fn gpu_object(object: &Object<GpuMesh>, row: &Row) -> GpuObject {
     let surface = &object.surface;
     let mut flags = 0;
     if surface.unlit {
@@ -128,7 +131,10 @@ fn gpu_object(object: &Object<GpuMesh>, first_vertex: u32) -> GpuObject {
     if surface.blending == lumen_3d::Blending::Blend {
         flags |= FLAG_BLEND;
     }
-    let normal = Mat3::from_mat4(object.world).inverse().transpose();
+    if lumen_3d::mirrors(&object.world) {
+        flags |= FLAG_MIRRORED;
+    }
+    let normal = row.normal;
     GpuObject {
         model: object.world.to_cols_array_2d(),
         normal: [normal.x_axis, normal.y_axis, normal.z_axis].map(|axis| axis.extend(0.0).into()),
@@ -137,7 +143,7 @@ fn gpu_object(object: &Object<GpuMesh>, first_vertex: u32) -> GpuObject {
         metallic: surface.metallic,
         roughness: surface.roughness,
         flags,
-        first_vertex,
+        first_vertex: row.first_vertex,
         _pad: 0,
     }
 }
@@ -160,7 +166,7 @@ fn gpu_light(light: &lumen_3d::Light) -> GpuLight {
     }
 }
 
-fn render_error(node_id: crate::node::NodeId, details: String) -> LumenError {
+pub(super) fn render_error(node_id: crate::node::NodeId, details: String) -> LumenError {
     RenderError::NodeEvaluation {
         node_id,
         node_kind: "Render3d",
@@ -196,13 +202,23 @@ impl RecordNode for Render3d {
             pick(params.width, canvas.width),
             pick(params.height, canvas.height),
         );
-        let mut scene = Scene::default();
-        collect(
+        let max = cx.rec.device().limits().max_texture_dimension_2d;
+        if size.width > max || size.height > max {
+            return Err(render_error(
+                self.id,
+                format!(
+                    "a {}x{} output is larger than this device's {max}-pixel texture limit",
+                    size.width, size.height
+                ),
+            ));
+        }
+        let mut collected = Collected::new(self.id);
+        collected.add(
             cx,
             required_input(self.id, "scene", self.scene)?,
             Mat4::IDENTITY,
-            &mut scene,
         )?;
+        let scene = collected.scene;
         let fog = solid_linear(self.id, "Render3d", &params.fog_color)?;
         let camera = scene.camera.unwrap_or_default();
         let view = camera.view();
@@ -212,9 +228,15 @@ impl RecordNode for Render3d {
             return Ok(cx.transparent(size));
         }
 
-        let max = cx.rec.device().limits().max_texture_dimension_2d;
+        // The output fits, so a supersample of 1 always does.
         let mut supersample = params.supersample.clamp(1, 4);
-        while supersample > 1 && size.width.max(size.height) * supersample > max {
+        while supersample > 1
+            && size
+                .width
+                .max(size.height)
+                .checked_mul(supersample)
+                .is_none_or(|side| side > max)
+        {
             supersample -= 1;
         }
         let target_size = Size::new(size.width * supersample, size.height * supersample);
@@ -239,7 +261,7 @@ impl RecordNode for Render3d {
         let objects: Vec<GpuObject> = draws
             .rows
             .iter()
-            .map(|row| gpu_object(&scene.objects[row.object], row.first_vertex))
+            .map(|row| gpu_object(&scene.objects[row.object], row))
             .collect();
         let objects = cx.rec.storage_parts(&[bytemuck::cast_slice(&objects)]);
 
@@ -259,7 +281,11 @@ impl RecordNode for Render3d {
             } else {
                 DepthTest::Write
             };
-            let cull = (!run.key.double_sided).then_some(wgpu::Face::Back);
+            let cull = match (run.key.double_sided, run.key.mirrored) {
+                (true, _) => None,
+                (false, false) => Some(wgpu::Face::Back),
+                (false, true) => Some(wgpu::Face::Front),
+            };
             let program = cx.render_program(
                 "scene-3d",
                 SHADER,

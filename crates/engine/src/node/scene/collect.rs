@@ -3,8 +3,8 @@
 use foldhash::HashMap;
 use lumen_3d::glam::{Mat4, Vec3};
 use lumen_3d::{
-    Blending, Camera, Light, LightKind, Mesh, Object, Primitive, Projection, Scene, Surface,
-    Transform,
+    Blending, Camera, DrawError, Light, LightKind, MAX_OBJECTS, Mesh, Object, Primitive,
+    Projection, Scene, Surface, Transform,
 };
 use lumen_gpu::{BufRef, Recorder, wgpu};
 
@@ -127,90 +127,117 @@ fn surface(node_id: NodeId, material: &Material3d) -> crate::Result<Surface> {
     })
 }
 
-/// Adds the scene `node_id` outputs, placed by `parent`, to `out`.
-pub(super) fn collect(
-    cx: &mut FrameCx<'_>,
-    node_id: NodeId,
-    parent: Mat4,
-    out: &mut Scene<GpuMesh>,
-) -> crate::Result<()> {
-    let node = cx
-        .node(node_id)
-        .ok_or(RenderError::MissingNode { node_id })?;
-    let expr = cx.expr();
-    let ctx = DelegateEvalContext {
-        node_id,
-        expr: &expr,
-    };
-    match node {
-        NodeKind::Merge3d(merge) => {
-            let world = parent * placement(&merge.params.eval(&ctx)?.placement).matrix();
-            for &object in &merge.objects {
-                collect(cx, object, world, out)?;
-            }
-        }
-        NodeKind::Shape3d(shape) => {
-            let params = shape.params.eval(&ctx)?;
-            let size = vec3(params.size).max(Vec3::ZERO);
-            let world = parent * placement(&params.placement).matrix() * Mat4::from_scale(size);
-            let surface = surface(node_id, &params.material)?;
-            let (rec, cache) = cx.scene_cache();
-            let (mesh, index_count) = cache.shape(rec, params.shape);
-            out.objects.push(Object {
-                world,
-                mesh,
-                index_count,
-                surface,
-                center: world.transform_point3(Vec3::ZERO),
-            });
-        }
-        NodeKind::Camera3d(camera) => {
-            let params = camera.params.eval(&ctx)?;
-            let local = if params.look_at {
-                lumen_3d::look_at(vec3(params.pose.position), vec3(params.target))
-            } else {
-                pose(&params.pose).matrix()
-            };
-            let near = (params.near as f32).max(1e-4);
-            out.camera.get_or_insert(Camera {
-                world: parent * local,
-                projection: match params.projection {
-                    Projection3d::Perspective => Projection::Perspective {
-                        fov_y: (params.fov.clamp(1.0, 179.0) as f32).to_radians(),
-                    },
-                    Projection3d::Orthographic => Projection::Orthographic {
-                        height: (params.ortho_height as f32).max(1e-4),
-                    },
-                },
-                near,
-                far: (params.far as f32).max(near + 1e-3),
-            });
-        }
-        NodeKind::Light3d(light) => {
-            let params = light.params.eval(&ctx)?;
-            let [r, g, b, _] = solid_linear(node_id, "Light3d", &params.color)?;
-            out.lights.push(Light::new(
-                match params.light {
-                    Light3dKind::Directional => LightKind::Directional,
-                    Light3dKind::Point => LightKind::Point,
-                    Light3dKind::Spot => LightKind::Spot,
-                    Light3dKind::Ambient => LightKind::Ambient,
-                },
-                Vec3::new(r, g, b) * params.intensity as f32,
-                parent * pose(&params.pose).matrix(),
-                params.range as f32,
-                params.spot_angle as f32,
-                params.spot_softness as f32,
-            ));
-        }
-        // Validation keeps rasters out of scene inputs.
-        _ => {
-            return Err(LumenError::from(RenderError::NodeEvaluation {
-                node_id,
-                node_kind: "Render3d",
-                details: "a scene input takes scene nodes, not a raster".to_string(),
-            }));
+/// The scene a `render_3d` draws, as far as its nodes have been walked.
+pub(super) struct Collected {
+    pub(super) scene: Scene<GpuMesh>,
+    render_id: NodeId,
+    /// Scene nodes walked, counting a node each time it is reached.
+    reached: usize,
+}
+
+impl Collected {
+    pub(super) fn new(render_id: NodeId) -> Self {
+        Self {
+            scene: Scene::default(),
+            render_id,
+            reached: 0,
         }
     }
-    Ok(())
+
+    /// Adds the scene `node_id` outputs, placed by `parent`. A scene that reaches more than
+    /// [`MAX_OBJECTS`] nodes fails as soon as it does, before a node wired in many times over
+    /// can expand much further.
+    pub(super) fn add(
+        &mut self,
+        cx: &mut FrameCx<'_>,
+        node_id: NodeId,
+        parent: Mat4,
+    ) -> crate::Result<()> {
+        self.reached += 1;
+        if self.reached > MAX_OBJECTS {
+            return Err(super::render::render_error(
+                self.render_id,
+                DrawError::TooManyObjects.to_string(),
+            ));
+        }
+        let node = cx
+            .node(node_id)
+            .ok_or(RenderError::MissingNode { node_id })?;
+        let expr = cx.expr();
+        let ctx = DelegateEvalContext {
+            node_id,
+            expr: &expr,
+        };
+        match node {
+            NodeKind::Merge3d(merge) => {
+                let world = parent * placement(&merge.params.eval(&ctx)?.placement).matrix();
+                for &object in &merge.objects {
+                    self.add(cx, object, world)?;
+                }
+            }
+            NodeKind::Shape3d(shape) => {
+                let params = shape.params.eval(&ctx)?;
+                let size = vec3(params.size).max(Vec3::ZERO);
+                let world = parent * placement(&params.placement).matrix() * Mat4::from_scale(size);
+                let surface = surface(node_id, &params.material)?;
+                let (rec, cache) = cx.scene_cache();
+                let (mesh, index_count) = cache.shape(rec, params.shape);
+                self.scene.objects.push(Object {
+                    world,
+                    mesh,
+                    index_count,
+                    surface,
+                    center: world.transform_point3(Vec3::ZERO),
+                });
+            }
+            NodeKind::Camera3d(camera) => {
+                let params = camera.params.eval(&ctx)?;
+                let local = if params.look_at {
+                    lumen_3d::look_at(vec3(params.pose.position), vec3(params.target))
+                } else {
+                    pose(&params.pose).matrix()
+                };
+                let near = (params.near as f32).max(1e-4);
+                self.scene.camera.get_or_insert(Camera {
+                    world: parent * local,
+                    projection: match params.projection {
+                        Projection3d::Perspective => Projection::Perspective {
+                            fov_y: (params.fov.clamp(1.0, 179.0) as f32).to_radians(),
+                        },
+                        Projection3d::Orthographic => Projection::Orthographic {
+                            height: (params.ortho_height as f32).max(1e-4),
+                        },
+                    },
+                    near,
+                    far: (params.far as f32).max(near + 1e-3),
+                });
+            }
+            NodeKind::Light3d(light) => {
+                let params = light.params.eval(&ctx)?;
+                let [r, g, b, _] = solid_linear(node_id, "Light3d", &params.color)?;
+                self.scene.lights.push(Light::new(
+                    match params.light {
+                        Light3dKind::Directional => LightKind::Directional,
+                        Light3dKind::Point => LightKind::Point,
+                        Light3dKind::Spot => LightKind::Spot,
+                        Light3dKind::Ambient => LightKind::Ambient,
+                    },
+                    Vec3::new(r, g, b) * params.intensity as f32,
+                    parent * pose(&params.pose).matrix(),
+                    params.range as f32,
+                    params.spot_angle as f32,
+                    params.spot_softness as f32,
+                ));
+            }
+            // Validation keeps rasters out of scene inputs.
+            _ => {
+                return Err(LumenError::from(RenderError::NodeEvaluation {
+                    node_id,
+                    node_kind: "Render3d",
+                    details: "a scene input takes scene nodes, not a raster".to_string(),
+                }));
+            }
+        }
+        Ok(())
+    }
 }

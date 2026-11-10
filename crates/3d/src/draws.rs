@@ -6,11 +6,12 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 
-use glam::Mat4;
+use glam::{Mat3, Mat4};
 
-use crate::{Blending, Object};
+use crate::{Blending, Object, mirrors, normal_matrix};
 
-/// The most objects one frame may draw.
+/// The most objects one frame may draw. Whoever expands a scene into objects should stop once it
+/// has reached this many of its parts, counting a part each time it is reached.
 pub const MAX_OBJECTS: usize = 100_000;
 
 /// What objects drawn together share.
@@ -18,6 +19,8 @@ pub const MAX_OBJECTS: usize = 100_000;
 pub struct DrawKey<M> {
     pub blend: bool,
     pub double_sided: bool,
+    /// Whether the object's world matrix mirrors it, which turns the faces that point away.
+    pub mirrored: bool,
     pub mesh: M,
 }
 
@@ -26,18 +29,21 @@ impl<M: Copy> DrawKey<M> {
         Self {
             blend: object.surface.blending == Blending::Blend,
             double_sided: object.surface.double_sided,
+            mirrored: mirrors(&object.world),
             mesh: object.mesh,
         }
     }
 }
 
 /// One row of the object table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Row {
     /// The object's index in the scene.
     pub object: usize,
     /// Where the object's vertices start among all the table's, one per index it draws.
     pub first_vertex: u32,
+    /// The object's [`normal_matrix`].
+    pub normal: Mat3,
 }
 
 /// One draw: `count` rows from `first`, whose `vertices` start at `base` among all the table's.
@@ -50,7 +56,7 @@ pub struct Run<M> {
     pub vertices: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Draws<M> {
     pub rows: Vec<Row>,
     pub runs: Vec<Run<M>>,
@@ -75,7 +81,8 @@ impl std::error::Error for DrawError {}
 
 impl<M: Copy + Eq + Hash> Draws<M> {
     /// Opaque objects first, grouped by what they bind and otherwise in scene order, then blended
-    /// ones from back to front as `view` sees them. Objects that draw nothing are left out.
+    /// ones from back to front as `view` sees them. Objects that draw nothing are left out: those
+    /// without indices, and those whose world matrix has no [`normal_matrix`].
     pub fn new(objects: &[Object<M>], view: &Mat4) -> Result<Self, DrawError> {
         if objects.len() > MAX_OBJECTS {
             return Err(DrawError::TooManyObjects);
@@ -90,10 +97,13 @@ impl<M: Copy + Eq + Hash> Draws<M> {
             })
             .collect();
         let depth = |index: usize| view.transform_point3(objects[index].center).z;
-        let mut order: Vec<usize> = (0..objects.len())
-            .filter(|&index| objects[index].index_count > 0)
+        let mut order: Vec<(usize, Mat3)> = objects
+            .iter()
+            .enumerate()
+            .filter(|(_, object)| object.index_count > 0)
+            .filter_map(|(index, object)| Some((index, normal_matrix(&object.world)?)))
             .collect();
-        order.sort_by(|&a, &b| {
+        order.sort_by(|&(a, _), &(b, _)| {
             keys[a].blend.cmp(&keys[b].blend).then_with(|| {
                 if keys[a].blend {
                     depth(a).total_cmp(&depth(b))
@@ -108,7 +118,7 @@ impl<M: Copy + Eq + Hash> Draws<M> {
             runs: Vec::new(),
         };
         let mut vertices = 0u32;
-        for (row, index) in order.into_iter().enumerate() {
+        for (row, (index, normal)) in order.into_iter().enumerate() {
             let count = objects[index].index_count;
             let first_vertex = vertices;
             vertices = vertices
@@ -117,6 +127,7 @@ impl<M: Copy + Eq + Hash> Draws<M> {
             draws.rows.push(Row {
                 object: index,
                 first_vertex,
+                normal,
             });
             match draws.runs.last_mut() {
                 Some(run) if run.key == keys[index] => {
@@ -206,13 +217,29 @@ mod tests {
     fn objects_that_draw_nothing_are_left_out() {
         let mut empty = object(1, Blending::Opaque, 0.0);
         empty.index_count = 0;
-        let draws = Draws::new(&[empty, object(1, Blending::Opaque, 0.0)], &Mat4::IDENTITY);
-        assert_eq!(
-            draws.unwrap().rows,
-            [Row {
-                object: 1,
-                first_vertex: 0
-            }]
-        );
+        let mut flattened = object(1, Blending::Opaque, 0.0);
+        flattened.world = Mat4::from_scale(Vec3::new(0.0, 0.0, 1.0));
+        let objects = [empty, flattened, object(1, Blending::Opaque, 0.0)];
+        let draws = Draws::new(&objects, &Mat4::IDENTITY).unwrap();
+        let rows: Vec<(usize, u32)> = draws
+            .rows
+            .iter()
+            .map(|row| (row.object, row.first_vertex))
+            .collect();
+        assert_eq!(rows, [(2, 0)]);
+    }
+
+    #[test]
+    fn mirrored_objects_draw_apart_from_unmirrored_ones() {
+        let mut mirrored = object(1, Blending::Opaque, 0.0);
+        mirrored.world = Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0));
+        let objects = [object(1, Blending::Opaque, 0.0), mirrored];
+        let draws = Draws::new(&objects, &Mat4::IDENTITY).unwrap();
+        let runs: Vec<(bool, u32)> = draws
+            .runs
+            .iter()
+            .map(|run| (run.key.mirrored, run.count))
+            .collect();
+        assert_eq!(runs, [(false, 1), (true, 1)]);
     }
 }

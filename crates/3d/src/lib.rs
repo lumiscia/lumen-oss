@@ -18,4 +18,4 @@ pub use glam;
 pub use light::{Light, LightKind, Lighting};
 pub use mesh::{Mesh, Primitive, Vertex};
 pub use scene::{Blending, Object, Scene, Surface};
-pub use transform::{Transform, look_at, rotation};
+pub use transform::{Transform, look_at, mirrors, normal_matrix, rotation};

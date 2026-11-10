@@ -7,6 +7,8 @@ const PI: f32 = 3.14159265;
 
 const FLAG_UNLIT: u32 = 1u;
 const FLAG_BLEND: u32 = 2u;
+// Mirrored by its world matrix, so its outward faces wind clockwise.
+const FLAG_MIRRORED: u32 = 4u;
 
 const LIGHT_DIRECTIONAL: u32 = 0u;
 const LIGHT_SPOT: u32 = 2u;
@@ -32,6 +34,7 @@ struct Globals {
 
 struct Object {
     model: mat4x4<f32>,
+    // Takes normals to world space up to their length.
     normal: mat3x3<f32>,
     base_color: vec4<f32>,
     emissive: vec3<f32>,
@@ -194,11 +197,16 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         return vec4<f32>(fogged(display(base.rgb + o.emissive), in.world) * base.a, base.a);
     }
 
-    var n = normalize(in.normal);
-    if (!front) {
-        n = -n;
-    }
     let v = view_direction(in.world);
+    // A normal the world matrix flattened away, on a face it left without area, faces the viewer.
+    var n = v;
+    if (dot(in.normal, in.normal) > 0.0) {
+        n = normalize(in.normal);
+        let mirrored = (o.flags & FLAG_MIRRORED) != 0u;
+        if (front == mirrored) {
+            n = -n;
+        }
+    }
     let n_dot_v = max(dot(n, v), 1e-4);
     let metallic = clamp(o.metallic, 0.0, 1.0);
     let roughness = clamp(o.roughness, 0.03, 1.0);

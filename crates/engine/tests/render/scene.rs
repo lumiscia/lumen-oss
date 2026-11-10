@@ -31,13 +31,14 @@ fn merge(id: u32, objects: &[u32], params: Value) -> Value {
     json!({ "id": id, "type": "merge_3d", "params": params, "in": { "objects": objects } })
 }
 
-/// Asserts that the white box covers `(x, y)` of `frame`, lit grey.
+/// Asserts that the white box covers `(x, y)` of `frame`, its front lit by the default key light,
+/// ambient fill and studio environment.
 fn lit_at(frame: &Frame, x: u32, y: u32) {
     let [r, g, b, a] = frame.pixel(x, y);
     assert_eq!(a, 255, "the box covers ({x}, {y})");
     assert!(
-        r > 40 && r == g && g == b,
-        "a white box is lit grey, got {r} {g} {b}"
+        r.abs_diff(214) <= 8 && r == g && g == b,
+        "a white box's front is lit light grey, got {r} {g} {b}"
     );
 }
 
@@ -132,6 +133,138 @@ fn a_blended_object_shows_what_is_behind_it() {
             ]),
         )
         .tolerance(2),
+    ]);
+}
+
+#[test]
+fn overlapping_blended_objects_composite_from_back_to_front_in_either_node_order() {
+    let near = flat(
+        1,
+        json!({ "size": [1, 1, 0.2], "position": [0.4, 0, 1], "opacity": 0.5 }),
+        GREEN,
+    );
+    let far = flat(
+        2,
+        json!({ "size": [1, 1, 0.2], "position": [-0.4, 0, -1], "opacity": 0.5 }),
+        RED,
+    );
+    // Half green over half red, in linear light: green 0.5, red 0.25, alpha 0.75. Red over green
+    // would swap the red and green channels.
+    let overlap = || Expect::Probes(vec![(CENTER, CENTER, [117, 160, 0, 191])]);
+    check(vec![
+        Case::new(
+            "near node first",
+            render_3d(vec![
+                near.clone(),
+                far.clone(),
+                merge(3, &[1, 2], json!({})),
+            ]),
+            overlap(),
+        )
+        .tolerance(2),
+        Case::new(
+            "far node first",
+            render_3d(vec![near, far, merge(3, &[2, 1], json!({}))]),
+            overlap(),
+        )
+        .tolerance(2),
+    ]);
+}
+
+/// A lit plane facing the default camera, with `params` on top of its own.
+fn facing_plane(params: Value) -> Value {
+    let mut plane = json!({ "shape": "plane", "rotation": [90, 0, 0] });
+    for (name, value) in params.as_object().expect("params") {
+        plane[name] = value.clone();
+    }
+    json!({ "id": 1, "type": "shape_3d", "params": plane })
+}
+
+#[test]
+fn a_mirrored_object_shows_and_is_lit_as_its_unmirrored_twin() {
+    let plane = || render_3d(vec![facing_plane(json!({}))]).into();
+    check(vec![
+        Case::new(
+            "single-sided",
+            render_3d(vec![facing_plane(json!({ "scale": [-1, 1, 1] }))]),
+            Expect::Matches(plane()),
+        ),
+        Case::new(
+            "double-sided",
+            render_3d(vec![facing_plane(
+                json!({ "scale": [-1, 1, 1], "double_sided": true }),
+            )]),
+            Expect::Matches(plane()),
+        ),
+        Case::new(
+            "mirrored by its merge_3d",
+            render_3d(vec![
+                facing_plane(json!({})),
+                merge(2, &[1], json!({ "scale": [-1, 1, 1] })),
+            ]),
+            Expect::Matches(plane()),
+        ),
+    ]);
+}
+
+#[test]
+fn a_plane_without_thickness_is_lit_as_one_with_it() {
+    // A plane has no extent across Y, so flattening Y leaves it as it was.
+    let plane = || render_3d(vec![facing_plane(json!({}))]).into();
+    check(vec![
+        Case::new(
+            "zero size",
+            render_3d(vec![facing_plane(json!({ "size": [1, 0, 1] }))]),
+            Expect::Matches(plane()),
+        ),
+        Case::new(
+            "zero scale",
+            render_3d(vec![facing_plane(json!({ "scale": [1, 0, 1] }))]),
+            Expect::Matches(plane()),
+        ),
+    ]);
+}
+
+#[test]
+fn point_and_spot_lights_leave_what_they_do_not_reach_unlit() {
+    // A wall filling the canvas, lit by `light` alone.
+    let lit_by = |light: Value| {
+        scene(
+            SIZE,
+            json!([
+                facing_plane(json!({ "size": [4, 1, 4] })),
+                { "id": 2, "type": "light_3d", "params": light },
+                merge(3, &[1, 2], json!({})),
+                { "id": 100, "type": "render_3d", "params": { "environment": 0 }, "in": { "scene": 3 } },
+            ]),
+        )
+    };
+    // One unit right of centre on the wall.
+    let right = (49, CENTER);
+    let unlit = [0, 0, 0, 255];
+    let lit = |frame: &Frame, (x, y): (u32, u32)| {
+        let [r, _, _, a] = frame.pixel(x, y);
+        assert!(r > 100 && a == 255, "({x}, {y}) is lit, got {r}");
+    };
+    check(vec![
+        Case::new(
+            "a point light a unit left of centre reaches 1.5 units",
+            lit_by(json!({ "light": "point", "position": [-1, 0, 1], "range": 1.5 })),
+            Expect::Custom(Box::new(move |frames| {
+                lit(&frames[0], (15, CENTER));
+                assert_eq!(frames[0].pixel(right.0, right.1), unlit);
+            })),
+        ),
+        Case::new(
+            "a spot light 2 units out shines a 30° cone at the centre",
+            lit_by(
+                json!({ "light": "spot", "position": [0, 0, 2], "rotation": [0, 0, 0], "spot_angle": 30 }),
+            ),
+            Expect::Custom(Box::new(move |frames| {
+                lit(&frames[0], (CENTER, CENTER));
+                assert_eq!(frames[0].pixel(right.0, right.1), unlit);
+            })),
+        ),
     ]);
 }
 
@@ -270,5 +403,54 @@ fn a_render_3d_is_kept_across_frames_until_its_scene_animates() {
     assert_eq!(skipped, 0, "an animated scene renders every frame");
     for pair in moving.windows(2) {
         assert!(pair[0] != pair[1], "the camera orbits");
+    }
+}
+
+fn render_error(composition: &Composition) -> String {
+    gpu()
+        .renderer()
+        .render_frame_at(composition, 0.0, &TestMedia::default())
+        .expect_err("the render fails")
+        .to_string()
+}
+
+#[test]
+fn a_scene_that_expands_past_the_object_limit_fails_before_expanding_it() {
+    // Each merge_3d takes the one before twice, so the box is reached 2^40 times.
+    let mut nodes = vec![json!({ "id": 1, "type": "shape_3d" })];
+    for id in 2..=41 {
+        nodes.push(merge(id, &[id - 1, id - 1], json!({})));
+    }
+    let error = render_error(&render_3d(nodes).into());
+    assert!(
+        error.contains("the scene has more than 100000 objects"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_output_larger_than_the_device_allows_fails() {
+    let max = gpu()
+        .renderer()
+        .gpu_renderer()
+        .device
+        .limits()
+        .max_texture_dimension_2d;
+    for width in [max + 1, u32::MAX] {
+        let composition = scene(
+            SIZE,
+            json!([
+                { "id": 1, "type": "shape_3d" },
+                { "id": 100, "type": "render_3d", "params": { "width": width, "height": 1 }, "in": { "scene": 1 } },
+            ]),
+        )
+        .into();
+        let error = render_error(&composition);
+        assert!(
+            error.contains(&format!(
+                "a {width}x1 output is larger than this device's {max}-pixel texture limit"
+            )),
+            "{error}"
+        );
     }
 }
