@@ -161,6 +161,8 @@ impl_delegated_deferred!(
     [u8; 4],
     (f64, f64),
     [f32; 2],
+    [f64; 3],
+    [f32; 3],
     ShaderUniforms,
     ClipProps
 );
