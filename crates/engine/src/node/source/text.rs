@@ -1452,37 +1452,6 @@ pub(crate) fn literal_font_families(text: &Text) -> Vec<(String, &str)> {
     families
 }
 
-/// Loads the families every text node of `composition` and its templates names as literals, in
-/// node order, so that recording a frame need not stop for them. A family that fails to load is
-/// left to the text that names it, which reports the error if it is drawn.
-pub(crate) fn load_literal_font_families(
-    text_system: &mut lumen_text::TextSystem,
-    media: Option<&dyn MediaStore>,
-    composition: &crate::composition::Composition,
-) {
-    let scenes = std::iter::once(composition.scene()).chain(
-        composition
-            .compositions()
-            .values()
-            .map(|template| &template.scene),
-    );
-    for scene in scenes {
-        let mut texts: Vec<_> = scene
-            .graph
-            .nodes
-            .values()
-            .filter_map(|node| match node {
-                crate::node::NodeKind::Text(text) => Some(text),
-                _ => None,
-            })
-            .collect();
-        texts.sort_by_key(|text| text.id);
-        for (_, family) in texts.into_iter().flat_map(literal_font_families) {
-            let _ = load_font_family(text_system, media, family);
-        }
-    }
-}
-
 /// The text system of `media`'s fonts, which rendering and text measurement share so both see
 /// them. Do not hold the guard while evaluating expressions, which may measure text.
 pub(crate) fn text_system<'a>(

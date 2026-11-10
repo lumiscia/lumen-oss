@@ -873,44 +873,6 @@ fn many_fonts_loaded_while_binding_settle_in_one_render() {
     drawn_in(&gpu, json!(nodes), &media);
 }
 
-#[test]
-fn literal_families_load_before_the_first_frame_is_recorded() {
-    let gpu = gpu();
-    let mut media = TestMedia::default();
-    let mut nodes = Vec::new();
-    for font in 0..6u32 {
-        let family = format!("Literal{font}");
-        media = media.font(&family, &family, font_named(INTER, &family));
-        nodes.push(text_node(
-            font + 1,
-            json!({ "content": "W", "font_family": family, "position": [font * 16, 10] }),
-        ));
-    }
-    nodes.push(
-        json!({ "id": 100, "type": "raster_multimerge", "in": { "layers": [1, 2, 3, 4, 5, 6] } }),
-    );
-    let composition: Composition = scene((128, 64), json!(nodes)).into();
-    let mut renderer = gpu.renderer();
-    assert!(drawn(
-        &render(&mut renderer, &composition, 0.0, &media).rgba
-    ));
-    assert_eq!(renderer.font_rerecorded_frame_count(), 0);
-    assert_eq!(media.font_requests(), 6);
-
-    // A family an expression names still loads as the frame is recorded.
-    let media = media.font("Named", "Named", font_named(INTER, "Named"));
-    let named: Composition = scene(
-        (128, 64),
-        json!([text_node(
-            1,
-            json!({ "content": "W", "font_family": "=\"Named\"" })
-        )]),
-    )
-    .into();
-    render(&mut renderer, &named, 0.0, &media);
-    assert_eq!(renderer.font_rerecorded_frame_count(), 1);
-}
-
 /// Gives "Churn" a resolver with a new id each time it is asked, so its font never settles.
 #[derive(Debug, Default)]
 struct ChurningFont {
