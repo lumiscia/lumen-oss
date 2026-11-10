@@ -65,4 +65,4 @@ What isn't:
 - Morph targets, vertex colours, a second set of texture coordinates, and points and lines. A model with them loads and draws without them.
 - The model's own lights and cameras.
 
-The Lumen server takes `.glb` uploads as `model` assets, checking each by reading it as renders do. The browser preview has no models yet; a `model_3d` there fails, naming the source.
+The Lumen server takes `.glb` uploads as `model` assets, checking each by reading it as renders do.
