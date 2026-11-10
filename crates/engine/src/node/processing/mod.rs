@@ -8,6 +8,7 @@ pub(crate) mod gaussian;
 pub mod glow;
 pub mod hue_saturation;
 pub mod levels;
+pub mod motion_blur;
 pub mod opacity;
 pub mod resize;
 pub mod shadow;

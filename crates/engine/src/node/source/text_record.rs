@@ -218,7 +218,8 @@ pub(crate) fn record_text(
     use lumen_gpu::{Res, TargetLoad, wgpu};
 
     let size = cx.canvas_size();
-    let blurred = text_blurred(text);
+    let motion_blur = cx.analytic_motion_blur();
+    let blurred = motion_blur && text_blurred(text);
     let layer_size = text_layer_size(blurred, size);
     let atlas = cx.atlas()?;
     let instance = cx.text_instance(text.id, |cx| {
@@ -246,6 +247,7 @@ pub(crate) fn record_text(
             size,
             layer_size,
             measure_ink: !blurred && text_may_be_bounded(text),
+            motion_blur,
             state: std::sync::Arc::new(std::sync::Mutex::new(TextState::default())),
         })
     })?;

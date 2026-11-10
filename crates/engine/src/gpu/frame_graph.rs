@@ -219,6 +219,12 @@ struct PathId(u32);
 type InstanceKey = (usize, PathId, NodeId);
 /// A node of one graph, wherever it is reached from.
 type GraphNodeKey = (usize, NodeId);
+/// A node reached along one path, in one sample of the `motion_blur` that path samples, or in
+/// sample 0 outside one.
+type MemoKey = (InstanceKey, u32);
+/// A video frame a `media_in` showed this frame: the node's instance, the ID of the resolver it
+/// read, the source frame, its size and whether its colour is premultiplied.
+type VideoFrameKey = (InstanceKey, String, u32, (u32, u32), bool);
 
 struct Slot {
     raster: Raster,
@@ -268,7 +274,7 @@ struct RecordState {
     font_generation: Option<u64>,
     tick: u64,
     paths: HashMap<(PathId, NodeId), PathId>,
-    memo: HashMap<InstanceKey, Raster>,
+    memo: HashMap<MemoKey, Raster>,
     full_frames: HashMap<(TexRef, u32, u32), Raster>,
     statics: HashMap<GraphNodeKey, bool>,
     slots: HashMap<GraphNodeKey, Slot>,
@@ -282,14 +288,22 @@ struct RecordState {
     next_shader: u64,
     transparent: Option<TexRef>,
     dummy_float: Option<TexRef>,
+    dummy_uint: Option<TexRef>,
     atlas: Option<TexRef>,
     /// Adopted images by their texture, and the tick that last bound each.
     media: HashMap<usize, (TexRef, u64)>,
     video_uploads: Vec<VideoUpload>,
     yuv_uploads: Vec<YuvUpload>,
-    /// The slot each video source's GPU frames are imported into, and when it was last used.
+    /// The texture of each video frame shown this frame, which samples of a `motion_blur` landing
+    /// on the same source frame share.
+    video_frames: HashMap<VideoFrameKey, TexRef>,
+    /// The slot each video source's GPU frames are imported into, by the source and how many
+    /// distinct frames it imported earlier in the frame, and when it was last used.
     #[cfg(feature = "ffmpeg")]
-    video_imports: HashMap<InstanceKey, (u32, u64)>,
+    video_imports: HashMap<(InstanceKey, u32), (u32, u64)>,
+    /// Distinct GPU frames each video source has imported this frame.
+    #[cfg(feature = "ffmpeg")]
+    frame_imports: HashMap<InstanceKey, u32>,
     #[cfg(feature = "ffmpeg")]
     next_video_import: u32,
     output: Option<Raster>,
@@ -427,6 +441,9 @@ impl FrameGraph {
             self.state.full_frames.clear();
             self.state.video_uploads.clear();
             self.state.yuv_uploads.clear();
+            self.state.video_frames.clear();
+            #[cfg(feature = "ffmpeg")]
+            self.state.frame_imports.clear();
             self.recorder.begin_frame();
             let mut cx = FrameCx {
                 rec: &mut self.recorder,
@@ -436,6 +453,8 @@ impl FrameGraph {
                 scope: Scope::root(composition),
                 frame: frame.into(),
                 path: PathId(0),
+                sample: 0,
+                sampling: false,
                 media,
                 output_format,
                 full_frame_sources,
@@ -704,10 +723,9 @@ impl FrameGraph {
         node: NodeId,
     ) -> Option<TextureDomain> {
         let graph = std::ptr::from_ref(composition.graph()) as usize;
-        let recorded =
-            self.state.memo.iter().find_map(|(key, raster)| {
-                (key.0 == graph && key.2 == node).then_some(raster.domain)
-            });
+        let recorded = self.state.memo.iter().find_map(|((key, _), raster)| {
+            (key.0 == graph && key.2 == node).then_some(raster.domain)
+        });
         recorded.or_else(|| Some(self.state.slots.get(&(graph, node))?.raster.domain))
     }
 
@@ -731,9 +749,11 @@ impl FrameGraph {
         state.fingerprint = None;
         state.video_uploads.clear();
         state.yuv_uploads.clear();
+        state.video_frames.clear();
         #[cfg(feature = "ffmpeg")]
         {
             state.video_imports.clear();
+            state.frame_imports.clear();
             self.imports = GpuMediaImports::default();
         }
         for (_, (tex, _)) in state.media.drain() {
@@ -761,6 +781,7 @@ impl FrameGraph {
         self.drop_pending();
         self.state.transparent = None;
         self.state.dummy_float = None;
+        self.state.dummy_uint = None;
         self.recorder.release_all();
     }
 
@@ -885,6 +906,10 @@ pub(crate) struct FrameCx<'a> {
     scope: Scope<'a>,
     frame: FrameTime,
     path: PathId,
+    /// The sample of the `motion_blur` that `path` samples, or 0 outside one.
+    sample: u32,
+    /// Whether the walk is inside a `motion_blur` that samples, where analytic motion blur is off.
+    sampling: bool,
     media: Option<&'a dyn MediaStore>,
     output_format: wgpu::TextureFormat,
     full_frame_sources: bool,
@@ -1015,7 +1040,7 @@ impl<'a> FrameCx<'a> {
             self.st.skipped_passes += slot.passes;
             return Ok(slot.raster);
         }
-        let key = (graph, self.path, node_id);
+        let key = ((graph, self.path, node_id), self.sample);
         let raster = match self.st.memo.get(&key) {
             Some(raster) => *raster,
             None => {
@@ -1569,13 +1594,40 @@ impl<'a> FrameCx<'a> {
         Ok(target)
     }
 
+    /// The texture `media_in` node `node_id` shows `source_frame` of the video `resolver` names
+    /// through, taking the frame from `frame` the first time this frame shows it.
+    pub(crate) fn video_texture(
+        &mut self,
+        node_id: NodeId,
+        resolver: &str,
+        source_frame: u32,
+        frame: impl FnOnce() -> crate::Result<MediaFrame>,
+        size: Size,
+        alpha: AlphaMode,
+    ) -> crate::Result<TexRef> {
+        let instance = (self.graph_key(), self.path, node_id);
+        let key = (
+            instance,
+            resolver.to_string(),
+            source_frame,
+            (size.width, size.height),
+            alpha == AlphaMode::Premultiplied,
+        );
+        if let Some(tex) = self.st.video_frames.get(&key) {
+            return Ok(*tex);
+        }
+        let tex = self.decoded_video_texture(instance, frame()?, size, alpha)?;
+        self.st.video_frames.insert(key, tex);
+        Ok(tex)
+    }
+
     /// The texture a video frame shows through. A GPU frame is imported now, ahead of this frame's
     /// submission in queue order, which settles its source on the GPU. One the renderer can't use
     /// moves its source to the CPU, unless the source has already imported a GPU frame, even earlier
     /// in this output frame, which fails the render instead.
-    pub(crate) fn video_texture(
+    fn decoded_video_texture(
         &mut self,
-        #[cfg_attr(not(feature = "ffmpeg"), allow(unused_variables))] node_id: NodeId,
+        #[cfg_attr(not(feature = "ffmpeg"), allow(unused_variables))] instance: InstanceKey,
         frame: MediaFrame,
         size: Size,
         alpha: AlphaMode,
@@ -1586,7 +1638,11 @@ impl<'a> FrameCx<'a> {
             }
             #[cfg(feature = "ffmpeg")]
             MediaFrame::GpuVideo(frame) => {
-                let key = (self.graph_key(), self.path, node_id);
+                // Imports copy into their slot's textures before the frame's passes run, so each
+                // distinct frame a source shows this frame needs a slot of its own.
+                let imported = self.st.frame_imports.entry(instance).or_default();
+                let key = (instance, *imported);
+                *imported += 1;
                 let tick = self.st.tick;
                 let next = &mut self.st.next_video_import;
                 let slot = self.st.video_imports.entry(key).or_insert_with(|| {
@@ -1625,6 +1681,173 @@ impl<'a> FrameCx<'a> {
                 }
             }
         }
+    }
+
+    /// Whether analytic motion blur applies. It is off inside a `motion_blur` that samples, whose
+    /// samples already spread motion over the shutter.
+    pub(crate) fn analytic_motion_blur(&self) -> bool {
+        !self.sampling
+    }
+
+    /// Records `source` at each of `offsets` frames from this one and averages the samples in
+    /// premultiplied space. Each sample is summed into a running target as soon as it is recorded,
+    /// so its textures go back to the pool for the next. The samples share a path of their own,
+    /// keeping their text and video state apart from the source's outside the blur.
+    pub(crate) fn record_motion_blur(
+        &mut self,
+        node_id: NodeId,
+        source: NodeId,
+        offsets: &[f64],
+    ) -> crate::Result<Raster> {
+        let (frame, path) = (self.frame, self.path);
+        let next = PathId(self.st.paths.len() as u32 + 1);
+        self.path = *self.st.paths.entry((path, node_id)).or_insert(next);
+        self.sampling = true;
+        let result = self.accumulate(source, frame, offsets);
+        self.sampling = false;
+        self.sample = 0;
+        self.path = path;
+        self.frame = frame;
+        result
+    }
+
+    fn accumulate(
+        &mut self,
+        source: NodeId,
+        frame: FrameTime,
+        offsets: &[f64],
+    ) -> crate::Result<Raster> {
+        let mut sum: Option<Raster> = None;
+        // The domain and bounds every sample had, which the average keeps when they all agree.
+        let mut shared: Option<Option<(TextureDomain, Option<CropParams>)>> = None;
+        for (index, offset) in offsets.iter().enumerate() {
+            self.sample = index as u32;
+            self.frame = frame.offset(*offset);
+            let sample = self.input(source)?;
+            let this = (sample.domain, sample.bounds);
+            shared = Some(match shared {
+                None => Some(this),
+                Some(kept) => kept.filter(|kept| *kept == this),
+            });
+            let last = index + 1 == offsets.len();
+            // A blank sample adds nothing, so the sum starts at the first sample that draws, and
+            // later blank samples count only towards the divisor.
+            let blank = Some(sample.tex) == self.st.transparent;
+            if blank && !last {
+                continue;
+            }
+            if blank && sum.is_none() {
+                return Ok(self.transparent(sample.domain.display_size()));
+            }
+            sum = Some(self.add_sample(sum, sample, blank, last, offsets.len() as u32)?);
+        }
+        let mut average = sum.expect("motion blur takes at least two samples");
+        if let Some(Some((domain, bounds))) = shared
+            && domain == average.domain
+        {
+            average.bounds = bounds;
+        }
+        Ok(average)
+    }
+
+    /// `sample` added to `sum`, over the union of their domains or over the sum's alone when the
+    /// sample is `blank`: a running sum, or the average of `samples` once `last`.
+    fn add_sample(
+        &mut self,
+        sum: Option<Raster>,
+        sample: Raster,
+        blank: bool,
+        last: bool,
+        samples: u32,
+    ) -> crate::Result<Raster> {
+        use crate::node::processing::motion_blur as blur;
+
+        let (display, data) = match sum {
+            Some(sum) if blank => (sum.domain.display_size(), sum.domain.data_rect),
+            Some(sum) => {
+                let [held, shown] = [sum, sample].map(|raster| raster.domain.display_size());
+                (
+                    Size::new(held.width.max(shown.width), held.height.max(shown.height)),
+                    sum.domain.data_rect.union(sample.domain.data_rect),
+                )
+            }
+            None => (sample.domain.display_size(), sample.domain.data_rect),
+        };
+        let domain = quantized_domain(display, data);
+        let origin = [domain.data_rect.x, domain.data_rect.y];
+        let from = |raster: &Raster| {
+            let at = raster.origin();
+            [origin[0] - at[0], origin[1] - at[1]]
+        };
+        let params = blur::AccumulateParams {
+            sum_offset: sum.as_ref().map_or([0, 0], from),
+            sample_offset: from(&sample),
+            has_sum: u32::from(sum.is_some()),
+            samples,
+            _pad: [0; 2],
+        };
+        let sum_tex = match sum {
+            Some(sum) => sum.tex,
+            None => self.unused_uint(),
+        };
+        let size = domain.storage_size;
+        let (program, tex) = if last {
+            let program = self.program(
+                "motion-blur-resolve",
+                blur::RESOLVE_SHADER,
+                "cs_main",
+                blur::RESOLVE_LAYOUT,
+            )?;
+            (program, self.storage_target(size))
+        } else {
+            let program = self.program(
+                "motion-blur-accumulate",
+                blur::ACCUMULATE_SHADER,
+                "cs_main",
+                blur::ACCUMULATE_LAYOUT,
+            )?;
+            let format = blur::SUM_FORMAT;
+            let tex = self
+                .rec
+                .acquire(size, format, TextureDesc::storage(size, format).usage);
+            (program, tex)
+        };
+        let uniform = self.rec.uniform(&params);
+        self.rec.compute(
+            program,
+            &[
+                (0, Res::Tex(sum_tex)),
+                (1, Res::Tex(sample.tex)),
+                (2, uniform),
+                (3, Res::Tex(tex)),
+            ],
+            dispatch_for(size),
+        );
+        Ok(Raster {
+            tex,
+            domain,
+            bounds: None,
+        })
+    }
+
+    /// A one-texel unsigned-integer texture for a running sum a pass binds but does not read.
+    fn unused_uint(&mut self) -> TexRef {
+        if let Some(tex) = self.st.dummy_uint {
+            return tex;
+        }
+        let texture = self.rec.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("lumen frame graph unused sum"),
+            size: Size::new(1, 1).as_extent(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::node::processing::motion_blur::SUM_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let tex = self.rec.adopt(Arc::new(texture));
+        self.st.dummy_uint = Some(tex);
+        tex
     }
 
     fn is_static(&mut self, node: &NodeKind) -> bool {
@@ -1754,6 +1977,7 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
         NodeKind::Opacity(node) => node.programs(programs),
         NodeKind::TimeRemap(_) => Ok(()),
         NodeKind::Transform(node) => node.programs(programs),
+        NodeKind::MotionBlur(node) => node.programs(programs),
         NodeKind::Crop(node) => node.programs(programs),
         NodeKind::Resize(node) => node.programs(programs),
         NodeKind::Shadow(node) => node.programs(programs),
@@ -1788,6 +2012,7 @@ fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
         NodeKind::Opacity(node) => node.record(cx),
         NodeKind::TimeRemap(node) => cx.record_time_remap(node),
         NodeKind::Transform(node) => node.record(cx),
+        NodeKind::MotionBlur(node) => node.record(cx),
         NodeKind::Crop(node) => node.record(cx),
         NodeKind::Resize(node) => node.record(cx),
         NodeKind::Shadow(node) => node.record(cx),

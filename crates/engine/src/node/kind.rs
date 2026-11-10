@@ -108,6 +108,7 @@ node_kinds! {
     Levels(processing::levels::Levels),
     TimeRemap(processing::time_remap::TimeRemap),
     Transform(processing::transform::Transform),
+    MotionBlur(processing::motion_blur::MotionBlur),
     Crop(processing::crop::Crop),
     Resize(processing::resize::Resize),
     Shadow(processing::shadow::Shadow),

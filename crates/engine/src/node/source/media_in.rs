@@ -271,7 +271,14 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
                     frame: cx.frame_number(),
                     frame_count: metadata.frame_count,
                 })?;
-                cx.video_texture(self.id, resolver.frame(source_frame)?, size, alpha)?
+                cx.video_texture(
+                    self.id,
+                    resolver.id(),
+                    source_frame,
+                    || Ok(resolver.frame(source_frame)?),
+                    size,
+                    alpha,
+                )?
             }
         };
         Ok(crate::gpu::frame_graph::Raster {

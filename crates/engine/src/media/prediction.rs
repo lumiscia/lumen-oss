@@ -70,6 +70,7 @@ pub fn collect_frame_requirements<M: MediaStore>(
         scope,
         media_store,
         frame: f64::from(frame).into(),
+        sampling: false,
     };
     context.collect_node(output, &mut walk)?;
     let requirements = FrameRequirements::from(walk.requirements);
@@ -83,12 +84,13 @@ pub fn collect_frame_requirements<M: MediaStore>(
     Ok(requirements)
 }
 
-/// What a traversal has gathered and visited. The time remaps and clips above a node determine
-/// its scope and frame, so reaching a node again by the same path requires nothing new.
+/// What a traversal has gathered and visited. The time remaps, clips and `motion_blur` samples
+/// above a node determine its scope and frame, so reaching a node again by the same path at the
+/// same frame requires nothing new.
 #[derive(Default)]
 struct Walk {
     requirements: RenderRequirements,
-    visited: HashSet<(NodeId, Vec<NodeId>)>,
+    visited: HashSet<(NodeId, Vec<NodeId>, u64)>,
     instances: Vec<NodeId>,
 }
 
@@ -96,11 +98,17 @@ struct RequirementContext<'a, M: MediaStore> {
     scope: Scope<'a>,
     media_store: &'a M,
     frame: FrameTime,
+    /// Inside a `motion_blur` that samples.
+    sampling: bool,
 }
 
 impl<'a, M: MediaStore> RequirementContext<'a, M> {
     fn collect_node(&self, node_id: NodeId, walk: &mut Walk) -> Result<(), LumenError> {
-        if !walk.visited.insert((node_id, walk.instances.clone())) {
+        if !walk.visited.insert((
+            node_id,
+            walk.instances.clone(),
+            self.frame.value().to_bits(),
+        )) {
             return Ok(());
         }
 
@@ -111,19 +119,26 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
             return self.collect_media_in(media_in_node, &mut walk.requirements);
         }
         for Routed {
-            node,
+            node: input,
             frame,
             scope,
             instance,
-        } in crate::scope::route(&self.scope, node, self.frame, Some(self.media_store))?
-        {
+        } in crate::scope::route(
+            &self.scope,
+            node,
+            self.frame,
+            Some(self.media_store),
+            self.sampling,
+        )? {
             let context = RequirementContext {
                 scope,
                 media_store: self.media_store,
                 frame,
+                sampling: self.sampling
+                    || (instance.is_some() && matches!(node, NodeKind::MotionBlur(_))),
             };
             walk.instances.extend(instance);
-            let result = context.collect_node(node, walk);
+            let result = context.collect_node(input, walk);
             if instance.is_some() {
                 walk.instances.pop();
             }

@@ -94,14 +94,19 @@ pub struct Path {
     pub params: PathParamsDelegate,
 }
 
-/// Evaluates a path node's uniforms, points and bands at the frame of `expr`.
+/// Evaluates a path node's uniforms, points and bands at the frame of `expr`, blurring its motion
+/// only when `motion_blur` allows.
 fn path_frame(
     params: &PathParamsDelegate,
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
     band_capacity: usize,
+    motion_blur: bool,
 ) -> crate::Result<PathFrame> {
-    let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
+    let mut evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
+    if !motion_blur {
+        evaluated.placement.motion_blur = 0.0;
+    }
     let shutter = params
         .placement
         .shutter(&evaluated.placement, node_id, expr)?;
@@ -759,6 +764,7 @@ impl crate::gpu::frame_graph::RecordNode for Path {
             self.id,
             &cx.expr(),
             super::path_bands::band_capacity(MAX_PATH_POINTS),
+            cx.analytic_motion_blur(),
         )?;
         record_path_source(cx, frame)
     }

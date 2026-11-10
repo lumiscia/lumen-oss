@@ -79,13 +79,17 @@ pub struct Shape {
 }
 
 /// Evaluates a rectangle or ellipse shape's uniforms at the frame of `expr`, and its copies when
-/// it repeats.
+/// it repeats, blurring their motion only when `motion_blur` allows.
 fn shape_frame(
     params: &ShapeParamsDelegate,
     node_id: NodeId,
     expr: &crate::expr::ExpressionContext<'_>,
+    motion_blur: bool,
 ) -> crate::Result<(ShapeUniforms, Option<GpuCopies>)> {
-    let evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
+    let mut evaluated = params.eval(&DelegateEvalContext { node_id, expr })?;
+    if !motion_blur {
+        evaluated.placement.motion_blur = 0.0;
+    }
     let shutter = params
         .placement
         .shutter(&evaluated.placement, node_id, expr)?;
@@ -200,7 +204,8 @@ impl crate::gpu::frame_graph::RecordNode for Shape {
         &self,
         cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
-        let (mut uniforms, copies) = shape_frame(&self.params, self.id, &cx.expr())?;
+        let (mut uniforms, copies) =
+            shape_frame(&self.params, self.id, &cx.expr(), cx.analytic_motion_blur())?;
         record_shape_source(cx, &mut uniforms, copies.as_ref())
     }
 }

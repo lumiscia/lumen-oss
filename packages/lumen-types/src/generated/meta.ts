@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2 } from "../values.js";
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
 export type NodePortKind = "raster_frame";
 export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
-export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 
 export const schemaVersion = 1 as const;
 
@@ -1474,6 +1474,26 @@ export interface MergeNode extends CompositionNodeBase<"merge"> {
   };
 }
 
+/**
+ * Blurs everything that moves in its source, including what analytic motion blur can't see:
+ * animated sizes, path data, motion upstream of a transform and motion inside video. Analytic
+ * motion blur in the source is off while it samples, and so is a `motion_blur` inside it.
+ */
+export interface MotionBlurNode extends CompositionNodeBase<"motion_blur"> {
+  readonly params?: {
+    /**
+     * Sub-frames rendered across the shutter, from 1 to 64. Each renders the whole source
+     * again, so the cost grows with it. 1 renders the source once, at the frame.
+     */
+    readonly samples?: ExpressionValue<number>;
+    /**
+     * Shutter angle in degrees, centred on the frame, from 0 to 360. 0 is off, 180 is the
+     * usual film look and 360 smears over the whole frame.
+     */
+    readonly shutter?: ExpressionValue<number>;
+  };
+}
+
 /** Uniformly adjusts raster opacity. */
 export interface OpacityNode extends CompositionNodeBase<"opacity"> {
   readonly params?: {
@@ -1883,6 +1903,7 @@ export interface CompositionNodeByKind {
   readonly "media_in": MediaInNode;
   readonly "media_output": MediaOutputNode;
   readonly "merge": MergeNode;
+  readonly "motion_blur": MotionBlurNode;
   readonly "opacity": OpacityNode;
   readonly "path": PathNode;
   readonly "radial_blur": RadialBlurNode;
@@ -1947,6 +1968,9 @@ export interface CompositionNodeInputByKind {
   readonly "merge": Omit<MergeNode, "id"> & {
     readonly id?: number;
   };
+  readonly "motion_blur": Omit<MotionBlurNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "opacity": Omit<OpacityNode, "id"> & {
     readonly id?: number;
   };
@@ -2005,6 +2029,7 @@ export interface NodeInputPortNameByKind {
   readonly "media_in": never;
   readonly "media_output": "source";
   readonly "merge": "base" | "mask" | "overlay";
+  readonly "motion_blur": "source";
   readonly "opacity": "source";
   readonly "path": never;
   readonly "radial_blur": "source";
@@ -2037,6 +2062,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "media_in": never;
   readonly "media_output": never;
   readonly "merge": never;
+  readonly "motion_blur": never;
   readonly "opacity": never;
   readonly "path": never;
   readonly "radial_blur": never;

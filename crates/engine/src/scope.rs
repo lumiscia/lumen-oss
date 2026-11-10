@@ -12,7 +12,10 @@ use crate::{
     media::MediaStore,
     node::{
         DelegateEvalContext, DelegateEvaluable, Node, NodeId, NodeKind,
-        processing::time_remap::{TimeRemap, remap_frame},
+        processing::{
+            motion_blur::MotionBlur,
+            time_remap::{TimeRemap, remap_frame},
+        },
         required_input,
     },
 };
@@ -52,6 +55,11 @@ impl FrameTime {
     /// The time in frames.
     pub fn value(self) -> f64 {
         self.num / self.den
+    }
+
+    /// This time moved by `frames`.
+    pub fn offset(self, frames: f64) -> Self {
+        Self::new(self.num + frames * self.den, self.den)
     }
 }
 
@@ -149,16 +157,19 @@ impl<'a> Routed<'a> {
 }
 
 /// The inputs `node` of `scope` reads at `frame`: a time remap's source at the remapped frame,
-/// a switch's selected layer, a clip's content in its own time while it shows, and every other
-/// node's inputs as they are.
+/// a switch's selected layer, a clip's content in its own time while it shows, a `motion_blur`'s
+/// source at each frame it samples, and every other node's inputs as they are. A `motion_blur`
+/// inside one that samples renders its source once, which `sampling` says.
 pub fn route<'a>(
     scope: &Scope<'a>,
     node: &NodeKind,
     frame: FrameTime,
     media: Option<&dyn MediaStore>,
+    sampling: bool,
 ) -> crate::Result<Vec<Routed<'a>>> {
     Ok(match node {
         NodeKind::TimeRemap(node) => vec![route_time_remap(scope, node, frame, media)?],
+        NodeKind::MotionBlur(node) if !sampling => route_motion_blur(scope, node, frame, media)?,
         NodeKind::Switch(node) => {
             let ctx = scope.expr_context(frame, media);
             crate::node::compositing::switch::selected_layer_for_frame(node, &ctx)?
@@ -174,6 +185,28 @@ pub fn route<'a>(
             .map(|input| Routed::same(scope, input, frame))
             .collect(),
     })
+}
+
+/// A `motion_blur`'s source at each frame it samples, or at `frame` when it renders it once.
+fn route_motion_blur<'a>(
+    scope: &Scope<'a>,
+    node: &MotionBlur,
+    frame: FrameTime,
+    media: Option<&dyn MediaStore>,
+) -> crate::Result<Vec<Routed<'a>>> {
+    let source = required_input(node.id, "source", node.source)?;
+    Ok(
+        match node.sample_offsets(&scope.expr_context(frame, media))? {
+            None => vec![Routed::same(scope, source, frame)],
+            Some(offsets) => offsets
+                .into_iter()
+                .map(|offset| Routed {
+                    instance: Some(node.id),
+                    ..Routed::same(scope, source, frame.offset(offset))
+                })
+                .collect(),
+        },
+    )
 }
 
 /// A time remap's source at the frame it maps `frame` to.
