@@ -18,7 +18,8 @@ use crate::media::ModelResolver;
 use crate::node::vector::paint::Paint;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, required_input};
 
-/// The bytes of models no frame is drawing that the cache keeps on the GPU.
+/// The bytes of models the cache keeps on the GPU beyond those the latest frame drew or a kept
+/// output drew.
 const MODEL_BUDGET_BYTES: u64 = 256 << 20;
 
 /// The most joint matrices one frame's scene may hold.
@@ -103,9 +104,36 @@ impl SceneCache {
         self.model_bytes = 0;
     }
 
-    /// The model `resolver` serves, loaded once per resolver ID. Models no frame since `tick`
-    /// began has drawn are freed, least recently drawn first, while the cache holds more than
-    /// [`MODEL_BUDGET_BYTES`].
+    /// Frees models, least recently drawn first, while the cache holds more than
+    /// [`MODEL_BUDGET_BYTES`], keeping those frame `tick` drew and those `kept` names.
+    pub(crate) fn trim<'k>(
+        &mut self,
+        rec: &mut Recorder,
+        tick: u64,
+        kept: impl IntoIterator<Item = &'k String>,
+    ) {
+        if self.model_bytes <= MODEL_BUDGET_BYTES {
+            return;
+        }
+        let kept: std::collections::HashSet<&String> = kept.into_iter().collect();
+        let freed = evictions(
+            self.models.iter().map(|(id, cached)| {
+                let protected = cached.last_used == tick || kept.contains(id);
+                (id, cached.bytes, cached.last_used, protected)
+            }),
+            self.model_bytes,
+            MODEL_BUDGET_BYTES,
+        );
+        let freed: Vec<String> = freed.into_iter().cloned().collect();
+        for id in freed {
+            if let Some(cached) = self.models.remove(&id) {
+                forget_model(rec, &cached.model);
+                self.model_bytes -= cached.bytes;
+            }
+        }
+    }
+
+    /// The model `resolver` serves, loaded once per resolver ID and marked drawn in `tick`.
     fn model(
         &mut self,
         rec: &mut Recorder,
@@ -130,19 +158,6 @@ impl SceneCache {
                 last_used: tick,
             },
         );
-        while self.model_bytes > MODEL_BUDGET_BYTES {
-            let idle = self
-                .models
-                .iter()
-                .filter(|(_, cached)| cached.last_used < tick)
-                .min_by_key(|(_, cached)| cached.last_used)
-                .map(|(id, _)| id.clone());
-            let Some(cached) = idle.and_then(|id| self.models.remove(&id)) else {
-                break;
-            };
-            forget_model(rec, &cached.model);
-            self.model_bytes -= cached.bytes;
-        }
         Ok(loaded)
     }
 
@@ -178,6 +193,31 @@ impl From<MediaError> for ModelLoadError {
     fn from(error: MediaError) -> Self {
         Self::Media(error)
     }
+}
+
+/// Which of `models`, each with its bytes, the tick it was last drawn in and whether it must stay,
+/// to free so that the `total` bytes they hold come down to `budget`: least recently drawn first,
+/// then by key, and none that must stay.
+fn evictions<K: Ord + Copy>(
+    models: impl Iterator<Item = (K, u64, u64, bool)>,
+    total: u64,
+    budget: u64,
+) -> Vec<K> {
+    let mut idle: Vec<(u64, K, u64)> = models
+        .filter(|&(_, _, _, protected)| !protected)
+        .map(|(key, bytes, last_used, _)| (last_used, key, bytes))
+        .collect();
+    idle.sort_unstable();
+    let mut total = total;
+    let mut freed = Vec::new();
+    for (_, key, bytes) in idle {
+        if total <= budget {
+            break;
+        }
+        total -= bytes;
+        freed.push(key);
+    }
+    freed
 }
 
 fn forget_model(rec: &mut Recorder, model: &LoadedModel) {
@@ -558,6 +598,7 @@ impl Collected {
                 ModelLoadError::Media(error) => LumenError::from(error),
                 ModelLoadError::Model(details) => error(details),
             })?;
+        cx.drew_model(resolver.id());
         let scene = &model.scene;
         let clip = scene.animation(&params.animation).map_err(error)?;
         let replaced = match (params.texture_material.as_str(), node.texture) {
@@ -635,5 +676,33 @@ impl Collected {
             });
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::evictions;
+
+    #[test]
+    fn evictions_free_the_least_recently_drawn_down_to_the_budget_and_spare_protected_models() {
+        // Each model's key, bytes, last tick drawn and whether it must stay.
+        let models = [
+            ("old", 10, 1, false),
+            ("kept", 10, 1, true),
+            ("older", 10, 0, false),
+            ("recent", 10, 2, false),
+            ("drawn", 10, 3, true),
+        ];
+        assert_eq!(
+            evictions(models.into_iter(), 50, 25,),
+            ["older", "old", "recent"]
+        );
+        assert_eq!(evictions(models.into_iter(), 50, 35), ["older", "old"]);
+        assert_eq!(evictions(models.into_iter(), 50, 50), Vec::<&str>::new());
+        // Protected models stay even when what is left is over the budget.
+        assert_eq!(
+            evictions(models.into_iter(), 50, 0),
+            ["older", "old", "recent"]
+        );
     }
 }

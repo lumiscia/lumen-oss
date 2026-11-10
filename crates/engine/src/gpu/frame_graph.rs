@@ -234,6 +234,9 @@ struct Slot {
     full: Option<TexRef>,
     last_used: u64,
     bytes: u64,
+    /// The models it drew, which the scene cache keeps while it is kept.
+    #[cfg(feature = "3d")]
+    models: Vec<String>,
 }
 
 struct ShaderEntry {
@@ -317,6 +320,9 @@ struct RecordState {
     skipped_passes: u64,
     #[cfg(feature = "3d")]
     scene: crate::node::scene::collect::SceneCache,
+    /// Models drawn while the static output being recorded records, which its slot keeps.
+    #[cfg(feature = "3d")]
+    static_models: Vec<String>,
 }
 
 pub(crate) struct FrameGraph {
@@ -446,6 +452,8 @@ impl FrameGraph {
             self.state.video_frames.clear();
             #[cfg(feature = "ffmpeg")]
             self.state.frame_imports.clear();
+            #[cfg(feature = "3d")]
+            self.state.static_models.clear();
             self.recorder.begin_frame();
             let mut cx = FrameCx {
                 rec: &mut self.recorder,
@@ -483,6 +491,12 @@ impl FrameGraph {
                     self.drop_pending();
                 }
                 self.resolve(raster)?;
+                #[cfg(feature = "3d")]
+                self.state.scene.trim(
+                    &mut self.recorder,
+                    self.state.tick,
+                    self.state.slots.values().flat_map(|slot| &slot.models),
+                );
                 return Ok(bound);
             }
             if rebinds == max_rebinds {
@@ -1013,6 +1027,14 @@ impl<'a> FrameCx<'a> {
         self.st.tick
     }
 
+    /// Notes that the model `id` was drawn, so that a static output recording now keeps it.
+    #[cfg(feature = "3d")]
+    pub(crate) fn drew_model(&mut self, id: &str) {
+        if self.static_depth > 0 {
+            self.st.static_models.push(id.to_string());
+        }
+    }
+
     #[cfg(feature = "3d")]
     pub(crate) fn scene_cache(
         &mut self,
@@ -1094,6 +1116,8 @@ impl<'a> FrameCx<'a> {
                 full: None,
                 last_used: self.st.tick,
                 bytes,
+                #[cfg(feature = "3d")]
+                models: std::mem::take(&mut self.st.static_models),
             },
         );
         self.st.pending.push((graph, node));
