@@ -1761,6 +1761,7 @@ dependencies = [
  "fontdb",
  "futures-util",
  "lumen-engine",
+ "lumen-engine-3d",
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",
  "lumen-engine-text",

@@ -710,6 +710,15 @@ fn asset_errors(
                         );
                     }
                 }
+                NodeKind::Model3d(model) => {
+                    if let Deferred::Value(source) = &model.params.source {
+                        check(
+                            source,
+                            Some(AssetKind::Model),
+                            crate::diagnostic::at_param(root, template, model.id, "source"),
+                        );
+                    }
+                }
                 NodeKind::Text(text) => {
                     for (param, family) in crate::node::source::text::literal_font_families(text) {
                         check(
@@ -2121,7 +2130,8 @@ mod tests {
             &scene_document(
                 serde_json::json!([
                     { "id": 4, "type": "background" },
-                    { "id": 5, "type": "image_plane_3d" }
+                    { "id": 5, "type": "image_plane_3d" },
+                    { "id": 6, "type": "model_3d", "params": { "source": "robot.glb" } }
                 ]),
                 serde_json::json!([{ "from_node": 4, "to_node": 5, "to_port": "source" }]),
             ),
@@ -2137,6 +2147,7 @@ mod tests {
                     ("node.unsupported", "/nodes/0/type", Some(1)),
                     ("node.unsupported", "/nodes/1/type", Some(2)),
                     ("node.unsupported", "/nodes/4/type", Some(5)),
+                    ("node.unsupported", "/nodes/5/type", Some(6)),
                 ]
             );
         }
@@ -2218,9 +2229,49 @@ mod tests {
                 "clip" => Some(Asset::Video(path)),
                 "voice" => Some(Asset::Audio(path)),
                 "brand" => Some(Asset::Font(vec![path])),
+                "robot" => Some(Asset::Model(path)),
                 _ => None,
             }
         }
+    }
+
+    // Without 3D, the node fails as unsupported before assets are checked.
+    #[cfg(feature = "3d")]
+    #[test]
+    fn model_sources_must_reference_model_assets() {
+        let model = |id: u64, source: &str| serde_json::json!({ "id": id, "type": "model_3d", "params": { "source": source } });
+        let diagnostics = check_value(
+            &scene_document(
+                serde_json::json!([
+                    model(4, "asset:robot"),
+                    model(5, "asset:photo"),
+                    model(6, "asset:gone")
+                ]),
+                serde_json::json!([]),
+            ),
+            None,
+            Some(&Assets),
+        );
+        let assets: Vec<_> = codes_and_paths(&diagnostics)
+            .into_iter()
+            .filter(|(code, ..)| code.starts_with("asset."))
+            .collect();
+        assert_eq!(
+            assets,
+            [
+                ("asset.wrong_kind", "/nodes/4/params/source", Some(5)),
+                ("asset.not_found", "/nodes/5/params/source", Some(6)),
+            ]
+        );
+        let wrong_kind = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "asset.wrong_kind")
+            .unwrap();
+        assert!(
+            wrong_kind.message.contains("is an image, not a model"),
+            "{}",
+            wrong_kind.message
+        );
     }
 
     #[test]

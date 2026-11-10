@@ -340,6 +340,7 @@ fn declares_kind(content_type: &str, kind: MediaKind) -> bool {
         MediaKind::Video => &["video/"],
         MediaKind::Audio => &["audio/"],
         MediaKind::Font => &["font/", "application/font-", "application/x-font-"],
+        MediaKind::Model => &["model/gltf-binary"],
     };
     prefixes
         .iter()

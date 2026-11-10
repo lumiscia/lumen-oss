@@ -134,6 +134,7 @@ node_kinds! {
     MediaOutput(media_output::MediaOutput),
     Shape3d(scene::Shape3d),
     ImagePlane3d(scene::ImagePlane3d),
+    Model3d(scene::Model3d),
     Camera3d(scene::Camera3d),
     Light3d(scene::Light3d),
     Merge3d(scene::Merge3d),

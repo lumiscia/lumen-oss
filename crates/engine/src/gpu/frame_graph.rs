@@ -1007,6 +1007,12 @@ impl<'a> FrameCx<'a> {
         self.scope.node(id)
     }
 
+    /// Counts frames recorded, for caches that keep what recent frames used.
+    #[cfg(feature = "3d")]
+    pub(crate) fn tick(&self) -> u64 {
+        self.st.tick
+    }
+
     #[cfg(feature = "3d")]
     pub(crate) fn scene_cache(
         &mut self,
@@ -2030,6 +2036,8 @@ fn is_static_candidate(node: &NodeKind) -> bool {
         // Media changes with the frame and the media store, shaders see the built-in time, and
         // the output is written into external textures that replace its own.
         NodeKind::MediaIn(_) | NodeKind::WgslShader(_) | NodeKind::MediaOutput(_) => false,
+        // A model playing a clip poses differently with the frame.
+        NodeKind::Model3d(model) => !model.animates() && !node.has_expressions(),
         _ => !node.has_expressions(),
     }
 }
@@ -2072,6 +2080,7 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
         NodeKind::Render3d(_) => Ok(()),
         NodeKind::Shape3d(_)
         | NodeKind::ImagePlane3d(_)
+        | NodeKind::Model3d(_)
         | NodeKind::Camera3d(_)
         | NodeKind::Light3d(_)
         | NodeKind::Merge3d(_) => Ok(()),
@@ -2123,6 +2132,7 @@ fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
         // without recording it.
         NodeKind::Shape3d(_)
         | NodeKind::ImagePlane3d(_)
+        | NodeKind::Model3d(_)
         | NodeKind::Camera3d(_)
         | NodeKind::Light3d(_)
         | NodeKind::Merge3d(_) => Err(RenderError::NodeEvaluation {

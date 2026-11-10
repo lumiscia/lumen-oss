@@ -10,7 +10,7 @@ pub(crate) mod collect;
 pub(crate) mod render;
 
 use crate::node::vector::paint::Paint;
-use crate::node::{NodeId, NodeParams};
+use crate::node::{Deferred, NodeId, NodeParams};
 
 /// Where something sits and which way it faces.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
@@ -202,6 +202,74 @@ pub struct ImagePlane3d {
 
     #[input()]
     pub source: Option<NodeId>,
+}
+
+#[derive(Debug, Clone, lumen_macros::Delegate)]
+pub struct Model3dParams {
+    /// A binary glTF (`.glb`) file with its buffers and images inside it: a path or `media`
+    /// alias, or `asset:<id>` for a model asset of the host's.
+    #[meta(role = "source_id")]
+    pub source: String,
+    /// The animation clip to play, by its name or else its index; empty plays none.
+    #[meta()]
+    pub animation: String,
+    /// Playback speed multiplier.
+    #[meta(step = 0.1)]
+    pub animation_speed: f64,
+    /// Seconds into the clip at the clip's first frame.
+    #[meta(step = 0.1)]
+    pub animation_offset: f64,
+    /// Plays the clip again from its start once it ends, rather than holding its last pose.
+    #[meta()]
+    pub animation_loop: bool,
+    /// The material, by name, whose surfaces show the `texture` input instead, unlit.
+    #[meta()]
+    pub texture_material: String,
+    #[meta(flatten)]
+    pub placement: Placement3d,
+}
+
+impl Default for Model3dParams {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            animation: String::new(),
+            animation_speed: 1.0,
+            animation_offset: 0.0,
+            animation_loop: true,
+            texture_material: String::new(),
+            placement: Placement3d::default(),
+        }
+    }
+}
+
+/// A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, skins and
+/// animation clips. A raster wired into `texture` shows on the surfaces of the material
+/// `texture_material` names, such as a screen. The model's own lights and cameras are left out.
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
+#[node(
+    kind = "model_3d",
+    name = "Model 3D",
+    category = "scene",
+    output = "scene"
+)]
+pub struct Model3d {
+    pub id: NodeId,
+    #[params]
+    pub params: Model3dParamsDelegate,
+
+    #[input(optional)]
+    pub texture: Option<NodeId>,
+}
+
+impl Model3d {
+    /// Whether the model may pose differently from frame to frame.
+    pub(crate) fn animates(&self) -> bool {
+        match &self.params.animation {
+            Deferred::Value(clip) => !clip.is_empty(),
+            Deferred::Expr(_) => true,
+        }
+    }
 }
 
 #[derive(

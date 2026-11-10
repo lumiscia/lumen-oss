@@ -10,7 +10,8 @@ use lumen_engine::{
     error::MediaError,
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
-        TextSession, VideoFrameRequirement, VideoFrameResolver, VideoMetadata, YuvFrame,
+        ModelResolver, TextSession, VideoFrameRequirement, VideoFrameResolver, VideoMetadata,
+        YuvFrame,
     },
 };
 /// Total bytes of decoded video frames kept across all streams of one media store.
@@ -484,6 +485,13 @@ impl MediaStore for WasmMediaStore {
             id: stream_id.to_string(),
             store: Arc::clone(&self.inner),
         }))
+    }
+
+    fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
+        Err(MediaError::source_not_found(
+            source,
+            "the browser preview has no models; render this composition on a Lumen server",
+        ))
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {

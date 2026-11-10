@@ -1,61 +1,149 @@
 //! Evaluates a scene's nodes at a frame into what `render_3d` draws.
 
+use std::sync::Arc;
+
 use foldhash::HashMap;
 use lumen_3d::glam::{Mat4, Vec3};
+use lumen_3d::model::{Material, Model, ModelScene, Playback, Texture};
 use lumen_3d::{
     Blending, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive, Projection,
     Scene, Surface, Transform,
 };
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
-use super::{Light3dKind, Material3d, Placement3d, Pose3d, Projection3d, Shape3dKind};
-use crate::error::{LumenError, RenderError};
+use super::{Light3dKind, Material3d, Model3d, Placement3d, Pose3d, Projection3d, Shape3dKind};
+use crate::error::{LumenError, MediaError, RenderError};
 use crate::gpu::frame_graph::FrameCx;
+use crate::media::ModelResolver;
 use crate::node::vector::paint::Paint;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, required_input};
 
-/// A mesh's vertices and indices on the GPU, which the scene shader pulls vertices from.
+/// The bytes of models no frame is drawing that the cache keeps on the GPU.
+const MODEL_BUDGET_BYTES: u64 = 256 << 20;
+
+/// The most joint matrices one frame's scene may hold.
+const MAX_SCENE_JOINTS: usize = 1 << 16;
+
+/// A mesh's vertices and indices on the GPU, which the scene shader pulls vertices from, and the
+/// joints and weights of a skinned one's vertices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct GpuMesh {
     pub(crate) vertices: BufRef,
     pub(crate) indices: BufRef,
+    pub(crate) skin: Option<BufRef>,
+}
+
+fn storage_buffer(rec: &mut Recorder, label: &str, contents: &[u8]) -> BufRef {
+    let buffer = wgpu::util::DeviceExt::create_buffer_init(
+        rec.device(),
+        &wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents,
+            usage: wgpu::BufferUsages::STORAGE,
+        },
+    );
+    rec.adopt_buffer(Arc::new(buffer))
 }
 
 impl GpuMesh {
     fn upload(rec: &mut Recorder, mesh: &Mesh) -> Self {
-        let mut buffer = |label, contents: &[u8]| {
-            let buffer = wgpu::util::DeviceExt::create_buffer_init(
-                rec.device(),
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some(label),
-                    contents,
-                    usage: wgpu::BufferUsages::STORAGE,
-                },
-            );
-            rec.adopt_buffer(std::sync::Arc::new(buffer))
-        };
         Self {
-            vertices: buffer("lumen 3d vertices", bytemuck::cast_slice(&mesh.vertices)),
-            indices: buffer("lumen 3d indices", bytemuck::cast_slice(&mesh.indices)),
+            vertices: storage_buffer(
+                rec,
+                "lumen 3d vertices",
+                bytemuck::cast_slice(&mesh.vertices),
+            ),
+            indices: storage_buffer(rec, "lumen 3d indices", bytemuck::cast_slice(&mesh.indices)),
+            skin: None,
+        }
+    }
+
+    fn forget(&self, rec: &mut Recorder) {
+        for buffer in [self.vertices, self.indices].into_iter().chain(self.skin) {
+            rec.forget_buffer(buffer);
         }
     }
 }
 
-/// The primitives' and the image plane's meshes, uploaded once with how many indices each draws.
+/// A model on the GPU.
+#[derive(Clone)]
+struct LoadedModel {
+    scene: Arc<ModelScene>,
+    mesh: GpuMesh,
+    /// One per texture of the model, in its order.
+    textures: Arc<[TexRef]>,
+}
+
+struct CachedModel {
+    model: LoadedModel,
+    bytes: u64,
+    last_used: u64,
+}
+
+/// What scenes draw, uploaded once: the primitives' and the image plane's meshes with how many
+/// indices each draws, and models by their resolver's ID.
 #[derive(Default)]
 pub(crate) struct SceneCache {
     shapes: HashMap<Shape3dKind, (GpuMesh, u32)>,
     quad: Option<(GpuMesh, u32)>,
+    models: HashMap<String, CachedModel>,
+    model_bytes: u64,
 }
 
 impl SceneCache {
     pub(crate) fn release(&mut self, rec: &mut Recorder) {
         for (mesh, _) in self.shapes.values().chain(&self.quad) {
-            rec.forget_buffer(mesh.vertices);
-            rec.forget_buffer(mesh.indices);
+            mesh.forget(rec);
         }
         self.shapes.clear();
         self.quad = None;
+        for (_, cached) in self.models.drain() {
+            forget_model(rec, &cached.model);
+        }
+        self.model_bytes = 0;
+    }
+
+    /// The model `resolver` serves, loaded once per resolver ID. Models no frame since `tick`
+    /// began has drawn are freed, least recently drawn first, while the cache holds more than
+    /// [`MODEL_BUDGET_BYTES`].
+    fn model(
+        &mut self,
+        rec: &mut Recorder,
+        tick: u64,
+        resolver: &dyn ModelResolver,
+    ) -> Result<LoadedModel, ModelLoadError> {
+        if let Some(cached) = self.models.get_mut(resolver.id()) {
+            cached.last_used = tick;
+            return Ok(cached.model.clone());
+        }
+        let bytes = resolver.data()?;
+        let model =
+            Model::from_glb(&bytes).map_err(|error| ModelLoadError::Model(error.to_string()))?;
+        drop(bytes);
+        let (loaded, size) = upload_model(rec, model)?;
+        self.model_bytes += size;
+        self.models.insert(
+            resolver.id().to_string(),
+            CachedModel {
+                model: loaded.clone(),
+                bytes: size,
+                last_used: tick,
+            },
+        );
+        while self.model_bytes > MODEL_BUDGET_BYTES {
+            let idle = self
+                .models
+                .iter()
+                .filter(|(_, cached)| cached.last_used < tick)
+                .min_by_key(|(_, cached)| cached.last_used)
+                .map(|(id, _)| id.clone());
+            let Some(cached) = idle.and_then(|id| self.models.remove(&id)) else {
+                break;
+            };
+            forget_model(rec, &cached.model);
+            self.model_bytes -= cached.bytes;
+        }
+        Ok(loaded)
     }
 
     fn quad(&mut self, rec: &mut Recorder) -> (GpuMesh, u32) {
@@ -78,6 +166,113 @@ impl SceneCache {
             (GpuMesh::upload(rec, &mesh), mesh.indices.len() as u32)
         })
     }
+}
+
+enum ModelLoadError {
+    Media(MediaError),
+    /// Why the file isn't a model that can be drawn.
+    Model(String),
+}
+
+impl From<MediaError> for ModelLoadError {
+    fn from(error: MediaError) -> Self {
+        Self::Media(error)
+    }
+}
+
+fn forget_model(rec: &mut Recorder, model: &LoadedModel) {
+    model.mesh.forget(rec);
+    for &texture in model.textures.iter() {
+        rec.forget(texture);
+    }
+}
+
+/// Uploads `model`'s geometry and textures, returning them with the bytes they take.
+fn upload_model(rec: &mut Recorder, model: Model) -> Result<(LoadedModel, u64), ModelLoadError> {
+    let limits = rec.device().limits();
+    let geometry = &model.geometry;
+    let parts: [&[u8]; 3] = [
+        bytemuck::cast_slice(&geometry.vertices),
+        bytemuck::cast_slice(&geometry.indices),
+        bytemuck::cast_slice(&geometry.skin),
+    ];
+    let largest = parts
+        .iter()
+        .map(|part| part.len() as u64)
+        .max()
+        .unwrap_or(0);
+    if largest
+        > limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size)
+    {
+        return Err(ModelLoadError::Model(
+            "the model's geometry is larger than this device can bind at once".to_string(),
+        ));
+    }
+    let max_side = limits.max_texture_dimension_2d;
+    if model
+        .textures
+        .iter()
+        .any(|texture| texture.width > max_side || texture.height > max_side)
+    {
+        return Err(ModelLoadError::Model(format!(
+            "an image in the model is larger than this device's {max_side}-pixel texture limit"
+        )));
+    }
+    let mut bytes = parts.iter().map(|part| part.len() as u64).sum::<u64>();
+    let mesh = GpuMesh {
+        vertices: storage_buffer(rec, "lumen 3d model vertices", parts[0]),
+        indices: storage_buffer(rec, "lumen 3d model indices", parts[1]),
+        skin: (!geometry.skin.is_empty())
+            .then(|| storage_buffer(rec, "lumen 3d model skin", parts[2])),
+    };
+    let textures = model
+        .textures
+        .iter()
+        .map(|texture| {
+            bytes += texture
+                .levels
+                .iter()
+                .map(|level| level.len() as u64)
+                .sum::<u64>();
+            upload_texture(rec, texture)
+        })
+        .collect();
+    let loaded = LoadedModel {
+        scene: Arc::new(model.scene),
+        mesh,
+        textures,
+    };
+    Ok((loaded, bytes))
+}
+
+fn upload_texture(rec: &mut Recorder, texture: &Texture) -> TexRef {
+    let texture = wgpu::util::DeviceExt::create_texture_with_data(
+        rec.device(),
+        rec.queue(),
+        &wgpu::TextureDescriptor {
+            label: Some("lumen 3d model texture"),
+            size: wgpu::Extent3d {
+                width: texture.width,
+                height: texture.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: texture.levels.len() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: if texture.srgb {
+                wgpu::TextureFormat::Rgba8UnormSrgb
+            } else {
+                wgpu::TextureFormat::Rgba8Unorm
+            },
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &texture.levels.concat(),
+    );
+    rec.adopt(Arc::new(texture))
 }
 
 fn vec3(value: [f64; 3]) -> Vec3 {
@@ -127,7 +322,6 @@ fn surface(
     let emissive = material.emissive.max(0.0) as f32;
     Ok(Surface {
         base_color,
-        texture: None,
         metallic: material.metallic.clamp(0.0, 1.0) as f32,
         roughness: material.roughness.clamp(0.0, 1.0) as f32,
         emissive: [0, 1, 2].map(|i| base_color[i] * emissive),
@@ -138,7 +332,36 @@ fn surface(
         },
         unlit: material.unlit,
         double_sided: material.double_sided,
+        ..Surface::default()
     })
+}
+
+/// How a model's `material` shades, reading the model's `textures`.
+fn model_surface(material: &Material, textures: &[TexRef], flat_normals: bool) -> Surface<TexRef> {
+    Surface {
+        base_color: material.base_color,
+        texture: None,
+        // Reading checked that every map names one of the model's textures.
+        maps: material.maps.map(|&texture| textures[texture]),
+        metallic: material.metallic,
+        roughness: material.roughness,
+        emissive: material.emissive,
+        normal_scale: material.normal_scale,
+        occlusion_strength: material.occlusion_strength,
+        blending: material.blending,
+        unlit: material.unlit,
+        double_sided: material.double_sided,
+        flat_normals,
+    }
+}
+
+fn model_error(node_id: NodeId, source: &str, details: impl std::fmt::Display) -> LumenError {
+    RenderError::NodeEvaluation {
+        node_id,
+        node_kind: "Model3d",
+        details: format!("model `{source}`: {details}"),
+    }
+    .into()
 }
 
 /// The scene a `render_3d` draws, as far as its nodes have been walked.
@@ -219,9 +442,11 @@ impl Collected {
                 self.scene.objects.push(Object {
                     world,
                     mesh,
+                    first_index: 0,
                     index_count,
                     surface,
                     center: world.transform_point3(Vec3::ZERO),
+                    first_joint: None,
                 });
             }
             NodeKind::ImagePlane3d(plane) => {
@@ -243,10 +468,21 @@ impl Collected {
                 self.scene.objects.push(Object {
                     world,
                     mesh,
+                    first_index: 0,
                     index_count,
                     surface,
                     center: world.transform_point3(Vec3::ZERO),
+                    first_joint: None,
                 });
+            }
+            NodeKind::Model3d(model) => {
+                let params = model.params.eval(&ctx)?;
+                let seconds = if expr.fps > 0.0 {
+                    expr.frame / f64::from(expr.fps)
+                } else {
+                    0.0
+                };
+                self.add_model(cx, model, params, seconds, parent)?;
             }
             NodeKind::Camera3d(camera) => {
                 let params = camera.params.eval(&ctx)?;
@@ -297,5 +533,107 @@ impl Collected {
             }
         }
         Ok(None)
+    }
+
+    /// Adds the primitives of `node`'s model, posed `seconds` into the composition's clip.
+    fn add_model(
+        &mut self,
+        cx: &mut FrameCx<'_>,
+        node: &Model3d,
+        params: super::Model3dParams,
+        seconds: f64,
+        parent: Mat4,
+    ) -> crate::Result<()> {
+        let source = params.source.as_str();
+        let error = |details: String| model_error(node.id, source, details);
+        let media = cx.media().ok_or_else(|| {
+            MediaError::source_not_found(source, "this render has no media store")
+        })?;
+        let resolver = media.get_model_resolver(source)?;
+        let tick = cx.tick();
+        let (rec, cache) = cx.scene_cache();
+        let model = cache
+            .model(rec, tick, &*resolver)
+            .map_err(|failure| match failure {
+                ModelLoadError::Media(error) => LumenError::from(error),
+                ModelLoadError::Model(details) => error(details),
+            })?;
+        let scene = &model.scene;
+        let clip = scene.animation(&params.animation).map_err(error)?;
+        let replaced = match (params.texture_material.as_str(), node.texture) {
+            ("", None) => None,
+            ("", Some(_)) => {
+                return Err(error(
+                    "a `texture` input needs `texture_material` to name the material it shows on"
+                        .to_string(),
+                ));
+            }
+            (name, texture) => {
+                let material = scene.material(name).map_err(error)?;
+                match texture {
+                    Some(texture) => Some((material, cx.input_native(texture)?.tex)),
+                    None => None,
+                }
+            }
+        };
+        if self.scene.objects.len() + scene.draw_count() > MAX_SCENE_NODES {
+            return Err(super::render::render_error(
+                self.render_id,
+                format!("the scene draws more than {MAX_SCENE_NODES} objects"),
+            ));
+        }
+
+        let playback = clip.map(|clip| Playback {
+            clip,
+            seconds: (seconds * params.animation_speed + params.animation_offset) as f32,
+            looped: params.animation_loop,
+        });
+        let pose = scene.pose(playback);
+        let first_joint = self.scene.joints.len();
+        if first_joint + pose.joints.len() > MAX_SCENE_JOINTS {
+            return Err(super::render::render_error(
+                self.render_id,
+                format!(
+                    "the scene's skinned models have more than {MAX_SCENE_JOINTS} joints together"
+                ),
+            ));
+        }
+        self.scene.joints.extend(pose.joints);
+        let root = parent * placement(&params.placement).matrix();
+        let default = Material::default();
+        for posed in pose.primitives {
+            let primitive = posed.primitive;
+            let material = primitive
+                .material
+                .and_then(|index| scene.materials().get(index))
+                .unwrap_or(&default);
+            let mut surface = model_surface(material, &model.textures, primitive.flat_normals);
+            if let Some((replaced, raster)) = replaced
+                && primitive.material == Some(replaced)
+            {
+                surface = Surface {
+                    texture: Some(raster),
+                    unlit: true,
+                    blending: material.blending,
+                    double_sided: material.double_sided,
+                    ..Surface::default()
+                };
+            }
+            // A skinned primitive's joints place it within the model, so only the model is placed.
+            let world = match posed.first_joint {
+                Some(_) => root,
+                None => root * posed.world,
+            };
+            self.scene.objects.push(Object {
+                world,
+                mesh: model.mesh,
+                first_index: primitive.first_index,
+                index_count: primitive.index_count,
+                surface,
+                center: world.transform_point3(primitive.center),
+                first_joint: posed.first_joint.map(|joint| joint + first_joint as u32),
+            });
+        }
+        Ok(())
     }
 }

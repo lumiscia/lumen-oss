@@ -260,8 +260,10 @@ fn shader_constants_match_rust() {
 #[test]
 fn scene_shader_matches_its_rust_layouts_and_constants() {
     use crate::node::scene::render::{
-        FLAG_BLEND, FLAG_MIRRORED, FLAG_RASTER, FLAG_UNLIT, GpuGlobals, GpuLight, GpuObject,
-        GpuRun, LIGHT_DIRECTIONAL, LIGHT_SPOT, SHADER,
+        FLAG_BASE_COLOR_MAP, FLAG_BLEND, FLAG_EMISSIVE_MAP, FLAG_FLAT_NORMALS, FLAG_MASK,
+        FLAG_METALLIC_ROUGHNESS_MAP, FLAG_MIRRORED, FLAG_NORMAL_MAP, FLAG_OCCLUSION_MAP,
+        FLAG_RASTER, FLAG_SKINNED, FLAG_UNLIT, GpuGlobals, GpuLight, GpuObject, GpuRun,
+        LIGHT_DIRECTIONAL, LIGHT_SPOT, SHADER,
     };
 
     let module = naga::front::wgsl::parse_str(SHADER).expect("the scene shader should parse");
@@ -295,8 +297,14 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
                 roughness,
                 flags,
                 first_vertex,
+                first_index,
+                first_joint,
+                alpha_cutoff,
+                normal_scale,
+                occlusion_strength,
             ),
             layout!("Vertex", lumen_3d::Vertex, position, normal, uv),
+            layout!("SkinVertex", lumen_3d::SkinVertex, joints, weights),
             layout!(
                 "Light", GpuLight, position, kind, direction, range, radiance, cos_outer,
                 cos_inner,
@@ -309,6 +317,14 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
         ("FLAG_BLEND", FLAG_BLEND),
         ("FLAG_MIRRORED", FLAG_MIRRORED),
         ("FLAG_RASTER", FLAG_RASTER),
+        ("FLAG_MASK", FLAG_MASK),
+        ("FLAG_SKINNED", FLAG_SKINNED),
+        ("FLAG_FLAT_NORMALS", FLAG_FLAT_NORMALS),
+        ("FLAG_BASE_COLOR_MAP", FLAG_BASE_COLOR_MAP),
+        ("FLAG_METALLIC_ROUGHNESS_MAP", FLAG_METALLIC_ROUGHNESS_MAP),
+        ("FLAG_NORMAL_MAP", FLAG_NORMAL_MAP),
+        ("FLAG_EMISSIVE_MAP", FLAG_EMISSIVE_MAP),
+        ("FLAG_OCCLUSION_MAP", FLAG_OCCLUSION_MAP),
         ("LIGHT_DIRECTIONAL", LIGHT_DIRECTIONAL),
         ("LIGHT_SPOT", LIGHT_SPOT),
     ] {

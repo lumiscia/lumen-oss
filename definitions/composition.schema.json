@@ -4153,6 +4153,187 @@
           },
           {
             "additionalProperties": false,
+            "description": "A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, skins and\nanimation clips. A raster wired into `texture` shows on the surfaces of the material\n`texture_material` names, such as a screen. The model's own lights and cameras are left out.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "animation": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The animation clip to play, by its name or else its index; empty plays none.",
+                    "title": "Animation",
+                    "x-lumen-kind": "string"
+                  },
+                  "animation_loop": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Plays the clip again from its start once it ends, rather than holding its last pose.",
+                    "title": "Animation Loop",
+                    "x-lumen-kind": "bool"
+                  },
+                  "animation_offset": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Seconds into the clip at the clip's first frame.",
+                    "title": "Animation Offset",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "animation_speed": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Playback speed multiplier.",
+                    "title": "Animation Speed",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "position": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Position in world units along X, Y and Z, in the parent's space.",
+                    "title": "Position",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned\nX, then roll about the turned Z.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0, 1.0],
+                    "description": "Scale multiplier along X, Y and Z, applied before the rotation.",
+                    "title": "Scale",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "source": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "A binary glTF (`.glb`) file with its buffers and images inside it: a path or `media`\nalias, or `asset:<id>` for a model asset of the host's.",
+                    "title": "Source",
+                    "x-lumen-constraints": {
+                      "role": "source_id"
+                    },
+                    "x-lumen-kind": "string"
+                  },
+                  "texture_material": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The material, by name, whose surfaces show the `texture` input instead, unlit.",
+                    "title": "Texture Material",
+                    "x-lumen-kind": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "model_3d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Model 3D",
+            "type": "object",
+            "x-lumen-category": "scene",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "texture",
+                "optional": true,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "scene",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Blurs everything that moves in its source, including what analytic motion blur can't see:\nanimated sizes, path data, motion upstream of a transform and motion inside video. Analytic\nmotion blur in the source is off while it samples, and so is a `motion_blur` inside it.",
             "properties": {
               "id": {
