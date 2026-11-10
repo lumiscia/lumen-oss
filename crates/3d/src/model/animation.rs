@@ -58,7 +58,8 @@ pub(super) struct Animation {
 
 impl Animation {
     /// Sets the properties the clip animates in `locals`, each node's translation, rotation and
-    /// scale, to their values at `time`.
+    /// scale, to their values at `time`. Where two channels target the same property, the later
+    /// one wins. A sampled value can overflow to infinity, which `pose` then leaves out.
     pub(super) fn apply(&self, time: f32, locals: &mut [(Vec3, Quat, Vec3)]) {
         for channel in &self.channels {
             if let Some(local) = locals.get_mut(channel.node) {
@@ -77,7 +78,7 @@ impl Channel {
             Values::Translation(values) => local.0 = self.sample(values, keys, Vec3::lerp),
             Values::Scale(values) => local.2 = self.sample(values, keys, Vec3::lerp),
             Values::Rotation(values) => {
-                local.1 = self.sample(values, keys, Quat::slerp).normalize();
+                local.1 = unit(self.sample(values, keys, Quat::slerp));
             }
         }
     }
@@ -127,6 +128,16 @@ impl Channel {
                     + in_tangent * (t3 - t2)
             }
         }
+    }
+}
+
+/// `rotation` at unit length, or no rotation when it has no direction or isn't finite.
+pub(super) fn unit(rotation: Quat) -> Quat {
+    let length = rotation.length();
+    if length > 1e-12 && length.is_finite() {
+        rotation / length
+    } else {
+        Quat::IDENTITY
     }
 }
 

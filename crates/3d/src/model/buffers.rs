@@ -9,7 +9,8 @@ use gltf_json::validation::Checked;
 use gltf_json::{Accessor, Index, Root};
 
 use super::{
-    MAX_COMPONENTS, MAX_DECODED_BYTES, MAX_VIEW_BYTES, ModelError, invalid, too_large, unsupported,
+    DECODED_BYTES_PER_FILE_BYTE, MAX_COMPONENTS, MAX_DECODED_BYTES, MAX_VIEW_BYTES,
+    MIN_DECODED_BUDGET, ModelError, invalid, too_large, unsupported,
 };
 
 pub(super) struct Buffers<'a> {
@@ -17,6 +18,8 @@ pub(super) struct Buffers<'a> {
     buffers: Vec<Cow<'a, [u8]>>,
     /// Bytes accessor reads have decoded so far, at four a component.
     decoded: Cell<usize>,
+    /// The most bytes accessor reads may decode to.
+    budget: usize,
 }
 
 /// `value` as a `usize`, or an error naming `what` when it doesn't fit.
@@ -45,8 +48,13 @@ pub(super) fn data_uri(uri: &str) -> Result<Vec<u8>, ModelError> {
 
 impl<'a> Buffers<'a> {
     /// The model's buffers: the first may be the file's binary chunk, `bin`, and any may be a
-    /// `data:` URI.
-    pub(super) fn load(root: &'a Root, bin: Option<&'a [u8]>) -> Result<Self, ModelError> {
+    /// `data:` URI. `file_bytes` is the size of the whole file, which bounds what accessor reads
+    /// may decode to.
+    pub(super) fn load(
+        root: &'a Root,
+        bin: Option<&'a [u8]>,
+        file_bytes: usize,
+    ) -> Result<Self, ModelError> {
         let mut buffers = Vec::with_capacity(root.buffers.len());
         for (index, buffer) in root.buffers.iter().enumerate() {
             let data: Cow<'a, [u8]> = match (&buffer.uri, index, bin) {
@@ -76,6 +84,9 @@ impl<'a> Buffers<'a> {
             root,
             buffers,
             decoded: Cell::new(0),
+            budget: file_bytes
+                .saturating_mul(DECODED_BYTES_PER_FILE_BYTE)
+                .clamp(MIN_DECODED_BUDGET, MAX_DECODED_BYTES),
         })
     }
 
@@ -114,8 +125,18 @@ impl<'a> Buffers<'a> {
         let total = components
             .checked_mul(4)
             .and_then(|bytes| bytes.checked_add(self.decoded.get()))
-            .filter(|&total| total <= MAX_DECODED_BYTES)
-            .ok_or_else(|| too_large("bytes of accessor data", MAX_DECODED_BYTES))?;
+            .filter(|&total| total <= self.budget)
+            .ok_or_else(|| {
+                if self.budget < MAX_DECODED_BYTES {
+                    ModelError::TooLarge(format!(
+                        "the model's accessors decode to more than the {} bytes a file of its \
+                         size may",
+                        self.budget
+                    ))
+                } else {
+                    too_large("bytes of accessor data", MAX_DECODED_BYTES)
+                }
+            })?;
         self.decoded.set(total);
         Ok(())
     }

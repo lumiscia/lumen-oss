@@ -1,5 +1,6 @@
 //! Reads a binary glTF's document into a [`Model`], checking it as it goes.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use glam::{Mat4, Quat, Vec3};
@@ -10,13 +11,13 @@ use gltf_json::texture::{MagFilter, MinFilter, WrappingMode};
 use gltf_json::validation::Checked;
 use gltf_json::{Index, Root};
 
-use super::animation::{Animation, Channel, Interpolation, Values};
+use super::animation::{Animation, Channel, Interpolation, Values, unit};
 use super::buffers::{Buffers, data_uri, size};
-use super::image::{Decoded, decode};
+use super::image;
 use super::{
-    Geometry, MAX_DRAWS, MAX_INDICES, MAX_JOINTS, MAX_NODES, MAX_SKIN_JOINTS, MAX_TEXTURE_PIXELS,
+    Geometry, MAX_DRAWS, MAX_INDICES, MAX_JOINTS, MAX_SKIN_JOINTS, MAX_TEXTURE_PIXELS,
     MAX_VERTICES, Material, Model, ModelError, ModelScene, Node, Primitive, Skin, Texture, glb,
-    invalid, too_large, unsupported,
+    invalid, scan, too_large, unsupported,
 };
 use crate::{Blending, Filter, Map, Maps, Sampler, SkinVertex, Vertex, Wrap};
 
@@ -30,6 +31,7 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
 
 pub(super) fn read(bytes: &[u8]) -> Result<Model, ModelError> {
     let glb = glb::split(bytes)?;
+    scan::check(glb.json)?;
     let root = Root::from_slice(glb.json)
         .map_err(|error| invalid(format!("the model's JSON isn't valid glTF: {error}")))?;
     if !root.asset.version.starts_with("2.") {
@@ -47,10 +49,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Model, ModelError> {
             "the model requires the glTF extension {required}, which isn't supported"
         )));
     }
-    if root.nodes.len() > MAX_NODES {
-        return Err(too_large("nodes", MAX_NODES));
-    }
-    let buffers = Buffers::load(&root, glb.bin)?;
+    let buffers = Buffers::load(&root, glb.bin, bytes.len())?;
     let Meshes {
         geometry,
         meshes,
@@ -58,14 +57,21 @@ pub(super) fn read(bytes: &[u8]) -> Result<Model, ModelError> {
     } = read_meshes(&root, &buffers)?;
     let skins = read_skins(&root, &buffers)?;
     let (nodes, roots) = read_nodes(&root, meshes.len(), skins.len())?;
-    for node in &nodes {
-        if let (Some(mesh), Some(skin)) = (node.mesh, node.skin)
+    let reached = reached(&nodes, &roots);
+    for (node, _) in nodes.iter().zip(&reached).filter(|(_, reached)| **reached) {
+        let Some(skin) = node.skin else { continue };
+        if let Some(mesh) = node.mesh
             && joints_needed[mesh] > skins[skin].joints.len()
         {
             return Err(invalid("a mesh uses a joint its skin lacks"));
         }
+        if let Some(joint) = skins[skin].joints.iter().find(|&&joint| !reached[joint]) {
+            return Err(invalid(format!(
+                "skin {skin} uses node {joint} as a joint, which isn't in the scene"
+            )));
+        }
     }
-    let draws = count_draws(&nodes, &roots, &meshes)?;
+    let draws = count_draws(&nodes, &reached, &meshes)?;
     let (materials, textures) = read_materials(&root, &buffers)?;
     if meshes.iter().flatten().any(|primitive| {
         primitive
@@ -139,11 +145,29 @@ fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError>
                 .map(|accessor| buffers.vectors::<3>(accessor, None))
                 .transpose()?;
             let normals = read_count(normals)?;
+            if normals
+                .iter()
+                .flatten()
+                .flatten()
+                .any(|value| !value.is_finite())
+            {
+                return Err(invalid("a vertex normal isn't a finite number"));
+            }
             let uvs = attribute(Semantic::TexCoords(0))?
                 .map(|accessor| buffers.vectors::<2>(accessor, None))
                 .transpose()?;
             if uvs.as_ref().is_some_and(|uvs| uvs.len() != count) {
                 return Err(different_counts());
+            }
+            if uvs
+                .iter()
+                .flatten()
+                .flatten()
+                .any(|value| !value.is_finite())
+            {
+                return Err(invalid(
+                    "a vertex's texture coordinates aren't finite numbers",
+                ));
             }
             let skin = match (
                 attribute(Semantic::Joints(0))?,
@@ -218,7 +242,7 @@ fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError>
                 first_index,
                 index_count: local.len() as u32,
                 material: primitive.material.map(|material| material.value()),
-                center: (min + max) * 0.5,
+                center: min * 0.5 + max * 0.5,
                 flat_normals,
                 skinned: skin.is_some(),
             });
@@ -257,11 +281,10 @@ fn skin_vertices(
     for (joints, weights) in joints.iter().zip(weights) {
         let mut vertex = SkinVertex::default();
         for i in 0..4 {
-            let weight = if weights[i].is_finite() {
-                weights[i].clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
+            if !weights[i].is_finite() {
+                return Err(invalid("a vertex's joint weight isn't a finite number"));
+            }
+            let weight = weights[i].clamp(0.0, 1.0);
             vertex.weights[i] = (weight * 65535.0 + 0.5) as u16;
             if vertex.weights[i] == 0 {
                 continue;
@@ -280,8 +303,9 @@ fn skin_vertices(
 
 /// UVs for a primitive without any, projected onto the plane of its two longest extents with V
 /// running down the second, so that a flat screen shows a raster upright.
+/// Works in `f64`, where the extent of any finite positions is finite.
 fn planar_uvs(positions: &[[f32; 3]], min: Vec3, max: Vec3) -> Vec<[f32; 2]> {
-    let extent = (max - min).max(Vec3::splat(1e-6));
+    let extent = [0, 1, 2].map(|axis| (f64::from(max[axis]) - f64::from(min[axis])).max(1e-6));
     let shortest = (0..3)
         .min_by(|&a, &b| extent[a].total_cmp(&extent[b]))
         .unwrap_or(2);
@@ -290,14 +314,12 @@ fn planar_uvs(positions: &[[f32; 3]], min: Vec3, max: Vec3) -> Vec<[f32; 2]> {
         1 => [0, 2],
         _ => [0, 1],
     };
+    let along = |position: &[f32; 3], axis: usize| {
+        (f64::from(position[axis]) - f64::from(min[axis])) / extent[axis]
+    };
     positions
         .iter()
-        .map(|position| {
-            [
-                (position[u] - min[u]) / extent[u],
-                1.0 - (position[v] - min[v]) / extent[v],
-            ]
-        })
+        .map(|position| [along(position, u) as f32, (1.0 - along(position, v)) as f32])
         .collect()
 }
 
@@ -313,18 +335,31 @@ fn read_skins(root: &Root, buffers: &Buffers<'_>) -> Result<Vec<Skin>, ModelErro
             return Err(too_large("joints", MAX_JOINTS));
         }
         let joints: Vec<usize> = skin.joints.iter().map(|joint| joint.value()).collect();
-        if joints.iter().any(|&joint| joint >= root.nodes.len()) {
+        if joints
+            .iter()
+            .chain(skin.skeleton.map(|skeleton| skeleton.value()).as_ref())
+            .any(|&node| node >= root.nodes.len())
+        {
             return Err(invalid("a skin names a node the model lacks"));
         }
-        let mut inverse_binds: Vec<Mat4> = match skin.inverse_bind_matrices {
+        let inverse_binds: Vec<Mat4> = match skin.inverse_bind_matrices {
             Some(accessor) => buffers
                 .vectors::<16>(buffers.accessor(accessor)?, None)?
                 .iter()
                 .map(Mat4::from_cols_array)
                 .collect(),
-            None => Vec::new(),
+            None => vec![Mat4::IDENTITY; joints.len()],
         };
-        inverse_binds.resize(joints.len(), Mat4::IDENTITY);
+        if inverse_binds.len() != joints.len() {
+            return Err(invalid(format!(
+                "a skin has {} inverse bind matrices for its {} joints",
+                inverse_binds.len(),
+                joints.len()
+            )));
+        }
+        if !inverse_binds.iter().all(Mat4::is_finite) {
+            return Err(invalid("a skin's inverse bind matrix isn't finite"));
+        }
         skins.push(Skin {
             joints,
             inverse_binds,
@@ -336,17 +371,42 @@ fn read_skins(root: &Root, buffers: &Buffers<'_>) -> Result<Vec<Skin>, ModelErro
 /// The nodes and the roots of the default scene, or of the first scene when none is the default,
 /// or every node without a parent when there are no scenes. Each node may have one parent at
 /// most and roots none, so the hierarchy is a forest that walking from the roots can't loop in.
+/// A node's matrix is kept as given unless an animation moves the node, which needs its
+/// translation, rotation and scale.
 fn read_nodes(
     root: &Root,
     mesh_count: usize,
     skin_count: usize,
 ) -> Result<(Vec<Node>, Vec<usize>), ModelError> {
     let count = root.nodes.len();
+    let mut animated = vec![false; count];
+    for channel in root
+        .animations
+        .iter()
+        .flat_map(|animation| &animation.channels)
+    {
+        if let Some(animated) = animated.get_mut(channel.target.node.value()) {
+            *animated = true;
+        }
+    }
     let mut nodes = Vec::with_capacity(count);
     for (index, node) in root.nodes.iter().enumerate() {
-        let (scale, rotation, translation) = match node.matrix {
-            Some(matrix) => Mat4::from_cols_array(&matrix).to_scale_rotation_translation(),
-            None => (
+        let matrix = node.matrix.map(|matrix| Mat4::from_cols_array(&matrix));
+        if matrix.is_some_and(|matrix| !matrix.is_finite()) {
+            return Err(invalid(format!("node {index}'s matrix isn't finite")));
+        }
+        let (scale, rotation, translation) = match matrix {
+            Some(matrix) if animated[index] => {
+                let (scale, rotation, translation) = matrix.to_scale_rotation_translation();
+                if !(scale.is_finite() && rotation.is_finite() && translation.is_finite()) {
+                    return Err(invalid(format!(
+                        "node {index} is animated, but its matrix doesn't come apart into a \
+                         translation, rotation and scale"
+                    )));
+                }
+                (scale, rotation, translation)
+            }
+            _ => (
                 node.scale.map_or(Vec3::ONE, Vec3::from),
                 node.rotation
                     .map_or(Quat::IDENTITY, |rotation| Quat::from_array(rotation.0)),
@@ -375,6 +435,7 @@ fn read_nodes(
             )));
         }
         nodes.push(Node {
+            matrix: matrix.filter(|_| !animated[index]),
             translation,
             rotation: unit(rotation),
             scale,
@@ -414,116 +475,161 @@ fn read_nodes(
     Ok((nodes, roots))
 }
 
-/// How many primitives the nodes reachable from `roots` place.
+/// Which nodes the scene reaches from `roots`, which `read_nodes` checked form a forest.
+fn reached(nodes: &[Node], roots: &[usize]) -> Vec<bool> {
+    let mut reached = vec![false; nodes.len()];
+    let mut pending = roots.to_vec();
+    while let Some(index) = pending.pop() {
+        reached[index] = true;
+        pending.extend(&nodes[index].children);
+    }
+    reached
+}
+
+/// How many primitives the nodes the scene reaches place.
 fn count_draws(
     nodes: &[Node],
-    roots: &[usize],
+    reached: &[bool],
     meshes: &[Vec<Primitive>],
 ) -> Result<usize, ModelError> {
     let mut draws = 0usize;
-    let mut pending = roots.to_vec();
-    while let Some(index) = pending.pop() {
-        let node = &nodes[index];
+    for (node, _) in nodes.iter().zip(reached).filter(|(_, reached)| **reached) {
         if let Some(mesh) = node.mesh {
             draws = draws.saturating_add(meshes[mesh].len());
             if draws > MAX_DRAWS {
                 return Err(too_large("primitives placed in its scene", MAX_DRAWS));
             }
         }
-        pending.extend(&node.children);
     }
     Ok(draws)
 }
 
-/// `rotation` at unit length, or no rotation when it has none.
-fn unit(rotation: Quat) -> Quat {
-    let length = rotation.length();
-    if length > 1e-12 && length.is_finite() {
-        rotation / length
+/// `value`, which a material factor must hold as a finite number.
+fn factor(value: f32) -> Result<f32, ModelError> {
+    if value.is_finite() {
+        Ok(value)
     } else {
-        Quat::IDENTITY
+        Err(invalid("a material's factor isn't a finite number"))
     }
 }
 
-fn finite_or(value: f32, default: f32) -> f32 {
-    if value.is_finite() { value } else { default }
+/// Where an image's bytes are: a buffer view, which any number of images may share, or the data
+/// URI of the image at this index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ImageBytes {
+    View(usize),
+    DataUri(usize),
 }
 
-/// Decodes images once each, and keeps each in the colour spaces material slots read it in.
-struct Images<'r, 'b> {
-    root: &'r Root,
-    buffers: &'r Buffers<'b>,
-    decoded: HashMap<usize, Decoded>,
-    textures: Vec<Texture>,
-    made: HashMap<(usize, bool), usize>,
-    pixels: u64,
+/// A material slot's texture before images are decoded: where its image's bytes are, and whether
+/// the slot reads them as sRGB colour.
+type Pending = (ImageBytes, bool);
+
+/// The map a material slot reads `info` through, or `None` when it reads none, or reads a UV set
+/// other than the first, which isn't supported.
+fn pending_map(
+    root: &Root,
+    info: Option<(Index<gltf_json::Texture>, u32)>,
+    srgb: bool,
+) -> Result<Option<Map<Pending>>, ModelError> {
+    let Some((texture, tex_coord)) = info else {
+        return Ok(None);
+    };
+    if tex_coord != 0 {
+        return Ok(None);
+    }
+    let json = root
+        .textures
+        .get(texture.value())
+        .ok_or_else(|| invalid("a material names a texture the model lacks"))?;
+    let sampler = match json.sampler {
+        Some(sampler) => sampler_of(
+            root.samplers
+                .get(sampler.value())
+                .ok_or_else(|| invalid("a texture names a sampler the model lacks"))?,
+        ),
+        None => Sampler::default(),
+    };
+    let image = json.source.value();
+    let bytes = match root.images.get(image) {
+        Some(gltf_json::Image {
+            buffer_view: Some(view),
+            ..
+        }) => ImageBytes::View(view.value()),
+        Some(gltf_json::Image { uri: Some(_), .. }) => ImageBytes::DataUri(image),
+        Some(_) => return Err(invalid("an image in the model has no data")),
+        None => return Err(invalid("a texture names an image the model lacks")),
+    };
+    Ok(Some(Map {
+        texture: (bytes, srgb),
+        sampler,
+    }))
 }
 
-impl Images<'_, '_> {
-    /// The map a material slot reads `info` through, or `None` when it reads none, or reads a UV
-    /// set other than the first, which isn't supported.
-    fn map(
-        &mut self,
-        info: Option<(Index<gltf_json::Texture>, u32)>,
-        srgb: bool,
-    ) -> Result<Option<Map<usize>>, ModelError> {
-        let Some((texture, tex_coord)) = info else {
-            return Ok(None);
-        };
-        if tex_coord != 0 {
-            return Ok(None);
-        }
-        let json = self
-            .root
-            .textures
-            .get(texture.value())
-            .ok_or_else(|| invalid("a material names a texture the model lacks"))?;
-        let sampler = match json.sampler {
-            Some(sampler) => sampler_of(
-                self.root
-                    .samplers
-                    .get(sampler.value())
-                    .ok_or_else(|| invalid("a texture names a sampler the model lacks"))?,
-            ),
-            None => Sampler::default(),
-        };
-        let image = json.source.value();
-        if let Some(&texture) = self.made.get(&(image, srgb)) {
-            return Ok(Some(Map { texture, sampler }));
-        }
-        if !self.decoded.contains_key(&image) {
-            let json = self
-                .root
-                .images
-                .get(image)
-                .ok_or_else(|| invalid("a texture names an image the model lacks"))?;
-            let owned;
-            let bytes = match (&json.buffer_view, &json.uri) {
-                (Some(view), _) => self.buffers.view(*view)?.0,
-                (None, Some(uri)) => {
-                    owned = data_uri(uri)?;
-                    &owned
-                }
-                (None, None) => return Err(invalid("an image in the model has no data")),
-            };
-            let decoded = decode(bytes, self.pixels)?;
-            self.decoded.insert(image, decoded);
-        }
-        let decoded = &self.decoded[&image];
-        let pixels = u64::from(decoded.width) * u64::from(decoded.height);
-        self.pixels = self
-            .pixels
-            .checked_add(pixels)
+/// The textures `pending` names, in order of first use. Each image's bytes are read once however
+/// many images and slots name them, and every texture's mip levels are counted against
+/// [`MAX_TEXTURE_PIXELS`] before any image is decoded.
+fn decode_textures(
+    root: &Root,
+    buffers: &Buffers<'_>,
+    pending: &[Pending],
+) -> Result<(Vec<Texture>, HashMap<Pending, usize>), ModelError> {
+    let mut order: Vec<Pending> = Vec::new();
+    let mut indices = HashMap::new();
+    for &texture in pending {
+        indices.entry(texture).or_insert_with(|| {
+            order.push(texture);
+            order.len() - 1
+        });
+    }
+    // Each image's bytes in order of first use, with the textures read from them.
+    let mut images: Vec<(ImageBytes, Vec<usize>)> = Vec::new();
+    let mut image_of = HashMap::new();
+    for (texture, &(bytes, _)) in order.iter().enumerate() {
+        let image = *image_of.entry(bytes).or_insert_with(|| {
+            images.push((bytes, Vec::new()));
+            images.len() - 1
+        });
+        images[image].1.push(texture);
+    }
+    let data = images
+        .iter()
+        .map(|&(bytes, _)| {
+            Ok(match bytes {
+                ImageBytes::View(view) => Cow::Borrowed(buffers.view(Index::new(view as u32))?.0),
+                ImageBytes::DataUri(image) => Cow::Owned(data_uri(
+                    root.images[image].uri.as_deref().unwrap_or_default(),
+                )?),
+            })
+        })
+        .collect::<Result<Vec<Cow<'_, [u8]>>, ModelError>>()?;
+    let mut sources = Vec::with_capacity(images.len());
+    let mut pixels = 0u64;
+    for ((_, textures), data) in images.iter().zip(&data) {
+        let source = image::source(data)?;
+        pixels = image::mip_pixels(source.width, source.height)
+            .checked_mul(textures.len() as u64)
+            .and_then(|charge| pixels.checked_add(charge))
             .filter(|&total| total <= MAX_TEXTURE_PIXELS)
             .ok_or_else(|| too_large("texture pixels", MAX_TEXTURE_PIXELS))?;
-        let index = self.textures.len();
-        self.textures.push(super::image::texture(decoded, srgb));
-        self.made.insert((image, srgb), index);
-        Ok(Some(Map {
-            texture: index,
-            sampler,
-        }))
+        sources.push(source);
     }
+
+    let mut textures: Vec<Option<Texture>> = vec![None; order.len()];
+    for ((_, uses), source) in images.iter().zip(&sources) {
+        let mut rgba = image::decode(source)?;
+        for (count, &texture) in uses.iter().enumerate() {
+            // The last texture read from the image takes the decoded pixels themselves.
+            let pixels = if count + 1 == uses.len() {
+                std::mem::take(&mut rgba)
+            } else {
+                rgba.clone()
+            };
+            let srgb = order[texture].1;
+            textures[texture] = Some(image::texture(pixels, source.width, source.height, srgb));
+        }
+    }
+    Ok((textures.into_iter().flatten().collect(), indices))
 }
 
 fn sampler_of(sampler: &gltf_json::texture::Sampler) -> Sampler {
@@ -563,80 +669,90 @@ fn read_materials(
     root: &Root,
     buffers: &Buffers<'_>,
 ) -> Result<(Vec<Material>, Vec<Texture>), ModelError> {
-    let mut images = Images {
-        root,
-        buffers,
-        decoded: HashMap::new(),
-        textures: Vec::new(),
-        made: HashMap::new(),
-        pixels: 0,
-    };
     let mut materials = Vec::with_capacity(root.materials.len());
+    let mut maps = Vec::with_capacity(root.materials.len());
     for material in &root.materials {
         let pbr = &material.pbr_metallic_roughness;
         let extensions = material.extensions.as_ref();
-        let strength = extensions
-            .and_then(|extensions| extensions.emissive_strength.as_ref())
-            .map_or(1.0, |strength| {
-                finite_or(strength.emissive_strength.0, 1.0).max(0.0)
-            });
+        let strength = match extensions.and_then(|extensions| extensions.emissive_strength.as_ref())
+        {
+            Some(strength) => factor(strength.emissive_strength.0)?.max(0.0),
+            None => 1.0,
+        };
         let info = |info: &Option<gltf_json::texture::Info>| {
             info.as_ref().map(|info| (info.index, info.tex_coord))
         };
         let blending = match material.alpha_mode {
             Checked::Valid(AlphaMode::Mask) => Blending::Mask {
-                cutoff: finite_or(material.alpha_cutoff.map_or(0.5, |cutoff| cutoff.0), 0.5),
+                cutoff: factor(material.alpha_cutoff.map_or(0.5, |cutoff| cutoff.0))?,
             },
             Checked::Valid(AlphaMode::Blend) => Blending::Blend,
             _ => Blending::Opaque,
         };
+        let [r, g, b, a] = pbr.base_color_factor.0;
+        let base_color = [factor(r)?, factor(g)?, factor(b)?, factor(a)?];
+        let [r, g, b] = material.emissive_factor.0;
+        let emissive = [factor(r)?, factor(g)?, factor(b)?];
         materials.push(Material {
             name: material.name.clone().unwrap_or_default(),
-            base_color: pbr
-                .base_color_factor
-                .0
-                .map(|channel| finite_or(channel, 1.0).clamp(0.0, 1.0)),
-            metallic: finite_or(pbr.metallic_factor.0, 1.0).clamp(0.0, 1.0),
-            roughness: finite_or(pbr.roughness_factor.0, 1.0).clamp(0.0, 1.0),
-            emissive: material
-                .emissive_factor
-                .0
-                .map(|channel| finite_or(channel, 0.0).max(0.0) * strength),
-            normal_scale: material
-                .normal_texture
-                .as_ref()
-                .map_or(1.0, |normal| finite_or(normal.scale, 1.0)),
-            occlusion_strength: material
-                .occlusion_texture
-                .as_ref()
-                .map_or(1.0, |occlusion| {
-                    finite_or(occlusion.strength.0, 1.0).clamp(0.0, 1.0)
-                }),
+            base_color: base_color.map(|channel| channel.clamp(0.0, 1.0)),
+            metallic: factor(pbr.metallic_factor.0)?.clamp(0.0, 1.0),
+            roughness: factor(pbr.roughness_factor.0)?.clamp(0.0, 1.0),
+            emissive: emissive.map(|channel| channel.max(0.0) * strength),
+            normal_scale: match &material.normal_texture {
+                Some(normal) => factor(normal.scale)?,
+                None => 1.0,
+            },
+            occlusion_strength: match &material.occlusion_texture {
+                Some(occlusion) => factor(occlusion.strength.0)?.clamp(0.0, 1.0),
+                None => 1.0,
+            },
             blending,
             unlit: extensions.is_some_and(|extensions| extensions.unlit.is_some()),
             double_sided: material.double_sided,
-            maps: Maps {
-                base_color: images.map(info(&pbr.base_color_texture), true)?,
-                metallic_roughness: images.map(info(&pbr.metallic_roughness_texture), false)?,
-                normal: images.map(
-                    material
-                        .normal_texture
-                        .as_ref()
-                        .map(|normal| (normal.index, normal.tex_coord)),
-                    false,
-                )?,
-                emissive: images.map(info(&material.emissive_texture), true)?,
-                occlusion: images.map(
-                    material
-                        .occlusion_texture
-                        .as_ref()
-                        .map(|occlusion| (occlusion.index, occlusion.tex_coord)),
-                    false,
-                )?,
-            },
+            maps: Maps::default(),
+        });
+        maps.push(Maps {
+            base_color: pending_map(root, info(&pbr.base_color_texture), true)?,
+            metallic_roughness: pending_map(root, info(&pbr.metallic_roughness_texture), false)?,
+            normal: pending_map(
+                root,
+                material
+                    .normal_texture
+                    .as_ref()
+                    .map(|normal| (normal.index, normal.tex_coord)),
+                false,
+            )?,
+            emissive: pending_map(root, info(&material.emissive_texture), true)?,
+            occlusion: pending_map(
+                root,
+                material
+                    .occlusion_texture
+                    .as_ref()
+                    .map(|occlusion| (occlusion.index, occlusion.tex_coord)),
+                false,
+            )?,
         });
     }
-    Ok((materials, images.textures))
+    let pending: Vec<Pending> = maps
+        .iter()
+        .flat_map(|maps: &Maps<Pending>| {
+            [
+                maps.base_color,
+                maps.metallic_roughness,
+                maps.normal,
+                maps.emissive,
+                maps.occlusion,
+            ]
+        })
+        .flatten()
+        .map(|map| map.texture)
+        .collect();
+    let (textures, indices) = decode_textures(root, buffers, &pending)?;
+    for (material, maps) in materials.iter_mut().zip(&maps) {
+        material.maps = maps.map(|texture| indices[texture]);
+    }
+    Ok((materials, textures))
 }
 
 fn read_animations(
@@ -684,13 +800,20 @@ fn read_animations(
             let output = buffers.accessor(sampler.output)?;
             let cubic = interpolation == Interpolation::CubicSpline;
             let values = match property {
+                // Rotations are normalised, but a cubic spline's tangents, the first and last of
+                // each three values, are not.
                 Property::Rotation => Values::Rotation(
                     buffers
                         .vectors::<4>(output, None)?
                         .into_iter()
-                        .map(|value| {
+                        .enumerate()
+                        .map(|(index, value)| {
                             let quat = Quat::from_array(value);
-                            if cubic { quat } else { unit(quat) }
+                            if !quat.is_finite() || (cubic && index % 3 != 1) {
+                                quat
+                            } else {
+                                unit(quat)
+                            }
                         })
                         .collect(),
                 ),

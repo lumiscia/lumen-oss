@@ -1,15 +1,26 @@
 //! Binary glTF (`.glb`) models, read from untrusted bytes by [`Model::from_glb`].
 //!
-//! Reading checks every length, index and count against the limits below before it uses or
-//! allocates for it, does its arithmetic without overflow, and fails with a [`ModelError`] rather
-//! than panicking on any input. A model holds plain data: its geometry and decoded textures to
-//! upload, and the [`ModelScene`] that poses and shades them.
+//! Reading is safe and bounded on any input: it checks every length, index and count against the
+//! limits below before it uses or allocates for it, does its arithmetic without overflow, and
+//! fails with a [`ModelError`] rather than panicking. What it reads from a valid file is correct,
+//! and every number it keeps is finite. It is not a glTF validator: it accepts some files the
+//! specification forbids where they can still be read safely, such as bytes past the declared
+//! length, nodes no scene reaches that form a cycle, repeated key times, and two animation
+//! channels that target the same property, of which the later wins.
+//!
+//! Images are decoded by the `image` crate, after their size is checked against the limits from
+//! their headers. A decoder that panics fails the model where panics unwind; on targets that
+//! abort on panic, such as `wasm32-unknown-unknown`, it aborts instead.
+//!
+//! A model holds plain data: its geometry and decoded textures to upload, and the [`ModelScene`]
+//! that poses and shades them.
 
 mod animation;
 mod buffers;
 mod glb;
 mod image;
 mod read;
+mod scan;
 #[cfg(test)]
 mod tests;
 
@@ -25,9 +36,10 @@ pub use animation::Playback;
 pub const MAX_MODEL_BYTES: usize = 512 << 20;
 /// The largest JSON chunk read.
 pub const MAX_JSON_BYTES: usize = 32 << 20;
-/// The most objects and strings the JSON chunk may hold together, which bounds what parsing it
-/// allocates.
-pub const MAX_JSON_ITEMS: usize = 2_000_000;
+/// The most values (objects, arrays, keys, strings, numbers, booleans and nulls) the JSON chunk
+/// may hold together, which bounds what deserialising it allocates.
+pub const MAX_JSON_VALUES: usize = 4_000_000;
+pub use scan::{COLLECTION_LIMITS, MAX_ANIMATION_CHANNELS, MAX_PRIMITIVES};
 /// The most vertices all of a model's primitives may hold together.
 pub const MAX_VERTICES: usize = 4_000_000;
 /// The most triangle indices all of a model's primitives may hold together.
@@ -46,10 +58,17 @@ pub const MAX_VIEW_BYTES: usize = 256 << 20;
 pub const MAX_COMPONENTS: usize = 48_000_000;
 /// The most bytes all accessor reads may decode to together, at four bytes a component.
 pub const MAX_DECODED_BYTES: usize = 512 << 20;
+/// Accessor reads may also decode to no more than this many times the file's size, or
+/// [`MIN_DECODED_BUDGET`] for a smaller file, so that a small file can't expand hugely.
+pub const DECODED_BYTES_PER_FILE_BYTE: usize = 32;
+pub const MIN_DECODED_BUDGET: usize = 16 << 20;
 /// The widest or tallest image a model may hold, in pixels.
 pub const MAX_IMAGE_SIDE: u32 = 8192;
-/// The most pixels all of a model's textures may hold together, at their full size.
+/// The most pixels all of a model's textures may hold together, counting every mip level.
 pub const MAX_TEXTURE_PIXELS: u64 = 160_000_000;
+/// The most bytes decoding one image may produce, in its own pixel format: an 8-bit RGBA image
+/// [`MAX_IMAGE_SIDE`] a side.
+pub const MAX_IMAGE_DECODE_BYTES: u64 = 1 << 28;
 
 /// Why a model can't be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,9 +198,11 @@ pub struct Primitive {
     pub skinned: bool,
 }
 
-/// A node of the hierarchy, in its parent's space.
+/// A node of the hierarchy, in its parent's space: `matrix` as the file gives it when no animation
+/// moves the node, and otherwise its translation, rotation and scale.
 #[derive(Debug, Clone, PartialEq)]
 struct Node {
+    matrix: Option<Mat4>,
     translation: Vec3,
     rotation: Quat,
     scale: Vec3,
@@ -302,7 +323,9 @@ impl ModelScene {
         })
     }
 
-    /// The scene's primitives placed with `playback`'s clip sampled, or at rest without one.
+    /// The scene's primitives placed with `playback`'s clip sampled, or at rest without one. A
+    /// primitive whose world matrix, or any of whose joint matrices, isn't finite is left out, so
+    /// every matrix in the pose is finite.
     pub fn pose(&self, playback: Option<Playback>) -> Pose {
         let mut locals: Vec<(Vec3, Quat, Vec3)> = self
             .nodes
@@ -331,8 +354,10 @@ impl ModelScene {
             else {
                 continue;
             };
-            let world =
-                parent * Mat4::from_scale_rotation_translation(scale, rotation, translation);
+            let local = node.matrix.unwrap_or_else(|| {
+                Mat4::from_scale_rotation_translation(scale, rotation, translation)
+            });
+            let world = parent * local;
             worlds[index] = world;
             order.push(index);
             pending.extend(node.children.iter().rev().map(|&child| (child, world)));
@@ -342,38 +367,58 @@ impl ModelScene {
             primitives: Vec::with_capacity(self.draws),
             joints: Vec::new(),
         };
-        let mut skin_starts: Vec<Option<u32>> = vec![None; self.skins.len()];
+        // Where each skin's joint matrices start, once worked out, or `None` when any isn't finite.
+        let mut skin_starts: Vec<Option<Option<u32>>> = vec![None; self.skins.len()];
         for index in order {
             let node = &self.nodes[index];
             let Some(primitives) = node.mesh.and_then(|mesh| self.meshes.get(mesh)) else {
                 continue;
             };
+            let world = worlds[index];
+            if !world.is_finite() {
+                continue;
+            }
             let mut skin_start = || {
                 let skin = node.skin?;
                 let start = skin_starts.get_mut(skin)?;
                 if start.is_none() {
                     let skin = self.skins.get(skin)?;
-                    *start = Some(pose.joints.len() as u32);
-                    pose.joints
-                        .extend(skin.joints.iter().zip(&skin.inverse_binds).map(
-                            |(&joint, inverse_bind)| {
-                                worlds.get(joint).copied().unwrap_or(Mat4::IDENTITY) * *inverse_bind
-                            },
-                        ));
+                    let joints: Vec<Mat4> = skin
+                        .joints
+                        .iter()
+                        .zip(&skin.inverse_binds)
+                        .map(|(&joint, inverse_bind)| {
+                            worlds.get(joint).copied().unwrap_or(Mat4::NAN) * *inverse_bind
+                        })
+                        .collect();
+                    *start = Some(joints.iter().all(Mat4::is_finite).then(|| {
+                        let first = pose.joints.len() as u32;
+                        pose.joints.extend(joints);
+                        first
+                    }));
                 }
                 *start
             };
-            let first_joint = if primitives.iter().any(|primitive| primitive.skinned) {
-                skin_start()
-            } else {
-                None
+            // Skinned primitives of a node without a skin are placed by the node; those of a node
+            // whose skin has a joint matrix that isn't finite are left out.
+            let skinned = primitives.iter().any(|primitive| primitive.skinned);
+            let skin = match node.skin {
+                Some(_) if skinned => match skin_start() {
+                    Some(Some(start)) => Ok(Some(start)),
+                    _ => Err(()),
+                },
+                _ => Ok(None),
             };
-            pose.primitives
-                .extend(primitives.iter().map(|&primitive| Posed {
-                    primitive,
-                    world: worlds[index],
-                    first_joint: first_joint.filter(|_| primitive.skinned),
-                }));
+            pose.primitives.extend(
+                primitives
+                    .iter()
+                    .filter(|primitive| !primitive.skinned || skin.is_ok())
+                    .map(|&primitive| Posed {
+                        primitive,
+                        world,
+                        first_joint: skin.ok().flatten().filter(|_| primitive.skinned),
+                    }),
+            );
         }
         pose
     }

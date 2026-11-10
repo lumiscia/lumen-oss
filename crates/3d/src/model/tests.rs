@@ -193,13 +193,36 @@ fn materials_read_each_alpha_mode() {
 
 /// A PNG of `width` x `height` pixels of one colour.
 fn png(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
-    use ::image::ImageEncoder;
     let pixels: Vec<u8> = (0..width * height).flat_map(|_| rgba).collect();
+    png_of(width, height, &pixels)
+}
+
+/// A PNG of `width` x `height` RGBA8 `pixels`, rows top first.
+fn png_of(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
+    use ::image::ImageEncoder;
     let mut out = Vec::new();
     ::image::codecs::png::PngEncoder::new(&mut out)
-        .write_image(&pixels, width, height, ::image::ExtendedColorType::Rgba8)
+        .write_image(pixels, width, height, ::image::ExtendedColorType::Rgba8)
         .unwrap();
     out
+}
+
+/// A PNG chunk of `kind` holding `data`, whose checksum is right only when `valid`.
+fn png_chunk(kind: &[u8; 4], data: &[u8], valid: bool) -> Vec<u8> {
+    let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
+    chunk.extend(kind);
+    chunk.extend(data);
+    let crc = crc32(&chunk[4..]) ^ u32::from(!valid);
+    chunk.extend(crc.to_be_bytes());
+    chunk
+}
+
+/// `image`, a PNG, with its header's size replaced by `width` x `height`.
+fn resized_header(mut image: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+    image[16..24].copy_from_slice(&[width.to_be_bytes(), height.to_be_bytes()].concat());
+    let crc = crc32(&image[12..29]);
+    image[29..33].copy_from_slice(&crc.to_be_bytes());
+    image
 }
 
 fn crc32(bytes: &[u8]) -> u32 {
@@ -268,10 +291,7 @@ fn textures_decode_with_mips_in_the_colour_space_of_their_slots() {
 
 #[test]
 fn an_image_declaring_a_huge_size_is_rejected_before_decoding() {
-    let mut image = png(1, 1, [0; 4]);
-    image[16..24].copy_from_slice(&[100_000u32.to_be_bytes(), 100_000u32.to_be_bytes()].concat());
-    let crc = crc32(&image[12..29]);
-    image[29..33].copy_from_slice(&crc.to_be_bytes());
+    let image = resized_header(png(1, 1, [0; 4]), 100_000, 100_000);
     let error = textured(Glb::triangle(), &image).read().unwrap_err();
     assert_eq!(
         error,
@@ -279,6 +299,75 @@ fn an_image_declaring_a_huge_size_is_rejected_before_decoding() {
             "the model has more pixels across one image than the 8192 it may".to_string()
         )
     );
+}
+
+#[test]
+fn every_mip_level_counts_toward_the_texture_pixel_limit_before_decoding() {
+    // Two 8192 x 8192 images are 134 M pixels, under the limit, and 179 M with their mips.
+    let mut glb = textured(Glb::triangle(), &[]);
+    let views =
+        [0u8, 1].map(|colour| glb.view(&resized_header(png(1, 1, [colour; 4]), 8192, 8192)));
+    glb.json["images"] = json!([{ "bufferView": views[0] }, { "bufferView": views[1] }]);
+    glb.json["textures"] = json!([{ "source": 0 }, { "source": 1 }]);
+    glb.json["materials"] = json!([{
+        "pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } },
+        "emissiveTexture": { "index": 1 },
+    }]);
+    assert_eq!(
+        glb.read().unwrap_err(),
+        ModelError::TooLarge(
+            "the model has more texture pixels than the 160000000 it may".to_string()
+        )
+    );
+}
+
+#[test]
+fn images_sharing_bytes_decode_once() {
+    // A hundred 1200 x 1200 textures would be past the texture pixel limit; one isn't.
+    let mut glb = textured(Glb::triangle(), &png(1200, 1200, [0, 0, 255, 255]));
+    let image = glb.json["images"][0].clone();
+    glb.json["images"] = Value::Array(vec![image; 100]);
+    glb.json["textures"] = (0..100).map(|source| json!({ "source": source })).collect();
+    glb.json["materials"] = (0..100)
+        .map(|index| json!({ "pbrMetallicRoughness": { "baseColorTexture": { "index": index } } }))
+        .collect();
+    let model = glb.read().unwrap();
+    assert_eq!(model.textures.len(), 1);
+    let maps: Vec<_> = model
+        .scene
+        .materials()
+        .iter()
+        .map(|m| m.maps.base_color.map(|map| map.texture))
+        .collect();
+    assert!(maps.iter().all(|&texture| texture == Some(0)));
+}
+
+#[test]
+fn a_png_decodes_from_its_still_image_chunks_alone() {
+    // Each chunk beside the still image has a bad checksum, which the decoder would refuse.
+    let image = png(1, 1, [10, 20, 30, 255]);
+    let (header, rest) = image.split_at(33);
+    let iend = rest.len() - 12;
+    let mut edited = header.to_vec();
+    for kind in [b"iCCP", b"gAMA", b"sRGB", b"cICP", b"acTL", b"fcTL"] {
+        edited.extend(png_chunk(kind, b"profile\0\0\x78\x9c", false));
+    }
+    edited.extend(&rest[..iend]);
+    edited.extend(png_chunk(b"fdAT", &[0; 16], false));
+    edited.extend(png_chunk(b"tEXt", b"Comment\0hello", false));
+    edited.extend(&rest[iend..]);
+    let model = textured(Glb::triangle(), &edited).read().unwrap();
+    assert_eq!(model.textures[0].levels[0], [10, 20, 30, 255]);
+}
+
+#[test]
+fn an_odd_sides_last_texel_counts_toward_its_mip() {
+    let pixels = [[0, 0, 0, 255], [0, 0, 0, 255], [255, 255, 255, 255]].concat();
+    let model = textured(Glb::triangle(), &png_of(3, 1, &pixels))
+        .read()
+        .unwrap();
+    // A third of white in linear light is 156 in sRGB.
+    assert_eq!(model.textures[0].levels[1], [156, 156, 156, 255]);
 }
 
 /// A triangle placed by three nodes, each moved along X by one clip's channel with `interpolation`
@@ -444,10 +533,159 @@ fn a_skinned_primitive_follows_its_joints_and_ignores_its_nodes_transform() {
 #[test]
 fn a_skinned_vertex_leaning_on_a_joint_its_skin_lacks_is_an_error() {
     let mut glb = skinned();
-    glb.json["skins"][0]["joints"] = json!([1]);
+    glb.json["skins"][0] = json!({ "joints": [1] });
     assert_eq!(
         glb.read().unwrap_err(),
         ModelError::Invalid("a mesh uses a joint its skin lacks".to_string())
+    );
+}
+
+#[test]
+fn skins_read_identity_binds_when_absent_and_check_their_joints() {
+    let mut absent = skinned();
+    absent.json["skins"][0] = json!({ "joints": [1, 2] });
+    let model = absent.read().unwrap();
+    assert_eq!(
+        model.scene.pose(None).joints,
+        [Mat4::IDENTITY, Mat4::from_translation(Vec3::Y)]
+    );
+
+    let cases: [(&str, Edit); 3] = [
+        (
+            "a skin has 1 inverse bind matrices for its 2 joints",
+            Box::new(|json| json["accessors"][4]["count"] = json!(1)),
+        ),
+        (
+            "skin 0 uses node 1 as a joint, which isn't in the scene",
+            Box::new(|json| json["scenes"] = json!([{ "nodes": [0] }])),
+        ),
+        (
+            "a skin names a node the model lacks",
+            Box::new(|json| json["skins"][0]["skeleton"] = json!(9)),
+        ),
+    ];
+    for (expected, edit) in cases {
+        let mut glb = skinned();
+        edit(&mut glb.json);
+        assert_eq!(
+            glb.read().unwrap_err(),
+            ModelError::Invalid(expected.to_string())
+        );
+    }
+}
+
+/// Every matrix `scene` poses at `seconds` into its first clip.
+fn posed_matrices(scene: &ModelScene, seconds: f32) -> Vec<Mat4> {
+    let pose = scene.pose(Some(Playback {
+        clip: 0,
+        seconds,
+        looped: true,
+    }));
+    pose.primitives
+        .iter()
+        .map(|posed| posed.world)
+        .chain(pose.joints)
+        .collect()
+}
+
+#[test]
+fn values_too_large_or_degenerate_never_reach_a_pose() {
+    let cases: [(&str, Edit); 2] = [
+        (
+            "a material's factor isn't a finite number",
+            Box::new(|json| json["materials"] = json!([{ "emissiveFactor": [1e39, 0, 0] }])),
+        ),
+        (
+            "the model's JSON holds 4294967296, larger than any index or size in a model",
+            Box::new(|json| json["nodes"][0]["mesh"] = json!(4_294_967_296u64)),
+        ),
+    ];
+    for (expected, edit) in cases {
+        assert_eq!(error_with(edit), ModelError::Invalid(expected.to_string()));
+    }
+    let mut normals = Glb::triangle();
+    let normal = normals.accessor(FLOAT, "VEC3", 3, &floats(&[f32::NAN; 9]));
+    normals.json["meshes"][0]["primitives"][0]["attributes"]["NORMAL"] = json!(normal);
+    assert_eq!(
+        normals.read().unwrap_err(),
+        ModelError::Invalid("a vertex normal isn't a finite number".to_string())
+    );
+
+    // Positions near the largest float still give a finite centre and texture coordinates.
+    let mut far = Glb::triangle();
+    far.bin[..36].copy_from_slice(&floats(&[
+        -3e38, -3e38, 0.0, 3e38, -3e38, 0.0, -3e38, 3e38, 0.0,
+    ]));
+    let model = far.read().unwrap();
+    assert!(
+        model.scene.pose(None).primitives[0]
+            .primitive
+            .center
+            .is_finite()
+    );
+    assert!(
+        model
+            .geometry
+            .vertices
+            .iter()
+            .all(|vertex| vertex.uv.iter().all(|uv| uv.is_finite()))
+    );
+
+    // A zero rotation key, linear and cubic, and scales whose product overflows.
+    let mut glb = Glb::triangle();
+    glb.json["nodes"] = json!([
+        { "mesh": 0 },
+        { "mesh": 0 },
+        { "scale": [1e30, 1e30, 1e30], "children": [3] },
+        { "mesh": 0, "scale": [1e30, 1e30, 1e30] },
+    ]);
+    glb.json["scenes"] = json!([{ "nodes": [0, 1, 2] }]);
+    let times = glb.accessor(FLOAT, "SCALAR", 2, &floats(&[0.0, 1.0]));
+    let zero = glb.accessor(FLOAT, "VEC4", 2, &floats(&[0.0; 8]));
+    let zero_cubic = glb.accessor(FLOAT, "VEC4", 6, &floats(&[0.0; 24]));
+    glb.json["animations"] = json!([{
+        "samplers": [
+            { "input": times, "output": zero },
+            { "input": times, "output": zero_cubic, "interpolation": "CUBICSPLINE" },
+        ],
+        "channels": [
+            { "sampler": 0, "target": { "node": 0, "path": "rotation" } },
+            { "sampler": 1, "target": { "node": 1, "path": "rotation" } },
+        ],
+    }]);
+    let scene = glb.read().unwrap().scene;
+    for seconds in [0.0, 0.5, 1.0] {
+        let matrices = posed_matrices(&scene, seconds);
+        assert_eq!(matrices.len(), 2, "the overflowing primitive is left out");
+        assert!(matrices.iter().all(Mat4::is_finite), "{matrices:?}");
+    }
+}
+
+#[test]
+fn a_nodes_matrix_is_kept_as_given_unless_it_is_animated() {
+    let flat = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    let mut still = Glb::triangle();
+    still.json["nodes"][0]["matrix"] = json!(flat);
+    let pose = still.read().unwrap().scene.pose(None);
+    assert_eq!(
+        pose.primitives[0].world,
+        Mat4::from_scale(Vec3::new(1.0, 1.0, 0.0))
+    );
+
+    let mut animated = still;
+    let times = animated.accessor(FLOAT, "SCALAR", 1, &floats(&[0.0]));
+    let moves = animated.accessor(FLOAT, "VEC3", 1, &floats(&[0.0; 3]));
+    animated.json["animations"] = json!([{
+        "samplers": [{ "input": times, "output": moves }],
+        "channels": [{ "sampler": 0, "target": { "node": 0, "path": "translation" } }],
+    }]);
+    assert_eq!(
+        animated.read().unwrap_err(),
+        ModelError::Invalid(
+            "node 0 is animated, but its matrix doesn't come apart into a translation, rotation \
+             and scale"
+                .to_string()
+        )
     );
 }
 
@@ -504,12 +742,34 @@ fn malformed_containers_and_out_of_range_data_are_errors() {
         Model::from_glb(&magic),
         Err(ModelError::Invalid(_))
     ));
-    let mut chunk = bytes.clone();
-    chunk[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
-    assert_eq!(
-        Model::from_glb(&chunk).unwrap_err(),
-        ModelError::Invalid("a chunk reaches past the end of the file".to_string())
-    );
+    let chunk_length = |length: u32| {
+        let mut chunk = bytes.clone();
+        chunk[12..16].copy_from_slice(&length.to_le_bytes());
+        Model::from_glb(&chunk).unwrap_err()
+    };
+    let appended = |kind: &[u8; 4]| {
+        let mut file = bytes.clone();
+        file.extend(4u32.to_le_bytes());
+        file.extend(kind);
+        file.extend(b"{}  ");
+        let length = file.len() as u32;
+        file[8..12].copy_from_slice(&length.to_le_bytes());
+        Model::from_glb(&file).unwrap_err()
+    };
+    for (error, expected) in [
+        (
+            chunk_length(0xffff_fffc),
+            "a chunk reaches past the end of the file",
+        ),
+        (
+            chunk_length(13),
+            "a chunk's length isn't a multiple of four bytes",
+        ),
+        (appended(b"JSON"), "the file has two JSON chunks"),
+        (appended(b"BIN\0"), "the file has two binary chunks"),
+    ] {
+        assert_eq!(error, ModelError::Invalid(expected.to_string()));
+    }
 
     let cases: [(&str, Edit); 7] = [
         (
@@ -554,7 +814,7 @@ fn counts_past_each_limit_are_errors_before_anything_that_size_is_read() {
     let too_large = |what: &str, limit: &str| {
         ModelError::TooLarge(format!("the model has more {what} than the {limit} it may"))
     };
-    let cases: [(ModelError, Edit); 6] = [
+    let cases: [(ModelError, Edit); 9] = [
         (
             too_large("vertices", "4000000"),
             Box::new(|json| json["accessors"][0]["count"] = json!(4_000_001)),
@@ -568,8 +828,25 @@ fn counts_past_each_limit_are_errors_before_anything_that_size_is_read() {
             Box::new(move |json| json["nodes"] = empty_objects(100_001)),
         ),
         (
-            too_large("JSON objects and strings", "2000000"),
-            Box::new(move |json| json["nodes"] = empty_objects(2_000_001)),
+            too_large("JSON values", "4000000"),
+            Box::new(|json| json["extras"] = json!(vec![0; 4_000_001])),
+        ),
+        (
+            too_large("materials", "10000"),
+            Box::new(move |json| json["materials"] = empty_objects(10_001)),
+        ),
+        (
+            too_large("channels in one animation", "100000"),
+            Box::new(move |json| {
+                json["animations"] = json!([{ "channels": empty_objects(100_001) }])
+            }),
+        ),
+        (
+            too_large("primitives", "100000"),
+            Box::new(move |json| {
+                json["meshes"] =
+                    Value::Array(vec![json!({ "primitives": empty_objects(50_001) }); 2]);
+            }),
         ),
         (
             too_large("joints in one skin", "1024"),
@@ -603,26 +880,119 @@ fn counts_past_each_limit_are_errors_before_anything_that_size_is_read() {
         huge_input,
         too_large("components in one accessor", "48000000")
     );
+
+    // A small file's accessors may decode to 16 MiB at most, however large its counts.
+    let zeros = error_with(|json| {
+        json["accessors"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "componentType": FLOAT, "type": "SCALAR", "count": 5_000_000 }));
+        json["animations"] = json!([{
+            "samplers": [{ "input": 2, "output": 2 }],
+            "channels": [{ "sampler": 0, "target": { "node": 0, "path": "scale" } }],
+        }]);
+    });
+    assert_eq!(
+        zeros,
+        ModelError::TooLarge(
+            "the model's accessors decode to more than the 16777216 bytes a file of its size may"
+                .to_string()
+        )
+    );
+}
+
+/// Where each number in `value` is, as JSON pointers.
+fn number_paths(value: &Value, path: String, out: &mut Vec<String>) {
+    match value {
+        Value::Number(_) => out.push(path),
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                number_paths(item, format!("{path}/{index}"), out);
+            }
+        }
+        Value::Object(fields) => {
+            for (key, item) in fields {
+                number_paths(item, format!("{path}/{key}"), out);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[test]
 fn corrupted_files_return_without_panicking() {
-    let bytes = skinned().bytes();
+    // Numbers at the edges of what counts, offsets, indices and component types may hold.
+    let boundaries = [
+        json!(0),
+        json!(1),
+        json!(-1),
+        json!(3),
+        json!(4),
+        json!(255),
+        json!(65_535),
+        json!(4_294_967_295u64),
+        json!(4_294_967_296u64),
+        json!(9_007_199_254_740_993u64),
+        json!(1e39),
+        json!(0.5),
+        json!(5120),
+        json!(5125),
+        json!(5126),
+    ];
+    let rich = textured(skinned(), &png(2, 2, [255, 0, 0, 255]));
     let mut seed = 0x2545_f491_u32;
-    for _ in 0..3000 {
-        let mut corrupt = bytes.clone();
-        for _ in 0..3 {
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let at = (seed >> 8) as usize % corrupt.len();
-            corrupt[at] = (seed >> 24) as u8;
-        }
-        // A corrupt file may still be a readable model; only that it returns matters.
-        if let Ok(model) = Model::from_glb(&corrupt) {
-            model.scene.pose(Some(Playback {
-                clip: 0,
-                seconds: 0.5,
-                looped: true,
-            }));
+    let mut next = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        seed >> 8
+    };
+    // How many mutations end where: the pre-deserialisation scan, glTF deserialising, the reader
+    // afterwards, or a model that reads.
+    let mut split = [0usize; 4];
+    for glb in [Glb::triangle(), rich] {
+        let mut paths = Vec::new();
+        number_paths(&glb.json, String::new(), &mut paths);
+        for round in 0..1500 {
+            let mut json = glb.json.clone();
+            let mut bin = glb.bin.clone();
+            for _ in 0..1 + next() % 2 {
+                if round % 2 == 0 {
+                    let path = &paths[next() as usize % paths.len()];
+                    *json.pointer_mut(path).unwrap() =
+                        boundaries[next() as usize % boundaries.len()].clone();
+                } else {
+                    let at = next() as usize % bin.len();
+                    bin[at] = next() as u8;
+                }
+            }
+            let corrupt = Glb { json, bin };
+            match corrupt.read() {
+                Err(ModelError::Invalid(message))
+                    if message.starts_with("the model's JSON holds") =>
+                {
+                    split[0] += 1;
+                }
+                Err(ModelError::Invalid(message))
+                    if message.starts_with("the model's JSON isn't valid glTF") =>
+                {
+                    split[1] += 1;
+                }
+                Err(_) => split[2] += 1,
+                Ok(model) => {
+                    split[3] += 1;
+                    for seconds in [0.0, 0.3, 1.0, 7.5] {
+                        assert!(
+                            posed_matrices(&model.scene, seconds)
+                                .iter()
+                                .all(Mat4::is_finite)
+                        );
+                    }
+                }
+            }
         }
     }
+    eprintln!(
+        "mutations: {} scanned out, {} glTF parse errors, {} later errors, {} read",
+        split[0], split[1], split[2], split[3]
+    );
+    assert!(split[2] > 300 && split[3] > 300, "{split:?}");
 }

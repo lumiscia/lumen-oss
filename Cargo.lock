@@ -1666,6 +1666,7 @@ dependencies = [
  "glam 0.32.1",
  "gltf-json",
  "image",
+ "serde",
  "serde_json",
 ]
 
