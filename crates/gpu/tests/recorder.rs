@@ -281,3 +281,23 @@ fn a_draw_without_a_viewport_covers_the_target_after_one_with_a_viewport() {
         [30, 30]
     );
 }
+
+#[test]
+fn a_render_program_binding_a_storage_texture_is_refused() {
+    let (_renderer, mut recorder) = setup();
+    const WRITING: &[LayoutEntry] = &[LayoutEntry::staged(
+        0,
+        wgpu::ShaderStages::FRAGMENT,
+        LayoutKind::StorageTexture(FORMAT),
+    )];
+    let program = recorder.render_program(
+        "test draw",
+        DRAW_SHADER,
+        "vs_main",
+        "fs_main",
+        WRITING,
+        RenderTargetSpec::flat(FORMAT, wgpu::BlendState::REPLACE),
+        0,
+    );
+    assert!(program.is_err());
+}

@@ -1010,7 +1010,9 @@ impl Recorder {
     }
 
     /// A render program built from a `'static` shader, cached by that shader's identity and
-    /// `variant`, which names its blend and target format.
+    /// `variant`, which names its blend and target format. Its layout can't hold a storage
+    /// texture: draws share a render pass, where a texture written by one and read by another
+    /// would conflict.
     #[allow(
         clippy::too_many_arguments,
         reason = "a render program's parts, cached together"
@@ -1035,6 +1037,12 @@ impl Recorder {
         };
         if let Some(&program) = self.program_keys.get(&key) {
             return Ok(program);
+        }
+        if layout
+            .iter()
+            .any(|entry| matches!(entry.kind, LayoutKind::StorageTexture(_)))
+        {
+            return Err(anyhow!("render program `{label}` binds a storage texture"));
         }
         let contents = format!(
             "{vertex}{fragment}{variant}{:?}{:?}{:?}{:?}{layout:?}{shader}",
