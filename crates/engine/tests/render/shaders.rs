@@ -170,13 +170,6 @@ fn shader_errors_name_the_problem_and_leave_the_renderer_usable() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
     let media = TestMedia::default();
-    let oversized_fields: String = (0..4097)
-        .map(|index| format!("f{index}: vec4<f32>,"))
-        .collect();
-    let oversized = format!(
-        "struct Big {{ {oversized_fields} }}\n@group(0) @binding(1) var<uniform> big: Big;\n{}",
-        fill_shader("big.f0")
-    );
     let write_only_input = "
 @group(0) @binding(0) var input_tex: texture_storage_2d<rgba8unorm, write>;
 @compute @workgroup_size(8, 8, 1)
@@ -197,7 +190,6 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
             "uniforms.values: vec4<f32> needs 4 components",
         ),
         (matrix, json!({}), "unsupported type `mat4x4<f32>`"),
-        (&oversized, json!({}), "limited to 65536 bytes"),
         (
             &fill_shader("vec4<f32>(1.0"),
             json!({}),

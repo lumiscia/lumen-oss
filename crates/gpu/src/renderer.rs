@@ -103,7 +103,10 @@ impl Renderer {
             "selected wgpu adapter"
         );
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                required_limits: adapter.limits(),
+                ..Default::default()
+            })
             .await
             .context("create wgpu device")?;
         Ok(Self::from_device_with_adapter_info(

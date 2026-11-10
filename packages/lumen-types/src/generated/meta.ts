@@ -1828,6 +1828,8 @@ export interface MergeNode extends CompositionNodeBase<"merge"> {
  * Blurs everything that moves in its source, including what analytic motion blur can't see:
  * animated sizes, path data, motion upstream of a transform and motion inside video. Analytic
  * motion blur in the source is off while it samples, and so is a `motion_blur` inside it.
+ * Content that already has its own motion blur, like a video recorded with it, is blurred
+ * twice.
  */
 export interface MotionBlurNode extends CompositionNodeBase<"motion_blur"> {
   readonly params?: {

@@ -44,7 +44,7 @@ lossless uses libx264 or libx265. --encoder or LUMEN_VIDEO_ENCODER pins one enco
 opens or fails the render.
 
 --bitrate, --crf, --qp and --preset replace the preset with those settings on every encoder tried, \
-and can't be combined with --quality. A preset alone targets 14 Mb/s. Each fails on an encoder that \
+and can't be combined with --quality. --preset alone, with no rate control, targets 14 Mb/s. Each fails on an encoder that \
 doesn't support it (--crf: libx264, libx265, libsvtav1, NVENC; --qp: those and Vulkan; --preset: \
 libx264 and libx265 ultrafast..placebo, NVENC p1..p7, libsvtav1 0..13), which moves on to the next.
 

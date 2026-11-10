@@ -3431,7 +3431,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Blurs everything that moves in its source, including what analytic motion blur can't see:\nanimated sizes, path data, motion upstream of a transform and motion inside video. Analytic\nmotion blur in the source is off while it samples, and so is a `motion_blur` inside it.",
+            "description": "Blurs everything that moves in its source, including what analytic motion blur can't see:\nanimated sizes, path data, motion upstream of a transform and motion inside video. Analytic\nmotion blur in the source is off while it samples, and so is a `motion_blur` inside it.\nContent that already has its own motion blur, like a video recorded with it, is blurred\ntwice.",
             "properties": {
               "id": {
                 "minimum": 0,
