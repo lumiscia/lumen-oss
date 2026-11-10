@@ -145,4 +145,4 @@ jobs:
         run: pnpm -r --filter './packages/*' --filter '!@lumiscia/lumen-bindings' build
 
       - name: Check pure Rust crates
-        run: cargo check -p lumen-engine -p lumen-engine-gpu -p lumen-generators -p lumen-engine-macros -p lumen-engine-text
+        run: cargo check -p lumen-engine -p lumen-engine-gpu -p lumen-generators -p lumen-engine-macros -p lumen-engine-text -p lumen-engine-3d

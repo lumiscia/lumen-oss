@@ -17,6 +17,8 @@ mod noise;
 mod operators;
 mod paint;
 mod repeat;
+#[cfg(feature = "3d")]
+mod scene;
 mod shaders;
 mod support;
 mod sweep_blurs;

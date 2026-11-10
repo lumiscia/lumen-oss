@@ -17,6 +17,7 @@ metadata = []
 metal = ["dep:objc2-metal", "lumen-ffmpeg?/metal", "lumen-gpu/metal"]
 vulkan = ["lumen-ffmpeg?/vulkan", "lumen-gpu/vulkan"]
 cuda = ["lumen-ffmpeg?/cuda"]
+"3d" = ["dep:lumen-3d"]
 
 [dependencies]
 thiserror = "2.0.18"
@@ -41,6 +42,7 @@ lyon_path = "1.0.19"
 svgtypes = "0.16.1"
 lumen-ffmpeg = { workspace = true, optional = true }
 lumen-gpu = { workspace = true }
+lumen-3d = { workspace = true, optional = true }
 lumen-text = { workspace = true }
 bytemuck = { version = "1.25.0", features = ["derive"] }
 objc2-metal = { version = "0.3.2", optional = true }

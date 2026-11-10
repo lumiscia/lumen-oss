@@ -240,6 +240,7 @@ fn category_tokens(category: &Ident) -> proc_macro2::TokenStream {
         "source" | "Source" => quote!(::lumen_engine::node::NodeCategory::Source),
         "output" | "Output" => quote!(::lumen_engine::node::NodeCategory::Output),
         "vector" | "Vector" => quote!(::lumen_engine::node::NodeCategory::Vector),
+        "scene" | "Scene" => quote!(::lumen_engine::node::NodeCategory::Scene),
         _ => {
             let span = category.span();
             quote::quote_spanned!(span=> compile_error!("unknown node category"))

@@ -255,3 +255,60 @@ fn shader_constants_match_rust() {
         Literal::F32(lumen_text::RECT_WAVY_AMPLITUDE),
     );
 }
+
+#[cfg(feature = "3d")]
+#[test]
+fn scene_shader_matches_its_rust_layouts_and_constants() {
+    use crate::node::scene::render::{
+        FLAG_BLEND, FLAG_UNLIT, GpuGlobals, GpuLight, GpuObject, GpuRun, LIGHT_DIRECTIONAL,
+        LIGHT_SPOT, SHADER,
+    };
+
+    let module = naga::front::wgsl::parse_str(SHADER).expect("the scene shader should parse");
+    check_layouts(
+        &module,
+        vec![
+            layout!(
+                "Globals",
+                GpuGlobals,
+                view_proj,
+                camera_position,
+                light_count,
+                camera_back,
+                orthographic,
+                ambient,
+                environment,
+                fog_color,
+                fog_density,
+                tone_mapping,
+                exposure,
+            ),
+            layout!(
+                "Object",
+                GpuObject,
+                model,
+                normal,
+                base_color,
+                emissive,
+                metallic,
+                roughness,
+                flags,
+                first_vertex,
+            ),
+            layout!("Vertex", lumen_3d::Vertex, position, normal),
+            layout!(
+                "Light", GpuLight, position, kind, direction, range, radiance, cos_outer,
+                cos_inner,
+            ),
+            layout!("Run", GpuRun, first, count, base),
+        ],
+    );
+    for (name, value) in [
+        ("FLAG_UNLIT", FLAG_UNLIT),
+        ("FLAG_BLEND", FLAG_BLEND),
+        ("LIGHT_DIRECTIONAL", LIGHT_DIRECTIONAL),
+        ("LIGHT_SPOT", LIGHT_SPOT),
+    ] {
+        assert_eq!(literal(&module, name), Literal::U32(value), "`{name}`");
+    }
+}

@@ -101,6 +101,7 @@ See [`crates/server`](crates/server/README.md) for the current self-hosted HTTP 
 - `crates/generators`: schema and metadata generators
 - `crates/macros`: internal proc macros for node metadata
 - `crates/text`: text layout and glyph data helpers
+- `crates/3d`: mesh, transform, camera and draw-order maths for the 3D scene nodes
 - `definitions`: generated node metadata and JSON schemas
 - `packages/lumen-types`: generated TypeScript types for schemas and metadata
 - `packages/lumen-shared`: dependency-light composition builder

@@ -315,6 +315,8 @@ struct RecordState {
     diagnostics: Vec<crate::diagnostic::Diagnostic>,
     /// Passes reads of retained outputs skipped.
     skipped_passes: u64,
+    #[cfg(feature = "3d")]
+    scene: crate::node::scene::collect::SceneCache,
 }
 
 pub(crate) struct FrameGraph {
@@ -782,6 +784,8 @@ impl FrameGraph {
         self.state.transparent = None;
         self.state.dummy_float = None;
         self.state.dummy_uint = None;
+        #[cfg(feature = "3d")]
+        self.state.scene.release(&mut self.recorder);
         self.recorder.release_all();
     }
 
@@ -996,6 +1000,18 @@ impl<'a> FrameCx<'a> {
 
     pub(crate) fn frame_time(&self) -> FrameTime {
         self.frame
+    }
+
+    #[cfg(feature = "3d")]
+    pub(crate) fn node(&self, id: NodeId) -> Option<&'a NodeKind> {
+        self.scope.node(id)
+    }
+
+    #[cfg(feature = "3d")]
+    pub(crate) fn scene_cache(
+        &mut self,
+    ) -> (&mut Recorder, &mut crate::node::scene::collect::SceneCache) {
+        (&mut *self.rec, &mut self.st.scene)
     }
 
     pub(crate) fn canvas_size(&self) -> Size {
@@ -1990,6 +2006,14 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
         NodeKind::Switch(node) => node.programs(programs),
         NodeKind::Clip(_) => programs.spatial("clip-crop", CLIP_CROP_SHADER),
         NodeKind::MediaOutput(node) => node.programs(programs),
+        #[cfg(feature = "3d")]
+        NodeKind::Render3d(node) => node.programs(programs),
+        #[cfg(not(feature = "3d"))]
+        NodeKind::Render3d(_) => Ok(()),
+        NodeKind::Shape3d(_)
+        | NodeKind::Camera3d(_)
+        | NodeKind::Light3d(_)
+        | NodeKind::Merge3d(_) => Ok(()),
     }
 }
 
@@ -2025,5 +2049,26 @@ fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
         NodeKind::Switch(node) => node.record(cx),
         NodeKind::Clip(node) => cx.record_clip(node),
         NodeKind::MediaOutput(node) => node.record(cx),
+        #[cfg(feature = "3d")]
+        NodeKind::Render3d(node) => node.record(cx),
+        #[cfg(not(feature = "3d"))]
+        NodeKind::Render3d(node) => Err(RenderError::NodeEvaluation {
+            node_id: node.id,
+            node_kind: "Render3d",
+            details: crate::error::NO_3D_SUPPORT.to_string(),
+        }
+        .into()),
+        // Validation keeps a scene out of every raster input, and `render_3d` reads its scene
+        // without recording it.
+        NodeKind::Shape3d(_)
+        | NodeKind::Camera3d(_)
+        | NodeKind::Light3d(_)
+        | NodeKind::Merge3d(_) => Err(RenderError::NodeEvaluation {
+            node_id: node.id(),
+            node_kind: "Scene",
+            details: "a scene node outputs a scene, not a raster; draw it through a render_3d"
+                .to_string(),
+        }
+        .into()),
     }
 }

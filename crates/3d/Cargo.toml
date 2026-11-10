@@ -1,0 +1,15 @@
+[package]
+name = "lumen-engine-3d"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Scene maths and mesh data for the Lumen engine's 3D nodes."
+
+[lib]
+name = "lumen_3d"
+path = "src/lib.rs"
+
+[dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+glam = "0.32.1"

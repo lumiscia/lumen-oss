@@ -308,6 +308,7 @@ fn locate_graph(error: &GraphValidationError, scene: &Value) -> (String, Option<
         | GraphValidationError::InputAlreadyConnected { node_id, .. } => {
             at_node(scene, *node_id, "")
         }
+        GraphValidationError::No3dSupport { node_id, .. } => at_node(scene, *node_id, "/type"),
         GraphValidationError::WrongInputKind {
             node_id,
             port,

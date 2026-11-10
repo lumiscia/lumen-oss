@@ -176,6 +176,10 @@ pub enum GraphValidationError {
         expected: PortKind,
         actual: PortKind,
     },
+    /// A 3D node, in a build of the engine without the `3d` feature.
+    #[code("node.unsupported")]
+    #[error("node {node_id} (`{kind}`): {NO_3D_SUPPORT}")]
+    No3dSupport { node_id: NodeId, kind: &'static str },
     #[code("graph.missing_required_input")]
     #[error("node {node_id} is missing required input `{port}`")]
     MissingRequiredInput { node_id: NodeId, port: String },
@@ -227,10 +231,13 @@ pub enum GraphValidationError {
     },
 }
 
+pub(crate) const NO_3D_SUPPORT: &str =
+    "this build of the engine has no 3D support, as it was built without the `3d` feature";
+
 /// What to do about wiring a node of the wrong kind into an input that takes `expected`.
 fn wrong_kind_hint(expected: PortKind) -> &'static str {
     match expected {
-        PortKind::Raster => "render the scene to a raster first, and wire that in",
+        PortKind::Raster => "draw the scene into a raster through a render_3d, and wire that in",
         PortKind::Scene => {
             "show the raster in the scene through a scene node that takes a raster input"
         }

@@ -1608,6 +1608,7 @@ dependencies = [
  "foldhash",
  "image",
  "js-sys",
+ "lumen-engine-3d",
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",
  "lumen-engine-macros",
@@ -1624,6 +1625,14 @@ dependencies = [
  "thiserror",
  "tiff",
  "tracing",
+]
+
+[[package]]
+name = "lumen-engine-3d"
+version = "0.5.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.32.1",
 ]
 
 [[package]]

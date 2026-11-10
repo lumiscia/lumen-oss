@@ -2060,6 +2060,81 @@ mod tests {
         );
     }
 
+    /// A box drawn by a `render_3d` into the output, with `connections` added.
+    fn scene_document(nodes: Value, connections: Value) -> Value {
+        let mut all = vec![
+            serde_json::json!({ "id": 1, "type": "shape_3d" }),
+            serde_json::json!({ "id": 2, "type": "render_3d" }),
+            serde_json::json!({ "id": 3, "type": "media_output" }),
+        ];
+        all.extend(nodes.as_array().unwrap().iter().cloned());
+        let mut wired = vec![
+            serde_json::json!({ "from_node": 1, "to_node": 2, "to_port": "scene" }),
+            serde_json::json!({ "from_node": 2, "to_node": 3, "to_port": "source" }),
+        ];
+        wired.extend(connections.as_array().unwrap().iter().cloned());
+        serde_json::json!({
+            "timeline": { "fps": 30, "duration_frames": 1 },
+            "render_settings": { "width": 16, "height": 16 },
+            "nodes": all,
+            "connections": wired
+        })
+    }
+
+    #[test]
+    fn scenes_and_rasters_only_wire_into_inputs_of_their_kind() {
+        let document = scene_document(
+            serde_json::json!([
+                { "id": 4, "type": "opacity" },
+                { "id": 5, "type": "background" },
+                { "id": 6, "type": "merge_3d" }
+            ]),
+            serde_json::json!([
+                { "from_node": 1, "to_node": 4, "to_port": "source" },
+                { "from_node": 5, "to_node": 6, "to_port": "objects" }
+            ]),
+        );
+        let diagnostics = check_value(&document, None, None);
+        let wrong: Vec<(&str, &str)> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "connection.wrong_kind")
+            .map(|diagnostic| (diagnostic.path.as_str(), diagnostic.message.as_str()))
+            .collect();
+        assert_eq!(
+            wrong,
+            [
+                (
+                    "/connections/2",
+                    "node 1 outputs a scene, but input `source` of node 4 takes a raster: draw the scene into a raster through a render_3d, and wire that in"
+                ),
+                (
+                    "/connections/3",
+                    "node 5 outputs a raster, but input `objects` of node 6 takes a scene: show the raster in the scene through a scene node that takes a raster input"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn scene_nodes_need_an_engine_built_with_3d() {
+        let diagnostics = check_value(
+            &scene_document(serde_json::json!([]), serde_json::json!([])),
+            None,
+            None,
+        );
+        if cfg!(feature = "3d") {
+            assert_eq!(diagnostics, []);
+        } else {
+            assert_eq!(
+                codes_and_paths(&diagnostics),
+                [
+                    ("node.unsupported", "/nodes/0/type", Some(1)),
+                    ("node.unsupported", "/nodes/1/type", Some(2)),
+                ]
+            );
+        }
+    }
+
     #[test]
     fn diagnostics_are_capped() {
         let nodes = (0..80)

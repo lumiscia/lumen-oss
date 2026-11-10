@@ -2,7 +2,7 @@
 use super::schema::NodeSchema;
 use super::{
     JsonNode, Node, PropertyEval, PropertyRead, compositing, ids::NodeId, media_output, processing,
-    source, vector,
+    scene, source, vector,
 };
 use crate::{
     error::{DocumentError, GraphValidationError},
@@ -37,6 +37,13 @@ macro_rules! node_kinds {
                         node_id: id,
                         kind: other.to_string(),
                     }]),
+                }
+            }
+
+            /// The node's `type` in JSON.
+            pub(crate) fn kind_name(&self) -> &'static str {
+                match self {
+                    $(Self::$variant(_) => <$node as JsonNode>::KIND,)+
                 }
             }
 
@@ -125,4 +132,9 @@ node_kinds! {
     DisplacementMap(processing::displacement_map::DisplacementMap),
     WgslShader(processing::wgsl_shader::WgslShader),
     MediaOutput(media_output::MediaOutput),
+    Shape3d(scene::Shape3d),
+    Camera3d(scene::Camera3d),
+    Light3d(scene::Light3d),
+    Merge3d(scene::Merge3d),
+    Render3d(scene::Render3d),
 }

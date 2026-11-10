@@ -18,6 +18,8 @@ just wasm-bindings-debug
 pnpm --filter @lumiscia/example-vite-react dev   # or example-vite-svelte
 ```
 
+Add `?scene=3d` to the URL for a 3D scene.
+
 `dev` builds the workspace packages first, and stops with that command if the bindings are missing.
 
 ```bash

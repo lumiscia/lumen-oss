@@ -88,6 +88,7 @@ pub enum NodeCategory {
     Source = 2,
     Output = 3,
     Vector = 4,
+    Scene = 5,
 }
 
 #[derive(Debug, Clone)]
