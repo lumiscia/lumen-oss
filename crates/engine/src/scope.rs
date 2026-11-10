@@ -75,7 +75,8 @@ impl From<f64> for FrameTime {
 
 /// Most nodes a walk of the graph may be inside at once, counting from the output through clips
 /// and the compositions they play. Recording and media prediction recurse once per node, so this
-/// bounds their stack, with room for the deepest node's own work on a 2 MiB thread in a debug build.
+/// bounds their stack, with room on a 2 MiB thread in a debug build for the costliest expression
+/// the evaluator allows at the bottom of the heaviest chain.
 pub(crate) const MAX_GRAPH_DEPTH: u32 = 48;
 
 /// The props a template instance was given, by name.

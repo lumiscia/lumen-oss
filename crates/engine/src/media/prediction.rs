@@ -107,15 +107,15 @@ struct RequirementContext<'a, M: MediaStore> {
 
 impl<'a, M: MediaStore> RequirementContext<'a, M> {
     fn collect_node(&self, node_id: NodeId, walk: &mut Walk) -> Result<(), LumenError> {
-        if self.depth == MAX_GRAPH_DEPTH {
-            return Err(self.scope.too_deep(node_id));
-        }
         if !walk.visited.insert((
             node_id,
             walk.instances.clone(),
             self.frame.value().to_bits(),
         )) {
             return Ok(());
+        }
+        if self.depth == MAX_GRAPH_DEPTH {
+            return Err(self.scope.too_deep(node_id));
         }
 
         let Some(node) = self.scope.node(node_id) else {

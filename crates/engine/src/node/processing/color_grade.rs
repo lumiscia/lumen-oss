@@ -72,6 +72,19 @@ impl crate::gpu::frame_graph::RecordNode for ColorGrade {
         cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
         let source = cx.required_full(self.id, "source", self.source)?;
+        self.grade(cx, source)
+    }
+}
+
+impl ColorGrade {
+    /// Grades `source`. It has a frame of its own, which is gone before the next node's input
+    /// records, so the colour table doesn't add to the stack a long chain of nodes uses.
+    #[inline(never)]
+    fn grade(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+        source: crate::gpu::frame_graph::Raster,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
         let evaluated = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),

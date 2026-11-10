@@ -84,11 +84,70 @@ fn a_chain_too_deep_to_record_fails_with_an_error_instead_of_overflowing_the_sta
     );
 }
 
+/// Makes the path at the bottom of `chain` evaluate the costliest expression the evaluator allows
+/// while every node above it is still recording. The path's `opacity` reads the `rotate` of a
+/// `transform`, and each nests right-leaning sums as deep as the 96 evaluation levels allow. The
+/// second ends in the measurement of a text node, which shapes text with all those evaluations open.
+fn with_the_costliest_expression(mut document: Value) -> Value {
+    let nest = |levels: usize, leaf: &str| {
+        format!("{}{leaf}{}", "1 + (".repeat(levels), ")".repeat(levels))
+    };
+    document["nodes"][0]["params"]["opacity"] =
+        json!(format!("=min({}, 1)", nest(44, "node(900, 'rotate')")));
+    let nodes = document["nodes"].as_array_mut().unwrap();
+    nodes.push(json!({ "id": 900, "type": "transform", "params": {
+        "rotate": format!("={}", nest(44, "text_width(node(901))"))
+    } }));
+    nodes.push(
+        json!({ "id": 901, "type": "text", "params": { "content": "WWW", "font_size": 16 } }),
+    );
+    document["connections"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "from_node": 1, "to_node": 900, "to_port": "source" }));
+    document
+}
+
 #[test]
-fn the_deepest_chain_allowed_renders_on_a_default_stack() {
-    // `color_grade` records with the largest stack frame of any node with an input, and paths with
-    // the largest of the sources: the output, 46 of them and a path are 48 nodes deep.
-    assert!(first_frame_error(chain("color_grade", json!({}), 46)).is_none());
+fn the_deepest_chains_allowed_render_on_a_default_stack_with_the_costliest_expression() {
+    // The output, 46 nodes and a path are 48 deep. `transform` has the largest frame of the nodes
+    // with an input, with `color_grade` next after keeping its colour table out of it. In a debug
+    // build the heaviest chain, 46 transforms, needs about 1.65 MiB of the 2 MiB.
+    for (kind, params) in [
+        ("color_grade", json!({})),
+        ("transform", json!({ "rotate": 1 })),
+    ] {
+        let document = with_the_costliest_expression(chain(kind, params, 46));
+        assert!(first_frame_error(document).is_none(), "{kind}");
+    }
+}
+
+#[test]
+fn a_deep_read_of_an_input_that_is_already_recorded_is_not_too_deep() {
+    // The merge records its base, a background, first. The overlay's 46 transforms read that
+    // background again as their 49th node, from the cache.
+    let mut nodes = vec![
+        json!({ "id": 1, "type": "background", "params": { "paint": [200, 30, 30, 255] } }),
+        json!({ "id": 2, "type": "merge" }),
+        json!({ "id": 3, "type": "media_output" }),
+    ];
+    let mut connections = vec![
+        json!({ "from_node": 1, "to_node": 2, "to_port": "base" }),
+        json!({ "from_node": 2, "to_node": 3, "to_port": "source" }),
+    ];
+    for id in 10..56 {
+        nodes.push(json!({ "id": id, "type": "transform", "params": { "rotate": 1 } }));
+        let from = if id == 10 { 1 } else { id - 1 };
+        connections.push(json!({ "from_node": from, "to_node": id, "to_port": "source" }));
+    }
+    connections.push(json!({ "from_node": 55, "to_node": 2, "to_port": "overlay" }));
+    let document = json!({
+        "timeline": { "fps": 30, "duration_frames": 1 },
+        "render_settings": { "width": 64, "height": 32 },
+        "nodes": nodes,
+        "connections": connections,
+    });
+    assert!(first_frame_error(document).is_none());
 }
 
 #[test]
