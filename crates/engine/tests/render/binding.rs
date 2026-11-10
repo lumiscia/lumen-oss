@@ -85,7 +85,7 @@ fn bind_errors() {
                 { "id": 2, "type": "color_grade", "in": { "source": 1 },
                   "params": { "lut_source": source } },
             ]),
-            "ColorGrade node 2 evaluation failed: LUT components must be finite",
+            "color_grade node 2 evaluation failed: LUT components must be finite",
         ));
     }
     rows.push(row(
@@ -193,7 +193,7 @@ fn bind_errors() {
     rows.push(row(
         "malformed path data",
         json!([{ "id": 1, "type": "path", "params": { "data": "M 0 0 L 10 10 C nope" } }]),
-        "Path node 1 evaluation failed: `data` is malformed",
+        "path node 1 evaluation failed: `data` is malformed",
     ));
     let mut data = String::from("M 10 10");
     for index in 1..20_000 - 2 {

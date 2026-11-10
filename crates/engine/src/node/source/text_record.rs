@@ -6,7 +6,7 @@ use crate::node::vector::{
     drawable::{DRAWABLE_SHADER, GpuDrawableMotion, GpuDrawableTransform},
     paint::{GpuPaint, PaintDelegate},
 };
-use crate::node::{Deferred, DelegateEvalContext, Override};
+use crate::node::{Deferred, DelegateEvalContext, JsonNode, Override};
 
 use super::text::{
     Stable, Text, TextInstance, TextState, decoration_paints, literal_font_families, stroked,
@@ -119,7 +119,7 @@ fn text_paint_count(text: &Text) -> crate::Result<usize> {
     if paints > lumen_text::GLYPH_MAX_PAINTS as usize {
         return Err(RenderError::NodeEvaluation {
             node_id: text.id,
-            node_kind: "Text",
+            node_kind: <Text as JsonNode>::KIND,
             details: format!(
                 "text has {paints} span and decoration paints, more than the {} that can be \
                  painted",

@@ -1,10 +1,14 @@
 //! Easing curves, cubic Béziers and springs. All are pure functions of their inputs.
 
+use std::f64::consts::{FRAC_PI_2, PI};
+
 use super::spec::NamedEasing;
 
 const BACK_C1: f64 = 1.70158;
 const BACK_C2: f64 = BACK_C1 * 1.525;
 const BACK_C3: f64 = BACK_C1 + 1.0;
+const ELASTIC_C4: f64 = 2.0 * PI / 3.0;
+const ELASTIC_C5: f64 = 2.0 * PI / 4.5;
 
 impl NamedEasing {
     pub fn from_name(name: &str) -> Option<Self> {
@@ -41,7 +45,53 @@ impl NamedEasing {
                 ((2.0 * t - 2.0).powi(2) * ((BACK_C2 + 1.0) * (2.0 * t - 2.0) + BACK_C2) + 2.0)
                     / 2.0
             }
+            Self::InSine => 1.0 - (t * FRAC_PI_2).cos(),
+            Self::OutSine => (t * FRAC_PI_2).sin(),
+            Self::InOutSine => -((PI * t).cos() - 1.0) / 2.0,
+            Self::InQuart => t.powi(4),
+            Self::OutQuart => 1.0 - (1.0 - t).powi(4),
+            Self::InOutQuart if t < 0.5 => 8.0 * t.powi(4),
+            Self::InOutQuart => 1.0 - (-2.0 * t + 2.0).powi(4) / 2.0,
+            Self::InQuint => t.powi(5),
+            Self::OutQuint => 1.0 - (1.0 - t).powi(5),
+            Self::InOutQuint if t < 0.5 => 16.0 * t.powi(5),
+            Self::InOutQuint => 1.0 - (-2.0 * t + 2.0).powi(5) / 2.0,
+            Self::InCirc => 1.0 - (1.0 - t * t).sqrt(),
+            Self::OutCirc => (1.0 - (t - 1.0).powi(2)).sqrt(),
+            Self::InOutCirc if t < 0.5 => (1.0 - (1.0 - (2.0 * t).powi(2)).sqrt()) / 2.0,
+            Self::InOutCirc => ((1.0 - (-2.0 * t + 2.0).powi(2)).sqrt() + 1.0) / 2.0,
+            Self::InElastic => {
+                -2f64.powf(10.0 * t - 10.0) * ((10.0 * t - 10.75) * ELASTIC_C4).sin()
+            }
+            Self::OutElastic => 2f64.powf(-10.0 * t) * ((10.0 * t - 0.75) * ELASTIC_C4).sin() + 1.0,
+            Self::InOutElastic if t < 0.5 => {
+                -(2f64.powf(20.0 * t - 10.0) * ((20.0 * t - 11.125) * ELASTIC_C5).sin()) / 2.0
+            }
+            Self::InOutElastic => {
+                2f64.powf(-20.0 * t + 10.0) * ((20.0 * t - 11.125) * ELASTIC_C5).sin() / 2.0 + 1.0
+            }
+            Self::InBounce => 1.0 - out_bounce(1.0 - t),
+            Self::OutBounce => out_bounce(t),
+            Self::InOutBounce if t < 0.5 => (1.0 - out_bounce(1.0 - 2.0 * t)) / 2.0,
+            Self::InOutBounce => (1.0 + out_bounce(2.0 * t - 1.0)) / 2.0,
         }
+    }
+}
+
+fn out_bounce(t: f64) -> f64 {
+    const N1: f64 = 7.5625;
+    const D1: f64 = 2.75;
+    if t < 1.0 / D1 {
+        N1 * t * t
+    } else if t < 2.0 / D1 {
+        let t = t - 1.5 / D1;
+        N1 * t * t + 0.75
+    } else if t < 2.5 / D1 {
+        let t = t - 2.25 / D1;
+        N1 * t * t + 0.9375
+    } else {
+        let t = t - 2.625 / D1;
+        N1 * t * t + 0.984375
     }
 }
 
@@ -153,6 +203,8 @@ pub fn spring(t: f64, stiffness: f64, damping: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::f64::consts::FRAC_1_SQRT_2;
+
     use super::*;
 
     #[test]
@@ -179,11 +231,48 @@ mod tests {
             NamedEasing::InOutCubic,
             NamedEasing::InOutExpo,
             NamedEasing::InOutBack,
+            NamedEasing::InOutSine,
+            NamedEasing::InOutQuart,
+            NamedEasing::InOutQuint,
+            NamedEasing::InOutCirc,
+            NamedEasing::InOutElastic,
+            NamedEasing::InOutBounce,
         ] {
             assert!((easing.apply(0.5) - 0.5).abs() < 1e-12, "{}", easing.name());
         }
         assert!(NamedEasing::InBack.apply(0.3) < 0.0);
         assert!(NamedEasing::OutBack.apply(0.7) > 1.0);
+    }
+
+    #[test]
+    fn new_easings_match_the_easings_net_definitions() {
+        let cases = [
+            (NamedEasing::InSine, 0.5, 1.0 - FRAC_1_SQRT_2),
+            (NamedEasing::OutSine, 0.5, FRAC_1_SQRT_2),
+            (NamedEasing::InQuart, 0.5, 0.0625),
+            (NamedEasing::OutQuart, 0.5, 0.9375),
+            (NamedEasing::InOutQuart, 0.25, 0.03125),
+            (NamedEasing::InQuint, 0.5, 0.03125),
+            (NamedEasing::OutQuint, 0.5, 0.96875),
+            (NamedEasing::InOutQuint, 0.25, 0.015625),
+            (NamedEasing::InCirc, 0.6, 0.2),
+            (NamedEasing::OutCirc, 0.8, 0.96f64.sqrt()),
+            (NamedEasing::InElastic, 0.5, -0.015625),
+            (NamedEasing::OutElastic, 0.5, 1.015625),
+            (NamedEasing::OutBounce, 0.5, 0.765625),
+            (NamedEasing::InBounce, 0.5, 0.234375),
+            (NamedEasing::OutBounce, 0.2, 0.3025),
+        ];
+        for (easing, t, expected) in cases {
+            let value = easing.apply(t);
+            assert!(
+                (value - expected).abs() < 1e-9,
+                "{}({t}) = {value}, expected {expected}",
+                easing.name()
+            );
+        }
+        assert!(NamedEasing::OutElastic.apply(0.2) > 1.0);
+        assert!(NamedEasing::InElastic.apply(0.6) < 0.0);
     }
 
     #[test]

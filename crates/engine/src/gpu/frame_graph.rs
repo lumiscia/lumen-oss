@@ -131,6 +131,10 @@ impl Programs<'_> {
         self.output_format
     }
 
+    pub(crate) fn limits(&self) -> wgpu::Limits {
+        self.rec.device().limits()
+    }
+
     pub(crate) fn compute(
         &mut self,
         label: &str,
@@ -633,7 +637,7 @@ impl FrameGraph {
         {
             let mut rgba = fit_frame_to_rgba8(&frame, size.width, size.height);
             if premultiply {
-                premultiply_rgba_in_place_if_needed(&mut rgba);
+                premultiply_rgba_in_place_if_needed(rgba.to_mut());
             }
             self.recorder.queue().write_texture(
                 self.recorder.texture(tex).as_image_copy(),
@@ -765,6 +769,8 @@ impl FrameGraph {
         }
         state.statics.clear();
         state.texts.clear();
+        state.paths.clear();
+        state.fonts.clear();
         state.font_fallbacks.clear();
         state.shaders.clear();
         state.memo.clear();
