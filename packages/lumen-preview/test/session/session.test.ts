@@ -662,6 +662,30 @@ describe("LumenPreviewSession", () => {
     ]);
   });
 
+  it("reads what a source in a template is, as at the root", async () => {
+    const fox = new Blob(["glTF"]);
+    const logo = new Blob(["png"]);
+    const { worker } = await playable({
+      composition: {
+        nodes: [],
+        compositions: {
+          card: {
+            nodes: [
+              { id: 1, type: "model_3d", params: { source: "fox" } },
+              { id: 2, type: "media_in", params: { source: "logo" } },
+            ],
+          },
+        },
+      } as unknown as LumenComposition,
+      media: { fox, logo },
+    });
+
+    expect(worker.ofType("load").at(-1)?.media).toEqual([
+      { id: "fox", kind: "model", source: fox },
+      { id: "logo", kind: "image", source: logo },
+    ]);
+  });
+
   it("doesn't retry a failed load until an input really changes", async () => {
     const onError = vi.fn();
     const { preview, session, worker } = await started({ onError });

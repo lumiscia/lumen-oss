@@ -93,12 +93,13 @@ function mediaEntry(value: LumenPreviewMedia[string]): LumenPreviewMediaEntry {
 }
 
 /**
- * What each literal `source` reads: a model for `model_3d`, and for `media_in` its `kind`, an image
- * without one, as the engine does.
+ * What each literal `source` in the composition or its templates reads: a model for `model_3d`, and
+ * for `media_in` its `kind`, an image without one, as the engine does.
  */
 function literalSourceKinds(document: LumenComposition | null): Map<string, LumenPreviewMediaKind> {
   const kinds = new Map<string, LumenPreviewMediaKind>();
-  for (const node of document?.nodes ?? []) {
+  const templates = Object.values(document?.compositions ?? {});
+  for (const node of [document?.nodes ?? [], ...templates.map(({ nodes }) => nodes)].flat()) {
     if (node.type !== "media_in" && node.type !== "model_3d") {
       continue;
     }
