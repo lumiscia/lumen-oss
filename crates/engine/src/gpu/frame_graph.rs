@@ -309,8 +309,8 @@ struct RecordState {
     output: Option<Raster>,
     /// The font resolver of each family text names, which retained text was drawn with.
     fonts: HashMap<String, Option<String>>,
-    /// The resolver of each image source that retained output was drawn from.
-    images: HashMap<String, Option<String>>,
+    /// The texture of each image source that retained output was drawn from.
+    images: HashMap<String, Option<super::MediaTextureKey>>,
     /// The template, node and family of each font fallback reported for this composition.
     font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
     /// Warnings not yet taken.
@@ -806,16 +806,16 @@ impl FrameGraph {
         changed
     }
 
-    /// Whether an image source retained output was drawn from now resolves differently, as when a
-    /// host replaces the image under the same source.
+    /// Whether an image source retained output was drawn from now resolves to another texture, as
+    /// when a host replaces the image under the same source or with one of another size.
     fn images_changed(&mut self, media: Option<&dyn MediaStore>) -> bool {
         let mut changed = false;
-        for (source, resolver) in &mut self.state.images {
+        for (source, key) in &mut self.state.images {
             let current = media
                 .and_then(|media| media.get_image_resolver(source).ok())
-                .map(|resolver| resolver.id().to_string());
-            if *resolver != current {
-                *resolver = current;
+                .map(|resolver| super::MediaTextureKey::of_image(&*resolver));
+            if *key != current {
+                *key = current;
                 changed = true;
             }
         }
@@ -1392,11 +1392,10 @@ impl<'a> FrameCx<'a> {
         Ok(atlas)
     }
 
-    /// Remembers the resolver of an image source when what reads it is retained.
-    pub(crate) fn note_image(&mut self, source: &str, resolver: &str) {
+    /// Remembers the texture of an image source when what reads it is retained.
+    pub(crate) fn note_image(&mut self, source: &str, key: &super::MediaTextureKey) {
         if self.static_depth > 0 && !self.st.images.contains_key(source) {
-            let resolver = Some(resolver.to_string());
-            self.st.images.insert(source.to_string(), resolver);
+            self.st.images.insert(source.to_string(), Some(key.clone()));
         }
     }
 

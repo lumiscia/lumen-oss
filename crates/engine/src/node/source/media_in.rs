@@ -241,12 +241,8 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
         let tex = match kind {
             MediaInKind::Image { image_id } => {
                 let resolver = media.get_image_resolver(&image_id)?;
-                cx.note_image(&image_id, resolver.id());
-                let key = MediaTextureKey {
-                    source: resolver.id().to_string(),
-                    width: size.width,
-                    height: size.height,
-                };
+                let key = MediaTextureKey::of_image(&*resolver);
+                cx.note_image(&image_id, &key);
                 cx.image_texture(key, &resolver.frame()?, size)?
             }
             MediaInKind::Video {

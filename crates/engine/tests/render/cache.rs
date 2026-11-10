@@ -465,6 +465,28 @@ fn a_static_image_is_kept_until_its_image_is_replaced() {
 }
 
 #[test]
+fn a_static_image_is_redrawn_when_replaced_by_one_of_another_size() {
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    let composition = image_under_animated("logo", true);
+    let large = image("logo", "logo#1", RED);
+    // The same id with other dimensions, as a host that resizes an image in place reports.
+    let small = TestMedia::default().image_with_id("logo", "logo#1", 2, 2, BLUE.repeat(4));
+    for (frame, media, color) in [(0, &large, RED), (1, &large, RED), (2, &small, BLUE)] {
+        let pixels = render(&mut renderer, &composition, f64::from(frame), media).rgba;
+        reference.release_resources();
+        let expected = render(&mut reference, &composition, f64::from(frame), media).rgba;
+        assert!(pixels == expected, "frame {frame}");
+        assert_eq!(pixel(&pixels, 9, 1), color, "frame {frame}");
+        // Only the 8 × 8 image reaches this far.
+        let far = if color == RED { RED } else { [0; 4] };
+        assert_eq!(pixel(&pixels, 12, 4), far, "frame {frame}");
+    }
+}
+
+#[test]
 fn an_image_picked_by_frame_is_never_kept() {
     let gpu = gpu();
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
