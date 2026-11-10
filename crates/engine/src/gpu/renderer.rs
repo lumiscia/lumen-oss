@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     sync::{Arc, Mutex},
 };
@@ -545,9 +546,9 @@ fn max_font_rebinds(composition: &Composition) -> usize {
     composition.graph().nodes.len() + templates + 3
 }
 
-pub(super) fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32) -> Vec<u8> {
+pub(super) fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32) -> Cow<'_, [u8]> {
     if frame.width == width && frame.height == height && frame.row_bytes == width as usize * 4 {
-        return frame.rgba.as_ref().clone();
+        return Cow::Borrowed(frame.rgba.as_slice());
     }
 
     let mut out = vec![0; width as usize * height as usize * 4];
@@ -564,5 +565,5 @@ pub(super) fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32)
             out[dst..dst + 4].copy_from_slice(&frame.rgba[src..src + 4]);
         }
     }
-    out
+    Cow::Owned(out)
 }
