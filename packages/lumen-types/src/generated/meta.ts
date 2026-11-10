@@ -1491,6 +1491,11 @@ export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation">
  */
 export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> {
   readonly params?: {
+    /**
+     * Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
+     * at least half.
+     */
+    readonly cast_shadows?: ExpressionValue<boolean>;
     /** Base colour, which an image plane's raster is multiplied by. Must be a solid color. */
     readonly color?: ExpressionValue<Paint>;
     /** Draws the back of each face too. */
@@ -1503,6 +1508,8 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
     readonly opacity?: ExpressionValue<number>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
+    /** Darkens where shadows fall on it. An unlit surface shows none. */
+    readonly receive_shadows?: ExpressionValue<boolean>;
     /**
      * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
      * X, then roll about the turned Z.
@@ -1512,6 +1519,13 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
     readonly roughness?: ExpressionValue<number>;
     /** Scale multiplier along X, Y and Z, applied before the rotation. */
     readonly scale?: ExpressionValue<Vec3>;
+    /**
+     * Shows nothing but the shadows falling on it, as transparent black that darkens what the
+     * render is composited over by as much light as the shadows take away, times the colour's
+     * alpha and the opacity. It hides what is behind it and casts no shadows, so a ground plane
+     * catching a model's shadow can stand in for the floor of 2D footage behind it.
+     */
+    readonly shadow_catcher?: ExpressionValue<boolean>;
     /** Shows the base colour as is, ignoring lights. */
     readonly unlit?: ExpressionValue<boolean>;
     /**
@@ -1541,6 +1555,12 @@ export interface LevelsNode extends CompositionNodeBase<"levels"> {
 /** A light. A scene without any is lit by a default key light and ambient fill. */
 export interface Light3dNode extends CompositionNodeBase<"light_3d"> {
   readonly params?: {
+    /**
+     * Casts shadows from objects that block it onto those behind them. A scene draws shadows for
+     * its first 8 lights that cast them, in the order its scene inputs are wired, and warns
+     * about the rest. A spot light's shadows reach 170° across at most.
+     */
+    readonly cast_shadows?: ExpressionValue<boolean>;
     /** Light colour. Must be a solid color. */
     readonly color?: ExpressionValue<Paint>;
     /** Unitless brightness multiplier; point and spot lights fall off with the square of distance. */
@@ -1556,6 +1576,11 @@ export interface Light3dNode extends CompositionNodeBase<"light_3d"> {
      * X, then roll about the turned Z.
      */
     readonly rotation?: ExpressionValue<Vec3>;
+    /**
+     * Width in world units over which shadow edges blur, up to 16 texels of the light's shadow
+     * map, which is up to 4096 texels across and shared among the shadow-casting lights.
+     */
+    readonly shadow_softness?: ExpressionValue<number>;
     /** Full angle of a spot light's cone in degrees. */
     readonly spot_angle?: ExpressionValue<number>;
     /** Fraction of a spot light's cone, from its edge, that fades out. */
@@ -1634,8 +1659,15 @@ export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
     readonly animation_offset?: ExpressionValue<number>;
     /** Playback speed multiplier. */
     readonly animation_speed?: ExpressionValue<number>;
+    /**
+     * Blocks light from lights that cast shadows, in the posed shape and where masked or blended
+     * materials' alpha reaches their cutoff, or half for blended ones.
+     */
+    readonly cast_shadows?: ExpressionValue<boolean>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
+    /** Darkens where shadows fall on its lit surfaces. */
+    readonly receive_shadows?: ExpressionValue<boolean>;
     /**
      * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
      * X, then roll about the turned Z.
@@ -1891,6 +1923,11 @@ export interface ShapeNode extends CompositionNodeBase<"shape"> {
 /** A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. */
 export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
   readonly params?: {
+    /**
+     * Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
+     * at least half.
+     */
+    readonly cast_shadows?: ExpressionValue<boolean>;
     /** Base colour, which an image plane's raster is multiplied by. Must be a solid color. */
     readonly color?: ExpressionValue<Paint>;
     /** Draws the back of each face too. */
@@ -1903,6 +1940,8 @@ export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
     readonly opacity?: ExpressionValue<number>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
+    /** Darkens where shadows fall on it. An unlit surface shows none. */
+    readonly receive_shadows?: ExpressionValue<boolean>;
     /**
      * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
      * X, then roll about the turned Z.
@@ -1912,6 +1951,13 @@ export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
     readonly roughness?: ExpressionValue<number>;
     /** Scale multiplier along X, Y and Z, applied before the rotation. */
     readonly scale?: ExpressionValue<Vec3>;
+    /**
+     * Shows nothing but the shadows falling on it, as transparent black that darkens what the
+     * render is composited over by as much light as the shadows take away, times the colour's
+     * alpha and the opacity. It hides what is behind it and casts no shadows, so a ground plane
+     * catching a model's shadow can stand in for the floor of 2D footage behind it.
+     */
+    readonly shadow_catcher?: ExpressionValue<boolean>;
     /** Primitive to build. */
     readonly shape?: Shape3dKind;
     /** Width, height and depth in world units, along X, Y and Z before the rotation. */

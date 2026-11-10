@@ -1,6 +1,6 @@
 use glam::{Mat4, Vec3};
 
-use crate::{Camera, Light};
+use crate::{Bounds, Camera, Light};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Blending {
@@ -129,6 +129,15 @@ pub struct Surface<T> {
     pub double_sided: bool,
     /// Lights each face by its own flat normal, for meshes without vertex normals.
     pub flat_normals: bool,
+    /// Blocks light from shadow-casting lights: where its alpha reaches its mask's cutoff, or half
+    /// for a blended surface.
+    pub cast_shadows: bool,
+    /// Darkens where shadows fall on it. An unlit surface shows none.
+    pub receive_shadows: bool,
+    /// Shows nothing but the shadows falling on it, as black whose alpha is the fraction of light
+    /// they take away, times the base colour's alpha. It hides what is behind it, casts no shadows
+    /// and is drawn before other objects.
+    pub shadow_catcher: bool,
 }
 
 impl<T> Default for Surface<T> {
@@ -147,6 +156,9 @@ impl<T> Default for Surface<T> {
             unlit: false,
             double_sided: false,
             flat_normals: false,
+            cast_shadows: true,
+            receive_shadows: true,
+            shadow_catcher: false,
         }
     }
 }
@@ -171,6 +183,8 @@ pub struct Object<M, T> {
     pub center: Vec3,
     /// Where the object's joint matrices start in the scene's `joints`, for a skinned object.
     pub first_joint: Option<u32>,
+    /// What the object covers in world space, at least, which shadows are fitted to.
+    pub bounds: Bounds,
 }
 
 /// What a scene holds at one frame.

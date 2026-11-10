@@ -6,8 +6,8 @@ use foldhash::HashMap;
 use lumen_3d::glam::{Mat4, Vec3};
 use lumen_3d::model::{Material, Model, ModelScene, Playback, Texture};
 use lumen_3d::{
-    Blending, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive, Projection,
-    Scene, Surface, Transform,
+    Blending, Bounds, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive,
+    Projection, Scene, Shadow, Surface, Transform,
 };
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
@@ -73,6 +73,8 @@ struct LoadedModel {
     mesh: GpuMesh,
     /// One per texture of the model, in its order.
     textures: Arc<[TexRef]>,
+    /// The bounds of each primitive's vertices, by its first index and index count.
+    bounds: Arc<HashMap<(u32, u32), Bounds>>,
 }
 
 struct CachedModel {
@@ -89,6 +91,8 @@ pub(crate) struct SceneCache {
     quad: Option<(GpuMesh, u32)>,
     models: HashMap<String, CachedModel>,
     model_bytes: u64,
+    /// A depth texture bound in place of a shadow atlas by scenes without shadows.
+    no_shadows: Option<TexRef>,
 }
 
 impl SceneCache {
@@ -98,6 +102,9 @@ impl SceneCache {
         }
         self.shapes.clear();
         self.quad = None;
+        if let Some(texture) = self.no_shadows.take() {
+            rec.forget(texture);
+        }
         for (_, cached) in self.models.drain() {
             forget_model(rec, &cached.model);
         }
@@ -159,6 +166,27 @@ impl SceneCache {
             },
         );
         Ok(loaded)
+    }
+
+    pub(super) fn no_shadows(&mut self, rec: &mut Recorder) -> TexRef {
+        *self.no_shadows.get_or_insert_with(|| {
+            let texture = rec.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("lumen 3d no shadows"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: lumen_gpu::DEPTH_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            rec.adopt(Arc::new(texture))
+        })
     }
 
     fn quad(&mut self, rec: &mut Recorder) -> (GpuMesh, u32) {
@@ -260,6 +288,7 @@ fn upload_model(rec: &mut Recorder, model: Model) -> Result<(LoadedModel, u64), 
             "an image in the model is larger than this device's {max_side}-pixel texture limit"
         )));
     }
+    let bounds = primitive_bounds(&model);
     let mut bytes = parts.iter().map(|part| part.len() as u64).sum::<u64>();
     let mesh = GpuMesh {
         vertices: storage_buffer(rec, "lumen 3d model vertices", parts[0]),
@@ -283,9 +312,39 @@ fn upload_model(rec: &mut Recorder, model: Model) -> Result<(LoadedModel, u64), 
         scene: Arc::new(model.scene),
         mesh,
         textures,
+        bounds: Arc::new(bounds),
     };
     Ok((loaded, bytes))
 }
+
+/// The bounds of the vertices of each primitive `model` draws, by its first index and index count.
+fn primitive_bounds(model: &Model) -> HashMap<(u32, u32), Bounds> {
+    let geometry = &model.geometry;
+    let mut bounds = HashMap::default();
+    for posed in model.scene.pose(None).primitives {
+        let primitive = posed.primitive;
+        bounds
+            .entry((primitive.first_index, primitive.index_count))
+            .or_insert_with(|| {
+                let start = primitive.first_index as usize;
+                let indices = geometry
+                    .indices
+                    .get(start..start + primitive.index_count as usize)
+                    .unwrap_or_default();
+                Bounds::of(indices.iter().filter_map(|&index| {
+                    let vertex = geometry.vertices.get(index as usize)?;
+                    Some(Vec3::from(vertex.position))
+                }))
+            });
+    }
+    bounds
+}
+
+/// What a unit primitive covers, centred on the origin.
+const UNIT_BOUNDS: Bounds = Bounds {
+    min: Vec3::splat(-0.5),
+    max: Vec3::splat(0.5),
+};
 
 fn upload_texture(rec: &mut Recorder, texture: &Texture) -> TexRef {
     let texture = wgpu::util::DeviceExt::create_texture_with_data(
@@ -365,19 +424,28 @@ fn surface(
         metallic: material.metallic.clamp(0.0, 1.0) as f32,
         roughness: material.roughness.clamp(0.0, 1.0) as f32,
         emissive: [0, 1, 2].map(|i| base_color[i] * emissive),
-        blending: if base_color[3] < 1.0 {
+        // A catcher's alpha only scales how dark its shadows are.
+        blending: if base_color[3] < 1.0 && !material.shadow_catcher {
             Blending::Blend
         } else {
             Blending::Opaque
         },
         unlit: material.unlit,
         double_sided: material.double_sided,
+        cast_shadows: material.cast_shadows,
+        receive_shadows: material.receive_shadows,
+        shadow_catcher: material.shadow_catcher,
         ..Surface::default()
     })
 }
 
 /// How a model's `material` shades, reading the model's `textures`.
-fn model_surface(material: &Material, textures: &[TexRef], flat_normals: bool) -> Surface<TexRef> {
+fn model_surface(
+    material: &Material,
+    textures: &[TexRef],
+    flat_normals: bool,
+    params: &super::Model3dParams,
+) -> Surface<TexRef> {
     Surface {
         base_color: material.base_color,
         texture: None,
@@ -392,6 +460,9 @@ fn model_surface(material: &Material, textures: &[TexRef], flat_normals: bool) -
         unlit: material.unlit,
         double_sided: material.double_sided,
         flat_normals,
+        cast_shadows: params.cast_shadows,
+        receive_shadows: params.receive_shadows,
+        shadow_catcher: false,
     }
 }
 
@@ -407,6 +478,8 @@ fn model_error(node_id: NodeId, source: &str, details: impl std::fmt::Display) -
 /// The scene a `render_3d` draws, as far as its nodes have been walked.
 pub(super) struct Collected {
     pub(super) scene: Scene<GpuMesh, TexRef>,
+    /// The node of each of the scene's lights.
+    pub(super) light_nodes: Vec<NodeId>,
     render_id: NodeId,
     /// Scene nodes walked, counting a node each time it is reached.
     reached: usize,
@@ -416,6 +489,7 @@ impl Collected {
     pub(super) fn new(render_id: NodeId) -> Self {
         Self {
             scene: Scene::default(),
+            light_nodes: Vec::new(),
             render_id,
             reached: 0,
         }
@@ -487,6 +561,7 @@ impl Collected {
                     surface,
                     center: world.transform_point3(Vec3::ZERO),
                     first_joint: None,
+                    bounds: UNIT_BOUNDS.transformed(&world),
                 });
             }
             NodeKind::ImagePlane3d(plane) => {
@@ -513,6 +588,11 @@ impl Collected {
                     surface,
                     center: world.transform_point3(Vec3::ZERO),
                     first_joint: None,
+                    bounds: Bounds {
+                        min: Vec3::new(-0.5, -0.5, 0.0),
+                        max: Vec3::new(0.5, 0.5, 0.0),
+                    }
+                    .transformed(&world),
                 });
             }
             NodeKind::Model3d(model) => {
@@ -549,7 +629,7 @@ impl Collected {
             NodeKind::Light3d(light) => {
                 let params = light.params.eval(&ctx)?;
                 let [r, g, b, _] = solid_linear(node_id, "Light3d", &params.color)?;
-                self.scene.lights.push(Light::new(
+                let light = Light::new(
                     match params.light {
                         Light3dKind::Directional => LightKind::Directional,
                         Light3dKind::Point => LightKind::Point,
@@ -561,7 +641,14 @@ impl Collected {
                     params.range as f32,
                     params.spot_angle as f32,
                     params.spot_softness as f32,
-                ));
+                );
+                self.scene.lights.push(Light {
+                    shadow: params.cast_shadows.then(|| Shadow {
+                        softness: (params.shadow_softness as f32).max(0.0),
+                    }),
+                    ..light
+                });
+                self.light_nodes.push(node_id);
             }
             // Validation keeps rasters out of scene inputs.
             _ => {
@@ -639,8 +726,11 @@ impl Collected {
                 ),
             ));
         }
-        self.scene.joints.extend(pose.joints);
         let root = parent * placement(&params.placement).matrix();
+        // A skinned vertex lies between where its joints move it, so within the bounds of its
+        // primitive moved by each of them.
+        let skinned: Vec<Mat4> = pose.joints.iter().map(|joint| root * *joint).collect();
+        self.scene.joints.extend(pose.joints);
         let default = Material::default();
         for posed in pose.primitives {
             let primitive = posed.primitive;
@@ -648,7 +738,8 @@ impl Collected {
                 .material
                 .and_then(|index| scene.materials().get(index))
                 .unwrap_or(&default);
-            let mut surface = model_surface(material, &model.textures, primitive.flat_normals);
+            let mut surface =
+                model_surface(material, &model.textures, primitive.flat_normals, &params);
             if let Some((replaced, raster)) = replaced
                 && primitive.material == Some(replaced)
             {
@@ -657,9 +748,16 @@ impl Collected {
                     unlit: true,
                     blending: material.blending,
                     double_sided: material.double_sided,
+                    cast_shadows: params.cast_shadows,
+                    receive_shadows: params.receive_shadows,
                     ..Surface::default()
                 };
             }
+            let local = model
+                .bounds
+                .get(&(primitive.first_index, primitive.index_count))
+                .copied()
+                .unwrap_or(Bounds::EMPTY);
             // A skinned primitive's joints place it within the model, so only the model is placed.
             let world = match posed.first_joint {
                 Some(_) => root,
@@ -673,6 +771,12 @@ impl Collected {
                 surface,
                 center: world.transform_point3(primitive.center),
                 first_joint: posed.first_joint.map(|joint| joint + first_joint as u32),
+                bounds: match posed.first_joint {
+                    Some(_) => skinned.iter().fold(Bounds::EMPTY, |bounds, joint| {
+                        bounds.union(local.transformed(joint))
+                    }),
+                    None => local.transformed(&world),
+                },
             });
         }
         Ok(())

@@ -22,9 +22,18 @@ const FLAG_METALLIC_ROUGHNESS_MAP: u32 = 256u;
 const FLAG_NORMAL_MAP: u32 = 512u;
 const FLAG_EMISSIVE_MAP: u32 = 1024u;
 const FLAG_OCCLUSION_MAP: u32 = 2048u;
+const FLAG_RECEIVE_SHADOWS: u32 = 4096u;
+// Shows only the shadows on it, as black whose alpha is the fraction of light they take away.
+const FLAG_SHADOW_CATCHER: u32 = 8192u;
 
 const LIGHT_DIRECTIONAL: u32 = 0u;
+const LIGHT_POINT: u32 = 1u;
 const LIGHT_SPOT: u32 = 2u;
+
+// Taps of the shadow map a shadow's edge is filtered from, each filtered between four texels.
+const SHADOW_TAPS: u32 = 32u;
+// The widest the taps spread, in texels; `MAX_FILTER_TEXELS` in `lumen_3d`.
+const MAX_SHADOW_RADIUS: f32 = 16.0;
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -99,6 +108,24 @@ struct Light {
     // Cosines of a spot light's outer and inner angles.
     cos_outer: f32,
     cos_inner: f32,
+    // The light's first shadow view, six of them for a point light, or -1 without shadows.
+    shadow: i32,
+    // World width over which shadow edges blur.
+    shadow_softness: f32,
+}
+
+// One view a light casts shadows from, a tile of the shadow atlas.
+struct ShadowView {
+    // World to the view's clip space, whose X and Y span its tile from -1 to 1.
+    view_proj: mat4x4<f32>,
+    // A world point's depth from the light is `dot(depth.xyz, p) + depth.w`, 1 at the view's far
+    // end.
+    depth: vec4<f32>,
+    // The tile as fractions of the atlas: left, top, right and bottom.
+    tile: vec4<f32>,
+    // World width of a texel; for a perspective view, at depth 1 and in proportion to depth.
+    texel: f32,
+    perspective: u32,
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -124,6 +151,10 @@ struct Light {
 @group(0) @binding(17) var normal_sampler: sampler;
 @group(0) @binding(18) var emissive_sampler: sampler;
 @group(0) @binding(19) var occlusion_sampler: sampler;
+@group(0) @binding(20) var<storage, read> shadow_views: array<ShadowView>;
+// Each view's depth over the light's reach, 1 where nothing casts a shadow.
+@group(0) @binding(21) var shadow_map: texture_depth_2d;
+@group(0) @binding(22) var shadow_sampler: sampler_comparison;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -183,8 +214,16 @@ fn normal_turn(m: mat4x4<f32>) -> mat3x3<f32> {
     return mat3x3<f32>(cross(y, z) * sign, cross(z, x) * sign, cross(x, y) * sign);
 }
 
-@vertex
-fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
+// A vertex of the run being drawn, posed in world space.
+struct Posed {
+    object: u32,
+    world: vec4<f32>,
+    // In world space up to its length.
+    normal: vec3<f32>,
+    uv: vec2<f32>,
+}
+
+fn posed(index: u32) -> Posed {
     let slot = index + run.base;
     let oi = object_of(slot);
     let o = objects[oi];
@@ -197,14 +236,73 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
         position = skin * position;
         normal = normal_turn(skin) * normal;
     }
-    let world = o.model * position;
-    var out: VsOut;
-    out.clip = globals.view_proj * world;
-    out.world = world.xyz;
-    out.normal = o.normal * normal;
+    var out: Posed;
     out.object = oi;
+    out.world = o.model * position;
+    out.normal = o.normal * normal;
     out.uv = vec2<f32>(vertex.uv[0], vertex.uv[1]);
     return out;
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
+    let vertex = posed(index);
+    var out: VsOut;
+    out.clip = globals.view_proj * vertex.world;
+    out.world = vertex.world.xyz;
+    out.normal = vertex.normal;
+    out.object = vertex.object;
+    out.uv = vertex.uv;
+    return out;
+}
+
+struct ShadowOut {
+    @builtin(position) clip: vec4<f32>,
+    // X, Y and W of the vertex's place in its view's own clip space, to keep fragments in its tile.
+    @location(0) view_clip: vec3<f32>,
+    @location(1) depth: f32,
+    @location(2) uv: vec2<f32>,
+    @location(3) @interpolate(flat) object: u32,
+}
+
+// The vertex seen from the shadow view of the instance being drawn, squeezed into its tile.
+@vertex
+fn vs_shadow(@builtin(vertex_index) index: u32, @builtin(instance_index) view_index: u32) -> ShadowOut {
+    let vertex = posed(index);
+    let view = shadow_views[view_index];
+    let clip = view.view_proj * vertex.world;
+    let scale = view.tile.zw - view.tile.xy;
+    let offset = vec2<f32>(view.tile.x + view.tile.z - 1.0, 1.0 - view.tile.y - view.tile.w);
+    var out: ShadowOut;
+    out.clip = vec4<f32>(clip.xy * scale + offset * clip.w, clip.z, clip.w);
+    out.view_clip = clip.xyw;
+    out.depth = dot(view.depth.xyz, vertex.world.xyz) + view.depth.w;
+    out.uv = vertex.uv;
+    out.object = vertex.object;
+    return out;
+}
+
+// Writes depth from the view's light within its tile, where the surface blocks light: masked
+// surfaces where their alpha reaches the cutoff, blended ones where it reaches half.
+@fragment
+fn fs_shadow(in: ShadowOut) -> @builtin(frag_depth) f32 {
+    if (any(abs(in.view_clip.xy) > vec2<f32>(in.view_clip.z))) {
+        discard;
+    }
+    let o = objects[in.object];
+    if (has(o.flags, FLAG_MASK) || has(o.flags, FLAG_BLEND)) {
+        var alpha = o.base_color.a;
+        if (has(o.flags, FLAG_RASTER)) {
+            alpha *= textureSampleLevel(raster_tex, raster_sampler, in.uv, 0.0).a;
+        }
+        if (has(o.flags, FLAG_BASE_COLOR_MAP)) {
+            alpha *= textureSampleLevel(base_color_map, base_color_sampler, in.uv, 0.0).a;
+        }
+        if (alpha < select(0.5, o.alpha_cutoff, has(o.flags, FLAG_MASK))) {
+            discard;
+        }
+    }
+    return clamp(in.depth, 0.0, 1.0);
 }
 
 fn distribution_ggx(n_dot_h: f32, alpha: f32) -> f32 {
@@ -348,6 +446,89 @@ fn has(flags: u32, flag: u32) -> bool {
     return (flags & flag) != 0u;
 }
 
+// `p` seen from `view`: its place in texels of an atlas `size` texels across, and its depth.
+fn shadow_coords(view: ShadowView, size: vec2<f32>, p: vec3<f32>) -> vec3<f32> {
+    let clip = view.view_proj * vec4<f32>(p, 1.0);
+    let ndc = clip.xy / clip.w;
+    let uv = mix(view.tile.xy, view.tile.zw, vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5));
+    return vec3<f32>(uv * size, dot(view.depth.xyz, p) + view.depth.w);
+}
+
+// How much of `light` reaches `world`, on a face whose geometric normal `face` points to the lit
+// side, past whatever its shadow map holds, filtered over a disc of taps the size of the light's
+// softness. The taps turn from pixel to pixel by `pixel`, so that supersampling smooths them.
+fn shadow_visibility(light: Light, world: vec3<f32>, face: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    if (light.shadow < 0) {
+        return 1.0;
+    }
+    var index = u32(light.shadow);
+    if (light.kind == LIGHT_POINT) {
+        // The face of the six the point lies most in the direction of.
+        let d = world - light.position;
+        let a = abs(d);
+        if (a.x >= a.y && a.x >= a.z) {
+            index += select(1u, 0u, d.x > 0.0);
+        } else if (a.y >= a.z) {
+            index += select(3u, 2u, d.y > 0.0);
+        } else {
+            index += select(5u, 4u, d.z > 0.0);
+        }
+    }
+    let view = shadow_views[index];
+    let texel = view.texel * select(1.0, max(dot(view.depth.xyz, world) + view.depth.w, 0.0), view.perspective != 0u);
+    // Lifted off the surface by about a texel, so it doesn't shadow itself where a texel of the
+    // map spans depths across a tilted surface.
+    let p = world + face * texel * 1.5;
+    let clip = view.view_proj * vec4<f32>(p, 1.0);
+    if (clip.w <= 0.0 || any(abs(clip.xy) > vec2<f32>(clip.w))) {
+        return 1.0;
+    }
+    let size = vec2<f32>(textureDimensions(shadow_map));
+    let center = shadow_coords(view, size, p);
+    if (center.z >= 1.0) {
+        return 1.0;
+    }
+    // How the surface's depth changes across the map, so each tap compares against the depth of
+    // the surface's own plane there, and a wide filter doesn't shadow the surface with itself.
+    let axis = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(face.y) > 0.9);
+    let t1 = normalize(cross(face, axis));
+    let t2 = cross(face, t1);
+    let a = shadow_coords(view, size, p + t1 * texel) - center;
+    let b = shadow_coords(view, size, p + t2 * texel) - center;
+    let det = a.x * b.y - b.x * a.y;
+    let texel_depth = texel * length(view.depth.xyz);
+    let radius = clamp(light.shadow_softness / texel, 1.0, MAX_SHADOW_RADIUS);
+    // Each tap blends the four texels around it, up to a texel away along each axis.
+    var bias = 0.1 * texel_depth;
+    var gradient = vec2<f32>(0.0);
+    if (abs(det) > 1e-8) {
+        gradient = vec2<f32>(a.z * b.y - b.z * a.y, b.z * a.x - a.z * b.x) / det;
+        // Followed only up to about 87° from the light, where a curved surface's plane strays
+        // far from it within the filter, and the rest is taken up as bias instead.
+        let limit = 20.0 * texel_depth;
+        let steepness = length(gradient);
+        if (steepness > limit) {
+            gradient *= limit / steepness;
+            bias += (steepness - limit) * (radius + 1.0);
+        }
+        bias += abs(gradient.x) + abs(gradient.y);
+    }
+    let low = view.tile.xy * size + 0.5;
+    let high = view.tile.zw * size - 0.5;
+    // Interleaved gradient noise.
+    let turn = 2.0 * PI * fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
+    var lit = 0.0;
+    for (var i = 0u; i < SHADOW_TAPS; i += 1u) {
+        let r = sqrt((f32(i) + 0.5) / f32(SHADOW_TAPS)) * radius;
+        let angle = f32(i) * 2.39996323 + turn;
+        let at = clamp(center.xy + r * vec2<f32>(cos(angle), sin(angle)), low, high);
+        // Past the far end, where nothing was drawn, the surface's plane is lit.
+        let reference = min(center.z + dot(gradient, at - center.xy) - bias, 1.0);
+        lit += textureSampleCompareLevel(shadow_map, shadow_sampler, at / size, reference);
+    }
+    return lit / f32(SHADOW_TAPS);
+}
+
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     // Derivatives need uniform control flow, so they come before anything branches.
@@ -404,6 +585,10 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         let side = select(1.0, -1.0, back);
         n = side * mapped_normal(side * n, in.uv, world_dx, world_dy, uv_dx, uv_dy, o.normal_scale);
     }
+    // The face's own normal on the side `n` is lit from, which shadows are tested off.
+    var face = unit(cross(world_dx, world_dy));
+    face = select(n, select(face, -face, dot(face, n) < 0.0), any(face != vec3<f32>(0.0)));
+    let receives = has(o.flags, FLAG_RECEIVE_SHADOWS);
     let n_dot_v = max(dot(n, v), 1e-4);
     var metallic = o.metallic;
     var roughness = o.roughness;
@@ -425,6 +610,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     let f0 = mix(vec3<f32>(0.04), base.rgb, metallic);
 
     var color = vec3<f32>(0.0);
+    // Light reaching the surface with and without shadows, for a shadow catcher.
+    var unshadowed = 0.0;
+    var shadowed = 0.0;
     for (var i = 0u; i < globals.light_count; i += 1u) {
         let light = lights[i];
         var l: vec3<f32>;
@@ -450,6 +638,14 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         if (n_dot_l <= 0.0) {
             continue;
         }
+        var visibility = 1.0;
+        if (receives) {
+            visibility = shadow_visibility(light, in.world, face, in.clip.xy);
+        }
+        let strength = luminance(radiance) * n_dot_l;
+        unshadowed += strength;
+        shadowed += strength * visibility;
+        radiance *= visibility;
         let h = normalize(l + v);
         let n_dot_h = max(dot(n, h), 0.0);
         let v_dot_h = max(dot(v, h), 0.0);
@@ -459,6 +655,12 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         color += (diffuse + specular) * radiance * n_dot_l;
     }
 
+    if (has(o.flags, FLAG_SHADOW_CATCHER)) {
+        // Light from all around, as irradiance like the lights'.
+        let around = luminance(diffuse_environment(n)) * PI;
+        let shadow = select(0.0, 1.0 - (around + shadowed) / (around + unshadowed), unshadowed > 0.0);
+        return vec4<f32>(0.0, 0.0, 0.0, clamp(shadow * o.base_color.a * fog_transmittance(in.world), 0.0, 1.0));
+    }
     let reflected = reflect(-v, n);
     let blurred = normalize(mix(reflected, n, alpha * alpha));
     color += diffuse_color * diffuse_environment(n) * occlusion;
@@ -467,15 +669,23 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     return vec4<f32>(fogged(display(color), in.world) * base.a, base.a);
 }
 
-// `color`, already in the displayed range, faded into the fog by the distance to `world`.
-fn fogged(color: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
-    let density = globals.fog_density;
-    if (density <= 0.0) {
-        return color;
-    }
+fn luminance(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+// How much of a surface at `world` shows through the fog.
+fn fog_transmittance(world: vec3<f32>) -> f32 {
     let to_camera = globals.camera_position - world;
     let distance = select(length(to_camera), dot(to_camera, globals.camera_back), globals.orthographic != 0u);
-    return mix(globals.fog_color, color, exp(-density * max(distance, 0.0)));
+    return exp(-globals.fog_density * max(distance, 0.0));
+}
+
+// `color`, already in the displayed range, faded into the fog by the distance to `world`.
+fn fogged(color: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+    if (globals.fog_density <= 0.0) {
+        return color;
+    }
+    return mix(globals.fog_color, color, fog_transmittance(world));
 }
 
 fn aces(x: vec3<f32>) -> vec3<f32> {

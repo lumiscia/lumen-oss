@@ -1605,3 +1605,529 @@ fn a_clip_or_material_the_model_lacks_is_an_error_listing_those_it_has() {
          it has `fox_material`"
     );
 }
+
+/// Where the ground below is seen: an orthographic camera looking straight down at `center`,
+/// `height` units across, which leaves out everything above 0.05 so that only the ground and
+/// the shadows on it show.
+struct GroundView {
+    center: [f32; 2],
+    height: f32,
+}
+
+impl GroundView {
+    const WHOLE: Self = Self {
+        center: [0.0, 0.0],
+        height: 6.0,
+    };
+
+    /// `objects` over a white, fully rough ground 6 units across at y = 0, without light from
+    /// all around.
+    fn scene(&self, objects: Vec<Value>, render: Value) -> Scene {
+        scene(SIZE, json!(self.nodes(objects, render)))
+    }
+
+    /// The nodes of [`Self::scene`], the `render_3d` last, with id 100.
+    fn nodes(&self, objects: Vec<Value>, render: Value) -> Vec<Value> {
+        let [x, z] = self.center;
+        let mut nodes = vec![
+            json!({ "id": 50, "type": "shape_3d", "params": {
+                "shape": "plane", "size": [6, 1, 6], "roughness": 1 } }),
+            json!({ "id": 51, "type": "camera_3d", "params": {
+                "projection": "orthographic", "ortho_height": self.height, "position": [x, 4, z],
+                "rotation": [-90, 0, 0], "near": 3.95, "far": 10 } }),
+        ];
+        nodes.extend(objects);
+        let ids: Vec<u32> = nodes
+            .iter()
+            .filter(|node| {
+                node["type"]
+                    .as_str()
+                    .is_some_and(|kind| kind.ends_with("_3d"))
+            })
+            .map(|node| node["id"].as_u64().unwrap() as u32)
+            .collect();
+        nodes.push(merge(90, &ids, json!({})));
+        let mut params = json!({ "environment": 0 });
+        for (name, value) in render.as_object().expect("params") {
+            params[name] = value.clone();
+        }
+        nodes.push(
+            json!({ "id": 100, "type": "render_3d", "params": params, "in": { "scene": 90 } }),
+        );
+        nodes
+    }
+
+    /// The pixel showing the ground at `x`, `z`.
+    fn pixel(&self, x: f32, z: f32) -> (u32, u32) {
+        let at = |value: f32, center: f32| ((value - center) / self.height + 0.5) * SIZE.0 as f32;
+        (at(x, self.center[0]) as u32, at(z, self.center[1]) as u32)
+    }
+
+    /// Whether pixel `(x, y)` lies `margin` pixels or more inside the ground's `left`, `top`,
+    /// `right` and `bottom`, or outside them for a negative margin.
+    fn inside(
+        &self,
+        (x, y): (u32, u32),
+        [left, top, right, bottom]: [f32; 4],
+        margin: f32,
+    ) -> bool {
+        let (x0, y0) = self.pixel(left, top);
+        let (x1, y1) = self.pixel(right, bottom);
+        let (x, y) = (x as f32 + 0.5, y as f32 + 0.5);
+        x >= x0 as f32 + margin
+            && x <= x1 as f32 + 1.0 - margin
+            && y >= y0 as f32 + margin
+            && y <= y1 as f32 + 1.0 - margin
+    }
+}
+
+fn light(id: u32, params: Value) -> Value {
+    json!({ "id": id, "type": "light_3d", "params": params })
+}
+
+/// `params` with shadows cast or not.
+fn casting(params: &Value, cast: bool) -> Value {
+    let mut params = params.clone();
+    params["cast_shadows"] = json!(cast);
+    params
+}
+
+fn frame_of(scene: Scene, media: &TestMedia) -> Frame {
+    render(&mut gpu().renderer(), &scene.into(), 0.0, media)
+}
+
+fn every_pixel() -> impl Iterator<Item = (u32, u32)> {
+    (0..SIZE.1).flat_map(|y| (0..SIZE.0).map(move |x| (x, y)))
+}
+
+#[test]
+fn each_kind_of_light_darkens_where_its_shadow_falls_and_nothing_else() {
+    let view = GroundView::WHOLE;
+    // A slab 2 units up, which each light shines past at 45° towards +X onto (1, 0, 0). The
+    // shadow's extent on the ground, left, top, right and bottom: the directional light moves
+    // the slab over, and the others, two units farther from the ground than the slab is, also
+    // spread it about twice as wide.
+    let slab = json!({ "id": 1, "type": "shape_3d", "params": {
+        "size": [0.6, 0.2, 0.6], "position": [-1, 2, 0] } });
+    let spread = [0.24, -0.63, 1.84, 0.63];
+    let lights = [
+        (
+            "directional",
+            json!({ "light": "directional", "intensity": 3, "rotation": [-45, -90, 0] }),
+            [0.6, -0.3, 1.4, 0.3],
+        ),
+        (
+            "spot",
+            json!({ "light": "spot", "intensity": 40, "position": [-3, 4, 0],
+                    "rotation": [-45, -90, 0], "spot_angle": 60 }),
+            spread,
+        ),
+        (
+            "point",
+            json!({ "light": "point", "intensity": 40, "position": [-3, 4, 0] }),
+            spread,
+        ),
+    ];
+    let media = TestMedia::default();
+    for (name, params, shadow) in lights {
+        let seen = |with_slab: bool, cast: bool| {
+            let mut objects = vec![light(60, casting(&params, cast))];
+            if with_slab {
+                objects.push(slab.clone());
+            }
+            frame_of(view.scene(objects, json!({})), &media)
+        };
+        let (shadowed, unshadowed, bare) = (seen(true, true), seen(true, false), seen(false, true));
+        assert!(
+            unshadowed.rgba == bare.rgba,
+            "{name}: a light without cast_shadows lights the ground as if nothing were above it"
+        );
+        let (x, y) = view.pixel(1.0, 0.0);
+        let [lit, ..] = bare.pixel(x, y);
+        assert!(lit > 60, "{name}: the ground is lit, at {lit}");
+        assert_eq!(
+            shadowed.pixel(x, y),
+            [0, 0, 0, 255],
+            "{name}: the shadow's middle"
+        );
+        for at in every_pixel() {
+            let (before, after) = (bare.pixel(at.0, at.1), shadowed.pixel(at.0, at.1));
+            if view.inside(at, shadow, -1.5) {
+                if view.inside(at, shadow, 1.5) {
+                    assert!(
+                        after[0] < 8,
+                        "{name}: {at:?} is in the shadow, at {}",
+                        after[0]
+                    );
+                }
+            } else {
+                assert!(
+                    before.iter().zip(after).all(|(a, b)| a.abs_diff(b) <= 1),
+                    "{name}: {at:?} is outside the shadow, but changed from {before:?} to {after:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ground_lit_at_a_grazing_angle_shadows_nothing_of_itself() {
+    let view = GroundView::WHOLE;
+    let lights = [
+        (
+            "a directional light 5° above the horizon",
+            json!({ "light": "directional", "intensity": 10, "rotation": [-5, -90, 0] }),
+        ),
+        (
+            "a point light just above the ground",
+            json!({ "light": "point", "intensity": 3, "position": [-2.5, 0.25, 0.5] }),
+        ),
+    ];
+    check(
+        lights
+            .into_iter()
+            .map(|(name, params)| {
+                let seen = |cast| view.scene(vec![light(60, casting(&params, cast))], json!({}));
+                Case::new(name, seen(true), Expect::Matches(seen(false).into()))
+            })
+            .collect(),
+    );
+}
+
+#[test]
+fn a_box_on_the_ground_is_shadowed_from_its_base_without_a_gap() {
+    // The box's right side stands at x = 0.3, and its shadow reaches 0.6 farther in light 45°
+    // from overhead. Each pixel is 2.5 cm.
+    let view = GroundView {
+        center: [0.3, 0.0],
+        height: 1.6,
+    };
+    let scene = view.scene(
+        vec![
+            json!({ "id": 1, "type": "shape_3d", "params": {
+                "size": [0.6, 0.6, 0.6], "position": [0, 0.3, 0] } }),
+            light(
+                60,
+                json!({ "light": "directional", "intensity": 3, "rotation": [-45, -90, 0],
+                        "cast_shadows": true }),
+            ),
+        ],
+        json!({}),
+    );
+    let frame = frame_of(scene, &TestMedia::default());
+    let (edge, y) = view.pixel(0.3, 0.0);
+    let (end, _) = view.pixel(0.9, 0.0);
+    let row: Vec<u8> = (0..SIZE.0).map(|x| frame.pixel(x, y)[0]).collect();
+    assert!(
+        row[edge as usize..end as usize - 1].iter().all(|&r| r < 8),
+        "the shadow runs dark from the box's base, columns {edge} to {end}: {row:?}"
+    );
+    assert!(
+        row[end as usize + 2..].iter().all(|&r| r > 60),
+        "and the ground past it is lit: {row:?}"
+    );
+}
+
+#[test]
+fn a_walking_models_shadow_takes_its_posed_shape() {
+    let view = GroundView {
+        center: [0.0, 0.0],
+        height: 2.4,
+    };
+    // Seen from above by a camera that leaves out the fox, the shadow of light from straight
+    // overhead is the outline of the fox seen from above by one that leaves out the ground.
+    let seen = |at: f64, shadow: bool| {
+        let fox = fox(
+            1,
+            json!({ "position": [0, 0, 0], "rotation": [0, 30, 0], "scale": [0.018, 0.018, 0.018],
+                    "animation": "Walk" }),
+        );
+        let sun = light(
+            60,
+            json!({ "light": "directional", "rotation": [-90, 0, 0], "cast_shadows": true,
+                    "shadow_softness": 0 }),
+        );
+        let mut scene = view.scene(vec![fox, sun], json!({})).frames(30);
+        if !shadow {
+            let camera = scene.0["nodes"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|node| node["id"] == 51)
+                .unwrap();
+            camera["params"]["near"] = json!(0.05);
+            camera["params"]["far"] = json!(3.9);
+        }
+        let frame = render(&mut gpu().renderer(), &scene.into(), at, &fox_media());
+        // A pixel at least half in shadow has under half the light of the lit ground in its
+        // corner, which in sRGB is under about 0.73 of its value.
+        let lit = f32::from(frame.pixel(0, SIZE.1 - 1)[0]);
+        frame
+            .rgba
+            .chunks(4)
+            .map(|pixel| {
+                if shadow {
+                    f32::from(pixel[0]) < lit * 0.73
+                } else {
+                    pixel[3] >= 128
+                }
+            })
+            .collect::<Vec<bool>>()
+    };
+    let differing = |a: &[bool], b: &[bool]| a.iter().zip(b).filter(|(a, b)| a != b).count();
+    let (outline, later) = (seen(0.0, false), seen(12.0, false));
+    let area = outline.iter().filter(|&&covered| covered).count();
+    assert!(area > 200, "the fox covers {area} pixels");
+    assert!(
+        differing(&outline, &later) > area / 20,
+        "the fox moves between the frames"
+    );
+    for (at, own, other) in [(0.0, &outline, &later), (12.0, &later, &outline)] {
+        let shadow = seen(at, true);
+        let off = differing(&shadow, own);
+        assert!(
+            off <= area / 20 && off < differing(&shadow, other),
+            "frame {at}: the shadow and outline differ at {off} of {area} pixels"
+        );
+    }
+}
+
+#[test]
+fn masked_and_blended_surfaces_cast_shadows_only_where_they_cover() {
+    let view = GroundView::WHOLE;
+    let sun = || {
+        light(
+            60,
+            json!({ "light": "directional", "intensity": 3, "rotation": [-90, 0, 0],
+                    "cast_shadows": true }),
+        )
+    };
+    // A card filling the middle of the ground, a unit up and facing it.
+    let card = |material: Value| {
+        let mut material = material;
+        material["name"] = json!("card");
+        let media = TestMedia::default().model(
+            "card.glb",
+            quads(json!([material]), &[([-1.0, -1.0, 1.0, 1.0], 0)]),
+        );
+        let model = model(
+            1,
+            json!({ "source": "card.glb", "position": [0, 1, 0], "rotation": [-90, 0, 0] }),
+        );
+        frame_of(view.scene(vec![model, sun()], json!({})), &media)
+    };
+    let (middle_x, middle_y) = view.pixel(0.0, 0.0);
+    let middle = |frame: Frame| frame.pixel(middle_x, middle_y)[0];
+    let alpha = |alpha: f32, mode: Value| {
+        let mut material =
+            json!({ "pbrMetallicRoughness": { "baseColorFactor": [1, 1, 1, alpha] } });
+        for (name, value) in mode.as_object().expect("mode") {
+            material[name] = value.clone();
+        }
+        middle(card(material))
+    };
+    let mask = json!({ "alphaMode": "MASK", "alphaCutoff": 0.5 });
+    let blend = json!({ "alphaMode": "BLEND" });
+    assert!(
+        alpha(0.4, mask.clone()) > 60,
+        "masked below its cutoff, it casts none"
+    );
+    assert_eq!(
+        alpha(0.5, mask),
+        0,
+        "masked at its cutoff, it casts all of it"
+    );
+    assert!(
+        alpha(0.4, blend.clone()) > 60,
+        "blended below half, it casts none"
+    );
+    assert_eq!(
+        alpha(0.6, blend),
+        0,
+        "blended over half, it casts all of it"
+    );
+
+    // An image plane blends by its raster, whose left half is opaque and right half transparent.
+    let plane = plane(
+        1,
+        10,
+        json!({ "width": 2, "position": [0, 1, 0], "rotation": [-90, 0, 0] }),
+    );
+    let frame = frame_of(
+        view.scene(vec![plate(10), plane, sun()], json!({})),
+        &half_blue(),
+    );
+    let at = |x: f32| {
+        let (x, y) = view.pixel(x, 0.0);
+        frame.pixel(x, y)[0]
+    };
+    assert_eq!(
+        (at(-0.5), at(0.5) > 60),
+        (0, true),
+        "the opaque half alone casts a shadow"
+    );
+}
+
+#[test]
+fn a_shadow_catcher_darkens_what_is_under_it_by_the_light_its_shadows_take_away() {
+    const BACKDROP: [u8; 4] = [200, 100, 50, 255];
+    let view = GroundView::WHOLE;
+    // A slab a unit over the middle of a catcher, lit from straight above, and with as much
+    // light again from all around, so that its shadow takes half the light away.
+    let nodes = |render: Value, catcher: Value| {
+        let mut catcher_params = json!({
+            "shape": "plane", "size": [6, 1, 6], "shadow_catcher": true, "position": [0, 0.01, 0] });
+        for (name, value) in catcher.as_object().expect("catcher") {
+            catcher_params[name] = value.clone();
+        }
+        let objects = vec![
+            json!({ "id": 1, "type": "shape_3d", "params": { "size": [1, 0.2, 1], "position": [0, 1, 0] } }),
+            json!({ "id": 2, "type": "shape_3d", "params": catcher_params }),
+            light(
+                60,
+                json!({ "light": "directional", "intensity": 1, "rotation": [-90, 0, 0],
+                             "cast_shadows": true }),
+            ),
+            light(
+                61,
+                json!({ "light": "ambient", "intensity": 1.0 / std::f64::consts::PI }),
+            ),
+        ];
+        view.nodes(objects, render)
+    };
+    let scene =
+        |render: Value, catcher: Value| crate::support::scene(SIZE, json!(nodes(render, catcher)));
+    let (middle_x, middle_y) = view.pixel(0.0, 0.0);
+    let (edge_x, edge_y) = view.pixel(2.5, 2.5);
+    let probes = |middle: [u8; 4], edge: [u8; 4]| {
+        Expect::Probes(vec![(middle_x, middle_y, middle), (edge_x, edge_y, edge)])
+    };
+    let mut over_backdrop =
+        vec![json!({ "id": 200, "type": "background", "params": { "paint": BACKDROP } })];
+    over_backdrop.extend(nodes(json!({}), json!({})));
+    over_backdrop
+        .push(json!({ "id": 201, "type": "merge", "in": { "base": 200, "overlay": 100 } }));
+    let half = [0, 0, 0, 128];
+    // Half the backdrop shows through half-transparent black.
+    let darkened = [100, 50, 25, 255];
+    check(vec![
+        Case::new(
+            "transparent where unshadowed, half-transparent black in the shadow",
+            scene(json!({}), json!({})),
+            probes(half, CLEAR),
+        )
+        .tolerance(1),
+        Case::new(
+            "whatever the exposure and tone mapping",
+            scene(json!({ "exposure": 2, "tone_mapping": "aces" }), json!({})),
+            probes(half, CLEAR),
+        )
+        .tolerance(1),
+        Case::new(
+            "and the supersampling",
+            scene(json!({ "supersample": 1 }), json!({})),
+            probes(half, CLEAR),
+        )
+        .tolerance(1),
+        Case::new(
+            "its opacity scales how dark it is",
+            scene(json!({}), json!({ "opacity": 0.5 })),
+            probes([0, 0, 0, 64], CLEAR),
+        )
+        .tolerance(1),
+        Case::new(
+            "composited over a backdrop",
+            crate::support::scene(SIZE, json!(over_backdrop)),
+            probes(darkened, BACKDROP),
+        )
+        .tolerance(1),
+    ]);
+}
+
+#[test]
+fn shadow_catchers_hide_what_is_behind_them() {
+    let view = GroundView::WHOLE;
+    // A red box sunk below a catcher shows nowhere.
+    let scene = view.scene(
+        vec![
+            flat(1, json!({ "position": [0, -0.6, 0] }), RED),
+            json!({ "id": 2, "type": "shape_3d", "params": {
+                "shape": "plane", "size": [6, 1, 6], "shadow_catcher": true, "position": [0, 0.01, 0] } }),
+        ],
+        json!({}),
+    );
+    check(vec![Case::new(
+        "a box under a catcher",
+        scene,
+        Expect::Uniform(CLEAR),
+    )]);
+}
+
+#[test]
+fn lights_past_the_first_eight_casting_shadows_cast_none_and_are_named_in_a_warning() {
+    let view = GroundView::WHOLE;
+    let slab = json!({ "id": 1, "type": "shape_3d", "params": {
+        "size": [1, 0.2, 1], "position": [0, 1, 0] } });
+    // Eight dark lights casting shadows, then the one that lights the ground.
+    let mut objects: Vec<Value> = (60..68)
+        .map(|id| {
+            light(
+                id,
+                json!({ "light": "directional", "intensity": 0, "cast_shadows": true }),
+            )
+        })
+        .collect();
+    objects.push(light(
+        68,
+        json!({ "light": "directional", "intensity": 3, "rotation": [-90, 0, 0],
+                "cast_shadows": true }),
+    ));
+    let composition: Composition = view.scene(objects.clone(), json!({})).into();
+    let mut renderer = gpu().renderer();
+    let frame = render(&mut renderer, &composition, 0.0, &TestMedia::default());
+    let warnings = renderer.take_diagnostics();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].code, "scene.shadow_limit");
+    assert_eq!(warnings[0].node, Some(lumen_engine::node::NodeId::new(100)));
+    assert!(
+        warnings[0]
+            .message
+            .contains("light nodes 68 cast no shadows"),
+        "{}",
+        warnings[0].message
+    );
+    let (x, y) = view.pixel(0.0, 0.0);
+    assert!(
+        frame.pixel(x, y)[0] > 60,
+        "the last light lights the ground under the slab"
+    );
+
+    objects.push(slab);
+    let with_slab = frame_of(view.scene(objects, json!({})), &TestMedia::default());
+    assert_eq!(with_slab.pixel(x, y), frame.pixel(x, y));
+}
+
+#[test]
+fn shadows_of_lights_and_objects_too_far_or_large_to_place_draw_nothing() {
+    let view = GroundView::WHOLE;
+    let objects = vec![
+        json!({ "id": 1, "type": "shape_3d", "params": { "size": [1, 0.2, 1], "position": [0, 1, 0] } }),
+        json!({ "id": 2, "type": "shape_3d", "params": { "size": [1e30, 1e30, 1e30], "position": [0, 1, 0] } }),
+        json!({ "id": 3, "type": "shape_3d", "params": { "position": [1e300, 0, 0] } }),
+        light(
+            60,
+            json!({ "light": "point", "intensity": 3, "position": [1e300, 2, 0], "cast_shadows": true,
+                         "shadow_softness": 1e300 }),
+        ),
+        light(
+            61,
+            json!({ "light": "directional", "intensity": 3, "rotation": [1e300, 0, 0], "cast_shadows": true }),
+        ),
+        light(
+            62,
+            json!({ "light": "spot", "intensity": 3, "position": [0, 3, 0], "rotation": [-90, 0, 0],
+                         "spot_angle": 0, "cast_shadows": true }),
+        ),
+    ];
+    frame_of(view.scene(objects, json!({})), &TestMedia::default());
+}

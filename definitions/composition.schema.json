@@ -3065,6 +3065,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "cast_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half.",
+                    "title": "Cast Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "color": {
                     "anyOf": [
                       {
@@ -3169,6 +3183,20 @@
                     },
                     "x-lumen-kind": "vec3"
                   },
+                  "receive_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Darkens where shadows fall on it. An unlit surface shows none.",
+                    "title": "Receive Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "rotation": {
                     "anyOf": [
                       {
@@ -3221,6 +3249,20 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
+                  },
+                  "shadow_catcher": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha and the opacity. It hides what is behind it and casts no shadows, so a ground plane\ncatching a model's shadow can stand in for the floor of 2D footage behind it.",
+                    "title": "Shadow Catcher",
+                    "x-lumen-kind": "bool"
                   },
                   "unlit": {
                     "anyOf": [
@@ -3422,6 +3464,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "cast_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Casts shadows from objects that block it onto those behind them. A scene draws shadows for\nits first 8 lights that cast them, in the order its scene inputs are wired, and warns\nabout the rest. A spot light's shadows reach 170° across at most.",
+                    "title": "Cast Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "color": {
                     "anyOf": [
                       {
@@ -3539,6 +3595,24 @@
                       "step": 1.0
                     },
                     "x-lumen-kind": "vec3"
+                  },
+                  "shadow_softness": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.02,
+                    "description": "Width in world units over which shadow edges blur, up to 16 texels of the light's shadow\nmap, which is up to 4096 texels across and shared among the shadow-casting lights.",
+                    "title": "Shadow Softness",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
                   },
                   "spot_angle": {
                     "anyOf": [
@@ -4224,6 +4298,20 @@
                     },
                     "x-lumen-kind": "float"
                   },
+                  "cast_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Blocks light from lights that cast shadows, in the posed shape and where masked or blended\nmaterials' alpha reaches their cutoff, or half for blended ones.",
+                    "title": "Cast Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "position": {
                     "anyOf": [
                       {
@@ -4240,6 +4328,20 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
+                  },
+                  "receive_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Darkens where shadows fall on its lit surfaces.",
+                    "title": "Receive Shadows",
+                    "x-lumen-kind": "bool"
                   },
                   "rotation": {
                     "anyOf": [
@@ -5844,6 +5946,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "cast_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half.",
+                    "title": "Cast Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "color": {
                     "anyOf": [
                       {
@@ -5948,6 +6064,20 @@
                     },
                     "x-lumen-kind": "vec3"
                   },
+                  "receive_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Darkens where shadows fall on it. An unlit surface shows none.",
+                    "title": "Receive Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "rotation": {
                     "anyOf": [
                       {
@@ -6000,6 +6130,20 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
+                  },
+                  "shadow_catcher": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha and the opacity. It hides what is behind it and casts no shadows, so a ground plane\ncatching a model's shadow can stand in for the floor of 2D footage behind it.",
+                    "title": "Shadow Catcher",
+                    "x-lumen-kind": "bool"
                   },
                   "shape": {
                     "default": "box",

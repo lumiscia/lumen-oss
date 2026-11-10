@@ -76,6 +76,19 @@ pub struct Material3d {
     /// Draws the back of each face too.
     #[meta()]
     pub double_sided: bool,
+    /// Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
+    /// at least half.
+    #[meta()]
+    pub cast_shadows: bool,
+    /// Darkens where shadows fall on it. An unlit surface shows none.
+    #[meta()]
+    pub receive_shadows: bool,
+    /// Shows nothing but the shadows falling on it, as transparent black that darkens what the
+    /// render is composited over by as much light as the shadows take away, times the colour's
+    /// alpha and the opacity. It hides what is behind it and casts no shadows, so a ground plane
+    /// catching a model's shadow can stand in for the floor of 2D footage behind it.
+    #[meta()]
+    pub shadow_catcher: bool,
 }
 
 impl Default for Material3d {
@@ -88,6 +101,9 @@ impl Default for Material3d {
             opacity: 1.0,
             unlit: false,
             double_sided: false,
+            cast_shadows: true,
+            receive_shadows: true,
+            shadow_catcher: false,
         }
     }
 }
@@ -225,6 +241,13 @@ pub struct Model3dParams {
     /// The material, by name, whose surfaces show the `texture` input instead, unlit.
     #[meta()]
     pub texture_material: String,
+    /// Blocks light from lights that cast shadows, in the posed shape and where masked or blended
+    /// materials' alpha reaches their cutoff, or half for blended ones.
+    #[meta()]
+    pub cast_shadows: bool,
+    /// Darkens where shadows fall on its lit surfaces.
+    #[meta()]
+    pub receive_shadows: bool,
     #[meta(flatten)]
     pub placement: Placement3d,
 }
@@ -238,6 +261,8 @@ impl Default for Model3dParams {
             animation_offset: 0.0,
             animation_loop: true,
             texture_material: String::new(),
+            cast_shadows: true,
+            receive_shadows: true,
             placement: Placement3d::default(),
         }
     }
@@ -384,6 +409,15 @@ pub struct Light3dParams {
     /// Fraction of a spot light's cone, from its edge, that fades out.
     #[meta(min = 0, max = 1, step = 0.05)]
     pub spot_softness: f64,
+    /// Casts shadows from objects that block it onto those behind them. A scene draws shadows for
+    /// its first 8 lights that cast them, in the order its scene inputs are wired, and warns
+    /// about the rest. A spot light's shadows reach 170° across at most.
+    #[meta()]
+    pub cast_shadows: bool,
+    /// Width in world units over which shadow edges blur, up to 16 texels of the light's shadow
+    /// map, which is up to 4096 texels across and shared among the shadow-casting lights.
+    #[meta(min = 0, step = 0.01)]
+    pub shadow_softness: f64,
     #[meta(flatten)]
     pub pose: Pose3d,
 }
@@ -397,6 +431,8 @@ impl Default for Light3dParams {
             range: 0.0,
             spot_angle: 45.0,
             spot_softness: 0.2,
+            cast_shadows: false,
+            shadow_softness: 0.02,
             pose: Pose3d {
                 rotation: [-45.0, 30.0, 0.0],
                 ..Pose3d::default()

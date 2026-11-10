@@ -314,6 +314,9 @@ struct RecordState {
     fonts: HashMap<String, Option<String>>,
     /// The template, node and family of each font fallback reported for this composition.
     font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
+    /// The template and `render_3d` node of each shadow limit reported for this composition.
+    #[cfg(feature = "3d")]
+    shadow_limits: HashSet<(Option<String>, NodeId)>,
     /// Warnings not yet taken.
     diagnostics: Vec<crate::diagnostic::Diagnostic>,
     /// Passes reads of retained outputs skipped.
@@ -781,6 +784,8 @@ impl FrameGraph {
         state.statics.clear();
         state.texts.clear();
         state.font_fallbacks.clear();
+        #[cfg(feature = "3d")]
+        state.shadow_limits.clear();
         state.shaders.clear();
         state.memo.clear();
         state.full_frames.clear();
@@ -971,15 +976,38 @@ impl<'a> FrameCx<'a> {
         Ok(draw)
     }
 
-    /// Warns once per composition that `family` fell back for text node `node_id`.
-    fn note_font_fallback(&mut self, node_id: NodeId, family: String) {
-        let template = self
-            .composition
+    /// The template being recorded, or `None` at the root.
+    fn template_name(&self) -> Option<String> {
+        self.composition
             .compositions()
             .iter()
             .find(|(_, template)| std::ptr::eq(&template.scene, self.scope.scene))
-            .map(|(name, _)| name.clone());
-        let key = (template, node_id, family);
+            .map(|(name, _)| name.clone())
+    }
+
+    /// Warns once per composition and `render_3d` node `node_id` that `lights` cast no shadows.
+    #[cfg(feature = "3d")]
+    pub(crate) fn note_shadow_limit(&mut self, node_id: NodeId, lights: Vec<NodeId>) {
+        let key = (self.template_name(), node_id);
+        if self.st.shadow_limits.contains(&key) {
+            return;
+        }
+        let warning = crate::error::Warning::ShadowLimit {
+            template: key.0.clone(),
+            node_id,
+            lights,
+        };
+        tracing::warn!(target: "lumen_3d", "{warning}");
+        let path = crate::diagnostic::scene_pointer(key.0.as_deref());
+        self.st
+            .diagnostics
+            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
+        self.st.shadow_limits.insert(key);
+    }
+
+    /// Warns once per composition that `family` fell back for text node `node_id`.
+    fn note_font_fallback(&mut self, node_id: NodeId, family: String) {
+        let key = (self.template_name(), node_id, family);
         if self.st.font_fallbacks.contains(&key) {
             return;
         }

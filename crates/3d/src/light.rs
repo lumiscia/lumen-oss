@@ -26,11 +26,22 @@ pub struct Light {
     /// fading out.
     pub cos_outer: f32,
     pub cos_inner: f32,
+    /// How the light casts shadows, if it does.
+    pub shadow: Option<Shadow>,
+}
+
+/// How a light's shadows look.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shadow {
+    /// Width in world units over which shadow edges blur, within the limits of the light's shadow
+    /// map.
+    pub softness: f32,
 }
 
 impl Light {
     /// A light placed by `world`, shining along its -Z. A spot light's cone is `spot_angle`
-    /// degrees across, and fades out over the `spot_softness` fraction of it nearest its edge.
+    /// degrees across, and fades out over the `spot_softness` fraction of it nearest its edge. It
+    /// casts no shadows.
     pub fn new(
         kind: LightKind,
         radiance: Vec3,
@@ -50,6 +61,7 @@ impl Light {
             range: range.max(0.0),
             cos_outer: half.cos(),
             cos_inner: (half * (1.0 - spot_softness.clamp(0.0, 1.0))).cos(),
+            shadow: None,
         }
     }
 }
@@ -64,7 +76,7 @@ pub struct Lighting {
 }
 
 impl Lighting {
-    /// `lights` split into direct and ambient light. A scene without any lights gets a key light
+    /// `lights` split into direct light, in their order, and ambient light. A scene without any lights gets a key light
     /// from above, right and in front, and a dim ambient fill.
     pub fn of(lights: &[Light]) -> Self {
         if lights.is_empty() {
@@ -76,6 +88,7 @@ impl Lighting {
                 range: 0.0,
                 cos_outer: 0.0,
                 cos_inner: 0.0,
+                shadow: None,
             };
             return Self {
                 direct: vec![key],
