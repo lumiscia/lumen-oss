@@ -1,6 +1,6 @@
 import { Composition, type LumenComposition } from "@lumiscia/lumen-shared";
 
-import { LumenError, errorFromResponse, isRecord, readBody, readDiagnostics } from "./errors.js";
+import { LumenError, errorFromResponse, isRecord, readDiagnostics } from "./errors.js";
 import { outputBody } from "./output.js";
 import { parseMedia, parsePart, parseUploadId, parseUploadTarget } from "./media.js";
 import { isTerminal, parseProgress, parseRender, renderError, resolveUrl } from "./render.js";
@@ -491,7 +491,22 @@ async function readJson<T extends object = Record<string, unknown>>(
   response: Response,
   signal: AbortSignal | undefined,
 ): Promise<T> {
-  const body = await readBody(response, signal);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (cause) {
+    if (signal?.aborted) {
+      throw signal.reason;
+    }
+    if (!(cause instanceof SyntaxError)) {
+      throw new LumenError(
+        "network_error",
+        cause instanceof Error ? cause.message : "Lumen API response could not be read.",
+        { cause },
+      );
+    }
+    body = undefined;
+  }
   if (!isRecord(body)) {
     throw new LumenError("invalid_response", "Lumen API returned a malformed response body.", {
       status: response.status,

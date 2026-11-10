@@ -614,7 +614,7 @@ describe("Lumen media", () => {
 });
 
 describe("Lumen multipart part retries", () => {
-  type Step = "network" | 500 | 429 | 400 | "ok";
+  type Step = "network" | "body" | 500 | 429 | 400 | "ok";
 
   function uploadWith(steps: Step[]) {
     let partRequests = 0;
@@ -628,6 +628,13 @@ describe("Lumen multipart part retries", () => {
         const step = steps[partRequests] ?? "ok";
         partRequests += 1;
         if (step === "network") throw new TypeError("socket hang up");
+        if (step === "body") {
+          return new Response(
+            new ReadableStream({
+              start: (controller) => controller.error(new TypeError("terminated")),
+            }),
+          );
+        }
         if (step !== "ok") {
           return Response.json(
             { code: "part_failed", error: "no" },
@@ -656,6 +663,36 @@ describe("Lumen multipart part retries", () => {
     const limited = uploadWith([429, "ok"]);
     await expect(limited.upload()).resolves.toMatchObject({ id: "m" });
     expect(limited.partRequests()).toBe(2);
+  });
+
+  test("a part is sent again when the connection drops while its response is read", async () => {
+    const { partRequests, upload } = uploadWith(["body", "ok"]);
+
+    await expect(upload()).resolves.toMatchObject({ id: "m" });
+    expect(partRequests()).toBe(2);
+  });
+
+  test("a part whose response is not JSON is not sent again", async () => {
+    let partRequests = 0;
+    const stub = (async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/v1/media") {
+        return Response.json({ media: { id: "m" }, uploadUrl: "/v1/media/m/content" });
+      }
+      if (path.endsWith("/multipart")) return Response.json({ uploadId: "u" });
+      partRequests += 1;
+      return new Response("not json");
+    }) as typeof fetch;
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await expect(
+      lumen.uploadMedia({
+        body: new Blob(["abc"]).stream(),
+        contentType: "video/mp4",
+        sizeBytes: 3,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+    expect(partRequests).toBe(1);
   });
 
   test("a part fails with its last error after three attempts", async () => {

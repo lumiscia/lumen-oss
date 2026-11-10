@@ -438,7 +438,8 @@ impl AssetStore {
     }
 
     /// Stores part `number` of a multipart upload, replacing an earlier one, and returns its etag.
-    /// A part being replaced counts until its replacement is stored.
+    /// An earlier part is dropped as its replacement starts, so a part sent again after a lost
+    /// response fits, and one whose replacement fails has to be sent once more.
     pub async fn put_part<S, E>(
         &self,
         id: &str,
@@ -457,6 +458,21 @@ impl AssetStore {
         }
         self.check_upload(id, upload_id)?;
         let dir = self.upload_dir(id, upload_id);
+        {
+            let mut entries = self.entries();
+            let entry = entries.get_mut(id).ok_or(StoreError::UploadNotFound)?;
+            let upload = entry
+                .uploads
+                .get_mut(upload_id)
+                .ok_or(StoreError::UploadNotFound)?;
+            if upload.completing {
+                return Err(StoreError::Busy);
+            }
+            if let Some(earlier) = upload.parts.remove(&number) {
+                entry.staged_bytes = entry.staged_bytes.saturating_sub(earlier.bytes);
+                let _ = fs::remove_file(dir.join(number.to_string()));
+            }
+        }
         let mut staging = Staging::new(self, id, &dir);
         let bytes = staging.write(body).await?;
 

@@ -1814,6 +1814,35 @@ fn send_raw(server: &Server, head: &str, body: &[u8]) -> TcpStream {
     stream
 }
 
+#[test]
+fn media_multipart_part_sent_again_at_full_size_still_completes() {
+    let server = Server::start(&[]);
+    let jpeg = normal_sized_jpeg();
+    let created = create_upload(&server, "photo.jpg", "image/jpeg", jpeg.len());
+    let id = media_id(&created["media"]);
+    let started: Value = server
+        .post_to(&format!("/media/{id}/multipart"), &json!({}))
+        .json()
+        .expect("multipart body");
+    let upload_id = started["uploadId"].as_str().expect("upload id");
+
+    // A client that lost the first response sends the only part again.
+    let mut etag = Value::Null;
+    for _ in 0..2 {
+        let response =
+            server.put_bytes(&format!("/media/{id}/multipart/{upload_id}/parts/1"), &jpeg);
+        assert_eq!(response.status(), StatusCode::OK);
+        let part: Value = response.json().expect("part body");
+        etag = part["etag"].clone();
+    }
+
+    let completed = server.post_to(
+        &format!("/media/{id}/multipart/{upload_id}/complete"),
+        &json!({ "parts": [{ "etag": etag, "partNumber": 1 }] }),
+    );
+    assert_eq!(completed.status(), StatusCode::OK);
+}
+
 fn wait_until(what: &str, deadline: Duration, mut done: impl FnMut() -> bool) {
     let started = Instant::now();
     while !done() {
@@ -1840,8 +1869,7 @@ fn media_uploads_never_hold_more_than_their_size_on_disk() {
     };
 
     assert_eq!(part(1, 1024).status(), StatusCode::OK);
-    // Sending part 1 again would hold both copies until the new one replaced the old.
-    for (number, size) in [(2, 1), (3, 1024), (1, 1024)] {
+    for (number, size) in [(2, 1), (3, 1024)] {
         let refused = part(number, size);
         assert_eq!(
             refused.status(),
@@ -1850,6 +1878,13 @@ fn media_uploads_never_hold_more_than_their_size_on_disk() {
         );
         assert_eq!(error_code(refused), "media_too_large");
     }
+    assert_eq!(
+        bytes_under(&server.media_dir.path().join(&id).join("parts")),
+        1024
+    );
+
+    // Sending the only part again, as a client does after losing the response, replaces it.
+    assert_eq!(part(1, 1024).status(), StatusCode::OK);
     assert_eq!(
         bytes_under(&server.media_dir.path().join(&id).join("parts")),
         1024
