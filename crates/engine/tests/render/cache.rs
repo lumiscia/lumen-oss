@@ -407,3 +407,82 @@ fn kept_text_keeps_its_glyphs_in_the_shared_atlas() {
     }
     assert!(renderer.skipped_pass_count() > 0, "the static text is kept");
 }
+
+/// An 8 × 8 image from `source`, moved right by a transform when `transformed`, under a square
+/// moving with the frame.
+fn image_under_animated(source: &str, transformed: bool) -> Composition {
+    let mut nodes = vec![json!({ "id": 1, "type": "media_in", "params": { "source": source } })];
+    if transformed {
+        nodes.push(json!({ "id": 2, "type": "transform", "in": { "source": 1 },
+            "params": { "translate_x": 8 } }));
+    }
+    nodes.push(square(
+        3,
+        json!("=vec2(frame * 2, 10)"),
+        4,
+        [30, 220, 60, 255],
+    ));
+    nodes.push(merge(4, &[if transformed { 2 } else { 1 }, 3]));
+    canvas(nodes).into()
+}
+
+fn image(source: &str, id: &str, color: [u8; 4]) -> TestMedia {
+    TestMedia::default().image_with_id(source, id, 8, 8, color.repeat(64))
+}
+
+#[test]
+fn a_static_image_is_kept_until_its_image_is_replaced() {
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    let (red, blue) = (image("logo", "logo#1", RED), image("logo", "logo#2", BLUE));
+    for transformed in [true, false] {
+        let composition = image_under_animated("logo", transformed);
+        let x = if transformed { 12 } else { 4 };
+        // Frame 3 replaces the image under the same source.
+        for (frame, media, color, kept) in [
+            (0, &red, RED, false),
+            (1, &red, RED, true),
+            (2, &red, RED, true),
+            (3, &blue, BLUE, false),
+            (4, &blue, BLUE, true),
+        ] {
+            let skipped = renderer.skipped_pass_count();
+            let pixels = render(&mut renderer, &composition, f64::from(frame), media).rgba;
+            reference.release_resources();
+            let expected = render(&mut reference, &composition, f64::from(frame), media).rgba;
+            assert!(
+                pixels == expected,
+                "frame {frame}, transformed {transformed}"
+            );
+            assert_eq!(pixel(&pixels, x, 4), color, "frame {frame}");
+            // An image read as is has nothing to keep.
+            let skips = renderer.skipped_pass_count() > skipped;
+            assert_eq!(skips, kept && transformed, "frame {frame}");
+        }
+    }
+}
+
+#[test]
+fn an_image_picked_by_frame_is_never_kept() {
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    let media = TestMedia::default()
+        .image("red", 8, 8, [255, 0, 0, 255].repeat(64))
+        .image("blue", 8, 8, [0, 0, 255, 255].repeat(64));
+    let composition = image_under_animated("=if(frame % 2 < 1, 'red', 'blue')", true);
+    for frame in 0..4 {
+        let pixels = render(&mut renderer, &composition, f64::from(frame), &media).rgba;
+        reference.release_resources();
+        let expected = render(&mut reference, &composition, f64::from(frame), &media).rgba;
+        assert!(pixels == expected, "frame {frame}");
+        let color = if frame % 2 == 0 {
+            [255, 0, 0, 255]
+        } else {
+            [0, 0, 255, 255]
+        };
+        assert_eq!(pixel(&pixels, 12, 4), color, "frame {frame}");
+    }
+    assert_eq!(renderer.skipped_pass_count(), 0);
+}
