@@ -37,7 +37,7 @@ use crate::{
             text::{TextDraw, TextInstance},
         },
     },
-    scope::{FrameTime, Routed, Scope},
+    scope::{FrameTime, MAX_GRAPH_DEPTH, Routed, Scope},
 };
 
 #[cfg(feature = "ffmpeg")]
@@ -461,6 +461,7 @@ impl FrameGraph {
                 single_tile_repeats,
                 retain_static,
                 static_depth: 0,
+                depth: 0,
                 bound: BoundFrame::new(),
                 text_atlas,
                 atlas_texture: &mut *atlas_texture,
@@ -918,6 +919,8 @@ pub(crate) struct FrameCx<'a> {
     retain_static: bool,
     /// How many static nodes the walk is inside, whose readers retain them rather than this.
     static_depth: u32,
+    /// How many nodes the walk is recording inside.
+    depth: u32,
     pub(crate) bound: BoundFrame,
     text_atlas: &'a Arc<Mutex<lumen_text::GlyphAtlas>>,
     atlas_texture: &'a mut Option<Arc<wgpu::Texture>>,
@@ -955,13 +958,11 @@ impl<'a> FrameCx<'a> {
 
     /// Warns once per composition that `family` fell back for text node `node_id`.
     fn note_font_fallback(&mut self, node_id: NodeId, family: String) {
-        let template = self
-            .composition
-            .compositions()
-            .iter()
-            .find(|(_, template)| std::ptr::eq(&template.scene, self.scope.scene))
-            .map(|(name, _)| name.clone());
-        let key = (template, node_id, family);
+        let key = (
+            self.scope.template_name().map(str::to_string),
+            node_id,
+            family,
+        );
         if self.st.font_fallbacks.contains(&key) {
             return;
         }
@@ -1044,9 +1045,14 @@ impl<'a> FrameCx<'a> {
         let raster = match self.st.memo.get(&key) {
             Some(raster) => *raster,
             None => {
+                if self.depth == MAX_GRAPH_DEPTH {
+                    return Err(self.scope.too_deep(node_id));
+                }
                 let passes = self.rec.pass_count();
                 self.static_depth += u32::from(is_static);
+                self.depth += 1;
                 let raster = record_node(node, self);
+                self.depth -= 1;
                 self.static_depth -= u32::from(is_static);
                 let raster = raster?;
                 self.st.memo.insert(key, raster);
@@ -1850,21 +1856,46 @@ impl<'a> FrameCx<'a> {
         tex
     }
 
+    /// Whether `node` and everything it reads are static candidates. Walks its inputs depth first
+    /// with a stack of its own, so a long chain of nodes can't run out of call stack.
     fn is_static(&mut self, node: &NodeKind) -> bool {
-        let key = (self.graph_key(), node.id());
-        if let Some(known) = self.st.statics.get(&key) {
-            return *known;
-        }
-        self.st.statics.insert(key, false);
-        let result = is_static_candidate(node)
-            && !matches!(node, NodeKind::Clip(_) | NodeKind::TimeRemap(_))
-            && node.input_ports().into_iter().flatten().all(|input| {
-                self.scope
-                    .node(input)
-                    .is_some_and(|input| self.is_static(input))
+        let graph = self.graph_key();
+        let mut pending = vec![node.id()];
+        // Nodes whose inputs have been put on `pending`, which are decided when next reached.
+        let mut entered = HashSet::default();
+        while let Some(&id) = pending.last() {
+            if self.st.statics.contains_key(&(graph, id)) {
+                pending.pop();
+                continue;
+            }
+            let candidate = self.scope.node(id).filter(|node| {
+                is_static_candidate(node)
+                    && !matches!(node, NodeKind::Clip(_) | NodeKind::TimeRemap(_))
             });
-        self.st.statics.insert(key, result);
-        result
+            let Some(node) = candidate else {
+                self.st.statics.insert((graph, id), false);
+                pending.pop();
+                continue;
+            };
+            let inputs = node.input_ports().into_iter().flatten();
+            if entered.insert(id) {
+                let undecided = inputs
+                    .clone()
+                    .filter(|input| !self.st.statics.contains_key(&(graph, *input)));
+                let before = pending.len();
+                pending.extend(undecided);
+                if pending.len() > before {
+                    continue;
+                }
+            }
+            // An input still undecided here is part of a cycle, which validation rejects.
+            let result = inputs
+                .into_iter()
+                .all(|input| self.st.statics.get(&(graph, input)) == Some(&true));
+            self.st.statics.insert((graph, id), result);
+            pending.pop();
+        }
+        self.st.statics.get(&(graph, node.id())) == Some(&true)
     }
 
     fn record_routed(&mut self, routed: Routed<'a>) -> crate::Result<Raster> {

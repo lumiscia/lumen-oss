@@ -475,8 +475,11 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
 #[test]
 fn a_frame_with_more_shaders_than_the_caches_hold_renders_and_settles() {
     const SHADERS: u32 = 70;
+    // Chains are only so deep, so the shaders run in parallel chains that a last shader adds up.
+    const CHAINS: u32 = 3;
     let mut nodes =
         vec![json!({ "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } })];
+    let mut ends = [1; CHAINS as usize];
     for index in 0..SHADERS {
         let shader = format!(
             "const NODE: u32 = {index}u;\n\
@@ -486,11 +489,22 @@ fn a_frame_with_more_shaders_than_the_caches_hold_renders_and_settles() {
                textureStore(output, vec2<i32>(id.xy), textureLoad(input0, vec2<i32>(id.xy), 0) + step);\n\
              }}"
         );
+        let chain = (index % CHAINS) as usize;
         nodes.push(json!({
-            "id": index + 2, "type": "wgsl_shader", "in": { "source": index + 1 },
+            "id": index + 2, "type": "wgsl_shader", "in": { "source": ends[chain] },
             "params": { "shader": shader }
         }));
+        ends[chain] = index + 2;
     }
+    nodes.push(json!({
+        "id": SHADERS + 2, "type": "wgsl_shader", "in": { "source": ends },
+        "params": { "shader": "@compute @workgroup_size(8, 8, 1)\n\
+             fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {\n\
+               let at = vec2<i32>(id.xy);\n\
+               let red = textureLoad(input0, at, 0).r + textureLoad(input1, at, 0).r + textureLoad(input2, at, 0).r;\n\
+               textureStore(output, at, vec4<f32>(red, 0.0, 0.0, 1.0));\n\
+             }" }
+    }));
     let composition = scene((8, 8), json!(nodes)).into();
     let gpu = gpu();
     let mut renderer = gpu.renderer();
