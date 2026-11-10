@@ -342,15 +342,17 @@ fn read_skins(root: &Root, buffers: &Buffers<'_>) -> Result<Vec<Skin>, ModelErro
         {
             return Err(invalid("a skin names a node the model lacks"));
         }
+        // A skin may carry more inverse bind matrices than joints; the extra ones are unused.
         let inverse_binds: Vec<Mat4> = match skin.inverse_bind_matrices {
             Some(accessor) => buffers
                 .vectors::<16>(buffers.accessor(accessor)?, None)?
                 .iter()
+                .take(joints.len())
                 .map(Mat4::from_cols_array)
                 .collect(),
             None => vec![Mat4::IDENTITY; joints.len()],
         };
-        if inverse_binds.len() != joints.len() {
+        if inverse_binds.len() < joints.len() {
             return Err(invalid(format!(
                 "a skin has {} inverse bind matrices for its {} joints",
                 inverse_binds.len(),
