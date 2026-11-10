@@ -1110,6 +1110,32 @@ fn fox(id: u32, params: Value) -> Value {
 /// left, bottom, right and top edges, that shows the whole of its textures, top left at top left,
 /// in the material its index in `materials` names.
 fn quads(materials: Value, quads: &[([f32; 4], usize)]) -> Vec<u8> {
+    let quads: Vec<Quad> = quads
+        .iter()
+        .map(|&(edges, material)| Quad {
+            edges,
+            material,
+            normal: [0.0, 0.0, 1.0],
+            mirrored_u: false,
+        })
+        .collect();
+    model_glb(materials, None, &quads)
+}
+
+/// A rectangle facing +Z for [`model_glb`].
+struct Quad {
+    /// Its left, bottom, right and top edges.
+    edges: [f32; 4],
+    material: usize,
+    /// The normal at each of its vertices.
+    normal: [f32; 3],
+    /// Whether its texture coordinates run right to left.
+    mirrored_u: bool,
+}
+
+/// A `.glb` of one mesh with a primitive for each of `quads`, which show the whole of their
+/// textures, top left at top left. `image`, a PNG, is texture 0.
+fn model_glb(materials: Value, image: Option<&[u8]>, quads: &[Quad]) -> Vec<u8> {
     let mut bin = Vec::new();
     let (mut views, mut accessors, mut primitives) = (Vec::new(), Vec::new(), Vec::new());
     let mut accessor = |bytes: Vec<u8>, kind: &str, component: u32, count: usize| {
@@ -1123,14 +1149,20 @@ fn quads(materials: Value, quads: &[([f32; 4], usize)]) -> Vec<u8> {
     };
     let floats =
         |values: &[f32]| -> Vec<u8> { values.iter().flat_map(|v| v.to_le_bytes()).collect() };
-    for &([left, bottom, right, top], material) in quads {
+    for quad in quads {
+        let [left, bottom, right, top] = quad.edges;
         let positions = [
             left, top, 0.0, right, top, 0.0, left, bottom, 0.0, right, bottom, 0.0,
         ];
         let position = accessor(floats(&positions), "VEC3", 5126, 4);
-        let normal = accessor(floats(&[0.0, 0.0, 1.0].repeat(4)), "VEC3", 5126, 4);
+        let normal = accessor(floats(&quad.normal.repeat(4)), "VEC3", 5126, 4);
+        let (start, end) = if quad.mirrored_u {
+            (1.0, 0.0)
+        } else {
+            (0.0, 1.0)
+        };
         let uv = accessor(
-            floats(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]),
+            floats(&[start, 0.0, end, 0.0, start, 1.0, end, 1.0]),
             "VEC2",
             5126,
             4,
@@ -1143,10 +1175,16 @@ fn quads(materials: Value, quads: &[([f32; 4], usize)]) -> Vec<u8> {
         primitives.push(json!({
             "attributes": { "POSITION": position, "NORMAL": normal, "TEXCOORD_0": uv },
             "indices": indices,
-            "material": material,
+            "material": quad.material,
         }));
     }
-    let document = json!({
+    let image = image.map(|image| {
+        views.push(json!({ "buffer": 0, "byteOffset": bin.len(), "byteLength": image.len() }));
+        bin.extend(image);
+        bin.resize(bin.len().next_multiple_of(4), 0);
+        views.len() - 1
+    });
+    let mut document = json!({
         "asset": { "version": "2.0" },
         "extensionsUsed": ["KHR_materials_unlit"],
         "scene": 0,
@@ -1158,6 +1196,10 @@ fn quads(materials: Value, quads: &[([f32; 4], usize)]) -> Vec<u8> {
         "bufferViews": views,
         "buffers": [{ "byteLength": bin.len() }],
     });
+    if let Some(view) = image {
+        document["images"] = json!([{ "bufferView": view, "mimeType": "image/png" }]);
+        document["textures"] = json!([{ "source": 0 }]);
+    }
     let mut json = serde_json::to_vec(&document).unwrap();
     json.resize(json.len().next_multiple_of(4), b' ');
     let mut glb = b"glTF".to_vec();
@@ -1183,6 +1225,107 @@ fn unlit(name: &str, color: [f32; 4]) -> Value {
 
 fn model(id: u32, params: Value) -> Value {
     json!({ "id": id, "type": "model_3d", "params": params })
+}
+
+/// A 1 x 1 PNG of `rgba`, stored without compression.
+fn texel_png(rgba: [u8; 4]) -> Vec<u8> {
+    let crc = |bytes: &[u8]| {
+        let mut crc = !0u32;
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb8_8320 & (crc & 1).wrapping_neg());
+            }
+        }
+        !crc
+    };
+    let chunk = |kind: &[u8; 4], data: &[u8]| {
+        let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
+        chunk.extend(kind);
+        chunk.extend(data);
+        chunk.extend(crc(&chunk[4..]).to_be_bytes());
+        chunk
+    };
+    // One row: no filter, then the texel.
+    let row = [0, rgba[0], rgba[1], rgba[2], rgba[3]];
+    let (a, b) = row.iter().fold((1u32, 0u32), |(a, b), &byte| {
+        (
+            (a + u32::from(byte)) % 65521,
+            (b + a + u32::from(byte)) % 65521,
+        )
+    });
+    let mut zlib = vec![0x78, 0x01, 0x01, 5, 0, !5, !0];
+    zlib.extend(row);
+    zlib.extend(((b << 16) | a).to_be_bytes());
+    let mut png = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+    png.extend(chunk(b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]));
+    png.extend(chunk(b"IDAT", &zlib));
+    png.extend(chunk(b"IEND", &[]));
+    png
+}
+
+#[test]
+fn a_normal_map_tilts_a_surface_as_vertex_normals_tilting_the_same_way_do() {
+    let lean = std::f32::consts::FRAC_1_SQRT_2;
+    let (right, up) = ([218, 128, 218, 255], [128, 218, 218, 255]);
+    // Each case's texel, whether its texture coordinates run right to left, the model's scale
+    // along X, and the vertex normal that tilts the surface the same way.
+    let cases = [
+        ("+X towards +U", right, false, 1.0, [lean, 0.0, lean]),
+        ("+Y up the image", up, false, 1.0, [0.0, lean, lean]),
+        ("+X with U mirrored", right, true, 1.0, [-lean, 0.0, lean]),
+        (
+            "+X on a model mirrored along X",
+            right,
+            false,
+            -1.0,
+            [lean, 0.0, lean],
+        ),
+    ];
+    let cases = cases.map(|(name, texel, mirrored_u, scale_x, normal)| {
+        let opposite = [-normal[0], -normal[1], normal[2]];
+        let quad = |left: f32, material: usize, normal: [f32; 3], mirrored_u: bool| Quad {
+            edges: [left, -0.6, left + 1.2, 0.6],
+            material,
+            normal,
+            mirrored_u,
+        };
+        let glb = model_glb(
+            json!([
+                { "normalTexture": { "index": 0 }, "pbrMetallicRoughness": { "roughnessFactor": 1 } },
+                { "pbrMetallicRoughness": { "roughnessFactor": 1 } },
+            ]),
+            Some(&texel_png(texel)),
+            &[
+                quad(-1.9, 0, [0.0, 0.0, 1.0], mirrored_u),
+                quad(-0.6, 1, normal, false),
+                quad(0.7, 1, opposite, false),
+            ],
+        );
+        let scene = render_3d_with(
+            json!({ "environment": 0 }),
+            vec![
+                model(1, json!({ "source": "card.glb", "scale": [scale_x, 1, 1] })),
+                ortho(2, json!({})),
+                json!({ "id": 3, "type": "light_3d", "params": { "rotation": [25, 35, 0] } }),
+                merge(4, &[1, 2, 3], json!({})),
+            ],
+        );
+        let pixel = move |frame: &Frame, x: f32| frame.pixel((32.0 + x * scale_x * 16.0) as u32, CENTER);
+        Case::new(
+            name,
+            scene,
+            Expect::Custom(Box::new(move |frames| {
+                let (mapped, reference, other) =
+                    (pixel(&frames[0], -1.3), pixel(&frames[0], 0.0), pixel(&frames[0], 1.3));
+                let differ = |a: [u8; 4], b: [u8; 4]| (0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap();
+                assert!(differ(reference, other) > 20, "the light tells the leans apart: {reference:?}, {other:?}");
+                assert!(differ(mapped, reference) <= 3, "mapped {mapped:?}, vertex normals {reference:?}, opposite {other:?}");
+            })),
+        )
+        .media(TestMedia::default().model("card.glb", glb))
+    });
+    check(cases.into());
 }
 
 #[test]

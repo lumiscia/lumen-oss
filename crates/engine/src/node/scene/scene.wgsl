@@ -329,8 +329,11 @@ fn mapped_normal(
     let texel = textureSampleGrad(normal_map, normal_sampler, uv, uv_dx, uv_dy).xyz * 2.0 - 1.0;
     let dy_perp = cross(world_dy, n);
     let dx_perp = cross(n, world_dx);
-    let t = dy_perp * uv_dx.x + dx_perp * uv_dy.x;
-    let b = dy_perp * uv_dx.y + dx_perp * uv_dy.y;
+    // Solving for the frame divides by this determinant. Only its sign is kept, which orients the
+    // frame; with `dpdy` pointing down the screen it is negative where `n` faces the viewer.
+    let side = select(1.0, -1.0, dot(n, cross(world_dx, world_dy)) < 0.0);
+    let t = (dy_perp * uv_dx.x + dx_perp * uv_dy.x) * side;
+    let b = (dy_perp * uv_dx.y + dx_perp * uv_dy.y) * side;
     let size = max(dot(t, t), dot(b, b));
     if (size <= 0.0) {
         return n;
