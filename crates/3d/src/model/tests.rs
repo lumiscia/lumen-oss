@@ -630,13 +630,11 @@ fn posed_matrices(scene: &ModelScene, seconds: f32) -> Vec<Mat4> {
 
 #[test]
 fn values_too_large_or_degenerate_never_reach_a_pose() {
-    let cases: [(&str, Edit); 1] = [(
-        "a material's factor isn't a finite number",
-        Box::new(|json| json["materials"] = json!([{ "emissiveFactor": [1e39, 0, 0] }])),
-    )];
-    for (expected, edit) in cases {
-        assert_eq!(error_with(edit), ModelError::Invalid(expected.to_string()));
-    }
+    // How serde_json reads a float too large for `f32` depends on the features it is built with:
+    // as infinity, which the reader refuses, or as a number out of range.
+    let too_large: Edit =
+        Box::new(|json| json["materials"] = json!([{ "emissiveFactor": [1e39, 0, 0] }]));
+    assert!(matches!(error_with(too_large), ModelError::Invalid(_)));
     let mut normals = Glb::triangle();
     let normal = normals.accessor(FLOAT, "VEC3", 3, &floats(&[f32::NAN; 9]));
     normals.json["meshes"][0]["primitives"][0]["attributes"]["NORMAL"] = json!(normal);
