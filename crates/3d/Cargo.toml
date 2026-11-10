@@ -16,7 +16,7 @@ default = ["exr"]
 exr = ["dep:exr"]
 draco = ["dep:draco-core"]
 meshopt = ["dep:meshopt-pure"]
-ktx2 = ["dep:basisu"]
+ktx2 = ["dep:basisu", "dep:ruzstd"]
 webp = ["image/webp"]
 
 [dependencies]
@@ -33,15 +33,13 @@ gltf-json = { version = "1.4.1", default-features = false, features = [
 ] }
 half = "2.7.1"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
-basisu = { version = "0.1.0", default-features = false, features = [
-  "std",
-  "zstd",
-], optional = true }
+basisu = { version = "0.1.0", default-features = false, features = ["std"], optional = true }
 draco-core = { version = "2.3.3", default-features = false, features = [
   "decoder",
   "edgebreaker_valence_decode",
   "legacy_bitstream_decode",
 ], optional = true }
 meshopt-pure = { version = "1.3.0", optional = true }
+ruzstd = { version = "0.7.3", default-features = false, features = ["std"], optional = true }
 serde = "1.0.228"
 serde_json = "1.0.145"

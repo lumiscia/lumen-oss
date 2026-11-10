@@ -1409,7 +1409,11 @@ fn assert_cases(cases: Vec<Case>) {
         if enabled {
             let mut glb = Glb::parse(fixture);
             edit(&mut glb.json, &mut glb.bin);
-            assert_eq!(glb.read().unwrap_err(), expected, "{extension}");
+            assert_eq!(
+                read_without_panicking(&glb.bytes()).unwrap_err(),
+                expected,
+                "{extension}"
+            );
         }
     }
 }
@@ -1467,11 +1471,16 @@ fn compressed_data_disagreeing_with_its_declared_counts_is_an_error() {
 
 #[test]
 fn compressed_data_past_its_budget_is_rejected_before_decoding() {
-    let meshes = || {
-        ModelError::TooLarge(
-            "the model's compressed meshes decode to more than the 16777216 bytes a file of its size may"
-                .to_string(),
-        )
+    let budget = |what: &str| {
+        ModelError::TooLarge(format!(
+            "the model's {what} decode to more than the 16777216 bytes a file of its size may"
+        ))
+    };
+    let pixels = |bytes: usize| {
+        ModelError::TooLarge(format!(
+            "the model's KTX2 and WebP images decode to more than the 8388608 pixels their \
+             {bytes} bytes may"
+        ))
     };
     assert_cases(vec![
         (
@@ -1481,7 +1490,7 @@ fn compressed_data_past_its_budget_is_rejected_before_decoding() {
                     json["accessors"][accessor]["count"] = json!(300_000);
                 }
             },
-            meshes(),
+            budget("Draco meshes"),
         ),
         (
             1,
@@ -1489,23 +1498,244 @@ fn compressed_data_past_its_budget_is_rejected_before_decoding() {
                 json["bufferViews"][1]["extensions"][MESHOPT]["count"] = json!(2_200_000);
                 json["bufferViews"][1]["byteLength"] = json!(2_200_000 * 8);
             },
-            meshes(),
+            budget("meshopt buffer views"),
         ),
         (
             2,
             |_, bin| bin[KTX2_WIDTH..][..8].copy_from_slice(&[0, 32, 0, 0, 0, 32, 0, 0]),
+            pixels(671),
+        ),
+        (
+            4,
+            |_, bin| {
+                bin[WEBP_CANVAS..][..6].copy_from_slice(&[0x3F, 0x1F, 0, 0x3F, 0x1F, 0]);
+                let frame = webp_frame(bin);
+                bin[frame..][..4].copy_from_slice(&[0x40, 0x1F, 0x40, 0x1F]);
+            },
+            pixels(182),
+        ),
+    ]);
+}
+
+/// Where the width and height of the lossy frame of `grid-webp.glb`'s image are in `bin`.
+fn webp_frame(bin: &[u8]) -> usize {
+    bin.windows(4).position(|kind| kind == b"VP8 ").unwrap() + 8 + 6
+}
+
+/// A Zstandard frame of `blocks` RLE blocks of `block` bytes each, with a window of
+/// `2^window_log` bytes.
+fn rle_frame(window_log: u8, blocks: usize, block: u32) -> Vec<u8> {
+    let mut frame = 0xFD2F_B528u32.to_le_bytes().to_vec();
+    frame.extend([0, (window_log - 10) << 3]);
+    for index in 0..blocks {
+        let last = u32::from(index + 1 == blocks);
+        frame.extend(&(block << 3 | 1 << 1 | last).to_le_bytes()[..3]);
+        frame.push(0x55);
+    }
+    frame
+}
+
+/// `grid-uastc.glb` with its full-size level replaced by `frame`.
+fn uastc_level(frame: Vec<u8>) -> Glb {
+    let mut glb = Glb::parse(COMPRESSED[3].0);
+    let level = u64::from_le_bytes(glb.bin[80..88].try_into().unwrap()) as usize;
+    glb.bin[level..][..frame.len()].copy_from_slice(&frame);
+    glb.bin[88..96].copy_from_slice(&(frame.len() as u64).to_le_bytes());
+    glb
+}
+
+/// `grid-etc1s.glb` with its image declaring 2048 x 2048 pixels, and with a copy of that image
+/// as its metallic-roughness texture when `twice`.
+fn large_etc1s(twice: bool) -> Glb {
+    let mut glb = Glb::parse(COMPRESSED[2].0);
+    glb.bin[KTX2_WIDTH..][..8].copy_from_slice(&[0, 8, 0, 0, 0, 8, 0, 0]);
+    if twice {
+        let length = glb.json["bufferViews"][0]["byteLength"].as_u64().unwrap() as usize;
+        let image = glb.bin[..length].to_vec();
+        let view = glb.view(&image);
+        glb.json["images"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "bufferView": view, "mimeType": "image/ktx2" }));
+        glb.json["textures"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "extensions": { "KHR_texture_basisu": { "source": 1 } } }));
+        glb.json["materials"][0]["pbrMetallicRoughness"]["metallicRoughnessTexture"] =
+            json!({ "index": 1 });
+    }
+    glb
+}
+
+/// Reads `bytes`, asserting that nothing panics on the way, caught or not.
+fn read_without_panicking(bytes: &[u8]) -> Result<Model, ModelError> {
+    thread_local!(static PANICKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            PANICKED.set(true);
+            previous(info);
+        }));
+    });
+    PANICKED.set(false);
+    let model = Model::from_glb(bytes);
+    assert!(!PANICKED.get(), "reading the model panicked");
+    model
+}
+
+#[test]
+fn zstandard_levels_are_bounded_by_their_declared_length() {
+    if !cfg!(feature = "ktx2") {
+        return;
+    }
+    // A 1 GiB window, and 1 KiB blocks running far past the level's 256 bytes.
+    assert_eq!(
+        read_without_panicking(&uastc_level(rle_frame(30, 20, 128 << 10)).bytes()).unwrap_err(),
+        ModelError::TooLarge(
+            "a KTX2 image in the model has a level of 256 bytes whose Zstandard window is \
+             1073741824 bytes, more than the 1024 it may be"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        read_without_panicking(&uastc_level(rle_frame(10, 20, 1 << 10)).bytes()).unwrap_err(),
+        invalid(
+            "a KTX2 image in the model is corrupt: a level inflates to another length than it declares"
+        )
+    );
+    // The level's own length, inflated from a frame of 1 KiB window, reads.
+    let mut exact = rle_frame(10, 1, 256);
+    exact[5] = 0;
+    let model = read_without_panicking(&uastc_level(exact).bytes()).unwrap();
+    assert_eq!(model.textures[0].width, 16);
+}
+
+#[test]
+fn webp_images_are_one_still_image_the_size_of_their_canvas() {
+    if !cfg!(feature = "webp") {
+        return;
+    }
+    let mut inner = Glb::parse(COMPRESSED[4].0);
+    let frame = webp_frame(&inner.bin);
+    inner.bin[frame..][..4].copy_from_slice(&[0xFF, 0x3F, 0xFF, 0x3F]);
+    let mut animated = Glb::parse(COMPRESSED[4].0);
+    animated.bin[WEBP_CANVAS - 4] |= 0x02;
+    for (glb, expected) in [
+        (
+            inner,
+            invalid(
+                "a WebP image in the model is corrupt: its image is another size than its canvas",
+            ),
+        ),
+        (
+            animated,
+            unsupported("an image in the model is an animated WebP"),
+        ),
+    ] {
+        assert_eq!(read_without_panicking(&glb.bytes()).unwrap_err(), expected);
+    }
+}
+
+#[test]
+fn compressed_images_share_one_pixel_budget() {
+    if !cfg!(feature = "ktx2") {
+        return;
+    }
+    assert_ne!(
+        read_without_panicking(&large_etc1s(false).bytes())
+            .err()
+            .map(|error| matches!(error, ModelError::TooLarge(_))),
+        Some(true),
+        "one 2048 x 2048 image fits the floor"
+    );
+    assert_eq!(
+        read_without_panicking(&large_etc1s(true).bytes()).unwrap_err(),
+        ModelError::TooLarge(
+            "the model's KTX2 and WebP images decode to more than the 8388608 pixels their 1342 \
+             bytes may"
+                .to_string()
+        )
+    );
+}
+
+#[test]
+fn draco_streams_hold_only_named_attributes_and_fallbacks_read_first() {
+    if !cfg!(feature = "draco") {
+        return;
+    }
+    const DRACO: &str = "KHR_draco_mesh_compression";
+    assert_cases(vec![
+        (
+            0,
+            |json, _| {
+                let primitive = &mut json["meshes"][0]["primitives"][0];
+                primitive["attributes"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("TEXCOORD_0");
+                primitive["extensions"][DRACO]["attributes"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("TEXCOORD_0");
+            },
+            invalid("a Draco-compressed primitive holds other attributes than its extension names"),
+        ),
+        // Normals read from an accessor that fails, beside a corrupt stream: the accessor fails
+        // first.
+        (
+            0,
+            |json, bin| {
+                let primitive = &mut json["meshes"][0]["primitives"][0];
+                primitive["extensions"][DRACO]["attributes"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("NORMAL");
+                json["accessors"][2]["bufferView"] = json!(9);
+                bin.fill(0xFF);
+            },
+            invalid("a buffer view index is out of range"),
+        ),
+    ]);
+}
+
+/// Files made to reach past the reader's limits, from `tests/fixtures/review-*.glb`.
+#[test]
+fn files_made_to_reach_past_the_limits_are_errors_without_panicking() {
+    let webp = |why: &str| invalid(format!("a WebP image in the model is corrupt: {why}"));
+    let files: [(&[u8], bool, ModelError); 4] = [
+        (
+            include_bytes!("../../tests/fixtures/review-zstd.glb"),
+            cfg!(feature = "ktx2"),
             ModelError::TooLarge(
-                "an image in the model decodes to more than the 8388608 pixels its 671 bytes may"
+                "a KTX2 image in the model has a level of 256 bytes whose Zstandard window is \
+                 1073741824 bytes, more than the 1024 it may be"
                     .to_string(),
             ),
         ),
         (
-            4,
-            |_, bin| bin[WEBP_CANVAS..][..6].copy_from_slice(&[0x3F, 0x1F, 0, 0x3F, 0x1F, 0]),
+            include_bytes!("../../tests/fixtures/review-webp-size.glb"),
+            cfg!(feature = "webp"),
+            webp("its image is another size than its canvas"),
+        ),
+        (
+            include_bytes!("../../tests/fixtures/review-animated.glb"),
+            cfg!(feature = "webp"),
+            unsupported("an image in the model is an animated WebP"),
+        ),
+        (
+            include_bytes!("../../tests/fixtures/review-floor.glb"),
+            cfg!(feature = "webp"),
             ModelError::TooLarge(
-                "an image in the model decodes to more than the 8388608 pixels its 182 bytes may"
+                "the model's KTX2 and WebP images decode to more than the 8388608 pixels their \
+                 880 bytes may"
                     .to_string(),
             ),
         ),
-    ]);
+    ];
+    for (bytes, enabled, expected) in files {
+        if enabled {
+            assert_eq!(read_without_panicking(bytes).unwrap_err(), expected);
+        }
+    }
 }

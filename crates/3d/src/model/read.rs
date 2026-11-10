@@ -390,20 +390,38 @@ fn read_draco(
     count: usize,
     index_count: usize,
 ) -> Result<Attributes, ModelError> {
-    use super::draco::Decoded;
-
-    fn vectors<const N: usize>(
-        buffers: &Buffers<'_>,
-        decoded: &Decoded<'_>,
+    let stream = super::draco::Stream::new(extension)?;
+    // What the stream doesn't hold is read from its accessors, before anything is decoded.
+    fn unless_held<'a>(
+        stream: &super::draco::Stream<'_>,
         semantic: &str,
-        accessor: &Accessor,
-        normalized: Option<bool>,
-    ) -> Result<Vec<[f32; N]>, ModelError> {
-        match decoded.vectors::<N>(semantic, accessor, normalized)? {
-            Some(values) => Ok(values),
-            None => buffers.vectors::<N>(accessor, normalized),
-        }
+        accessor: Option<&'a Accessor>,
+    ) -> Option<&'a Accessor> {
+        accessor.filter(|_| !stream.holds(semantic))
     }
+    let positions = unless_held(&stream, "POSITION", Some(accessors.positions))
+        .map(|accessor| buffers.vectors::<3>(accessor, None))
+        .transpose()?;
+    let normals = unless_held(&stream, "NORMAL", accessors.normals)
+        .map(|accessor| buffers.vectors::<3>(accessor, None))
+        .transpose()?;
+    let uvs = unless_held(&stream, "TEXCOORD_0", accessors.uvs)
+        .map(|accessor| buffers.vectors::<2>(accessor, None))
+        .transpose()?;
+    let joints = unless_held(
+        &stream,
+        "JOINTS_0",
+        accessors.skin.map(|(joints, _)| joints),
+    )
+    .map(|accessor| buffers.uint_vectors::<4>(accessor))
+    .transpose()?;
+    let weights = unless_held(
+        &stream,
+        "WEIGHTS_0",
+        accessors.skin.map(|(_, weights)| weights),
+    )
+    .map(|accessor| buffers.vectors::<4>(accessor, Some(true)))
+    .transpose()?;
 
     let mut read = vec![("POSITION", 3)];
     read.extend(accessors.normals.map(|_| ("NORMAL", 3)));
@@ -411,12 +429,13 @@ fn read_draco(
     if accessors.skin.is_some() {
         read.extend([("JOINTS_0", 4), ("WEIGHTS_0", 4)]);
     }
-    let decoded = super::draco::decode(buffers, extension, count, index_count, &read)?;
+    let decoded = stream.decode(buffers, count, index_count, &read)?;
     let skin = match accessors.skin {
-        Some((joints, weights)) => {
-            let joints = match decoded.vectors::<4>("JOINTS_0", joints, Some(false))? {
-                Some(values) => {
-                    let Checked::Valid(component) = &joints.component_type else {
+        Some((joints_accessor, weights_accessor)) => {
+            let joints = match joints {
+                Some(joints) => joints,
+                None => {
+                    let Checked::Valid(component) = &joints_accessor.component_type else {
                         return Err(invalid("an accessor has an unknown component type or type"));
                     };
                     if matches!(
@@ -427,30 +446,34 @@ fn read_draco(
                             "an index or joint accessor doesn't hold unsigned integers",
                         ));
                     }
-                    values
+                    decoded
+                        .vectors::<4>("JOINTS_0", joints_accessor, Some(false))?
                         .iter()
                         .map(|joint| joint.map(|index| index as u32))
                         .collect()
                 }
-                None => buffers.uint_vectors::<4>(joints)?,
             };
-            Some((
-                joints,
-                vectors::<4>(buffers, &decoded, "WEIGHTS_0", weights, Some(true))?,
-            ))
+            let weights = match weights {
+                Some(weights) => weights,
+                None => decoded.vectors::<4>("WEIGHTS_0", weights_accessor, Some(true))?,
+            };
+            Some((joints, weights))
         }
         None => None,
     };
     Ok(Attributes {
-        positions: vectors::<3>(buffers, &decoded, "POSITION", accessors.positions, None)?,
-        normals: accessors
-            .normals
-            .map(|accessor| vectors::<3>(buffers, &decoded, "NORMAL", accessor, None))
-            .transpose()?,
-        uvs: accessors
-            .uvs
-            .map(|accessor| vectors::<2>(buffers, &decoded, "TEXCOORD_0", accessor, None))
-            .transpose()?,
+        positions: match positions {
+            Some(positions) => positions,
+            None => decoded.vectors::<3>("POSITION", accessors.positions, None)?,
+        },
+        normals: match (accessors.normals, normals) {
+            (Some(accessor), None) => Some(decoded.vectors::<3>("NORMAL", accessor, None)?),
+            (_, normals) => normals,
+        },
+        uvs: match (accessors.uvs, uvs) {
+            (Some(accessor), None) => Some(decoded.vectors::<2>("TEXCOORD_0", accessor, None)?),
+            (_, uvs) => uvs,
+        },
         skin,
         indices: Some(decoded.indices()),
     })
@@ -811,8 +834,11 @@ fn decode_textures(
     };
     let mut headers = Vec::with_capacity(images.len());
     let mut pixels = 0u64;
+    let mut expansion = image::Expansion::default();
     for (bytes, textures) in &images {
-        let header = image::header(&data(*bytes)?)?;
+        let data = data(*bytes)?;
+        let header = image::header(&data)?;
+        expansion.add(header, data.len());
         pixels = image::mip_pixels(header.width, header.height)
             .checked_mul(textures.len() as u64)
             .and_then(|charge| pixels.checked_add(charge))
@@ -820,6 +846,7 @@ fn decode_textures(
             .ok_or_else(|| too_large("texture pixels", MAX_TEXTURE_PIXELS))?;
         headers.push(header);
     }
+    expansion.check()?;
 
     let mut textures: Vec<Option<Texture>> = vec![None; order.len()];
     for ((bytes, uses), &header) in images.iter().zip(&headers) {

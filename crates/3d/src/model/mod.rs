@@ -74,17 +74,21 @@ pub const MAX_DECODED_BYTES: usize = 512 << 20;
 /// [`MIN_DECODED_BUDGET`] for a smaller file, so that a small file can't expand hugely.
 pub const DECODED_BYTES_PER_FILE_BYTE: usize = 32;
 pub const MIN_DECODED_BUDGET: usize = 16 << 20;
-/// Compressed geometry, whose encoding doesn't bound how far it expands, has a budget of its own
-/// that it is charged before it is decoded: Draco primitives at four bytes for each component
-/// and index they decode to, and meshopt buffer views at their decoded size, may together come to
-/// no more than this many times the file's size, or [`MIN_DECODED_BUDGET`] for a smaller file,
-/// and [`MAX_DECODED_BYTES`] at most. What accessors then read from meshopt views counts toward
+/// Compressed geometry, whose encoding doesn't bound how far it expands, is charged before it is
+/// decoded to a budget of this many times the file's size, or [`MIN_DECODED_BUDGET`] for a
+/// smaller file: one for meshopt buffer views, at their decoded size and [`MAX_DECODED_BYTES`] at
+/// most, and one for Draco primitives, at what their decoder may produce and
+/// [`MAX_DRACO_DECODED_BYTES`] at most. What accessors then read from meshopt views counts toward
 /// the accessors' own budget as well.
 pub const COMPRESSED_BYTES_PER_FILE_BYTE: usize = 256;
-/// A KTX2 or WebP image, whose encoding doesn't bound how many pixels it expands to, may hold no
-/// more pixels, counting every mip level, than this many for each of its bytes, or
-/// [`MIN_COMPRESSED_IMAGE_PIXELS`] for a smaller image.
+/// The most bytes all of a model's Draco primitives may decode to, whose decoder peaks at about
+/// six times what it produces.
+pub const MAX_DRACO_DECODED_BYTES: usize = 96 << 20;
+/// A model's KTX2 and WebP images, whose encoding doesn't bound how many pixels they expand to,
+/// may hold no more pixels together, counting every mip level, than this many for each of their
+/// bytes, or [`MIN_COMPRESSED_IMAGE_PIXELS`] for smaller images.
 pub const COMPRESSED_IMAGE_PIXELS_PER_BYTE: u64 = 1024;
+/// Room for one 2048 x 2048 texture and its mips, however small its file.
 pub const MIN_COMPRESSED_IMAGE_PIXELS: u64 = 1 << 23;
 /// The widest or tallest image a model may hold, in pixels.
 pub const MAX_IMAGE_SIDE: u32 = 8192;

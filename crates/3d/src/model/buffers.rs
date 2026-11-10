@@ -12,6 +12,8 @@ use gltf_json::{Accessor, Index, Root};
 
 #[cfg(any(feature = "draco", feature = "meshopt"))]
 use super::COMPRESSED_BYTES_PER_FILE_BYTE;
+#[cfg(feature = "draco")]
+use super::MAX_DRACO_DECODED_BYTES;
 use super::{
     DECODED_BYTES_PER_FILE_BYTE, MAX_COMPONENTS, MAX_DECODED_BYTES, MAX_VIEW_BYTES,
     MIN_DECODED_BUDGET, ModelError, invalid, too_large, unsupported,
@@ -25,9 +27,12 @@ pub(super) struct Buffers<'a> {
     decoded_views: HashMap<usize, Vec<u8>>,
     /// Bytes accessor reads have decoded so far, at four a component.
     decoded: Budget,
-    /// Bytes compressed geometry has decoded to so far.
-    #[cfg(any(feature = "draco", feature = "meshopt"))]
-    compressed: Budget,
+    /// Bytes meshopt-compressed buffer views have decoded to so far.
+    #[cfg(feature = "meshopt")]
+    meshopt: Budget,
+    /// Bytes Draco primitives' decoders have been allowed so far.
+    #[cfg(feature = "draco")]
+    draco: Budget,
 }
 
 /// What one kind of decoding has spent of what it may, and the names its errors give it: what
@@ -35,6 +40,8 @@ pub(super) struct Buffers<'a> {
 struct Budget {
     spent: Cell<usize>,
     limit: usize,
+    /// The limit for the largest files.
+    max: usize,
     what: &'static str,
     data: &'static str,
 }
@@ -43,6 +50,7 @@ impl Budget {
     fn new(
         file_bytes: usize,
         per_file_byte: usize,
+        max: usize,
         what: &'static str,
         data: &'static str,
     ) -> Self {
@@ -50,10 +58,17 @@ impl Budget {
             spent: Cell::new(0),
             limit: file_bytes
                 .saturating_mul(per_file_byte)
-                .clamp(MIN_DECODED_BUDGET, MAX_DECODED_BYTES),
+                .clamp(MIN_DECODED_BUDGET, max),
+            max,
             what,
             data,
         }
+    }
+
+    /// What is left of the limit.
+    #[cfg(feature = "draco")]
+    fn remaining(&self) -> usize {
+        self.limit - self.spent.get()
     }
 
     /// Counts `bytes` toward the limit, failing past it.
@@ -62,14 +77,14 @@ impl Budget {
             .checked_add(self.spent.get())
             .filter(|&total| total <= self.limit)
             .ok_or_else(|| {
-                if self.limit < MAX_DECODED_BYTES {
+                if self.limit < self.max {
                     ModelError::TooLarge(format!(
                         "the model's {} decode to more than the {} bytes a file of its size \
                          may",
                         self.what, self.limit
                     ))
                 } else {
-                    too_large(&format!("bytes of {}", self.data), MAX_DECODED_BYTES)
+                    too_large(&format!("bytes of {}", self.data), self.max)
                 }
             })?;
         self.spent.set(total);
@@ -168,15 +183,25 @@ impl<'a> Buffers<'a> {
             decoded: Budget::new(
                 file_bytes,
                 DECODED_BYTES_PER_FILE_BYTE,
+                MAX_DECODED_BYTES,
                 "accessors",
                 "accessor data",
             ),
-            #[cfg(any(feature = "draco", feature = "meshopt"))]
-            compressed: Budget::new(
+            #[cfg(feature = "meshopt")]
+            meshopt: Budget::new(
                 file_bytes,
                 COMPRESSED_BYTES_PER_FILE_BYTE,
-                "compressed meshes",
-                "compressed mesh data",
+                MAX_DECODED_BYTES,
+                "meshopt buffer views",
+                "meshopt buffer data",
+            ),
+            #[cfg(feature = "draco")]
+            draco: Budget::new(
+                file_bytes,
+                COMPRESSED_BYTES_PER_FILE_BYTE,
+                MAX_DRACO_DECODED_BYTES,
+                "Draco meshes",
+                "Draco mesh data",
             ),
         };
         #[cfg(feature = "meshopt")]
@@ -214,10 +239,22 @@ impl<'a> Buffers<'a> {
             .ok_or_else(|| invalid("a buffer view names a buffer the model lacks"))
     }
 
-    /// Counts `bytes` of decoded compressed geometry toward its budget, failing past it.
-    #[cfg(any(feature = "draco", feature = "meshopt"))]
-    pub(super) fn spend_compressed(&self, bytes: usize) -> Result<(), ModelError> {
-        self.compressed.spend(bytes)
+    /// Counts `bytes` of decoded meshopt buffer views toward their budget, failing past it.
+    #[cfg(feature = "meshopt")]
+    pub(super) fn spend_meshopt(&self, bytes: usize) -> Result<(), ModelError> {
+        self.meshopt.spend(bytes)
+    }
+
+    /// Counts `bytes` a Draco decoder is allowed toward their budget, failing past it.
+    #[cfg(feature = "draco")]
+    pub(super) fn spend_draco(&self, bytes: usize) -> Result<(), ModelError> {
+        self.draco.spend(bytes)
+    }
+
+    /// What is left of the Draco budget.
+    #[cfg(feature = "draco")]
+    pub(super) fn draco_remaining(&self) -> usize {
+        self.draco.remaining()
     }
 
     /// Where the bytes of buffer view `view` are.

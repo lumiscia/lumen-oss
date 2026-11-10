@@ -122,7 +122,7 @@ fn decode_view(
         }
         (filter, _) => return Err(malformed(&format!("has an unknown filter `{filter}`"))),
     }
-    buffers.spend_compressed(decoded)?;
+    buffers.spend_meshopt(decoded)?;
 
     let corrupt = |error: meshoptimizer::Error| {
         invalid(format!(

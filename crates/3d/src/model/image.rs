@@ -56,18 +56,45 @@ fn pixel_bytes(bytes: &[u8]) -> Result<(ImageFormat, Cow<'_, [u8]>), ModelError>
     }
 }
 
-/// Fails an image of `bytes` encoded bytes whose `width` x `height` pixels, with their mips, are
-/// more than [`COMPRESSED_IMAGE_PIXELS_PER_BYTE`] allows.
-fn check_expansion(width: u32, height: u32, bytes: usize) -> Result<(), ModelError> {
-    let allowed = (bytes as u64)
-        .saturating_mul(COMPRESSED_IMAGE_PIXELS_PER_BYTE)
-        .max(MIN_COMPRESSED_IMAGE_PIXELS);
-    if mip_pixels(width, height) > allowed {
-        return Err(ModelError::TooLarge(format!(
-            "an image in the model decodes to more than the {allowed} pixels its {bytes} bytes may"
-        )));
+/// The pixels, with their mips, and the encoded bytes of a model's KTX2 and WebP images, which
+/// together may hold no more pixels than [`COMPRESSED_IMAGE_PIXELS_PER_BYTE`] allows.
+#[derive(Default)]
+pub(super) struct Expansion {
+    pixels: u64,
+    bytes: u64,
+}
+
+impl Expansion {
+    /// Counts the image of `bytes` encoded bytes whose header is `header`, when it is KTX2 or
+    /// WebP.
+    pub(super) fn add(&mut self, header: Header, bytes: usize) {
+        let expands = match header.format {
+            Format::Raster(format) => format != ImageFormat::Png && format != ImageFormat::Jpeg,
+            #[cfg(feature = "ktx2")]
+            Format::Ktx2(_) => true,
+        };
+        if expands {
+            self.pixels = self
+                .pixels
+                .saturating_add(mip_pixels(header.width, header.height));
+            self.bytes = self.bytes.saturating_add(bytes as u64);
+        }
     }
-    Ok(())
+
+    pub(super) fn check(&self) -> Result<(), ModelError> {
+        let allowed = self
+            .bytes
+            .saturating_mul(COMPRESSED_IMAGE_PIXELS_PER_BYTE)
+            .max(MIN_COMPRESSED_IMAGE_PIXELS);
+        if self.pixels > allowed {
+            return Err(ModelError::TooLarge(format!(
+                "the model's KTX2 and WebP images decode to more than the {allowed} pixels their \
+                 {} bytes may",
+                self.bytes
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Reads the header of the image in `bytes`, keeping nothing of it. A KTX2 image's container is
@@ -76,15 +103,17 @@ pub(super) fn header(bytes: &[u8]) -> Result<Header, ModelError> {
     #[cfg(feature = "ktx2")]
     if bytes.starts_with(&super::ktx2::MAGIC) {
         let container = super::ktx2::check(bytes)?;
-        check_expansion(container.width, container.height, bytes.len())?;
         return Ok(Header {
             format: Format::Ktx2(container),
             width: container.width,
             height: container.height,
         });
     }
-    let encoded = bytes.len();
     let (format, bytes) = pixel_bytes(bytes)?;
+    #[cfg(feature = "webp")]
+    let walked = (format == ImageFormat::WebP)
+        .then(|| webp_size(&bytes))
+        .transpose()?;
     // A JPEG's header segments are copied as they are, without decompressing anything, so
     // reading them takes memory and time in proportion to the file.
     let (width, height) = guarded("an image", || {
@@ -98,8 +127,9 @@ pub(super) fn header(bytes: &[u8]) -> Result<Header, ModelError> {
     if width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE {
         return Err(too_large("pixels across one image", MAX_IMAGE_SIDE));
     }
-    if format != ImageFormat::Png && format != ImageFormat::Jpeg {
-        check_expansion(width, height, encoded)?;
+    #[cfg(feature = "webp")]
+    if walked.is_some_and(|size| size != (width, height)) {
+        return Err(webp_malformed("its image is another size than its canvas"));
     }
     Ok(Header {
         format: Format::Raster(format),
@@ -132,6 +162,99 @@ fn png_pixel_chunks(bytes: &[u8]) -> Result<Vec<u8>, ModelError> {
         rest = &rest[end..];
     }
     Ok(out)
+}
+
+#[cfg(feature = "webp")]
+fn webp_malformed(why: &str) -> ModelError {
+    invalid(format!("a WebP image in the model is corrupt: {why}"))
+}
+
+/// The size of the one still image the WebP in `bytes` holds, from its bitstream's header, which
+/// in an extended file must match its canvas. Animations, files of more than one image, and alpha
+/// beside a lossless image are rejected, so that what the decoder allocates follows from the size
+/// checked.
+#[cfg(feature = "webp")]
+fn webp_size(bytes: &[u8]) -> Result<(u32, u32), ModelError> {
+    let le = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .rev()
+            .fold(0u32, |sum, &byte| sum << 8 | u32::from(byte))
+    };
+    let riff = bytes
+        .get(4..8)
+        .map(le)
+        .and_then(|length| usize::try_from(length).ok()?.checked_add(8))
+        .and_then(|end| bytes.get(12..end))
+        .filter(|_| bytes.get(8..12) == Some(b"WEBP"))
+        .ok_or_else(|| webp_malformed("its RIFF header is out of place"))?;
+    let (mut canvas, mut image, mut alpha) = (None, None, false);
+    let mut rest = riff;
+    while !rest.is_empty() {
+        let (Some(kind), Some(length)) = (rest.get(..4), rest.get(4..8).map(le)) else {
+            return Err(webp_malformed("it ends inside a chunk header"));
+        };
+        let data = usize::try_from(length)
+            .ok()
+            .and_then(|length| rest.get(8..8 + length))
+            .ok_or_else(|| webp_malformed("a chunk reaches past its end"))?;
+        let first = canvas.is_none() && image.is_none() && !alpha;
+        match kind {
+            b"VP8X" if first => {
+                let header = data
+                    .get(..10)
+                    .ok_or_else(|| webp_malformed("its VP8X chunk is too short"))?;
+                if header[0] & 0x02 != 0 {
+                    return Err(unsupported("an image in the model is an animated WebP"));
+                }
+                canvas = Some((le(&header[4..7]) + 1, le(&header[7..10]) + 1));
+            }
+            b"ANIM" | b"ANMF" => {
+                return Err(unsupported("an image in the model is an animated WebP"));
+            }
+            b"ALPH" if canvas.is_some() && image.is_none() && !alpha => {
+                if data.first().is_none_or(|header| header & 0x03 > 1) {
+                    return Err(webp_malformed("its alpha is compressed in an unknown way"));
+                }
+                alpha = true;
+            }
+            b"VP8 " if image.is_none() && (first || canvas.is_some()) => {
+                // A key frame's tag, its start code, and its 14-bit width and height.
+                let header = data
+                    .get(..10)
+                    .filter(|header| header[0] & 1 == 0 && header[3..6] == [0x9d, 0x01, 0x2a])
+                    .ok_or_else(|| webp_malformed("its lossy image has no key frame header"))?;
+                image = Some((le(&header[6..8]) & 0x3fff, le(&header[8..10]) & 0x3fff));
+            }
+            b"VP8L" if image.is_none() && !alpha && (first || canvas.is_some()) => {
+                // A signature, then the width and height less one in 14 bits each, an alpha bit
+                // and a version of 0.
+                let bits = data
+                    .get(..5)
+                    .filter(|header| header[0] == 0x2f)
+                    .map(|header| le(&header[1..5]))
+                    .filter(|bits| bits >> 29 == 0)
+                    .ok_or_else(|| webp_malformed("its lossless image has no header"))?;
+                image = Some(((bits & 0x3fff) + 1, (bits >> 14 & 0x3fff) + 1));
+            }
+            b"VP8X" | b"ALPH" | b"VP8 " | b"VP8L" => {
+                return Err(webp_malformed("its chunks are out of order or repeated"));
+            }
+            // Colour profiles and metadata, which glTF ignores, in an extended file only.
+            _ if canvas.is_some() => {}
+            _ => return Err(webp_malformed("it holds chunks a simple file can't")),
+        }
+        // Chunks are padded to an even length.
+        rest = rest
+            .get((8 + data.len()).next_multiple_of(2)..)
+            .unwrap_or_default();
+    }
+    match (canvas, image) {
+        (Some(canvas), Some(image)) if canvas == image => Ok(image),
+        (None, Some(image)) => Ok(image),
+        (Some(_), Some(_)) => Err(webp_malformed("its image is another size than its canvas")),
+        (_, None) => Err(webp_malformed("it holds no image")),
+    }
 }
 
 fn corrupt(error: ImageError) -> ModelError {
