@@ -214,15 +214,17 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 
 // Where a sample of the raster belongs: at `uv`, moved to the centre of the output pixel the
 // sample is part of, so that the samples averaged into a pixel all read the same place and a
-// raster drawn pixel for pixel isn't filtered twice. Minified rasters keep each sample's own
-// place, since averaging distinct samples is what filters them. `dx` and `dy` are the change in
-// `uv` over a sample, and `position` the sample's place in the supersampled target.
+// raster shown at its own size or larger isn't filtered twice. A raster shown smaller keeps each
+// sample's own place, since averaging distinct samples is what filters it, and moving them
+// together would shrink that filter. `dx` and `dy` are the change in `uv` over a sample, and
+// `position` the sample's place in the supersampled target.
 fn pixel_centre_uv(position: vec2<f32>, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec2<f32> {
     let scale = f32(max(globals.supersample, 1u));
     let to_centre = (floor(position / scale) + vec2<f32>(0.5)) * scale - position;
     let size = vec2<f32>(textureDimensions(raster_tex));
     let texels_per_pixel = max(length(dx * size), length(dy * size)) * scale;
-    let weight = clamp((3.0 - texels_per_pixel) / 1.5, 0.0, 1.0);
+    // One texel per pixel, with margin for the rounding of derivatives, down to the ramp's end.
+    let weight = clamp((1.25 - texels_per_pixel) / 0.2, 0.0, 1.0);
     return uv + weight * (dx * to_centre.x + dy * to_centre.y);
 }
 

@@ -619,7 +619,7 @@ fn a_plane_drawn_pixel_for_pixel_keeps_one_pixel_detail_at_any_supersample() {
         render_3d_with(json!({ "supersample": supersample }), nodes)
     };
     check(
-        [1, 2, 4]
+        [1, 2, 3, 4]
             .map(|supersample| {
                 Case::new(
                     format!("supersample {supersample}"),
@@ -630,6 +630,76 @@ fn a_plane_drawn_pixel_for_pixel_keeps_one_pixel_detail_at_any_supersample() {
             })
             .into(),
     );
+}
+
+#[test]
+fn a_plane_smaller_than_its_source_is_filtered_by_supersampling_alone() {
+    // 32 x 32 output pixels show 64 x 64 texels. Without supersampling a pixel reads the raster at
+    // its centre, so moving the plane a quarter pixel each way reads it where the four
+    // supersamples of the default do; averaging those four in linear light is what it should give.
+    let seen = |params: Value, offset: [f64; 2]| {
+        let mut nodes = vec![plate(10)];
+        nodes.extend([
+            plane(
+                1,
+                10,
+                json!({ "width": 2, "position": [offset[0], offset[1], 0] }),
+            ),
+            ortho(2, json!({})),
+            merge(3, &[1, 2], json!({})),
+        ]);
+        Composition::from(render_3d_with(params, nodes))
+    };
+    let to_linear = |byte: u8| {
+        let c = f64::from(byte) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let to_srgb = |c: f64| {
+        let c = if c <= 0.0031308 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
+        (c * 255.0).round() as u8
+    };
+    let gpu = gpu();
+    let media = fine_detail();
+    let supersampled = render(
+        &mut gpu.renderer(),
+        &seen(json!({ "supersample": 2 }), [0.0, 0.0]),
+        0.0,
+        &media,
+    );
+    // A quarter pixel is 1/64 of a unit.
+    let quarter = 1.0 / 64.0;
+    let shifted: Vec<Frame> = [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)]
+        .iter()
+        .map(|(x, y)| {
+            let composition = seen(json!({ "supersample": 1 }), [x * quarter, y * quarter]);
+            render(&mut gpu.renderer(), &composition, 0.0, &media)
+        })
+        .collect();
+    // The plane covers pixels 16 to 48, and its edges are left out.
+    for y in 18..46 {
+        for x in 18..46 {
+            for channel in 0..3 {
+                let sum: f64 = shifted
+                    .iter()
+                    .map(|frame| to_linear(frame.pixel(x, y)[channel]))
+                    .sum();
+                let expected = to_srgb(sum / 4.0);
+                let actual = supersampled.pixel(x, y)[channel];
+                assert!(
+                    actual.abs_diff(expected) <= 1,
+                    "({x}, {y}) channel {channel} is {actual}, expected {expected}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -988,4 +1058,30 @@ fn compiling_reaches_the_programs_of_a_planes_source_through_the_scene_nodes() {
     render(&mut renderer, &composition, 0.0, &TestMedia::default());
 
     assert_eq!(renderer.created_program_count(), compiled);
+}
+
+#[test]
+fn a_clip_canvas_larger_than_the_device_allows_fails_naming_the_clip() {
+    let max = gpu()
+        .renderer()
+        .gpu_renderer()
+        .device
+        .limits()
+        .max_texture_dimension_2d;
+    let width = max + 1;
+    let mut wide = wide_clip(
+        json!({ "id": 1, "type": "media_in", "params": { "kind": "image", "source": "plate" } }),
+    );
+    wide.0["compositions"]["wide"]["render_settings"]["width"] = json!(width);
+    let error = gpu()
+        .renderer()
+        .render_frame_at(&wide.into(), 0.0, &image(|_, _| RED))
+        .expect_err("the render fails")
+        .to_string();
+    assert!(
+        error.contains(&format!(
+            "a {width}x64 canvas is larger than this device's {max}-pixel texture limit"
+        )) && error.contains("Clip"),
+        "{error}"
+    );
 }

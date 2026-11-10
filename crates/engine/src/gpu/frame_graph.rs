@@ -1137,6 +1137,18 @@ impl<'a> FrameCx<'a> {
     pub(crate) fn input_native(&mut self, node_id: NodeId) -> crate::Result<Raster> {
         if let Some(NodeKind::Clip(clip)) = self.scope.node(node_id) {
             let canvas = clip.content_canvas(&self.scope)?;
+            let max = self.rec.device().limits().max_texture_dimension_2d;
+            if canvas.width > max || canvas.height > max {
+                return Err(RenderError::NodeEvaluation {
+                    node_id,
+                    node_kind: "Clip",
+                    details: format!(
+                        "a {}x{} canvas is larger than this device's {max}-pixel texture limit",
+                        canvas.width, canvas.height
+                    ),
+                }
+                .into());
+            }
             return match clip.route(&self.scope, self.frame, self.media)? {
                 Some(routed) => {
                     let raster = self.place_routed(routed, canvas)?;

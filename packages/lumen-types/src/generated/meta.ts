@@ -1486,6 +1486,8 @@ export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation">
  * ordered by its centre among blended objects, so its transparent parts show what is behind it.
  * Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers
  * separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
+ * A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
+ * filtered by `render_3d`'s `supersample`.
  */
 export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> {
   readonly params?: {
