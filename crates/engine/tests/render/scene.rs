@@ -1269,8 +1269,9 @@ fn a_normal_map_tilts_a_surface_as_vertex_normals_tilting_the_same_way_do() {
     let lean = std::f32::consts::FRAC_1_SQRT_2;
     let (right, up) = ([218, 128, 218, 255], [128, 218, 218, 255]);
     // Each case's texel, whether its texture coordinates run right to left, the model's scale
-    // along X, and the vertex normal that tilts the surface the same way.
-    let cases = [
+    // along X, and the vertex normal that tilts the surface the same way. Each is seen from in
+    // front and, turned about Y, from behind.
+    let fronts = [
         ("+X towards +U", right, false, 1.0, [lean, 0.0, lean]),
         ("+Y up the image", up, false, 1.0, [0.0, lean, lean]),
         ("+X with U mirrored", right, true, 1.0, [-lean, 0.0, lean]),
@@ -1282,7 +1283,15 @@ fn a_normal_map_tilts_a_surface_as_vertex_normals_tilting_the_same_way_do() {
             [lean, 0.0, lean],
         ),
     ];
-    let cases = cases.map(|(name, texel, mirrored_u, scale_x, normal)| {
+    let cases = fronts
+        .into_iter()
+        .flat_map(|case| [(case, false), (case, true)]);
+    let cases = cases.map(|((name, texel, mirrored_u, scale_x, normal), behind)| {
+        let name = if behind {
+            format!("{name}, from behind")
+        } else {
+            name.to_string()
+        };
         let opposite = [-normal[0], -normal[1], normal[2]];
         let quad = |left: f32, material: usize, normal: [f32; 3], mirrored_u: bool| Quad {
             edges: [left, -0.6, left + 1.2, 0.6],
@@ -1292,8 +1301,9 @@ fn a_normal_map_tilts_a_surface_as_vertex_normals_tilting_the_same_way_do() {
         };
         let glb = model_glb(
             json!([
-                { "normalTexture": { "index": 0 }, "pbrMetallicRoughness": { "roughnessFactor": 1 } },
-                { "pbrMetallicRoughness": { "roughnessFactor": 1 } },
+                { "normalTexture": { "index": 0 }, "pbrMetallicRoughness": { "roughnessFactor": 1 },
+                  "doubleSided": true },
+                { "pbrMetallicRoughness": { "roughnessFactor": 1 }, "doubleSided": true },
             ]),
             Some(&texel_png(texel)),
             &[
@@ -1305,27 +1315,46 @@ fn a_normal_map_tilts_a_surface_as_vertex_normals_tilting_the_same_way_do() {
         let scene = render_3d_with(
             json!({ "environment": 0 }),
             vec![
-                model(1, json!({ "source": "card.glb", "scale": [scale_x, 1, 1] })),
+                model(
+                    1,
+                    json!({
+                        "source": "card.glb",
+                        "scale": [scale_x, 1, 1],
+                        "rotation": [0, if behind { 180 } else { 0 }, 0],
+                    }),
+                ),
                 ortho(2, json!({})),
                 json!({ "id": 3, "type": "light_3d", "params": { "rotation": [25, 35, 0] } }),
                 merge(4, &[1, 2, 3], json!({})),
             ],
         );
-        let pixel = move |frame: &Frame, x: f32| frame.pixel((32.0 + x * scale_x * 16.0) as u32, CENTER);
+        let across = if behind { -scale_x } else { scale_x };
+        let pixel =
+            move |frame: &Frame, x: f32| frame.pixel((32.0 + x * across * 16.0) as u32, CENTER);
         Case::new(
-            name,
+            &name,
             scene,
             Expect::Custom(Box::new(move |frames| {
-                let (mapped, reference, other) =
-                    (pixel(&frames[0], -1.3), pixel(&frames[0], 0.0), pixel(&frames[0], 1.3));
-                let differ = |a: [u8; 4], b: [u8; 4]| (0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap();
-                assert!(differ(reference, other) > 20, "the light tells the leans apart: {reference:?}, {other:?}");
-                assert!(differ(mapped, reference) <= 3, "mapped {mapped:?}, vertex normals {reference:?}, opposite {other:?}");
+                let (mapped, reference, other) = (
+                    pixel(&frames[0], -1.3),
+                    pixel(&frames[0], 0.0),
+                    pixel(&frames[0], 1.3),
+                );
+                let differ =
+                    |a: [u8; 4], b: [u8; 4]| (0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap();
+                assert!(
+                    differ(reference, other) > 20,
+                    "the light tells the leans apart: {reference:?}, {other:?}"
+                );
+                assert!(
+                    differ(mapped, reference) <= 3,
+                    "mapped {mapped:?}, vertex normals {reference:?}, opposite {other:?}"
+                );
             })),
         )
         .media(TestMedia::default().model("card.glb", glb))
     });
-    check(cases.into());
+    check(cases.collect());
 }
 
 #[test]

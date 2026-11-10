@@ -384,6 +384,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     }
 
     let v = view_direction(in.world);
+    // Whether this is the back of the surface by its winding, which is lit by its normal reversed.
+    let back = front == has(o.flags, FLAG_MIRRORED);
     // A normal the world matrix flattened away, on a face it left without area, faces the viewer.
     var n = v;
     if (has(o.flags, FLAG_FLAT_NORMALS)) {
@@ -394,15 +396,13 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     } else {
         let normal = unit(in.normal);
         if (any(normal != vec3<f32>(0.0))) {
-            n = normal;
-            let mirrored = has(o.flags, FLAG_MIRRORED);
-            if (front == mirrored) {
-                n = -n;
-            }
+            n = select(normal, -normal, back);
         }
     }
     if (has(o.flags, FLAG_NORMAL_MAP)) {
-        n = mapped_normal(n, in.uv, world_dx, world_dy, uv_dx, uv_dy, o.normal_scale);
+        // The map tilts the surface's own side; its back is lit by that tilted normal reversed.
+        let side = select(1.0, -1.0, back);
+        n = side * mapped_normal(side * n, in.uv, world_dx, world_dy, uv_dx, uv_dy, o.normal_scale);
     }
     let n_dot_v = max(dot(n, v), 1e-4);
     var metallic = o.metallic;
