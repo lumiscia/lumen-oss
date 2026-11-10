@@ -18,6 +18,11 @@ metal = ["dep:objc2-metal", "lumen-ffmpeg?/metal", "lumen-gpu/metal"]
 vulkan = ["lumen-ffmpeg?/vulkan", "lumen-gpu/vulkan"]
 cuda = ["lumen-ffmpeg?/cuda"]
 "3d" = ["dep:lumen-3d"]
+# Compressed models: Draco meshes, meshopt buffers, KTX2 (Basis Universal) and WebP textures.
+"3d-draco" = ["3d", "lumen-3d/draco"]
+"3d-meshopt" = ["3d", "lumen-3d/meshopt"]
+"3d-ktx2" = ["3d", "lumen-3d/ktx2"]
+"3d-webp" = ["3d", "lumen-3d/webp"]
 
 [dependencies]
 thiserror = "2.0.18"

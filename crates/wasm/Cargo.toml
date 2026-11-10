@@ -8,8 +8,12 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["3d"]
+default = ["3d", "3d-meshopt"]
 "3d" = ["lumen-engine/3d"]
+"3d-draco" = ["lumen-engine/3d-draco"]
+"3d-meshopt" = ["lumen-engine/3d-meshopt"]
+"3d-ktx2" = ["lumen-engine/3d-ktx2"]
+"3d-webp" = ["lumen-engine/3d-webp"]
 
 [dependencies]
 js-sys = "0.3"
