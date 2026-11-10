@@ -7,6 +7,8 @@
 #[cfg(feature = "3d")]
 pub(crate) mod collect;
 #[cfg(feature = "3d")]
+mod environment;
+#[cfg(feature = "3d")]
 pub(crate) mod render;
 
 use crate::node::vector::paint::Paint;
@@ -521,10 +523,28 @@ pub struct Render3dParams {
     /// How light brighter than white is brought into range.
     #[meta(kind = "enum", enum_type = ToneMapping)]
     pub tone_mapping: ToneMapping,
-    /// Brightness of the built-in studio of softboxes that surfaces reflect and are lit by from
-    /// all around. 0 turns it off.
+    /// Brightness of the light from all around that surfaces reflect and are lit by: the
+    /// `environment_map` when one is set, and otherwise a built-in studio of softboxes. 0 turns it
+    /// off.
     #[meta(min = 0, step = 0.1)]
     pub environment: f64,
+    /// An equirectangular Radiance `.hdr` or OpenEXR `.exr` file that lights the scene from all
+    /// around in place of the studio: a path or `media` alias, or `asset:<id>` for an environment
+    /// map asset of the host's. Its centre is the view along -Z, with +X to its right and +Y at
+    /// its top. While a map lights a scene without lights, it gets no default ones. Empty uses
+    /// the studio.
+    #[meta(role = "source_id")]
+    pub environment_map: String,
+    /// Turn of the environment map about +Y in degrees, as a yaw turns an object.
+    #[meta(step = 1)]
+    pub environment_rotation: f64,
+    /// Shows the environment map behind the scene, through the exposure and tone mapping but not
+    /// the fog, which makes the output opaque. Shadow catchers darken it.
+    #[meta()]
+    pub environment_background: bool,
+    /// How blurred the background is, as a surface of this roughness reflects it: 0 is sharp.
+    #[meta(min = 0, max = 1, step = 0.05)]
+    pub environment_background_blur: f64,
     /// Colour surfaces fade to with distance. Must be a solid color.
     #[meta(role = "color")]
     pub fog_color: Paint,
@@ -543,13 +563,18 @@ impl Default for Render3dParams {
             exposure: 0.0,
             tone_mapping: ToneMapping::None,
             environment: 1.0,
+            environment_map: String::new(),
+            environment_rotation: 0.0,
+            environment_background: false,
+            environment_background_blur: 0.0,
             fog_color: Paint::solid([255, 255, 255, 255]),
             fog_density: 0.0,
         }
     }
 }
 
-/// Draws a 3D scene into a raster, with a transparent background.
+/// Draws a 3D scene into a raster, with a transparent background unless it shows its environment
+/// map.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "render_3d", name = "Render 3D", category = "scene")]
 pub struct Render3d {

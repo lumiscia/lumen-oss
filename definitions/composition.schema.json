@@ -5196,7 +5196,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Draws a 3D scene into a raster, with a transparent background.",
+            "description": "Draws a 3D scene into a raster, with a transparent background unless it shows its environment\nmap.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -5215,11 +5215,78 @@
                       }
                     ],
                     "default": 1.0,
-                    "description": "Brightness of the built-in studio of softboxes that surfaces reflect and are lit by from\nall around. 0 turns it off.",
+                    "description": "Brightness of the light from all around that surfaces reflect and are lit by: the\n`environment_map` when one is set, and otherwise a built-in studio of softboxes. 0 turns it\noff.",
                     "title": "Environment",
                     "x-lumen-constraints": {
                       "min": 0.0,
                       "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "environment_background": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Shows the environment map behind the scene, through the exposure and tone mapping but not\nthe fog, which makes the output opaque. Shadow catchers darken it.",
+                    "title": "Environment Background",
+                    "x-lumen-kind": "bool"
+                  },
+                  "environment_background_blur": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "How blurred the background is, as a surface of this roughness reflects it: 0 is sharp.",
+                    "title": "Environment Background Blur",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "environment_map": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "An equirectangular Radiance `.hdr` or OpenEXR `.exr` file that lights the scene from all\naround in place of the studio: a path or `media` alias, or `asset:<id>` for an environment\nmap asset of the host's. Its centre is the view along -Z, with +X to its right and +Y at\nits top. While a map lights a scene without lights, it gets no default ones. Empty uses\nthe studio.",
+                    "title": "Environment Map",
+                    "x-lumen-constraints": {
+                      "role": "source_id"
+                    },
+                    "x-lumen-kind": "string"
+                  },
+                  "environment_rotation": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Turn of the environment map about +Y in degrees, as a yaw turns an object.",
+                    "title": "Environment Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
                     },
                     "x-lumen-kind": "float"
                   },

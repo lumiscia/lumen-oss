@@ -739,6 +739,7 @@ fn asset_of(media: &Media, dir: &Path) -> Option<Asset> {
         MediaKind::Audio => Asset::Audio(content),
         MediaKind::Font => Asset::Font(vec![content]),
         MediaKind::Model => Asset::Model(content),
+        MediaKind::Environment => Asset::Environment(content),
     })
 }
 

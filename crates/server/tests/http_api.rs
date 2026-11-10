@@ -1338,6 +1338,15 @@ fn media_uploads_are_probed_once_their_bytes_are_complete() {
         "{truncated}"
     );
 
+    let sky = upload(
+        &server,
+        "sky.hdr",
+        "image/vnd.radiance",
+        b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 2\n\x80\x80\x80\x81\x80\x80\x80\x81",
+    );
+    assert_eq!(sky["kind"], "environment", "{sky}");
+    assert_eq!(sky["metadata"], json!({ "width": 2, "height": 1 }));
+
     let fake = upload(&server, "fake.png", "image/png", b"not media");
     assert_eq!(fake["status"], "rejected", "{fake}");
     assert!(fake["rejectionReason"].is_string(), "{fake}");

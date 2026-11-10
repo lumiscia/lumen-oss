@@ -36,7 +36,7 @@ const SWEEP_FRAMES: u64 = 60;
 /// Programs built from runtime shader source that stay cached.
 const MAX_DYNAMIC_PROGRAMS: usize = 64;
 /// Most bindings a pass can have.
-pub const MAX_PASS_BINDINGS: usize = 24;
+pub const MAX_PASS_BINDINGS: usize = 28;
 const BUMP_ALIGNMENT: u32 = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

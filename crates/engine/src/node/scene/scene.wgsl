@@ -34,6 +34,8 @@ const LIGHT_SPOT: u32 = 2u;
 const SHADOW_TAPS: u32 = 32u;
 // The widest the taps spread, in texels; `MAX_FILTER_TEXELS` in `lumen_3d`.
 const MAX_SHADOW_RADIUS: f32 = 16.0;
+// Cells of the environment's split-sum table along each axis; `BRDF_TABLE_SIZE` in `lumen_3d`.
+const BRDF_TABLE_SIZE: u32 = 32u;
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -54,6 +56,22 @@ struct Globals {
     exposure: f32,
     // Samples per output pixel along each axis.
     supersample: u32,
+}
+
+// An equirectangular environment map, whose centre looks along -Z with +X to its right.
+struct Environment {
+    // Irradiance over pi as spherical-harmonic coefficients, in the map's own frame.
+    irradiance: array<vec4<f32>, 9>,
+    // Clip space to world space, for the directions behind each pixel.
+    clip_to_world: mat4x4<f32>,
+    // The cosine and sine of the map's turn about +Y.
+    turn: vec2<f32>,
+    // The last reflection level, which is for roughness 1.
+    roughest: f32,
+    // The roughness the background is blurred to.
+    background_blur: f32,
+    // 1 when a map lights the scene in place of the studio.
+    map: u32,
 }
 
 struct Object {
@@ -157,6 +175,16 @@ struct ShadowView {
 // Each view's depth over the light's reach, 1 where nothing casts a shadow.
 @group(0) @binding(21) var shadow_map: texture_depth_2d;
 @group(0) @binding(22) var shadow_sampler: sampler_comparison;
+@group(0) @binding(23) var<uniform> environment: Environment;
+// The map's reflections, mip level `i` for a roughness of `i / roughest`.
+@group(0) @binding(24) var environment_map: texture_2d<f32>;
+// The map at its decoded size, for the background.
+@group(0) @binding(25) var environment_background: texture_2d<f32>;
+// Wraps around horizontally and clamps vertically.
+@group(0) @binding(26) var environment_sampler: sampler;
+// The split sum's scale and bias of `f0`: by n·v at cell centres along each row, and by roughness
+// from 0 to 1 down the rows.
+@group(0) @binding(27) var<storage, read> environment_brdf: array<vec2<f32>>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -360,12 +388,97 @@ fn studio(direction: vec3<f32>, blur: f32) -> vec3<f32> {
 
 // Light a diffuse surface facing `n` receives from all around, over pi.
 fn diffuse_environment(n: vec3<f32>) -> vec3<f32> {
+    if (environment.map != 0u) {
+        return sky(n) + map_irradiance(n) * globals.environment;
+    }
     return sky(n) + studio(n, 1.2) * globals.environment;
 }
 
 // Light reflected towards the viewer along `direction` by a surface of `roughness`.
 fn specular_environment(direction: vec3<f32>, roughness: f32) -> vec3<f32> {
+    if (environment.map != 0u) {
+        return sky(direction) + map_reflection(direction, roughness) * globals.environment;
+    }
     return sky(direction) + studio(direction, roughness * roughness * 1.5) * globals.environment;
+}
+
+// Where the environment map shows the world direction `d`, turned into the map's frame.
+fn map_uv(d: vec3<f32>) -> vec2<f32> {
+    let c = environment.turn.x;
+    let s = environment.turn.y;
+    let m = unit(vec3<f32>(c * d.x - s * d.z, d.y, s * d.x + c * d.z));
+    return vec2<f32>(0.5 + atan2(m.x, -m.z) / (2.0 * PI), acos(clamp(m.y, -1.0, 1.0)) / PI);
+}
+
+// The map's light reflected along `direction` by a surface of `roughness`.
+fn map_reflection(direction: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let level = clamp(roughness, 0.0, 1.0) * environment.roughest;
+    return textureSampleLevel(environment_map, environment_sampler, map_uv(direction), level).rgb;
+}
+
+// The map's irradiance over pi on a surface facing `n`, from its harmonics; `sh_basis` in
+// `lumen_3d`.
+fn map_irradiance(n: vec3<f32>) -> vec3<f32> {
+    let c = environment.turn.x;
+    let s = environment.turn.y;
+    let d = vec3<f32>(c * n.x - s * n.z, n.y, s * n.x + c * n.z);
+    let sh = environment.irradiance;
+    var e = sh[0].rgb * 0.282095;
+    e += (sh[1].rgb * d.y + sh[2].rgb * d.z + sh[3].rgb * d.x) * 0.488603;
+    e += (sh[4].rgb * (d.x * d.y) + sh[5].rgb * (d.y * d.z) + sh[7].rgb * (d.x * d.z)) * 1.092548;
+    e += sh[6].rgb * (0.315392 * (3.0 * d.z * d.z - 1.0));
+    e += sh[8].rgb * (0.546274 * (d.x * d.x - d.y * d.y));
+    return max(e, vec3<f32>(0.0));
+}
+
+// The split sum's scale and bias of `f0` at `n_dot_v` and `roughness`, interpolated in its table.
+fn environment_split_sum(n_dot_v: f32, roughness: f32) -> vec2<f32> {
+    let last = f32(BRDF_TABLE_SIZE - 1u);
+    let x = clamp(n_dot_v * f32(BRDF_TABLE_SIZE) - 0.5, 0.0, last);
+    let y = clamp(roughness, 0.0, 1.0) * last;
+    let x0 = u32(x);
+    let y0 = u32(y);
+    let x1 = min(x0 + 1u, BRDF_TABLE_SIZE - 1u);
+    let y1 = min(y0 + 1u, BRDF_TABLE_SIZE - 1u);
+    let top = mix(environment_brdf[y0 * BRDF_TABLE_SIZE + x0], environment_brdf[y0 * BRDF_TABLE_SIZE + x1], x - f32(x0));
+    let bottom = mix(environment_brdf[y1 * BRDF_TABLE_SIZE + x0], environment_brdf[y1 * BRDF_TABLE_SIZE + x1], x - f32(x0));
+    return mix(top, bottom, y - f32(y0));
+}
+
+// How much of the reflected light from all around an occlusion of `occlusion` leaves (Lagarde).
+fn specular_occlusion(n_dot_v: f32, occlusion: f32, roughness: f32) -> f32 {
+    return clamp(pow(n_dot_v + occlusion, exp2(-16.0 * roughness - 1.0)) - 1.0 + occlusion, 0.0, 1.0);
+}
+
+struct BackgroundOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) ndc: vec2<f32>,
+}
+
+// A triangle covering the target.
+@vertex
+fn vs_background(@builtin(vertex_index) index: u32) -> BackgroundOut {
+    let ndc = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u)) * 2.0 - 1.0;
+    var out: BackgroundOut;
+    out.clip = vec4<f32>(ndc, 0.0, 1.0);
+    out.ndc = ndc;
+    return out;
+}
+
+// The environment map seen behind the pixel, displayed as surfaces are and unfogged, blurred
+// from the sharp map into its reflection levels.
+@fragment
+fn fs_background(in: BackgroundOut) -> @location(0) vec4<f32> {
+    let near = environment.clip_to_world * vec4<f32>(in.ndc, 0.0, 1.0);
+    let far = environment.clip_to_world * vec4<f32>(in.ndc, 1.0, 1.0);
+    let uv = map_uv(far.xyz / far.w - near.xyz / near.w);
+    let level = clamp(environment.background_blur, 0.0, 1.0) * environment.roughest;
+    var radiance = textureSampleLevel(environment_map, environment_sampler, uv, level).rgb;
+    if (level < 1.0) {
+        let sharp = textureSampleLevel(environment_background, environment_sampler, uv, 0.0).rgb;
+        radiance = mix(sharp, radiance, level);
+    }
+    return vec4<f32>(display(radiance * globals.environment), 1.0);
 }
 
 // `v` at unit length, scaled first so that its squared length neither overflows nor underflows.
@@ -681,8 +794,18 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     }
     let reflected = reflect(-v, n);
     let blurred = normalize(mix(reflected, n, alpha * alpha));
-    color += diffuse_color * diffuse_environment(n) * occlusion;
-    color += specular_environment(blurred, roughness) * env_brdf(f0, roughness, n_dot_v) * occlusion;
+    if (environment.map != 0u) {
+        // What the surface reflects of light from all around, and what passes into its diffuse
+        // layer.
+        let split = environment_split_sum(n_dot_v, roughness);
+        let reflectance = f0 * split.x + split.y;
+        color += diffuse_color * diffuse_environment(n) * (vec3<f32>(1.0) - reflectance) * occlusion;
+        color += specular_environment(blurred, roughness) * reflectance
+            * specular_occlusion(n_dot_v, occlusion, roughness);
+    } else {
+        color += diffuse_color * diffuse_environment(n) * occlusion;
+        color += specular_environment(blurred, roughness) * env_brdf(f0, roughness, n_dot_v) * occlusion;
+    }
     color += emissive;
     return vec4<f32>(fogged(display(color), in.world) * base.a, base.a);
 }

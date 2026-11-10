@@ -4,7 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 use crate::audio::AudioResolver;
 use crate::error::{LumenError, MediaError, RenderError};
 
-use super::{FontResolver, ImageResolver, ModelResolver, VideoFrameResolver};
+use super::{EnvironmentResolver, FontResolver, ImageResolver, ModelResolver, VideoFrameResolver};
 
 /// The fonts one store has loaded and what was shaped and measured with them. Nothing rendered
 /// with another store reads them.
@@ -76,6 +76,17 @@ pub trait MediaStore: Send + Sync + Debug {
         Err(MediaError::source_not_found(
             source,
             "this store has no models",
+        ))
+    }
+
+    /// The resolver for the environment map file `source`.
+    fn get_environment_resolver(
+        &self,
+        source: &str,
+    ) -> Result<Box<dyn EnvironmentResolver>, MediaError> {
+        Err(MediaError::source_not_found(
+            source,
+            "this store has no environment maps",
         ))
     }
 

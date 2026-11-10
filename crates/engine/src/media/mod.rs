@@ -24,8 +24,8 @@ pub use prediction::{FrameRequirements, VideoFrameRequirement, collect_frame_req
 #[cfg(feature = "ffmpeg")]
 pub use resolver::GpuVideoMediaFrame;
 pub use resolver::{
-    CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, ModelResolver,
-    VideoFrameResolver, VideoMetadata,
+    CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver, MediaFrame,
+    ModelResolver, VideoFrameResolver, VideoMetadata,
 };
 pub use store::{MediaStore, TextSession};
 pub use yuv::{

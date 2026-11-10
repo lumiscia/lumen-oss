@@ -171,3 +171,11 @@ pub trait ModelResolver: Send + Sync {
 
     fn data(&self) -> Result<Vec<u8>, MediaError>;
 }
+
+/// An environment map file. Maps load once per ID, which must change whenever the file's bytes
+/// do.
+pub trait EnvironmentResolver: Send + Sync {
+    fn id(&self) -> &str;
+
+    fn data(&self) -> Result<Vec<u8>, MediaError>;
+}

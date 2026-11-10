@@ -719,6 +719,20 @@ fn asset_errors(
                         );
                     }
                 }
+                NodeKind::Render3d(render) => {
+                    if let Deferred::Value(source) = &render.params.environment_map {
+                        check(
+                            source,
+                            Some(AssetKind::Environment),
+                            crate::diagnostic::at_param(
+                                root,
+                                template,
+                                render.id,
+                                "environment_map",
+                            ),
+                        );
+                    }
+                }
                 NodeKind::Text(text) => {
                     for (param, family) in crate::node::source::text::literal_font_families(text) {
                         check(

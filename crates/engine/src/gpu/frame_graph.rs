@@ -234,7 +234,7 @@ struct Slot {
     full: Option<TexRef>,
     last_used: u64,
     bytes: u64,
-    /// The models it drew, which the scene cache keeps while it is kept.
+    /// The models and environment maps it drew, which the scene cache keeps while it is kept.
     #[cfg(feature = "3d")]
     models: Vec<String>,
 }
@@ -496,6 +496,12 @@ impl FrameGraph {
                 self.resolve(raster)?;
                 #[cfg(feature = "3d")]
                 self.state.scene.trim(
+                    &mut self.recorder,
+                    self.state.tick,
+                    self.state.slots.values().flat_map(|slot| &slot.models),
+                );
+                #[cfg(feature = "3d")]
+                self.state.scene.trim_environments(
                     &mut self.recorder,
                     self.state.tick,
                     self.state.slots.values().flat_map(|slot| &slot.models),
@@ -1055,7 +1061,8 @@ impl<'a> FrameCx<'a> {
         self.st.tick
     }
 
-    /// Notes that the model `id` was drawn, so that a static output recording now keeps it.
+    /// Notes that the model or environment map `id` was drawn, so that a static output recording
+    /// now keeps it.
     #[cfg(feature = "3d")]
     pub(crate) fn drew_model(&mut self, id: &str) {
         if self.static_depth > 0 {

@@ -16,11 +16,12 @@ pub enum MediaKind {
     Audio,
     Font,
     Model,
+    Environment,
 }
 
 /// What the check found. Each kind fills its own fields: images their size; video its size, frame
 /// rate, frames, duration, codec and audio; audio its duration, rate and channels; fonts their
-/// families and faces. Models fill none.
+/// families and faces; environment maps their size. Models fill none.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMetadata {
@@ -56,7 +57,8 @@ pub struct FontFace {
     pub style: String,
 }
 
-const UNREADABLE: &str = "not an image, video, audio file, font or model that lumen can read";
+const UNREADABLE: &str =
+    "not an image, video, audio file, font, model or environment map that lumen can read";
 
 /// The kind and metadata of the file at `path`, or why it was rejected. The extension and declared
 /// content type play no part.
@@ -70,6 +72,9 @@ pub fn probe(path: &Path) -> Result<(MediaKind, MediaMetadata), String> {
 
     if head.starts_with(b"glTF") {
         return probe_model(path).map(|metadata| (MediaKind::Model, metadata));
+    }
+    if lumen_3d::environment::is_environment_magic(head) {
+        return probe_environment(path).map(|metadata| (MediaKind::Environment, metadata));
     }
     if let Some(font) = font_magic(head) {
         return probe_font(path, font).map(|metadata| (MediaKind::Font, metadata));
@@ -167,6 +172,28 @@ fn probe_model(path: &Path) -> Result<MediaMetadata, String> {
     lumen_3d::model::Model::from_glb(&bytes)
         .map_err(|error| format!("the model could not be read: {error}"))?;
     Ok(MediaMetadata::default())
+}
+
+/// A Radiance or OpenEXR environment map, decoded as renders decode it.
+fn probe_environment(path: &Path) -> Result<MediaMetadata, String> {
+    let limit = lumen_3d::environment::MAX_ENVIRONMENT_BYTES;
+    let size = fs::metadata(path)
+        .map_err(|error| format!("the file could not be read: {error}"))?
+        .len();
+    if size > limit as u64 {
+        return Err(format!(
+            "the environment map is larger than the {} MiB an environment map may be",
+            limit >> 20
+        ));
+    }
+    let bytes = fs::read(path).map_err(|error| format!("the file could not be read: {error}"))?;
+    let map = lumen_3d::environment::decode(&bytes)
+        .map_err(|error| format!("the environment map could not be read: {error}"))?;
+    Ok(MediaMetadata {
+        width: Some(map.width()),
+        height: Some(map.height()),
+        ..MediaMetadata::default()
+    })
 }
 
 /// Video when a stream of more than one frame decodes; audio when only sound does, which counts
