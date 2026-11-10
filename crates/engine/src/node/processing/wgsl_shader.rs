@@ -231,15 +231,18 @@ impl ShaderInterface {
             });
         }
         interface.uniform_size = end.next_multiple_of(16).max(16);
-        let max_size = lumen_gpu::wgpu::Limits::default().max_uniform_buffer_binding_size;
-        if interface.uniform_size as u64 > max_size {
-            return Err(format!(
-                "`{struct_name}` is {} bytes; uniform buffers are limited to {max_size} bytes",
-                interface.uniform_size
-            ));
-        }
         interface.struct_name = Some(struct_name);
         Ok(interface)
+    }
+
+    fn check_uniform_size(&self, max_size: u64) -> Result<(), String> {
+        match &self.struct_name {
+            Some(name) if self.uniform_size as u64 > max_size => Err(format!(
+                "`{name}` is {} bytes; uniform buffers are limited to {max_size} bytes",
+                self.uniform_size
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// The user's source followed by the prelude, which declares every binding the shader left out.
@@ -587,10 +590,15 @@ fn record_parts(
     node_id: NodeId,
     source: &str,
     inputs: usize,
+    max_uniform_size: u64,
 ) -> crate::Result<crate::gpu::frame_graph::ShaderParts> {
     use lumen_gpu::{LayoutEntry, LayoutKind};
 
     let interface = ShaderInterface::parse(source)
+        .and_then(|interface| {
+            interface.check_uniform_size(max_uniform_size)?;
+            Ok(interface)
+        })
         .map_err(|details| shader_error(node_id, format!("shader: {details}")))?;
     let assembled = interface.assemble(source, inputs);
     let mut layout = vec![
@@ -644,8 +652,9 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
         } else {
             source.as_str()
         };
+        let max_uniform_size = programs.limits().max_uniform_buffer_binding_size;
         let shader = programs.dynamic(&self.label(), source, inputs, || {
-            record_parts(self.id, source, inputs)
+            record_parts(self.id, source, inputs, max_uniform_size)
         })?;
         let Deferred::Value(uniforms) = &self.params.uniforms else {
             return Ok(());
@@ -680,8 +689,9 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
             params.shader.as_str()
         };
         let input_count = inputs.len();
+        let max_uniform_size = cx.rec.device().limits().max_uniform_buffer_binding_size;
         let shader = cx.cached_shader(user_source, input_count, || {
-            record_parts(self.id, user_source, input_count)
+            record_parts(self.id, user_source, input_count, max_uniform_size)
         })?;
         let interface = shader
             .interface
@@ -774,6 +784,14 @@ mod tests {
         );
         assert_eq!(interface.uniform_size, 48);
         assert!(!interface.declares_input0 && !interface.declares_output);
+    }
+
+    #[test]
+    fn uniform_size_is_checked_against_the_device_limit() {
+        let interface = ShaderInterface::parse(SHADER).unwrap();
+        assert!(interface.check_uniform_size(48).is_ok());
+        let error = interface.check_uniform_size(32).unwrap_err();
+        assert!(error.contains("`Params` is 48 bytes; uniform buffers are limited to 32 bytes"));
     }
 
     #[test]
