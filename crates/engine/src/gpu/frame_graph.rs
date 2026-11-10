@@ -33,7 +33,7 @@ use crate::{
         compositing::clip::Clip,
         required_input,
         source::{
-            media_in::AlphaMode,
+            media_in::{AlphaMode, MediaInSourceKindDelegate},
             text::{TextDraw, TextInstance},
         },
     },
@@ -313,6 +313,8 @@ struct RecordState {
     output: Option<Raster>,
     /// The font resolver of each family text names, which retained text was drawn with.
     fonts: HashMap<String, Option<String>>,
+    /// The texture of each image source that retained output was drawn from.
+    images: HashMap<String, Option<super::MediaTextureKey>>,
     /// The template, node and family of each font fallback reported for this composition.
     font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
     /// Warnings not yet taken.
@@ -436,7 +438,11 @@ impl FrameGraph {
         loop {
             self.drop_pending();
             let generation = font_generation(media);
-            if self.state.font_generation != generation || self.fonts_changed(media) {
+            let images_changed = self.images_changed(media);
+            if self.state.font_generation != generation
+                || self.fonts_changed(media)
+                || images_changed
+            {
                 self.drop_slots();
                 self.state.font_generation = generation;
             }
@@ -806,6 +812,22 @@ impl FrameGraph {
         changed
     }
 
+    /// Whether an image source retained output was drawn from now resolves to another texture, as
+    /// when a host replaces the image under the same source or with one of another size.
+    fn images_changed(&mut self, media: Option<&dyn MediaStore>) -> bool {
+        let mut changed = false;
+        for (source, key) in &mut self.state.images {
+            let current = media
+                .and_then(|media| media.get_image_resolver(source).ok())
+                .map(|resolver| super::MediaTextureKey::of_image(&*resolver));
+            if *key != current {
+                *key = current;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// The warnings recording has raised since the last call.
     pub(crate) fn take_diagnostics(&mut self) -> Vec<crate::diagnostic::Diagnostic> {
         std::mem::take(&mut self.state.diagnostics)
@@ -837,6 +859,7 @@ impl FrameGraph {
 
     fn drop_slots(&mut self) {
         self.state.pending.clear();
+        self.state.images.clear();
         let keys: Vec<_> = self.state.slots.keys().copied().collect();
         for key in keys {
             Self::release_slot(&mut self.recorder, &mut self.state, key);
@@ -1073,6 +1096,10 @@ impl<'a> FrameCx<'a> {
     }
 
     fn retain(&mut self, graph: usize, node: NodeId, raster: Raster, passes: u64) {
+        // An image's own texture is let go of by frames that don't bind it, so it isn't kept.
+        if self.st.media.values().any(|(tex, _)| *tex == raster.tex) {
+            return;
+        }
         self.rec.retain(raster.tex);
         let bytes = self.rec.texture_bytes(raster.tex);
         self.st.retained_bytes += bytes;
@@ -1369,6 +1396,13 @@ impl<'a> FrameCx<'a> {
         let atlas = self.rec.adopt(texture);
         self.st.atlas = Some(atlas);
         Ok(atlas)
+    }
+
+    /// Remembers the texture of an image source when what reads it is retained.
+    pub(crate) fn note_image(&mut self, source: &str, key: &super::MediaTextureKey) {
+        if self.static_depth > 0 && !self.st.images.contains_key(source) {
+            self.st.images.insert(source.to_string(), Some(key.clone()));
+        }
     }
 
     /// Remembers the resolver of a family text names.
@@ -1988,9 +2022,13 @@ impl<'a> FrameCx<'a> {
 /// Whether the node renders the same output on every frame as long as its inputs do.
 fn is_static_candidate(node: &NodeKind) -> bool {
     match node {
-        // Media changes with the frame and the media store, shaders see the built-in time, and
-        // the output is written into external textures that replace its own.
-        NodeKind::MediaIn(_) | NodeKind::WgslShader(_) | NodeKind::MediaOutput(_) => false,
+        // An image changes only with the media store, which `images_changed` watches.
+        NodeKind::MediaIn(media) => {
+            matches!(media.params.kind, MediaInSourceKindDelegate::Image) && !node.has_expressions()
+        }
+        // Video changes with the frame, shaders see the built-in time, and the output is written
+        // into external textures that replace its own.
+        NodeKind::WgslShader(_) | NodeKind::MediaOutput(_) => false,
         _ => !node.has_expressions(),
     }
 }
