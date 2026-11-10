@@ -475,9 +475,19 @@ pub(crate) fn catcher_programs(
     Ok(())
 }
 
+impl Render3d {
+    /// Whether some frame may draw the environment map behind the scene.
+    fn may_show_background(&self) -> bool {
+        let params = &self.params;
+        !matches!(params.environment_background, Deferred::Value(false))
+            && !matches!(&params.environment_map, Deferred::Value(map) if map.is_empty())
+    }
+}
+
 impl RecordNode for Render3d {
-    /// Builds the programs scenes draw with but for those drawing shadow maps and catchers, which
-    /// the lights and surfaces asking for them build.
+    /// Builds the programs scenes draw with, and the background's if the scene may show one, but
+    /// for those drawing shadow maps and catchers, which the lights and surfaces asking for them
+    /// build.
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
         for (depth, cull) in VARIANTS {
             programs.render(
@@ -487,6 +497,17 @@ impl RecordNode for Render3d {
                 "fs_main",
                 LAYOUT,
                 spec(depth, cull),
+                0,
+            )?;
+        }
+        if self.may_show_background() {
+            programs.render(
+                "scene-3d-background",
+                SHADER,
+                "vs_background",
+                "fs_background",
+                BACKGROUND_LAYOUT,
+                background_spec(),
                 0,
             )?;
         }

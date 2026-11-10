@@ -1071,6 +1071,18 @@ fn compiling_reaches_the_programs_of_a_planes_source_through_the_scene_nodes() {
     }
 
     assert_eq!(renderer.created_program_count(), compiled);
+
+    // A scene that shows its environment map behind it.
+    let media = TestMedia::default().environment("sky.hdr", environment_file(16, 8, |_| Vec3::ONE));
+    let composition = Composition::from(render_3d_with(
+        lit_by("sky.hdr", json!({ "environment_background": true })),
+        vec![sphere(json!({}))],
+    ));
+    let mut renderer = gpu.renderer();
+    renderer.compile(&composition).expect("the scene compiles");
+    let compiled = renderer.created_program_count();
+    render(&mut renderer, &composition, 0.0, &media);
+    assert_eq!(renderer.created_program_count(), compiled);
 }
 
 #[test]
