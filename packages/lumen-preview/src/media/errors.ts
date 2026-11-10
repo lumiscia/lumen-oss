@@ -9,7 +9,7 @@ export type LumenMediaErrorCode =
 export class LumenMediaError extends Error {
   readonly code: LumenMediaErrorCode;
   readonly cause: unknown;
-  /** The id of the image or video source that failed, when one is involved. */
+  /** The id of the image, model or video source that failed, when one is involved. */
   readonly sourceId: string | undefined;
 
   constructor(

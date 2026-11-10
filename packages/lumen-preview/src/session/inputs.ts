@@ -26,18 +26,18 @@ export function resolvePreviewInputs(
 ): ResolvedPreviewInputs {
   const document = composition ? compositionDocument(composition) : null;
   const audioAliases = new Set(document?.audio?.clips.map((clip) => clip.source_id));
-  const mediaInKinds = literalMediaInKinds(document);
+  const sourceKinds = literalSourceKinds(document);
   const audio: AudioSourceRegistration[] = [];
   const visual = new Map<string, MediaRegistration>();
 
   for (const [id, value] of Object.entries(media)) {
     const { kind: declaredKind, source: rawSource, ...options } = mediaEntry(value);
     const source = absoluteSource(rawSource);
-    const kind = declaredKind ?? blobKind(source) ?? mediaInKinds.get(id);
+    const kind = declaredKind ?? blobKind(source) ?? sourceKinds.get(id);
     if (audioAliases.has(id)) {
       audio.push({ id, kind: "audio", source });
     }
-    if (kind === "image") {
+    if (kind === "image" || kind === "model") {
       visual.set(id, { id, kind, source });
     } else if (kind === "video") {
       visual.set(id, { id, kind, source, ...options });
@@ -92,18 +92,22 @@ function mediaEntry(value: LumenPreviewMedia[string]): LumenPreviewMediaEntry {
   return typeof value === "object" && "source" in value ? value : { source: value };
 }
 
-/** A `media_in` without a `kind` param reads an image, as the engine does. */
-function literalMediaInKinds(
-  document: LumenComposition | null,
-): Map<string, LumenPreviewMediaKind> {
+/**
+ * What each literal `source` reads: a model for `model_3d`, and for `media_in` its `kind`, an image
+ * without one, as the engine does.
+ */
+function literalSourceKinds(document: LumenComposition | null): Map<string, LumenPreviewMediaKind> {
   const kinds = new Map<string, LumenPreviewMediaKind>();
   for (const node of document?.nodes ?? []) {
-    if (node.type !== "media_in") {
+    if (node.type !== "media_in" && node.type !== "model_3d") {
       continue;
     }
     const params = (node.params ?? {}) as { kind?: unknown; source?: unknown };
     if (typeof params.source === "string") {
-      kinds.set(params.source, params.kind === "video" ? "video" : "image");
+      kinds.set(
+        params.source,
+        node.type === "model_3d" ? "model" : params.kind === "video" ? "video" : "image",
+      );
     }
   }
   return kinds;
@@ -116,6 +120,9 @@ function blobKind(source: MediaSourceInput): LumenPreviewMediaKind | undefined {
       : typeof source === "object" && "kind" in source && source.kind === "blob"
         ? source.blob
         : null;
+  if (blob?.type === "model/gltf-binary") {
+    return "model";
+  }
   const group = blob?.type.split("/")[0];
   return group === "audio" || group === "image" || group === "video" ? group : undefined;
 }

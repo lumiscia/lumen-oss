@@ -257,12 +257,13 @@ export function createLumenPreviewWorkerHost({
     );
 
     try {
+      // Parsed first, so a composition the engine rejects fails before any media is fetched.
+      activeController.loadComposition(message.compositionJson);
       await syncFonts(activeController, isCurrent);
       await activeController.syncMediaSources([...media.values()]);
       if (!isCurrent()) {
         return;
       }
-      activeController.loadComposition(message.compositionJson);
       if (canvas) {
         canvas.width = activeController.width() || 1;
         canvas.height = activeController.height() || 1;

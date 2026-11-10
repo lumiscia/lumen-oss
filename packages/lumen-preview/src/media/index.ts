@@ -40,6 +40,7 @@ export type {
   MediaSourceInput,
   NativeVideoFrameTarget,
   RegisteredImageSource,
+  RegisteredModelSource,
   RegisteredVideoSource,
   UrlMediaSourceInput,
   VideoFrameMetadata,
