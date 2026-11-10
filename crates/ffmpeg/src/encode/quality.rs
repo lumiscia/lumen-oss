@@ -34,8 +34,8 @@ pub struct EncoderQuality {
 
 impl EncoderQuality {
     /// The quality lumen-local's flags ask for: at most one of `bitrate`, `crf` and `qp`, plus a
-    /// preset, or `None` if they ask for none of them. A preset alone targets 14 Mb/s. Errors when
-    /// more than one rate control is given.
+    /// preset, or `None` if they ask for none of them. An encoder preset alone targets 14 Mb/s.
+    /// Errors when more than one rate control is given.
     pub fn from_options(
         bitrate: Option<u64>,
         crf: Option<u8>,
