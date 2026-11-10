@@ -13,7 +13,7 @@ use lumen_engine::{
     gpu::{BoundFrame, GpuCompositionRenderer},
     media::{
         CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
-        TextSession, VideoFrameResolver, VideoMetadata, YuvFrame,
+        ModelResolver, TextSession, VideoFrameResolver, VideoMetadata, YuvFrame,
     },
     node::NodeKind,
 };
@@ -132,6 +132,10 @@ pub struct TestMedia {
     font_requests: Arc<AtomicUsize>,
     /// How many image resolvers were asked for, shared with its clones.
     image_requests: Arc<AtomicUsize>,
+    /// Model files by source.
+    models: HashMap<String, Arc<Vec<u8>>>,
+    /// How many times model bytes were read, shared with its clones.
+    model_loads: Arc<AtomicUsize>,
 }
 
 impl TestMedia {
@@ -211,6 +215,17 @@ impl TestMedia {
     pub fn image_requests(&self) -> usize {
         self.image_requests.load(Ordering::Relaxed)
     }
+
+    #[cfg(feature = "3d")]
+    pub fn model(mut self, source: &str, bytes: Vec<u8>) -> Self {
+        self.models.insert(source.to_string(), Arc::new(bytes));
+        self
+    }
+
+    #[cfg(feature = "3d")]
+    pub fn model_loads(&self) -> usize {
+        self.model_loads.load(Ordering::Relaxed)
+    }
 }
 
 fn still_frame(width: u32, height: u32, rgba: Vec<u8>) -> Arc<CpuMediaFrame> {
@@ -275,7 +290,36 @@ impl FontResolver for TestFont {
     }
 }
 
+struct TestModel {
+    id: String,
+    data: Arc<Vec<u8>>,
+    loads: Arc<AtomicUsize>,
+}
+
+impl ModelResolver for TestModel {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> Result<Vec<u8>, MediaError> {
+        self.loads.fetch_add(1, Ordering::Relaxed);
+        Ok(self.data.to_vec())
+    }
+}
+
 impl MediaStore for TestMedia {
+    fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
+        let data = self
+            .models
+            .get(source)
+            .ok_or_else(|| MediaError::source_not_found(source, "not registered"))?;
+        Ok(Box::new(TestModel {
+            id: source.to_string(),
+            data: Arc::clone(data),
+            loads: Arc::clone(&self.model_loads),
+        }))
+    }
+
     fn get_image_resolver(
         &self,
         source: &str,

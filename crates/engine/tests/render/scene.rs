@@ -1085,3 +1085,295 @@ fn a_clip_canvas_larger_than_the_device_allows_fails_naming_the_clip() {
         "{error}"
     );
 }
+
+/// The glTF sample fox: skinned, textured, without vertex normals, with the clips `Survey`,
+/// `Walk` and `Run`.
+fn fox_media() -> TestMedia {
+    TestMedia::default().model("fox.glb", include_bytes!("../fixtures/Fox.glb").to_vec())
+}
+
+/// The fox standing side on to the default camera, nose to the right, filling most of the frame.
+fn fox(id: u32, params: Value) -> Value {
+    let mut fox = json!({
+        "source": "fox.glb",
+        "position": [0, -0.8, 0],
+        "rotation": [0, 90, 0],
+        "scale": [0.02, 0.02, 0.02],
+    });
+    for (name, value) in params.as_object().expect("params") {
+        fox[name] = value.clone();
+    }
+    json!({ "id": id, "type": "model_3d", "params": fox })
+}
+
+/// A `.glb` of one mesh with a primitive for each of `quads`: a rectangle facing +Z, given by its
+/// left, bottom, right and top edges, that shows the whole of its textures, top left at top left,
+/// in the material its index in `materials` names.
+fn quads(materials: Value, quads: &[([f32; 4], usize)]) -> Vec<u8> {
+    let mut bin = Vec::new();
+    let (mut views, mut accessors, mut primitives) = (Vec::new(), Vec::new(), Vec::new());
+    let mut accessor = |bytes: Vec<u8>, kind: &str, component: u32, count: usize| {
+        views.push(json!({ "buffer": 0, "byteOffset": bin.len(), "byteLength": bytes.len() }));
+        bin.extend(bytes);
+        bin.resize(bin.len().next_multiple_of(4), 0);
+        accessors.push(json!({
+            "bufferView": views.len() - 1, "componentType": component, "type": kind, "count": count
+        }));
+        accessors.len() - 1
+    };
+    let floats =
+        |values: &[f32]| -> Vec<u8> { values.iter().flat_map(|v| v.to_le_bytes()).collect() };
+    for &([left, bottom, right, top], material) in quads {
+        let positions = [
+            left, top, 0.0, right, top, 0.0, left, bottom, 0.0, right, bottom, 0.0,
+        ];
+        let position = accessor(floats(&positions), "VEC3", 5126, 4);
+        let normal = accessor(floats(&[0.0, 0.0, 1.0].repeat(4)), "VEC3", 5126, 4);
+        let uv = accessor(
+            floats(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0]),
+            "VEC2",
+            5126,
+            4,
+        );
+        let indices: Vec<u8> = [0u16, 2, 1, 1, 2, 3]
+            .iter()
+            .flat_map(|i| i.to_le_bytes())
+            .collect();
+        let indices = accessor(indices, "SCALAR", 5123, 6);
+        primitives.push(json!({
+            "attributes": { "POSITION": position, "NORMAL": normal, "TEXCOORD_0": uv },
+            "indices": indices,
+            "material": material,
+        }));
+    }
+    let document = json!({
+        "asset": { "version": "2.0" },
+        "extensionsUsed": ["KHR_materials_unlit"],
+        "scene": 0,
+        "scenes": [{ "nodes": [0] }],
+        "nodes": [{ "mesh": 0 }],
+        "meshes": [{ "primitives": primitives }],
+        "materials": materials,
+        "accessors": accessors,
+        "bufferViews": views,
+        "buffers": [{ "byteLength": bin.len() }],
+    });
+    let mut json = serde_json::to_vec(&document).unwrap();
+    json.resize(json.len().next_multiple_of(4), b' ');
+    let mut glb = b"glTF".to_vec();
+    glb.extend(2u32.to_le_bytes());
+    glb.extend(((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
+    glb.extend((json.len() as u32).to_le_bytes());
+    glb.extend(b"JSON");
+    glb.extend(json);
+    glb.extend((bin.len() as u32).to_le_bytes());
+    glb.extend(b"BIN\0");
+    glb.extend(bin);
+    glb
+}
+
+/// An unlit material of `color`, in linear light with straight alpha.
+fn unlit(name: &str, color: [f32; 4]) -> Value {
+    json!({
+        "name": name,
+        "pbrMetallicRoughness": { "baseColorFactor": color },
+        "extensions": { "KHR_materials_unlit": {} },
+    })
+}
+
+fn model(id: u32, params: Value) -> Value {
+    json!({ "id": id, "type": "model_3d", "params": params })
+}
+
+#[test]
+fn a_textured_model_shows_its_base_colour_map() {
+    check(vec![
+        Case::new(
+            "the fox is orange",
+            render_3d(vec![fox(1, json!({}))]),
+            Expect::Custom(Box::new(|frames| {
+                let frame = &frames[0];
+                let covered: Vec<[u8; 4]> = (0..SIZE.1)
+                    .flat_map(|y| (0..SIZE.0).map(move |x| (x, y)))
+                    .map(|(x, y)| frame.pixel(x, y))
+                    .filter(|pixel| pixel[3] == 255)
+                    .collect();
+                assert!(
+                    covered.len() > 400,
+                    "the fox covers {} pixels",
+                    covered.len()
+                );
+                let orange = covered
+                    .iter()
+                    .filter(|[r, g, b, _]| r > g && *g > b.saturating_add(20))
+                    .count();
+                assert!(
+                    orange * 2 > covered.len(),
+                    "{orange} of {} covered pixels are orange",
+                    covered.len()
+                );
+            })),
+        )
+        .media(fox_media()),
+    ]);
+}
+
+#[test]
+fn a_skinned_model_playing_a_clip_poses_anew_each_frame_and_a_still_one_is_kept() {
+    let gpu = gpu();
+    let frames = |animation: &str| {
+        let composition: Composition = render_3d(vec![fox(1, json!({ "animation": animation }))])
+            .frames(4)
+            .fps(4.0)
+            .into();
+        let media = fox_media();
+        let mut renderer = gpu.renderer();
+        let frames: Vec<Vec<u8>> = (0..4)
+            .map(|frame| render(&mut renderer, &composition, f64::from(frame), &media).rgba)
+            .collect();
+        assert_eq!(media.model_loads(), 1, "the model loads once");
+        (frames, renderer.skipped_pass_count())
+    };
+
+    let (still, skipped) = frames("");
+    assert!(still.iter().all(|frame| *frame == still[0]));
+    assert!(
+        skipped >= 3 * 2,
+        "frames after the first read the kept draw and resolve, skipping {skipped} passes"
+    );
+
+    let (walking, skipped) = frames("Walk");
+    assert_eq!(skipped, 0, "a model playing a clip renders every frame");
+    for pair in walking.windows(2) {
+        assert!(pair[0] != pair[1], "the fox walks");
+    }
+    assert!(
+        walking[0] != still[0],
+        "walking moves the fox from its rest pose"
+    );
+}
+
+#[test]
+fn the_texture_input_shows_on_the_named_material_as_an_image_plane_shows_it() {
+    let screen = |quads_of: &[([f32; 4], usize)]| {
+        quads(
+            json!([
+                unlit("body", [1.0, 0.0, 0.0, 1.0]),
+                unlit("screen", [0.0, 1.0, 0.0, 1.0])
+            ]),
+            quads_of,
+        )
+    };
+    let seen = |model_bytes: Vec<u8>, media: TestMedia| {
+        let mut nodes = vec![plate(10)];
+        nodes.push(json!({
+            "id": 1,
+            "type": "model_3d",
+            "params": { "source": "tv.glb", "texture_material": "screen" },
+            "in": { "texture": 10 },
+        }));
+        nodes.extend([ortho(2, json!({})), merge(3, &[1, 2], json!({}))]);
+        (
+            render_3d_with(json!({ "supersample": 1 }), nodes),
+            media.model("tv.glb", model_bytes),
+        )
+    };
+
+    let (full, full_media) = seen(screen(&[([-2.0, -2.0, 2.0, 2.0], 1)]), gradient());
+    // The raster's left half is green and its right half blue; the screen shows it on the left
+    // half of the frame, beside the red body.
+    let halves = image(|x, _| if x < 32 { GREEN } else { BLUE });
+    let (beside, beside_media) = seen(
+        screen(&[([-2.0, -2.0, 0.0, 2.0], 1), ([0.0, -2.0, 2.0, 2.0], 0)]),
+        halves,
+    );
+    check(vec![
+        Case::new(
+            "filling the frame, one texel to a pixel",
+            full,
+            Expect::Matches(scene(SIZE, json!([plate(1)])).into()),
+        )
+        .media(full_media)
+        .tolerance(1),
+        Case::new(
+            "beside another material",
+            beside,
+            Expect::Probes(vec![
+                (8, CENTER, GREEN),
+                (24, CENTER, BLUE),
+                (48, CENTER, RED),
+            ]),
+        )
+        .media(beside_media),
+    ]);
+}
+
+#[test]
+fn masked_materials_cut_out_and_blended_ones_show_through() {
+    let covering = |material: Value| {
+        let media = TestMedia::default().model(
+            "card.glb",
+            quads(json!([material]), &[([-3.0, -3.0, 3.0, 3.0], 0)]),
+        );
+        let scene = render_3d(vec![
+            model(1, json!({ "source": "card.glb" })),
+            ortho(2, json!({})),
+            merge(3, &[1, 2], json!({})),
+        ]);
+        (scene, media)
+    };
+    let with = |alpha: f32, mode: Value| {
+        let mut material = unlit("card", [0.0, 0.0, 1.0, alpha]);
+        for (name, value) in mode.as_object().expect("mode") {
+            material[name] = value.clone();
+        }
+        covering(material)
+    };
+    let case = |name: &str, (scene, media): (Scene, TestMedia), expect| {
+        Case::new(name, scene, expect).media(media)
+    };
+    check(vec![
+        case(
+            "masked below its cutoff",
+            with(0.4, json!({ "alphaMode": "MASK", "alphaCutoff": 0.5 })),
+            Expect::Uniform(CLEAR),
+        ),
+        case(
+            "masked at its cutoff, and opaque there",
+            with(0.5, json!({ "alphaMode": "MASK", "alphaCutoff": 0.5 })),
+            Expect::Uniform(BLUE),
+        ),
+        case(
+            "blended at half",
+            with(0.5, json!({ "alphaMode": "BLEND" })),
+            Expect::Uniform([0, 0, 128, 128]),
+        ),
+        case(
+            "opaque ignores alpha",
+            with(0.25, json!({})),
+            Expect::Uniform(BLUE),
+        ),
+    ]);
+}
+
+#[test]
+fn a_clip_or_material_the_model_lacks_is_an_error_listing_those_it_has() {
+    let error = |params: Value| {
+        let composition: Composition = render_3d(vec![fox(1, params)]).into();
+        gpu()
+            .renderer()
+            .render_frame_at(&composition, 0.0, &fox_media())
+            .expect_err("the render fails")
+            .to_string()
+    };
+    assert_eq!(
+        error(json!({ "animation": "Dance" })),
+        "Model3d node 1 evaluation failed: model `fox.glb`: the model has no animation `Dance`; \
+         it has 0 `Survey`, 1 `Walk`, 2 `Run`"
+    );
+    assert_eq!(
+        error(json!({ "texture_material": "screen" })),
+        "Model3d node 1 evaluation failed: model `fox.glb`: the model has no material `screen`; \
+         it has `fox_material`"
+    );
+}

@@ -57,6 +57,15 @@ composition.addNode({ type: "opacity", inputs: { source: plane } });
 // @ts-expect-error a render_3d outputs a raster, not a scene
 composition.addNode({ type: "merge_3d", inputs: { objects: [box, render] } });
 
+const model = composition.addNode({
+  type: "model_3d",
+  params: { source: "asset:tv", texture_material: "screen", animation: "Idle" },
+  inputs: { texture: background },
+});
+composition.addNode({ type: "merge_3d", inputs: { objects: [model, plane] } });
+// @ts-expect-error a model shows a raster on its material, not a scene
+composition.addNode({ type: "model_3d", inputs: { texture: group } });
+
 // @ts-expect-error background outputs a raster, not a scene
 const scene: NodeReference<"scene"> = background;
 const sceneNode: NodeReference<"scene"> = group;
