@@ -157,10 +157,7 @@ fn shared_text_shader() -> &'static str {
 }
 
 fn text_blend(blend: lumen_gpu::wgpu::BlendState) -> lumen_gpu::RenderTargetSpec {
-    lumen_gpu::RenderTargetSpec {
-        format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
-        blend,
-    }
+    lumen_gpu::RenderTargetSpec::flat(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm, blend)
 }
 
 fn opacity_blend() -> lumen_gpu::wgpu::BlendState {

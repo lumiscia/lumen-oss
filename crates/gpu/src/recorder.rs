@@ -54,9 +54,15 @@ pub struct ProgramRef(u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SamplerRef(u32);
 
+/// A long-lived buffer adopted from outside, bound whole as read-only storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BufRef(u32);
+
 #[derive(Debug, Clone, Copy)]
 pub enum LayoutKind {
     Texture,
+    /// A float texture read with `textureLoad`, such as `R32Float`, which can't be filtered.
+    UnfilterableTexture,
     /// An unsigned-integer texture, read with `textureLoad`.
     UintTexture,
     StorageTexture(wgpu::TextureFormat),
@@ -99,6 +105,7 @@ pub enum Res {
     Uniform { offset: u32, size: u32 },
     Storage { offset: u32, size: u32 },
     Sampler(SamplerRef),
+    Buffer(BufRef),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -107,6 +114,7 @@ enum KeyRes {
     Uniform { size: u32 },
     Storage { offset: u32, size: u32 },
     Sampler(SamplerRef),
+    Buffer(BufRef),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +163,7 @@ impl PassBindings {
                     Res::Uniform { size, .. } => KeyRes::Uniform { size },
                     Res::Storage { offset, size } => KeyRes::Storage { offset, size },
                     Res::Sampler(sampler) => KeyRes::Sampler(sampler),
+                    Res::Buffer(buffer) => KeyRes::Buffer(buffer),
                 },
             );
         }
@@ -184,6 +193,7 @@ enum RecordedPass {
         bindings: PassBindings,
         target: TexRef,
         load: TargetLoad,
+        depth: Option<(TexRef, TargetLoad)>,
         vertices: u32,
         instances: u32,
         viewport: Option<[f32; 4]>,
@@ -212,10 +222,16 @@ impl RecordedPass {
         match self {
             Self::Compute { bindings, .. } => bound(bindings),
             Self::Render {
-                bindings, target, ..
+                bindings,
+                target,
+                depth,
+                ..
             } => {
                 bound(bindings);
                 visit(target);
+                if let Some((depth, _)) = depth {
+                    visit(depth);
+                }
             }
             Self::Copy {
                 source,
@@ -228,6 +244,14 @@ impl RecordedPass {
             Self::Clear { texture } => visit(texture),
         }
     }
+}
+
+/// A render pass kept open at submit so later draws onto the same attachments join it.
+struct OpenRender {
+    pass: wgpu::RenderPass<'static>,
+    target: TexRef,
+    depth: Option<TexRef>,
+    viewport_set: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -348,6 +372,20 @@ struct ProgramKey {
     entry: usize,
     variant: u64,
     format: Option<wgpu::TextureFormat>,
+    depth: Option<DepthTest>,
+    cull: Option<wgpu::Face>,
+}
+
+/// The format of every depth attachment a render pass draws with.
+pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// How a render program uses its pass's depth attachment, testing closer-than.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DepthTest {
+    /// Tests and writes depth, for opaque geometry.
+    Write,
+    /// Tests without writing, for blended geometry drawn after the opaque.
+    Read,
 }
 
 /// How a program's pipeline draws, for render programs.
@@ -355,6 +393,21 @@ struct ProgramKey {
 pub struct RenderTargetSpec {
     pub format: wgpu::TextureFormat,
     pub blend: wgpu::BlendState,
+    /// Set for programs drawn into a pass with a depth attachment.
+    pub depth: Option<DepthTest>,
+    pub cull: Option<wgpu::Face>,
+}
+
+impl RenderTargetSpec {
+    /// A target without depth or culling.
+    pub const fn flat(format: wgpu::TextureFormat, blend: wgpu::BlendState) -> Self {
+        Self {
+            format,
+            blend,
+            depth: None,
+            cull: None,
+        }
+    }
 }
 
 /// Counters of what recording cost, cumulative since the recorder was made.
@@ -395,6 +448,7 @@ pub struct Recorder {
     /// a second key for the same program finds it here.
     program_contents: foldhash::HashMap<String, ProgramRef>,
     samplers: Vec<(u64, wgpu::Sampler)>,
+    buffers: Vec<Option<Arc<wgpu::Buffer>>>,
     uniforms: Arena,
     storage: Arena,
     groups: Vec<Option<(wgpu::BindGroup, u64)>>,
@@ -422,6 +476,7 @@ impl Recorder {
             program_keys: foldhash::HashMap::default(),
             program_contents: foldhash::HashMap::default(),
             samplers: Vec::new(),
+            buffers: Vec::new(),
             uniforms: Arena::new("lumen frame graph uniforms", wgpu::BufferUsages::UNIFORM),
             storage: Arena::new("lumen frame graph storage", wgpu::BufferUsages::STORAGE),
             groups: Vec::new(),
@@ -870,6 +925,8 @@ impl Recorder {
             entry: entry.as_ptr() as usize,
             variant: layout.as_ptr() as u64,
             format: None,
+            depth: None,
+            cull: None,
         };
         self.compute_with_key(key, label, || shader.to_string(), entry, layout, false)
     }
@@ -889,6 +946,8 @@ impl Recorder {
             entry: entry.as_ptr() as usize,
             variant: layout.len() as u64,
             format: None,
+            depth: None,
+            cull: None,
         };
         self.compute_with_key(key, label, shader, entry, layout, true)
     }
@@ -971,13 +1030,15 @@ impl Recorder {
             entry: fragment.as_ptr() as usize,
             variant: variant ^ (vertex.as_ptr() as u64),
             format: Some(target.format),
+            depth: target.depth,
+            cull: target.cull,
         };
         if let Some(&program) = self.program_keys.get(&key) {
             return Ok(program);
         }
         let contents = format!(
-            "{vertex}{fragment}{variant}{:?}{:?}{layout:?}{shader}",
-            target.format, target.blend
+            "{vertex}{fragment}{variant}{:?}{:?}{:?}{:?}{layout:?}{shader}",
+            target.format, target.blend, target.depth, target.cull
         );
         if let Some(&program) = self.program_contents.get(&contents) {
             self.program_keys.insert(key, program);
@@ -1009,8 +1070,17 @@ impl Recorder {
                     compilation_options: Default::default(),
                     buffers: &[],
                 },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: target.cull,
+                    ..Default::default()
+                },
+                depth_stencil: target.depth.map(|depth| wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(depth == DepthTest::Write),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
@@ -1018,7 +1088,8 @@ impl Recorder {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: target.format,
-                        blend: Some(target.blend),
+                        // Replacing is the same as not blending, which unblendable formats need.
+                        blend: (target.blend != wgpu::BlendState::REPLACE).then_some(target.blend),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
@@ -1040,6 +1111,11 @@ impl Recorder {
                 ty: match entry.kind {
                     LayoutKind::Texture => wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    LayoutKind::UnfilterableTexture => wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -1206,10 +1282,54 @@ impl Recorder {
             bindings: PassBindings::new(bindings),
             target,
             load,
+            depth: None,
             vertices,
             instances,
             viewport,
         });
+    }
+
+    /// `draw` into a pass that also tests against, and may write, `depth`, a `DEPTH_FORMAT`
+    /// texture of the target's size.
+    #[allow(clippy::too_many_arguments, reason = "a draw's flat inputs")]
+    pub fn draw_with_depth(
+        &mut self,
+        program: ProgramRef,
+        bindings: &[(u32, Res)],
+        target: TexRef,
+        load: TargetLoad,
+        depth: TexRef,
+        depth_load: TargetLoad,
+        vertices: u32,
+        instances: u32,
+    ) {
+        self.pin_program(program);
+        self.passes.push(RecordedPass::Render {
+            program,
+            bindings: PassBindings::new(bindings),
+            target,
+            load,
+            depth: Some((depth, depth_load)),
+            vertices,
+            instances,
+            viewport: None,
+        });
+    }
+
+    /// Takes `buffer` in to bind as storage until `forget_buffer`.
+    pub fn adopt_buffer(&mut self, buffer: Arc<wgpu::Buffer>) -> BufRef {
+        if let Some(slot) = self.buffers.iter().position(Option::is_none) {
+            self.buffers[slot] = Some(buffer);
+            return BufRef(slot as u32);
+        }
+        self.buffers.push(Some(buffer));
+        BufRef(self.buffers.len() as u32 - 1)
+    }
+
+    /// Lets go of an adopted buffer and the bind groups holding it.
+    pub fn forget_buffer(&mut self, buffer: BufRef) {
+        self.buffers[buffer.0 as usize] = None;
+        self.purge_groups(|res| matches!(res, KeyRes::Buffer(held) if *held == buffer));
     }
 
     pub fn copy(&mut self, source: TexRef, destination: TexRef, origin: [u32; 2], size: Size) {
@@ -1255,6 +1375,7 @@ impl Recorder {
                 label: Some("lumen frame graph"),
             });
         let mut compute: Option<wgpu::ComputePass<'static>> = None;
+        let mut open: Option<OpenRender> = None;
         let mut offsets = Vec::with_capacity(4);
         let mut resolved = self.resolved.iter();
         for pass in &self.passes {
@@ -1264,6 +1385,7 @@ impl Recorder {
                     bindings,
                     dispatch,
                 } => {
+                    open = None;
                     let group = *resolved.next().expect("resolved bind group");
                     let RuntimeProgram::Compute(pipeline, _) = &self.programs[program.0 as usize]
                         .as_ref()
@@ -1290,6 +1412,7 @@ impl Recorder {
                     bindings,
                     target,
                     load,
+                    depth,
                     vertices,
                     instances,
                     viewport,
@@ -1303,34 +1426,66 @@ impl Recorder {
                     else {
                         return Err(anyhow!("recorded a compute program in a render pass"));
                     };
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: None,
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: self.view(*target),
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: match load {
-                                    TargetLoad::Clear => {
-                                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
-                                    }
-                                    TargetLoad::Load => wgpu::LoadOp::Load,
-                                },
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        occlusion_query_set: None,
-                        timestamp_writes: None,
-                        multiview_mask: None,
-                    });
-                    dynamic_offsets(bindings, &mut offsets);
-                    pass.set_pipeline(pipeline);
-                    pass.set_bind_group(0, self.group(group), &offsets);
-                    if let Some([x, y, width, height]) = *viewport {
-                        pass.set_viewport(x, y, width, height, 0.0, 1.0);
+                    let depth_tex = depth.map(|(texture, _)| texture);
+                    let continues = matches!(load, TargetLoad::Load)
+                        && depth.is_none_or(|(_, load)| matches!(load, TargetLoad::Load))
+                        && open.as_ref().is_some_and(|open| {
+                            open.target == *target
+                                && open.depth == depth_tex
+                                && (viewport.is_some() || !open.viewport_set)
+                        });
+                    if !continues {
+                        drop(open.take());
+                        open = Some(OpenRender {
+                            pass: encoder
+                                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                                    label: None,
+                                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                        view: self.view(*target),
+                                        depth_slice: None,
+                                        resolve_target: None,
+                                        ops: wgpu::Operations {
+                                            load: match load {
+                                                TargetLoad::Clear => {
+                                                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                                                }
+                                                TargetLoad::Load => wgpu::LoadOp::Load,
+                                            },
+                                            store: wgpu::StoreOp::Store,
+                                        },
+                                    })],
+                                    depth_stencil_attachment: depth.map(|(depth, load)| {
+                                        wgpu::RenderPassDepthStencilAttachment {
+                                            view: self.view(depth),
+                                            depth_ops: Some(wgpu::Operations {
+                                                load: match load {
+                                                    TargetLoad::Clear => wgpu::LoadOp::Clear(1.0),
+                                                    TargetLoad::Load => wgpu::LoadOp::Load,
+                                                },
+                                                store: wgpu::StoreOp::Store,
+                                            }),
+                                            stencil_ops: None,
+                                        }
+                                    }),
+                                    occlusion_query_set: None,
+                                    timestamp_writes: None,
+                                    multiview_mask: None,
+                                })
+                                .forget_lifetime(),
+                            target: *target,
+                            depth: depth_tex,
+                            viewport_set: false,
+                        });
                     }
-                    pass.draw(0..*vertices, 0..*instances);
+                    let open = open.as_mut().expect("open render pass");
+                    dynamic_offsets(bindings, &mut offsets);
+                    open.pass.set_pipeline(pipeline);
+                    open.pass.set_bind_group(0, self.group(group), &offsets);
+                    if let Some([x, y, width, height]) = *viewport {
+                        open.pass.set_viewport(x, y, width, height, 0.0, 1.0);
+                        open.viewport_set = true;
+                    }
+                    open.pass.draw(0..*vertices, 0..*instances);
                 }
                 RecordedPass::Copy {
                     source,
@@ -1339,6 +1494,7 @@ impl Recorder {
                     size,
                 } => {
                     compute = None;
+                    open = None;
                     encoder.copy_texture_to_texture(
                         self.texture(*source).as_image_copy(),
                         wgpu::TexelCopyTextureInfo {
@@ -1356,6 +1512,7 @@ impl Recorder {
                 }
                 RecordedPass::Clear { texture } => {
                     compute = None;
+                    open = None;
                     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: None,
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1376,6 +1533,7 @@ impl Recorder {
             }
         }
         drop(compute);
+        drop(open);
         let submission = self.queue.submit([encoder.finish()]);
         self.stats.passes += self.passes.len() as u64;
         scope.finish()?;
@@ -1461,6 +1619,10 @@ impl Recorder {
                     Res::Sampler(sampler) => {
                         wgpu::BindingResource::Sampler(&self.samplers[sampler.0 as usize].1)
                     }
+                    Res::Buffer(buffer) => self.buffers[buffer.0 as usize]
+                        .as_ref()
+                        .expect("adopted buffer")
+                        .as_entire_binding(),
                 },
             })
             .collect();
@@ -1525,6 +1687,7 @@ impl Recorder {
         self.program_keys = foldhash::HashMap::default();
         self.program_contents = foldhash::HashMap::default();
         self.samplers = Vec::new();
+        self.buffers = Vec::new();
         self.uniforms.release();
         self.storage.release();
         self.groups = Vec::new();

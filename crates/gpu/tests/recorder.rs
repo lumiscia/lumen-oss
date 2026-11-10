@@ -168,3 +168,116 @@ fn releasing_everything_frees_what_the_recorder_held_and_it_records_again() {
 
     assert_eq!(frame(&mut recorder), [3]);
 }
+
+const DRAW_SHADER: &str = "
+struct Params { value: f32, depth: f32 }
+@group(0) @binding(0) var<uniform> params: Params;
+@vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    let corner = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
+    return vec4<f32>(corner * 2.0 - 1.0, params.depth, 1.0);
+}
+@fragment fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(params.value / 255.0, 0.0, 0.0, 1.0);
+}";
+const DRAW_LAYOUT: &[LayoutEntry] = &[LayoutEntry::staged(
+    0,
+    wgpu::ShaderStages::VERTEX_FRAGMENT,
+    LayoutKind::Uniform,
+)];
+const DRAW_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::RENDER_ATTACHMENT
+    .union(wgpu::TextureUsages::TEXTURE_BINDING)
+    .union(wgpu::TextureUsages::COPY_SRC);
+
+/// A program covering the target with a red `value` at a depth, both given by its uniform.
+fn draw_program(recorder: &mut Recorder, depth: Option<DepthTest>) -> ProgramRef {
+    recorder
+        .render_program(
+            "test draw",
+            DRAW_SHADER,
+            "vs_main",
+            "fs_main",
+            DRAW_LAYOUT,
+            RenderTargetSpec {
+                depth,
+                ..RenderTargetSpec::flat(FORMAT, wgpu::BlendState::REPLACE)
+            },
+            0,
+        )
+        .expect("program")
+}
+
+#[test]
+fn a_draw_behind_what_is_already_drawn_is_hidden_unless_nothing_wrote_depth() {
+    let (renderer, mut recorder) = setup();
+    let size = Size::new(1, 1);
+    let drawn = |recorder: &mut Recorder, near: DepthTest| {
+        recorder.begin_frame();
+        let target = recorder.acquire(size, FORMAT, DRAW_USAGE);
+        let depth = recorder.acquire(size, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let draws = [(near, [10.0_f32, 0.25]), (DepthTest::Write, [20.0, 0.75])];
+        for (index, (test, params)) in draws.into_iter().enumerate() {
+            let program = draw_program(recorder, Some(test));
+            let load = if index == 0 {
+                TargetLoad::Clear
+            } else {
+                TargetLoad::Load
+            };
+            let bindings = [(0, recorder.uniform(&params))];
+            recorder.draw_with_depth(program, &bindings, target, load, depth, load, 3, 1);
+        }
+        submit_and_read(&renderer, recorder, target, size)
+    };
+    assert_eq!(drawn(&mut recorder, DepthTest::Write), [10]);
+    assert_eq!(drawn(&mut recorder, DepthTest::Read), [20]);
+}
+
+#[test]
+fn a_draw_without_a_viewport_covers_the_target_after_one_with_a_viewport() {
+    let (renderer, mut recorder) = setup();
+    let size = Size::new(2, 1);
+    recorder.begin_frame();
+    let target = recorder.acquire(size, FORMAT, DRAW_USAGE);
+    let program = draw_program(&mut recorder, None);
+    let left = [(0, recorder.uniform(&[10.0_f32, 0.0]))];
+    recorder.draw(
+        program,
+        &left,
+        target,
+        TargetLoad::Clear,
+        3,
+        1,
+        Some([0.0, 0.0, 1.0, 1.0]),
+    );
+    let right = [(0, recorder.uniform(&[20.0_f32, 0.0]))];
+    recorder.draw(
+        program,
+        &right,
+        target,
+        TargetLoad::Load,
+        3,
+        1,
+        Some([1.0, 0.0, 1.0, 1.0]),
+    );
+    assert_eq!(
+        submit_and_read(&renderer, &mut recorder, target, size),
+        [10, 20]
+    );
+
+    recorder.begin_frame();
+    let target = recorder.acquire(size, FORMAT, DRAW_USAGE);
+    recorder.draw(
+        program,
+        &left,
+        target,
+        TargetLoad::Clear,
+        3,
+        1,
+        Some([0.0, 0.0, 1.0, 1.0]),
+    );
+    let whole = [(0, recorder.uniform(&[30.0_f32, 0.0]))];
+    recorder.draw(program, &whole, target, TargetLoad::Load, 3, 1, None);
+    assert_eq!(
+        submit_and_read(&renderer, &mut recorder, target, size),
+        [30, 30]
+    );
+}

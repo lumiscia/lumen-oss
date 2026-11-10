@@ -26,10 +26,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
             "vs_main",
             "fs_main",
             RECORD_LAYOUT,
-            lumen_gpu::RenderTargetSpec {
-                format,
-                blend: lumen_gpu::wgpu::BlendState::REPLACE,
-            },
+            lumen_gpu::RenderTargetSpec::flat(format, lumen_gpu::wgpu::BlendState::REPLACE),
             0,
         )
     }
@@ -59,10 +56,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
             "vs_main",
             "fs_main",
             RECORD_LAYOUT,
-            lumen_gpu::RenderTargetSpec {
-                format,
-                blend: lumen_gpu::wgpu::BlendState::REPLACE,
-            },
+            lumen_gpu::RenderTargetSpec::flat(format, lumen_gpu::wgpu::BlendState::REPLACE),
             0,
         )?;
         cx.rec.draw(
