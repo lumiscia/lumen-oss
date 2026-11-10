@@ -787,6 +787,14 @@ mod tests {
     }
 
     #[test]
+    fn uniform_size_is_checked_against_the_device_limit() {
+        let interface = ShaderInterface::parse(SHADER).unwrap();
+        assert!(interface.check_uniform_size(48).is_ok());
+        let error = interface.check_uniform_size(32).unwrap_err();
+        assert!(error.contains("`Params` is 48 bytes; uniform buffers are limited to 32 bytes"));
+    }
+
+    #[test]
     fn declarations_parse_with_any_whitespace() {
         let interface = ShaderInterface::parse(
             "struct  Params{ tint :vec3 < f32 > ,alpha : f32 }\n\
