@@ -36,7 +36,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36056503b9996959defdfcf058811637fdf68a2e35a48ee8e39c89a787fe9cdc"
 dependencies = [
  "portable-atomic",
- "ruzstd",
 ]
 
 [[package]]
@@ -261,6 +260,7 @@ dependencies = [
  "gltf-json",
  "image",
  "meshopt-pure",
+ "ruzstd",
  "serde",
  "serde_json",
 ]
