@@ -1022,6 +1022,17 @@ fn number_paths(value: &Value, path: String, out: &mut Vec<String>) {
     }
 }
 
+/// Writes two of the models these tests build to `fuzz/seeds`, for the fuzz targets.
+#[test]
+#[ignore = "writes the fuzz seeds"]
+fn write_fuzz_seeds() {
+    let rich = textured(skinned(), &png(2, 2, [255, 0, 0, 255]));
+    for (name, glb) in [("triangle", Glb::triangle()), ("rich", rich)] {
+        let path = format!("{}/fuzz/seeds/{name}.glb", env!("CARGO_MANIFEST_DIR"));
+        std::fs::write(path, glb.bytes()).unwrap();
+    }
+}
+
 #[test]
 fn corrupted_files_return_without_panicking() {
     // Numbers at the edges of what counts, offsets, indices and component types may hold.

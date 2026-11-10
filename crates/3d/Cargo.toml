@@ -33,7 +33,10 @@ gltf-json = { version = "1.4.1", default-features = false, features = [
 ] }
 half = "2.7.1"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
-basisu = { version = "0.1.0", default-features = false, features = ["std", "zstd"], optional = true }
+basisu = { version = "0.1.0", default-features = false, features = [
+  "std",
+  "zstd",
+], optional = true }
 draco-core = { version = "2.3.3", default-features = false, features = [
   "decoder",
   "edgebreaker_valence_decode",

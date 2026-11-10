@@ -83,7 +83,7 @@ fn decode_view(
     };
     let source = buffers
         .buffer(buffer)?
-        .get(offset..offset.checked_add(length).unwrap_or(usize::MAX))
+        .get(offset..offset.saturating_add(length))
         .ok_or_else(|| malformed("reaches past the end of its buffer"))?;
     let decoded = count
         .checked_mul(stride)

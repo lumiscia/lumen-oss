@@ -144,6 +144,7 @@ fn corrupt(error: ImageError) -> ModelError {
 /// before anything is decoded. The decoder's own limits are set as a second line, though on this
 /// path they don't bound every allocation it makes.
 pub(super) fn decode(bytes: &[u8], header: Header) -> Result<Vec<Vec<u8>>, ModelError> {
+    #[cfg_attr(not(feature = "ktx2"), expect(clippy::infallible_destructuring_match))]
     let expected = match header.format {
         Format::Raster(format) => format,
         #[cfg(feature = "ktx2")]

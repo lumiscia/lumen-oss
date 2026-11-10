@@ -321,13 +321,16 @@ struct Accessors<'a> {
     indices: Option<&'a Accessor>,
 }
 
+/// Each vertex's joints and weights.
+type SkinValues = (Vec<[u32; 4]>, Vec<[f32; 4]>);
+
 /// A primitive's vertex attributes and indices as read, before they are checked against each
 /// other.
 struct Attributes {
     positions: Vec<[f32; 3]>,
     normals: Option<Vec<[f32; 3]>>,
     uvs: Option<Vec<[f32; 2]>>,
-    skin: Option<(Vec<[u32; 4]>, Vec<[f32; 4]>)>,
+    skin: Option<SkinValues>,
     indices: Option<Vec<u32>>,
 }
 

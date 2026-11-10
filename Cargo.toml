@@ -12,6 +12,7 @@ members = [
   "crates/text",
   "crates/3d",
 ]
+exclude = ["crates/3d/fuzz"]
 
 resolver = "3"
 
@@ -24,6 +25,11 @@ repository = "https://github.com/lumiscia/lumen-oss"
 [profile.release]
 lto = true
 codegen-units = 1
+
+# basisu's arithmetic overflows on some corrupt ETC1S streams. Wrapping, as release builds do, keeps
+# its loops bounded, so debug builds wrap too rather than panic.
+[profile.dev.package.basisu]
+overflow-checks = false
 
 [workspace.dependencies]
 lumen-3d = { package = "lumen-engine-3d", path = "crates/3d", version = "0.5.0", default-features = false }
