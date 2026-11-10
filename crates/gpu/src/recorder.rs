@@ -389,6 +389,8 @@ pub struct Recorder {
     adopted_bytes: u64,
     budget: u64,
     frame_textures: Vec<FrameTexture>,
+    /// The widest or tallest texture this frame has acquired.
+    largest_texture: Size,
     programs: Vec<Option<ProgramEntry>>,
     program_keys: foldhash::HashMap<ProgramKey, ProgramRef>,
     /// Programs by what they're built from. A `'static` shader isn't guaranteed one address, so
@@ -418,6 +420,7 @@ impl Recorder {
             adopted_bytes: 0,
             budget: DEFAULT_POOL_BUDGET_BYTES,
             frame_textures: Vec::new(),
+            largest_texture: Size::new(0, 0),
             programs: Vec::new(),
             program_keys: foldhash::HashMap::default(),
             program_contents: foldhash::HashMap::default(),
@@ -474,6 +477,7 @@ impl Recorder {
         self.frame += 1;
         self.passes.clear();
         self.frame_textures.clear();
+        self.largest_texture = Size::new(0, 0);
         self.uniforms.cpu.clear();
         self.storage.cpu.clear();
         for bucket in self.buckets.values_mut() {
@@ -491,6 +495,10 @@ impl Recorder {
         format: wgpu::TextureFormat,
         usage: wgpu::TextureUsages,
     ) -> TexRef {
+        if size.width.max(size.height) > self.largest_texture.width.max(self.largest_texture.height)
+        {
+            self.largest_texture = size;
+        }
         self.frame_textures.push(FrameTexture {
             key: PoolKey {
                 width: size.width.max(1),
@@ -505,6 +513,11 @@ impl Recorder {
             released: false,
         });
         TexRef(FRAME_TEXTURE | (self.frame_textures.len() as u32 - 1))
+    }
+
+    /// The widest or tallest texture acquired since `begin_frame`, or zero by zero if none was.
+    pub fn largest_acquired_texture(&self) -> Size {
+        self.largest_texture
     }
 
     /// `acquire` for a texture written between `resolve` and the passes running.
