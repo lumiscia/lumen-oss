@@ -6,7 +6,7 @@ use lumen_gpu::{LayoutEntry, LayoutKind, wgpu};
 
 use crate::error::RenderError;
 use crate::expr::ExpressionContext;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, motion};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams, motion};
 
 /// Most sub-frames a `motion_blur` node renders. Their 8-bit channels are summed in 16 bits.
 pub(crate) const MAX_MOTION_BLUR_SAMPLES: i64 = 64;
@@ -93,6 +93,8 @@ impl Default for MotionBlurParams {
 /// Blurs everything that moves in its source, including what analytic motion blur can't see:
 /// animated sizes, path data, motion upstream of a transform and motion inside video. Analytic
 /// motion blur in the source is off while it samples, and so is a `motion_blur` inside it.
+/// Content that already has its own motion blur, like a video recorded with it, is blurred
+/// twice.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "motion_blur", name = "Motion Blur", category = "processing")]
 pub struct MotionBlur {
@@ -117,7 +119,7 @@ impl MotionBlur {
         let invalid = |details: String| {
             Err(RenderError::NodeEvaluation {
                 node_id: self.id,
-                node_kind: "MotionBlur",
+                node_kind: <MotionBlur as JsonNode>::KIND,
                 details,
             }
             .into())

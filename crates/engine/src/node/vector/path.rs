@@ -7,7 +7,7 @@ use super::repeat::{Drawn, GpuCopies, Repeat, RepeatedTransform};
 use crate::error::RenderError;
 use crate::gpu::params;
 use crate::node::motion::Shutter;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams};
 
 pub(crate) const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -135,7 +135,7 @@ fn path_frame(
         parse_path_points(&evaluated.data, flattening_tolerance(peak), MAX_PATH_POINTS).map_err(
             |details| RenderError::NodeEvaluation {
                 node_id,
-                node_kind: "Path",
+                node_kind: <Path as JsonNode>::KIND,
                 details: format!("`data` {details}"),
             },
         )?;
@@ -146,7 +146,7 @@ fn path_frame(
         GpuDash::new(&evaluated.stroke_dash, evaluated.stroke_dash_offset).map_err(|details| {
             RenderError::NodeEvaluation {
                 node_id,
-                node_kind: "Path",
+                node_kind: <Path as JsonNode>::KIND,
                 details,
             }
         })?;
@@ -158,7 +158,7 @@ fn path_frame(
         if value.is_nan() {
             return Err(RenderError::NodeEvaluation {
                 node_id,
-                node_kind: "Path",
+                node_kind: <Path as JsonNode>::KIND,
                 details: format!("`{name}` is not a number"),
             });
         }
