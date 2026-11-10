@@ -18,11 +18,7 @@ foldhash = "0.2.0"
 objc2 = { version = "0.6.4", optional = true }
 objc2-metal = { version = "0.3.2", optional = true }
 tracing = "0.1.44"
-wgpu = { version = "30.0.1", default-features = false, features = [
-  "std",
-  "webgpu",
-  "wgsl",
-] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "webgpu", "wgsl"] }
 wgpu-hal = { version = "30.0.1", default-features = false, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
