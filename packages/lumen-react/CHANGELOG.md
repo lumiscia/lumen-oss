@@ -1,5 +1,58 @@
 # @lumiscia/lumen-react
 
+## 0.5.0
+
+### Minor Changes
+
+- 4df3509: Diagnostics reach the TypeScript packages. The wasm bindings add `check(json, fonts?)`, which returns what is wrong with a composition without loading it, and a composition `loadComposition` rejects throws with the same `diagnostics`. `LumenError` in the SDK has `diagnostics`, filled when a render is rejected for an invalid composition. The preview and both `Player` components take `onError`, which receives each failure with its diagnostics. `LumenDiagnostic` is exported from `@lumiscia/lumen-types`.
+- 29f9e9b: `Player` no longer takes `bindings`: `<Player preview={preview} composition={composition} />` is enough. React and Svelte now depend on `@lumiscia/lumen-bindings` and start its preview worker and wasm from where they're installed, which Vite and plain ESM both resolve. A page that serves them elsewhere passes `workerUrl` and `wasmUrl` to `Player`.
+
+  This is breaking. `mountPreview` and `LumenPreviewSession` take `wasmUrl` and `workerUrl` in place of `bindings`, and `@lumiscia/lumen-bindings/urls` exports the defaults without loading the wasm. `LumenWorkerBindings` is gone, and `createLumenBindings` from `@lumiscia/lumen-bindings` no longer takes `previewWorkerUrl`; it only loads the wasm on the calling thread.
+
+### Patch Changes
+
+- 92b28e3: Every package now has a README, so its npm page describes it.
+- Updated dependencies [6cddffa]
+- Updated dependencies [db420ff]
+- Updated dependencies [d21228a]
+- Updated dependencies [4df3509]
+- Updated dependencies [428e0a7]
+- Updated dependencies [8a28aa1]
+- Updated dependencies [a08ab26]
+- Updated dependencies [08a87a7]
+- Updated dependencies [3861bfd]
+- Updated dependencies [9208a20]
+- Updated dependencies [53e1e41]
+- Updated dependencies [3665a2c]
+- Updated dependencies [b7342d2]
+- Updated dependencies [e06506b]
+- Updated dependencies [f31d22c]
+- Updated dependencies [8857666]
+- Updated dependencies [1484e3a]
+- Updated dependencies [48ad23c]
+- Updated dependencies [c491e28]
+- Updated dependencies [c667040]
+- Updated dependencies [92b28e3]
+- Updated dependencies [1d76f93]
+- Updated dependencies [29f9e9b]
+- Updated dependencies [bc958b9]
+- Updated dependencies [8b9b483]
+- Updated dependencies [5260e32]
+- Updated dependencies [404f117]
+- Updated dependencies [ef422d1]
+- Updated dependencies [5db9958]
+- Updated dependencies [d60eaad]
+- Updated dependencies [991ef36]
+- Updated dependencies [672e2f8]
+- Updated dependencies [89b7b38]
+- Updated dependencies [699ae65]
+- Updated dependencies [04f41b2]
+- Updated dependencies [b9efc3b]
+- Updated dependencies [833d912]
+- Updated dependencies [892990a]
+  - @lumiscia/lumen-bindings@0.5.0
+  - @lumiscia/lumen-preview@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes

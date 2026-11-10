@@ -1,5 +1,43 @@
 # @lumiscia/lumen-preview
 
+## 0.5.0
+
+### Minor Changes
+
+- 4df3509: Diagnostics reach the TypeScript packages. The wasm bindings add `check(json, fonts?)`, which returns what is wrong with a composition without loading it, and a composition `loadComposition` rejects throws with the same `diagnostics`. `LumenError` in the SDK has `diagnostics`, filled when a render is rejected for an invalid composition. The preview and both `Player` components take `onError`, which receives each failure with its diagnostics. `LumenDiagnostic` is exported from `@lumiscia/lumen-types`.
+- 29f9e9b: `Player` no longer takes `bindings`: `<Player preview={preview} composition={composition} />` is enough. React and Svelte now depend on `@lumiscia/lumen-bindings` and start its preview worker and wasm from where they're installed, which Vite and plain ESM both resolve. A page that serves them elsewhere passes `workerUrl` and `wasmUrl` to `Player`.
+
+  This is breaking. `mountPreview` and `LumenPreviewSession` take `wasmUrl` and `workerUrl` in place of `bindings`, and `@lumiscia/lumen-bindings/urls` exports the defaults without loading the wasm. `LumenWorkerBindings` is gone, and `createLumenBindings` from `@lumiscia/lumen-bindings` no longer takes `previewWorkerUrl`; it only loads the wasm on the calling thread.
+
+- 8b9b483: Updating a preview's composition now keeps the playback position instead of rewinding to frame 0, and a preview that was playing keeps playing. The worker starts the new composition on the clock it was already following, so frequent updates, such as from a dragged slider, neither hold playback back nor step the frame backwards. A paused position past the new end parks on the last frame, and playback carries on round a shorter loop. Audio with an unchanged timeline plays on undisturbed. A changed audio timeline restarts the mix at the current position. A seek made during an update applies once it loads, clamped to the new length.
+
+### Patch Changes
+
+- 92b28e3: Every package now has a README, so its npm page describes it.
+- bc958b9: When audio starts and then stops arriving for good, the preview no longer freezes silently. After 10 seconds of continuous underrun during playback it reports `audio_failed` once and keeps the video playing without audio until the next play, seek or composition load.
+- 5260e32: The preview hands video to the engine as the browser's native YUV planes, and the engine converts them with the same matrix as a server render, instead of leaving the conversion to the browser. Untagged video now looks the same in the preview and in a render: below 720 rows it's BT.601, and from 720 rows it's BT.709. Chrome used to pick BT.709 for sizes like 960×540 and 720×576, and Safari for everything, including video tagged BT.601. Video also shows in Safari again, which ignored the RGBA conversion and left frames black. Rotated video is rotated by the engine.
+- Updated dependencies [6cddffa]
+- Updated dependencies [db420ff]
+- Updated dependencies [d21228a]
+- Updated dependencies [4df3509]
+- Updated dependencies [428e0a7]
+- Updated dependencies [8a28aa1]
+- Updated dependencies [08a87a7]
+- Updated dependencies [3861bfd]
+- Updated dependencies [53e1e41]
+- Updated dependencies [3665a2c]
+- Updated dependencies [b7342d2]
+- Updated dependencies [f31d22c]
+- Updated dependencies [8857666]
+- Updated dependencies [48ad23c]
+- Updated dependencies [c491e28]
+- Updated dependencies [92b28e3]
+- Updated dependencies [1d76f93]
+- Updated dependencies [404f117]
+- Updated dependencies [ef422d1]
+- Updated dependencies [5db9958]
+  - @lumiscia/lumen-types@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes

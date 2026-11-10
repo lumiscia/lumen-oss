@@ -1,6 +1,0 @@
----
-"@lumiscia/lumen-bindings": minor
-"@lumiscia/lumen-types": minor
----
-
-A `motion_blur` node blurs any motion in its source, including what the analytic `motion_blur` shutter of shapes, paths, text and `transform` can't see: animated `width`, `height`, `font_size` and `border_radius`, path data, anything upstream of a `transform`, and motion inside video. `{ "type": "motion_blur", "params": { "samples": 8, "shutter": 180 } }` renders its source at `samples` sub-frame times across a `shutter` of that many degrees, centred on the frame like the analytic shutter, and averages them in premultiplied space. The result is the average of the sub-frames' 8-bit renders, rounded to the nearest level. Each sample renders the whole source again, so the cost grows with `samples`; the samples share the same pooled textures, so memory doesn't. Video shows the source frame each sub-frame time maps to, and media prediction asks for those frames. `samples` is 1 to 64 and `shutter` 0 to 360; other values fail the render. `samples: 1` or `shutter: 0` renders the source once, unchanged. While a `motion_blur` samples, analytic motion blur inside it is off, and a `motion_blur` inside it renders its source once per sample.

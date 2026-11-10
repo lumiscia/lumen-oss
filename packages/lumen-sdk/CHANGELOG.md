@@ -1,5 +1,38 @@
 # @lumiscia/lumen-sdk
 
+## 0.5.0
+
+### Minor Changes
+
+- 4df3509: Diagnostics reach the TypeScript packages. The wasm bindings add `check(json, fonts?)`, which returns what is wrong with a composition without loading it, and a composition `loadComposition` rejects throws with the same `diagnostics`. `LumenError` in the SDK has `diagnostics`, filled when a render is rejected for an invalid composition. The preview and both `Player` components take `onError`, which receives each failure with its diagnostics. `LumenDiagnostic` is exported from `@lumiscia/lumen-types`.
+- d60eaad: `POST /renders` on `lumen-server` accepts `quality`, a quality preset name such as `"high"`, and `codec`, `"h264"`, `"hevc"` or `"av1"`. Both win over the composition's `render_settings`. `RenderOptions.quality` and `RenderOptions.codec` in the SDK send them, and `QualityPreset` types the preset name.
+
+### Patch Changes
+
+- 92b28e3: Every package now has a README, so its npm page describes it.
+- Updated dependencies [6cddffa]
+- Updated dependencies [db420ff]
+- Updated dependencies [d21228a]
+- Updated dependencies [4df3509]
+- Updated dependencies [428e0a7]
+- Updated dependencies [8a28aa1]
+- Updated dependencies [08a87a7]
+- Updated dependencies [3861bfd]
+- Updated dependencies [53e1e41]
+- Updated dependencies [3665a2c]
+- Updated dependencies [b7342d2]
+- Updated dependencies [f31d22c]
+- Updated dependencies [8857666]
+- Updated dependencies [48ad23c]
+- Updated dependencies [c491e28]
+- Updated dependencies [92b28e3]
+- Updated dependencies [1d76f93]
+- Updated dependencies [404f117]
+- Updated dependencies [ef422d1]
+- Updated dependencies [5db9958]
+  - @lumiscia/lumen-types@0.5.0
+  - @lumiscia/lumen-shared@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes
