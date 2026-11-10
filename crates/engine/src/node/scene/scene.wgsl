@@ -550,6 +550,13 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         texel *= textureSampleGrad(base_color_map, base_color_sampler, in.uv, uv_dx, uv_dy);
     }
     var base = o.base_color * texel;
+    // A shadow catcher shows none of its colour, and catches shadows as much as its alpha covers
+    // it, with its raster's and maps', which hide nothing where they are 0.
+    let catcher = has(o.flags, FLAG_SHADOW_CATCHER);
+    let coverage = base.a;
+    if (catcher && coverage <= 0.0) {
+        discard;
+    }
     if (has(o.flags, FLAG_MASK)) {
         if (base.a < o.alpha_cutoff) {
             discard;
@@ -558,7 +565,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     } else if (!has(o.flags, FLAG_BLEND)) {
         base.a = 1.0;
     }
-    if ((o.flags & FLAG_UNLIT) != 0u) {
+    if (has(o.flags, FLAG_UNLIT) && !catcher) {
         // A raster shown unlit keeps its colours as in 2D, whatever the exposure and tone mapping.
         let shown = base.rgb + emissive;
         return vec4<f32>(fogged(select(display(shown), shown, raster), in.world) * base.a, base.a);
@@ -655,11 +662,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         color += (diffuse + specular) * radiance * n_dot_l;
     }
 
-    if (has(o.flags, FLAG_SHADOW_CATCHER)) {
+    if (catcher) {
         // Light from all around, as irradiance like the lights'.
         let around = luminance(diffuse_environment(n)) * PI;
         let shadow = select(0.0, 1.0 - (around + shadowed) / (around + unshadowed), unshadowed > 0.0);
-        return vec4<f32>(0.0, 0.0, 0.0, clamp(shadow * o.base_color.a * fog_transmittance(in.world), 0.0, 1.0));
+        return vec4<f32>(0.0, 0.0, 0.0, clamp(shadow * coverage * fog_transmittance(in.world), 0.0, 1.0));
     }
     let reflected = reflect(-v, n);
     let blurred = normalize(mix(reflected, n, alpha * alpha));

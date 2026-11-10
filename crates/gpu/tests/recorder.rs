@@ -327,7 +327,11 @@ fn a_depth_only_draw_writes_depth_a_later_draw_compares_against() {
     const COMPARE_LAYOUT: &[LayoutEntry] = &[
         LayoutEntry::staged(0, wgpu::ShaderStages::VERTEX_FRAGMENT, LayoutKind::Uniform),
         LayoutEntry::staged(1, wgpu::ShaderStages::FRAGMENT, LayoutKind::DepthTexture),
-        LayoutEntry::staged(2, wgpu::ShaderStages::FRAGMENT, LayoutKind::ComparisonSampler),
+        LayoutEntry::staged(
+            2,
+            wgpu::ShaderStages::FRAGMENT,
+            LayoutKind::ComparisonSampler,
+        ),
     ];
     let (renderer, mut recorder) = setup();
     let size = Size::new(1, 1);

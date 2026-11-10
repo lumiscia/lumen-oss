@@ -1493,7 +1493,8 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
   readonly params?: {
     /**
      * Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
-     * at least half.
+     * at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,
+     * such as a bulb around a point light, needs this off.
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
     /** Base colour, which an image plane's raster is multiplied by. Must be a solid color. */
@@ -1522,8 +1523,10 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
     /**
      * Shows nothing but the shadows falling on it, as transparent black that darkens what the
      * render is composited over by as much light as the shadows take away, times the colour's
-     * alpha and the opacity. It hides what is behind it and casts no shadows, so a ground plane
-     * catching a model's shadow can stand in for the floor of 2D footage behind it.
+     * alpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows
+     * none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no
+     * shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
+     * footage behind it.
      */
     readonly shadow_catcher?: ExpressionValue<boolean>;
     /** Shows the base colour as is, ignoring lights. */
@@ -1578,7 +1581,9 @@ export interface Light3dNode extends CompositionNodeBase<"light_3d"> {
     readonly rotation?: ExpressionValue<Vec3>;
     /**
      * Width in world units over which shadow edges blur, up to 16 texels of the light's shadow
-     * map, which is up to 4096 texels across and shared among the shadow-casting lights.
+     * map, which is up to 4096 texels across and shared among the shadow-casting lights. A
+     * directional light's shadows reach as far from the camera as its map covers with texels no
+     * wider than this, or than 0.01 when this is smaller.
      */
     readonly shadow_softness?: ExpressionValue<number>;
     /** Full angle of a spot light's cone in degrees. */
@@ -1661,7 +1666,8 @@ export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
     readonly animation_speed?: ExpressionValue<number>;
     /**
      * Blocks light from lights that cast shadows, in the posed shape and where masked or blended
-     * materials' alpha reaches their cutoff, or half for blended ones.
+     * materials' alpha reaches their cutoff, or half for blended ones. Unlit and glowing
+     * materials block it too, so a model of a lamp around a light needs this off.
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
     /** Position in world units along X, Y and Z, in the parent's space. */
@@ -1925,7 +1931,8 @@ export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
   readonly params?: {
     /**
      * Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
-     * at least half.
+     * at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,
+     * such as a bulb around a point light, needs this off.
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
     /** Base colour, which an image plane's raster is multiplied by. Must be a solid color. */
@@ -1954,8 +1961,10 @@ export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
     /**
      * Shows nothing but the shadows falling on it, as transparent black that darkens what the
      * render is composited over by as much light as the shadows take away, times the colour's
-     * alpha and the opacity. It hides what is behind it and casts no shadows, so a ground plane
-     * catching a model's shadow can stand in for the floor of 2D footage behind it.
+     * alpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows
+     * none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no
+     * shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
+     * footage behind it.
      */
     readonly shadow_catcher?: ExpressionValue<boolean>;
     /** Primitive to build. */

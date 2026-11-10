@@ -77,7 +77,8 @@ pub struct Material3d {
     #[meta()]
     pub double_sided: bool,
     /// Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
-    /// at least half.
+    /// at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,
+    /// such as a bulb around a point light, needs this off.
     #[meta()]
     pub cast_shadows: bool,
     /// Darkens where shadows fall on it. An unlit surface shows none.
@@ -85,8 +86,10 @@ pub struct Material3d {
     pub receive_shadows: bool,
     /// Shows nothing but the shadows falling on it, as transparent black that darkens what the
     /// render is composited over by as much light as the shadows take away, times the colour's
-    /// alpha and the opacity. It hides what is behind it and casts no shadows, so a ground plane
-    /// catching a model's shadow can stand in for the floor of 2D footage behind it.
+    /// alpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows
+    /// none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no
+    /// shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
+    /// footage behind it.
     #[meta()]
     pub shadow_catcher: bool,
 }
@@ -242,7 +245,8 @@ pub struct Model3dParams {
     #[meta()]
     pub texture_material: String,
     /// Blocks light from lights that cast shadows, in the posed shape and where masked or blended
-    /// materials' alpha reaches their cutoff, or half for blended ones.
+    /// materials' alpha reaches their cutoff, or half for blended ones. Unlit and glowing
+    /// materials block it too, so a model of a lamp around a light needs this off.
     #[meta()]
     pub cast_shadows: bool,
     /// Darkens where shadows fall on its lit surfaces.
@@ -415,7 +419,9 @@ pub struct Light3dParams {
     #[meta()]
     pub cast_shadows: bool,
     /// Width in world units over which shadow edges blur, up to 16 texels of the light's shadow
-    /// map, which is up to 4096 texels across and shared among the shadow-casting lights.
+    /// map, which is up to 4096 texels across and shared among the shadow-casting lights. A
+    /// directional light's shadows reach as far from the camera as its map covers with texels no
+    /// wider than this, or than 0.01 when this is smaller.
     #[meta(min = 0, step = 0.01)]
     pub shadow_softness: f64,
     #[meta(flatten)]

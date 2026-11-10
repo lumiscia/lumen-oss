@@ -75,6 +75,8 @@ struct LoadedModel {
     textures: Arc<[TexRef]>,
     /// The bounds of each primitive's vertices, by its first index and index count.
     bounds: Arc<HashMap<(u32, u32), Bounds>>,
+    /// For each skin, by joint, the bounds of the vertices the joint moves.
+    joint_bounds: Arc<Vec<Vec<Bounds>>>,
 }
 
 struct CachedModel {
@@ -289,6 +291,7 @@ fn upload_model(rec: &mut Recorder, model: Model) -> Result<(LoadedModel, u64), 
         )));
     }
     let bounds = primitive_bounds(&model);
+    let joint_bounds = model.scene.joint_bounds(&model.geometry);
     let mut bytes = parts.iter().map(|part| part.len() as u64).sum::<u64>();
     let mesh = GpuMesh {
         vertices: storage_buffer(rec, "lumen 3d model vertices", parts[0]),
@@ -313,6 +316,7 @@ fn upload_model(rec: &mut Recorder, model: Model) -> Result<(LoadedModel, u64), 
         mesh,
         textures,
         bounds: Arc::new(bounds),
+        joint_bounds: Arc::new(joint_bounds),
     };
     Ok((loaded, bytes))
 }
@@ -475,11 +479,31 @@ fn model_error(node_id: NodeId, source: &str, details: impl std::fmt::Display) -
     .into()
 }
 
+/// What an object covers before it is placed in the world.
+enum Extent {
+    /// Bounds its world matrix places.
+    Local(Bounds),
+    /// Within the bounds of one of the scene's posed skins.
+    Skin(usize),
+}
+
+/// A skin posed in the scene: where its joint matrices start in the scene's joints, the model
+/// matrix they are placed by, and its joints' bounds before posing.
+struct PosedSkin {
+    first_joint: usize,
+    root: Mat4,
+    joint_bounds: Arc<Vec<Vec<Bounds>>>,
+    skin: usize,
+}
+
 /// The scene a `render_3d` draws, as far as its nodes have been walked.
 pub(super) struct Collected {
     pub(super) scene: Scene<GpuMesh, TexRef>,
     /// The node of each of the scene's lights.
     pub(super) light_nodes: Vec<NodeId>,
+    /// One per object, from which [`Self::place_bounds`] works out its bounds.
+    extents: Vec<Extent>,
+    skins: Vec<PosedSkin>,
     render_id: NodeId,
     /// Scene nodes walked, counting a node each time it is reached.
     reached: usize,
@@ -490,8 +514,45 @@ impl Collected {
         Self {
             scene: Scene::default(),
             light_nodes: Vec::new(),
+            extents: Vec::new(),
+            skins: Vec::new(),
             render_id,
             reached: 0,
+        }
+    }
+
+    fn push(&mut self, object: Object<GpuMesh, TexRef>, extent: Extent) {
+        self.scene.objects.push(object);
+        self.extents.push(extent);
+    }
+
+    /// Sets every object's bounds in the world, which only shadows need: each skin's from the
+    /// joints that move its vertices, once for every object it moves.
+    pub(super) fn place_bounds(&mut self) {
+        let joints = &self.scene.joints;
+        let skins: Vec<Bounds> = self
+            .skins
+            .iter()
+            .map(|skin| {
+                let bounds = skin
+                    .joint_bounds
+                    .get(skin.skin)
+                    .map_or(&[][..], Vec::as_slice);
+                let posed = joints.get(skin.first_joint..).unwrap_or_default();
+                bounds
+                    .iter()
+                    .zip(posed)
+                    .filter(|(bounds, _)| !bounds.is_empty())
+                    .fold(Bounds::EMPTY, |all, (bounds, joint)| {
+                        all.union(bounds.transformed(&(skin.root * *joint)))
+                    })
+            })
+            .collect();
+        for (object, extent) in self.scene.objects.iter_mut().zip(&self.extents) {
+            object.bounds = match *extent {
+                Extent::Local(bounds) => bounds.transformed(&object.world),
+                Extent::Skin(skin) => skins[skin],
+            };
         }
     }
 
@@ -553,16 +614,19 @@ impl Collected {
                 let surface = surface(node_id, "Shape3d", &params.material)?;
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.shape(rec, params.shape);
-                self.scene.objects.push(Object {
-                    world,
-                    mesh,
-                    first_index: 0,
-                    index_count,
-                    surface,
-                    center: world.transform_point3(Vec3::ZERO),
-                    first_joint: None,
-                    bounds: UNIT_BOUNDS.transformed(&world),
-                });
+                self.push(
+                    Object {
+                        world,
+                        mesh,
+                        first_index: 0,
+                        index_count,
+                        surface,
+                        center: world.transform_point3(Vec3::ZERO),
+                        first_joint: None,
+                        bounds: Bounds::EMPTY,
+                    },
+                    Extent::Local(UNIT_BOUNDS),
+                );
             }
             NodeKind::ImagePlane3d(plane) => {
                 let params = plane.params.eval(&ctx)?;
@@ -580,20 +644,22 @@ impl Collected {
                 surface.texture = Some(source.tex);
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.quad(rec);
-                self.scene.objects.push(Object {
-                    world,
-                    mesh,
-                    first_index: 0,
-                    index_count,
-                    surface,
-                    center: world.transform_point3(Vec3::ZERO),
-                    first_joint: None,
-                    bounds: Bounds {
+                self.push(
+                    Object {
+                        world,
+                        mesh,
+                        first_index: 0,
+                        index_count,
+                        surface,
+                        center: world.transform_point3(Vec3::ZERO),
+                        first_joint: None,
+                        bounds: Bounds::EMPTY,
+                    },
+                    Extent::Local(Bounds {
                         min: Vec3::new(-0.5, -0.5, 0.0),
                         max: Vec3::new(0.5, 0.5, 0.0),
-                    }
-                    .transformed(&world),
-                });
+                    }),
+                );
             }
             NodeKind::Model3d(model) => {
                 let params = model.params.eval(&ctx)?;
@@ -727,10 +793,23 @@ impl Collected {
             ));
         }
         let root = parent * placement(&params.placement).matrix();
-        // A skinned vertex lies between where its joints move it, so within the bounds of its
-        // primitive moved by each of them.
-        let skinned: Vec<Mat4> = pose.joints.iter().map(|joint| root * *joint).collect();
-        self.scene.joints.extend(pose.joints);
+        // Each skin's joint matrices start, in the pose, at the first joint of the primitives it
+        // moves, and later skins' start later.
+        let first_skin = self.skins.len();
+        self.skins
+            .extend(pose.skins.iter().map(|&(skin, start)| PosedSkin {
+                first_joint: first_joint + start as usize,
+                root,
+                joint_bounds: model.joint_bounds.clone(),
+                skin,
+            }));
+        let skin_of = |start: u32| {
+            pose.skins
+                .binary_search_by_key(&start, |&(_, first)| first)
+                .ok()
+                .map(|index| first_skin + index)
+        };
+        self.scene.joints.extend(pose.joints.iter().copied());
         let default = Material::default();
         for posed in pose.primitives {
             let primitive = posed.primitive;
@@ -763,21 +842,23 @@ impl Collected {
                 Some(_) => root,
                 None => root * posed.world,
             };
-            self.scene.objects.push(Object {
-                world,
-                mesh: model.mesh,
-                first_index: primitive.first_index,
-                index_count: primitive.index_count,
-                surface,
-                center: world.transform_point3(primitive.center),
-                first_joint: posed.first_joint.map(|joint| joint + first_joint as u32),
-                bounds: match posed.first_joint {
-                    Some(_) => skinned.iter().fold(Bounds::EMPTY, |bounds, joint| {
-                        bounds.union(local.transformed(joint))
-                    }),
-                    None => local.transformed(&world),
+            let extent = match posed.first_joint.and_then(skin_of) {
+                Some(skin) => Extent::Skin(skin),
+                None => Extent::Local(local),
+            };
+            self.push(
+                Object {
+                    world,
+                    mesh: model.mesh,
+                    first_index: primitive.first_index,
+                    index_count: primitive.index_count,
+                    surface,
+                    center: world.transform_point3(primitive.center),
+                    first_joint: posed.first_joint.map(|joint| joint + first_joint as u32),
+                    bounds: Bounds::EMPTY,
                 },
-            });
+                extent,
+            );
         }
         Ok(())
     }

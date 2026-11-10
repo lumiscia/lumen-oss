@@ -183,7 +183,8 @@ pub struct Object<M, T> {
     pub center: Vec3,
     /// Where the object's joint matrices start in the scene's `joints`, for a skinned object.
     pub first_joint: Option<u32>,
-    /// What the object covers in world space, at least, which shadows are fitted to.
+    /// What the object covers in world space, at least, which shadows are fitted to. A scene
+    /// without lights casting shadows may leave it empty.
     pub bounds: Bounds,
 }
 

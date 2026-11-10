@@ -1046,16 +1046,26 @@ fn compiling_reaches_the_programs_of_a_planes_source_through_the_scene_nodes() {
         json!({ "id": 10, "type": "shape", "params": { "width": 16, "height": 16 } }),
         json!({ "id": 11, "type": "blur", "params": { "radius": 2 }, "in": { "source": 10 } }),
         plane(1, 11, json!({ "width": 4 })),
-        merge(2, &[1], json!({})),
+        // Shadows, and a catcher from the second frame on, that only an expression turns on.
+        json!({ "id": 3, "type": "shape_3d", "params": { "size": [0.5, 0.5, 0.5], "position": [0, 0, 1] } }),
+        json!({ "id": 4, "type": "shape_3d", "params": {
+            "shape": "plane", "size": [6, 1, 6], "position": [0, -1, 0], "shadow_catcher": "=frame > 0" } }),
+        light(
+            5,
+            json!({ "light": "directional", "rotation": [-60, 0, 0], "cast_shadows": true }),
+        ),
+        merge(2, &[1, 3, 4, 5], json!({})),
     ];
-    let composition = Composition::from(render_3d(std::mem::take(&mut nodes)));
+    let composition = Composition::from(render_3d(std::mem::take(&mut nodes)).frames(2));
     let gpu = gpu();
     let mut renderer = gpu.renderer();
     renderer.compile(&composition).expect("the scene compiles");
     let compiled = renderer.created_program_count();
     assert!(compiled > 0);
 
-    render(&mut renderer, &composition, 0.0, &TestMedia::default());
+    for frame in [0.0, 1.0] {
+        render(&mut renderer, &composition, frame, &TestMedia::default());
+    }
 
     assert_eq!(renderer.created_program_count(), compiled);
 }
@@ -2130,4 +2140,112 @@ fn shadows_of_lights_and_objects_too_far_or_large_to_place_draw_nothing() {
         ),
     ];
     frame_of(view.scene(objects, json!({})), &TestMedia::default());
+}
+
+#[test]
+fn an_image_plane_catches_shadows_where_its_raster_covers_it_and_shows_none_of_its_colour() {
+    let view = GroundView::WHOLE;
+    let scene = |catcher: bool| {
+        let mut objects = vec![
+            json!({ "id": 1, "type": "shape_3d", "params": { "size": [1, 0.2, 1], "position": [0, 1, 0] } }),
+            light(
+                60,
+                json!({ "light": "directional", "intensity": 1, "rotation": [-90, 0, 0],
+                        "cast_shadows": true }),
+            ),
+            light(
+                61,
+                json!({ "light": "ambient", "intensity": 1.0 / std::f64::consts::PI }),
+            ),
+            plate(10),
+        ];
+        if catcher {
+            objects.push(plane(
+                2,
+                10,
+                json!({ "width": 6, "rotation": [-90, 0, 0], "position": [0, 0.01, 0],
+                        "shadow_catcher": true }),
+            ));
+        }
+        view.scene(objects, json!({}))
+    };
+    let (middle_x, middle_y) = view.pixel(0.0, 0.0);
+    let (edge_x, edge_y) = view.pixel(2.5, 2.5);
+
+    // Unlit by default, an opaque red source catches shadows as a shape does.
+    let red = frame_of(scene(true), &image(|_, _| RED));
+    for (pixel, expected) in [
+        (red.pixel(middle_x, middle_y), [0, 0, 0, 128]),
+        (red.pixel(edge_x, edge_y), CLEAR),
+    ] {
+        assert!(
+            pixel.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1),
+            "{pixel:?}, not {expected:?}"
+        );
+    }
+    // A transparent source leaves the ground under the plane showing as if it weren't there.
+    let transparent = image(|_, _| CLEAR);
+    let (with, without) = (
+        frame_of(scene(true), &transparent),
+        frame_of(scene(false), &transparent),
+    );
+    assert!(
+        with.rgba
+            .iter()
+            .zip(&without.rgba)
+            .all(|(a, b)| a.abs_diff(*b) <= 1)
+    );
+    assert_eq!(with.pixel(edge_x, edge_y)[3], 255);
+}
+
+#[test]
+fn shadows_of_small_objects_on_a_floor_far_wider_than_the_view_are_kept() {
+    let lights = [
+        json!({ "light": "directional", "intensity": 3, "rotation": [-50, 35, 0] }),
+        json!({ "light": "spot", "intensity": 60, "position": [0.5, 4, 0.5], "rotation": [-80, 45, 0],
+                "spot_angle": 60 }),
+        json!({ "light": "point", "intensity": 30, "position": [0.5, 3, 0.5] }),
+    ];
+    for params in lights {
+        // Pixels the box's shadow darkens on a floor `half` units out each way.
+        let shadow = |half: f64| {
+            let frame = |cast: bool| {
+                let nodes = vec![
+                    json!({ "id": 1, "type": "shape_3d", "params": {
+                        "shape": "plane", "size": [2.0 * half, 1, 2.0 * half], "roughness": 1 } }),
+                    json!({ "id": 2, "type": "shape_3d", "params": {
+                        "size": [0.6, 0.6, 0.6], "position": [0, 0.3, 0] } }),
+                    json!({ "id": 3, "type": "camera_3d", "params": {
+                        "position": [0, 1.5, 3], "look_at": true, "target": [0, 0, 0] } }),
+                    light(4, casting(&params, cast)),
+                    merge(5, &[1, 2, 3, 4], json!({})),
+                ];
+                frame_of(
+                    render_3d_with(json!({ "environment": 0 }), nodes),
+                    &TestMedia::default(),
+                )
+            };
+            let (shadowed, lit) = (frame(true), frame(false));
+            every_pixel()
+                .filter(|&(x, y)| {
+                    let (a, b) = (shadowed.pixel(x, y)[0], lit.pixel(x, y)[0]);
+                    b > 30 && a < b / 2
+                })
+                .count()
+        };
+        let small = shadow(3.0);
+        assert!(
+            small > 12,
+            "{params}: {small} pixels shadowed on a small floor"
+        );
+        // A floor kilometres across places its own pixels to within about a centimetre, which
+        // moves the shadow's edge by a pixel or so.
+        for half in [500.0, 5000.0] {
+            let wide = shadow(half);
+            assert!(
+                wide.abs_diff(small) <= small / 4,
+                "{params}: {wide} pixels shadowed on a floor {half} out, {small} on a small one"
+            );
+        }
+    }
 }

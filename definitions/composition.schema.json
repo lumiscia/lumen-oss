@@ -3075,7 +3075,7 @@
                       }
                     ],
                     "default": true,
-                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half.",
+                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,\nsuch as a bulb around a point light, needs this off.",
                     "title": "Cast Shadows",
                     "x-lumen-kind": "bool"
                   },
@@ -3260,7 +3260,7 @@
                       }
                     ],
                     "default": false,
-                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha and the opacity. It hides what is behind it and casts no shadows, so a ground plane\ncatching a model's shadow can stand in for the floor of 2D footage behind it.",
+                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows\nnone of its colours, hides what is behind it wherever that alpha isn't 0, and casts no\nshadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
                     "title": "Shadow Catcher",
                     "x-lumen-kind": "bool"
                   },
@@ -3606,7 +3606,7 @@
                       }
                     ],
                     "default": 0.02,
-                    "description": "Width in world units over which shadow edges blur, up to 16 texels of the light's shadow\nmap, which is up to 4096 texels across and shared among the shadow-casting lights.",
+                    "description": "Width in world units over which shadow edges blur, up to 16 texels of the light's shadow\nmap, which is up to 4096 texels across and shared among the shadow-casting lights. A\ndirectional light's shadows reach as far from the camera as its map covers with texels no\nwider than this, or than 0.01 when this is smaller.",
                     "title": "Shadow Softness",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -4308,7 +4308,7 @@
                       }
                     ],
                     "default": true,
-                    "description": "Blocks light from lights that cast shadows, in the posed shape and where masked or blended\nmaterials' alpha reaches their cutoff, or half for blended ones.",
+                    "description": "Blocks light from lights that cast shadows, in the posed shape and where masked or blended\nmaterials' alpha reaches their cutoff, or half for blended ones. Unlit and glowing\nmaterials block it too, so a model of a lamp around a light needs this off.",
                     "title": "Cast Shadows",
                     "x-lumen-kind": "bool"
                   },
@@ -5956,7 +5956,7 @@
                       }
                     ],
                     "default": true,
-                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half.",
+                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,\nsuch as a bulb around a point light, needs this off.",
                     "title": "Cast Shadows",
                     "x-lumen-kind": "bool"
                   },
@@ -6141,7 +6141,7 @@
                       }
                     ],
                     "default": false,
-                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha and the opacity. It hides what is behind it and casts no shadows, so a ground plane\ncatching a model's shadow can stand in for the floor of 2D footage behind it.",
+                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows\nnone of its colours, hides what is behind it wherever that alpha isn't 0, and casts no\nshadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
                     "title": "Shadow Catcher",
                     "x-lumen-kind": "bool"
                   },

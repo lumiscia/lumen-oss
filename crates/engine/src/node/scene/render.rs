@@ -11,11 +11,11 @@ use lumen_gpu::{
     TexRef, TextureDomain, wgpu,
 };
 
-use super::Render3d;
 use super::collect::{Collected, GpuMesh, solid_linear};
+use super::{Light3d, Render3d};
 use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::{FrameCx, Programs, Raster, RecordNode};
-use crate::node::{DelegateEvalContext, DelegateEvaluable, required_input};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, required_input};
 
 pub(crate) const SHADER: &str = include_str!("scene.wgsl");
 const RESOLVE_SHADER: &str = include_str!("resolve.wgsl");
@@ -366,16 +366,17 @@ fn shadow_atlas(
     if !draws.runs.iter().any(|run| run.key.cast_shadows) {
         return None;
     }
-    let bounds = draws
-        .rows
-        .iter()
-        .map(|row| &objects[row.object])
-        .filter(|object| {
-            let surface = &object.surface;
-            surface.cast_shadows || surface.receive_shadows || surface.shadow_catcher
-        })
-        .fold(Bounds::EMPTY, |bounds, object| bounds.union(object.bounds));
-    ShadowAtlas::plan(lights, camera, aspect, bounds, max_side)
+    let (mut casters, mut receivers) = (Bounds::EMPTY, Bounds::EMPTY);
+    for object in draws.rows.iter().map(|row| &objects[row.object]) {
+        let surface = &object.surface;
+        if surface.cast_shadows && !surface.shadow_catcher {
+            casters = casters.union(object.bounds);
+        }
+        if (surface.receive_shadows && !surface.unlit) || surface.shadow_catcher {
+            receivers = receivers.union(object.bounds);
+        }
+    }
+    ShadowAtlas::plan(lights, camera, aspect, casters, receivers, max_side)
 }
 
 pub(super) fn render_error(node_id: crate::node::NodeId, details: String) -> LumenError {
@@ -387,9 +388,52 @@ pub(super) fn render_error(node_id: crate::node::NodeId, details: String) -> Lum
     .into()
 }
 
+/// Whether `flag` may be on at some frame.
+fn may(flag: &Deferred<bool>) -> bool {
+    !matches!(flag, Deferred::Value(false))
+}
+
+/// Builds the program drawing shadow maps, when `light` may cast shadows.
+pub(crate) fn light_programs(light: &Light3d, programs: &mut Programs<'_>) -> crate::Result<()> {
+    if may(&light.params.cast_shadows) {
+        programs.render(
+            "scene-3d-shadow",
+            SHADER,
+            "vs_shadow",
+            "fs_shadow",
+            SHADOW_LAYOUT,
+            RenderTargetSpec::depth_only(DepthTest::Write, None),
+            0,
+        )?;
+    }
+    Ok(())
+}
+
+/// Builds the programs drawing a surface as a shadow catcher, facing either way or both, when
+/// `shadow_catcher` may be on.
+pub(crate) fn catcher_programs(
+    shadow_catcher: &Deferred<bool>,
+    programs: &mut Programs<'_>,
+) -> crate::Result<()> {
+    if may(shadow_catcher) {
+        for cull in [Some(wgpu::Face::Back), Some(wgpu::Face::Front), None] {
+            programs.render(
+                "scene-3d",
+                SHADER,
+                "vs_main",
+                "fs_main",
+                LAYOUT,
+                catcher_spec(cull),
+                CATCHER_VARIANT,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 impl RecordNode for Render3d {
-    /// Builds the programs scenes without shadows draw with. Those drawing shadows and catchers
-    /// are built when first drawn.
+    /// Builds the programs scenes draw with but for those drawing shadow maps and catchers, which
+    /// the lights and surfaces asking for them build.
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
         for (depth, cull) in VARIANTS {
             programs.render(
@@ -428,6 +472,14 @@ impl RecordNode for Render3d {
         }
         let mut collected = Collected::new(self.id);
         collected.add(cx, required_input(self.id, "scene", self.scene)?)?;
+        if collected
+            .scene
+            .lights
+            .iter()
+            .any(|light| light.shadow.is_some())
+        {
+            collected.place_bounds();
+        }
         let scene = &collected.scene;
         let fog = solid_linear(self.id, "Render3d", &params.fog_color)?;
         let camera = scene.camera.unwrap_or_default();
