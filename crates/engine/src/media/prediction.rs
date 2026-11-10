@@ -5,7 +5,7 @@ use crate::{
     error::{LumenError, MediaError},
     expr::ExpressionContext,
     node::{NodeId, NodeKind, source::media_in},
-    scope::{FrameTime, Routed, Scope},
+    scope::{FrameTime, MAX_GRAPH_DEPTH, Routed, Scope},
 };
 
 use super::MediaStore;
@@ -71,6 +71,7 @@ pub fn collect_frame_requirements<M: MediaStore>(
         media_store,
         frame: f64::from(frame).into(),
         sampling: false,
+        depth: 0,
     };
     context.collect_node(output, &mut walk)?;
     let requirements = FrameRequirements::from(walk.requirements);
@@ -100,10 +101,15 @@ struct RequirementContext<'a, M: MediaStore> {
     frame: FrameTime,
     /// Inside a `motion_blur` that samples.
     sampling: bool,
+    /// How many nodes the traversal is inside, which recording limits the same way.
+    depth: u32,
 }
 
 impl<'a, M: MediaStore> RequirementContext<'a, M> {
     fn collect_node(&self, node_id: NodeId, walk: &mut Walk) -> Result<(), LumenError> {
+        if self.depth == MAX_GRAPH_DEPTH {
+            return Err(self.scope.too_deep(node_id));
+        }
         if !walk.visited.insert((
             node_id,
             walk.instances.clone(),
@@ -136,6 +142,7 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                 frame,
                 sampling: self.sampling
                     || (instance.is_some() && matches!(node, NodeKind::MotionBlur(_))),
+                depth: self.depth + 1,
             };
             walk.instances.extend(instance);
             let result = context.collect_node(input, walk);

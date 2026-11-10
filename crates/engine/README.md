@@ -147,6 +147,7 @@ literal: one the store doesn't have is `asset.not_found`, and one of another kin
 | `render.missing_node`                | error    | render        | A node read while rendering doesn't exist.                                                                                                                                                  |
 | `render.invalid_output_type`         | error    | render        | A node's output had the wrong type for its reader.                                                                                                                                          |
 | `render.gpu`                         | error    | render        | The GPU failed.                                                                                                                                                                             |
+| `render.too_deeply_nested`           | error    | render        | A node is more than 48 nodes deep, counting through clips. Flatten the chain, such as by combining consecutive transforms or adjustments, or layering with `merge` or `raster_multimerge`.  |
 
 ## Features
 
