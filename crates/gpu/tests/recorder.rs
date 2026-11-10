@@ -301,3 +301,80 @@ fn a_render_program_binding_a_storage_texture_is_refused() {
     );
     assert!(program.is_err());
 }
+
+const DEPTH_SHADER: &str = "
+struct Params { value: f32, depth: f32 }
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var map: texture_depth_2d;
+@group(0) @binding(2) var compare: sampler_comparison;
+@vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    let corner = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
+    return vec4<f32>(corner * 2.0 - 1.0, params.depth, 1.0);
+}
+@fragment fn fs_depth() {}
+@fragment fn fs_compare() -> @location(0) vec4<f32> {
+    let lit = textureSampleCompareLevel(map, compare, vec2<f32>(0.5), params.depth);
+    return vec4<f32>(lit, 0.0, 0.0, 1.0);
+}";
+
+#[test]
+fn a_depth_only_draw_writes_depth_a_later_draw_compares_against() {
+    const WRITE_LAYOUT: &[LayoutEntry] = &[LayoutEntry::staged(
+        0,
+        wgpu::ShaderStages::VERTEX_FRAGMENT,
+        LayoutKind::Uniform,
+    )];
+    const COMPARE_LAYOUT: &[LayoutEntry] = &[
+        LayoutEntry::staged(0, wgpu::ShaderStages::VERTEX_FRAGMENT, LayoutKind::Uniform),
+        LayoutEntry::staged(1, wgpu::ShaderStages::FRAGMENT, LayoutKind::DepthTexture),
+        LayoutEntry::staged(2, wgpu::ShaderStages::FRAGMENT, LayoutKind::ComparisonSampler),
+    ];
+    let (renderer, mut recorder) = setup();
+    let size = Size::new(1, 1);
+    let write = recorder
+        .render_program(
+            "test depth",
+            DEPTH_SHADER,
+            "vs_main",
+            "fs_depth",
+            WRITE_LAYOUT,
+            RenderTargetSpec::depth_only(DepthTest::Write, None),
+            0,
+        )
+        .expect("program");
+    let compare = recorder
+        .render_program(
+            "test compare",
+            DEPTH_SHADER,
+            "vs_main",
+            "fs_compare",
+            COMPARE_LAYOUT,
+            RenderTargetSpec::flat(FORMAT, wgpu::BlendState::REPLACE),
+            0,
+        )
+        .expect("program");
+    let sampler = recorder.sampler(1, || wgpu::SamplerDescriptor {
+        compare: Some(wgpu::CompareFunction::LessEqual),
+        ..wgpu::SamplerDescriptor::default()
+    });
+    let lit = |recorder: &mut Recorder, reference: f32| {
+        recorder.begin_frame();
+        let map = recorder.acquire(
+            size,
+            DEPTH_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let at_half = [(0, recorder.uniform(&[0.0_f32, 0.5]))];
+        recorder.draw_depth(write, &at_half, map, TargetLoad::Clear, 3, 1);
+        let target = recorder.acquire(size, FORMAT, DRAW_USAGE);
+        let bindings = [
+            (0, recorder.uniform(&[0.0_f32, reference])),
+            (1, Res::Tex(map)),
+            (2, Res::Sampler(sampler)),
+        ];
+        recorder.draw(compare, &bindings, target, TargetLoad::Clear, 3, 1, None);
+        submit_and_read(&renderer, recorder, target, size)
+    };
+    assert_eq!(lit(&mut recorder, 0.25), [255]);
+    assert_eq!(lit(&mut recorder, 0.75), [0]);
+}

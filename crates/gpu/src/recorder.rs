@@ -35,8 +35,8 @@ const IDLE_FRAMES: u64 = 600;
 const SWEEP_FRAMES: u64 = 60;
 /// Programs built from runtime shader source that stay cached.
 const MAX_DYNAMIC_PROGRAMS: usize = 64;
-/// Most bindings a pass can have: a shader's 16 inputs and 4 others.
-pub const MAX_PASS_BINDINGS: usize = 20;
+/// Most bindings a pass can have.
+pub const MAX_PASS_BINDINGS: usize = 24;
 const BUMP_ALIGNMENT: u32 = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -65,11 +65,15 @@ pub enum LayoutKind {
     UnfilterableTexture,
     /// An unsigned-integer texture, read with `textureLoad`.
     UintTexture,
+    /// A depth texture, read with a comparison sampler.
+    DepthTexture,
     StorageTexture(wgpu::TextureFormat),
     /// Bound with a dynamic offset into the uniform bump buffer.
     Uniform,
     Storage,
     Sampler,
+    /// A sampler that compares depth, made with a `compare` function.
+    ComparisonSampler,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,7 +195,8 @@ enum RecordedPass {
     Render {
         program: ProgramRef,
         bindings: PassBindings,
-        target: TexRef,
+        /// `None` for a pass that only draws depth.
+        target: Option<TexRef>,
         load: TargetLoad,
         depth: Option<(TexRef, TargetLoad)>,
         vertices: u32,
@@ -228,7 +233,9 @@ impl RecordedPass {
                 ..
             } => {
                 bound(bindings);
-                visit(target);
+                if let Some(target) = target {
+                    visit(target);
+                }
                 if let Some((depth, _)) = depth {
                     visit(depth);
                 }
@@ -249,7 +256,7 @@ impl RecordedPass {
 /// A render pass kept open at submit so later draws onto the same attachments join it.
 struct OpenRender {
     pass: wgpu::RenderPass<'static>,
-    target: TexRef,
+    target: Option<TexRef>,
     depth: Option<TexRef>,
     viewport_set: bool,
 }
@@ -391,7 +398,8 @@ pub enum DepthTest {
 /// How a program's pipeline draws, for render programs.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderTargetSpec {
-    pub format: wgpu::TextureFormat,
+    /// The colour target's format, or `None` for a program that only draws depth.
+    pub format: Option<wgpu::TextureFormat>,
     pub blend: wgpu::BlendState,
     /// Set for programs drawn into a pass with a depth attachment.
     pub depth: Option<DepthTest>,
@@ -402,10 +410,20 @@ impl RenderTargetSpec {
     /// A target without depth or culling.
     pub const fn flat(format: wgpu::TextureFormat, blend: wgpu::BlendState) -> Self {
         Self {
-            format,
+            format: Some(format),
             blend,
             depth: None,
             cull: None,
+        }
+    }
+
+    /// A program drawing only into a depth attachment, for `draw_depth`.
+    pub const fn depth_only(depth: DepthTest, cull: Option<wgpu::Face>) -> Self {
+        Self {
+            format: None,
+            blend: wgpu::BlendState::REPLACE,
+            depth: Some(depth),
+            cull,
         }
     }
 }
@@ -1031,7 +1049,7 @@ impl Recorder {
             shader: (shader.as_ptr() as usize, shader.len() as u64),
             entry: fragment.as_ptr() as usize,
             variant: variant ^ (vertex.as_ptr() as u64),
-            format: Some(target.format),
+            format: target.format,
             depth: target.depth,
             cull: target.cull,
         };
@@ -1059,6 +1077,16 @@ impl Recorder {
                 label: Some(label),
                 source: wgpu::ShaderSource::Wgsl(shader.into()),
             });
+        let color_target = target.format.map(|format| wgpu::ColorTargetState {
+            format,
+            // Replacing is the same as not blending, which unblendable formats need.
+            blend: (target.blend != wgpu::BlendState::REPLACE).then_some(target.blend),
+            write_mask: wgpu::ColorWrites::ALL,
+        });
+        let color_targets = match color_target {
+            Some(_) => std::slice::from_ref(&color_target),
+            None => &[],
+        };
         let group = self.bind_group_layout(layout);
         let pipeline_layout = self
             .device
@@ -1094,12 +1122,7 @@ impl Recorder {
                     module: &module,
                     entry_point: Some(fragment),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: target.format,
-                        // Replacing is the same as not blending, which unblendable formats need.
-                        blend: (target.blend != wgpu::BlendState::REPLACE).then_some(target.blend),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
+                    targets: color_targets,
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -1132,6 +1155,11 @@ impl Recorder {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
+                    LayoutKind::DepthTexture => wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     LayoutKind::StorageTexture(format) => wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
                         format,
@@ -1149,6 +1177,9 @@ impl Recorder {
                     },
                     LayoutKind::Sampler => {
                         wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
+                    }
+                    LayoutKind::ComparisonSampler => {
+                        wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison)
                     }
                 },
                 count: None,
@@ -1288,7 +1319,7 @@ impl Recorder {
         self.passes.push(RecordedPass::Render {
             program,
             bindings: PassBindings::new(bindings),
-            target,
+            target: Some(target),
             load,
             depth: None,
             vertices,
@@ -1315,9 +1346,33 @@ impl Recorder {
         self.passes.push(RecordedPass::Render {
             program,
             bindings: PassBindings::new(bindings),
-            target,
+            target: Some(target),
             load,
             depth: Some((depth, depth_load)),
+            vertices,
+            instances,
+            viewport: None,
+        });
+    }
+
+    /// A draw into `depth` alone, a `DEPTH_FORMAT` texture, with a program made with
+    /// `RenderTargetSpec::depth_only`.
+    pub fn draw_depth(
+        &mut self,
+        program: ProgramRef,
+        bindings: &[(u32, Res)],
+        depth: TexRef,
+        load: TargetLoad,
+        vertices: u32,
+        instances: u32,
+    ) {
+        self.pin_program(program);
+        self.passes.push(RecordedPass::Render {
+            program,
+            bindings: PassBindings::new(bindings),
+            target: None,
+            load: TargetLoad::Load,
+            depth: Some((depth, load)),
             vertices,
             instances,
             viewport: None,
@@ -1444,24 +1499,29 @@ impl Recorder {
                         });
                     if !continues {
                         drop(open.take());
+                        let color = target.map(|target| wgpu::RenderPassColorAttachment {
+                            view: self.view(target),
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: match load {
+                                    TargetLoad::Clear => {
+                                        wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                                    }
+                                    TargetLoad::Load => wgpu::LoadOp::Load,
+                                },
+                                store: wgpu::StoreOp::Store,
+                            },
+                        });
+                        let color_attachments = match color {
+                            Some(_) => std::slice::from_ref(&color),
+                            None => &[],
+                        };
                         open = Some(OpenRender {
                             pass: encoder
                                 .begin_render_pass(&wgpu::RenderPassDescriptor {
                                     label: None,
-                                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                        view: self.view(*target),
-                                        depth_slice: None,
-                                        resolve_target: None,
-                                        ops: wgpu::Operations {
-                                            load: match load {
-                                                TargetLoad::Clear => {
-                                                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
-                                                }
-                                                TargetLoad::Load => wgpu::LoadOp::Load,
-                                            },
-                                            store: wgpu::StoreOp::Store,
-                                        },
-                                    })],
+                                    color_attachments,
                                     depth_stencil_attachment: depth.map(|(depth, load)| {
                                         wgpu::RenderPassDepthStencilAttachment {
                                             view: self.view(depth),
