@@ -10,9 +10,15 @@ description = "Scene maths, meshes and glTF models for the Lumen engine's 3D nod
 name = "lumen_3d"
 path = "src/lib.rs"
 
+[features]
+default = ["exr"]
+# Reads OpenEXR environment maps, as well as Radiance ones.
+exr = ["dep:exr"]
+
 [dependencies]
 base64 = "0.22.1"
 bytemuck = { version = "1.25.0", features = ["derive"] }
+exr = { version = "1.74.3", default-features = false, optional = true }
 glam = "0.32.1"
 gltf-json = { version = "1.4.1", default-features = false, features = [
   "extras",
@@ -20,6 +26,7 @@ gltf-json = { version = "1.4.1", default-features = false, features = [
   "KHR_materials_emissive_strength",
   "KHR_materials_unlit",
 ] }
+half = "2.7.1"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
 serde = "1.0.228"
 serde_json = "1.0.145"
