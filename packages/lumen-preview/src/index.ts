@@ -81,6 +81,8 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   setFont(fontFamily: string, bytes: Uint8Array): void;
   setModel(modelId: string, bytes: Uint8Array): void;
   setLogLevel(level: LumenLogLevel): void;
+  /** Throws as `loadComposition` would on a composition the engine rejects, without loading it. */
+  validateComposition(compositionJson: string): void;
   width(): number;
 }
 

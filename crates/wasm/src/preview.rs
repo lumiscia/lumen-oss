@@ -148,6 +148,14 @@ impl LumenPreviewController {
         Ok(())
     }
 
+    /// Fails as `loadComposition` would on a composition the engine rejects, without loading it.
+    #[wasm_bindgen(js_name = "validateComposition")]
+    pub fn validate_composition(&self, composition_json: &str) -> Result<(), JsValue> {
+        composition_json_to_composition(composition_json)
+            .map(drop)
+            .map_err(|error| parse_failure(&error))
+    }
+
     /// The audio timeline the engine parsed from the loaded composition, as JSON.
     #[wasm_bindgen(js_name = "audioTimeline")]
     pub fn audio_timeline(&self) -> Result<Option<String>, JsValue> {

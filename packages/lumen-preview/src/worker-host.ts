@@ -257,13 +257,15 @@ export function createLumenPreviewWorkerHost({
     );
 
     try {
-      // Parsed first, so a composition the engine rejects fails before any media is fetched.
-      activeController.loadComposition(message.compositionJson);
+      // A composition the engine rejects fails before any media is fetched. It becomes the one
+      // renders draw only once its media is in, as a render still in flight draws whichever is.
+      activeController.validateComposition(message.compositionJson);
       await syncFonts(activeController, isCurrent);
       await activeController.syncMediaSources([...media.values()]);
       if (!isCurrent()) {
         return;
       }
+      activeController.loadComposition(message.compositionJson);
       if (canvas) {
         canvas.width = activeController.width() || 1;
         canvas.height = activeController.height() || 1;
