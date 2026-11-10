@@ -490,7 +490,7 @@ fn a_template_canvas_over_the_texture_limit_fails_a_full_frame_read() {
         .render_frame_at(&wide_template_scene(width, "resize"), 0.0, &media)
         .unwrap_err()
         .to_string();
-    assert!(error.contains("Resize"), "{error}");
+    assert!(error.contains("resize"), "{error}");
     assert!(
         error.contains(&format!(
             "a {width}x64 canvas is larger than this device's {max}-pixel texture limit"
@@ -528,7 +528,7 @@ fn a_root_canvas_over_the_texture_limit_fails_a_render() {
         .render_frame_at(&composition, 0.0, &TestMedia::default())
         .unwrap_err()
         .to_string();
-    assert!(error.contains("MediaOutput"), "{error}");
+    assert!(error.contains("media_output"), "{error}");
     assert!(
         error.contains(&format!(
             "a {width}x64 canvas is larger than this device's {max}-pixel texture limit"
@@ -556,7 +556,7 @@ fn a_root_canvas_over_the_texture_limit_fails_the_output_size_check() {
         .check_output_size(&composition)
         .unwrap_err()
         .to_string();
-    assert!(error.contains("MediaOutput"), "{error}");
+    assert!(error.contains("media_output"), "{error}");
     assert!(
         error.contains(&format!(
             "a {width}x64 canvas is larger than this device's {max}-pixel texture limit"
@@ -593,7 +593,7 @@ fn an_oversized_texture_is_blamed_on_the_node_that_acquires_it() {
         .render_frame_at(&composition, 0.0, &TestMedia::default())
         .unwrap_err()
         .to_string();
-    assert!(error.contains("Boolean node 3"), "{error}");
+    assert!(error.contains("boolean node 3"), "{error}");
     assert!(
         error.contains(&format!(
             "a {width}x64 canvas is larger than this device's {max}-pixel texture limit"
