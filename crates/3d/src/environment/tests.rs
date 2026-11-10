@@ -133,6 +133,43 @@ fn shrinking_a_map_keeps_the_light_it_holds_even_near_its_poles() {
 }
 
 #[test]
+fn odd_sized_maps_keep_their_light_however_they_are_shrunk() {
+    // All of the light in the last column, which a half has no column of its own for.
+    let mut texels = vec![Vec3::ZERO; 513 * 2];
+    texels[512] = Vec3::splat(100.0);
+    texels[513 + 512] = Vec3::splat(100.0);
+    let map = Equirect::new(513, 2, texels);
+    for (smaller, size) in [(map.half(), (256, 1)), (map.fit(1), (1, 1))] {
+        assert_eq!((smaller.width(), smaller.height()), size);
+        assert!(close(smaller.power() / map.power(), Vec3::ONE, 1e-4));
+    }
+    let lit = prefilter(&map);
+    assert!(lit.irradiance[0].x > 0.0);
+    assert!(close(lit.levels[1].power() / map.power(), Vec3::ONE, 0.02));
+    // One texel wide and high, and far from 2:1.
+    for (width, height) in [(1, 7), (9, 1), (5, 13)] {
+        let map = Equirect::from_fn(width, height, |d| Vec3::splat(1.0 + d.y + d.x));
+        assert!(close(map.half().power() / map.power(), Vec3::ONE, 1e-4));
+    }
+    // Shrunk while read, with its last row and column only partly filling a texel.
+    let (width, height) = (MAX_MAP_SIDE * 2 - 1, 5);
+    let texels = (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            Vec3::splat(if x == width - 1 || y == height - 1 {
+                50.0
+            } else {
+                1.0
+            })
+        })
+        .collect();
+    let source = Equirect::new(width, height, texels);
+    let read = decode(&hdr_file(width, height, source.texels(), true)).expect("reads");
+    assert_eq!((read.width(), read.height()), (MAX_MAP_SIDE - 1, 2));
+    assert!(close(read.power() / source.power(), Vec3::ONE, 1e-3));
+}
+
+#[test]
 fn a_sun_in_one_texel_lights_by_its_power_and_extreme_texels_stay_finite() {
     let mut texels = vec![Vec3::ZERO; 512 * 256];
     // Just above the horizon in front.
@@ -161,6 +198,18 @@ fn a_sun_in_one_texel_lights_by_its_power_and_extreme_texels_stay_finite() {
     let expected = map.power().x / PI * 1.0625;
     let lit = prefilter(&map).irradiance_at(sun).x;
     assert!((lit / expected - 1.0).abs() < 0.02, "{lit} vs {expected}");
+}
+
+#[test]
+fn the_side_facing_away_from_a_small_sun_gets_little_of_its_light() {
+    let sun = Vec3::new(0.3, 0.8, -0.5).normalize();
+    let map = Equirect::from_fn(256, 128, |d| {
+        Vec3::splat(if d.dot(sun) > 0.999 { 1e4 } else { 0.0 })
+    });
+    let lit = prefilter(&map);
+    let (facing, away) = (lit.irradiance_at(sun).x, lit.irradiance_at(-sun).x);
+    // Order-2 harmonics of a point light give 1/17 of the facing side to the opposite one.
+    assert!(away < 0.06 * facing, "{away} vs {facing}");
 }
 
 #[test]
@@ -259,6 +308,27 @@ fn malformed_and_oversized_files_are_errors_before_their_pixels_are_read() {
     let header = overrun.len() - (good.len() - good.iter().rposition(|&b| b == b'\n').unwrap() - 1);
     overrun[header + 4] = 200;
     assert!(invalid(decode(&overrun)), "a run past the row's end");
+
+    // Long lines are refused without reading them through.
+    let mut long_size = b"#?RADIANCE\n\n-Y 2 +X 16".to_vec();
+    long_size.extend(b" 1".repeat(4 << 20));
+    long_size.push(b'\n');
+    assert!(invalid(decode(&long_size)), "a long size line");
+    let mut long_comment = b"#?RADIANCE\n#".to_vec();
+    long_comment.extend(b"x".repeat(8 << 20));
+    long_comment.extend(b"\n\n-Y 2 +X 16\n");
+    assert!(invalid(decode(&long_comment)), "a long comment line");
+    let many_lines = [
+        &b"#?RADIANCE\n"[..],
+        &b"#\n".repeat(1000),
+        b"\n-Y 2 +X 16\n",
+    ]
+    .concat();
+    assert!(invalid(decode(&many_lines)), "many header lines");
+    assert!(
+        unsupported(decode(b"#?RADIANCE\n\n-Y 2 +X 16 +Z 1\n")),
+        "a fifth field"
+    );
 }
 
 #[cfg(feature = "exr")]

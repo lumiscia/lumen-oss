@@ -161,38 +161,25 @@ impl Equirect {
         self.texels[(y * self.width + x) as usize]
     }
 
-    /// The map at half its size, as a mip level is, each texel the mean of the up to four it
-    /// covers weighted by the solid angle each spans, so that the light it holds is kept.
+    /// The map at half its size, rounded down, as a mip level is: see [`Resample`].
     pub fn half(&self) -> Self {
         let width = (self.width / 2).max(1);
         let height = (self.height / 2).max(1);
-        let mut texels = Vec::with_capacity(width as usize * height as usize);
-        for y in 0..height {
-            let rows = if self.height == 1 {
-                [0, 0]
-            } else {
-                [y * 2, y * 2 + 1]
-            };
-            let weights = rows.map(|row| row_solid_angle(self.height, row));
-            let total = weights[0] + weights[1];
-            for x in 0..width {
-                let columns = if self.width == 1 {
-                    [0, 0]
-                } else {
-                    [x * 2, x * 2 + 1]
-                };
-                let mut sum = Vec3::ZERO;
-                for (row, weight) in rows.into_iter().zip(weights) {
-                    sum += (self.texel(columns[0], row) + self.texel(columns[1], row)) * weight;
-                }
-                texels.push(sum / (2.0 * total));
+        let mut resample = Resample::new(
+            self.width,
+            self.height,
+            Self {
+                width,
+                height,
+                texels: vec![Vec3::ZERO; width as usize * height as usize],
+            },
+        );
+        for y in 0..self.height {
+            for x in 0..self.width {
+                resample.add(x, y, self.texel(x, y));
             }
         }
-        Self {
-            width,
-            height,
-            texels,
-        }
+        resample.map
     }
 
     /// The map halved until neither side is longer than `side`.
@@ -269,14 +256,76 @@ pub fn uv(direction: Vec3) -> Vec2 {
     )
 }
 
-/// A map being decoded, shrunk by a power of two `factor` so that it fits the limits, which
-/// pixels are added to one at a time in any order.
-struct Shrink {
-    factor: u32,
-    /// Each source row's weight within the texels it is part of.
-    row_weights: Vec<f32>,
+/// A source map's texels spread over a map no larger along either side. Each texel of the
+/// smaller map is the mean of the source over the part of the sphere it covers, weighted by the
+/// solid angle each source texel shares with it, so the light the map holds is kept whatever the
+/// two sizes, odd or 1 texel across. Both maps stretch to cover the whole sphere, whatever their
+/// aspect.
+struct Resample {
+    /// Per source column, the up to two columns it overlaps and the share of each it covers.
+    columns: Vec<[(u32, f32); 2]>,
+    /// Per source row, the up to two rows it overlaps and the share of each one's solid angle it
+    /// covers.
+    rows: Vec<[(u32, f32); 2]>,
     map: Equirect,
 }
+
+impl Resample {
+    /// Spreads a `width` by `height` source over `map`, which must be zero and no larger.
+    fn new(width: u32, height: u32, map: Equirect) -> Self {
+        let pi = std::f64::consts::PI;
+        Self {
+            columns: overlaps(width, map.width, |a, b| b - a),
+            rows: overlaps(height, map.height, |a, b| (pi * a).cos() - (pi * b).cos()),
+            map,
+        }
+    }
+
+    /// Adds source texel `(x, y)`, which must be within the source's size.
+    fn add(&mut self, x: u32, y: u32, radiance: Vec3) {
+        for (row, row_share) in self.rows[y as usize] {
+            for (column, column_share) in self.columns[x as usize] {
+                let texel = &mut self.map.texels[(row * self.map.width + column) as usize];
+                *texel += radiance * (row_share * column_share);
+            }
+        }
+    }
+}
+
+/// For each of `source` texels along an axis from 0 to 1, the up to two of `target` texels, no
+/// more than `source`, that it overlaps, and the share of each one's `extent` that it covers.
+/// The second is a zero share of the first when it overlaps only one.
+fn overlaps(source: u32, target: u32, extent: impl Fn(f64, f64) -> f64) -> Vec<[(u32, f32); 2]> {
+    debug_assert!(target <= source);
+    // Edges in units of 1 / (source * target), so they are exact.
+    let (s, t) = (u64::from(source), u64::from(target));
+    let unit = (s * t) as f64;
+    (0..s)
+        .map(|i| {
+            let (start, end) = (i * t, (i + 1) * t);
+            let share = |j: u64| {
+                let covered = extent(
+                    start.max(j * s) as f64 / unit,
+                    end.min((j + 1) * s) as f64 / unit,
+                );
+                let whole = extent(j as f64 / t as f64, (j + 1) as f64 / t as f64);
+                (j as u32, (covered / whole) as f32)
+            };
+            let (first, last) = (start / s, (end - 1) / s);
+            let first_share = share(first);
+            let last_share = if last == first {
+                (first_share.0, 0.0)
+            } else {
+                share(last)
+            };
+            [first_share, last_share]
+        })
+        .collect()
+}
+
+/// A map being decoded, shrunk by a power of two so that it fits the limits, which pixels are
+/// added to one at a time in any order.
+struct Shrink(Resample);
 
 impl Shrink {
     /// Room for a file of `width` by `height` pixels, if the limits allow it.
@@ -308,40 +357,20 @@ impl Shrink {
             .try_reserve_exact(count)
             .map_err(|_| EnvironmentError::TooLarge("no memory for the environment map".into()))?;
         texels.resize(count, Vec3::ZERO);
-        // A side shorter than `factor` gives its one texel all of its pixels.
-        let columns = factor.min(width) as f32;
-        let row_weights = (0..height)
-            .map(|y| {
-                let block = y / factor;
-                let rows = block * factor..(block * factor + factor).min(height);
-                let total: f32 = rows.map(|row| row_solid_angle(height, row)).sum();
-                row_solid_angle(height, y) / (total * columns)
-            })
-            .collect();
-        Ok(Self {
-            factor,
-            row_weights,
-            map: Equirect {
-                width: map_width,
-                height: map_height,
-                texels,
-            },
-        })
+        let map = Equirect {
+            width: map_width,
+            height: map_height,
+            texels,
+        };
+        Ok(Self(Resample::new(width, height, map)))
     }
 
-    /// Adds the pixel at `(x, y)` of the file, which must be within its size. Pixels past the last
-    /// whole block along a side are left out.
+    /// Adds the pixel at `(x, y)` of the file, which must be within its size.
     fn add(&mut self, x: u32, y: u32, rgb: [f32; 3]) {
-        let (tx, ty) = (x / self.factor, y / self.factor);
-        if tx >= self.map.width || ty >= self.map.height {
-            return;
-        }
-        let weight = self.row_weights[y as usize];
-        let texel = &mut self.map.texels[(ty * self.map.width + tx) as usize];
-        *texel += Vec3::from(rgb.map(sanitize)) * weight;
+        self.0.add(x, y, Vec3::from(rgb.map(sanitize)));
     }
 
     fn finish(self) -> Equirect {
-        self.map
+        self.0.map
     }
 }

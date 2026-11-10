@@ -30,12 +30,24 @@ fn take_pixel(data: &mut &[u8]) -> Result<[u8; 4], EnvironmentError> {
     Ok([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
-/// The next line of `data` without its newline, which it moves past.
+/// The longest header line read, newline included.
+const MAX_LINE_BYTES: usize = 1024;
+/// The most header lines read before the blank line that ends them.
+const MAX_HEADER_LINES: usize = 128;
+
+/// The next line of `data` without its newline, which it moves past, looking no further than
+/// [`MAX_LINE_BYTES`] for its end.
 fn line<'a>(data: &mut &'a [u8]) -> Result<&'a [u8], EnvironmentError> {
-    let end = data
+    let end = data[..data.len().min(MAX_LINE_BYTES)]
         .iter()
         .position(|&byte| byte == b'\n')
-        .ok_or_else(truncated)?;
+        .ok_or_else(|| {
+            if data.len() < MAX_LINE_BYTES {
+                truncated()
+            } else {
+                invalid("a header line of the environment map is too long")
+            }
+        })?;
     let line = &data[..end];
     *data = &data[end + 1..];
     Ok(line.strip_suffix(b"\r").unwrap_or(line))
@@ -44,10 +56,15 @@ fn line<'a>(data: &mut &'a [u8]) -> Result<&'a [u8], EnvironmentError> {
 pub(super) fn decode(bytes: &[u8]) -> Result<Equirect, EnvironmentError> {
     let mut data = bytes;
     line(&mut data)?;
+    let mut lines = 0;
     loop {
         let header = line(&mut data)?;
         if header.is_empty() {
             break;
+        }
+        lines += 1;
+        if lines > MAX_HEADER_LINES {
+            return Err(invalid("the environment map's header has too many lines"));
         }
         if let Some(format) = header.strip_prefix(b"FORMAT=")
             && format.trim_ascii() != b"32-bit_rle_rgbe"
@@ -59,8 +76,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Equirect, EnvironmentError> {
     }
     let resolution = std::str::from_utf8(line(&mut data)?)
         .map_err(|_| invalid("the environment map's size isn't text"))?;
-    let (width, height) = match resolution.split_ascii_whitespace().collect::<Vec<_>>()[..] {
-        ["-Y", height, "+X", width] => (width.parse::<u32>(), height.parse::<u32>()),
+    let mut fields = resolution.split_ascii_whitespace();
+    let first = std::array::from_fn::<_, 4, _>(|_| fields.next());
+    let (width, height) = match (first, fields.next()) {
+        ([Some("-Y"), Some(height), Some("+X"), Some(width)], None) => {
+            (width.parse::<u32>(), height.parse::<u32>())
+        }
         _ => {
             return Err(unsupported(
                 "the environment map's rows aren't stored from the top and left (-Y and +X)",
