@@ -10,6 +10,9 @@ pub struct Vertex {
     pub position: [f32; 3],
     /// Unit length.
     pub normal: [f32; 3],
+    /// Texture coordinates, with V running down like a raster's rows. Zero on the primitives,
+    /// which are drawn untextured.
+    pub uv: [f32; 2],
 }
 
 /// Triangles over shared vertices, wound counter-clockwise seen from the side their normals face.
@@ -33,7 +36,29 @@ pub enum Primitive {
 const SEGMENTS: u32 = 64;
 const RINGS: u32 = 32;
 
+/// The scale that turns [`Mesh::textured_quad`] into a plane `width` across with the aspect ratio of a
+/// raster `display` pixels in size. A raster with no area gets a plane with none.
+pub fn plane_scale(width: f32, display: (u32, u32)) -> Vec3 {
+    let (across, down) = (display.0 as f32, display.1 as f32);
+    let height = if across > 0.0 {
+        width * down / across
+    } else {
+        0.0
+    };
+    Vec3::new(width, height, 1.0)
+}
+
 impl Mesh {
+    /// A unit square in the XY plane facing +Z, textured edge to edge.
+    pub fn textured_quad() -> Self {
+        let mut mesh = Self::default();
+        for (x, y) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+            mesh.vertex_uv(Vec3::new(x - 0.5, y - 0.5, 0.0), Vec3::Z, [x, 1.0 - y]);
+        }
+        mesh.quad(0, 1, 2, 3);
+        mesh
+    }
+
     /// `primitive` one unit across in X and Z, centred on the origin. Round primitives stand along
     /// Y, a unit tall but for the flat plane and the torus, whose tube is a quarter unit thick.
     pub fn primitive(primitive: Primitive) -> Self {
@@ -134,9 +159,14 @@ impl Mesh {
     }
 
     fn vertex(&mut self, position: Vec3, normal: Vec3) {
+        self.vertex_uv(position, normal, [0.0; 2]);
+    }
+
+    fn vertex_uv(&mut self, position: Vec3, normal: Vec3, uv: [f32; 2]) {
         self.vertices.push(Vertex {
             position: position.into(),
             normal: normal.into(),
+            uv,
         });
     }
 
@@ -219,5 +249,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_quad_shows_a_raster_upright_and_faces_forward() {
+        let mesh = Mesh::textured_quad();
+        let corner = |x: f32, y: f32| {
+            let vertex = mesh
+                .vertices
+                .iter()
+                .find(|vertex| vertex.position[..2] == [x, y])
+                .expect("a corner");
+            assert_eq!(vertex.normal, [0.0, 0.0, 1.0]);
+            vertex.uv
+        };
+        assert_eq!(corner(-0.5, 0.5), [0.0, 0.0], "top left");
+        assert_eq!(corner(0.5, 0.5), [1.0, 0.0], "top right");
+        assert_eq!(corner(-0.5, -0.5), [0.0, 1.0], "bottom left");
+        assert_eq!(corner(0.5, -0.5), [1.0, 1.0], "bottom right");
+        let [a, b, c] =
+            [0, 1, 2].map(|i| Vec3::from(mesh.vertices[mesh.indices[i] as usize].position));
+        assert!((b - a).cross(c - a).z > 0.0, "counter-clockwise from +Z");
+    }
+
+    #[test]
+    fn a_plane_is_as_wide_as_asked_and_as_tall_as_its_raster() {
+        assert_eq!(plane_scale(2.0, (1920, 1080)), Vec3::new(2.0, 1.125, 1.0));
+        assert_eq!(plane_scale(2.0, (100, 400)), Vec3::new(2.0, 8.0, 1.0));
+        assert_eq!(plane_scale(2.0, (0, 0)), Vec3::new(2.0, 0.0, 1.0));
     }
 }

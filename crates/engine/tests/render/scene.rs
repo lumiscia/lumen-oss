@@ -13,9 +13,14 @@ const GREEN: [u8; 4] = [0, 255, 0, 255];
 
 /// `scene_nodes`, the last of which is the scene, drawn by a `render_3d` filling the canvas.
 fn render_3d(scene_nodes: Vec<Value>) -> Scene {
+    render_3d_with(json!({}), scene_nodes)
+}
+
+fn render_3d_with(params: Value, scene_nodes: Vec<Value>) -> Scene {
     let last = scene_nodes.last().expect("a scene node")["id"].clone();
     let mut nodes = scene_nodes;
-    nodes.push(json!({ "id": 100, "type": "render_3d", "in": { "scene": last } }));
+    nodes
+        .push(json!({ "id": 100, "type": "render_3d", "params": params, "in": { "scene": last } }));
     scene(SIZE, json!(nodes))
 }
 
@@ -516,4 +521,335 @@ fn an_output_larger_than_the_device_allows_fails() {
             "{error}"
         );
     }
+}
+
+const BLUE: [u8; 4] = [0, 0, 255, 255];
+
+/// A 64 x 64 image of straight RGBA, the colour of each pixel given by `color(x, y)`.
+fn image(color: impl Fn(u32, u32) -> [u8; 4]) -> TestMedia {
+    let pixels = (0..SIZE.1)
+        .flat_map(|y| (0..SIZE.0).map(move |x| (x, y)))
+        .flat_map(|(x, y)| color(x, y))
+        .collect();
+    TestMedia::default().image("plate", SIZE.0, SIZE.1, pixels)
+}
+
+/// A 64 x 64 image with red growing to the right and green downwards.
+fn gradient() -> TestMedia {
+    image(|x, y| [x as u8 * 4, y as u8 * 4, 128, 255])
+}
+
+/// The image `plate` as a 2D raster.
+fn plate(id: u32) -> Value {
+    json!({ "id": id, "type": "media_in", "params": { "kind": "image", "source": "plate" } })
+}
+
+fn plane(id: u32, source: u32, params: Value) -> Value {
+    json!({ "id": id, "type": "image_plane_3d", "params": params, "in": { "source": source } })
+}
+
+/// A camera that sees 4 units across the canvas however far away, so that a plane 4 units wide
+/// fills the frame and maps its texels to pixels.
+fn ortho(id: u32, params: Value) -> Value {
+    let mut camera = json!({ "projection": "orthographic", "ortho_height": 4 });
+    for (name, value) in params.as_object().expect("params") {
+        camera[name] = value.clone();
+    }
+    json!({ "id": id, "type": "camera_3d", "params": camera })
+}
+
+/// A plane filling the frame, in front of an orthographic camera.
+fn framed(source: u32) -> Vec<Value> {
+    vec![
+        plane(1, source, json!({ "width": 4 })),
+        ortho(2, json!({})),
+        merge(3, &[1, 2], json!({})),
+    ]
+}
+
+#[test]
+fn an_unlit_plane_filling_the_frame_reproduces_its_source_whatever_the_tone_mapping() {
+    let source = || scene(SIZE, json!([plate(1)]));
+    let seen = |params: Value| {
+        let mut nodes = vec![plate(10)];
+        nodes.extend(framed(10));
+        render_3d_with(params, nodes)
+    };
+    // One texel to a pixel, sampled at texel centres.
+    let exact = |name: &str, params: Value| {
+        Case::new(name, seen(params), Expect::Matches(source().into()))
+            .media(gradient())
+            .tolerance(1)
+    };
+    check(vec![
+        exact("untouched", json!({ "supersample": 1 })),
+        exact(
+            "with ACES and an extra stop",
+            json!({ "supersample": 1, "tone_mapping": "aces", "exposure": 1 }),
+        ),
+        exact(
+            "with AgX and a stop less",
+            json!({ "supersample": 1, "tone_mapping": "agx", "exposure": -1 }),
+        ),
+        // Supersampling blends a texel with its neighbours, which a ramp's straight edges survive.
+        exact(
+            "with the default supersampling and ACES",
+            json!({ "tone_mapping": "aces", "exposure": 1 }),
+        )
+        .tolerance(2),
+    ]);
+}
+
+#[test]
+fn a_planes_height_follows_the_canvas_of_its_source() {
+    // A clip of a 128 x 64 composition keeps that canvas on a 64 x 64 one, so a plane 4 units wide
+    // is 2 high: 64 x 32 pixels at 16 pixels to a unit.
+    let mut wide = render_3d(framed(10));
+    wide.0["compositions"] = json!({ "wide": {
+        "render_settings": { "width": 128, "height": 64 },
+        "timeline": { "fps": 30, "duration_frames": 1 },
+        "nodes": [
+            { "id": 1, "type": "background", "params": { "paint": RED } },
+            { "id": 2, "type": "media_output" },
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }],
+    } });
+    wide.0["nodes"].as_array_mut().expect("nodes").push(json!({
+        "id": 10, "type": "clip", "params": { "composition": "wide" }
+    }));
+    check(vec![Case::new(
+        "a clip whose canvas is twice as wide as tall",
+        wide,
+        Expect::Custom(Box::new(|frames| {
+            let frame = &frames[0];
+            let tall = (0..SIZE.1)
+                .filter(|&y| frame.pixel(CENTER, y)[3] == 255)
+                .count();
+            assert_eq!(tall, 32);
+            assert_eq!(covered(frame, CENTER, 0..SIZE.0), 64);
+            assert_eq!(frame.pixel(CENTER, 20), RED);
+            assert_eq!(frame.pixel(CENTER, 10), CLEAR);
+        })),
+    )]);
+}
+
+/// Opaque blue on the left half, nothing on the right.
+fn half_blue() -> TestMedia {
+    image(|x, _| if x < CENTER { BLUE } else { CLEAR })
+}
+
+#[test]
+fn a_planes_transparent_texels_show_what_is_behind_without_hiding_it() {
+    let behind = |plane_first: bool| {
+        let objects: Vec<Value> = vec![
+            plate(10),
+            plane(1, 10, json!({ "width": 4 })),
+            ortho(2, json!({})),
+            flat(
+                4,
+                json!({ "size": [4, 4, 0.2], "position": [0, 0, -2] }),
+                RED,
+            ),
+            flat(
+                5,
+                json!({ "size": [1, 1, 0.2], "position": [1, 0, -1], "opacity": 0.5 }),
+                GREEN,
+            ),
+        ];
+        let order: &[u32] = if plane_first {
+            &[1, 2, 4, 5]
+        } else {
+            &[4, 5, 2, 1]
+        };
+        let mut nodes = objects;
+        nodes.push(merge(6, order, json!({})));
+        render_3d(nodes)
+    };
+    // Left of centre the plane covers everything. Right of it the red wall shows, with a
+    // half-transparent green box in front of it, and the plane in front of both.
+    let expect = || {
+        Expect::Probes(vec![
+            (16, CENTER, BLUE),
+            (48, CENTER, [188, 188, 0, 255]),
+            (60, CENTER, RED),
+        ])
+    };
+    check(vec![
+        Case::new("the plane is listed first", behind(true), expect())
+            .media(half_blue())
+            .tolerance(2),
+        Case::new("the plane is listed last", behind(false), expect())
+            .media(half_blue())
+            .tolerance(2),
+        // Where a texel is partly transparent its colour is not darkened by its neighbours.
+        Case::new(
+            "an edge that is half covered keeps its colour",
+            render_3d_with(json!({}), {
+                let mut nodes = vec![plate(10)];
+                nodes.extend(framed(10));
+                nodes
+            }),
+            Expect::Custom(Box::new(|frames| {
+                let frame = &frames[0];
+                let edge = frame.pixel(CENTER - 1, CENTER);
+                assert!(
+                    (1..255).contains(&edge[3]),
+                    "the edge is partly covered, got {edge:?}"
+                );
+                assert!(
+                    edge[0] == 0 && edge[1] == 0 && edge[2].abs_diff(edge[3]) <= 2,
+                    "partly covered blue is blue scaled by its coverage, got {edge:?}"
+                );
+            })),
+        )
+        .media(half_blue()),
+    ]);
+}
+
+#[test]
+fn a_lit_plane_is_coloured_by_its_source_and_responds_to_light() {
+    // Red on the left and white on the right, lit head-on or from behind.
+    let lit_by = |rotation: [i32; 3]| {
+        let mut nodes = vec![plate(10)];
+        nodes.extend([
+            plane(1, 10, json!({ "width": 4, "unlit": false, "roughness": 1 })),
+            ortho(2, json!({})),
+            json!({ "id": 3, "type": "light_3d", "params": { "rotation": rotation } }),
+            merge(4, &[1, 2, 3], json!({})),
+        ]);
+        render_3d_with(json!({ "environment": 0 }), nodes)
+    };
+    let halves = || image(|x, _| if x < CENTER { RED } else { [255; 4] });
+    check(vec![
+        Case::new(
+            "a light shining on its face",
+            lit_by([0, 0, 0]),
+            Expect::Custom(Box::new(|frames| {
+                let [r, g, _, a] = frames[0].pixel(16, CENTER);
+                assert!(
+                    a == 255 && r > 150 && g < 40,
+                    "red under light, got {r} {g}"
+                );
+                let [r, g, b, _] = frames[0].pixel(48, CENTER);
+                assert!(r > 150 && r.abs_diff(g) <= 2 && g.abs_diff(b) <= 2);
+            })),
+        )
+        .media(halves()),
+        Case::new(
+            "a light shining on its back",
+            lit_by([0, 180, 0]),
+            Expect::Probes(vec![
+                (16, CENTER, [0, 0, 0, 255]),
+                (48, CENTER, [0, 0, 0, 255]),
+            ]),
+        )
+        .media(halves()),
+    ]);
+}
+
+#[test]
+fn a_plane_seen_from_behind_is_visible_and_mirrored() {
+    let from = |z: f64| {
+        let mut nodes = vec![plate(10)];
+        nodes.extend([
+            plane(1, 10, json!({ "width": 4 })),
+            ortho(2, json!({ "position": [0, 0, z], "look_at": true })),
+            merge(3, &[1, 2], json!({})),
+        ]);
+        render_3d(nodes)
+    };
+    let halves = || image(|x, _| if x < CENTER { RED } else { GREEN });
+    check(vec![
+        Case::new(
+            "from the front",
+            from(5.0),
+            Expect::Probes(vec![(16, CENTER, RED), (48, CENTER, GREEN)]),
+        )
+        .media(halves()),
+        Case::new(
+            "from behind",
+            from(-5.0),
+            Expect::Probes(vec![(16, CENTER, GREEN), (48, CENTER, RED)]),
+        )
+        .media(halves()),
+    ]);
+}
+
+#[test]
+fn a_render_3d_over_a_plane_is_kept_until_the_source_animates() {
+    let orbit = |paint: &str| {
+        let mut composition = render_3d(vec![
+            json!({ "id": 10, "type": "background", "params": { "paint": paint } }),
+            plane(1, 10, json!({ "width": 3 })),
+        ])
+        .frames(4);
+        composition.0["timeline"]["fps"] = json!(4);
+        Composition::from(composition)
+    };
+    let gpu = gpu();
+    let media = TestMedia::default();
+    let frames = |composition: &Composition| {
+        let mut renderer = gpu.renderer();
+        let frames: Vec<Vec<u8>> = (0..4)
+            .map(|frame| render(&mut renderer, composition, f64::from(frame), &media).rgba)
+            .collect();
+        (frames, renderer.skipped_pass_count())
+    };
+
+    let (still, skipped) = frames(&orbit("#3366cc"));
+    assert!(still.iter().all(|frame| *frame == still[0]));
+    assert!(
+        skipped >= 3 * 2,
+        "frames after the first read the kept draw and resolve, skipping {skipped} passes"
+    );
+
+    let (moving, skipped) = frames(&orbit("=rgb(60 * frame, 100, 200)"));
+    assert_eq!(skipped, 0, "a source that animates renders every frame");
+    for pair in moving.windows(2) {
+        assert!(pair[0] != pair[1], "the plane's colour changes");
+    }
+}
+
+#[test]
+fn a_planes_source_keeps_its_place_within_the_canvas_when_it_draws_less_than_all_of_it() {
+    // A 2D shape that fills a corner of the canvas is a bounded raster. The plane shows the whole
+    // canvas, so the shape stays in that corner of the plane, at the plane's scale.
+    let mut nodes = vec![json!({ "id": 10, "type": "shape", "params": {
+        "position": [8, 8], "width": 16, "height": 16, "fill_paint": GREEN
+    } })];
+    nodes.extend(framed(10));
+    check(vec![Case::new(
+        "a 16 pixel square near the top left",
+        render_3d(nodes),
+        Expect::Custom(Box::new(|frames| {
+            for (x, y, color) in [
+                (16, 16, GREEN),
+                (40, 16, CLEAR),
+                (16, 40, CLEAR),
+                (56, 56, CLEAR),
+            ] {
+                assert_eq!(frames[0].pixel(x, y), color, "({x}, {y})");
+            }
+        })),
+    )]);
+}
+
+#[test]
+fn compiling_reaches_the_programs_of_a_planes_source_through_the_scene_nodes() {
+    let mut nodes = vec![
+        json!({ "id": 10, "type": "shape", "params": { "width": 16, "height": 16 } }),
+        json!({ "id": 11, "type": "blur", "params": { "radius": 2 }, "in": { "source": 10 } }),
+        plane(1, 11, json!({ "width": 4 })),
+        merge(2, &[1], json!({})),
+    ];
+    let composition = Composition::from(render_3d(std::mem::take(&mut nodes)));
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    renderer.compile(&composition).expect("the scene compiles");
+    let compiled = renderer.created_program_count();
+    assert!(compiled > 0);
+
+    render(&mut renderer, &composition, 0.0, &TestMedia::default());
+
+    assert_eq!(renderer.created_program_count(), compiled);
 }

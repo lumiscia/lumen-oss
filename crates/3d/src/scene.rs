@@ -12,9 +12,12 @@ pub enum Blending {
 
 /// How an object's surface is shaded, in linear light.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Surface {
-    /// Linear colour with straight alpha.
+pub struct Surface<T> {
+    /// Linear colour with straight alpha, which the texture is multiplied by.
     pub base_color: [f32; 4],
+    /// A Lumen raster, premultiplied and sRGB-encoded, whose texels colour the surface through
+    /// the mesh's texture coordinates.
+    pub texture: Option<T>,
     /// 0 is a dielectric, 1 a bare metal.
     pub metallic: f32,
     /// 0 is a mirror finish, 1 fully diffuse.
@@ -32,29 +35,29 @@ pub struct Surface {
 /// also bounds the objects it draws.
 pub const MAX_SCENE_NODES: usize = 100_000;
 
-/// One mesh drawn somewhere in a scene. `M` names the mesh to whoever draws it.
+/// One mesh drawn somewhere in a scene. `M` names the mesh and `T` the texture to whoever draws it.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Object<M> {
+pub struct Object<M, T> {
     /// Mesh to world.
     pub world: Mat4,
     pub mesh: M,
     /// Indices the mesh draws, three to a triangle.
     pub index_count: u32,
-    pub surface: Surface,
+    pub surface: Surface<T>,
     /// The point blended objects sort by, in world space.
     pub center: Vec3,
 }
 
 /// What a scene holds at one frame.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Scene<M> {
-    pub objects: Vec<Object<M>>,
+pub struct Scene<M, T> {
+    pub objects: Vec<Object<M, T>>,
     pub lights: Vec<Light>,
     /// The first camera found, if any.
     pub camera: Option<Camera>,
 }
 
-impl<M> Default for Scene<M> {
+impl<M, T> Default for Scene<M, T> {
     fn default() -> Self {
         Self {
             objects: Vec::new(),

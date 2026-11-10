@@ -260,8 +260,8 @@ fn shader_constants_match_rust() {
 #[test]
 fn scene_shader_matches_its_rust_layouts_and_constants() {
     use crate::node::scene::render::{
-        FLAG_BLEND, FLAG_MIRRORED, FLAG_UNLIT, GpuGlobals, GpuLight, GpuObject, GpuRun,
-        LIGHT_DIRECTIONAL, LIGHT_SPOT, SHADER,
+        FLAG_BLEND, FLAG_MIRRORED, FLAG_RASTER, FLAG_UNLIT, GpuGlobals, GpuLight, GpuObject,
+        GpuRun, LIGHT_DIRECTIONAL, LIGHT_SPOT, SHADER,
     };
 
     let module = naga::front::wgsl::parse_str(SHADER).expect("the scene shader should parse");
@@ -295,7 +295,7 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
                 flags,
                 first_vertex,
             ),
-            layout!("Vertex", lumen_3d::Vertex, position, normal),
+            layout!("Vertex", lumen_3d::Vertex, position, normal, uv),
             layout!(
                 "Light", GpuLight, position, kind, direction, range, radiance, cos_outer,
                 cos_inner,
@@ -307,6 +307,7 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
         ("FLAG_UNLIT", FLAG_UNLIT),
         ("FLAG_BLEND", FLAG_BLEND),
         ("FLAG_MIRRORED", FLAG_MIRRORED),
+        ("FLAG_RASTER", FLAG_RASTER),
         ("LIGHT_DIRECTIONAL", LIGHT_DIRECTIONAL),
         ("LIGHT_SPOT", LIGHT_SPOT),
     ] {

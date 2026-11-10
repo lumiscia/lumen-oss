@@ -40,7 +40,8 @@ composition
   .addAudioTrack({ id: "clip-audio", name: "Clip audio" })
   .addAudio({ source: "clip", start: 0, duration: 4, trackId: "clip-audio" });
 
-// Open with `?scene=3d` for a 3D scene: shapes, a light and a camera drawn by render_3d.
+// Open with `?scene=3d` for a 3D scene: shapes, a video on a plane, a light and a camera drawn by
+// render_3d.
 const scene3d = new Composition({
   renderSettings: { width: 1280, height: 720 },
   timeline: { fps: 30, durationSeconds: 4 },
@@ -81,6 +82,20 @@ const glass = scene3d.addNode({
     roughness: 0.1,
   },
 });
+const screenVideo = scene3d.addNode({
+  type: "media_in",
+  params: { kind: "video", source: "clip" },
+});
+const screenSource = scene3d.addNode({
+  type: "resize",
+  params: { width: 1280, height: 720, mode: "fill" },
+  inputs: { source: screenVideo },
+});
+const screen = scene3d.addNode({
+  type: "image_plane_3d",
+  params: { width: 4, position: [0, 1.3, -2.5] },
+  inputs: { source: screenSource },
+});
 const camera = scene3d.addNode({
   type: "camera_3d",
   params: { look_at: true, position: "=vec3(5 * sin(time * 0.4), 1.4, 5 * cos(time * 0.4))" },
@@ -92,7 +107,7 @@ const sun = scene3d.addNode({
 const fill = scene3d.addNode({ type: "light_3d", params: { light: "ambient", intensity: 0.4 } });
 const objects = scene3d.addNode({
   type: "merge_3d",
-  inputs: { objects: [floor, ring, cube, glass, camera, sun, fill] },
+  inputs: { objects: [floor, ring, cube, glass, screen, camera, sun, fill] },
 });
 const rendered = scene3d.addNode({
   type: "render_3d",

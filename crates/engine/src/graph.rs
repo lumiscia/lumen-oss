@@ -307,7 +307,7 @@ mod tests {
         assert_eq!(
             errors(&render),
             [
-                "connection.wrong_kind: node 1 outputs a raster, but input `scene` of node 3 takes a scene: show the raster in the scene through a scene node that takes a raster input"
+                "connection.wrong_kind: node 1 outputs a raster, but input `scene` of node 3 takes a scene: show the raster in the scene through an image_plane_3d"
             ]
         );
         let scene = TestScene {
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(
             errors(&scene),
             [
-                "connection.wrong_kind: node 1 outputs a raster, but input `children` of node 4 takes a scene: show the raster in the scene through a scene node that takes a raster input"
+                "connection.wrong_kind: node 1 outputs a raster, but input `children` of node 4 takes a scene: show the raster in the scene through an image_plane_3d"
             ]
         );
         assert_eq!(

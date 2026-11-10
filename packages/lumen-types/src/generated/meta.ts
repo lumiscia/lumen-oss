@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 
 export const schemaVersion = 1 as const;
 
@@ -1480,6 +1480,46 @@ export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation">
   };
 }
 
+/**
+ * Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by
+ * default, so it looks as it does in 2D while it faces the camera, and is always blended, so its
+ * transparent parts show what is behind it. The source is sampled with bilinear filtering and no
+ * mipmaps; a plane framed to map its pixels one to one stays exact only with `render_3d`'s
+ * `supersample` at 1.
+ */
+export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> {
+  readonly params?: {
+    /** Base colour, which an image plane's raster is multiplied by. Must be a solid color. */
+    readonly color?: ExpressionValue<Paint>;
+    /** Draws the back of each face too. */
+    readonly double_sided?: ExpressionValue<boolean>;
+    /** Light the surface gives off on its own, as a multiple of its base colour. */
+    readonly emissive?: ExpressionValue<number>;
+    /** 0 is a dielectric such as plastic, 1 a bare metal. */
+    readonly metallic?: ExpressionValue<number>;
+    /** Opacity multiplier. Anything below 1 is drawn blended, after opaque objects. */
+    readonly opacity?: ExpressionValue<number>;
+    /** Position in world units along X, Y and Z, in the parent's space. */
+    readonly position?: ExpressionValue<Vec3>;
+    /**
+     * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
+     * X, then roll about the turned Z.
+     */
+    readonly rotation?: ExpressionValue<Vec3>;
+    /** 0 is a mirror finish, 1 fully diffuse. */
+    readonly roughness?: ExpressionValue<number>;
+    /** Scale multiplier along X, Y and Z, applied before the rotation. */
+    readonly scale?: ExpressionValue<Vec3>;
+    /** Shows the base colour as is, ignoring lights. */
+    readonly unlit?: ExpressionValue<boolean>;
+    /**
+     * Width in world units; the height follows the aspect ratio of the source's full display
+     * size.
+     */
+    readonly width?: ExpressionValue<number>;
+  };
+}
+
 /** Remaps raster black, white, gamma, and output range. */
 export interface LevelsNode extends CompositionNodeBase<"levels"> {
   readonly params?: {
@@ -1815,7 +1855,7 @@ export interface ShapeNode extends CompositionNodeBase<"shape"> {
 /** A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. */
 export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
   readonly params?: {
-    /** Base colour. Must be a solid color. */
+    /** Base colour, which an image plane's raster is multiplied by. Must be a solid color. */
     readonly color?: ExpressionValue<Paint>;
     /** Draws the back of each face too. */
     readonly double_sided?: ExpressionValue<boolean>;
@@ -2064,6 +2104,7 @@ export interface CompositionNodeByKind {
   readonly "fractal_noise": FractalNoiseNode;
   readonly "glow": GlowNode;
   readonly "hue_saturation": HueSaturationNode;
+  readonly "image_plane_3d": ImagePlane3dNode;
   readonly "levels": LevelsNode;
   readonly "light_3d": Light3dNode;
   readonly "media_in": MediaInNode;
@@ -2126,6 +2167,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "hue_saturation": Omit<HueSaturationNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "image_plane_3d": Omit<ImagePlane3dNode, "id"> & {
     readonly id?: number;
   };
   readonly "levels": Omit<LevelsNode, "id"> & {
@@ -2210,6 +2254,7 @@ export interface NodeInputPortNameByKind {
   readonly "fractal_noise": never;
   readonly "glow": "source";
   readonly "hue_saturation": "source";
+  readonly "image_plane_3d": "source";
   readonly "levels": "source";
   readonly "light_3d": never;
   readonly "media_in": never;
@@ -2248,6 +2293,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "fractal_noise": never;
   readonly "glow": never;
   readonly "hue_saturation": never;
+  readonly "image_plane_3d": never;
   readonly "levels": never;
   readonly "light_3d": never;
   readonly "media_in": never;
@@ -2286,6 +2332,7 @@ export interface NodeOutputKindByKind {
   readonly "fractal_noise": "raster";
   readonly "glow": "raster";
   readonly "hue_saturation": "raster";
+  readonly "image_plane_3d": "scene";
   readonly "levels": "raster";
   readonly "light_3d": "scene";
   readonly "media_in": "raster";
@@ -2324,6 +2371,7 @@ export interface NodeInputPortKindByKind {
   readonly "fractal_noise": {};
   readonly "glow": { readonly "source": "raster" };
   readonly "hue_saturation": { readonly "source": "raster" };
+  readonly "image_plane_3d": { readonly "source": "raster" };
   readonly "levels": { readonly "source": "raster" };
   readonly "light_3d": {};
   readonly "media_in": {};

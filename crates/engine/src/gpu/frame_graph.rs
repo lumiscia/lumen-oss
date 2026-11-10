@@ -1129,6 +1129,22 @@ impl<'a> FrameCx<'a> {
         Ok(full)
     }
 
+    /// `node_id` stored at its full display size, where a clip keeps its content's own canvas
+    /// rather than being cropped to this one, for readers that place it anywhere, such as 3D.
+    #[cfg(feature = "3d")]
+    pub(crate) fn input_native(&mut self, node_id: NodeId) -> crate::Result<Raster> {
+        if let Some(NodeKind::Clip(clip)) = self.scope.node(node_id) {
+            return match clip.route(&self.scope, self.frame, self.media)? {
+                Some(routed) => {
+                    let raster = self.record_routed(routed)?;
+                    Ok(self.full_frame(raster))
+                }
+                None => Ok(self.transparent(self.canvas_size())),
+            };
+        }
+        self.input_full(node_id)
+    }
+
     /// `raster` stored at its full display size, copied there when it is bounded.
     pub(crate) fn full_frame(&mut self, raster: Raster) -> Raster {
         if raster.domain.is_full_frame() {
@@ -2036,6 +2052,7 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
         #[cfg(not(feature = "3d"))]
         NodeKind::Render3d(_) => Ok(()),
         NodeKind::Shape3d(_)
+        | NodeKind::ImagePlane3d(_)
         | NodeKind::Camera3d(_)
         | NodeKind::Light3d(_)
         | NodeKind::Merge3d(_) => Ok(()),
@@ -2086,6 +2103,7 @@ fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
         // Validation keeps a scene out of every raster input, and `render_3d` reads its scene
         // without recording it.
         NodeKind::Shape3d(_)
+        | NodeKind::ImagePlane3d(_)
         | NodeKind::Camera3d(_)
         | NodeKind::Light3d(_)
         | NodeKind::Merge3d(_) => Err(RenderError::NodeEvaluation {

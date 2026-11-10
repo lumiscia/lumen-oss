@@ -2109,7 +2109,7 @@ mod tests {
                 ),
                 (
                     "/connections/3",
-                    "node 5 outputs a raster, but input `objects` of node 6 takes a scene: show the raster in the scene through a scene node that takes a raster input"
+                    "node 5 outputs a raster, but input `objects` of node 6 takes a scene: show the raster in the scene through an image_plane_3d"
                 ),
             ]
         );
@@ -2118,7 +2118,13 @@ mod tests {
     #[test]
     fn scene_nodes_need_an_engine_built_with_3d() {
         let diagnostics = check_value(
-            &scene_document(serde_json::json!([]), serde_json::json!([])),
+            &scene_document(
+                serde_json::json!([
+                    { "id": 4, "type": "background" },
+                    { "id": 5, "type": "image_plane_3d" }
+                ]),
+                serde_json::json!([{ "from_node": 4, "to_node": 5, "to_port": "source" }]),
+            ),
             None,
             None,
         );
@@ -2130,6 +2136,7 @@ mod tests {
                 [
                     ("node.unsupported", "/nodes/0/type", Some(1)),
                     ("node.unsupported", "/nodes/1/type", Some(2)),
+                    ("node.unsupported", "/nodes/4/type", Some(5)),
                 ]
             );
         }

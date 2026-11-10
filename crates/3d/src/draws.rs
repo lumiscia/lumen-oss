@@ -1,5 +1,5 @@
 //! The order a scene's objects draw in, and the runs of them one draw covers: consecutive objects
-//! that bind the same mesh and pipeline, laid out in one table whose rows a shader finds from the
+//! that bind the same mesh, texture and pipeline, laid out in one table whose rows a shader finds from the
 //! vertex it is drawing.
 
 use std::collections::HashMap;
@@ -12,21 +12,23 @@ use crate::{Blending, MAX_SCENE_NODES, Object, mirrors, normal_matrix};
 
 /// What objects drawn together share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DrawKey<M> {
+pub struct DrawKey<M, T> {
     pub blend: bool,
     pub double_sided: bool,
     /// Whether the object's world matrix mirrors it, which turns the faces that point away.
     pub mirrored: bool,
     pub mesh: M,
+    pub texture: Option<T>,
 }
 
-impl<M: Copy> DrawKey<M> {
-    fn of(object: &Object<M>) -> Self {
+impl<M: Copy, T: Copy> DrawKey<M, T> {
+    fn of(object: &Object<M, T>) -> Self {
         Self {
             blend: object.surface.blending == Blending::Blend,
             double_sided: object.surface.double_sided,
             mirrored: mirrors(&object.world),
             mesh: object.mesh,
+            texture: object.surface.texture,
         }
     }
 }
@@ -44,8 +46,8 @@ pub struct Row {
 
 /// One draw: `count` rows from `first`, whose `vertices` start at `base` among all the table's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Run<M> {
-    pub key: DrawKey<M>,
+pub struct Run<M, T> {
+    pub key: DrawKey<M, T>,
     pub first: u32,
     pub count: u32,
     pub base: u32,
@@ -53,9 +55,9 @@ pub struct Run<M> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Draws<M> {
+pub struct Draws<M, T> {
     pub rows: Vec<Row>,
-    pub runs: Vec<Run<M>>,
+    pub runs: Vec<Run<M, T>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,16 +77,16 @@ impl fmt::Display for DrawError {
 
 impl std::error::Error for DrawError {}
 
-impl<M: Copy + Eq + Hash> Draws<M> {
+impl<M: Copy + Eq + Hash, T: Copy + Eq + Hash> Draws<M, T> {
     /// Opaque objects first, grouped by what they bind and otherwise in scene order, then blended
     /// ones from back to front as `view` sees them. Objects that draw nothing are left out: those
     /// without indices, and those whose world matrix has no [`normal_matrix`].
-    pub fn new(objects: &[Object<M>], view: &Mat4) -> Result<Self, DrawError> {
+    pub fn new(objects: &[Object<M, T>], view: &Mat4) -> Result<Self, DrawError> {
         if objects.len() > MAX_SCENE_NODES {
             return Err(DrawError::TooManyObjects);
         }
-        let keys: Vec<DrawKey<M>> = objects.iter().map(DrawKey::of).collect();
-        let mut seen: HashMap<DrawKey<M>, usize> = HashMap::new();
+        let keys: Vec<DrawKey<M, T>> = objects.iter().map(DrawKey::of).collect();
+        let mut seen: HashMap<DrawKey<M, T>, usize> = HashMap::new();
         let groups: Vec<usize> = keys
             .iter()
             .map(|&key| {
@@ -150,13 +152,14 @@ mod tests {
     use super::*;
     use crate::Surface;
 
-    fn object(mesh: u8, blending: Blending, z: f32) -> Object<u8> {
+    fn object(mesh: u8, blending: Blending, z: f32) -> Object<u8, u8> {
         Object {
             world: Mat4::from_translation(Vec3::new(0.0, 0.0, z)),
             mesh,
             index_count: 6,
             surface: Surface {
                 base_color: [1.0; 4],
+                texture: None,
                 metallic: 0.0,
                 roughness: 0.5,
                 emissive: [0.0; 3],
@@ -237,5 +240,29 @@ mod tests {
             .map(|run| (run.key.mirrored, run.count))
             .collect();
         assert_eq!(runs, [(false, 1), (true, 1)]);
+    }
+
+    #[test]
+    fn objects_with_different_textures_draw_apart_however_they_are_listed() {
+        let textured = |texture| {
+            let mut object = object(1, Blending::Opaque, 0.0);
+            object.surface.texture = texture;
+            object
+        };
+        let objects = [
+            textured(Some(7)),
+            textured(None),
+            textured(Some(7)),
+            textured(Some(8)),
+        ];
+        let draws = Draws::new(&objects, &Mat4::IDENTITY).unwrap();
+        let order: Vec<usize> = draws.rows.iter().map(|row| row.object).collect();
+        assert_eq!(order, [0, 2, 1, 3]);
+        let runs: Vec<(Option<u8>, u32)> = draws
+            .runs
+            .iter()
+            .map(|run| (run.key.texture, run.count))
+            .collect();
+        assert_eq!(runs, [(Some(7), 2), (None, 1), (Some(8), 1)]);
     }
 }
