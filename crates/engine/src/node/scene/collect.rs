@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use foldhash::HashMap;
 use lumen_3d::glam::{Mat4, Vec3};
-use lumen_3d::model::{Material, Model, ModelScene, Playback, Texture};
+use lumen_3d::model::{Material, Model, ModelScene, Playback, SkinBounds, Texture};
 use lumen_3d::{
     Blending, Bounds, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive,
     Projection, Scene, Shadow, Surface, Transform,
@@ -24,6 +24,8 @@ const MODEL_BUDGET_BYTES: u64 = 256 << 20;
 
 /// The most joint matrices one frame's scene may hold.
 const MAX_SCENE_JOINTS: usize = 1 << 16;
+/// The shortest a directional light's shadows reach from the camera.
+const MIN_SHADOW_DISTANCE: f32 = 0.01;
 
 /// A mesh's vertices and indices on the GPU, which the scene shader pulls vertices from, and the
 /// joints and weights of a skinned one's vertices.
@@ -75,8 +77,8 @@ struct LoadedModel {
     textures: Arc<[TexRef]>,
     /// The bounds of each primitive's vertices, by its first index and index count.
     bounds: Arc<HashMap<(u32, u32), Bounds>>,
-    /// For each skin, by joint, the bounds of the vertices the joint moves.
-    joint_bounds: Arc<Vec<Vec<Bounds>>>,
+    /// Each skin's bounds before posing.
+    joint_bounds: Arc<Vec<SkinBounds>>,
 }
 
 struct CachedModel {
@@ -292,7 +294,12 @@ fn upload_model(rec: &mut Recorder, model: Model) -> Result<(LoadedModel, u64), 
     }
     let bounds = primitive_bounds(&model);
     let joint_bounds = model.scene.joint_bounds(&model.geometry);
-    let mut bytes = parts.iter().map(|part| part.len() as u64).sum::<u64>();
+    let mut bytes = parts.iter().map(|part| part.len() as u64).sum::<u64>()
+        + (bounds.len() * size_of::<((u32, u32), Bounds)>()) as u64
+        + joint_bounds
+            .iter()
+            .map(|skin| ((skin.joints.len() + 1) * size_of::<Bounds>()) as u64)
+            .sum::<u64>();
     let mesh = GpuMesh {
         vertices: storage_buffer(rec, "lumen 3d model vertices", parts[0]),
         indices: storage_buffer(rec, "lumen 3d model indices", parts[1]),
@@ -492,7 +499,7 @@ enum Extent {
 struct PosedSkin {
     first_joint: usize,
     root: Mat4,
-    joint_bounds: Arc<Vec<Vec<Bounds>>>,
+    joint_bounds: Arc<Vec<SkinBounds>>,
     skin: usize,
 }
 
@@ -534,18 +541,19 @@ impl Collected {
             .skins
             .iter()
             .map(|skin| {
-                let bounds = skin
-                    .joint_bounds
-                    .get(skin.skin)
-                    .map_or(&[][..], Vec::as_slice);
+                let Some(bounds) = skin.joint_bounds.get(skin.skin) else {
+                    return Bounds::EMPTY;
+                };
                 let posed = joints.get(skin.first_joint..).unwrap_or_default();
                 bounds
+                    .joints
                     .iter()
                     .zip(posed)
                     .filter(|(bounds, _)| !bounds.is_empty())
-                    .fold(Bounds::EMPTY, |all, (bounds, joint)| {
-                        all.union(bounds.transformed(&(skin.root * *joint)))
-                    })
+                    .fold(
+                        bounds.unmoved.transformed(&skin.root),
+                        |all, (bounds, joint)| all.union(bounds.transformed(&(skin.root * *joint))),
+                    )
             })
             .collect();
         for (object, extent) in self.scene.objects.iter_mut().zip(&self.extents) {
@@ -711,6 +719,7 @@ impl Collected {
                 self.scene.lights.push(Light {
                     shadow: params.cast_shadows.then(|| Shadow {
                         softness: (params.shadow_softness as f32).max(0.0),
+                        distance: (params.shadow_distance as f32).max(MIN_SHADOW_DISTANCE),
                     }),
                     ..light
                 });

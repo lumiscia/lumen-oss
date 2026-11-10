@@ -112,6 +112,8 @@ struct Light {
     shadow: i32,
     // World width over which shadow edges blur.
     shadow_softness: f32,
+    // How far from the camera along its view a directional light's shadows reach.
+    shadow_distance: f32,
 }
 
 // One view a light casts shadows from, a tile of the shadow atlas.
@@ -461,6 +463,15 @@ fn shadow_visibility(light: Light, world: vec3<f32>, face: vec3<f32>, pixel: vec
     if (light.shadow < 0) {
         return 1.0;
     }
+    // A directional light's shadows fade out over the last tenth of their distance.
+    var fade = 1.0;
+    if (light.kind == LIGHT_DIRECTIONAL) {
+        let depth = dot(globals.camera_position - world, globals.camera_back);
+        fade = clamp((light.shadow_distance - depth) / (0.1 * light.shadow_distance), 0.0, 1.0);
+        if (fade <= 0.0) {
+            return 1.0;
+        }
+    }
     var index = u32(light.shadow);
     if (light.kind == LIGHT_POINT) {
         // The face of the six the point lies most in the direction of.
@@ -526,7 +537,7 @@ fn shadow_visibility(light: Light, world: vec3<f32>, face: vec3<f32>, pixel: vec
         let reference = min(center.z + dot(gradient, at - center.xy) - bias, 1.0);
         lit += textureSampleCompareLevel(shadow_map, shadow_sampler, at / size, reference);
     }
-    return lit / f32(SHADOW_TAPS);
+    return mix(1.0, lit / f32(SHADOW_TAPS), fade);
 }
 
 @fragment

@@ -2198,6 +2198,34 @@ fn an_image_plane_catches_shadows_where_its_raster_covers_it_and_shows_none_of_i
     assert_eq!(with.pixel(edge_x, edge_y)[3], 255);
 }
 
+/// The pixels a light's shadows leave below half as bright as `lit`, the same scene unshadowed.
+fn darkened(shadowed: &Frame, lit: &Frame) -> Vec<(u32, u32)> {
+    let (width, height) = (lit.width, lit.height);
+    (0..height)
+        .flat_map(|y| (0..width).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let (a, b) = (shadowed.pixel(x, y)[0], lit.pixel(x, y)[0]);
+            b > 30 && a < b / 2
+        })
+        .collect()
+}
+
+/// The mean place of `pixels`, and their bounds: left, top, right and bottom.
+fn extent(pixels: &[(u32, u32)]) -> ([f32; 2], [u32; 4]) {
+    let n = pixels.len().max(1) as f32;
+    let mean = [
+        pixels.iter().map(|p| p.0 as f32).sum::<f32>() / n,
+        pixels.iter().map(|p| p.1 as f32).sum::<f32>() / n,
+    ];
+    let bounds = [
+        pixels.iter().map(|p| p.0).min().unwrap_or(0),
+        pixels.iter().map(|p| p.1).min().unwrap_or(0),
+        pixels.iter().map(|p| p.0).max().unwrap_or(0),
+        pixels.iter().map(|p| p.1).max().unwrap_or(0),
+    ];
+    (mean, bounds)
+}
+
 #[test]
 fn shadows_of_small_objects_on_a_floor_far_wider_than_the_view_are_kept() {
     let lights = [
@@ -2207,45 +2235,159 @@ fn shadows_of_small_objects_on_a_floor_far_wider_than_the_view_are_kept() {
         json!({ "light": "point", "intensity": 30, "position": [0.5, 3, 0.5] }),
     ];
     for params in lights {
-        // Pixels the box's shadow darkens on a floor `half` units out each way.
+        // The box's shadow on a 6 m patch over a floor `half` units out each way, which casts
+        // none and places its own pixels only to within about a centimetre when kilometres across.
         let shadow = |half: f64| {
             let frame = |cast: bool| {
                 let nodes = vec![
                     json!({ "id": 1, "type": "shape_3d", "params": {
-                        "shape": "plane", "size": [2.0 * half, 1, 2.0 * half], "roughness": 1 } }),
+                        "shape": "plane", "size": [2.0 * half, 1, 2.0 * half], "roughness": 1,
+                        "cast_shadows": false } }),
+                    json!({ "id": 6, "type": "shape_3d", "params": {
+                        "shape": "plane", "size": [6, 1, 6], "position": [0, 0.02, 0],
+                        "roughness": 1, "cast_shadows": false } }),
                     json!({ "id": 2, "type": "shape_3d", "params": {
-                        "size": [0.6, 0.6, 0.6], "position": [0, 0.3, 0] } }),
+                        "size": [0.6, 0.6, 0.6], "position": [0, 0.32, 0] } }),
                     json!({ "id": 3, "type": "camera_3d", "params": {
                         "position": [0, 1.5, 3], "look_at": true, "target": [0, 0, 0] } }),
                     light(4, casting(&params, cast)),
-                    merge(5, &[1, 2, 3, 4], json!({})),
+                    merge(5, &[1, 6, 2, 3, 4], json!({})),
                 ];
                 frame_of(
                     render_3d_with(json!({ "environment": 0 }), nodes),
                     &TestMedia::default(),
                 )
             };
-            let (shadowed, lit) = (frame(true), frame(false));
-            every_pixel()
-                .filter(|&(x, y)| {
-                    let (a, b) = (shadowed.pixel(x, y)[0], lit.pixel(x, y)[0]);
-                    b > 30 && a < b / 2
-                })
-                .count()
+            darkened(&frame(true), &frame(false))
         };
         let small = shadow(3.0);
         assert!(
-            small > 12,
-            "{params}: {small} pixels shadowed on a small floor"
+            small.len() > 12,
+            "{params}: {} pixels shadowed",
+            small.len()
         );
-        // A floor kilometres across places its own pixels to within about a centimetre, which
-        // moves the shadow's edge by a pixel or so.
+        let (mean, bounds) = extent(&small);
         for half in [500.0, 5000.0] {
-            let wide = shadow(half);
+            let (wide_mean, wide_bounds) = extent(&shadow(half));
             assert!(
-                wide.abs_diff(small) <= small / 4,
-                "{params}: {wide} pixels shadowed on a floor {half} out, {small} on a small one"
+                (wide_mean[0] - mean[0]).abs() <= 1.0 && (wide_mean[1] - mean[1]).abs() <= 1.0,
+                "{params}: the shadow's middle on a floor {half} out is {wide_mean:?}, not {mean:?}"
+            );
+            assert!(
+                wide_bounds
+                    .iter()
+                    .zip(bounds)
+                    .all(|(a, b)| a.abs_diff(b) <= 2),
+                "{params}: the shadow on a floor {half} out spans {wide_bounds:?}, not {bounds:?}"
             );
         }
     }
+}
+
+#[test]
+fn point_and_wide_spot_lights_shadow_casters_off_their_views_axes() {
+    let view = GroundView::WHOLE;
+    // A small box a metre up, which a light at (2, 3, 2) shadows around (-1, 0, -1): much nearer
+    // along the view it falls in than in a straight line, and alone, as the floor casts nothing.
+    let lights = [
+        json!({ "light": "point", "intensity": 100, "position": [2, 3, 2] }),
+        json!({ "light": "spot", "intensity": 100, "position": [2, 3, 2], "rotation": [-90, 0, 0],
+                "spot_angle": 160 }),
+    ];
+    for params in lights {
+        let frame = |cast: bool| {
+            let mut nodes = view.nodes(
+                vec![
+                    json!({ "id": 1, "type": "shape_3d", "params": {
+                        "size": [0.3, 0.3, 0.3], "position": [0, 1, 0] } }),
+                    light(60, casting(&params, cast)),
+                ],
+                json!({}),
+            );
+            nodes[0]["params"]["cast_shadows"] = json!(false);
+            frame_of(scene(SIZE, json!(nodes)), &TestMedia::default())
+        };
+        let (shadowed, lit) = (frame(true), frame(false));
+        let (x, y) = view.pixel(-1.0, -1.0);
+        let ([a, ..], [b, ..]) = (shadowed.pixel(x, y), lit.pixel(x, y));
+        assert!(b > 30 && a < b / 4, "{params}: {a} where unshadowed is {b}");
+    }
+}
+
+#[test]
+fn a_directional_lights_shadows_fade_out_toward_its_shadow_distance() {
+    let view = GroundView::WHOLE;
+    // The ground lies 4 units along the view from the camera looking straight down at it.
+    let darkness = |distance: f64| {
+        let frame = |cast: bool| {
+            let objects = vec![
+                json!({ "id": 1, "type": "shape_3d", "params": { "size": [1, 0.2, 1], "position": [0, 1, 0] } }),
+                light(
+                    60,
+                    json!({ "light": "directional", "intensity": 1, "rotation": [-90, 0, 0],
+                            "cast_shadows": cast, "shadow_distance": distance }),
+                ),
+            ];
+            frame_of(view.scene(objects, json!({})), &TestMedia::default())
+        };
+        let (x, y) = view.pixel(0.0, 0.0);
+        let ([a, ..], [b, ..]) = (frame(true).pixel(x, y), frame(false).pixel(x, y));
+        assert!(b > 60, "the ground is lit, at {b}");
+        1.0 - f32::from(a) / f32::from(b)
+    };
+    assert!(darkness(50.0) > 0.95, "well within: {}", darkness(50.0));
+    // A tenth of 4.2 is 0.42, of which the ground lies 0.2 inside, so the shadow takes about half
+    // the light, which shows a quarter darker once encoded for display.
+    let partial = darkness(4.2);
+    assert!((0.15..0.4).contains(&partial), "in the fade: {partial}");
+    assert_eq!(darkness(3.9), 0.0, "beyond");
+}
+
+#[test]
+fn how_far_directional_shadows_reach_doesnt_depend_on_their_softness() {
+    // Boxes at increasing distances along a floor to the horizon, which casts nothing.
+    let frame = |softness: f64, cast: bool| {
+        let mut nodes = vec![
+            json!({ "id": 1, "type": "shape_3d", "params": {
+                "shape": "plane", "size": [10000, 1, 10000], "roughness": 1, "cast_shadows": false } }),
+            json!({ "id": 3, "type": "camera_3d", "params": {
+                "position": [0, 10, 12], "look_at": true, "target": [0, 0, -25] } }),
+            light(
+                4,
+                json!({ "light": "directional", "intensity": 3, "rotation": [-50, 35, 0],
+                        "cast_shadows": cast, "shadow_softness": softness }),
+            ),
+        ];
+        let mut ids = vec![1, 3, 4];
+        for (index, z) in [-10, -18, -26, -34].into_iter().enumerate() {
+            let id = 10 + index as u32;
+            let x = if index % 2 == 0 { 5 } else { -5 };
+            nodes.push(json!({ "id": id, "type": "shape_3d", "params": {
+                "size": [2, 1, 2], "position": [x, 0.5, z], "receive_shadows": false } }));
+            ids.push(id);
+        }
+        nodes.push(merge(5, &ids, json!({})));
+        nodes.push(json!({ "id": 100, "type": "render_3d", "params": { "environment": 0 }, "in": { "scene": 5 } }));
+        frame_of(scene((128, 128), json!(nodes)), &TestMedia::default())
+    };
+    let lit = frame(0.0, false);
+    let shadows = [0.0, 0.3].map(|softness| darkened(&frame(softness, true), &lit));
+    let ((sharp_mean, sharp_bounds), (soft_mean, soft_bounds)) =
+        (extent(&shadows[0]), extent(&shadows[1]));
+    assert!(
+        shadows[0].len() > 20,
+        "{} pixels shadowed",
+        shadows[0].len()
+    );
+    assert!(
+        (sharp_mean[0] - soft_mean[0]).abs() <= 1.5 && (sharp_mean[1] - soft_mean[1]).abs() <= 1.5,
+        "{sharp_mean:?} sharp, {soft_mean:?} soft"
+    );
+    assert!(
+        sharp_bounds
+            .iter()
+            .zip(soft_bounds)
+            .all(|(a, b)| a.abs_diff(b) <= 3),
+        "{sharp_bounds:?} sharp, {soft_bounds:?} soft"
+    );
 }

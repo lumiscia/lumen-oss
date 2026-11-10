@@ -1089,10 +1089,31 @@ fn each_joints_bounds_hold_the_vertices_it_moves_before_posing() {
     // the corner along X and shares the top one.
     assert_eq!(
         model.scene.joint_bounds(&model.geometry),
-        [vec![
-            crate::Bounds::of([Vec3::ZERO, Vec3::Y]),
-            crate::Bounds::of([Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0)]),
-        ]]
+        [SkinBounds {
+            joints: vec![
+                crate::Bounds::of([Vec3::ZERO, Vec3::Y]),
+                crate::Bounds::of([Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0)]),
+            ],
+            unmoved: crate::Bounds::EMPTY,
+        }]
     );
     assert_eq!(model.scene.pose(None).skins, [(0, 0)]);
+
+    // A vertex weighted to no joint is drawn where it is, so it counts apart from the joints.
+    let mut glb = skinned();
+    let weights = glb.accessor(
+        FLOAT,
+        "VEC4",
+        3,
+        &floats(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0]),
+    );
+    glb.json["meshes"][0]["primitives"][0]["attributes"]["WEIGHTS_0"] = json!(weights);
+    let model = glb.read().unwrap();
+    let bounds = model.scene.joint_bounds(&model.geometry);
+    assert_eq!(bounds[0].unmoved, crate::Bounds::of([Vec3::X]));
+    assert_eq!(
+        bounds[0].joints[1],
+        crate::Bounds::of([Vec3::Y]),
+        "the joint the unweighted vertex names doesn't take it"
+    );
 }

@@ -16,8 +16,6 @@ const MAX_SPOT_FOV: f32 = 170.0 * std::f32::consts::PI / 180.0;
 /// Steps per doubling that a directional view's width rounds up to, so the width only changes
 /// when the view it fits grows or shrinks past a step.
 const WIDTH_STEPS: f32 = 8.0;
-/// The softness a directional view's reach is worked out for when its light's shadows are sharper.
-const SHARPEST_REACH_SOFTNESS: f32 = 0.01;
 
 /// One view a light casts shadows from.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -177,27 +175,16 @@ fn views_of(
         reach
     }
     .max(1e-3);
-    // From just short of the nearest caster. Depth is written as distance over `far`, so `near`
-    // only clips and costs no precision however small it is.
-    let nearest = casters
-        .min
-        .max(light.position)
-        .min(casters.max)
-        .distance(light.position);
-    let near = (nearest * 0.99).clamp(far * 1e-6, far * 0.5);
+    let view = |direction: Vec3, fov: f32| {
+        let near = nearest_caster(light.position, direction, fov, far, &casters);
+        perspective(light.position, direction, fov, near, far, tile)
+    };
     let views = match light.kind {
         LightKind::Directional => vec![directional(light, seen, casters, receivers, tile)],
         LightKind::Spot => {
             let cone = 2.0 * light.cos_outer.clamp(-1.0, 1.0).acos();
             let fov = cone.clamp(1f32.to_radians(), MAX_SPOT_FOV);
-            vec![perspective(
-                light.position,
-                light.direction,
-                fov,
-                near,
-                far,
-                tile,
-            )]
+            vec![view(light.direction, fov)]
         }
         LightKind::Point => {
             // Wider than a quarter turn by the filter's reach at each edge, so that filtering
@@ -211,7 +198,7 @@ fn views_of(
                 Vec3::Z,
                 Vec3::NEG_Z,
             ]
-            .map(|direction| perspective(light.position, direction, fov, near, far, tile))
+            .map(|direction| view(direction, fov))
             .to_vec()
         }
         LightKind::Ambient => return None,
@@ -223,6 +210,35 @@ fn views_of(
             && view.texel > 0.0
     };
     views.iter().all(finite).then_some(views)
+}
+
+/// Just short of how near along `direction` the part of `casters` within a view from `position`,
+/// `fov` radians across and reaching `far`, comes: where that view's near end can be without
+/// leaving any of them out. Depth is written as distance over `far`, so the near end only clips
+/// and costs no precision however near it is.
+fn nearest_caster(position: Vec3, direction: Vec3, fov: f32, far: f32, casters: &Bounds) -> f32 {
+    let least = far * 1e-6;
+    // Around the light, so that a view starting so near keeps its precision.
+    let right = direction.cross(up_for(direction)).normalize();
+    let up = right.cross(direction);
+    let spread = (fov * 0.5).tan();
+    let view = [0, 1, 2, 3, 4, 5, 6, 7].map(|corner| {
+        let depth = if corner & 4 == 0 { least } else { far };
+        let side = |bit: usize| if corner & bit == 0 { -1.0 } else { 1.0 };
+        (direction + (right * side(1) + up * side(2)) * spread) * depth
+    });
+    let casters = Bounds {
+        min: casters.min - position,
+        max: casters.max - position,
+    };
+    let nearest = within(&view, &casters)
+        .into_iter()
+        .map(|point| point.dot(direction))
+        .reduce(f32::min);
+    match nearest {
+        Some(nearest) => (nearest * 0.99).clamp(least, far * 0.5),
+        None => least,
+    }
 }
 
 /// A view from `position` along `direction`, `fov` radians across, from `near` to `far`.
@@ -244,10 +260,8 @@ fn perspective(
 }
 
 /// A view along `light`'s direction covering the receivers within `receivers` that the camera
-/// sees, as `seen` holds, from as far toward the light as `casters` in front of them reach. Where
-/// that is wider than the view's map covers with texels as wide as the light's softness, or
-/// [`SHARPEST_REACH_SOFTNESS`] when that is smaller, it covers only what is nearest the camera.
-/// The view's width rounds up to one of a set of steps, and its centre to a whole texel in a frame
+/// sees, as `seen` holds, no farther along its view than the light's shadow distance, from as far
+/// toward the light as `casters` in front of them reach. The view's width rounds up to one of a set of steps, and its centre to a whole texel in a frame
 /// fixed to the world, so that while the camera moves, each texel stays on the same part of the
 /// scene and edges don't shimmer.
 fn directional(
@@ -259,12 +273,9 @@ fn directional(
 ) -> ShadowView {
     let direction = light.direction;
     let turn = Mat4::look_to_rh(Vec3::ZERO, direction, up_for(direction));
-    let softness = light
-        .shadow
-        .map_or(0.0, |shadow| shadow.softness)
-        .max(SHARPEST_REACH_SOFTNESS);
+    let distance = light.shadow.map_or(f32::INFINITY, |shadow| shadow.distance);
     let fit = seen
-        .and_then(|seen| seen.fit(&turn, softness * tile as f32))
+        .and_then(|seen| seen.fit(&turn, distance))
         .unwrap_or_else(|| receivers.transformed(&turn));
     let extent = (fit.max - fit.min).truncate().max_element().max(1e-3);
     let margin = 1.0 + 2.0 * (MAX_FILTER_TEXELS + 2.0) / tile as f32;
@@ -357,30 +368,19 @@ impl<'a> Seen<'a> {
             .unwrap_or_default()
     }
 
-    /// The bounds of the receivers seen, in the space `turn` takes the world to. When those are
-    /// wider or taller than `reach`, only of those nearest the camera, as far as they stay within
-    /// it.
-    fn fit(&self, turn: &Mat4, reach: f32) -> Option<Bounds> {
-        let fit = |points: &[Vec3]| {
-            let fit = Bounds::of(points.iter().map(|&point| turn.transform_point3(point)));
-            (!fit.is_empty()).then_some(fit)
-        };
-        let width = |fit: &Bounds| (fit.max - fit.min).truncate().max_element();
-        let all = fit(&self.points)?;
-        if width(&all) <= reach {
-            return Some(all);
+    /// The bounds, in the space `turn` takes the world to, of the receivers seen no farther than
+    /// `distance` along the view, or `None` when there are none.
+    fn fit(&self, turn: &Mat4, distance: f32) -> Option<Bounds> {
+        let far = self.far.min(distance);
+        if far.partial_cmp(&self.near) != Some(std::cmp::Ordering::Greater) {
+            return None;
         }
-        // The farthest distance whose fit stays within `reach`, which grows with the distance.
-        let (mut inside, mut outside) = (self.near, self.far);
-        for _ in 0..24 {
-            let middle = 0.5 * (inside + outside);
-            if fit(&self.until(middle)).is_none_or(|fit| width(&fit) <= reach) {
-                inside = middle;
-            } else {
-                outside = middle;
-            }
-        }
-        fit(&self.until(inside)).or_else(|| fit(&self.until(outside)))
+        let fit = Bounds::of(
+            self.until(far)
+                .into_iter()
+                .map(|point| turn.transform_point3(point)),
+        );
+        (!fit.is_empty()).then_some(fit)
     }
 }
 
@@ -480,7 +480,10 @@ mod tests {
 
     fn light(kind: LightKind, world: Mat4) -> Light {
         Light {
-            shadow: Some(crate::Shadow { softness: 0.02 }),
+            shadow: Some(crate::Shadow {
+                softness: 0.02,
+                distance: 50.0,
+            }),
             ..Light::new(kind, Vec3::ONE, world, 0.0, 60.0, 0.2)
         }
     }
@@ -548,20 +551,71 @@ mod tests {
     }
 
     #[test]
-    fn a_directional_view_of_a_floor_to_the_horizon_keeps_to_what_its_map_resolves_near_the_camera()
-    {
-        let sun = aimed(LightKind::Directional, Vec3::new(2.0, 5.0, 3.0));
+    fn a_directional_view_of_a_floor_to_the_horizon_reaches_its_shadow_distance_however_soft() {
         let camera = Camera {
             world: crate::look_at(Vec3::new(0.0, 1.5, 5.0), Vec3::new(0.0, 1.5, 0.0)),
             ..Camera::default()
         };
         let scene = ground(5000.0);
-        let atlas = ShadowAtlas::plan(&[sun], &camera, 16.0 / 9.0, scene, scene, 8192).unwrap();
-        let view = atlas.views[0];
-        // Texels no wider than the light's softness, give or take the width's rounding and margin.
-        assert!(view.texel < 0.02 * 1.2, "{}", view.texel);
-        let box_top = texel_of(&view, atlas.tile, Vec3::Y);
-        assert!(box_top.x > 0.0 && box_top.x < 4096.0 && box_top.y > 0.0 && box_top.y < 4096.0);
+        let views = [0.0, 0.5].map(|softness| {
+            let sun = Light {
+                shadow: Some(crate::Shadow {
+                    softness,
+                    distance: 20.0,
+                }),
+                ..aimed(LightKind::Directional, Vec3::new(2.0, 5.0, 3.0))
+            };
+            ShadowAtlas::plan(&[sun], &camera, 16.0 / 9.0, scene, scene, 8192)
+                .unwrap()
+                .views[0]
+        });
+        assert_eq!(views[0], views[1]);
+        let covers = |point: Vec3| {
+            let at = texel_of(&views[0], 4096, point);
+            at.x > 0.0 && at.x < 4096.0 && at.y > 0.0 && at.y < 4096.0
+        };
+        // The camera looks down -Z from 5 along it.
+        assert!(covers(Vec3::Y));
+        assert!(covers(Vec3::new(0.0, 0.0, -14.0)));
+        assert!(!covers(Vec3::new(0.0, 0.0, -60.0)));
+    }
+
+    #[test]
+    fn spot_and_point_views_start_short_of_casters_off_their_axis() {
+        // A small box much nearer along a view's axis than straight-line distance to the light.
+        let casters = Bounds::of([Vec3::new(-0.15, 0.85, -0.15), Vec3::new(0.15, 1.15, 0.15)]);
+        let receivers = ground(15.0);
+        let point = light(
+            LightKind::Point,
+            Mat4::from_translation(Vec3::new(2.0, 3.0, 2.0)),
+        );
+        let spot = Light {
+            cos_outer: 80f32.to_radians().cos(),
+            ..light(
+                LightKind::Spot,
+                crate::look_at(Vec3::new(2.0, 3.0, 2.0), Vec3::new(2.0, 0.0, 2.0)),
+            )
+        };
+        for lights in [[point], [spot]] {
+            let atlas =
+                ShadowAtlas::plan(&lights, &Camera::default(), 1.0, casters, receivers, 8192)
+                    .unwrap();
+            let mut seen = 0;
+            for view in &atlas.views {
+                for corner in casters.corners() {
+                    let clip = view.view_proj * corner.extend(1.0);
+                    if clip.w > 0.0 && clip.x.abs() <= clip.w && clip.y.abs() <= clip.w {
+                        seen += 1;
+                        assert!(
+                            clip.z >= 0.0 && clip.z <= clip.w,
+                            "{:?}: {clip}",
+                            lights[0].kind
+                        );
+                    }
+                }
+            }
+            assert!(seen >= 8, "{:?} sees {seen} corners", lights[0].kind);
+        }
     }
 
     #[test]

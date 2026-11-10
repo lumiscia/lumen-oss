@@ -36,6 +36,9 @@ pub struct Shadow {
     /// Width in world units over which shadow edges blur, within the limits of the light's shadow
     /// map.
     pub softness: f32,
+    /// How far from a directional light's camera along its view its shadows reach, fading out
+    /// over the last tenth.
+    pub distance: f32,
 }
 
 impl Light {

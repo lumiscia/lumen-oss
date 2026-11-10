@@ -32,6 +32,7 @@ use glam::{Mat4, Quat, Vec3};
 use crate::{Blending, MAX_SCENE_NODES, Maps, SkinVertex, Vertex};
 use animation::Animation;
 pub use animation::Playback;
+pub use bounds::SkinBounds;
 
 /// The largest file read.
 pub const MAX_MODEL_BYTES: usize = 512 << 20;

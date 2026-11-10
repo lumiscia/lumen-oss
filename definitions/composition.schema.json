@@ -3596,6 +3596,24 @@
                     },
                     "x-lumen-kind": "vec3"
                   },
+                  "shadow_distance": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 50.0,
+                    "description": "How far from the camera, along its view, a directional light's shadows reach, fading out\nover the last tenth. Its shadow map spreads over what the camera sees of the scene up to\nhere, so a larger distance trades sharpness for reach; a scene the camera sees nearer\nkeeps its full sharpness.",
+                    "title": "Shadow Distance",
+                    "x-lumen-constraints": {
+                      "min": 0.01,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
                   "shadow_softness": {
                     "anyOf": [
                       {
@@ -3606,7 +3624,7 @@
                       }
                     ],
                     "default": 0.02,
-                    "description": "Width in world units over which shadow edges blur, up to 16 texels of the light's shadow\nmap, which is up to 4096 texels across and shared among the shadow-casting lights. A\ndirectional light's shadows reach as far from the camera as its map covers with texels no\nwider than this, or than 0.01 when this is smaller.",
+                    "description": "Width in world units over which shadow edges blur, up to 16 texels of the light's shadow\nmap, which is up to 4096 texels across and shared among the shadow-casting lights.",
                     "title": "Shadow Softness",
                     "x-lumen-constraints": {
                       "min": 0.0,

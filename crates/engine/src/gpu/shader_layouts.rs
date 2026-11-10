@@ -318,6 +318,7 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
                 cos_inner,
                 shadow,
                 shadow_softness,
+                shadow_distance,
             ),
             layout!(
                 "ShadowView",

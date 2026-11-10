@@ -125,7 +125,7 @@ pub(crate) struct GpuLight {
     /// The light's first view in the shadow views, or -1 for a light without shadows.
     pub(crate) shadow: i32,
     pub(crate) shadow_softness: f32,
-    _pad: f32,
+    pub(crate) shadow_distance: f32,
 }
 
 /// Keep in sync with `ShadowView` in `scene.wgsl`.
@@ -334,7 +334,7 @@ fn gpu_light(light: &lumen_3d::Light, shadow: Option<u32>) -> GpuLight {
         cos_inner: light.cos_inner,
         shadow: shadow.map_or(-1, |view| view as i32),
         shadow_softness: light.shadow.map_or(0.0, |shadow| shadow.softness),
-        _pad: 0.0,
+        shadow_distance: light.shadow.map_or(0.0, |shadow| shadow.distance),
     }
 }
 

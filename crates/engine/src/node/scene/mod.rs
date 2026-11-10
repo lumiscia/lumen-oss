@@ -419,11 +419,15 @@ pub struct Light3dParams {
     #[meta()]
     pub cast_shadows: bool,
     /// Width in world units over which shadow edges blur, up to 16 texels of the light's shadow
-    /// map, which is up to 4096 texels across and shared among the shadow-casting lights. A
-    /// directional light's shadows reach as far from the camera as its map covers with texels no
-    /// wider than this, or than 0.01 when this is smaller.
+    /// map, which is up to 4096 texels across and shared among the shadow-casting lights.
     #[meta(min = 0, step = 0.01)]
     pub shadow_softness: f64,
+    /// How far from the camera, along its view, a directional light's shadows reach, fading out
+    /// over the last tenth. Its shadow map spreads over what the camera sees of the scene up to
+    /// here, so a larger distance trades sharpness for reach; a scene the camera sees nearer
+    /// keeps its full sharpness.
+    #[meta(min = 0.01, step = 1)]
+    pub shadow_distance: f64,
     #[meta(flatten)]
     pub pose: Pose3d,
 }
@@ -439,6 +443,7 @@ impl Default for Light3dParams {
             spot_softness: 0.2,
             cast_shadows: false,
             shadow_softness: 0.02,
+            shadow_distance: 50.0,
             pose: Pose3d {
                 rotation: [-45.0, 30.0, 0.0],
                 ..Pose3d::default()
