@@ -730,7 +730,7 @@ fn integers_past_32_bits_are_rejected_only_where_they_would_be_truncated() {
     let mut glb = Glb::triangle();
     glb.json["accessors"][0]["max"] = json!([5_000_000_000u64, 1, 0]);
     glb.json["accessors"][0]["min"] = json!([0, 0, 0]);
-    glb.json["extras"] = json!({ "mesh": 5_000_000_000u64 });
+    glb.json["extras"] = json!([{ "mesh": 5_000_000_000u64 }, "any value"]);
     glb.read().expect("a large float bound is not an index");
 }
 
