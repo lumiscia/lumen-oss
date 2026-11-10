@@ -72,6 +72,24 @@ pub fn evaluate_builtin(
         BuiltinFn::Sin => unary(f64::sin),
         BuiltinFn::Cos => unary(f64::cos),
         BuiltinFn::Fract => unary(f64::fract),
+        BuiltinFn::Sign => unary(|value| {
+            if value == 0.0 || value.is_nan() {
+                value
+            } else {
+                value.signum()
+            }
+        }),
+        BuiltinFn::Atan2 => Ok(ExpressionValue::Number(number(0)?.atan2(number(1)?))),
+        BuiltinFn::Hypot => Ok(ExpressionValue::Number(number(0)?.hypot(number(1)?))),
+        BuiltinFn::Remap => {
+            let (value, from_min, from_max) = (number(0)?, number(1)?, number(2)?);
+            let (to_min, to_max) = (number(3)?, number(4)?);
+            if from_min == from_max {
+                return Err(error("remap requires from_min != from_max".to_string()));
+            }
+            let t = (value - from_min) / (from_max - from_min);
+            Ok(ExpressionValue::Number(to_min + (to_max - to_min) * t))
+        }
         BuiltinFn::Clamp => {
             let (value, min, max) = (number(0)?, number(1)?, number(2)?);
             if min.is_nan() || max.is_nan() || min > max {

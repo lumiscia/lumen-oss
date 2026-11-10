@@ -38,7 +38,8 @@ impl FfmpegResolverOptions {
     pub fn with_hardware_decode(prefer_hardware_decode: bool) -> Self {
         Self {
             prefer_hardware_decode,
-            ..Self::default()
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
+            vulkan_device: None,
         }
     }
 }
@@ -395,6 +396,8 @@ impl LibavStreamDecoder {
                         if let Some(seek) = self.seek.take()
                             && decoded_frame > target_frame
                         {
+                            // `GpuVideoFrame` only has drop glue when a hardware backend is enabled.
+                            #[allow(clippy::drop_non_drop)]
                             drop(decoded);
                             self.seek_before_landing(target_frame, seek)?;
                             continue;

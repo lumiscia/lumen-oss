@@ -954,7 +954,7 @@ fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
             .expect_err("2049 glyphs exceed the limit")
             .to_string();
         assert!(
-            error.contains("Text node 1") && error.contains("2049") && error.contains("2048"),
+            error.contains("text node 1") && error.contains("2049") && error.contains("2048"),
             "{font_size}: {error}"
         );
     }
@@ -981,7 +981,7 @@ fn text_dropped_by_a_full_atlas_still_counts_toward_the_instance_limit() {
         .expect_err("2080 glyphs exceed the limit")
         .to_string();
     assert!(
-        error.contains("Text node 1") && error.contains("2080") && error.contains("2048"),
+        error.contains("text node 1") && error.contains("2080") && error.contains("2048"),
         "{error}"
     );
 }
