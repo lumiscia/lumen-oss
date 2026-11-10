@@ -7,6 +7,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use lumen_engine::{composition::Composition, media::AssetResolver};
 use lumen_ffmpeg::QualityRequest;
 use lumen_server::render::{check_composition, resolve_encoder};
 
@@ -46,15 +47,24 @@ pub(super) async fn create_render(
     }
     validate_media_manifest(&input.media)
         .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    let composition = lumen_engine::json::parse_value(&input.composition)
-        .map_err(|error| ApiError::invalid_composition(&error))?;
     // Resolving leases each asset, so the sweep keeps it until the render ends.
     let assets = Arc::new(state.assets.job_assets());
-    let asset_errors =
-        lumen_engine::json::check_value(&input.composition, None, Some(assets.as_ref()));
-    if asset_errors.iter().any(|diagnostic| diagnostic.is_error()) {
-        return Err(ApiError::invalid_diagnostics(&asset_errors));
-    }
+    let (input, composition) = tokio::task::spawn_blocking({
+        let assets = Arc::clone(&assets);
+        move || {
+            let composition = load_composition(&input.composition, assets.as_ref());
+            (input, composition)
+        }
+    })
+    .await
+    .map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "check_failed",
+            format!("check worker join failed: {error}"),
+        )
+    })?;
+    let composition = composition?;
 
     // Resolved now with the resolver the render uses, so a request it would fail is refused here.
     let invalid_quality = |message: String| {
@@ -105,6 +115,19 @@ pub(super) async fn create_render(
         }),
     )
         .into_response())
+}
+
+fn load_composition(
+    value: &serde_json::Value,
+    assets: &dyn AssetResolver,
+) -> Result<Composition, ApiError> {
+    let composition = lumen_engine::json::parse_value(value)
+        .map_err(|error| ApiError::invalid_composition(&error))?;
+    let asset_errors = lumen_engine::json::check_value(value, None, Some(assets));
+    if asset_errors.iter().any(|diagnostic| diagnostic.is_error()) {
+        return Err(ApiError::invalid_diagnostics(&asset_errors));
+    }
+    Ok(composition)
 }
 
 /// What is wrong with a composition, without rendering it. Fonts resolve as a render's would,
