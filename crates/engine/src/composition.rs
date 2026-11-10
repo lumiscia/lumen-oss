@@ -250,23 +250,19 @@ impl CompositionBuilder {
     fn validate(&self) -> Result<(), Vec<LumenError>> {
         let mut errors = Vec::new();
 
-        errors.extend(
-            settings_problems(&self.scene)
-                .into_iter()
-                .map(|(field, details)| {
-                    GraphValidationError::InvalidSettings {
-                        template: None,
-                        field,
-                        details,
-                    }
-                    .into()
-                }),
-        );
+        let root_problems = settings_problems(&self.scene);
+        errors.extend(root_problems.iter().map(|(field, details)| {
+            GraphValidationError::InvalidSettings {
+                template: None,
+                field: field.clone(),
+                details: details.clone(),
+            }
+            .into()
+        }));
         match self.scene.graph.validate() {
             Ok(_) => {}
             Err(graph_errors) => errors.extend(graph_errors),
         }
-        let root_problems = settings_problems(&self.scene);
         for (name, template) in &self.compositions {
             // A template that inherits a bad setting from the root is reported once, at the root.
             let inherited = |field: &str| {
@@ -468,8 +464,6 @@ impl CompositionBuilder {
     }
 }
 
-/// What stops a timeline and canvas from rendering: a frame rate that isn't positive and finite,
-/// and no frames or pixels. Each comes with the JSON pointer of its setting.
 /// The setting at `field`, one of the pointers [`settings_problems`] reports.
 fn setting(scene: &Scene, field: &str) -> Option<f64> {
     match field {
@@ -481,6 +475,8 @@ fn setting(scene: &Scene, field: &str) -> Option<f64> {
     }
 }
 
+/// What stops a timeline and canvas from rendering: a frame rate that isn't positive and finite,
+/// and no frames or pixels. Each comes with the JSON pointer of its setting.
 fn settings_problems(scene: &Scene) -> Vec<(String, String)> {
     let Scene {
         timeline,
