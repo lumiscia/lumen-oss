@@ -5266,7 +5266,7 @@
                       }
                     ],
                     "default": "",
-                    "description": "An equirectangular Radiance `.hdr` or OpenEXR `.exr` file that lights the scene from all\naround in place of the studio: a path or `media` alias, or `asset:<id>` for an environment\nmap asset of the host's. Its centre is the view along -Z, with +X to its right and +Y at\nits top. While a map lights a scene without lights, it gets no default ones. Empty uses\nthe studio.",
+                    "description": "An equirectangular Radiance `.hdr` or OpenEXR `.exr` file that lights the scene from all\naround in place of the studio: a path or `media` alias, or `asset:<id>` for an environment\nmap asset of the host's. Its centre is the view along -Z, with +X to its right and +Y at\nits top, and it is stretched over the whole sphere whatever its aspect. Non-finite and\nnegative pixels are read as black. While a map lights a scene without lights, it gets no\ndefault ones. Empty uses the studio.",
                     "title": "Environment Map",
                     "x-lumen-constraints": {
                       "role": "source_id"

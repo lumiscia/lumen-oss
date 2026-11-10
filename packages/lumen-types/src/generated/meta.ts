@@ -1840,8 +1840,9 @@ export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
      * An equirectangular Radiance `.hdr` or OpenEXR `.exr` file that lights the scene from all
      * around in place of the studio: a path or `media` alias, or `asset:<id>` for an environment
      * map asset of the host's. Its centre is the view along -Z, with +X to its right and +Y at
-     * its top. While a map lights a scene without lights, it gets no default ones. Empty uses
-     * the studio.
+     * its top, and it is stretched over the whole sphere whatever its aspect. Non-finite and
+     * negative pixels are read as black. While a map lights a scene without lights, it gets no
+     * default ones. Empty uses the studio.
      */
     readonly environment_map?: ExpressionValue<string>;
     /** Turn of the environment map about +Y in degrees, as a yaw turns an object. */
