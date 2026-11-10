@@ -2,12 +2,16 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
+#[cfg(feature = "meshopt")]
+use std::collections::HashMap;
 
 use base64::Engine;
 use gltf_json::accessor::{ComponentType, Type};
 use gltf_json::validation::Checked;
 use gltf_json::{Accessor, Index, Root};
 
+#[cfg(any(feature = "draco", feature = "meshopt"))]
+use super::COMPRESSED_BYTES_PER_FILE_BYTE;
 use super::{
     DECODED_BYTES_PER_FILE_BYTE, MAX_COMPONENTS, MAX_DECODED_BYTES, MAX_VIEW_BYTES,
     MIN_DECODED_BUDGET, ModelError, invalid, too_large, unsupported,
@@ -16,10 +20,61 @@ use super::{
 pub(super) struct Buffers<'a> {
     root: &'a Root,
     buffers: Vec<Cow<'a, [u8]>>,
+    /// The bytes of each meshopt-compressed buffer view, decoded, by its index.
+    #[cfg(feature = "meshopt")]
+    decoded_views: HashMap<usize, Vec<u8>>,
     /// Bytes accessor reads have decoded so far, at four a component.
-    decoded: Cell<usize>,
-    /// The most bytes accessor reads may decode to.
-    budget: usize,
+    decoded: Budget,
+    /// Bytes compressed geometry has decoded to so far.
+    #[cfg(any(feature = "draco", feature = "meshopt"))]
+    compressed: Budget,
+}
+
+/// What one kind of decoding has spent of what it may, and the names its errors give it: what
+/// decodes, and what it decodes to.
+struct Budget {
+    spent: Cell<usize>,
+    limit: usize,
+    what: &'static str,
+    data: &'static str,
+}
+
+impl Budget {
+    fn new(
+        file_bytes: usize,
+        per_file_byte: usize,
+        what: &'static str,
+        data: &'static str,
+    ) -> Self {
+        Self {
+            spent: Cell::new(0),
+            limit: file_bytes
+                .saturating_mul(per_file_byte)
+                .clamp(MIN_DECODED_BUDGET, MAX_DECODED_BYTES),
+            what,
+            data,
+        }
+    }
+
+    /// Counts `bytes` toward the limit, failing past it.
+    fn spend(&self, bytes: usize) -> Result<(), ModelError> {
+        let total = bytes
+            .checked_add(self.spent.get())
+            .filter(|&total| total <= self.limit)
+            .ok_or_else(|| {
+                if self.limit < MAX_DECODED_BYTES {
+                    ModelError::TooLarge(format!(
+                        "the model's {} decode to more than the {} bytes a file of its size \
+                         may",
+                        self.what, self.limit
+                    ))
+                } else {
+                    too_large(&format!("bytes of {}", self.data), MAX_DECODED_BYTES)
+                }
+            })?;
+        self.spent.set(total);
+        Ok(())
+    }
 }
 
 /// `value` as a `usize`, or an error naming `what` when it doesn't fit.
@@ -66,8 +121,9 @@ fn base64_payload(uri: &str) -> Result<&str, ModelError> {
 
 impl<'a> Buffers<'a> {
     /// The model's buffers: the first may be the file's binary chunk, `bin`, and any may be a
-    /// `data:` URI. `file_bytes` is the size of the whole file, which bounds what accessor reads
-    /// may decode to.
+    /// `data:` URI, except a meshopt fallback buffer, which is left empty. `file_bytes` is the
+    /// size of the whole file, which bounds what accessor reads and compressed geometry may
+    /// decode to. Meshopt-compressed buffer views are decoded here.
     pub(super) fn load(
         root: &'a Root,
         bin: Option<&'a [u8]>,
@@ -75,6 +131,11 @@ impl<'a> Buffers<'a> {
     ) -> Result<Self, ModelError> {
         let mut buffers = Vec::with_capacity(root.buffers.len());
         for (index, buffer) in root.buffers.iter().enumerate() {
+            #[cfg(feature = "meshopt")]
+            if super::meshopt::is_fallback(buffer) {
+                buffers.push(Cow::Borrowed(&[][..]));
+                continue;
+            }
             let data: Cow<'a, [u8]> = match (&buffer.uri, index, bin) {
                 (Some(uri), _, _) => Cow::Owned(data_uri(uri)?),
                 (None, 0, Some(bin)) => Cow::Borrowed(bin),
@@ -98,24 +159,65 @@ impl<'a> Buffers<'a> {
                 }
             });
         }
-        Ok(Self {
+        #[cfg_attr(not(feature = "meshopt"), allow(unused_mut))]
+        let mut buffers = Self {
             root,
             buffers,
-            decoded: Cell::new(0),
-            budget: file_bytes
-                .saturating_mul(DECODED_BYTES_PER_FILE_BYTE)
-                .clamp(MIN_DECODED_BUDGET, MAX_DECODED_BYTES),
-        })
+            #[cfg(feature = "meshopt")]
+            decoded_views: HashMap::new(),
+            decoded: Budget::new(
+                file_bytes,
+                DECODED_BYTES_PER_FILE_BYTE,
+                "accessors",
+                "accessor data",
+            ),
+            #[cfg(any(feature = "draco", feature = "meshopt"))]
+            compressed: Budget::new(
+                file_bytes,
+                COMPRESSED_BYTES_PER_FILE_BYTE,
+                "compressed meshes",
+                "compressed mesh data",
+            ),
+        };
+        #[cfg(feature = "meshopt")]
+        {
+            buffers.decoded_views = super::meshopt::decode_views(root, &buffers)?;
+        }
+        Ok(buffers)
     }
 
-    /// The bytes of buffer view `view`, and its stride.
+    /// The bytes of buffer view `view`, decoded when it is meshopt-compressed, and its stride.
     pub(super) fn view(
         &self,
         view: Index<gltf_json::buffer::View>,
     ) -> Result<(&[u8], Option<usize>), ModelError> {
+        let stride = self
+            .root
+            .buffer_views
+            .get(view.value())
+            .and_then(|json| json.byte_stride)
+            .map(|stride| stride.0);
+        #[cfg(feature = "meshopt")]
+        if let Some(bytes) = self.decoded_views.get(&view.value()) {
+            return Ok((bytes, stride));
+        }
         let range = self.view_range(view)?;
-        let stride = self.root.buffer_views[view.value()].byte_stride;
-        Ok((self.bytes(range), stride.map(|stride| stride.0)))
+        Ok((self.bytes(range), stride))
+    }
+
+    /// Buffer `index`'s bytes, or an error when the model lacks it.
+    #[cfg(feature = "meshopt")]
+    pub(super) fn buffer(&self, index: usize) -> Result<&[u8], ModelError> {
+        self.buffers
+            .get(index)
+            .map(|buffer| &buffer[..])
+            .ok_or_else(|| invalid("a buffer view names a buffer the model lacks"))
+    }
+
+    /// Counts `bytes` of decoded compressed geometry toward its budget, failing past it.
+    #[cfg(any(feature = "draco", feature = "meshopt"))]
+    pub(super) fn spend_compressed(&self, bytes: usize) -> Result<(), ModelError> {
+        self.compressed.spend(bytes)
     }
 
     /// Where the bytes of buffer view `view` are.
@@ -161,23 +263,7 @@ impl<'a> Buffers<'a> {
 
     /// Counts `components` toward everything accessors may decode to, failing past it.
     fn spend(&self, components: usize) -> Result<(), ModelError> {
-        let total = components
-            .checked_mul(4)
-            .and_then(|bytes| bytes.checked_add(self.decoded.get()))
-            .filter(|&total| total <= self.budget)
-            .ok_or_else(|| {
-                if self.budget < MAX_DECODED_BYTES {
-                    ModelError::TooLarge(format!(
-                        "the model's accessors decode to more than the {} bytes a file of its \
-                         size may",
-                        self.budget
-                    ))
-                } else {
-                    too_large("bytes of accessor data", MAX_DECODED_BYTES)
-                }
-            })?;
-        self.decoded.set(total);
-        Ok(())
+        self.decoded.spend(components.saturating_mul(4))
     }
 
     /// An accessor's elements packed tightly, with sparse substitutions applied, and the type of

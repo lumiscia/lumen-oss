@@ -14,6 +14,10 @@ path = "src/lib.rs"
 default = ["exr"]
 # Reads OpenEXR environment maps, as well as Radiance ones.
 exr = ["dep:exr"]
+draco = ["dep:draco-core"]
+meshopt = ["dep:meshopt-pure"]
+ktx2 = ["dep:basisu"]
+webp = ["image/webp"]
 
 [dependencies]
 base64 = "0.22.1"
@@ -21,6 +25,7 @@ bytemuck = { version = "1.25.0", features = ["derive"] }
 exr = { version = "1.74.3", default-features = false, optional = true }
 glam = "0.32.1"
 gltf-json = { version = "1.4.1", default-features = false, features = [
+  "extensions",
   "extras",
   "names",
   "KHR_materials_emissive_strength",
@@ -28,5 +33,12 @@ gltf-json = { version = "1.4.1", default-features = false, features = [
 ] }
 half = "2.7.1"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
+basisu = { version = "0.1.0", default-features = false, features = ["std", "zstd"], optional = true }
+draco-core = { version = "2.3.3", default-features = false, features = [
+  "decoder",
+  "edgebreaker_valence_decode",
+  "legacy_bitstream_decode",
+], optional = true }
+meshopt-pure = { version = "1.3.0", optional = true }
 serde = "1.0.228"
 serde_json = "1.0.145"

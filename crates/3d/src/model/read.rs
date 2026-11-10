@@ -4,12 +4,14 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use glam::{Mat4, Quat, Vec3};
+#[cfg(feature = "draco")]
+use gltf_json::accessor::ComponentType;
 use gltf_json::animation::{Interpolation as JsonInterpolation, Property};
 use gltf_json::material::AlphaMode;
 use gltf_json::mesh::{Mode, Semantic};
 use gltf_json::texture::{MagFilter, MinFilter, WrappingMode};
 use gltf_json::validation::Checked;
-use gltf_json::{Index, Root};
+use gltf_json::{Accessor, Index, Root};
 
 use super::animation::{Animation, Channel, Interpolation, Values, unit};
 use super::buffers::{Buffers, ByteRange, data_uri, data_uri_length, size};
@@ -27,7 +29,40 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
     "KHR_materials_emissive_strength",
     "KHR_materials_unlit",
     "KHR_mesh_quantization",
+    #[cfg(feature = "draco")]
+    "KHR_draco_mesh_compression",
+    #[cfg(feature = "meshopt")]
+    "EXT_meshopt_compression",
+    #[cfg(feature = "ktx2")]
+    "KHR_texture_basisu",
+    #[cfg(feature = "webp")]
+    "EXT_texture_webp",
 ];
+
+/// The image a texture shows: the one its `KHR_texture_basisu` or `EXT_texture_webp` extension
+/// names, when this reader decodes it, and otherwise its own source.
+fn texture_source(texture: &gltf_json::Texture) -> Result<usize, ModelError> {
+    let extensions = texture
+        .extensions
+        .as_ref()
+        .map(|extensions| &extensions.others);
+    let names: &[&str] = &[
+        #[cfg(feature = "ktx2")]
+        "KHR_texture_basisu",
+        #[cfg(feature = "webp")]
+        "EXT_texture_webp",
+    ];
+    for &name in names {
+        if let Some(extension) = extensions.and_then(|extensions| extensions.get(name)) {
+            return extension
+                .get("source")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|source| usize::try_from(source).ok())
+                .ok_or_else(|| invalid(format!("a texture's {name} extension names no image")));
+        }
+    }
+    Ok(texture.source.value())
+}
 
 pub(super) fn read(bytes: &[u8]) -> Result<Model, ModelError> {
     let glb = glb::split(bytes)?;
@@ -104,7 +139,8 @@ struct Meshes {
 }
 
 /// Every triangle primitive's geometry, one after another. Primitives of other modes, and those
-/// without positions, are left out.
+/// without positions, are left out. Each primitive's counts are checked against the limits before
+/// its attributes are read or decoded, and what is read against them after.
 fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError> {
     let mut geometry = Geometry::default();
     let mut meshes = Vec::with_capacity(root.meshes.len());
@@ -131,58 +167,6 @@ fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError>
             if count > MAX_VERTICES - start {
                 return Err(too_large("vertices", MAX_VERTICES));
             }
-            let positions = buffers.vectors::<3>(positions, None)?;
-            if positions.iter().flatten().any(|value| !value.is_finite()) {
-                return Err(invalid("a vertex position isn't a finite number"));
-            }
-            let read_count = |values: Option<Vec<[f32; 3]>>| -> Result<_, ModelError> {
-                match values {
-                    Some(values) if values.len() != count => Err(different_counts()),
-                    values => Ok(values),
-                }
-            };
-            let normals = attribute(Semantic::Normals)?
-                .map(|accessor| buffers.vectors::<3>(accessor, None))
-                .transpose()?;
-            let normals = read_count(normals)?;
-            if normals
-                .iter()
-                .flatten()
-                .flatten()
-                .any(|value| !value.is_finite())
-            {
-                return Err(invalid("a vertex normal isn't a finite number"));
-            }
-            let uvs = attribute(Semantic::TexCoords(0))?
-                .map(|accessor| buffers.vectors::<2>(accessor, None))
-                .transpose()?;
-            if uvs.as_ref().is_some_and(|uvs| uvs.len() != count) {
-                return Err(different_counts());
-            }
-            if uvs
-                .iter()
-                .flatten()
-                .flatten()
-                .any(|value| !value.is_finite())
-            {
-                return Err(invalid(
-                    "a vertex's texture coordinates aren't finite numbers",
-                ));
-            }
-            let skin = match (
-                attribute(Semantic::Joints(0))?,
-                attribute(Semantic::Weights(0))?,
-            ) {
-                (Some(joints), Some(weights)) => {
-                    let joints = buffers.uint_vectors::<4>(joints)?;
-                    let weights = buffers.vectors::<4>(weights, Some(true))?;
-                    if joints.len() != count || weights.len() != count {
-                        return Err(different_counts());
-                    }
-                    Some(skin_vertices(&joints, &weights, &mut needed)?)
-                }
-                _ => None,
-            };
             let indices = primitive
                 .indices
                 .map(|indices| buffers.accessor(indices))
@@ -199,14 +183,76 @@ fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError>
                     "a primitive's index count isn't a multiple of three",
                 ));
             }
-            let local: Vec<u32> = match indices {
-                Some(indices) => buffers
-                    .uint_vectors::<1>(indices)?
-                    .into_iter()
-                    .map(|[index]| index)
-                    .collect(),
-                None => (0..count as u32).collect(),
+            let skin = match (
+                attribute(Semantic::Joints(0))?,
+                attribute(Semantic::Weights(0))?,
+            ) {
+                (Some(joints), Some(weights)) => Some((joints, weights)),
+                _ => None,
             };
+            let accessors = Accessors {
+                positions,
+                normals: attribute(Semantic::Normals)?,
+                uvs: attribute(Semantic::TexCoords(0))?,
+                skin,
+                indices,
+            };
+            let Attributes {
+                positions,
+                normals,
+                uvs,
+                skin,
+                indices,
+            } = read_attributes(buffers, primitive, &accessors, count, index_count)?;
+
+            if positions.len() != count {
+                return Err(different_counts());
+            }
+            if positions.iter().flatten().any(|value| !value.is_finite()) {
+                return Err(invalid("a vertex position isn't a finite number"));
+            }
+            if normals
+                .as_ref()
+                .is_some_and(|normals| normals.len() != count)
+            {
+                return Err(different_counts());
+            }
+            if normals
+                .iter()
+                .flatten()
+                .flatten()
+                .any(|value| !value.is_finite())
+            {
+                return Err(invalid("a vertex normal isn't a finite number"));
+            }
+            if uvs.as_ref().is_some_and(|uvs| uvs.len() != count) {
+                return Err(different_counts());
+            }
+            if uvs
+                .iter()
+                .flatten()
+                .flatten()
+                .any(|value| !value.is_finite())
+            {
+                return Err(invalid(
+                    "a vertex's texture coordinates aren't finite numbers",
+                ));
+            }
+            let skin = match skin {
+                Some((joints, weights)) => {
+                    if joints.len() != count || weights.len() != count {
+                        return Err(different_counts());
+                    }
+                    Some(skin_vertices(&joints, &weights, &mut needed)?)
+                }
+                None => None,
+            };
+            let local = indices.unwrap_or_else(|| (0..count as u32).collect());
+            if local.len() != index_count {
+                return Err(invalid(
+                    "a primitive has a different number of indices than its accessor declares",
+                ));
+            }
             if local.iter().any(|&index| index as usize >= count) {
                 return Err(invalid("a primitive has an index past its vertices"));
             }
@@ -262,6 +308,148 @@ fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError>
         geometry,
         meshes,
         joints_needed,
+    })
+}
+
+/// The accessors of what a triangle primitive's vertices hold that the reader reads.
+struct Accessors<'a> {
+    positions: &'a Accessor,
+    normals: Option<&'a Accessor>,
+    uvs: Option<&'a Accessor>,
+    /// Joints and weights.
+    skin: Option<(&'a Accessor, &'a Accessor)>,
+    indices: Option<&'a Accessor>,
+}
+
+/// A primitive's vertex attributes and indices as read, before they are checked against each
+/// other.
+struct Attributes {
+    positions: Vec<[f32; 3]>,
+    normals: Option<Vec<[f32; 3]>>,
+    uvs: Option<Vec<[f32; 2]>>,
+    skin: Option<(Vec<[u32; 4]>, Vec<[f32; 4]>)>,
+    indices: Option<Vec<u32>>,
+}
+
+/// Reads `accessors`, or decodes them from `primitive`'s Draco stream when it has one, which
+/// declare `count` vertices and `index_count` indices.
+#[cfg_attr(not(feature = "draco"), allow(unused_variables))]
+fn read_attributes(
+    buffers: &Buffers<'_>,
+    primitive: &gltf_json::mesh::Primitive,
+    accessors: &Accessors<'_>,
+    count: usize,
+    index_count: usize,
+) -> Result<Attributes, ModelError> {
+    #[cfg(feature = "draco")]
+    if let Some(extension) = super::draco::extension(primitive) {
+        return read_draco(buffers, extension, accessors, count, index_count);
+    }
+    Ok(Attributes {
+        positions: buffers.vectors::<3>(accessors.positions, None)?,
+        normals: accessors
+            .normals
+            .map(|accessor| buffers.vectors::<3>(accessor, None))
+            .transpose()?,
+        uvs: accessors
+            .uvs
+            .map(|accessor| buffers.vectors::<2>(accessor, None))
+            .transpose()?,
+        skin: accessors
+            .skin
+            .map(|(joints, weights)| -> Result<_, ModelError> {
+                Ok((
+                    buffers.uint_vectors::<4>(joints)?,
+                    buffers.vectors::<4>(weights, Some(true))?,
+                ))
+            })
+            .transpose()?,
+        indices: accessors
+            .indices
+            .map(|accessor| -> Result<Vec<u32>, ModelError> {
+                Ok(buffers
+                    .uint_vectors::<1>(accessor)?
+                    .into_iter()
+                    .map(|[index]| index)
+                    .collect())
+            })
+            .transpose()?,
+    })
+}
+
+/// [`read_attributes`] for a primitive with a Draco stream. Attributes the stream doesn't hold are
+/// read from their accessors.
+#[cfg(feature = "draco")]
+fn read_draco(
+    buffers: &Buffers<'_>,
+    extension: &serde_json::Value,
+    accessors: &Accessors<'_>,
+    count: usize,
+    index_count: usize,
+) -> Result<Attributes, ModelError> {
+    use super::draco::Decoded;
+
+    fn vectors<const N: usize>(
+        buffers: &Buffers<'_>,
+        decoded: &Decoded<'_>,
+        semantic: &str,
+        accessor: &Accessor,
+        normalized: Option<bool>,
+    ) -> Result<Vec<[f32; N]>, ModelError> {
+        match decoded.vectors::<N>(semantic, accessor, normalized)? {
+            Some(values) => Ok(values),
+            None => buffers.vectors::<N>(accessor, normalized),
+        }
+    }
+
+    let mut read = vec![("POSITION", 3)];
+    read.extend(accessors.normals.map(|_| ("NORMAL", 3)));
+    read.extend(accessors.uvs.map(|_| ("TEXCOORD_0", 2)));
+    if accessors.skin.is_some() {
+        read.extend([("JOINTS_0", 4), ("WEIGHTS_0", 4)]);
+    }
+    let decoded = super::draco::decode(buffers, extension, count, index_count, &read)?;
+    let skin = match accessors.skin {
+        Some((joints, weights)) => {
+            let joints = match decoded.vectors::<4>("JOINTS_0", joints, Some(false))? {
+                Some(values) => {
+                    let Checked::Valid(component) = &joints.component_type else {
+                        return Err(invalid("an accessor has an unknown component type or type"));
+                    };
+                    if matches!(
+                        component.0,
+                        ComponentType::F32 | ComponentType::I8 | ComponentType::I16
+                    ) {
+                        return Err(invalid(
+                            "an index or joint accessor doesn't hold unsigned integers",
+                        ));
+                    }
+                    values
+                        .iter()
+                        .map(|joint| joint.map(|index| index as u32))
+                        .collect()
+                }
+                None => buffers.uint_vectors::<4>(joints)?,
+            };
+            Some((
+                joints,
+                vectors::<4>(buffers, &decoded, "WEIGHTS_0", weights, Some(true))?,
+            ))
+        }
+        None => None,
+    };
+    Ok(Attributes {
+        positions: vectors::<3>(buffers, &decoded, "POSITION", accessors.positions, None)?,
+        normals: accessors
+            .normals
+            .map(|accessor| vectors::<3>(buffers, &decoded, "NORMAL", accessor, None))
+            .transpose()?,
+        uvs: accessors
+            .uvs
+            .map(|accessor| vectors::<2>(buffers, &decoded, "TEXCOORD_0", accessor, None))
+            .transpose()?,
+        skin,
+        indices: Some(decoded.indices()),
     })
 }
 
@@ -553,7 +741,7 @@ fn pending_map(
         ),
         None => Sampler::default(),
     };
-    let image = json.source.value();
+    let image = texture_source(json)?;
     let bytes = match root.images.get(image) {
         Some(gltf_json::Image {
             buffer_view: Some(view),
@@ -632,13 +820,13 @@ fn decode_textures(
 
     let mut textures: Vec<Option<Texture>> = vec![None; order.len()];
     for ((bytes, uses), &header) in images.iter().zip(&headers) {
-        let mut rgba = image::decode(&data(*bytes)?, header)?;
+        let mut levels = image::decode(&data(*bytes)?, header)?;
         for (count, &texture) in uses.iter().enumerate() {
             // The last texture read from the image takes the decoded pixels themselves.
             let pixels = if count + 1 == uses.len() {
-                std::mem::take(&mut rgba)
+                std::mem::take(&mut levels)
             } else {
-                rgba.clone()
+                levels.clone()
             };
             let srgb = order[texture].1;
             textures[texture] = Some(image::texture(pixels, header.width, header.height, srgb));

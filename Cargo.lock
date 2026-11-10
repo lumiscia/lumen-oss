@@ -202,6 +202,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
+name = "basisu"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36056503b9996959defdfcf058811637fdf68a2e35a48ee8e39c89a787fe9cdc"
+dependencies = [
+ "portable-atomic",
+ "ruzstd",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.73.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -582,6 +592,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
 dependencies = [
  "litrs",
+]
+
+[[package]]
+name = "draco-core"
+version = "2.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d384c03a3090e54e7840f9f08d0bfb0860d58a527bfb78bd96cc5b921d4ba2e"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
@@ -1690,12 +1709,15 @@ name = "lumen-engine-3d"
 version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
+ "basisu",
  "bytemuck",
+ "draco-core",
  "exr",
  "glam 0.32.1",
  "gltf-json",
  "half",
  "image",
+ "meshopt-pure",
  "serde",
  "serde_json",
 ]
@@ -1886,6 +1908,12 @@ checksum = "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "meshopt-pure"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "442047e34b8a2b5bde280628982846bb867daafd034257a8bf12f83d3f64bacb"
 
 [[package]]
 name = "micromap"
@@ -2838,6 +2866,12 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "ruzstd"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fad02996bfc73da3e301efe90b1837be9ed8f4a462b6ed410aa35d00381de89f"
 
 [[package]]
 name = "ryu"

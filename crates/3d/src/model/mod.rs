@@ -9,8 +9,12 @@
 //! channels that target the same property, of which the later wins.
 //!
 //! Images are decoded by the `image` crate, after their size is checked against the limits from
-//! their headers. A decoder that panics fails the model where panics unwind; on targets that
-//! abort on panic, such as `wasm32-unknown-unknown`, it aborts instead.
+//! their headers. With the crate's features, compressed data is read too: Draco primitives
+//! (`draco`), meshopt buffer views (`meshopt`), KTX2 Basis Universal images (`ktx2`) and WebP
+//! images (`webp`), each checked against the limits from what the JSON and its headers declare
+//! before it is decoded, and its decoded size against what they declared after. A decoder that
+//! panics fails the model where panics unwind; on targets that abort on panic, such as
+//! `wasm32-unknown-unknown`, it aborts instead.
 //!
 //! A model holds plain data: its geometry and decoded textures to upload, and the [`ModelScene`]
 //! that poses and shades them.
@@ -18,8 +22,14 @@
 mod animation;
 mod bounds;
 mod buffers;
+#[cfg(feature = "draco")]
+mod draco;
 mod glb;
 mod image;
+#[cfg(feature = "ktx2")]
+mod ktx2;
+#[cfg(feature = "meshopt")]
+mod meshopt;
 mod read;
 mod scan;
 #[cfg(test)]
@@ -64,6 +74,18 @@ pub const MAX_DECODED_BYTES: usize = 512 << 20;
 /// [`MIN_DECODED_BUDGET`] for a smaller file, so that a small file can't expand hugely.
 pub const DECODED_BYTES_PER_FILE_BYTE: usize = 32;
 pub const MIN_DECODED_BUDGET: usize = 16 << 20;
+/// Compressed geometry, whose encoding doesn't bound how far it expands, has a budget of its own
+/// that it is charged before it is decoded: Draco primitives at four bytes for each component
+/// and index they decode to, and meshopt buffer views at their decoded size, may together come to
+/// no more than this many times the file's size, or [`MIN_DECODED_BUDGET`] for a smaller file,
+/// and [`MAX_DECODED_BYTES`] at most. What accessors then read from meshopt views counts toward
+/// the accessors' own budget as well.
+pub const COMPRESSED_BYTES_PER_FILE_BYTE: usize = 256;
+/// A KTX2 or WebP image, whose encoding doesn't bound how many pixels it expands to, may hold no
+/// more pixels, counting every mip level, than this many for each of its bytes, or
+/// [`MIN_COMPRESSED_IMAGE_PIXELS`] for a smaller image.
+pub const COMPRESSED_IMAGE_PIXELS_PER_BYTE: u64 = 1024;
+pub const MIN_COMPRESSED_IMAGE_PIXELS: u64 = 1 << 23;
 /// The widest or tallest image a model may hold, in pixels.
 pub const MAX_IMAGE_SIDE: u32 = 8192;
 /// The most pixels all of a model's textures may hold together, counting every mip level.
@@ -105,6 +127,17 @@ pub(crate) fn unsupported(details: impl Into<String>) -> ModelError {
 
 pub(crate) fn too_large(what: &str, limit: impl fmt::Display) -> ModelError {
     ModelError::TooLarge(format!("the model has more {what} than the {limit} it may"))
+}
+
+/// Runs a third-party decoder, failing with `what` is corrupt rather than taking the process down
+/// if it panics, where panics unwind. Where they abort, as on `wasm32-unknown-unknown`, a panic
+/// aborts.
+pub(crate) fn guarded<T>(
+    what: &str,
+    decode: impl FnOnce() -> Result<T, ModelError>,
+) -> Result<T, ModelError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode))
+        .unwrap_or_else(|_| Err(invalid(format!("{what} in the model is corrupt"))))
 }
 
 /// A model read from a `.glb`: what to upload once, and what poses and shades it each frame.
