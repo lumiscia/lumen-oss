@@ -22,7 +22,13 @@ Compressed models need a feature each, and without it a model that requires the 
 | `ktx2`    | `KHR_texture_basisu`         | `basisu`, ETC1S and UASTC transcoded to RGBA8 |
 | `webp`    | `EXT_texture_webp`           | `image`'s WebP decoder                        |
 
-Each decoder sees its input only once the reader has checked what it declares against the limits: Draco and meshopt output is charged to its own budget of 256 bytes for each byte of the file (at least 16 MiB, at most 512 MiB) before decoding, and a KTX2 or WebP image may decode to 1024 pixels, with its mips, for each of its bytes (at least 8M). `basisu` trusts a KTX2 file's offsets, so the reader checks the whole container first. What a decoder returns must then agree with the accessors and image sizes the file declares.
+Each decoder sees its input only once the reader has checked what it declares against the limits, and is charged before decoding:
+
+- Meshopt buffer views, at their decoded size, to a budget of 256 bytes for each byte of the file, at least 16 MiB and at most 512 MiB.
+- Draco primitives, at the whole allowance their decoder is given (128 bytes for each declared vertex, within what is left, and four for each index), to a budget of their own of 256 bytes for each byte of the file, at least 16 MiB and at most 96 MiB. The decoder peaks at about six times its output, near 600 MiB at that ceiling. A stream holding attributes the extension doesn't name is rejected after decoding.
+- KTX2 and WebP images, together, at 1024 pixels with their mips for each of their encoded bytes, with one floor of 8M pixels for the model: room for one 2048 × 2048 texture however small its file.
+
+`basisu` trusts a KTX2 file's offsets, so the reader checks the whole container first, and inflates Zstandard levels itself: a level's frame may declare a window of no more than its length rounded up to a power of two, and 8 MiB at most, and inflates to exactly the length the level declares. A WebP file's chunks are walked first too: it must hold one still image, the size of its canvas. What a decoder returns must then agree with the accessors and image sizes the file declares.
 
 `lumen-engine` forwards these as `3d-draco`, `3d-meshopt`, `3d-ktx2` and `3d-webp`.
 
@@ -45,6 +51,6 @@ cargo +nightly fuzz run -O from_glb -- -fork=8 -max_total_time=600 -timeout=10
 cargo +nightly fuzz run -O mutated_glb -- -fork=8 -max_total_time=600 -timeout=10
 ```
 
-`-O` builds without overflow checks, as the workspace builds `basisu`: cargo-fuzz's default turns them on for every crate, and `basisu` overflows on some corrupt ETC1S streams, which wrapping keeps bounded.
+`-O` builds without overflow checks: cargo-fuzz's default turns them on for every crate, and `basisu` 0.1.0 overflows on some corrupt ETC1S streams (an addition in `etc1s.rs` that release builds wrap, which keeps its loops bounded). This workspace's dev profile turns overflow checks off for `basisu` alone, so its debug builds and tests wrap as release builds do; a crate that depends on `lumen-engine-3d` builds `basisu` with its own profiles, and its debug builds panic there instead, which the reader catches where panics unwind.
 
 `seeds/` holds two models the unit tests build, written by `cargo test -p lumen-engine-3d -- --ignored write_fuzz_seeds`. Corpora and crashes stay in `fuzz/corpus` and `fuzz/artifacts`, outside git.
