@@ -25,10 +25,10 @@ macro_rules! node_kinds {
                 vec![$(<$node>::schema(),)+]
             }
 
-            /// The variant's name, which errors name the node's kind by.
+            /// The node's `type` in JSON, which errors name the node's kind by.
             pub(crate) fn kind_name(&self) -> &'static str {
                 match self {
-                    $(Self::$variant(_) => stringify!($variant),)+
+                    $(Self::$variant(_) => <$node as JsonNode>::KIND,)+
                 }
             }
 

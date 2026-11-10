@@ -131,6 +131,10 @@ impl Programs<'_> {
         self.output_format
     }
 
+    pub(crate) fn limits(&self) -> wgpu::Limits {
+        self.rec.device().limits()
+    }
+
     pub(crate) fn compute(
         &mut self,
         label: &str,
