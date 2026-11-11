@@ -2124,9 +2124,12 @@ export interface Merge3dNode extends CompositionNodeBase<"merge_3d"> {
 }
 
 /**
- * A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, skins and
- * animation clips. A raster wired into `texture` shows on the surfaces of the material
- * `texture_material` names, such as a screen. The model's own lights and cameras are left out.
+ * A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex
+ * colours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets
+ * and animation clips. A raster wired into `texture` shows on the surfaces of the material
+ * `texture_material` names, such as a screen. The model's own lights and a camera are added with
+ * `lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a
+ * `scene.model_primitives_skipped` warning.
  */
 export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
   readonly params?: {
@@ -2143,11 +2146,28 @@ export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
     /** Playback speed multiplier. */
     readonly animation_speed?: ExpressionValue<number>;
     /**
+     * The model's camera to view the scene from, by its name or else its index, placed by the
+     * first node that places it, without that node's scale; empty uses none. It counts as a
+     * `camera_3d` at this node, so the first camera in the scene still wins. Its aspect ratio is
+     * the output's. A model's cameras are listed in the `cameras` of its upload's `metadata` on
+     * a host that takes uploads, and by `modelInfo` in the browser bindings.
+     */
+    readonly camera?: ExpressionValue<string>;
+    /**
      * Blocks light from lights that cast shadows, in the posed shape and where masked or blended
      * materials' alpha reaches their cutoff, or half for blended ones. Unlit and glowing
      * materials block it too, so a model of a lamp around a light needs this off.
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
+    /**
+     * Adds the model's own `KHR_lights_punctual` lights to the scene, where its nodes place
+     * them, as `light_3d` nodes there would light it: a directional light's intensity, in lux, and
+     * a point or spot light's, in candela, are `light_3d` intensities as they are, so a point
+     * light of intensity `I` lights a surface `d` metres away as a directional one of `I / d²`
+     * does. A spot light's cone fades from its inner angle out to its outer one. They cast no
+     * shadows, and a scene they light gets no default lights.
+     */
+    readonly lights?: ExpressionValue<boolean>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
     /** Darkens where shadows fall on its lit surfaces. */
@@ -3271,9 +3291,12 @@ export const nodeInputPorts = {
   /** Groups scenes into one, placed together by its transform. */
   "merge_3d": { "objects": { kind: "scene", variadic: true } },
   /**
-   * A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, skins and
-   * animation clips. A raster wired into `texture` shows on the surfaces of the material
-   * `texture_material` names, such as a screen. The model's own lights and cameras are left out.
+   * A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex
+   * colours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets
+   * and animation clips. A raster wired into `texture` shows on the surfaces of the material
+   * `texture_material` names, such as a screen. The model's own lights and a camera are added with
+   * `lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a
+   * `scene.model_primitives_skipped` warning.
    */
   "model_3d": { "texture": { kind: "raster", variadic: false } },
   /**

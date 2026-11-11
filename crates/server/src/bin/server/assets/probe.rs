@@ -2,7 +2,7 @@
 
 use std::{fs, io::Read, path::Path};
 
-use lumen_3d::model::{AnimationInfo, MaterialInfo, ModelInfo};
+use lumen_3d::model::{AnimationInfo, CameraInfo, MaterialInfo, ModelInfo};
 use lumen_engine::{
     error::{MediaError, MediaFailure},
     media::{
@@ -26,7 +26,8 @@ pub enum MediaKind {
 
 /// What the check found. Each kind fills its own fields: images their size; video its size, frame
 /// rate, frames, duration, codec and audio; audio its duration, rate and channels; fonts their
-/// families and faces; environment maps their size; models their animation clips and materials.
+/// families and faces; environment maps their size; models their animation clips, materials and
+/// cameras.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMetadata {
@@ -56,6 +57,8 @@ pub struct MediaMetadata {
     pub animations: Option<Vec<AnimationInfo>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub materials: Option<Vec<MaterialInfo>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cameras: Option<Vec<CameraInfo>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,20 +257,22 @@ fn probe_model(path: &Path) -> Result<MediaMetadata, Rejection> {
     model_metadata(info)
 }
 
-/// The most the names of a model's clips and materials may take together, in bytes.
+/// The most the names of a model's clips, materials and cameras may take together, in bytes.
 const MAX_MODEL_NAME_BYTES: usize = 64 << 10;
 
-/// The most clips and materials a model may list together.
+/// The most clips, materials and cameras a model may list together.
 const MAX_MODEL_ENTRIES: usize = 4096;
 
-/// A model's clips and materials, unless there are more of them, or their names are longer, than
-/// a media record keeps.
+/// A model's clips, materials and cameras, unless there are more of them, or their names are
+/// longer, than a media record keeps.
 fn model_metadata(info: ModelInfo) -> Result<MediaMetadata, Rejection> {
-    let entries = info.animations.len() + info.materials.len();
+    let entries = info.animations.len() + info.materials.len() + info.cameras.len();
     if entries > MAX_MODEL_ENTRIES {
         return Err(Box::new(MediaFailure::too_large(
             FILE,
-            format!("the model has more than {MAX_MODEL_ENTRIES} animations and materials"),
+            format!(
+                "the model has more than {MAX_MODEL_ENTRIES} animations, materials and cameras"
+            ),
             MAX_MODEL_ENTRIES as u64,
             Some(entries as u64),
         )));
@@ -277,12 +282,18 @@ fn model_metadata(info: ModelInfo) -> Result<MediaMetadata, Rejection> {
         .materials
         .iter()
         .map(|material| material.name.as_deref());
-    let names: usize = clips.chain(materials).flatten().map(str::len).sum();
+    let cameras = info.cameras.iter().map(|camera| camera.name.as_deref());
+    let names: usize = clips
+        .chain(materials)
+        .chain(cameras)
+        .flatten()
+        .map(str::len)
+        .sum();
     if names > MAX_MODEL_NAME_BYTES {
         return Err(Box::new(MediaFailure::too_large(
             FILE,
             format!(
-                "the model's animation and material names take more than {} KiB",
+                "the model's animation, material and camera names take more than {} KiB",
                 MAX_MODEL_NAME_BYTES >> 10
             ),
             MAX_MODEL_NAME_BYTES as u64,
@@ -292,6 +303,7 @@ fn model_metadata(info: ModelInfo) -> Result<MediaMetadata, Rejection> {
     Ok(MediaMetadata {
         animations: Some(info.animations),
         materials: Some(info.materials),
+        cameras: Some(info.cameras),
         ..MediaMetadata::default()
     })
 }
@@ -416,6 +428,7 @@ mod tests {
                 name: Some(name),
                 has_base_color_texture: false,
             }],
+            cameras: Vec::new(),
         };
         assert!(model_metadata(named("a".repeat(MAX_MODEL_NAME_BYTES))).is_ok());
         let error = model_metadata(named("a".repeat(MAX_MODEL_NAME_BYTES + 1))).unwrap_err();

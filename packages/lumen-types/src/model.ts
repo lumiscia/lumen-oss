@@ -27,8 +27,23 @@ export interface LumenModelMaterial {
   readonly hasBaseColorTexture: boolean;
 }
 
+/** A camera of a binary glTF (`.glb`) model. */
+export interface LumenModelCamera {
+  /**
+   * The camera's position in the file. A `model_3d`'s `camera` selects a camera by this, as text,
+   * when no camera has that text as its name.
+   */
+  readonly index: number;
+  /**
+   * What a `model_3d`'s `camera` selects the camera by. Of cameras sharing a name, it selects the
+   * first. Absent when the file doesn't name it.
+   */
+  readonly name?: string;
+}
+
 /** What a binary glTF (`.glb`) model offers a `model_3d` to choose from. */
 export interface LumenModelInfo {
   readonly animations: readonly LumenModelAnimation[];
   readonly materials: readonly LumenModelMaterial[];
+  readonly cameras: readonly LumenModelCamera[];
 }

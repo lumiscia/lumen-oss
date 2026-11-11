@@ -181,6 +181,7 @@ mod tests {
             },
             center: Vec3::new(0.0, 0.0, z),
             first_joint: None,
+            morph: None,
             bounds: crate::Bounds::EMPTY,
         }
     }

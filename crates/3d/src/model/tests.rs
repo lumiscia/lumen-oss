@@ -2,7 +2,7 @@ use glam::{Mat4, Quat, Vec3};
 use serde_json::{Value, json};
 
 use super::*;
-use crate::{Filter, Sampler, Wrap};
+use crate::{Filter, MapUv, Sampler, Wrap};
 
 /// A glTF document and its binary chunk, assembled into a `.glb` by [`Glb::bytes`].
 struct Glb {
@@ -254,8 +254,8 @@ fn crc32(bytes: &[u8]) -> u32 {
     !crc
 }
 
-/// `glb` with a material whose base colour and normal maps show `image`, the normal map through
-/// the second UV set.
+/// `glb` with a material whose base colour, normal and emissive maps show `image`, the normal map
+/// through a third UV set and the emissive map scaled by a texture transform.
 fn textured(mut glb: Glb, image: &[u8]) -> Glb {
     let view = glb.view(image);
     glb.json["images"] = json!([{ "bufferView": view, "mimeType": "image/png" }]);
@@ -264,7 +264,7 @@ fn textured(mut glb: Glb, image: &[u8]) -> Glb {
     glb.json["textures"] = json!([{ "source": 0, "sampler": 0 }]);
     glb.json["materials"] = json!([{
         "pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } },
-        "normalTexture": { "index": 0, "texCoord": 1 },
+        "normalTexture": { "index": 0, "texCoord": 2 },
         "emissiveTexture": { "index": 0, "extensions": { "KHR_texture_transform": { "scale": [2, 2] } } },
     }]);
     glb.json["extensionsUsed"] = json!(["KHR_texture_transform"]);
@@ -288,13 +288,15 @@ fn textures_decode_with_mips_in_the_colour_space_of_their_slots() {
             mipmap: None,
         }
     );
-    // The second UV set isn't read, so its map is left out; the optional texture transform is
-    // ignored and the emissive map shares the base colour's sRGB texture.
+    // A third UV set isn't read, so its map is left out; the emissive map shares the base
+    // colour's sRGB texture, scaled by its transform.
     assert_eq!(material.maps.normal, None);
     assert_eq!(
         material.maps.emissive.map(|map| map.texture),
         Some(base.texture)
     );
+    assert_eq!(material.map_uvs[0], MapUv::default());
+    assert_eq!(material.map_uvs[3], MapUv::new(0, [0.0; 2], 0.0, [2.0; 2]));
     assert_eq!(model.textures.len(), 1);
     let texture = &model.textures[0];
     assert!(texture.srgb);
@@ -562,6 +564,7 @@ fn info_lists_clips_and_materials_by_index_with_names_when_the_file_has_them() {
                 { "index": 1, "hasBaseColorTexture": false },
                 { "index": 2, "name": "screen", "hasBaseColorTexture": true },
             ],
+            "cameras": [],
         })
     );
 }
@@ -572,7 +575,7 @@ fn info_of_a_model_with_neither_is_empty_and_of_a_bad_file_is_an_error() {
     assert_eq!(info, ModelInfo::default());
     assert_eq!(
         serde_json::to_value(&info).unwrap(),
-        json!({ "animations": [], "materials": [] })
+        json!({ "animations": [], "materials": [], "cameras": [] })
     );
     assert!(ModelInfo::from_glb(&Glb::triangle().bytes()[..30]).is_err());
 }
@@ -893,10 +896,10 @@ fn models_needing_what_this_reader_lacks_are_rejected_naming_it() {
     let mut external = Glb::triangle();
     external.json["buffers"][0]["uri"] = json!("triangle.bin");
     let mut required = Glb::triangle();
-    required.json["extensionsUsed"] = json!(["KHR_texture_transform"]);
-    required.json["extensionsRequired"] = json!(["KHR_texture_transform"]);
+    required.json["extensionsUsed"] = json!(["KHR_materials_transmission"]);
+    required.json["extensionsRequired"] = json!(["KHR_materials_transmission"]);
     let mut optional = Glb::triangle();
-    optional.json["extensionsUsed"] = json!(["KHR_texture_transform"]);
+    optional.json["extensionsUsed"] = json!(["KHR_materials_transmission"]);
     let mut cases = vec![
         (
             external,
@@ -905,7 +908,7 @@ fn models_needing_what_this_reader_lacks_are_rejected_naming_it() {
         ),
         (
             required,
-            "the model requires the glTF extension KHR_texture_transform, which isn't supported"
+            "the model requires the glTF extension KHR_materials_transmission, which isn't supported"
                 .to_string(),
         ),
     ];
@@ -1229,6 +1232,14 @@ fn corrupted_files_return_without_panicking() {
     assert!(split[2] > 300 && split[3] > 300, "{split:?}");
 }
 
+/// The reach of unmorphed vertices at `points`.
+fn still<const N: usize>(points: [Vec3; N]) -> Reach {
+    Reach {
+        still: Bounds::of(points),
+        spread: Vec3::ZERO,
+    }
+}
+
 #[test]
 fn each_joints_bounds_hold_the_vertices_it_moves_before_posing() {
     let model = skinned().read().unwrap();
@@ -1238,10 +1249,10 @@ fn each_joints_bounds_hold_the_vertices_it_moves_before_posing() {
         model.scene.joint_bounds(&model.geometry),
         [SkinBounds {
             joints: vec![
-                crate::Bounds::of([Vec3::ZERO, Vec3::Y]),
-                crate::Bounds::of([Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0)]),
+                still([Vec3::ZERO, Vec3::Y]),
+                still([Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0)]),
             ],
-            unmoved: crate::Bounds::EMPTY,
+            unmoved: Reach::EMPTY,
         }]
     );
     assert_eq!(model.scene.pose(None).skins, [(0, 0)]);
@@ -1257,10 +1268,10 @@ fn each_joints_bounds_hold_the_vertices_it_moves_before_posing() {
     glb.json["meshes"][0]["primitives"][0]["attributes"]["WEIGHTS_0"] = json!(weights);
     let model = glb.read().unwrap();
     let bounds = model.scene.joint_bounds(&model.geometry);
-    assert_eq!(bounds[0].unmoved, crate::Bounds::of([Vec3::X]));
+    assert_eq!(bounds[0].unmoved, still([Vec3::X]));
     assert_eq!(
         bounds[0].joints[1],
-        crate::Bounds::of([Vec3::Y]),
+        still([Vec3::Y]),
         "the joint the unweighted vertex names doesn't take it"
     );
 }
@@ -1848,4 +1859,575 @@ fn files_made_to_reach_past_the_limits_are_errors_without_panicking() {
             );
         }
     }
+}
+
+/// [`Glb::triangle`] with `attribute` of its primitive set to an accessor of `bytes`.
+fn with_attribute(mut glb: Glb, attribute: &str, component: u32, kind: &str, bytes: &[u8]) -> Glb {
+    let accessor = glb.accessor(component, kind, 3, bytes);
+    glb.json["meshes"][0]["primitives"][0]["attributes"][attribute] = json!(accessor);
+    glb
+}
+
+#[test]
+fn vertex_colours_and_second_uvs_read_with_defaults_for_primitives_without_them() {
+    let rgb = with_attribute(
+        Glb::triangle(),
+        "COLOR_0",
+        FLOAT,
+        "VEC3",
+        &floats(&[1.0, 0.0, 0.0, 0.0, 0.5, 0.0, 2.0, -1.0, 1.0]),
+    );
+    let mut rgba = with_attribute(
+        rgb,
+        "TEXCOORD_1",
+        FLOAT,
+        "VEC2",
+        &floats(&[0.0, 0.0, 0.5, 0.0, 0.0, 0.5]),
+    );
+    // A second primitive without either.
+    let plain = rgba.json["meshes"][0]["primitives"][0].clone();
+    let mut plain = plain;
+    plain["attributes"] = json!({ "POSITION": plain["attributes"]["POSITION"] });
+    rgba.json["meshes"][0]["primitives"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, plain);
+    let model = rgba.read().unwrap();
+    let extras = &model.geometry.extras;
+    assert_eq!(extras.len(), 6);
+    let white = [u16::MAX; 4];
+    for (extra, vertex) in extras[..3].iter().zip(&model.geometry.vertices) {
+        assert_eq!((extra.color, extra.uv1), (white, vertex.uv));
+    }
+    // RGB reads with alpha 1, clamped to 0..1.
+    assert_eq!(extras[3].color, [65535, 0, 0, 65535]);
+    assert_eq!(extras[4].color, [0, 32768, 0, 65535]);
+    assert_eq!(extras[5].color, [65535, 0, 65535, 65535]);
+    assert_eq!(extras[4].uv1, [0.5, 0.0]);
+    let primitives = &model.scene.meshes[0];
+    assert!(!primitives[0].vertex_colors && primitives[1].vertex_colors);
+
+    let normalized = with_attribute(
+        Glb::triangle(),
+        "COLOR_0",
+        UNSIGNED_BYTE,
+        "VEC4",
+        &[255, 0, 0, 128, 0, 255, 0, 255, 0, 0, 255, 0],
+    );
+    let model = normalized.read().unwrap();
+    assert_eq!(model.geometry.extras[0].color, [65535, 0, 0, 32896]);
+    assert!(Glb::triangle().read().unwrap().geometry.extras.is_empty());
+}
+
+#[test]
+fn texture_transforms_read_their_offset_rotation_scale_and_uv_set() {
+    let mut glb = textured(Glb::triangle(), &png(1, 1, [255; 4]));
+    glb.json["materials"] = json!([{
+        "pbrMetallicRoughness": { "baseColorTexture": { "index": 0, "texCoord": 1 } },
+        "occlusionTexture": { "index": 0, "extensions": { "KHR_texture_transform": {
+            "offset": [0.5, 0.25], "rotation": std::f32::consts::FRAC_PI_2, "scale": [2, 3],
+            "texCoord": 1 } } },
+        "emissiveTexture": { "index": 0, "texCoord": 1,
+            "extensions": { "KHR_texture_transform": { "texCoord": 2 } } },
+    }]);
+    let model = glb.read().unwrap();
+    let material = &model.scene.materials()[0];
+    assert_eq!(material.map_uvs[0].set, 1);
+    let occlusion = material.map_uvs[4];
+    assert_eq!(occlusion.set, 1);
+    // Scaled, then turned a quarter so +U runs up the image, then offset: (1, 0) lands on
+    // (0.5, 0.25 - 2) and (0, 1) on (0.5 + 3, 0.25).
+    let at = |u: f32, v: f32| {
+        let [a, b] = occlusion.transform;
+        [a[0] * u + a[1] * v + a[2], b[0] * u + b[1] * v + b[2]]
+    };
+    let close = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6;
+    assert!(close(at(1.0, 0.0), [0.5, -1.75]), "{:?}", at(1.0, 0.0));
+    assert!(close(at(0.0, 1.0), [3.5, 0.25]), "{:?}", at(0.0, 1.0));
+    // The transform's own third set overrides the slot's, and isn't read.
+    assert!(material.maps.emissive.is_none() && material.maps.occlusion.is_some());
+
+    for transform in [
+        json!({ "offset": [1] }),
+        json!({ "scale": "big" }),
+        json!({ "rotation": 1e39 }),
+        json!({ "texCoord": -1 }),
+    ] {
+        let mut bad = textured(Glb::triangle(), &png(1, 1, [255; 4]));
+        bad.json["materials"][0]["emissiveTexture"]["extensions"]["KHR_texture_transform"] =
+            transform.clone();
+        assert!(
+            matches!(bad.read(), Err(ModelError::Invalid(_))),
+            "{transform}"
+        );
+    }
+}
+
+/// [`Glb::triangle`] with two morph targets: the first moves every vertex 1 along +Z and tilts
+/// its normal, the second moves only the first vertex along +X, through a sparse accessor.
+fn morphed() -> Glb {
+    let mut glb = with_attribute(
+        Glb::triangle(),
+        "NORMAL",
+        FLOAT,
+        "VEC3",
+        &floats(&[0.0, 0.0, 1.0].repeat(3)),
+    );
+    let along_z = glb.accessor(FLOAT, "VEC3", 3, &floats(&[0.0, 0.0, 1.0].repeat(3)));
+    let tilt = glb.accessor(FLOAT, "VEC3", 3, &floats(&[0.5, 0.0, 0.0].repeat(3)));
+    let indices = glb.view(&[0u16, 0].map(u16::to_le_bytes).concat());
+    let values = glb.view(&floats(&[2.0, 0.0, 0.0]));
+    let sparse = {
+        let accessors = glb.json["accessors"].as_array_mut().unwrap();
+        accessors.push(json!({
+            "componentType": FLOAT, "type": "VEC3", "count": 3,
+            "sparse": { "count": 1,
+                "indices": { "bufferView": indices, "componentType": UNSIGNED_SHORT },
+                "values": { "bufferView": values } },
+        }));
+        accessors.len() - 1
+    };
+    glb.json["meshes"][0]["primitives"][0]["targets"] = json!([
+        { "POSITION": along_z, "NORMAL": tilt },
+        { "POSITION": sparse },
+    ]);
+    glb.json["meshes"][0]["weights"] = json!([0.5, 0.0]);
+    glb
+}
+
+#[test]
+fn morph_targets_read_vertex_by_vertex_with_their_meshes_or_nodes_weights() {
+    let model = morphed().read().unwrap();
+    let morph = model.scene.meshes[0][0].morph.expect("morph targets");
+    assert_eq!(
+        morph,
+        crate::Morph {
+            first_delta: 0,
+            first_vertex: 0,
+            targets: 2
+        }
+    );
+    let deltas = &model.geometry.morphs;
+    assert_eq!(deltas.len(), 6);
+    assert_eq!(deltas[0].position, [0.0, 0.0, 1.0]);
+    assert_eq!(deltas[0].normal, [0.5, 0.0, 0.0]);
+    assert_eq!(deltas[1].position, [2.0, 0.0, 0.0]);
+    assert_eq!(deltas[3].position, [0.0; 3]);
+    let pose = model.scene.pose(None);
+    assert_eq!(pose.weights, [0.5, 0.0]);
+    assert_eq!(pose.primitives[0].first_weight, Some(0));
+    // The first vertex reaches 1 along Z and 2 along X either way of its rest place for each
+    // unit of weight, and its largest weight is 0.5.
+    let reach = model.geometry.reach(0).unwrap();
+    assert_eq!(reach.spread, Vec3::new(2.0, 0.0, 1.0));
+    assert_eq!(pose.weight_scale(&pose.primitives[0]), 0.5);
+    let at = reach.at(0.5);
+    assert_eq!(at.min, Vec3::new(-1.0, 0.0, -0.5));
+    assert_eq!(at.max, Vec3::new(1.0, 0.0, 0.5));
+    assert_eq!(model.geometry.morph_spread.len(), 3);
+
+    let mut own = morphed();
+    own.json["nodes"][0]["weights"] = json!([0.25, 1.0]);
+    assert_eq!(own.read().unwrap().scene.pose(None).weights, [0.25, 1.0]);
+    let mut unweighted = morphed();
+    unweighted.json["meshes"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("weights");
+    assert_eq!(
+        unweighted.read().unwrap().scene.pose(None).weights,
+        [0.0, 0.0]
+    );
+}
+
+#[test]
+fn clips_animate_morph_target_weights_and_count_them_in_their_duration() {
+    let mut glb = morphed();
+    let times = glb.accessor(FLOAT, "SCALAR", 2, &floats(&[0.0, 2.0]));
+    let values = glb.accessor(FLOAT, "SCALAR", 4, &floats(&[0.0, 1.0, 1.0, 0.0]));
+    glb.json["animations"] = json!([{
+        "samplers": [{ "input": times, "output": values }],
+        "channels": [{ "sampler": 0, "target": { "node": 0, "path": "weights" } }],
+    }]);
+    let model = glb.read().unwrap();
+    let at = |seconds| {
+        model
+            .scene
+            .pose(Some(Playback {
+                clip: 0,
+                seconds,
+                looped: false,
+            }))
+            .weights
+    };
+    assert_eq!(at(0.0), [0.0, 1.0]);
+    assert_eq!(at(1.0), [0.5, 0.5]);
+    assert_eq!(at(5.0), [1.0, 0.0]);
+    assert_eq!(model.scene.info().animations[0].duration, 2.0);
+
+    // Five values for two keys of two weights don't divide into keys.
+    let mut uneven = glb;
+    let five = uneven.accessor(FLOAT, "SCALAR", 5, &floats(&[0.0; 5]));
+    uneven.json["animations"][0]["samplers"][0]["output"] = json!(five);
+    assert_eq!(
+        uneven.read().unwrap_err(),
+        invalid("an animation has a different number of key times and values")
+    );
+}
+
+#[test]
+fn malformed_or_oversized_morph_targets_are_errors() {
+    let edit = |edit: &dyn Fn(&mut Glb)| {
+        let mut glb = morphed();
+        edit(&mut glb);
+        glb.read().unwrap_err()
+    };
+    let nan = edit(&|glb| glb.json["meshes"][0]["weights"] = json!([0.5, 1e39]));
+    assert_eq!(nan, invalid("a morph target weight isn't a finite number"));
+    let nan = edit(&|glb| glb.json["nodes"][0]["weights"] = json!([1e39, 0]));
+    assert_eq!(nan, invalid("a morph target weight isn't a finite number"));
+    let short = edit(&|glb| glb.json["meshes"][0]["weights"] = json!([0.5]));
+    assert_eq!(
+        short,
+        invalid("a mesh has a different number of weights than morph targets")
+    );
+    let short = edit(&|glb| glb.json["nodes"][0]["weights"] = json!([0.5]));
+    assert!(matches!(short, ModelError::Invalid(_)), "{short}");
+    let fewer = edit(&|glb| {
+        let accessor = glb.accessor(FLOAT, "VEC3", 2, &floats(&[0.0; 6]));
+        glb.json["meshes"][0]["primitives"][0]["targets"][0]["POSITION"] = json!(accessor);
+    });
+    assert_eq!(fewer, different_counts_error());
+    let past = edit(&|glb| {
+        glb.json["meshes"][0]["primitives"][0]["targets"][0]["POSITION"] = json!(99);
+    });
+    assert_eq!(past, invalid("an accessor index is out of range"));
+    if cfg!(feature = "draco") {
+        let draco = edit(&|glb| {
+            glb.json["meshes"][0]["primitives"][0]["extensions"] =
+                json!({ "KHR_draco_mesh_compression": { "bufferView": 0, "attributes": {} } });
+        });
+        assert!(matches!(draco, ModelError::Unsupported(_)), "{draco}");
+    }
+    let infinite = edit(&|glb| {
+        let accessor = glb.accessor(FLOAT, "VEC3", 3, &floats(&[f32::NAN; 9]));
+        glb.json["meshes"][0]["primitives"][0]["targets"][1]["NORMAL"] = json!(accessor);
+    });
+    assert_eq!(
+        infinite,
+        invalid("a morph target's displacement isn't a finite number")
+    );
+    let nan_key = edit(&|glb| {
+        let times = glb.accessor(FLOAT, "SCALAR", 1, &floats(&[0.0]));
+        let values = glb.accessor(FLOAT, "SCALAR", 2, &floats(&[f32::NAN, 0.0]));
+        glb.json["animations"] = json!([{
+            "samplers": [{ "input": times, "output": values }],
+            "channels": [{ "sampler": 0, "target": { "node": 0, "path": "weights" } }],
+        }]);
+    });
+    assert_eq!(
+        nan_key,
+        invalid("an animation's values aren't finite numbers")
+    );
+    let mismatched = edit(&|glb| {
+        let second = glb.json["meshes"][0]["primitives"][0].clone();
+        let mut second = second;
+        second["targets"] = json!([second["targets"][0]]);
+        glb.json["meshes"][0]["primitives"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+    });
+    assert_eq!(
+        mismatched,
+        invalid("a mesh's primitives have different numbers of morph targets")
+    );
+    let many = edit(&|glb| {
+        let target = glb.json["meshes"][0]["primitives"][0]["targets"][0].clone();
+        glb.json["meshes"][0]["primitives"][0]["targets"] =
+            json!(vec![target; MAX_MORPH_TARGETS + 1]);
+        glb.json["meshes"][0]["weights"] = json!(vec![0.0; MAX_MORPH_TARGETS + 1]);
+    });
+    assert_eq!(
+        many,
+        too_large("morph targets in one mesh", MAX_MORPH_TARGETS)
+    );
+}
+
+#[test]
+fn a_mesh_with_morphed_and_unmorphed_primitives_is_an_error_in_either_order() {
+    for morphed_first in [true, false] {
+        let mut glb = morphed();
+        let mut plain = glb.json["meshes"][0]["primitives"][0].clone();
+        plain.as_object_mut().unwrap().remove("targets");
+        let primitives = glb.json["meshes"][0]["primitives"].as_array_mut().unwrap();
+        if morphed_first {
+            primitives.push(plain);
+        } else {
+            primitives.insert(0, plain);
+        }
+        assert_eq!(
+            glb.read().unwrap_err(),
+            invalid("a mesh's primitives have different numbers of morph targets"),
+            "morphed first: {morphed_first}"
+        );
+    }
+}
+
+#[test]
+fn weights_past_the_limit_and_displacements_a_float_cant_reach_with_them_are_errors() {
+    let edit = |edit: &dyn Fn(&mut Glb)| {
+        let mut glb = morphed();
+        edit(&mut glb);
+        glb.read()
+    };
+    let at_limit = edit(&|glb| glb.json["meshes"][0]["weights"] = json!([MAX_MORPH_WEIGHT, 0]));
+    assert!(at_limit.is_ok(), "{at_limit:?}");
+    let past = invalid(format!("a morph target weight is past ±{MAX_MORPH_WEIGHT}"));
+    for weights in [
+        json!([MAX_MORPH_WEIGHT * 2.0, 0]),
+        json!([0, -MAX_MORPH_WEIGHT * 2.0]),
+    ] {
+        let mesh = edit(&|glb| glb.json["meshes"][0]["weights"] = weights.clone());
+        assert_eq!(mesh.unwrap_err(), past);
+        let node = edit(&|glb| glb.json["nodes"][0]["weights"] = weights.clone());
+        assert_eq!(node.unwrap_err(), past);
+    }
+    let keyed = edit(&|glb| {
+        let times = glb.accessor(FLOAT, "SCALAR", 1, &floats(&[0.0]));
+        let values = glb.accessor(FLOAT, "SCALAR", 2, &floats(&[0.0, 1e5]));
+        glb.json["animations"] = json!([{
+            "samplers": [{ "input": times, "output": values }],
+            "channels": [{ "sampler": 0, "target": { "node": 0, "path": "weights" } }],
+        }]);
+    });
+    assert_eq!(keyed.unwrap_err(), past);
+    // A cubic key's tangents are slopes, which the limit on weights leaves alone.
+    let cubic = |weight: f32| {
+        edit(&|glb| {
+            let times = glb.accessor(FLOAT, "SCALAR", 2, &floats(&[0.0, 1.0]));
+            let keys = [
+                2e4, 2e4, 0.0, 0.0, -2e4, 0.0, 0.0, 0.0, weight, 0.0, 0.0, 0.0,
+            ];
+            let values = glb.accessor(FLOAT, "SCALAR", 12, &floats(&keys));
+            glb.json["animations"] = json!([{
+                "samplers": [{ "input": times, "output": values, "interpolation": "CUBICSPLINE" }],
+                "channels": [{ "sampler": 0, "target": { "node": 0, "path": "weights" } }],
+            }]);
+        })
+    };
+    assert!(cubic(1.0).is_ok(), "{:?}", cubic(1.0));
+    assert_eq!(cubic(1e5).unwrap_err(), past);
+    // Each finite, but at the largest weight they move a vertex past what a float holds.
+    let far = edit(&|glb| {
+        let accessor = glb.accessor(FLOAT, "VEC3", 3, &floats(&[0.0, 0.0, 3e35].repeat(3)));
+        glb.json["meshes"][0]["primitives"][0]["targets"][1]["POSITION"] = json!(accessor);
+    });
+    assert_eq!(
+        far.unwrap_err(),
+        invalid("a morph target moves a vertex past what a float holds")
+    );
+    let turned = edit(&|glb| {
+        let accessor = glb.accessor(FLOAT, "VEC3", 3, &floats(&[3e35, 0.0, 0.0].repeat(3)));
+        glb.json["meshes"][0]["primitives"][0]["targets"][1]["NORMAL"] = json!(accessor);
+    });
+    assert_eq!(
+        turned.unwrap_err(),
+        invalid("a morph target moves a vertex past what a float holds")
+    );
+}
+
+#[test]
+fn a_vertexs_morph_reach_is_summed_once_however_often_it_is_drawn() {
+    const TARGETS: usize = 256;
+    const TRIANGLES: usize = 20_000;
+    let mut glb = Glb::triangle();
+    let up = glb.accessor(FLOAT, "VEC3", 3, &floats(&[0.0, 0.0, 1.0].repeat(3)));
+    let indices = [0u16, 1, 2].repeat(TRIANGLES);
+    let indices = glb.accessor(
+        UNSIGNED_SHORT,
+        "SCALAR",
+        indices.len(),
+        &indices
+            .iter()
+            .flat_map(|index| index.to_le_bytes())
+            .collect::<Vec<u8>>(),
+    );
+    let joints = glb.accessor(UNSIGNED_BYTE, "VEC4", 3, &[0u8; 12]);
+    let weights = glb.accessor(FLOAT, "VEC4", 3, &floats(&[1.0, 0.0, 0.0, 0.0].repeat(3)));
+    let primitive = &mut glb.json["meshes"][0]["primitives"][0];
+    primitive["indices"] = json!(indices);
+    primitive["targets"] = json!(vec![json!({ "POSITION": up }); TARGETS]);
+    primitive["attributes"]["JOINTS_0"] = json!(joints);
+    primitive["attributes"]["WEIGHTS_0"] = json!(weights);
+    glb.json["skins"] = json!([{ "joints": [1] }]);
+    glb.json["nodes"] = json!([{ "mesh": 0, "skin": 0 }, {}]);
+    glb.json["scenes"] = json!([{ "nodes": [0, 1] }]);
+
+    super::DELTAS_SUMMED.set(0);
+    let model = glb.read().unwrap();
+    let skins = model.scene.joint_bounds(&model.geometry);
+    let primitives = model.scene.primitive_bounds(&model.geometry);
+    let deltas = model.geometry.morphs.len();
+    assert_eq!(deltas, 3 * TARGETS);
+    assert!(
+        super::DELTAS_SUMMED.get() <= deltas,
+        "{} displacements summed for {deltas}",
+        super::DELTAS_SUMMED.get()
+    );
+    let reach = Reach {
+        still: Bounds::of([Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0)]),
+        spread: Vec3::new(0.0, 0.0, TARGETS as f32),
+    };
+    assert_eq!(skins[0].joints, [reach]);
+    assert_eq!(primitives.values().copied().collect::<Vec<_>>(), [reach]);
+}
+
+#[test]
+fn lights_and_cameras_whose_derived_values_overflow_are_errors() {
+    let mut glb = Glb::triangle();
+    glb.json["extensionsUsed"] = json!(["KHR_lights_punctual"]);
+    glb.json["extensions"] = json!({ "KHR_lights_punctual": { "lights": [
+        { "type": "point", "color": [2, 0, 0], "intensity": 2e38 },
+    ] } });
+    assert_eq!(
+        glb.read().unwrap_err(),
+        invalid("a light's colour times its intensity isn't a finite number")
+    );
+    glb.json["extensions"]["KHR_lights_punctual"]["lights"][0]["intensity"] = json!(2e37);
+    assert!(glb.read().is_ok());
+
+    let camera = |camera: Value| {
+        let mut glb = Glb::triangle();
+        glb.json["cameras"] = json!([camera]);
+        glb.read()
+    };
+    assert_eq!(
+        camera(json!({ "type": "orthographic",
+            "orthographic": { "xmag": 1, "ymag": 2e38, "znear": 0.1, "zfar": 10 } }))
+        .unwrap_err(),
+        invalid("a camera's projection isn't finite numbers")
+    );
+    assert_eq!(
+        camera(json!({ "type": "perspective",
+            "perspective": { "yfov": 0.5, "znear": 3e38, "zfar": 1 } }))
+        .unwrap_err(),
+        invalid("a camera's far plane isn't beyond its near plane")
+    );
+    assert!(
+        camera(json!({ "type": "orthographic",
+            "orthographic": { "xmag": 1, "ymag": 1e38, "znear": 0.1, "zfar": 10 } }))
+        .is_ok()
+    );
+}
+
+fn different_counts_error() -> ModelError {
+    invalid("a primitive's attributes hold different numbers of vertices")
+}
+
+#[test]
+fn lights_and_cameras_read_where_their_nodes_place_them() {
+    let mut glb = Glb::triangle();
+    glb.json["extensionsUsed"] = json!(["KHR_lights_punctual"]);
+    glb.json["extensions"] = json!({ "KHR_lights_punctual": { "lights": [
+        { "type": "spot", "color": [1, 0.5, 0], "intensity": 4, "range": 10,
+          "spot": { "innerConeAngle": 0.25, "outerConeAngle": 0.5 } },
+        { "type": "directional" },
+    ] } });
+    glb.json["cameras"] = json!([
+        { "type": "perspective", "name": "close",
+          "perspective": { "yfov": 0.5, "znear": 0.1 } },
+        { "type": "orthographic", "orthographic": { "xmag": 2, "ymag": 1.5, "znear": 0.5, "zfar": 20 } },
+    ]);
+    glb.json["nodes"] = json!([
+        { "mesh": 0, "children": [1, 2] },
+        { "translation": [0, 2, 0], "extensions": { "KHR_lights_punctual": { "light": 0 } } },
+        { "translation": [0, 0, 3], "camera": 1 },
+    ]);
+    let model = glb.read().unwrap();
+    let pose = model.scene.pose(None);
+    let spot = pose.lights[0];
+    assert_eq!(spot.kind, crate::LightKind::Spot);
+    assert_eq!(spot.radiance, Vec3::new(4.0, 2.0, 0.0));
+    assert_eq!(spot.position, Vec3::new(0.0, 2.0, 0.0));
+    assert_eq!(spot.direction, Vec3::NEG_Z);
+    assert_eq!(
+        (spot.cos_outer, spot.cos_inner),
+        (0.5f32.cos(), 0.25f32.cos())
+    );
+    assert_eq!(spot.range, 10.0);
+    assert_eq!(pose.lights.len(), 1, "the directional light isn't placed");
+    assert_eq!(pose.cameras.len(), 1);
+    assert_eq!(pose.cameras[0].0, 1);
+    assert!(close(
+        pose.cameras[0].1.transform_point3(Vec3::ZERO),
+        Vec3::new(0.0, 0.0, 3.0)
+    ));
+    let cameras = model.scene.cameras();
+    assert_eq!(
+        (cameras[0].projection, cameras[0].near, cameras[0].far),
+        (crate::Projection::Perspective { fov_y: 0.5 }, 0.1, 1000.0)
+    );
+    assert_eq!(
+        cameras[1].projection,
+        crate::Projection::Orthographic { height: 3.0 }
+    );
+    assert_eq!(model.scene.camera("close"), Ok(Some(0)));
+    assert_eq!(model.scene.camera("1"), Ok(Some(1)));
+    assert_eq!(model.scene.camera(""), Ok(None));
+    assert_eq!(
+        model.scene.camera("far"),
+        Err("the model has no camera `far`; it has 0 `close`, 1 (unnamed)".to_string())
+    );
+    assert_eq!(
+        serde_json::to_value(model.scene.info()).unwrap()["cameras"],
+        json!([{ "index": 0, "name": "close" }, { "index": 1 }])
+    );
+
+    let bad = |edit: &dyn Fn(&mut Value)| {
+        let mut bad = Glb {
+            json: glb.json.clone(),
+            bin: glb.bin.clone(),
+        };
+        edit(&mut bad.json);
+        bad.read().unwrap_err()
+    };
+    let missing =
+        bad(&|json| json["nodes"][1]["extensions"]["KHR_lights_punctual"]["light"] = json!(2));
+    assert_eq!(missing, invalid("node 1 names a light the model lacks"));
+    let unknown =
+        bad(&|json| json["extensions"]["KHR_lights_punctual"]["lights"][1]["type"] = json!("area"));
+    assert_eq!(unknown, invalid("a light's type is missing or unknown"));
+    let huge = bad(&|json| {
+        json["extensions"]["KHR_lights_punctual"]["lights"][0]["intensity"] = json!(1e39)
+    });
+    assert!(matches!(huge, ModelError::Invalid(_)), "{huge}");
+    let many = bad(&|json| {
+        json["extensions"]["KHR_lights_punctual"]["lights"] =
+            json!(vec![json!({ "type": "point" }); MAX_MODEL_LIGHTS + 1]);
+    });
+    assert_eq!(many, too_large("lights", MAX_MODEL_LIGHTS));
+    let camera = bad(&|json| json["nodes"][2]["camera"] = json!(5));
+    assert_eq!(
+        camera,
+        invalid("node 2 names a mesh, skin or camera the model lacks")
+    );
+}
+
+#[test]
+fn primitives_other_than_triangle_lists_are_counted_and_left_out() {
+    let mut glb = Glb::triangle();
+    let triangles = glb.json["meshes"][0]["primitives"][0].clone();
+    let mut lines = triangles.clone();
+    lines["mode"] = json!(1);
+    let mut points = triangles.clone();
+    points["mode"] = json!(0);
+    glb.json["meshes"][0]["primitives"] = json!([lines, triangles, points]);
+    let model = glb.read().unwrap();
+    assert_eq!(model.scene.skipped_primitives(), 2);
+    assert_eq!(model.scene.draw_count(), 1);
+    assert_eq!(
+        Glb::triangle().read().unwrap().scene.skipped_primitives(),
+        0
+    );
 }

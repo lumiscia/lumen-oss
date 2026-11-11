@@ -23,9 +23,10 @@ pub use draws::{DrawError, DrawKey, Draws, Row, Run};
 pub use extrude::{ExtrudeLimit, ExtrudeLimits, Extrusion, LimitExceeded, extrude};
 pub use glam;
 pub use light::{Light, LightKind, Lighting, Shadow};
-pub use mesh::{Mesh, Primitive, SkinVertex, Vertex, plane_scale};
+pub use mesh::{Mesh, MorphDelta, Primitive, SkinVertex, Vertex, VertexExtra, plane_scale};
 pub use scene::{
-    Blending, Filter, MAX_SCENE_NODES, Map, Maps, Object, Sampler, Scene, Surface, Wrap,
+    Blending, Filter, MAX_SCENE_NODES, Map, MapUv, Maps, Morph, Object, Sampler, Scene, Surface,
+    Wrap,
 };
 pub use shadow::{MAX_FILTER_TEXELS, MAX_SHADOW_LIGHTS, ShadowAtlas, ShadowView};
 pub use transform::{Transform, look_at, mirrors, normal_matrix, rotation};
