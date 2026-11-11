@@ -38,7 +38,8 @@ impl FfmpegResolverOptions {
     pub fn with_hardware_decode(prefer_hardware_decode: bool) -> Self {
         Self {
             prefer_hardware_decode,
-            ..Self::default()
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
+            vulkan_device: None,
         }
     }
 }
@@ -395,6 +396,8 @@ impl LibavStreamDecoder {
                         if let Some(seek) = self.seek.take()
                             && decoded_frame > target_frame
                         {
+                            // `GpuVideoFrame` only has drop glue when a hardware backend is enabled.
+                            #[allow(clippy::drop_non_drop)]
                             drop(decoded);
                             self.seek_before_landing(target_frame, seek)?;
                             continue;
@@ -924,22 +927,28 @@ fn resolve_stream_fps(stream: &VideoStreamInfo, source: &str) -> Result<f64, Med
         })
 }
 
+/// The stream's frame count, capped by what the presented duration holds. A stream-copied cut keeps
+/// preroll packets that an edit list hides, and the stream still counts them.
 fn resolve_frame_count(
     stream: &VideoStreamInfo,
     container_duration_us: Option<i64>,
     fps: f64,
 ) -> Option<u32> {
-    if let Some(explicit) = stream.frame_count {
-        return Some(u32::try_from(explicit).unwrap_or(u32::MAX));
-    }
-
     let stream_seconds = stream
         .duration_ts
         .zip(stream.time_base.as_f64())
         .map(|(duration, time_base)| duration as f64 * time_base);
     let container_seconds = container_duration_us.map(|duration| duration as f64 / 1_000_000.0);
-    let seconds = stream_seconds.or(container_seconds)?;
-    Some((seconds * fps).round().clamp(1.0, f64::from(u32::MAX)) as u32)
+    let presented = stream_seconds
+        .or(container_seconds)
+        .map(|seconds| (seconds * fps).round().clamp(1.0, f64::from(u32::MAX)) as u32);
+    let explicit = stream
+        .frame_count
+        .map(|count| u32::try_from(count).unwrap_or(u32::MAX));
+    match (explicit, presented) {
+        (Some(explicit), Some(presented)) => Some(explicit.min(presented)),
+        (explicit, presented) => explicit.or(presented),
+    }
 }
 
 fn open_input(source: &str) -> Result<InputContext, MediaError> {
@@ -1218,6 +1227,81 @@ mod tests {
         assert_eq!(resolver.metadata().frame_count, 40);
         assert!(resolver.frame(39).is_ok());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_stream_copied_cut_counts_only_the_frames_that_play() {
+        // The cut starts on a keyframe, and an edit list hides its 15 preroll frames.
+        let dir = std::env::temp_dir().join(format!("lumen_engine_{}_cut", std::process::id()));
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        let full = dir.join("full.mp4");
+        let cut = dir.join("cut.mp4");
+        let run = |args: &[&str]| {
+            let status = Command::new("ffmpeg")
+                .args(["-y", "-hide_banner", "-loglevel", "error"])
+                .args(args)
+                .status();
+            match status {
+                Ok(status) => {
+                    assert!(status.success(), "ffmpeg {args:?}");
+                    true
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    eprintln!("ffmpeg CLI not installed; skipping the cut clip");
+                    false
+                }
+                Err(error) => panic!("failed to run ffmpeg: {error}"),
+            }
+        };
+        let encoded = run(&[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x90:rate=30:duration=10",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-bf",
+            "2",
+            "-g",
+            "24",
+            "-keyint_min",
+            "24",
+            "-sc_threshold",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+            full.to_str().expect("utf-8 path"),
+        ]);
+        if !encoded {
+            return;
+        }
+        assert!(run(&[
+            "-ss",
+            "2.1",
+            "-i",
+            full.to_str().expect("utf-8 path"),
+            "-t",
+            "8",
+            "-c",
+            "copy",
+            cut.to_str().expect("utf-8 path"),
+        ]));
+
+        let full_clip = open_cpu(&full).expect("open full clip");
+        let cut_clip = open_cpu(&cut).expect("open cut clip");
+        assert_eq!(full_clip.metadata().frame_count, 300);
+        assert_eq!(cut_clip.metadata().frame_count, 237);
+        let last = yuv_frame(cut_clip.frame(236).expect("decode the last frame"));
+        let source_last = yuv_frame(
+            full_clip
+                .frame(299)
+                .expect("decode the source's last frame"),
+        );
+        assert_eq!(last.data, source_last.data);
+        assert!(cut_clip.frame(237).is_err());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -1,5 +1,25 @@
 # @lumiscia/lumen-react
 
+## 0.5.1
+
+### Patch Changes
+
+- Updated dependencies [bbab23f]
+- Updated dependencies [d14deff]
+- Updated dependencies [14af846]
+- Updated dependencies [6f5b681]
+- Updated dependencies [6285ab0]
+- Updated dependencies [6a6ee44]
+- Updated dependencies [10b9793]
+- Updated dependencies [87164d8]
+- Updated dependencies [5406425]
+- Updated dependencies [7fcff92]
+- Updated dependencies [ee8b9bf]
+- Updated dependencies [f9952fa]
+- Updated dependencies [9cd9f55]
+  - @lumiscia/lumen-bindings@0.5.1
+  - @lumiscia/lumen-preview@0.5.1
+
 ## 0.5.0
 
 ### Minor Changes

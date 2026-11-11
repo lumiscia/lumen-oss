@@ -153,6 +153,14 @@ builtins! {
     Mod "mod" (2, Some(2)) [value: Number, divisor: Number] -> Number,
         "Remainder of `value / divisor`, keeping the sign of `value`.";
     Fract "fract" (1, Some(1)) [value: Number] -> Number, "Fractional part of a number.";
+    Sign "sign" (1, Some(1)) [value: Number] -> Number, "-1, 0 or 1 by the sign of a number.";
+    Atan2 "atan2" (2, Some(2)) [y: Number, x: Number] -> Number,
+        "Angle in radians of the point `(x, y)` from the +x axis, in `-π..=π`.";
+    Hypot "hypot" (2, Some(2)) [x: Number, y: Number] -> Number,
+        "Length of the vector `(x, y)`.";
+    Remap "remap" (5, Some(5))
+        [value: Number, from_min: Number, from_max: Number, to_min: Number, to_max: Number] -> Number,
+        "Maps `value` from `from_min..from_max` onto `to_min..to_max` without clamping. `from_min` and `from_max` must differ.";
     Smoothstep "smoothstep" (3, Some(3)) [edge0: Number, edge1: Number, x: Number] -> Number,
         "Hermite smoothing of `x` between two edges.";
     Step "step" (3, Some(3)) [from: Number, to: Number, t: Number] -> Number,
@@ -210,6 +218,24 @@ builtins! {
     InBack "in_back", "Ease-in that pulls back first.";
     OutBack "out_back", "Ease-out that overshoots.";
     InOutBack "in_out_back", "Ease-in-out that pulls back and overshoots.";
+    InSine "in_sine", "Sinusoidal ease-in.";
+    OutSine "out_sine", "Sinusoidal ease-out.";
+    InOutSine "in_out_sine", "Sinusoidal ease-in-out.";
+    InQuart "in_quart", "Quartic ease-in.";
+    OutQuart "out_quart", "Quartic ease-out.";
+    InOutQuart "in_out_quart", "Quartic ease-in-out.";
+    InQuint "in_quint", "Quintic ease-in.";
+    OutQuint "out_quint", "Quintic ease-out.";
+    InOutQuint "in_out_quint", "Quintic ease-in-out.";
+    InCirc "in_circ", "Circular ease-in.";
+    OutCirc "out_circ", "Circular ease-out.";
+    InOutCirc "in_out_circ", "Circular ease-in-out.";
+    InElastic "in_elastic", "Ease-in that oscillates like a spring.";
+    OutElastic "out_elastic", "Ease-out that overshoots and oscillates like a spring.";
+    InOutElastic "in_out_elastic", "Ease-in-out that oscillates at both ends.";
+    InBounce "in_bounce", "Ease-in that bounces.";
+    OutBounce "out_bounce", "Ease-out that bounces like a dropped ball.";
+    InOutBounce "in_out_bounce", "Ease-in-out that bounces at both ends.";
     }
 }
 

@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams};
 use crate::scope::FrameTime;
 
 use crate::gpu::MediaTextureKey;
@@ -230,7 +230,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
         let media = cx.media().ok_or_else(|| RenderError::NodeEvaluation {
             node_id: self.id,
-            node_kind: "MediaIn",
+            node_kind: <MediaIn as JsonNode>::KIND,
             details: "media store is required for media input nodes".to_string(),
         })?;
         let (kind, fps, size) = {
@@ -241,11 +241,8 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
         let tex = match kind {
             MediaInKind::Image { image_id } => {
                 let resolver = media.get_image_resolver(&image_id)?;
-                let key = MediaTextureKey {
-                    source: resolver.id().to_string(),
-                    width: size.width,
-                    height: size.height,
-                };
+                let key = MediaTextureKey::of_image(&*resolver);
+                cx.note_image(&image_id, &key);
                 cx.image_texture(key, &resolver.frame()?, size)?
             }
             MediaInKind::Video {
