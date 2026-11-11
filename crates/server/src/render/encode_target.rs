@@ -204,7 +204,7 @@ impl EncodeTarget {
     /// float colour and quantise once, after chroma averaging.
     pub(super) fn output_format(&self) -> lumen_gpu::wgpu::TextureFormat {
         match self {
-            Self::Cpu(_) => lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            Self::Cpu { .. } => lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(_) => lumen_gpu::wgpu::TextureFormat::Rgba16Float,
             #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
