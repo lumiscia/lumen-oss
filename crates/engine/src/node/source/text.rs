@@ -1632,6 +1632,13 @@ mod tests {
         reads: Arc<AtomicU64>,
     }
 
+    impl CountingStore {
+        /// An identity of this store alone, so tests running together share no font.
+        fn identity(&self) -> MediaIdentity {
+            MediaIdentity::of_key(&format!("counting-store-{:p}", Arc::as_ptr(&self.reads)))
+        }
+    }
+
     struct CountingResolver {
         family: String,
         reads: Arc<AtomicU64>,
@@ -1653,7 +1660,7 @@ mod tests {
                 return Err(MediaError::source_not_found(family, "not served"));
             }
             Ok(ResolvedMedia::new(
-                MediaIdentity::of_key("counting-store-test-font"),
+                self.identity(),
                 MediaResolver::Font(Box::new(CountingResolver {
                     family: family.to_string(),
                     reads: Arc::clone(&self.reads),
@@ -1674,7 +1681,7 @@ mod tests {
         }
         assert_eq!(
             system.family_resolver("Known"),
-            Some(MediaIdentity::of_key("counting-store-test-font").as_str())
+            Some(store.identity().as_str())
         );
         assert_eq!(system.family_resolver("Unknown"), None);
         assert_eq!(store.reads.load(Ordering::Relaxed), 1);
