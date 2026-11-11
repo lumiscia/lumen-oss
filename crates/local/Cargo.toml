@@ -29,5 +29,8 @@ lumen-ffmpeg = { workspace = true }
 serde_json = "1.0.145"
 tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"] }
 
+[dev-dependencies]
+image = { version = "0.25.9", default-features = false, features = ["jpeg", "png"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 lumen-server = { workspace = true, features = ["vulkan"] }

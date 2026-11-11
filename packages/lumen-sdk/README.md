@@ -47,7 +47,9 @@ await lumen.render(composition, { quality: "lossless", codec: "h264" });
 
 ```ts
 const clip = await lumen.render(composition, { output: { frames: { start: 30, end: 90 } } });
-const poster = await lumen.render(composition, { output: { format: "png", frames: { start: 45 } } });
+const poster = await lumen.render(composition, {
+  output: { format: "png", frames: { start: 45 } },
+});
 const frames = await lumen.render(composition, {
   output: { format: "jpeg_sequence", frames: { end: 24 }, jpegQuality: 85 },
 });

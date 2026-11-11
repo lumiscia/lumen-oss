@@ -338,6 +338,21 @@ impl Cli {
         if self.jpeg_quality.is_some() && !format.is_jpeg() {
             bail!("--jpeg-quality is only supported when output is .jpg");
         }
+        if !format.is_video()
+            && !format.is_sequence()
+            && let Some(FrameRange {
+                start: Some(start),
+                end: Some(end),
+            }) = self.frames
+            && end.saturating_sub(start) > 1
+        {
+            bail!(
+                "{} renders one frame, but --frames {start}..{end} has {}; name the output like frames/shot_%d.{} for a sequence",
+                output.display(),
+                end - start,
+                extension
+            );
+        }
         let frames = match (self.frames, self.frame) {
             (Some(frames), _) => frames,
             (None, Some(frame)) => FrameRange {

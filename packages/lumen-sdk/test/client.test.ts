@@ -193,8 +193,8 @@ describe("Lumen render and download", () => {
   });
 
   test("outputFile names the content type and extension of each format", () => {
-    const files = (["mp4", "png", "jpeg", "png_sequence", "jpeg_sequence"] as const).map(
-      (format) => Object.values(outputFile({ format })),
+    const files = (["mp4", "png", "jpeg", "png_sequence", "jpeg_sequence"] as const).map((format) =>
+      Object.values(outputFile({ format })),
     );
     expect(files).toEqual([
       ["video/mp4", "mp4"],
@@ -216,7 +216,10 @@ describe("Lumen render and download", () => {
       })) as unknown as typeof fetch;
     const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
 
-    const response = await lumen.download({ id: "r", url: "https://api.test/v1/renders/r/artifact" });
+    const response = await lumen.download({
+      id: "r",
+      url: "https://api.test/v1/renders/r/artifact",
+    });
 
     expect(response.headers.get("content-type")).toBe("application/zip");
     expect(response.headers.get("content-disposition")).toContain("r.zip");
