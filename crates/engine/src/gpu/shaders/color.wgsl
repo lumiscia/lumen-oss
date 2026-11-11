@@ -24,3 +24,9 @@ fn lumen_linear_to_srgb(linear: vec3<f32>) -> vec3<f32> {
     let encoded = select(p + 0.055 * (p - 1.0), c * 12.92, c <= vec3<f32>(0.0031308));
     return sign(linear) * encoded;
 }
+
+// The straight colour of linear premultiplied `light` at coverage `alpha`, 0 to 1, sRGB-encoded and
+// clamped to 0..1. Unpremultiplied in linear light.
+fn lumen_straight_srgb(light: vec3<f32>, alpha: f32) -> vec3<f32> {
+    return clamp(lumen_linear_to_srgb(light / max(alpha, 1e-6)), vec3<f32>(0.0), vec3<f32>(1.0));
+}

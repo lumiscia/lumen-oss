@@ -95,12 +95,15 @@ pub(super) async fn create_render(
             )
         })?;
     if !output.format.is_video()
-        && (input.quality.is_some() || input.codec.is_some() || input.bit_depth.is_some())
+        && (input.quality.is_some()
+            || input.codec.is_some()
+            || input.bit_depth.is_some()
+            || input.alpha.is_some())
     {
         return Err(ApiError::rejected(
             StatusCode::UNPROCESSABLE_ENTITY,
             RenderJobError::invalid_output(
-                "quality, codec and bit_depth only apply to the mp4 format",
+                "quality, codec, bit_depth and alpha only apply to the mp4, mov and webm formats",
             ),
         ));
     }
@@ -120,10 +123,20 @@ pub(super) async fn create_render(
             preset: input.quality,
             codec,
             bit_depth,
+            alpha: input.alpha,
             ..QualityRequest::default()
         }
         .with_env_encoder();
-        Some(resolve_encoder(&state.quality, &composition, request).map_err(invalid_quality)?)
+        Some(
+            resolve_encoder(&state.quality, &composition, output.format, request).map_err(
+                |error| {
+                    ApiError::rejected(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        RenderJobError::refused(&error),
+                    )
+                },
+            )?,
+        )
     } else {
         None
     };

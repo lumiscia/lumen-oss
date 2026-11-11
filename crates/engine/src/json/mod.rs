@@ -159,6 +159,8 @@ struct RootRenderSettingsJson {
     quality: Option<String>,
     #[serde(default, deserialize_with = "present")]
     bit_depth: Option<BitDepth>,
+    #[serde(default, deserialize_with = "present")]
+    alpha: Option<bool>,
 }
 
 impl RootRenderSettingsJson {
@@ -170,11 +172,13 @@ impl RootRenderSettingsJson {
             codec,
             ref quality,
             bit_depth,
+            alpha,
         } = *self;
         let output = OutputSettings {
             codec,
             quality: quality.clone(),
             bit_depth,
+            alpha,
         };
         (RenderSettings { width, height }, output)
     }

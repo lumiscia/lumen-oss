@@ -33,12 +33,19 @@ export interface RenderOptions {
   readonly codec?: VideoCodec;
   /**
    * 10 encodes `hevc` or `av1` at 10 bits per sample. Wins over the composition's
-   * `render_settings.bit_depth`. Unset, 8. A host that can't write 10 bits rejects the render.
+   * `render_settings.bit_depth`. Unset, 8, or 10 for `prores`. A host that can't write the depth
+   * rejects the render.
    */
   readonly bitDepth?: VideoBitDepth;
   /**
-   * The format and frames to render. Unset, an MP4 of the whole timeline. `quality`, `codec` and
-   * `bitDepth` apply to `mp4` only, and a host rejects them with another format.
+   * Keeps the frame's transparency as an alpha channel, in a `mov` (ProRes 4444) or `webm` (VP9).
+   * Wins over the composition's `render_settings.alpha`. Unset, the video is opaque. A host rejects
+   * alpha in a format or encoder that can't hold it rather than rendering opaque.
+   */
+  readonly alpha?: boolean;
+  /**
+   * The format and frames to render. Unset, an MP4 of the whole timeline. `quality`, `codec`,
+   * `bitDepth` and `alpha` apply to videos only, and a host rejects them with another format.
    */
   readonly output?: RenderOutput;
 }

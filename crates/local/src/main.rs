@@ -23,8 +23,8 @@ use lumen_server::render::{
 };
 use tracing_subscriber::EnvFilter;
 
-/// Renders a Lumen composition to an .mp4 video, one frame to a .png or .jpg image, or a range of
-/// frames to numbered images.
+/// Renders a Lumen composition to an .mp4, .mov or .webm video, one frame to a .png or .jpg image,
+/// or a range of frames to numbered images.
 #[derive(Debug, Parser)]
 #[command(
     name = "lumen-local",
@@ -37,22 +37,27 @@ directory. Fonts come from --font-dir, which must exist, then <media-root>/asset
 system, matched by the family name inside each font file. A family none of them has warns once \
 and renders in the bundled font.
 
-On .mp4 output, --quality names a preset: draft, standard (the default), high, lossless, or one \
---quality-config defines. --codec picks h264 (the default), hevc or av1. --bit-depth 10 encodes \
-hevc or av1 at 10 bits, from the renderer's float colour; the default is 8, h264 is always 8, and \
-an encoder that can't write 10 bits is skipped, or fails the render when pinned. They win over the \
+On video output, --quality names a preset: draft, standard (the default), high, lossless, or one \
+--quality-config defines. --codec picks h264 (the default), hevc or av1 for .mp4; .mov is prores \
+(ProRes 4444) and .webm is vp9. --bit-depth 10 encodes hevc or av1 at 10 bits, from the \
+renderer's float colour; the default is 8, h264 and vp9 with alpha are always 8, prores always 10, \
+and an encoder that can't write the depth is skipped, or fails the render when pinned. --alpha \
+keeps the frame's transparency as an alpha channel, in .mov (prores_ks) or .webm (libvpx-vp9) \
+only; hardware encoders can't write it. They win over the \
 composition's render_settings, which win over the config's defaults. Each codec tries its encoders \
 in order, warning when one won't open: on Linux the Vulkan encoder, then libx264, libx265 or \
 libsvtav1, and on macOS VideoToolbox, then the same CPU encoders. A preset with no settings for an encoder skips it, so \
-lossless uses libx264 or libx265. --encoder or LUMEN_VIDEO_ENCODER pins one encoder, which either \
+lossless uses libx264, libx265 or libvpx-vp9. --encoder or LUMEN_VIDEO_ENCODER pins one encoder, which either \
 opens or fails the render.
 
 --bitrate, --crf, --qp and --preset replace the preset with those settings on every encoder tried, \
 and can't be combined with --quality. --preset alone, with no rate control, targets 14 Mb/s. Each fails on an encoder that \
-doesn't support it (--crf: libx264, libx265, libsvtav1, NVENC; --qp: those and Vulkan; --preset: \
-libx264 and libx265 ultrafast..placebo, NVENC p1..p7, libsvtav1 0..13), which moves on to the next.
+doesn't support it (--crf: libx264, libx265, libsvtav1, libvpx-vp9, NVENC; --qp: libx264, libx265, \
+libsvtav1, NVENC, Vulkan and prores_ks; --preset: libx264 and libx265 ultrafast..placebo, NVENC \
+p1..p7, libsvtav1 0..13, libvpx-vp9 0..5), which moves on to the next.
 
---output picks what is written. .mp4 is a video of the frames, with the audio cut to the same span. \
+--output picks what is written. .mp4, .mov and .webm are a video of the frames, with the audio cut \
+to the same span: AAC in .mp4 and .mov, Opus (libopus) in .webm. \
 .png and .jpg (or .jpeg) are one image, frame 0 unless --frame says another; a PNG keeps \
 transparency and a JPEG is opaque. A file name with %d or %0Nd, such as frames/shot_%d.png, writes \
 one image per frame instead, numbered with the composition's frame numbers and padded to at least \
@@ -74,11 +79,11 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     composition: PathBuf,
 
-    /// Where to write the render: .mp4 is a video, .png or .jpg one image, and a name with %d
-    /// (frame_%04d.png) an image per frame
+    /// Where to write the render: .mp4, .mov or .webm is a video, .png or .jpg one image, and a
+    /// name with %d (frame_%04d.png) an image per frame
     #[arg(
         long,
-        value_name = "PATH.[mp4|png|jpg]",
+        value_name = "PATH.[mp4|mov|webm|png|jpg]",
         required_unless_present = "check"
     )]
     output: Option<PathBuf>,
@@ -99,39 +104,44 @@ struct Cli {
     #[arg(long, env = FONT_DIR_ENV, value_name = "PATH", value_parser = existing_font_dir)]
     font_dir: Option<PathBuf>,
 
-    /// Video encoder name, defaulting to LUMEN_VIDEO_ENCODER. .mp4 only
+    /// Video encoder name, defaulting to LUMEN_VIDEO_ENCODER. Video only
     #[arg(long, value_name = "NAME")]
     encoder: Option<String>,
 
-    /// Quality preset name. .mp4 only
+    /// Quality preset name. Video only
     #[arg(long, value_name = "NAME", conflicts_with_all = ["bitrate", "crf", "qp", "preset"])]
     quality: Option<String>,
 
-    /// Video codec: h264, hevc or av1. .mp4 only
+    /// Video codec: h264, hevc or av1 in .mp4, prores in .mov, vp9 in .webm. Video only
     #[arg(long, value_name = "CODEC")]
     codec: Option<EncodeCodec>,
 
-    /// Bits per sample: 8 or 10 (hevc and av1). .mp4 only
+    /// Bits per sample: 8 or 10 (hevc and av1; prores is 10). Video only
     #[arg(long, value_name = "BITS")]
     bit_depth: Option<BitDepth>,
+
+    /// Keep transparency as an alpha channel: .mov (ProRes 4444) or .webm (VP9) only.
+    /// `--alpha false` renders opaque over a composition that asks for alpha
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+    alpha: Option<bool>,
 
     /// JSON file of quality presets and encoder orders, checked before rendering
     #[arg(long, env = QUALITY_CONFIG_ENV, value_name = "PATH")]
     quality_config: Option<PathBuf>,
 
-    /// Target bits per second, as 14000000, 14000k or 14M. .mp4 only
+    /// Target bits per second, as 14000000, 14000k or 14M. Video only
     #[arg(long, value_name = "BPS|Nk|NM", value_parser = parse_bitrate)]
     bitrate: Option<u64>,
 
-    /// Constant rate factor. .mp4 only
+    /// Constant rate factor. Video only
     #[arg(long, value_name = "N")]
     crf: Option<u8>,
 
-    /// Constant quantizer. .mp4 only
+    /// Constant quantizer. Video only
     #[arg(long, value_name = "N")]
     qp: Option<u8>,
 
-    /// Encoder speed preset. .mp4 only
+    /// Encoder speed preset. Video only
     #[arg(long, value_name = "NAME")]
     preset: Option<String>,
 
@@ -290,8 +300,12 @@ impl Cli {
             .expect("clap allows at most one rate control")
     }
 
-    /// The encoders an .mp4 render of `composition` tries.
-    fn encoder_choice(&self, composition: &Composition) -> Result<VideoEncoderChoice> {
+    /// The encoders a video render of `composition` to `format` tries.
+    fn encoder_choice(
+        &self,
+        composition: &Composition,
+        format: OutputFormat,
+    ) -> Result<VideoEncoderChoice> {
         let config_path = self
             .quality_config
             .as_deref()
@@ -301,11 +315,12 @@ impl Cli {
             preset: self.quality.clone(),
             codec: self.codec,
             bit_depth: self.bit_depth,
+            alpha: self.alpha,
             settings: self.quality(),
             encoder: self.encoder.clone(),
         }
         .with_env_encoder();
-        resolve_encoder(&config, composition, request).map_err(|error| anyhow!(error))
+        Ok(resolve_encoder(&config, composition, format, request)?)
     }
 
     /// What the command line asks to write, after checking that no flag only another kind of
@@ -325,13 +340,17 @@ impl Cli {
         let pattern = SequencePattern::parse(file_name)?;
         let format = match (extension.as_str(), pattern.is_some()) {
             ("mp4", false) => OutputFormat::Mp4,
-            ("mp4", true) => bail!("a %d pattern writes images, so use .png or .jpg, not .mp4"),
+            ("mov", false) => OutputFormat::Mov,
+            ("webm", false) => OutputFormat::Webm,
+            ("mp4" | "mov" | "webm", true) => {
+                bail!("a %d pattern writes images, so use .png or .jpg, not .{extension}")
+            }
             ("png", false) => OutputFormat::Png,
             ("png", true) => OutputFormat::PngSequence,
             ("jpg" | "jpeg", false) => OutputFormat::Jpeg,
             ("jpg" | "jpeg", true) => OutputFormat::JpegSequence,
             _ => bail!(
-                "unsupported output extension; use .mp4, .png, .jpg or .jpeg (got `{}`)",
+                "unsupported output extension; use .mp4, .mov, .webm, .png, .jpg or .jpeg (got `{}`)",
                 output.display()
             ),
         };
@@ -340,10 +359,11 @@ impl Cli {
                 || self.quality.is_some()
                 || self.codec.is_some()
                 || self.bit_depth.is_some()
+                || self.alpha.is_some()
                 || self.quality().is_some())
         {
             bail!(
-                "--encoder, --quality, --codec, --bit-depth, --bitrate, --crf, --qp and --preset are only supported when output is .mp4"
+                "--encoder, --quality, --codec, --bit-depth, --alpha, --bitrate, --crf, --qp and --preset are only supported when output is a video (.mp4, .mov or .webm)"
             );
         }
         if format.is_video() && self.frame.is_some() {
@@ -493,7 +513,7 @@ fn run(cli: &Cli) -> Result<()> {
         LocalMediaStore::new(media_root, &cli.render_config()).explaining_missing_sources();
 
     if plan.output.format.is_video() {
-        let choice = cli.encoder_choice(&composition)?;
+        let choice = cli.encoder_choice(&composition, plan.output.format)?;
         return render_to_partial(cli.output(), |partial| {
             render_mp4(
                 &composition,
@@ -527,7 +547,12 @@ fn render_to_partial(output: &Path, render: impl FnOnce(&Path) -> Result<()>) ->
 
     let existing = fs::metadata(&destination).ok();
     let mut partial = tempfile::Builder::new();
-    partial.prefix(".lumen-local-").suffix(".partial.mp4");
+    // The encoder picks its container from the extension, which the partial file keeps.
+    let extension = output.extension().map_or(String::new(), |extension| {
+        extension.to_string_lossy().to_ascii_lowercase()
+    });
+    let suffix = format!(".partial.{extension}");
+    partial.prefix(".lumen-local-").suffix(&suffix);
     // Without this the rename would leave a new output readable only by its owner, and a render
     // replacing a private output would be readable by others while it runs.
     #[cfg(unix)]
@@ -959,7 +984,7 @@ mod tests {
                 "{flag:?}"
             );
         }
-        assert!(parse(&["--output", "o.mp4", "--codec", "vp9"]).is_err());
+        assert!(parse(&["--output", "o.mp4", "--codec", "vp8"]).is_err());
         assert!(parse(&["--output", "o.mp4", "--bit-depth", "12"]).is_err());
         assert!(parse(&["--output", "o.mp4", "--crf", "300"]).is_err());
         assert!(parse(&["--output", "o.mp4", "--bitrate", "0"]).is_err());
@@ -974,7 +999,7 @@ mod tests {
 
         assert!(
             message(&["--output", "o.png", "--encoder", "libx264"])
-                .contains("only supported when output is .mp4")
+                .contains("only supported when output is a video")
         );
         for quality in [
             ["--bitrate", "14M"],
@@ -983,11 +1008,12 @@ mod tests {
             ["--quality", "high"],
             ["--codec", "hevc"],
             ["--bit-depth", "10"],
+            ["--alpha", "true"],
         ] {
             for output in ["o.png", "o.jpg", "o_%d.png"] {
                 assert!(
                     message(&["--output", output, quality[0], quality[1]])
-                        .contains("only supported when output is .mp4"),
+                        .contains("only supported when output is a video"),
                     "{output} {quality:?}"
                 );
             }
@@ -1121,7 +1147,7 @@ mod tests {
             let base = ["--output", "o.mp4", "--quality-config", config];
             parse(&[&base[..], flags].concat())
                 .unwrap()
-                .encoder_choice(&composition)
+                .encoder_choice(&composition, OutputFormat::Mp4)
         };
 
         let archive = choice(&[]).expect("archive resolves");
@@ -1137,6 +1163,37 @@ mod tests {
             ten_bit_h264.to_string().contains("always 8-bit"),
             "{ten_bit_h264}"
         );
+        let alpha_mp4 = choice(&["--alpha"]).unwrap_err();
+        assert!(
+            alpha_mp4.to_string().contains("can't hold alpha"),
+            "{alpha_mp4}"
+        );
+    }
+
+    #[test]
+    fn mov_and_webm_are_videos_that_can_ask_for_alpha() {
+        let format = |output: &str| {
+            parse(&["--output", output])
+                .unwrap()
+                .plan()
+                .map(|plan| plan.output.format)
+        };
+        assert_eq!(format("o.mov").unwrap(), OutputFormat::Mov);
+        assert_eq!(format("o.WEBM").unwrap(), OutputFormat::Webm);
+        assert!(
+            format("o_%d.webm")
+                .unwrap_err()
+                .to_string()
+                .contains("not .webm")
+        );
+        let alpha = |flags: &[&str]| {
+            parse(&[&["--output", "o.mov"], flags].concat())
+                .unwrap()
+                .alpha
+        };
+        assert_eq!(alpha(&[]), None);
+        assert_eq!(alpha(&["--alpha"]), Some(true));
+        assert_eq!(alpha(&["--alpha", "false"]), Some(false));
     }
 
     /// Runs `parsed_font_dir` in a child process, since clap reads `LUMEN_FONT_DIR` from the real

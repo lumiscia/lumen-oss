@@ -625,7 +625,20 @@ fn document_keys_schema_matches_engine_parsing() {
         ),
         (
             "unknown codec",
-            with_key(&["render_settings", "codec"], json!("vp9")),
+            with_key(&["render_settings", "codec"], json!("vp8")),
+            false,
+        ),
+        (
+            "alpha",
+            with_key(
+                &["render_settings"],
+                json!({ "width": 16, "height": 16, "codec": "prores", "alpha": true }),
+            ),
+            true,
+        ),
+        (
+            "non-boolean alpha",
+            with_key(&["render_settings", "alpha"], json!(1)),
             false,
         ),
         (

@@ -27,6 +27,11 @@ pub enum OutputCodec {
     H264,
     Hevc,
     Av1,
+    /// ProRes 4444, in `.mov`.
+    #[serde(rename = "prores")]
+    ProRes,
+    /// VP9, in `.webm`.
+    Vp9,
 }
 
 /// Bits per sample of the encoded video.
@@ -58,6 +63,8 @@ pub struct OutputSettings {
     /// A quality preset name, such as `high`.
     pub quality: Option<String>,
     pub bit_depth: Option<BitDepth>,
+    /// Keeps the frame's transparency in the video, which only ProRes and VP9 hold.
+    pub alpha: Option<bool>,
 }
 
 /// A validated composition that can no longer change. It is fingerprinted once when built, so
