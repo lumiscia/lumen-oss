@@ -193,6 +193,7 @@
       "expression": "=if(((((frame < 10) || (frame == 45)) && (frame != 3)) && (!(frame > 60))), 2, 3)",
       "expected": 2
     },
+    "tag_escapes": { "expression": "=uppercase('it\\'s a\\\\b')", "expected": "IT'S A\\B" },
     "raw_operand_not": { "expression": "=if((!(frame > 100)), 1, 0)", "expected": 1 },
     "raw_operand_and": {
       "expression": "=if(((frame > 0 || frame < -10) && (frame < 5)), 1, 0)",

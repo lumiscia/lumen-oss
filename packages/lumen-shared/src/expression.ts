@@ -507,6 +507,8 @@ export type ExprPart = AnyArg | boolean;
  * As a template tag, each interpolated value is lowered like a builtin argument, so built
  * expressions need no `=` stripped: ``expr<Vec2>`vec2(0, ${lift})` ``. Numbers, strings and
  * tuples are formatted and quoted, and a raw expression is bracketed where it meets an operator.
+ * The text between interpolations is taken as written, so a backslash reaches the engine as a
+ * backslash: ``expr`uppercase('it\'s')` `` keeps its `\'`. Only `` \` `` and `\${` lose theirs.
  */
 export function expr<T extends Value = never>(source: string): Expr<T>;
 export function expr<T extends Value = never>(
@@ -517,7 +519,10 @@ export function expr<T extends Value = never>(
   source: string | TemplateStringsArray,
   ...parts: readonly ExprPart[]
 ): Expr<T> {
-  const chunks = typeof source === "string" ? [source] : source;
+  const chunks =
+    typeof source === "string"
+      ? [source]
+      : source.raw.map((chunk) => chunk.replace(/\\(`|\$\{)/g, "$1"));
   if (chunks[0]?.startsWith("=")) {
     throw new TypeError("`expr` takes the expression without its leading `=`.");
   }
@@ -532,13 +537,14 @@ function interpolated(part: unknown): string {
   if (typeof part === "boolean") {
     return String(part);
   }
+  if (part instanceof Expr || typeof part === "number" || typeof part === "string") {
+    return operand(part);
+  }
   if (
-    part instanceof Expr ||
-    typeof part === "number" ||
-    typeof part === "string" ||
-    Array.isArray(part)
+    Array.isArray(part) &&
+    part.every((member) => member instanceof Expr || typeof member === "number")
   ) {
-    return operand(part as AnyArg);
+    return lower(part as unknown as AnyArg);
   }
   throw new TypeError(`\`expr\` cannot interpolate ${part === null ? "null" : typeof part}.`);
 }

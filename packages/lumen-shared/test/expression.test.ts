@@ -239,6 +239,7 @@ const cases: Readonly<Record<string, Case>> = {
     expression: when(frame.lt(10).or(frame.eq(45)).and(frame.neq(3)).and(frame.gt(60).not()), 2, 3),
     expected: 2,
   },
+  tag_escapes: { expression: expr<string>`uppercase('it\'s a\\b')`, expected: "IT'S A\\B" },
   raw_operand_not: { expression: when(expr<boolean>("frame > 100").not(), 1, 0), expected: 1 },
   raw_operand_and: {
     expression: when(expr<boolean>("frame > 0 || frame < -10").and(frame.lt(5)), 1, 0),
@@ -458,6 +459,10 @@ describe("expression helpers", () => {
 
   test("expr as a template tag rejects what it cannot lower", () => {
     expect(() => expr`=frame`).toThrow("without its leading `=`");
+    expect(String(expr`uppercase('it\'s')`)).toBe("=uppercase('it\\'s')");
+    expect(String(expr`'a\\n' + '\${x} \`'`)).toBe("='a\\\\n' + '${x} `'");
+    expect(() => expr`${["a", "b"] as never}`).toThrow("cannot interpolate");
+    expect(() => expr`${[[1, 2], 3] as never}`).toThrow("cannot interpolate");
     expect(() => expr`=${frame}`).toThrow("without its leading `=`");
     expect(String(expr`frame = ${frame}`)).toBe("=frame = frame");
     expect(() => expr`${Number.NaN}`).toThrow("cannot contain");
