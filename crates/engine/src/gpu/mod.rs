@@ -10,6 +10,7 @@ pub(crate) mod frame_graph;
 mod image_size;
 #[cfg(feature = "ffmpeg")]
 mod media;
+pub(crate) mod mips;
 pub(crate) mod params;
 mod renderer;
 #[cfg(test)]

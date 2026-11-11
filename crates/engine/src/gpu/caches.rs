@@ -24,6 +24,10 @@ pub struct CacheBudgets {
     /// `.cube` colour lookup tables, counted in total. Those the latest frame used are kept.
     /// 128 MiB.
     pub luts: u64,
+    /// Mip chains of the sources `transform` and `resize` show smaller than their size, and of
+    /// the rasters 3D scenes sample, counted in total. Those the latest frame used are kept. Each
+    /// is also dropped after 600 frames unused. 256 MiB.
+    pub mip_chains: u64,
     /// 3D models, counted in total: each one's GPU buffers and textures, plus the CPU bounds of
     /// its primitives and joints kept beside them. Those the latest frame drew, and those a kept
     /// output was drawn from, are kept. 256 MiB.
@@ -42,6 +46,7 @@ impl Default for CacheBudgets {
             pooled_textures: lumen_gpu::DEFAULT_POOL_BUDGET_BYTES,
             retained_outputs: 1 << 30,
             luts: 128 << 20,
+            mip_chains: 256 << 20,
             models: 256 << 20,
             environments: 256 << 20,
             text_meshes: 64 << 20,
@@ -58,6 +63,7 @@ pub struct CacheStats {
     pub pooled_textures: u64,
     pub retained_outputs: u64,
     pub luts: u64,
+    pub mip_chains: u64,
     /// GPU buffers and textures of 3D models, and the CPU bounds kept beside them.
     pub models: u64,
     /// Environment maps' textures, without the fixed 8 KiB lookup table their lighting uses.

@@ -1329,7 +1329,10 @@ fn mip_rasters(
         };
         let levels = mips::levels_for(raster.domain.storage_size, shown);
         if mips::is_minified(shown) && levels > 1 && !made.contains_key(&raster.tex) {
-            made.insert(raster.tex, mips::mipped(cx, node, raster, levels)?);
+            made.insert(
+                raster.tex,
+                crate::gpu::mips::mipped(cx, node, raster, None, levels)?,
+            );
         }
     }
     for object in &mut collected.scene.objects {

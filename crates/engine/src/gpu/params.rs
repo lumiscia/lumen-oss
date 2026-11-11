@@ -134,12 +134,14 @@ pub(crate) struct TransformParams {
     pub(crate) sampling: u32,
     /// Taps to average over the shutter, or 0 to sample with the fields above alone.
     pub(crate) tap_count: u32,
-    pub(crate) _pad0: u32,
+    /// The mip level that a filtered minification reads.
+    pub(crate) lod: f32,
     /// Canvas pixel of the output's first texel.
     pub(crate) output_origin: [i32; 2],
     /// Source pixel of the source's first texel.
     pub(crate) source_origin: [i32; 2],
-    pub(crate) _pad: [u32; 2],
+    /// Texels of the source a pixel covers along its axes when the source is minified, else 0.
+    pub(crate) footprint: [f32; 2],
     pub(crate) taps: [TransformTap; crate::node::motion::MAX_MOTION_TAPS],
 }
 
@@ -150,7 +152,11 @@ pub(crate) struct TransformTap {
     pub(crate) translate: [f32; 2],
     pub(crate) pivot: [f32; 2],
     pub(crate) rotate_radians: f32,
-    pub(crate) _pad: u32,
+    /// The mip level that a filtered minification reads.
+    pub(crate) lod: f32,
+    /// Texels of the source a pixel covers along its axes when the source is minified, else 0.
+    pub(crate) footprint: [f32; 2],
+    pub(crate) _pad: [u32; 2],
 }
 
 #[repr(C)]
@@ -183,7 +189,11 @@ pub(crate) struct ResizeParams {
     pub(crate) size: [u32; 2],
     pub(crate) mode: u32,
     pub(crate) sampling: u32,
-    pub(crate) _pad: [u32; 2],
+    /// Texels of the source a pixel covers along its axes when the source is minified, else 0.
+    pub(crate) footprint: [f32; 2],
+    /// The mip level that a filtered minification reads.
+    pub(crate) lod: f32,
+    pub(crate) _pad: u32,
 }
 
 /// Converts a signed pixel coordinate property to the `i32` the shaders use.

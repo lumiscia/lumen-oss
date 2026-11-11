@@ -24,7 +24,7 @@ use lumen_engine::{
 use serde_json::{Value, json};
 
 use super::compositions;
-use crate::bench::media::BenchmarkMediaStore;
+use crate::bench::media::{BenchmarkMediaStore, InMemoryImage};
 
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -403,6 +403,73 @@ fn load(args: &Args) -> anyhow::Result<(Composition, Fixture)> {
             Fixture::video(MemoryVideo::new(1920, 1080, 16, 240)),
         ),
         "shader_switch" => (parse(shader_switch())?, Fixture::fonts(fonts()?)),
+        "minified_image" => (
+            parse(minified(
+                "image",
+                "plate",
+                (3840.0, 2160.0),
+                0.125,
+                (480.0, 270.0),
+            ))?,
+            Fixture::bench(BenchmarkMediaStore::Image(InMemoryImage::checkerboard(
+                "plate", 3840, 2160,
+            ))),
+        ),
+        "minified_video" => (
+            parse(minified(
+                "video",
+                "video",
+                (3840.0, 2160.0),
+                0.125,
+                (480.0, 270.0),
+            ))?,
+            Fixture::video(MemoryVideo::new(3840, 2160, 4, 240)),
+        ),
+        "shrunk_video" => (
+            parse(minified(
+                "video",
+                "video",
+                (1920.0, 1080.0),
+                0.75,
+                (960.0, 540.0),
+            ))?,
+            Fixture::video(MemoryVideo::new(1920, 1080, 4, 240)),
+        ),
+        "half_video" => (
+            parse(minified(
+                "video",
+                "video",
+                (1920.0, 1080.0),
+                0.5,
+                (960.0, 540.0),
+            ))?,
+            Fixture::video(MemoryVideo::new(1920, 1080, 4, 240)),
+        ),
+        "unscaled_video" => (
+            parse(minified(
+                "video",
+                "video",
+                (1920.0, 1080.0),
+                1.0,
+                (960.0, 540.0),
+            ))?,
+            Fixture::video(MemoryVideo::new(1920, 1080, 4, 240)),
+        ),
+        name if name.starts_with("video_scale:") => {
+            let scale: f64 = name["video_scale:".len()..]
+                .parse()
+                .context("video_scale")?;
+            (
+                parse(minified(
+                    "video",
+                    "video",
+                    (1920.0, 1080.0),
+                    scale,
+                    (960.0, 540.0),
+                ))?,
+                Fixture::video(MemoryVideo::new(1920, 1080, 4, 240)),
+            )
+        }
         name if name.starts_with("file:") => {
             let source = std::fs::read_to_string(&name["file:".len()..])?;
             let composition = lumen_engine::json::parse(&source).context("composition json")?;
@@ -610,6 +677,30 @@ fn remapped_media() -> Value {
             (5, 7, "overlay"),
         ],
     )
+}
+
+/// A `width` × `height` source of `kind` scaled around its centre to about `scale`, which an
+/// expression varies a little each frame so that the transform records on every frame, with its
+/// centre moved to `centre`. A still image's source stays the same from frame to frame, and a
+/// video's changes.
+fn minified(
+    kind: &str,
+    source: &str,
+    (width, height): (f64, f64),
+    scale: f64,
+    centre: (f64, f64),
+) -> Value {
+    // Scale 1 stays there, in an expression, so that it records on every frame all the same.
+    let swing = if scale == 1.0 { 0.0 } else { scale * 0.04 };
+    let scale_at = format!("={scale} + {swing} * sin(frame / 10)");
+    let nodes = vec![
+        json!({ "id": 1, "type": "media_in", "params": { "kind": kind, "source": source } }),
+        json!({ "id": 2, "type": "transform", "params": {
+            "scale_x": scale_at, "scale_y": scale_at,
+            "translate_x": centre.0 - width / 2.0, "translate_y": centre.1 - height / 2.0,
+        } }),
+    ];
+    graph(240, nodes, vec![(1, 2, "source")])
 }
 
 /// A shader whose source an expression selects, and a switch between two branches.

@@ -4,6 +4,14 @@
 
 @group(0) @binding(0) var source: texture_2d<f32>;
 
+// Where the first level's texels start in `source`, for a chain of part of a raster.
+struct Region {
+    origin: vec2<i32>,
+    _pad: vec2<i32>,
+}
+
+@group(0) @binding(1) var<uniform> region: Region;
+
 // Rasters hold premultiplied linear light, which is what is averaged.
 fn to_linear(stored: vec4<f32>) -> vec4<f32> {
     return stored;
@@ -20,10 +28,10 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
 }
 
-// The raster itself, as the first level.
+// The raster itself, or the part of it that `region` places, as the first level.
 @fragment
 fn fs_copy(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
-    return textureLoad(source, vec2<i32>(at.xy), 0);
+    return textureLoad(source, vec2<i32>(at.xy) + region.origin, 0);
 }
 
 // The level below `source`, whose sides are half of its sides, rounded down.

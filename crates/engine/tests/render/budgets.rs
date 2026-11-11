@@ -83,6 +83,35 @@ fn luts_past_their_budget_keep_only_what_the_frame_uses() {
 }
 
 #[test]
+fn mip_chains_past_their_budget_keep_only_what_the_frame_uses() {
+    let shrunk = |source: &str| -> Composition {
+        scene(
+            (16, 16),
+            json!([
+                { "id": 1, "type": "media_in", "params": { "kind": "image", "source": source } },
+                { "id": 2, "type": "transform", "in": { "source": 1 },
+                  "params": { "scale_x": 0.125, "scale_y": 0.125 } },
+            ]),
+        )
+        .into()
+    };
+    // Idle chains of a size are reused for the next of it, so the images differ in size.
+    let media = TestMedia::default()
+        .image("a", 128, 128, vec![255; 128 * 128 * 4])
+        .image("b", 96, 96, vec![128; 96 * 96 * 4]);
+    check_budget(
+        shrunk("a"),
+        shrunk("b"),
+        media,
+        |budgets| CacheBudgets {
+            mip_chains: 0,
+            ..budgets
+        },
+        |stats| stats.mip_chains,
+    );
+}
+
+#[test]
 fn images_past_their_budget_keep_only_what_the_frame_binds() {
     let shown = |source: &str| -> Composition {
         scene(
