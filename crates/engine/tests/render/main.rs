@@ -2,6 +2,7 @@ mod accumulation;
 #[cfg(all(feature = "ffmpeg", feature = "image"))]
 mod alpha;
 mod binding;
+mod budgets;
 mod cache;
 mod clips;
 mod color;

@@ -154,6 +154,44 @@ impl MediaStore for MemoryStore {
 }
 ```
 
+## Caches and memory
+
+A `GpuCompositionRenderer` keeps media and what it derives from them on the GPU between frames,
+so later frames and renders skip decoding, uploading and drawing again. Each cache has a byte
+budget for what the latest frame doesn't use. What the frame uses, and what a kept output was
+drawn from, always stays, and past the budget the least recently used of the rest are freed. The
+budgets are one `CacheBudgets`, set with `set_cache_budgets` and read with `cache_budgets`:
+
+| What it holds                                                                       | Field              | Default |
+| ----------------------------------------------------------------------------------- | ------------------ | ------- |
+| Image textures, by identity and size, that no frame binds                           | `image_textures`   | 256 MiB |
+| Pooled textures frames are done with, which later frames reuse                      | `pooled_textures`  | 384 MiB |
+| Outputs of nodes that don't change with the frame (dropped after 600 frames unread) | `retained_outputs` | 1 GiB   |
+| `.cube` lookup tables                                                               | `luts`             | 128 MiB |
+| 3D models' buffers and textures                                                     | `models`           | 256 MiB |
+| 3D environment maps                                                                 | `environments`     | 256 MiB |
+| Extruded `text_3d` meshes (at most 256)                                             | `text_meshes`      | 64 MiB  |
+
+```rust
+use lumen_engine::gpu::{CacheBudgets, GpuCompositionRenderer};
+
+let mut renderer = GpuCompositionRenderer::new().await?;
+renderer.set_cache_budgets(CacheBudgets {
+    image_textures: 64 << 20,
+    retained_outputs: 256 << 20,
+    ..CacheBudgets::default()
+});
+let stats = renderer.cache_stats(); // bytes each cache holds now
+```
+
+`cache_stats` reports the bytes each cache holds, what frames use included, and the 64 MiB glyph
+atlas once text is drawn. Its `pooled_textures` count retained outputs too, as those are pooled
+textures. The atlas has a fixed size rather than a budget, and 3D raster mip chains keep 256 MiB
+beyond what the latest frame uses and drop chains unused for 600 frames, which `CacheBudgets` does
+not set yet. `release_resources` frees everything but the atlas, and `release_text_atlas` that
+too. Video decoders and their decoded frames, and decoded images on the CPU, belong to the media
+store and its resolvers: `FfmpegVideoResolver` keeps up to 64 frames or 256 MiB per source.
+
 ## Audio
 
 The root composition and each template can hold an `audio` timeline of tracks and clips. A
