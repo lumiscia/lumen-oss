@@ -5,7 +5,7 @@ use lumen_ffmpeg::AudioRangeReader;
 use super::open_failure;
 use crate::{
     audio::{AUDIO_CHANNELS, AudioBuffer, AudioResolver},
-    error::{MediaError, MediaFailure},
+    error::MediaError,
     media::AssetKind,
 };
 
@@ -79,13 +79,7 @@ impl AudioResolver for FfmpegAudioResolver {
 }
 
 fn decode_error(source: &str, err: lumen_ffmpeg::FfmpegError) -> MediaError {
-    let failure = MediaFailure::decode(source, format!("audio decode failed: {err}"))
-        .wanting(&[AssetKind::Audio]);
-    if err.is_resource_exhaustion() {
-        failure.transient().into()
-    } else {
-        failure.into()
-    }
+    super::ffmpeg_failure(source, AssetKind::Audio, "audio decode failed", &err)
 }
 
 #[cfg(test)]

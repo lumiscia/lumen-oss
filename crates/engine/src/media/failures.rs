@@ -49,16 +49,25 @@ fn open_audio(source: &str) -> MediaError {
         .unwrap_or_else(|| panic!("{source} opens as audio"))
 }
 
+/// Opens `source` as `wanted` and checks it fails as `expected` says.
+fn check(row: &str, wanted: AssetKind, source: &str, expected: Expected) {
+    let error = match wanted {
+        AssetKind::Image => open_image(source),
+        AssetKind::Video => open_video(source),
+        _ => open_audio(source),
+    };
+    expect(error, wanted, source, expected, row);
+}
+
 #[test]
 fn a_source_that_cant_be_used_fails_with_the_same_shape_for_every_kind() {
+    use AssetKind::{Audio, Image, Video};
+
     let dir = tempfile::tempdir().unwrap();
     let dir = dir.path();
-    let (Some(wav), Some(mp4)) = (
-        generate(
-            dir,
-            "tone.wav",
-            &["-i", "sine=frequency=440:duration=0.5", "-c:a", "pcm_s16le"],
-        ),
+    let tone = ["-i", "sine=frequency=440:duration=0.5"];
+    let (Some(wav), Some(mp4), Some(m4a)) = (
+        generate(dir, "tone.wav", &[tone[0], tone[1], "-c:a", "pcm_s16le"]),
         generate(
             dir,
             "clip.mp4",
@@ -71,10 +80,16 @@ fn a_source_that_cant_be_used_fails_with_the_same_shape_for_every_kind() {
                 "yuv420p",
             ],
         ),
+        generate(dir, "voice.mp4", &[tone[0], tone[1], "-c:a", "aac"]),
     ) else {
         eprintln!("ffmpeg CLI unavailable; skipping the media failure table");
         return;
     };
+    let webm = generate(
+        dir,
+        "voice.webm",
+        &[tone[0], tone[1], "-c:a", "opus", "-strict", "-2"],
+    );
     let path = |name: &str, bytes: &[u8]| {
         let path = dir.join(name);
         fs::write(&path, bytes).unwrap();
@@ -98,124 +113,32 @@ fn a_source_that_cant_be_used_fails_with_the_same_shape_for_every_kind() {
         png.truncate(png.len() / 2);
         path("cut.png", &png)
     };
-    let not_found = || Expected {
-        code: "media.not_found",
-        found: None,
-    };
-    let decode = || Expected {
-        code: "media.decode",
-        found: None,
-    };
-    let unsupported = || Expected {
-        code: "media.unsupported",
-        found: None,
-    };
-    let wrong = |found| Expected {
-        code: "media.wrong_kind",
-        found: Some(found),
-    };
+    let fails = |code, found| Expected { code, found };
+    let not_found = || fails("media.not_found", None);
+    let decode = || fails("media.decode", None);
+    let unsupported = || fails("media.unsupported", None);
+    // A container's header can't tell video from audio, so only opening it says what it holds.
+    let wrong = |found| fails("media.wrong_kind", found);
+    let (audio, video) = (Some(Audio), Some(Video));
 
-    let rows = [
-        (
-            "image: missing",
-            AssetKind::Image,
-            &missing,
-            open_image(&missing),
-            not_found(),
-        ),
-        (
-            "image: a video",
-            AssetKind::Image,
-            &mp4,
-            open_image(&mp4),
-            wrong(AssetKind::Video),
-        ),
-        (
-            "image: audio",
-            AssetKind::Image,
-            &wav,
-            open_image(&wav),
-            wrong(AssetKind::Audio),
-        ),
-        (
-            "image: HEIC",
-            AssetKind::Image,
-            &heic,
-            open_image(&heic),
-            unsupported(),
-        ),
-        (
-            "image: not an image",
-            AssetKind::Image,
-            &garbage,
-            open_image(&garbage),
-            decode(),
-        ),
-        (
-            "image: truncated",
-            AssetKind::Image,
-            &truncated,
-            open_image(&truncated),
-            decode(),
-        ),
-        (
-            "video: missing",
-            AssetKind::Video,
-            &missing,
-            open_video(&missing),
-            not_found(),
-        ),
-        (
-            "video: audio",
-            AssetKind::Video,
-            &wav,
-            open_video(&wav),
-            wrong(AssetKind::Audio),
-        ),
-        (
-            "video: playlist",
-            AssetKind::Video,
-            &playlist,
-            open_video(&playlist),
-            unsupported(),
-        ),
-        (
-            "video: not media",
-            AssetKind::Video,
-            &garbage,
-            open_video(&garbage),
-            decode(),
-        ),
-        (
-            "audio: missing",
-            AssetKind::Audio,
-            &missing,
-            open_audio(&missing),
-            not_found(),
-        ),
-        (
-            "audio: a silent video",
-            AssetKind::Audio,
-            &mp4,
-            open_audio(&mp4),
-            wrong(AssetKind::Video),
-        ),
-        (
-            "audio: playlist",
-            AssetKind::Audio,
-            &playlist,
-            open_audio(&playlist),
-            unsupported(),
-        ),
-        (
-            "audio: not media",
-            AssetKind::Audio,
-            &garbage,
-            open_audio(&garbage),
-            decode(),
-        ),
-    ];
-    for (row, wanted, source, error, expected) in rows {
-        expect(error, wanted, source, expected, row);
+    check("image: missing", Image, &missing, not_found());
+    check("image: a video", Image, &mp4, wrong(None));
+    check("image: an audio-only mp4", Image, &m4a, wrong(None));
+    check("image: audio", Image, &wav, wrong(audio));
+    check("image: HEIC", Image, &heic, unsupported());
+    check("image: not an image", Image, &garbage, decode());
+    check("image: truncated", Image, &truncated, decode());
+    check("video: missing", Video, &missing, not_found());
+    check("video: audio", Video, &wav, wrong(audio));
+    check("video: an audio-only mp4", Video, &m4a, wrong(audio));
+    check("video: playlist", Video, &playlist, unsupported());
+    check("video: not media", Video, &garbage, decode());
+    check("audio: missing", Audio, &missing, not_found());
+    check("audio: a silent video", Audio, &mp4, wrong(video));
+    check("audio: playlist", Audio, &playlist, unsupported());
+    check("audio: not media", Audio, &garbage, decode());
+    if let Some(webm) = webm {
+        check("image: an audio-only webm", Image, &webm, wrong(None));
+        check("video: an audio-only webm", Video, &webm, wrong(audio));
     }
 }

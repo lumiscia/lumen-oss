@@ -39,7 +39,7 @@ pub use resolver::{
     CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver, MediaFrame,
     ModelResolver, VideoFrameResolver, VideoMetadata,
 };
-pub use sniff::sniff_kind;
+pub use sniff::{Sniff, sniff, sniff_kind};
 pub use store::{MediaStore, TextSession};
 pub use yuv::{
     ChromaSubsampling, Rotation, YuvChroma, YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix,

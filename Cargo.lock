@@ -1604,6 +1604,7 @@ dependencies = [
  "foldhash",
  "image",
  "js-sys",
+ "libc",
  "lumen-engine-3d",
  "lumen-engine-ffmpeg",
  "lumen-engine-gpu",

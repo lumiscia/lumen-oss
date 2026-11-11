@@ -471,26 +471,50 @@ impl MediaFailure {
     }
 
     /// The failure from reading `source`, which `error` is about: a file that can't be opened is
-    /// `media.not_found`, a shortage that can pass is a transient `media.decode`, and any other
-    /// failure to read is `media.decode` of `what`.
+    /// `media.not_found`, a shortage of memory, file descriptors or a device that can pass is a
+    /// transient `media.decode`, and any other failure to read is `media.decode` of `what`.
     pub fn from_io(source: &str, what: &str, error: &std::io::Error) -> Self {
         use std::io::ErrorKind;
-        match error.kind() {
-            ErrorKind::NotFound | ErrorKind::PermissionDenied => {
-                Self::not_found(source, error.to_string())
-            }
-            kind => {
-                let failure = Self::decode(source, format!("failed reading {what}: {error}"));
-                match kind {
-                    ErrorKind::OutOfMemory
-                    | ErrorKind::WouldBlock
-                    | ErrorKind::Interrupted
-                    | ErrorKind::ResourceBusy => failure.transient(),
-                    _ => failure,
-                }
-            }
+        if matches!(
+            error.kind(),
+            ErrorKind::NotFound | ErrorKind::PermissionDenied | ErrorKind::NotADirectory
+        ) {
+            return Self::not_found(source, error.to_string());
+        }
+        let failure = Self::decode(source, format!("failed reading {what}: {error}"));
+        if is_shortage(error) {
+            failure.transient()
+        } else {
+            failure
         }
     }
+}
+
+/// Whether `error` is the system running short of memory, file descriptors or a device, which can
+/// pass.
+fn is_shortage(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    if matches!(
+        error.kind(),
+        ErrorKind::OutOfMemory
+            | ErrorKind::WouldBlock
+            | ErrorKind::Interrupted
+            | ErrorKind::ResourceBusy
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    if let Some(errno) = error.raw_os_error() {
+        return [
+            libc::ENOMEM,
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::EAGAIN,
+            libc::EBUSY,
+        ]
+        .contains(&errno);
+    }
+    false
 }
 
 impl fmt::Display for MediaFailure {
@@ -737,5 +761,21 @@ mod tests {
                 "actual": 9000,
             })
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shortage_of_descriptors_or_memory_while_reading_is_transient() {
+        for errno in [libc::EMFILE, libc::ENFILE, libc::ENOMEM, libc::EAGAIN] {
+            let io = std::io::Error::from_raw_os_error(errno);
+            let failure = MediaFailure::from_io("a.png", "image", &io);
+            assert_eq!(failure.code(), "media.decode", "{io}");
+            assert!(failure.transient, "{io}");
+        }
+        let corrupt = std::io::Error::from_raw_os_error(libc::EIO);
+        assert!(!MediaFailure::from_io("a.png", "image", &corrupt).transient);
+        let missing = std::io::Error::from_raw_os_error(libc::ENOTDIR);
+        let failure = MediaFailure::from_io("a/b.png", "image", &missing);
+        assert_eq!(failure.code(), "media.not_found");
     }
 }

@@ -240,14 +240,14 @@ fn model_failure(source: &str, bytes: &[u8], error: ModelError) -> MediaError {
     let wanted = [AssetKind::Model];
     let failure = match error {
         ModelError::Invalid(_) if !bytes.starts_with(b"glTF") => {
-            match crate::media::sniff_kind(bytes) {
+            match crate::media::sniff(bytes).other_than(AssetKind::Model) {
                 Some(found) => MediaFailure::wrong_kind(
                     source,
                     &wanted,
-                    Some(found),
+                    found,
                     "the file is not a binary glTF (.glb)",
                 ),
-                None if bytes.trim_ascii_start().starts_with(b"{") => MediaFailure::unsupported(
+                None if lumen_3d::model::is_gltf_json(bytes) => MediaFailure::unsupported(
                     source,
                     "glTF JSON (.gltf) files are not read; use a binary glTF (.glb)",
                 ),
@@ -1026,6 +1026,19 @@ mod tests {
         assert_eq!(
             read_as_model(b"nothing like a model at all"),
             ("media.decode", None)
+        );
+        // A file that only starts like JSON is not taken for a glTF document.
+        for json in [
+            &b"{garbage"[..],
+            br#"{"name": "a", "version": "1.0"}"#,
+            b"{",
+        ] {
+            assert_eq!(read_as_model(json), ("media.decode", None));
+        }
+        // A video or audio container is not a model, whichever it holds.
+        assert_eq!(
+            read_as_model(b"\0\0\0\x18ftypmp42\0\0\0\0"),
+            ("media.wrong_kind", None)
         );
         assert_eq!(
             read_as_model(b"glTF\x02\0\0\0\xff\xff\xff\x7f"),

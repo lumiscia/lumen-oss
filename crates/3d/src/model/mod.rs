@@ -25,6 +25,7 @@ mod buffers;
 #[cfg(feature = "draco")]
 mod draco;
 mod glb;
+mod gltf_json;
 mod image;
 mod info;
 #[cfg(feature = "ktx2")]
@@ -44,6 +45,7 @@ use crate::{Blending, MAX_SCENE_NODES, Maps, SkinVertex, Vertex};
 use animation::Animation;
 pub use animation::Playback;
 pub use bounds::SkinBounds;
+pub use gltf_json::{GLTF_JSON_SNIFF_BYTES, is_gltf_json};
 pub use info::{AnimationInfo, MaterialInfo, ModelInfo};
 
 /// The largest file read.

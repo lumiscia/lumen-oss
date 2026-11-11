@@ -11,7 +11,7 @@ use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 use super::collect::{evictions, storage_buffer};
 use crate::error::{LumenError, MediaError, MediaFailure};
 use crate::gpu::frame_graph::FrameCx;
-use crate::media::{AssetKind, EnvironmentResolver, sniff_kind};
+use crate::media::{AssetKind, EnvironmentResolver, sniff};
 
 /// The bytes of environment maps the cache keeps on the GPU beyond those the latest frame drew or
 /// a kept output drew.
@@ -212,11 +212,11 @@ fn environment_failure(source: &str, bytes: &[u8], error: EnvironmentError) -> M
     let wanted = [AssetKind::Environment];
     let failure = match error {
         EnvironmentError::Unsupported(_) if !environment::is_environment_magic(bytes) => {
-            match sniff_kind(bytes) {
+            match sniff(bytes).other_than(AssetKind::Environment) {
                 Some(found) => MediaFailure::wrong_kind(
                     source,
                     &wanted,
-                    Some(found),
+                    found,
                     "the file is not a Radiance .hdr or OpenEXR .exr map",
                 ),
                 None => MediaFailure::decode(source, error.to_string()),

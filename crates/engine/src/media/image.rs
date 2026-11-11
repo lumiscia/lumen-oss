@@ -3,8 +3,8 @@ use std::{fs, io::Cursor, path::Path, sync::Arc};
 use crate::error::{MediaError, MediaFailure};
 
 use super::{
-    AssetKind, CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame,
-    premultiply_rgba_in_place_if_needed, sniff_kind,
+    AssetKind, CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, Sniff,
+    premultiply_rgba_in_place_if_needed, sniff,
 };
 
 /// The memory the image decoder may use for one image.
@@ -84,16 +84,16 @@ fn image_failure(source: &str, encoded: &[u8], error: &image::ImageError) -> Med
             )
         }
         ImageError::Unsupported(_) if image::guess_format(encoded).is_err() => {
-            match sniff_kind(encoded) {
-                Some(AssetKind::Image) => {
-                    MediaFailure::unsupported(source, "this image format is not one Lumen reads")
-                }
+            match sniff(encoded).other_than(AssetKind::Image) {
                 Some(found) => MediaFailure::wrong_kind(
                     source,
                     &[AssetKind::Image],
-                    Some(found),
+                    found,
                     "the file is not an image",
                 ),
+                None if sniff(encoded) == Sniff::Kind(AssetKind::Image) => {
+                    MediaFailure::unsupported(source, "this image format is not one Lumen reads")
+                }
                 None => {
                     MediaFailure::decode(source, "the file is not in a recognised image format")
                 }

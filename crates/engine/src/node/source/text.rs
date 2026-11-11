@@ -7,7 +7,7 @@ use std::{
 use crate::error::{LumenError, MediaFailure, RenderError};
 use crate::expr::{ExpressionContext, GlyphScope};
 use crate::gpu::BoundFrame;
-use crate::media::{AssetKind, FontResolver, MediaStore, TextSession, sniff_kind};
+use crate::media::{AssetKind, FontResolver, MediaStore, TextSession, sniff};
 use crate::node::vector::{
     drawable::{DrawableMotion, DrawablePlacement, DrawablePlacementDelegate, DrawableTransform},
     paint::Paint,
@@ -1524,13 +1524,8 @@ fn unreadable_font(family: &str, heads: &[Vec<u8>]) -> MediaFailure {
             )
             .wanting(&wanted);
         }
-        if let Some(found) = sniff_kind(head).filter(|found| *found != AssetKind::Font) {
-            return MediaFailure::wrong_kind(
-                family,
-                &wanted,
-                Some(found),
-                "the file is not a font",
-            );
+        if let Some(found) = sniff(head).other_than(AssetKind::Font) {
+            return MediaFailure::wrong_kind(family, &wanted, found, "the file is not a font");
         }
     }
     MediaFailure::decode(family, "its font data holds no readable face").wanting(&wanted)

@@ -19,6 +19,7 @@ use crate::{
 };
 
 use super::{
+    ffmpeg_failure,
     image::{FrameLruCache, media_frame_bytes},
     open_failure,
 };
@@ -360,25 +361,31 @@ impl LibavStreamDecoder {
                         seek.landed = [packet.pts(), packet.dts()].into_iter().flatten().min();
                     }
                     self.open_decoder()?.send_packet(&packet).map_err(|err| {
-                        MediaError::decode(
+                        ffmpeg_failure(
                             &self.source,
-                            format!("failed sending packet to decoder: {err}"),
+                            AssetKind::Video,
+                            "failed sending packet to decoder",
+                            &err,
                         )
                     })?;
                 }
                 Ok(None) => {
                     self.open_decoder()?.send_eof().map_err(|err| {
-                        MediaError::decode(
+                        ffmpeg_failure(
                             &self.source,
-                            format!("failed sending decoder EOF: {err}"),
+                            AssetKind::Video,
+                            "failed sending decoder EOF",
+                            &err,
                         )
                     })?;
                     self.sent_eof = true;
                 }
                 Err(err) => {
-                    return Err(MediaError::decode(
+                    return Err(ffmpeg_failure(
                         &self.source,
-                        format!("packet read failed: {err}"),
+                        AssetKind::Video,
+                        "packet read failed",
+                        &err,
                     ));
                 }
             }
@@ -415,9 +422,11 @@ impl LibavStreamDecoder {
                     }
                     Ok(None) => return Ok(None),
                     Err(err) => {
-                        return Err(MediaError::decode(
+                        return Err(ffmpeg_failure(
                             &self.source,
-                            format!("failed receiving decoded GPU frame: {err}"),
+                            AssetKind::Video,
+                            "failed receiving decoded GPU frame",
+                            &err,
                         ));
                     }
                 }
@@ -442,9 +451,11 @@ impl LibavStreamDecoder {
                     }
                     Ok(None) => return Ok(None),
                     Err(err) => {
-                        return Err(MediaError::decode(
+                        return Err(ffmpeg_failure(
                             &self.source,
-                            format!("failed receiving decoded frame: {err}"),
+                            AssetKind::Video,
+                            "failed receiving decoded frame",
+                            &err,
                         ));
                     }
                 }
@@ -557,7 +568,9 @@ impl LibavStreamDecoder {
             self.reopen()?;
             self.input
                 .seek_stream(self.stream_index, timestamp)
-                .map_err(|err| MediaError::decode(&self.source, format!("seek failed: {err}")))?;
+                .map_err(|err| {
+                    ffmpeg_failure(&self.source, AssetKind::Video, "seek failed", &err)
+                })?;
         }
         self.after_seek(target_frame, 0)
     }
@@ -588,7 +601,12 @@ impl LibavStreamDecoder {
     fn after_seek(&mut self, target_frame: u32, retries: u8) -> Result<(), MediaError> {
         if let Some(decoder) = &mut self.decoder {
             decoder.flush().map_err(|err| {
-                MediaError::decode(&self.source, format!("failed flushing decoder: {err}"))
+                ffmpeg_failure(
+                    &self.source,
+                    AssetKind::Video,
+                    "failed flushing decoder",
+                    &err,
+                )
             })?;
         }
         self.sent_eof = false;

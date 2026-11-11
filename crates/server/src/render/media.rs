@@ -97,14 +97,7 @@ impl LocalMediaStore {
         resolve_local_path_with_root(source, &self.root)
             .map(|path| path.to_string_lossy().to_string())
             .map_err(|error| {
-                let reason = if self.explain_missing_sources {
-                    format!("{error:#}")
-                } else {
-                    "no such file in the media root".to_string()
-                };
-                MediaFailure::not_found(source, reason)
-                    .wanting(&[kind])
-                    .into()
+                local_path_failure(source, kind, &error, self.explain_missing_sources).into()
             })
     }
 
@@ -355,6 +348,31 @@ impl EnvironmentResolver for SceneFile {
     }
 }
 
+/// Why `source`, a path under the media root, doesn't resolve: `media.not_found`, unless the system
+/// ran short of descriptors or memory while looking, which can pass and says so.
+fn local_path_failure(
+    source: &str,
+    kind: AssetKind,
+    error: &anyhow::Error,
+    explain: bool,
+) -> MediaFailure {
+    let shortage = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .map(|io| MediaFailure::from_io(source, "the file", io))
+        .filter(|failure| failure.transient);
+    shortage
+        .unwrap_or_else(|| {
+            let reason = if explain {
+                format!("{error:#}")
+            } else {
+                "no such file in the media root".to_string()
+            };
+            MediaFailure::not_found(source, reason)
+        })
+        .wanting(&[kind])
+}
+
 /// `root`, or the current directory, made absolute.
 pub(super) fn media_root(root: Option<&Path>) -> Result<PathBuf, ServerRenderError> {
     let root = root.unwrap_or(Path::new("."));
@@ -429,6 +447,21 @@ mod tests {
     use super::*;
 
     const ROBOTO: &[u8] = include_bytes!("../../../text/assets/roboto/Roboto-Regular.ttf");
+
+    #[cfg(unix)]
+    #[test]
+    fn running_out_of_descriptors_while_resolving_a_path_is_not_a_missing_file() {
+        let shortage = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EMFILE))
+            .context("failed to canonicalize asset path `/media/a.png`");
+        let failure = local_path_failure("a.png", AssetKind::Image, &shortage, false);
+        assert_eq!(failure.code(), "media.decode");
+        assert!(failure.transient);
+        let missing = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::ENOENT))
+            .context("failed to canonicalize asset path");
+        let failure = local_path_failure("a.png", AssetKind::Image, &missing, false);
+        assert_eq!(failure.code(), "media.not_found");
+        assert!(!failure.transient);
+    }
 
     #[test]
     fn a_source_outside_the_root_fails_like_a_missing_one() {
