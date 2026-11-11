@@ -15,7 +15,8 @@ pub use types::{
 use lumen_engine::composition::Composition;
 use lumen_ffmpeg::VideoEncoderChoice;
 use lumen_server::render::{
-    ErrorCode, RenderConfig, RenderOptions, RenderProgress, ServerRenderError, render_project_mp4,
+    ErrorCode, OutputFormat, RenderConfig, RenderOptions, RenderOutput, RenderProgress,
+    SequenceLimits, ServerRenderError, render_project,
 };
 
 pub(super) use media_staging::{MediaClient, validate_media_manifest};
@@ -27,7 +28,10 @@ pub struct RenderJob {
     pub id: String,
     pub composition: Composition,
     pub media: HashMap<String, String>,
-    pub encoder: VideoEncoderChoice,
+    /// The encoders an MP4 render tries. Image outputs have none.
+    pub encoder: Option<VideoEncoderChoice>,
+    pub output: RenderOutput,
+    pub sequence_limits: SequenceLimits,
     /// The most glyph, stroke and decoration instances one text node may draw.
     pub max_text_glyphs: usize,
     /// The `asset:` references this render resolves, held until it ends.
@@ -36,6 +40,7 @@ pub struct RenderJob {
 
 pub struct CompletedRender {
     pub bytes: Vec<u8>,
+    pub format: OutputFormat,
     pub render_ms: u128,
 }
 
@@ -55,6 +60,8 @@ where
         composition,
         media,
         encoder,
+        output,
+        sequence_limits,
         max_text_glyphs,
         assets,
     } = job;
@@ -70,25 +77,29 @@ where
     let options = RenderOptions {
         config: config.clone(),
         media_root: Some(staged_path.clone()),
-        encoder: Some(encoder),
+        encoder,
         assets: Some(assets),
         max_text_glyphs: Some(max_text_glyphs),
+        output: output.clone(),
+        sequence_limits,
         cancel: cancellation.token(),
     };
 
     let output_width = composition.render_settings().width;
     let output_height = composition.render_settings().height;
     let total_frames = composition.timeline().duration_frames;
+    let format = output.format;
     let render_started = Instant::now();
     tracing::info!(
         job_id,
         width = output_width,
         height = output_height,
         total_frames,
-        "starting mp4 render"
+        ?format,
+        "starting render"
     );
     let render_span = tracing::info_span!("render_job", job_id);
-    let rendered_bytes = tokio::task::spawn_blocking(move || {
+    let rendered = tokio::task::spawn_blocking(move || {
         let _render_span = render_span.enter();
         let mut frame_started = std::time::Instant::now();
         let mut progress_callback = |event: RenderProgress| {
@@ -109,7 +120,7 @@ where
             on_progress(event);
         };
 
-        render_project_mp4(&composition, &options, &mut progress_callback)
+        render_project(&composition, &options, &mut progress_callback)
     })
     .await
     .map_err(|err| RenderJobError {
@@ -134,8 +145,8 @@ where
     tracing::info!(
         job_id,
         render_ms,
-        output_bytes = rendered_bytes.len(),
-        "finished mp4 render"
+        output_bytes = rendered.bytes.len(),
+        "finished render"
     );
 
     tracing::info!(
@@ -145,7 +156,8 @@ where
     );
 
     Ok(CompletedRender {
-        bytes: rendered_bytes,
+        bytes: rendered.bytes,
+        format: rendered.format,
         render_ms,
     })
 }

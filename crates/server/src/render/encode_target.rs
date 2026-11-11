@@ -1,4 +1,5 @@
 use std::{
+    ops::Range,
     path::Path,
     time::{Duration, Instant},
 };
@@ -207,13 +208,15 @@ impl EncodeTarget {
         }
     }
 
-    /// Renders frame `frame` and hands it to the encoder.
+    /// Renders frame `frame` and hands it to the encoder as the frame at `pts` of the output,
+    /// which counts from 0 whichever frame the output starts at.
     pub(super) fn write_frame(
         &mut self,
         renderer: &mut GpuCompositionRenderer,
         composition: &Composition,
         media_store: &LocalMediaStore,
         frame: u32,
+        pts: u32,
         timing: &mut RenderTiming,
     ) -> Result<(), ServerRenderError> {
         match self {
@@ -223,33 +226,34 @@ impl EncodeTarget {
                 poll(renderer, frame, timing, None)?;
                 checked_size(composition, &raster, frame)?;
                 let read = timed(&mut timing.readback, || {
-                    ring.push(renderer.gpu_renderer(), &raster.texture, frame)
+                    ring.push(renderer.gpu_renderer(), &raster.texture, pts)
                 })
                 .map_err(readback_failed)?;
                 send_read(sink, read, timing)
             }
             #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(target) => {
-                target.write_frame(renderer, composition, media_store, frame, timing)
+                target.write_frame(renderer, composition, media_store, frame, pts, timing)
             }
             #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
             Self::Cuda(target) => {
-                target.write_frame(renderer, composition, media_store, frame, timing)
+                target.write_frame(renderer, composition, media_store, frame, pts, timing)
             }
             #[cfg(all(target_os = "macos", feature = "metal"))]
             Self::Metal(target) => {
-                target.write_frame(renderer, composition, media_store, frame, timing)
+                target.write_frame(renderer, composition, media_store, frame, pts, timing)
             }
         }
     }
 
-    /// Writes the audio after the last frame and finishes the output. Checks `cancel` between the
-    /// frames it drains, between audio chunks and before it finishes the encoder.
+    /// Writes the audio of `frames` after the last frame and finishes the output. Checks `cancel`
+    /// between the frames it drains, between audio chunks and before it finishes the encoder.
     pub(super) fn finish(
         self,
         renderer: &GpuCompositionRenderer,
         composition: &Composition,
         media_store: &LocalMediaStore,
+        frames: &Range<u32>,
         cancel: &CancelToken,
         timing: &mut RenderTiming,
     ) -> Result<(), ServerRenderError> {
@@ -268,7 +272,7 @@ impl EncodeTarget {
                     send_read(&mut sink, Some(read), timing)?;
                 }
                 timed(&mut timing.audio_mix, || {
-                    write_composited_audio(composition, media_store, cancel, |frame| {
+                    write_composited_audio(composition, media_store, frames, cancel, |frame| {
                         sink.send_audio(frame)
                     })
                 })
@@ -282,6 +286,7 @@ impl EncodeTarget {
                 target.into_encoder(),
                 composition,
                 media_store,
+                frames,
                 cancel,
                 timing,
             ),
@@ -290,13 +295,14 @@ impl EncodeTarget {
                 target.into_encoder(),
                 composition,
                 media_store,
+                frames,
                 cancel,
                 timing,
             ),
             #[cfg(all(target_os = "macos", feature = "metal"))]
             Self::Metal(target) => {
                 let encoder = target.drain(renderer, cancel, timing)?;
-                finish_muxed(encoder, composition, media_store, cancel, timing)
+                finish_muxed(encoder, composition, media_store, frames, cancel, timing)
             }
         }
     }
@@ -311,11 +317,12 @@ fn finish_muxed(
     mut encoder: lumen_ffmpeg::MuxedEncoder,
     composition: &Composition,
     media_store: &LocalMediaStore,
+    frames: &Range<u32>,
     cancel: &CancelToken,
     timing: &mut RenderTiming,
 ) -> Result<(), ServerRenderError> {
     timed(&mut timing.audio_mix, || {
-        write_composited_audio(composition, media_store, cancel, |frame| {
+        write_composited_audio(composition, media_store, frames, cancel, |frame| {
             encoder
                 .write_audio_frame(&frame)
                 .map_err(|err| anyhow::anyhow!("lumen-ffmpeg audio encode failed: {err}"))
@@ -327,7 +334,7 @@ fn finish_muxed(
         .map_err(|err| encode_failed(err.to_string()))
 }
 
-fn timed<T>(total: &mut Duration, work: impl FnOnce() -> T) -> T {
+pub(super) fn timed<T>(total: &mut Duration, work: impl FnOnce() -> T) -> T {
     let started = Instant::now();
     let result = work();
     *total += started.elapsed();
@@ -347,7 +354,7 @@ fn send_read(
         .map_err(|err| encode_failed(format!("{err:#}")))
 }
 
-fn readback_failed(err: anyhow::Error) -> ServerRenderError {
+pub(super) fn readback_failed(err: anyhow::Error) -> ServerRenderError {
     render_failed("failed reading rendered pixels back".to_string()).caused_by(err)
 }
 
@@ -394,7 +401,7 @@ fn encoder_start_failed(error: anyhow::Error) -> ServerRenderError {
     }
 }
 
-fn gpu_renderer_failed(err: anyhow::Error) -> ServerRenderError {
+pub(super) fn gpu_renderer_failed(err: anyhow::Error) -> ServerRenderError {
     render_failed("failed to create GPU renderer".to_string()).caused_by(err)
 }
 
@@ -407,7 +414,7 @@ fn audio_render_failed(err: anyhow::Error) -> ServerRenderError {
 }
 
 /// Binds, uploads and submits one frame to the renderer's own output texture.
-fn render_raster(
+pub(super) fn render_raster(
     renderer: &mut GpuCompositionRenderer,
     composition: &Composition,
     media_store: &LocalMediaStore,
@@ -425,7 +432,7 @@ fn render_raster(
     timed(&mut timing.render, || renderer.submit_render()).map_err(failed)
 }
 
-fn checked_size(
+pub(super) fn checked_size(
     composition: &Composition,
     raster: &RasterHandle,
     frame: u32,
@@ -526,6 +533,7 @@ mod start_failure_tests {
 
     #[test]
     fn an_output_in_a_missing_directory_is_output_io() {
+        let _gpu = crate::render::gpu_test_guard();
         let missing = std::env::temp_dir()
             .join("lumen-no-such-dir")
             .join("out.mp4");
@@ -591,6 +599,7 @@ mod tests {
     /// on NVIDIA the CUDA context are up.
     #[test]
     fn a_cuda_target_that_will_not_open_leaves_a_working_cpu_upload() {
+        let _gpu = crate::render::gpu_test_guard();
         let composition = super::super::parse_composition(&serde_json::json!({
             "timeline": { "fps": 24, "duration_frames": 3 },
             "render_settings": { "width": 16, "height": 16 },
@@ -637,6 +646,7 @@ mod tests {
                     &composition,
                     &media_store,
                     frame,
+                    frame,
                     &mut timing,
                 )
                 .unwrap();
@@ -646,6 +656,7 @@ mod tests {
                 &renderer,
                 &composition,
                 &media_store,
+                &(0..3),
                 &CancelToken::new(),
                 &mut timing,
             )

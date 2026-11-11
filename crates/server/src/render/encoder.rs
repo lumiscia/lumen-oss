@@ -1,4 +1,5 @@
 use std::{
+    ops::Range,
     path::Path,
     sync::mpsc,
     thread::{self, JoinHandle},
@@ -6,7 +7,7 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use lumen_engine::{
-    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMixer, duration_samples},
+    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMixer},
     composition::Composition,
 };
 use lumen_ffmpeg::{
@@ -179,11 +180,22 @@ impl std::fmt::Display for AudioCancelled {
 
 impl std::error::Error for AudioCancelled {}
 
-/// Mixes the audio a chunk at a time, stopping with [`AudioCancelled`] before the chunk that
-/// follows a cancellation.
+/// The sample `frame` starts at, at the rate the video is encoded with, so audio and video cover
+/// the same time.
+fn frame_sample(frame: u32, fps: Rational) -> u64 {
+    let (numerator, denominator) = (fps.numerator as u128, fps.denominator as u128);
+    let samples = u128::from(frame) * denominator * u128::from(AUDIO_SAMPLE_RATE);
+    ((samples * 2 + numerator) / (numerator * 2)) as u64
+}
+
+/// Mixes the audio of `frames`, a range of the timeline's frames, a chunk at a time. The output
+/// starts at the sample the first frame starts at and ends where the last one does, so it lasts as
+/// long as the frames do. Stops with [`AudioCancelled`] before the chunk that follows a
+/// cancellation.
 pub(super) fn write_composited_audio(
     composition: &Composition,
     media_store: &LocalMediaStore,
+    frames: &Range<u32>,
     cancel: &CancelToken,
     mut write_frame: impl FnMut(AudioFrame) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
@@ -191,19 +203,17 @@ pub(super) fn write_composited_audio(
         return Ok(());
     }
 
-    let total_samples = duration_samples(
-        composition.timeline().duration_frames,
-        composition.timeline().fps,
-    );
+    let fps = Rational::from_fps(f64::from(composition.timeline().fps))?;
+    let end_sample = frame_sample(frames.end, fps);
     let mut mixer = AudioMixer::new(composition, media_store);
-    let mut start_sample = 0_u64;
+    let mut start_sample = frame_sample(frames.start, fps);
     let chunk_frames = (AUDIO_SAMPLE_RATE as usize).saturating_mul(30);
 
-    while start_sample < total_samples {
+    while start_sample < end_sample {
         if cancel.is_cancelled() {
             return Err(AudioCancelled.into());
         }
-        let frames = usize::try_from((total_samples - start_sample).min(chunk_frames as u64))
+        let frames = usize::try_from((end_sample - start_sample).min(chunk_frames as u64))
             .unwrap_or(chunk_frames);
         let mixed = mixer
             .mix_range(start_sample, frames)
@@ -256,6 +266,16 @@ mod tests {
             writer_handle: Some(writer_handle),
         });
         assert!(closed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_frame_starts_at_the_sample_the_encoded_video_reaches() {
+        let ntsc = Rational::from_fps(29.97).unwrap();
+        assert_eq!(
+            frame_sample(60_000, ntsc) - frame_sample(30_000, ntsc),
+            48_048_000
+        );
+        assert_eq!(frame_sample(1, Rational::new(30, 1)), 1_600);
     }
 
     #[test]

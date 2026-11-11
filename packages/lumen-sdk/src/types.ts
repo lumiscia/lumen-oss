@@ -1,5 +1,7 @@
 import type { LumenModelAnimation, LumenModelMaterial, VideoCodec } from "@lumiscia/lumen-types";
 
+import type { RenderOutput } from "./output.js";
+
 export interface LumenOptions {
   readonly apiKey: string;
   /** API base URL. Defaults to the hosted Lumiscia API, `https://api.lumiscia.com/v1`. */
@@ -23,6 +25,11 @@ export interface RenderOptions {
   readonly quality?: QualityPreset;
   /** Wins over the composition's `render_settings.codec`. Unset, the host's default applies. */
   readonly codec?: VideoCodec;
+  /**
+   * The format and frames to render. Unset, an MP4 of the whole timeline. `quality` and `codec`
+   * apply to `mp4` only, and a host rejects them with another format.
+   */
+  readonly output?: RenderOutput;
 }
 
 /** `cancelled` is a render stopped by `cancelRender`, which only lumen-server supports. */

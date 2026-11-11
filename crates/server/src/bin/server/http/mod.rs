@@ -16,8 +16,8 @@ use axum::{
 };
 use clap::Parser;
 use lumen_server::render::{
-    FONT_DIR_ENV, GpuSettings, HARDWARE_DECODE_ENV, RenderConfig, existing_font_dir,
-    is_enabled_flag,
+    FONT_DIR_ENV, GpuSettings, HARDWARE_DECODE_ENV, MAX_ARCHIVE_FRAMES, RenderConfig,
+    existing_font_dir, is_enabled_flag,
 };
 
 use self::{
@@ -87,6 +87,27 @@ pub struct Args {
         value_parser = clap::value_parser!(u32).range(1..=lumen_engine::gpu::MAX_TEXT_GLYPHS_CEILING as i64)
     )]
     pub max_text_glyphs: u32,
+
+    /// Most frames an image sequence render may have. A longer range is refused with `422` and
+    /// the code `output_too_large` before any work is done.
+    #[arg(
+        long,
+        env = "LUMEN_SERVER_MAX_SEQUENCE_FRAMES",
+        default_value_t = 3600,
+        value_parser = clap::value_parser!(u32).range(1..=MAX_ARCHIVE_FRAMES as i64)
+    )]
+    pub max_sequence_frames: u32,
+
+    /// Most bytes the encoded frames of an image sequence may add up to. A sequence that passes
+    /// it ends as `failed` with the code `output_too_large`. The archive is kept in memory like
+    /// every artifact, so this bounds what each retained sequence takes.
+    #[arg(
+        long,
+        env = "LUMEN_SERVER_MAX_SEQUENCE_BYTES",
+        default_value_t = 512 * 1024 * 1024,
+        value_parser = clap::value_parser!(u64).range(1..=3 * 1024 * 1024 * 1024)
+    )]
+    pub max_sequence_bytes: u64,
 
     /// JSON file of quality presets and encoder orders, checked at startup. Without it the
     /// built-in presets apply.

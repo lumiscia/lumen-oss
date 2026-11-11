@@ -76,11 +76,12 @@ impl MetalTarget {
         composition: &Composition,
         media_store: &LocalMediaStore,
         frame: u32,
+        pts: u32,
         timing: &mut RenderTiming,
     ) -> Result<(), ServerRenderError> {
         let target = self
             .pool
-            .acquire(renderer.gpu_renderer(), frame)
+            .acquire(renderer.gpu_renderer(), pts)
             .map_err(|err| {
                 ServerRenderError::engine(format!("failed to acquire frame {frame}"), err)
             })?;

@@ -79,6 +79,7 @@ impl VulkanTarget {
         composition: &Composition,
         media_store: &LocalMediaStore,
         frame: u32,
+        pts: u32,
         timing: &mut RenderTiming,
     ) -> Result<(), ServerRenderError> {
         let (raster, submission) =
@@ -88,7 +89,7 @@ impl VulkanTarget {
             self.target.convert(
                 renderer.gpu_renderer(),
                 &raster.texture,
-                Some(i64::from(frame)),
+                Some(i64::from(pts)),
             )
         })
         .map_err(|err| render_failed(format!("NV12 conversion failed at frame {frame}: {err}")))?;

@@ -1954,3 +1954,182 @@ fn media_url_import_failures_are_told_apart_by_cause_not_message() {
     );
     assert_eq!(error_code(response), "media_download_failed");
 }
+
+fn long_composition(frames: u32) -> Value {
+    let mut composition = solid_composition();
+    composition["timeline"]["duration_frames"] = json!(frames);
+    composition
+}
+
+fn rejection(response: Response) -> (StatusCode, String) {
+    let status = response.status();
+    let body: Value = response.json().expect("error body");
+    (
+        status,
+        body["code"].as_str().unwrap_or_default().to_string(),
+    )
+}
+
+#[test]
+fn rejects_outputs_that_cannot_be_rendered_before_queueing_them() {
+    let server = Server::start(&["--max-sequence-frames", "5"]);
+    let post = |output: Value| {
+        rejection(server.post(&json!({ "composition": long_composition(10), "output": output })))
+    };
+    let invalid = (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_output".to_string(),
+    );
+
+    for output in [
+        json!({ "frames": { "start": 5, "end": 5 } }),
+        json!({ "frames": { "start": 8, "end": 3 } }),
+        json!({ "frames": { "end": 11 } }),
+        json!({ "frames": { "start": 10 } }),
+        json!({ "format": "png", "frames": { "start": 2, "end": 4 } }),
+        json!({ "format": "png", "frames": { "start": 10 } }),
+        json!({ "format": "png", "jpeg_quality": 80 }),
+        json!({ "format": "jpeg", "jpeg_quality": 0 }),
+        json!({ "format": "jpeg_sequence", "jpeg_quality": 101 }),
+    ] {
+        assert_eq!(post(output.clone()), invalid, "{output}");
+    }
+    assert_eq!(
+        post(json!({ "format": "png_sequence" })),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "output_too_large".to_string()
+        )
+    );
+    assert_eq!(
+        post(json!({ "format": "png_sequence", "frames": { "start": 3, "end": 9 } })),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "output_too_large".to_string()
+        )
+    );
+
+    // Encoder settings belong to video and can't be smuggled in with an image.
+    for extra in [json!({ "quality": "high" }), json!({ "codec": "h264" })] {
+        let mut body =
+            json!({ "composition": long_composition(10), "output": { "format": "png" } });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        assert_eq!(rejection(server.post(&body)), invalid, "{body}");
+    }
+    for output in [
+        json!({ "format": "gif" }),
+        json!({ "encoder": "libx264" }),
+        json!({ "bitrate": 1 }),
+        json!({ "frames": { "from": 1 } }),
+    ] {
+        let (status, code) = post(output.clone());
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, "invalid_request_body"),
+            "{output}"
+        );
+    }
+
+    // Valid outputs are accepted, and a request without one still is.
+    for output in [
+        json!({ "frames": { "start": 2, "end": 9 } }),
+        json!({ "format": "jpeg", "frames": { "start": 9 }, "jpeg_quality": 70 }),
+        json!({ "format": "png_sequence", "frames": { "end": 5 } }),
+    ] {
+        let response =
+            server.post(&json!({ "composition": long_composition(10), "output": output }));
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "{output}");
+    }
+    assert_eq!(
+        server
+            .post(&json!({ "composition": long_composition(10) }))
+            .status(),
+        StatusCode::ACCEPTED
+    );
+}
+
+fn artifact_headers(server: &Server, id: &str) -> (Vec<u8>, String, String) {
+    let artifact = server.get(&format!("/renders/{id}/artifact"));
+    assert_eq!(artifact.status(), StatusCode::OK);
+    let header = |name: &str| {
+        artifact.headers()[name]
+            .to_str()
+            .expect("header")
+            .to_string()
+    };
+    let (content_type, disposition) = (header("content-type"), header("content-disposition"));
+    (
+        artifact.bytes().expect("artifact bytes").to_vec(),
+        content_type,
+        disposition,
+    )
+}
+
+/// The names of a stored ZIP's files, read from its central directory.
+fn zip_names(bytes: &[u8]) -> Vec<String> {
+    let end = bytes.len() - 22;
+    let count = u16::from_le_bytes([bytes[end + 10], bytes[end + 11]]) as usize;
+    let mut at = u32::from_le_bytes(bytes[end + 16..end + 20].try_into().unwrap()) as usize;
+    let mut names = Vec::new();
+    for _ in 0..count {
+        let field = |offset: usize| {
+            u16::from_le_bytes([bytes[at + offset], bytes[at + offset + 1]]) as usize
+        };
+        let (name, extra, comment) = (field(28), field(30), field(32));
+        names.push(String::from_utf8(bytes[at + 46..at + 46 + name].to_vec()).unwrap());
+        at += 46 + name + extra + comment;
+    }
+    names
+}
+
+#[test]
+fn stills_and_sequences_download_as_their_own_files_with_gpu() {
+    let server = Server::start(&[]);
+    let render = |output: Value| {
+        render_outcome(
+            &server,
+            &json!({ "composition": long_composition(6), "output": output }),
+        )
+    };
+
+    let Some((id, progress)) = render(json!({ "format": "png", "frames": { "start": 3 } })) else {
+        return;
+    };
+    assert_eq!(progress["state"], "succeeded", "{progress}");
+    let (bytes, content_type, disposition) = artifact_headers(&server, &id);
+    assert_eq!(content_type, "image/png");
+    assert_eq!(disposition, format!("attachment; filename=\"{id}.png\""));
+    let image = image::load_from_memory(&bytes).expect("png");
+    assert_eq!((image.width(), image.height()), (16, 16));
+
+    let (id, _) = render(json!({ "format": "jpeg", "jpeg_quality": 60 })).unwrap();
+    server.wait_for_state(&id, &["succeeded"]);
+    let (bytes, content_type, disposition) = artifact_headers(&server, &id);
+    assert_eq!(content_type, "image/jpeg");
+    assert_eq!(disposition, format!("attachment; filename=\"{id}.jpg\""));
+    assert_eq!(image::load_from_memory(&bytes).expect("jpeg").width(), 16);
+
+    let (id, progress) = render(json!({
+        "format": "png_sequence",
+        "frames": { "start": 2, "end": 5 }
+    }))
+    .unwrap();
+    assert_eq!(progress["state"], "succeeded", "{progress}");
+    assert_eq!(progress["progress"], 1.0);
+    let (bytes, content_type, disposition) = artifact_headers(&server, &id);
+    assert_eq!(content_type, "application/zip");
+    assert_eq!(disposition, format!("attachment; filename=\"{id}.zip\""));
+    assert_eq!(
+        zip_names(&bytes),
+        ["frame_0002.png", "frame_0003.png", "frame_0004.png"]
+    );
+
+    // Without an output the artifact is the same MP4 as before.
+    let (id, _) = render(Value::Null).unwrap();
+    server.wait_for_state(&id, &["succeeded"]);
+    let (_, content_type, disposition) = artifact_headers(&server, &id);
+    assert_eq!(content_type, "video/mp4");
+    assert_eq!(disposition, format!("attachment; filename=\"{id}.mp4\""));
+}

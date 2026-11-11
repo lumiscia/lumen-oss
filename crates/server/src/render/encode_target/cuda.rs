@@ -89,6 +89,7 @@ impl CudaTarget {
         composition: &Composition,
         media_store: &LocalMediaStore,
         frame: u32,
+        pts: u32,
         timing: &mut RenderTiming,
     ) -> Result<(), ServerRenderError> {
         timed(&mut timing.render, || {
@@ -107,7 +108,7 @@ impl CudaTarget {
         timed(&mut timing.encode_send, || {
             let frame_ref = self
                 .target
-                .video_frame(Some(i64::from(frame)))
+                .video_frame(Some(i64::from(pts)))
                 .map_err(|err| {
                     encode_failed(format!("CUDA frame failed at frame {frame}: {err}"))
                 })?;

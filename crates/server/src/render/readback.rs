@@ -162,6 +162,7 @@ mod tests {
 
     #[test]
     fn frames_come_back_in_order_and_match_a_synchronous_readback() {
+        let _gpu = crate::render::gpu_test_guard();
         let Ok(renderer) = pollster::block_on(lumen_gpu::Renderer::new()) else {
             eprintln!("skipping readback ring test: no GPU adapter");
             return;
