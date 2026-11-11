@@ -19,7 +19,7 @@
 | `submit_bound_frame(&bound)`                                   | `upload_frame(&bound)` then `submit_frame(&bound)`                                                                                                     |
 
 - The test-only renderer hooks (`limit_frame_storage`, `recorded_domain`, `recorded_pass_count`, `text_atlas_texture`, `set_full_frame_sources`, `set_single_tile_repeats`, `cached_media_texture_count`, `media_texture_upload_count`) and `BoundFrame`'s `atlas_region_count`, `atlas_region_rects` and `glyph_instances` exist only with the new `test-hooks` cargo feature, which is not a supported host API.
-- `lumen_engine::scope` and `lumen_engine::fingerprint` are no longer public, nor is `gpu::MediaTextureKey`, `Clip::window`, `ClipWindow::local_time` or `node::source::media_in::map_to_source_frame`.
+- `lumen_engine::scope` is no longer public and `lumen_engine::fingerprint` is hidden from the docs (the derive macros name it); `gpu::MediaTextureKey`, `Clip::window`, `ClipWindow::local_time` and `node::source::media_in::map_to_source_frame` are no longer public either.
 - The `lumen_engine::ffmpeg` and `lumen_engine::image` aliases and the `media::ffmpeg` and `media::image` modules are gone: `FfmpegVideoResolver`, `FfmpegAudioResolver`, `FfmpegResolverOptions` and `ImageFileResolver` are at `lumen_engine::media::*`, where they already were too.
 
 Compositions, the TypeScript SDK and the server's HTTP API are unaffected.

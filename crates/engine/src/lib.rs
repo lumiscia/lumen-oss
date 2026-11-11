@@ -26,7 +26,9 @@ pub mod composition;
 pub mod diagnostic;
 pub mod error;
 pub mod expr;
-pub(crate) mod fingerprint;
+// The derive macros' output names this module, so it is public for them and not for hosts.
+#[doc(hidden)]
+pub mod fingerprint;
 pub mod gpu;
 pub mod graph;
 pub mod json;
