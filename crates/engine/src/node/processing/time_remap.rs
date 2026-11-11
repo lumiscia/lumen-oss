@@ -76,6 +76,19 @@ pub fn remap_frame(node_id: NodeId, params: &TimeRemapParams) -> crate::Result<f
     Ok((whole + fraction).min((whole + 1.0).next_down()).max(whole))
 }
 
+impl crate::gpu::frame_graph::RecordNode for TimeRemap {
+    fn programs(&self, _: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        Ok(())
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        cx.record_time_remap(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{TimeRemapParams, remap_frame};

@@ -9,12 +9,9 @@
 //! A frame's output stays valid for whatever the host submits next in queue order, since the
 //! next frame's writes to it come after that.
 
-use std::{
-    collections::hash_map::Entry,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
-use foldhash::{HashMap, HashSet};
+use foldhash::HashSet;
 use lumen_gpu::{
     Dispatch, LayoutEntry, LayoutKind, ProgramRef, Recorder, Res, SamplerRef, Size, TexRef,
     TextureDesc, TextureDomain, wgpu,
@@ -24,16 +21,13 @@ use crate::{
     composition::Composition,
     error::{LumenError, RenderError},
     expr::ExpressionContext,
-    media::{
-        AssetKind, CpuMediaFrame, MediaFrame, MediaIdentity, MediaStore, PlaneShape, YuvChroma,
-        YuvFormat, YuvFrame, YuvPlanes, YuvUniform,
-    },
+    media::{AssetKind, MediaIdentity, MediaStore},
     node::{
         Deferred, MediaValue, Node, NodeId, NodeKind,
         compositing::clip::Clip,
         required_input,
         source::{
-            media_in::{AlphaMode, MediaInSourceKindDelegate},
+            media_in::MediaInSourceKindDelegate,
             text::{TextDraw, TextInstance},
         },
     },
@@ -48,84 +42,10 @@ use super::{
     params::{CropParams, copyable_texture_desc, dispatch_for},
     renderer::{MediaTextureCache, OutputEncoding, fit_frame_to_rgba8},
 };
+use state::{RecordState, Slot, VideoUpload};
 
-/// The format CPU RGBA frames are uploaded in, before `INGEST_SHADER` brings them into the working
-/// space.
-const UPLOAD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-/// Brings an image or CPU video texture into the working space: an sRGB-encoded one is decoded,
-/// its linear light goes from its primaries to BT.709 with colour outside BT.709 clipped at zero,
-/// and it is premultiplied. Colour already premultiplied is divided back out first.
-const INGEST_SHADER: &str = concat!(
-    include_str!("shaders/alpha.wgsl"),
-    include_str!("shaders/color.wgsl"),
-    "
-struct Params {
-    premultiplied: u32,
-    // Non-zero when the texture holds sRGB-encoded colour rather than linear light.
-    encoded: u32,
-    _pad0: u32,
-    _pad1: u32,
-    // The texture's primaries to BT.709, in linear light.
-    gamut: mat3x3<f32>,
-}
-
-@group(0) @binding(0) var input_tex: texture_2d<f32>;
-@group(0) @binding(1) var<uniform> params: Params;
-@group(0) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;
-
-@compute @workgroup_size(8, 8, 1)
-fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let size = textureDimensions(output_tex);
-    if (id.x >= size.x || id.y >= size.y) {
-        return;
-    }
-    var color = textureLoad(input_tex, vec2<i32>(id.xy), 0);
-    if (params.premultiplied != 0u) {
-        color = unpremultiply(color);
-    }
-    var linear = color.rgb;
-    if (params.encoded != 0u) {
-        linear = lumen_srgb_to_linear(linear);
-    }
-    linear = max(params.gamut * linear, vec3<f32>(0.0));
-    textureStore(output_tex, vec2<i32>(id.xy), premultiply(vec4<f32>(linear, color.a)));
-}
-"
-);
-/// `INGEST_SHADER`'s parameters.
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct IngestParams {
-    premultiplied: u32,
-    encoded: u32,
-    _pad: [u32; 2],
-    /// Columns of the gamut matrix, each padded to four floats as WGSL lays out a `mat3x3`.
-    gamut: [[f32; 4]; 3],
-}
-
-impl IngestParams {
-    fn new(premultiplied: bool, encoded: bool, gamut: Option<crate::media::GamutMatrix>) -> Self {
-        let rows = gamut.map_or(
-            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            |gamut| gamut.0,
-        );
-        Self {
-            premultiplied: u32::from(premultiplied),
-            encoded: u32::from(encoded),
-            _pad: [0; 2],
-            gamut: [0, 1, 2].map(|column| [rows[0][column], rows[1][column], rows[2][column], 0.0]),
-        }
-    }
-}
-
-/// An image frame's pixels as they are uploaded.
-#[derive(Clone, Copy)]
-enum ImageUpload<'a> {
-    /// RGBA8, sRGB-encoded.
-    Srgb8(&'a CpuMediaFrame),
-    /// Straight linear half floats.
-    Linear(&'a crate::media::LinearMediaFrame),
-}
+mod ingest;
+mod state;
 
 /// Copies the visible part of a clip's raster into a texture of the parent canvas.
 const CLIP_CROP_SHADER: &str = "
@@ -148,26 +68,6 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(output_tex, vec2<i32>(id.xy), texel);
 }
 ";
-const YUV_TO_RGBA_SHADER: &str = concat!(
-    include_str!("shaders/color.wgsl"),
-    include_str!("shaders/yuv_to_rgba.wgsl")
-);
-const YUV_TO_RGBA_LAYOUT: &[LayoutEntry] = &[
-    LayoutEntry::compute(0, LayoutKind::UintTexture),
-    LayoutEntry::compute(1, LayoutKind::UintTexture),
-    LayoutEntry::compute(2, LayoutKind::UintTexture),
-    LayoutEntry::compute(3, LayoutKind::UintTexture),
-    LayoutEntry::compute(4, LayoutKind::Uniform),
-    LayoutEntry::compute(5, LayoutKind::StorageTexture(WORKING)),
-];
-/// Frames a retained output stays without being read.
-const RETAINED_IDLE_FRAMES: u64 = 600;
-/// Distinct runtime shader sources kept, parsed and assembled.
-const MAX_SHADERS: usize = 64;
-/// Frames the import texture of a video source stays without being used.
-#[cfg(feature = "ffmpeg")]
-const VIDEO_IMPORT_IDLE_FRAMES: u64 = 600;
-
 pub(crate) const RECORD_STORAGE_TEXTURE: LayoutKind = LayoutKind::StorageTexture(WORKING);
 pub(crate) const SPATIAL_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::compute(0, LayoutKind::Texture),
@@ -231,19 +131,9 @@ impl Programs<'_> {
         self.compute(label, shader, "cs_main", SPATIAL_LAYOUT)
     }
 
-    /// The program that brings CPU images and video frames into the working space.
-    pub(crate) fn ingest(&mut self) -> crate::Result<()> {
-        self.spatial("ingest", INGEST_SHADER)
-    }
-
-    /// The program `FrameCx::yuv_to_rgba` records with.
-    pub(crate) fn yuv_to_rgba(&mut self) -> crate::Result<()> {
-        self.compute(
-            "yuv-to-rgba",
-            YUV_TO_RGBA_SHADER,
-            "cs_main",
-            YUV_TO_RGBA_LAYOUT,
-        )
+    /// The program `FrameCx::record_clip` crops a clip's content with.
+    pub(crate) fn clip_crop(&mut self) -> crate::Result<()> {
+        self.spatial("clip-crop", CLIP_CROP_SHADER)
     }
 
     #[allow(clippy::too_many_arguments, reason = "a render program's parts")]
@@ -272,7 +162,10 @@ impl Programs<'_> {
         inputs: usize,
         build: impl FnOnce() -> crate::Result<ShaderParts>,
     ) -> crate::Result<CachedShader> {
-        let shader = self.st.cached_shader(source, inputs, build)?;
+        let shader = self
+            .st
+            .shaders
+            .cached_shader(self.st.tick, source, inputs, build)?;
         dynamic_program(self.rec, node, label, &shader)?;
         Ok(shader)
     }
@@ -379,31 +272,6 @@ impl HoldTrack {
     }
 }
 
-struct Slot {
-    raster: Raster,
-    /// Passes recording it took, which each read of it skips.
-    passes: u64,
-    /// Its copy at full frame, once something has read it that way.
-    full: Option<TexRef>,
-    last_used: u64,
-    bytes: u64,
-    /// Tells this slot from any other kept in its place.
-    generation: u64,
-    /// The frames it may be read on, both ends included.
-    frames: (f64, f64),
-    /// The models and environment maps it drew, which the scene cache keeps while it is kept.
-    #[cfg_attr(
-        not(feature = "3d"),
-        allow(dead_code, reason = "read by the scene cache")
-    )]
-    models: Vec<String>,
-}
-
-struct ShaderEntry {
-    shader: CachedShader,
-    last_used: u64,
-}
-
 /// What a recorded shader needs, cached by its source.
 #[derive(Clone)]
 pub(crate) struct CachedShader {
@@ -411,103 +279,6 @@ pub(crate) struct CachedShader {
     pub(crate) interface: Arc<dyn std::any::Any + Send + Sync>,
     pub(crate) assembled: Arc<str>,
     pub(crate) layout: Arc<[LayoutEntry]>,
-}
-
-/// A CPU RGBA video frame, written to its texture before the frame's passes run.
-struct VideoUpload {
-    tex: TexRef,
-    frame: Arc<CpuMediaFrame>,
-    size: Size,
-}
-
-/// A plane of a CPU YUV frame, written to its texture before the frame's passes run.
-struct YuvUpload {
-    tex: TexRef,
-    frame: Arc<YuvFrame>,
-    offset: usize,
-    stride: u32,
-    shape: PlaneShape,
-}
-
-#[derive(Default)]
-struct RecordState {
-    fingerprint: Option<u64>,
-    font_generation: Option<u64>,
-    tick: u64,
-    paths: HashMap<(PathId, NodeId), PathId>,
-    memo: HashMap<MemoKey, Raster>,
-    full_frames: HashMap<(TexRef, u32, u32), Raster>,
-    statics: HashMap<GraphNodeKey, Staticness>,
-    slots: HashMap<GraphNodeKey, Slot>,
-    /// Slots made so far.
-    slot_generation: u64,
-    /// Slots retained this frame, which hold nothing until it is submitted.
-    pending: Vec<GraphNodeKey>,
-    retained_bytes: u64,
-    /// The textures of external targets, by the address of the texture.
-    externals: HashMap<usize, TexRef>,
-    texts: HashMap<InstanceKey, Arc<TextInstance>>,
-    shaders: HashMap<(Arc<str>, usize), ShaderEntry>,
-    next_shader: u64,
-    transparent: Option<TexRef>,
-    dummy_float: Option<TexRef>,
-    atlas: Option<TexRef>,
-    /// Adopted images and video planes by their texture, the tick that last bound each, and the
-    /// key of an image's pixels.
-    media: HashMap<usize, (TexRef, u64, Option<super::MediaTextureKey>)>,
-    video_uploads: Vec<VideoUpload>,
-    yuv_uploads: Vec<YuvUpload>,
-    /// The texture of each video frame shown this frame, which samples of a `motion_blur` landing
-    /// on the same source frame share.
-    video_frames: HashMap<VideoFrameKey, TexRef>,
-    /// The slot each video source's GPU frames are imported into, by the source and how many
-    /// distinct frames it imported earlier in the frame, and when it was last used.
-    #[cfg(feature = "ffmpeg")]
-    video_imports: HashMap<(InstanceKey, u32), (u32, u64)>,
-    /// Distinct GPU frames each video source has imported this frame.
-    #[cfg(feature = "ffmpeg")]
-    frame_imports: HashMap<InstanceKey, u32>,
-    #[cfg(feature = "ffmpeg")]
-    next_video_import: u32,
-    output: Option<Raster>,
-    /// The identity each source had, as the kind it was read as, when something kept across frames
-    /// read it, or `None` if it didn't resolve. Kept outputs don't read their sources again, so
-    /// these are what notices a source changing under them.
-    kept_sources: HashMap<(AssetKind, String), Option<MediaIdentity>>,
-    /// The template, node and family of each font fallback reported for this composition.
-    font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
-    /// The template, node and source of each unsupported colour reported for this composition.
-    media_colors: HashSet<(Option<String>, NodeId, String)>,
-    /// How large this composition can show each image, found once it shows one.
-    shown_sizes: Option<Arc<super::image_size::ShownSizes>>,
-    /// Each image reported as reduced to fit the size limit for this composition.
-    reduced_images: HashSet<String>,
-    /// The template and `render_3d` node of each shadow limit reported for this composition.
-    #[cfg(feature = "3d")]
-    shadow_limits: HashSet<(Option<String>, NodeId)>,
-    /// The template and `text_3d` node of each report of glyphs without outlines for this
-    /// composition.
-    #[cfg(feature = "3d")]
-    outline_gaps: HashSet<(Option<String>, NodeId)>,
-    /// The template and `model_3d` node of each model with skipped primitives reported for this
-    /// composition.
-    #[cfg(feature = "3d")]
-    skipped_primitives: HashSet<(Option<String>, NodeId)>,
-    /// Warnings not yet taken.
-    diagnostics: Vec<crate::diagnostic::Diagnostic>,
-    /// Passes reads of retained outputs skipped.
-    skipped_passes: u64,
-    #[cfg(feature = "3d")]
-    scene: crate::node::scene::collect::SceneCache,
-    luts: crate::node::processing::color_grade::LutCache,
-    /// Mip chains of the rasters nodes show smaller than their size.
-    mips: crate::gpu::mips::MipCache,
-    /// Models drawn while the static output being recorded records, which its slot keeps.
-    static_models: Vec<String>,
-    /// What each output that is static while its models hold a pose found out when it was recorded
-    /// this frame, for the outputs reading it again.
-    #[cfg(feature = "3d")]
-    held_memo: HashMap<MemoKey, HoldTrack>,
 }
 
 pub(crate) struct FrameGraph {
@@ -542,51 +313,6 @@ pub(crate) struct RecordInput<'a> {
     pub(crate) renderer: &'a lumen_gpu::Renderer,
     #[cfg(feature = "ffmpeg")]
     pub(crate) importer: &'a mut GpuMediaFrameImporter,
-}
-
-impl RecordState {
-    fn cached_shader(
-        &mut self,
-        source: &str,
-        inputs: usize,
-        build: impl FnOnce() -> crate::Result<ShaderParts>,
-    ) -> crate::Result<CachedShader> {
-        let tick = self.tick;
-        let key = (Arc::<str>::from(source), inputs);
-        let cached = self.shaders.len();
-        let entry = match self.shaders.entry(key) {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(vacant) => {
-                let (interface, assembled, layout) = build()?;
-                self.next_shader += 1;
-                vacant.insert(ShaderEntry {
-                    shader: CachedShader {
-                        id: self.next_shader,
-                        interface,
-                        assembled: assembled.into(),
-                        layout: layout.into(),
-                    },
-                    last_used: tick,
-                })
-            }
-        };
-        entry.last_used = tick;
-        let shader = entry.shader.clone();
-        // Only a new source evicts, and not what this frame used: a frame using more than the limit
-        // keeps them all, rather than compile again each frame.
-        if self.shaders.len() > cached && self.shaders.len() > MAX_SHADERS {
-            let oldest = self
-                .shaders
-                .iter()
-                .filter(|(_, entry)| entry.last_used < tick)
-                .min_by_key(|(_, entry)| entry.last_used)
-                .map(|(key, _)| key.clone());
-            if let Some(oldest) = oldest {
-                self.shaders.remove(&oldest);
-            }
-        }
-        Ok(shader)
-    }
 }
 
 impl FrameGraph {
@@ -632,21 +358,13 @@ impl FrameGraph {
         loop {
             self.drop_pending();
             let generation = font_generation(media);
-            if self.state.font_generation != generation || self.kept_sources_changed(media) {
-                self.drop_slots();
+            if self.state.font_generation != generation
+                || self.state.retained.sources_changed(media)
+            {
+                self.state.retained.drop_all(&mut self.recorder);
                 self.state.font_generation = generation;
             }
-            self.state.tick += 1;
-            self.state.memo.clear();
-            self.state.full_frames.clear();
-            self.state.video_uploads.clear();
-            self.state.yuv_uploads.clear();
-            self.state.video_frames.clear();
-            #[cfg(feature = "ffmpeg")]
-            self.state.frame_imports.clear();
-            self.state.static_models.clear();
-            #[cfg(feature = "3d")]
-            self.state.held_memo.clear();
+            self.state.begin_frame();
             self.recorder.begin_frame();
             let mut cx = FrameCx {
                 rec: &mut self.recorder,
@@ -690,26 +408,7 @@ impl FrameGraph {
                     self.drop_pending();
                 }
                 self.resolve(raster)?;
-                self.state
-                    .luts
-                    .trim(&mut self.recorder, self.state.tick, self.budgets.luts);
-                #[cfg(feature = "3d")]
-                self.state.scene.trim(
-                    &mut self.recorder,
-                    self.state.tick,
-                    self.state.slots.values().flat_map(|slot| &slot.models),
-                    &self.budgets,
-                );
-                #[cfg(feature = "3d")]
-                self.state.scene.trim_environments(
-                    &mut self.recorder,
-                    self.state.tick,
-                    self.state.slots.values().flat_map(|slot| &slot.models),
-                    self.budgets.environments,
-                );
-                self.state
-                    .mips
-                    .trim(&mut self.recorder, self.state.tick, self.budgets.mip_chains);
+                self.state.trim(&mut self.recorder, &self.budgets);
                 return Ok(bound);
             }
             if rebinds == max_rebinds {
@@ -738,8 +437,13 @@ impl FrameGraph {
             .resolve(raster.tex, external)
             .map_err(gpu_error)?;
         self.state.output = Some(Raster { tex, ..raster });
-        for key in &self.state.pending {
-            let slot = self.state.slots.get_mut(key).expect("pending slot");
+        for key in &self.state.retained.pending {
+            let slot = self
+                .state
+                .retained
+                .slots
+                .get_mut(key)
+                .expect("pending slot");
             slot.raster.tex = self.recorder.physical(slot.raster.tex);
             if let Some(full) = &mut slot.full {
                 *full = self.recorder.physical(*full);
@@ -753,18 +457,13 @@ impl FrameGraph {
     pub(crate) fn abandon_frame(&mut self) {
         self.drop_pending();
         self.recorder.begin_frame();
-        self.state.video_uploads.clear();
-        self.state.yuv_uploads.clear();
+        self.state.media.video_uploads.clear();
+        self.state.media.yuv_uploads.clear();
         self.state.output = None;
         let tick = self.state.tick;
-        let recorder = &mut self.recorder;
-        self.state.media.retain(|_, (tex, last_used, _)| {
-            let kept = *last_used != tick;
-            if !kept {
-                recorder.forget(*tex);
-            }
-            kept
-        });
+        self.state
+            .media
+            .forget_textures(&mut self.recorder, |last_used| last_used == tick);
         if let Some(external) = &self.external {
             let key = Arc::as_ptr(&external.texture_arc()) as usize;
             if let Some(tex) = self.state.externals.remove(&key) {
@@ -802,7 +501,7 @@ impl FrameGraph {
             let Some(node) = graph.nodes.get(&id) else {
                 continue;
             };
-            node_programs(node, &mut programs)?;
+            node.programs(&mut programs)?;
             match node {
                 NodeKind::Clip(clip) if clip.template_name().is_some() => {
                     let template = clip
@@ -849,7 +548,7 @@ impl FrameGraph {
         bound: &BoundFrame,
         atlas_texture: Option<&wgpu::Texture>,
     ) -> crate::Result<()> {
-        for VideoUpload { tex, frame, size } in self.state.video_uploads.drain(..) {
+        for VideoUpload { tex, frame, size } in self.state.media.video_uploads.drain(..) {
             let rgba = fit_frame_to_rgba8(&frame, size.width, size.height);
             self.recorder.queue().write_texture(
                 self.recorder.texture(tex).as_image_copy(),
@@ -862,7 +561,7 @@ impl FrameGraph {
                 size.as_extent(),
             );
         }
-        for upload in self.state.yuv_uploads.drain(..) {
+        for upload in self.state.media.yuv_uploads.drain(..) {
             let shape = upload.shape;
             self.recorder.queue().write_texture(
                 self.recorder.texture(upload.tex).as_image_copy(),
@@ -887,21 +586,20 @@ impl FrameGraph {
     /// The media cache frees what only it holds, so images this frame doesn't bind are let go.
     fn forget_unbound_media(&mut self) {
         let tick = self.state.tick;
-        let recorder = &mut self.recorder;
-        self.state.media.retain(|_, (tex, last_used, _)| {
-            let kept = *last_used == tick;
-            if !kept {
-                recorder.forget(*tex);
-            }
-            kept
-        });
+        self.state
+            .media
+            .forget_textures(&mut self.recorder, |last_used| last_used != tick);
     }
 
     /// Commits what the frame retained after submitting its passes, and sweeps what idled.
     pub(crate) fn finish_frame(&mut self) {
-        self.state.pending.clear();
+        self.state.retained.pending.clear();
         self.state.mips.commit();
-        self.evict_slots();
+        self.state.retained.evict(
+            &mut self.recorder,
+            self.state.tick,
+            self.budgets.retained_outputs,
+        );
         self.recorder.end_frame();
         let recorder = &mut self.recorder;
         // Nothing else holding one means nothing will bind it again. A submission still using it
@@ -913,21 +611,12 @@ impl FrameGraph {
             }
             kept
         };
-        self.state.media.retain(|_, (tex, ..)| unheld(tex));
+        self.state.media.textures.retain(|_, (tex, ..)| unheld(tex));
         self.state.externals.retain(|_, tex| unheld(tex));
         #[cfg(feature = "ffmpeg")]
-        {
-            let tick = self.state.tick;
-            let idle_before = tick.saturating_sub(VIDEO_IMPORT_IDLE_FRAMES);
-            let imports = &mut self.imports;
-            self.state.video_imports.retain(|_, (slot, last_used)| {
-                let kept = *last_used > idle_before;
-                if !kept {
-                    imports.remove(*slot);
-                }
-                kept
-            });
-        }
+        self.state
+            .media
+            .evict_imports(self.state.tick, &mut self.imports);
     }
 
     pub(crate) fn output(&self) -> Option<Raster> {
@@ -945,7 +634,7 @@ impl FrameGraph {
         let recorded = self.state.memo.iter().find_map(|((key, _), raster)| {
             (key.0 == graph && key.2 == node).then_some(raster.domain)
         });
-        recorded.or_else(|| Some(self.state.slots.get(&(graph, node))?.raster.domain))
+        recorded.or_else(|| Some(self.state.retained.slots.get(&(graph, node))?.raster.domain))
     }
 
     pub(crate) fn output_desc(&self) -> Option<TextureDesc> {
@@ -959,49 +648,16 @@ impl FrameGraph {
     }
 
     pub(crate) fn reset(&mut self) {
-        self.drop_slots();
+        self.state.retained.drop_all(&mut self.recorder);
         // A caller may hold the last frame of what is being replaced, so nothing writes it again.
         if let Some(output) = self.state.output {
             self.recorder.disown(output.tex);
         }
-        let state = &mut self.state;
-        state.fingerprint = None;
-        state.video_uploads.clear();
-        state.yuv_uploads.clear();
-        state.video_frames.clear();
         #[cfg(feature = "ffmpeg")]
         {
-            state.video_imports.clear();
-            state.frame_imports.clear();
             self.imports = GpuMediaImports::default();
         }
-        for (_, (tex, ..)) in state.media.drain() {
-            self.recorder.forget(tex);
-        }
-        for (_, tex) in state.externals.drain() {
-            self.recorder.forget(tex);
-        }
-        state.statics.clear();
-        state.texts.clear();
-        state.paths.clear();
-        state.kept_sources.clear();
-        state.font_fallbacks.clear();
-        state.media_colors.clear();
-        state.shown_sizes = None;
-        state.reduced_images.clear();
-        #[cfg(feature = "3d")]
-        state.shadow_limits.clear();
-        #[cfg(feature = "3d")]
-        state.outline_gaps.clear();
-        #[cfg(feature = "3d")]
-        state.skipped_primitives.clear();
-        state.shaders.clear();
-        state.memo.clear();
-        state.full_frames.clear();
-        state.output = None;
-        if let Some(atlas) = state.atlas.take() {
-            self.recorder.forget(atlas);
-        }
+        self.state.reset(&mut self.recorder);
     }
 
     /// Frees everything recording holds, as `reset` alone keeps its pool and programs for the next
@@ -1009,22 +665,8 @@ impl FrameGraph {
     pub(crate) fn release(&mut self) {
         self.reset();
         self.drop_pending();
-        self.state.transparent = None;
-        self.state.dummy_float = None;
-        #[cfg(feature = "3d")]
-        self.state.scene.release(&mut self.recorder);
-        self.state.luts.release(&mut self.recorder);
-        self.state.mips.release(&mut self.recorder);
+        self.state.release(&mut self.recorder);
         self.recorder.release_all();
-    }
-
-    /// Whether a source something kept across frames read now has another identity, or resolves
-    /// where it didn't or the other way round, as when a host replaces its bytes or a font arrives.
-    fn kept_sources_changed(&self, media: Option<&dyn MediaStore>) -> bool {
-        self.state
-            .kept_sources
-            .iter()
-            .any(|((kind, source), seen)| source_changed(media, *kind, source, seen.as_ref()))
     }
 
     /// The warnings recording has raised since the last call.
@@ -1041,12 +683,12 @@ impl FrameGraph {
     /// The bytes the caches recording fills hold.
     pub(crate) fn cache_stats(&self) -> super::CacheStats {
         #[cfg(feature = "3d")]
-        let (models, environments, text_meshes) = self.state.scene.held_bytes();
+        let (models, environments, text_meshes) = self.state.scene.cache.held_bytes();
         #[cfg(not(feature = "3d"))]
         let (models, environments, text_meshes) = (0, 0, 0);
         super::CacheStats {
             pooled_textures: self.recorder.pool_bytes(),
-            retained_outputs: self.state.retained_bytes,
+            retained_outputs: self.state.retained.bytes,
             luts: self.state.luts.bytes(),
             mip_chains: self.state.mips.bytes(),
             models,
@@ -1057,61 +699,16 @@ impl FrameGraph {
     }
 
     pub(crate) fn skipped_passes(&self) -> u64 {
-        self.state.skipped_passes
-    }
-
-    fn release_slot(recorder: &mut Recorder, state: &mut RecordState, key: GraphNodeKey) {
-        if let Some(slot) = state.slots.remove(&key) {
-            recorder.release(slot.raster.tex);
-            if let Some(full) = slot.full {
-                recorder.release(full);
-            }
-            state.retained_bytes -= slot.bytes;
-        }
+        self.state.retained.skipped_passes
     }
 
     fn drop_pending(&mut self) {
         self.state.mips.discard_pending();
-        for key in std::mem::take(&mut self.state.pending) {
-            Self::release_slot(&mut self.recorder, &mut self.state, key);
-        }
-    }
-
-    fn drop_slots(&mut self) {
-        self.state.pending.clear();
-        self.state.kept_sources.clear();
-        let keys: Vec<_> = self.state.slots.keys().copied().collect();
-        for key in keys {
-            Self::release_slot(&mut self.recorder, &mut self.state, key);
-        }
-    }
-
-    fn evict_slots(&mut self) {
-        let tick = self.state.tick;
-        let idle_before = tick.saturating_sub(RETAINED_IDLE_FRAMES);
-        let budget = self.budgets.retained_outputs;
-        let over_budget = self.state.retained_bytes > budget;
-        if !over_budget && !tick.is_multiple_of(60) {
-            return;
-        }
-        let mut idle: Vec<_> = self
-            .state
-            .slots
-            .iter()
-            .filter(|(_, slot)| slot.last_used != tick)
-            .map(|(key, slot)| (slot.last_used, *key))
-            .collect();
-        idle.sort_unstable_by_key(|(last_used, _)| *last_used);
-        for (last_used, key) in idle {
-            if last_used > idle_before && self.state.retained_bytes <= budget {
-                break;
-            }
-            Self::release_slot(&mut self.recorder, &mut self.state, key);
-        }
+        self.state.retained.drop_pending(&mut self.recorder);
     }
 
     pub(crate) fn retained_bytes(&self) -> u64 {
-        self.state.retained_bytes
+        self.state.retained.bytes
     }
 }
 
@@ -1240,24 +837,6 @@ fn internal(details: &str) -> crate::error::LumenError {
     .into()
 }
 
-/// The media failure of decoding a frame on the CPU after importing it on the GPU failed for
-/// `reason`.
-#[cfg(feature = "ffmpeg")]
-fn cpu_retry_failed(error: crate::error::MediaError, reason: &str) -> crate::error::LumenError {
-    use crate::error::MediaError;
-    match error {
-        MediaError::Failed(mut failure) => {
-            let details = format!(
-                "failed to import GPU media frame: {reason}; decoding it on the CPU also failed: {}",
-                failure.reason.details()
-            );
-            failure.reason = failure.reason.with_details(details);
-            MediaError::Failed(failure).into()
-        }
-        error => error.into(),
-    }
-}
-
 impl<'a> FrameCx<'a> {
     pub(crate) fn expr(&self) -> ExpressionContext<'_> {
         self.scope.expr_context(self.frame, self.media)
@@ -1286,7 +865,7 @@ impl<'a> FrameCx<'a> {
     #[cfg(feature = "3d")]
     pub(crate) fn note_shadow_limit(&mut self, node_id: NodeId, lights: Vec<NodeId>) {
         let key = (self.scope.template_name().map(str::to_string), node_id);
-        if self.st.shadow_limits.contains(&key) {
+        if self.st.scene.shadow_limits.contains(&key) {
             return;
         }
         let warning = crate::error::Warning::ShadowLimit {
@@ -1299,7 +878,7 @@ impl<'a> FrameCx<'a> {
         self.st
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        self.st.shadow_limits.insert(key);
+        self.st.scene.shadow_limits.insert(key);
     }
 
     /// Warns once per composition and `text_3d` node `node_id` that `glyphs` of its glyphs have
@@ -1307,7 +886,7 @@ impl<'a> FrameCx<'a> {
     #[cfg(feature = "3d")]
     pub(crate) fn note_missing_outlines(&mut self, node_id: NodeId, glyphs: usize) {
         let key = (self.scope.template_name().map(str::to_string), node_id);
-        if self.st.outline_gaps.contains(&key) {
+        if self.st.scene.outline_gaps.contains(&key) {
             return;
         }
         let warning = crate::error::Warning::NoOutlines {
@@ -1320,7 +899,7 @@ impl<'a> FrameCx<'a> {
         self.st
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        self.st.outline_gaps.insert(key);
+        self.st.scene.outline_gaps.insert(key);
     }
 
     /// Warns once per composition and `model_3d` node `node_id` that its model `source` has
@@ -1328,7 +907,7 @@ impl<'a> FrameCx<'a> {
     #[cfg(feature = "3d")]
     pub(crate) fn note_skipped_primitives(&mut self, node_id: NodeId, source: &str, count: usize) {
         let key = (self.scope.template_name().map(str::to_string), node_id);
-        if self.st.skipped_primitives.contains(&key) {
+        if self.st.scene.skipped_primitives.contains(&key) {
             return;
         }
         let warning = crate::error::Warning::ModelPrimitivesSkipped {
@@ -1342,7 +921,7 @@ impl<'a> FrameCx<'a> {
         self.st
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        self.st.skipped_primitives.insert(key);
+        self.st.scene.skipped_primitives.insert(key);
     }
 
     /// The most glyphs a text node may draw.
@@ -1358,7 +937,7 @@ impl<'a> FrameCx<'a> {
             node_id,
             family,
         );
-        if self.st.font_fallbacks.contains(&key) {
+        if self.st.text.font_fallbacks.contains(&key) {
             return;
         }
         let warning = crate::error::Warning::FontFallback {
@@ -1371,7 +950,7 @@ impl<'a> FrameCx<'a> {
         self.st
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        self.st.font_fallbacks.insert(key);
+        self.st.text.font_fallbacks.insert(key);
     }
 
     /// Warns once per composition, `media_in` node `node_id` and `media`, a `kind` source, that
@@ -1388,7 +967,7 @@ impl<'a> FrameCx<'a> {
             node_id,
             media.to_string(),
         );
-        if self.st.media_colors.contains(&key) {
+        if self.st.media.colors.contains(&key) {
             return;
         }
         let warning = crate::error::Warning::UnsupportedColor {
@@ -1403,7 +982,7 @@ impl<'a> FrameCx<'a> {
         self.st
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        self.st.media_colors.insert(key);
+        self.st.media.colors.insert(key);
     }
 
     pub(crate) fn media(&self) -> Option<&'a dyn MediaStore> {
@@ -1445,7 +1024,7 @@ impl<'a> FrameCx<'a> {
     #[cfg(feature = "3d")]
     pub(crate) fn drew_model(&mut self, id: &str) {
         if self.static_depth > 0 {
-            self.st.static_models.push(id.to_string());
+            self.st.retained.static_models.push(id.to_string());
         }
         if let Some(track) = self.holds.last_mut() {
             track.models.push(id.to_string());
@@ -1469,7 +1048,7 @@ impl<'a> FrameCx<'a> {
     ) -> Option<crate::gpu::mips::Stable> {
         use crate::gpu::mips::Stable;
         let graph = self.graph_key();
-        if let Some(slot) = self.st.slots.get(&(graph, node))
+        if let Some(slot) = self.st.retained.slots.get(&(graph, node))
             && (slot.raster.tex == raster.tex || slot.full == Some(raster.tex))
         {
             return Some(Stable::Slot {
@@ -1480,6 +1059,7 @@ impl<'a> FrameCx<'a> {
         }
         self.st
             .media
+            .textures
             .values()
             .find(|(tex, ..)| *tex == raster.tex)
             .and_then(|(.., key)| key.clone())
@@ -1503,7 +1083,7 @@ impl<'a> FrameCx<'a> {
     pub(crate) fn scene_cache(
         &mut self,
     ) -> (&mut Recorder, &mut crate::node::scene::collect::SceneCache) {
-        (&mut *self.rec, &mut self.st.scene)
+        (&mut *self.rec, &mut self.st.scene.cache)
     }
 
     pub(crate) fn canvas_size(&self) -> Size {
@@ -1550,12 +1130,12 @@ impl<'a> FrameCx<'a> {
         let is_static = staticness == Staticness::Always;
         let frame = self.frame.value();
         if staticness != Staticness::Never
-            && let Some(slot) = self.st.slots.get_mut(&(graph, node_id))
+            && let Some(slot) = self.st.retained.slots.get_mut(&(graph, node_id))
             && slot.frames.0 <= frame
             && frame <= slot.frames.1
         {
             slot.last_used = self.st.tick;
-            self.st.skipped_passes += slot.passes;
+            self.st.retained.skipped_passes += slot.passes;
             let raster = slot.raster;
             #[cfg(feature = "3d")]
             self.hold_slot(graph, node_id);
@@ -1566,7 +1146,7 @@ impl<'a> FrameCx<'a> {
             Some(raster) => {
                 let raster = *raster;
                 #[cfg(feature = "3d")]
-                if let Some(read) = self.st.held_memo.get(&key)
+                if let Some(read) = self.st.retained.held_memo.get(&key)
                     && let Some(track) = self.holds.last_mut()
                 {
                     track.narrow(read.frames);
@@ -1597,7 +1177,7 @@ impl<'a> FrameCx<'a> {
                 let passes = (self.rec.pass_count() - passes) as u64;
                 if is_static && self.static_depth == 0 {
                     let frames = (f64::NEG_INFINITY, f64::INFINITY);
-                    let models = std::mem::take(&mut self.st.static_models);
+                    let models = std::mem::take(&mut self.st.retained.static_models);
                     self.retain(graph, node_id, raster, passes, frames, models);
                 }
                 #[cfg(feature = "3d")]
@@ -1622,18 +1202,12 @@ impl<'a> FrameCx<'a> {
         models: Vec<String>,
     ) {
         // A slot kept for other frames makes way.
-        if let Some(old) = self.st.slots.remove(&(graph, node)) {
-            self.rec.release(old.raster.tex);
-            if let Some(full) = old.full {
-                self.rec.release(full);
-            }
-            self.st.retained_bytes -= old.bytes;
-        }
+        self.st.retained.release(self.rec, (graph, node));
         self.rec.retain(raster.tex);
         let bytes = self.rec.texture_bytes(raster.tex);
-        self.st.retained_bytes += bytes;
-        self.st.slot_generation += 1;
-        self.st.slots.insert(
+        self.st.retained.bytes += bytes;
+        self.st.retained.generation += 1;
+        self.st.retained.slots.insert(
             (graph, node),
             Slot {
                 raster,
@@ -1641,12 +1215,12 @@ impl<'a> FrameCx<'a> {
                 full: None,
                 last_used: self.st.tick,
                 bytes,
-                generation: self.st.slot_generation,
+                generation: self.st.retained.generation,
                 frames,
                 models,
             },
         );
-        self.st.pending.push((graph, node));
+        self.st.retained.pending.push((graph, node));
     }
 
     /// Notes in the output being recorded that it reads the kept output of `node`, which holds
@@ -1656,7 +1230,7 @@ impl<'a> FrameCx<'a> {
         let Some(track) = self.holds.last_mut() else {
             return;
         };
-        if let Some(slot) = self.st.slots.get(&(graph, node)) {
+        if let Some(slot) = self.st.retained.slots.get(&(graph, node)) {
             track.narrow(slot.frames);
             track.models.extend(slot.models.iter().cloned());
         }
@@ -1672,7 +1246,7 @@ impl<'a> FrameCx<'a> {
             outer.narrow(track.frames);
             outer.models.extend(track.models.iter().cloned());
         }
-        self.st.held_memo.insert(key, track.clone());
+        self.st.retained.held_memo.insert(key, track.clone());
         let frame = self.frame.value();
         if self.static_depth == 0 && track.contains(frame) && track.contains_another(frame) {
             self.retain(graph, node, raster, passes, track.frames, track.models);
@@ -1686,7 +1260,7 @@ impl<'a> FrameCx<'a> {
             return Ok(raster);
         }
         let slot_key = (self.graph_key(), node_id);
-        if let Some(slot) = self.st.slots.get(&slot_key)
+        if let Some(slot) = self.st.retained.slots.get(&slot_key)
             && let Some(full) = slot.full
         {
             return Ok(Raster {
@@ -1698,18 +1272,19 @@ impl<'a> FrameCx<'a> {
         let full = self.full_frame(raster);
         if self
             .st
+            .retained
             .slots
             .get(&slot_key)
             .is_some_and(|slot| slot.raster.tex == raster.tex)
         {
             self.rec.retain(full.tex);
             let bytes = self.rec.texture_bytes(full.tex);
-            self.st.retained_bytes += bytes;
-            let slot = self.st.slots.get_mut(&slot_key).expect("slot");
+            self.st.retained.bytes += bytes;
+            let slot = self.st.retained.slots.get_mut(&slot_key).expect("slot");
             slot.full = Some(full.tex);
             slot.bytes += bytes;
-            if !self.st.pending.contains(&slot_key) {
-                self.st.pending.push(slot_key);
+            if !self.st.retained.pending.contains(&slot_key) {
+                self.st.retained.pending.push(slot_key);
             }
         }
         Ok(full)
@@ -1977,7 +1552,7 @@ impl<'a> FrameCx<'a> {
                 .begin_frame();
             self.bound.text_atlas = Some(Arc::clone(self.text_atlas));
         }
-        if let Some(atlas) = self.st.atlas {
+        if let Some(atlas) = self.st.text.atlas {
             return Ok(atlas);
         }
         let texture = match self.atlas_texture {
@@ -1989,7 +1564,7 @@ impl<'a> FrameCx<'a> {
             }
         };
         let atlas = self.rec.adopt(texture);
-        self.st.atlas = Some(atlas);
+        self.st.text.atlas = Some(atlas);
         Ok(atlas)
     }
 
@@ -2011,11 +1586,13 @@ impl<'a> FrameCx<'a> {
         if kept
             && !self
                 .st
-                .kept_sources
+                .retained
+                .sources
                 .contains_key(&(kind, source.to_string()))
         {
             self.st
-                .kept_sources
+                .retained
+                .sources
                 .insert((kind, source.to_string()), identity.cloned());
         }
     }
@@ -2024,7 +1601,8 @@ impl<'a> FrameCx<'a> {
     pub(crate) fn note_font(&mut self, family: &str) {
         if !self
             .st
-            .kept_sources
+            .retained
+            .sources
             .contains_key(&(AssetKind::Font, family.to_string()))
         {
             let identity = source_identity(self.media, AssetKind::Font, family);
@@ -2039,11 +1617,11 @@ impl<'a> FrameCx<'a> {
         build: impl FnOnce(&Self) -> crate::Result<TextInstance>,
     ) -> crate::Result<Arc<TextInstance>> {
         let key = (self.graph_key(), self.path, node_id);
-        if let Some(text) = self.st.texts.get(&key) {
+        if let Some(text) = self.st.text.instances.get(&key) {
             return Ok(Arc::clone(text));
         }
         let text = Arc::new(build(self)?);
-        self.st.texts.insert(key, Arc::clone(&text));
+        self.st.text.instances.insert(key, Arc::clone(&text));
         Ok(text)
     }
 
@@ -2054,7 +1632,9 @@ impl<'a> FrameCx<'a> {
         inputs: usize,
         build: impl FnOnce() -> crate::Result<ShaderParts>,
     ) -> crate::Result<CachedShader> {
-        self.st.cached_shader(source, inputs, build)
+        self.st
+            .shaders
+            .cached_shader(self.st.tick, source, inputs, build)
     }
 
     pub(crate) fn dynamic_program(
@@ -2108,6 +1688,7 @@ impl<'a> FrameCx<'a> {
         use super::image_size::{Decoded, decoded_size};
         let shown = Arc::clone(
             self.st
+                .media
                 .shown_sizes
                 .get_or_insert_with(|| super::image_size::ShownSizes::of(self.composition)),
         );
@@ -2143,8 +1724,8 @@ impl<'a> FrameCx<'a> {
         // Warnings stop at a fixed number of sources, so a composition of many large images
         // doesn't fill the diagnostics.
         const WARNED_SOURCES: usize = 32;
-        if self.st.reduced_images.len() >= WARNED_SOURCES
-            || !self.st.reduced_images.insert(source.to_string())
+        if self.st.media.reduced_images.len() >= WARNED_SOURCES
+            || !self.st.media.reduced_images.insert(source.to_string())
         {
             return;
         }
@@ -2170,325 +1751,6 @@ impl<'a> FrameCx<'a> {
         self.st
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-    }
-
-    /// An image in the working space at `size`, the size of `key`. Its texture, 8-bit for
-    /// sRGB-encoded frames and half float for linear ones, is uploaded once and kept in the
-    /// renderer's media cache, and each frame that shows it brings it into the working space.
-    pub(crate) fn image_texture(
-        &mut self,
-        key: super::MediaTextureKey,
-        frame: &MediaFrame,
-        size: Size,
-    ) -> crate::Result<TexRef> {
-        let (upload, premultiplied, gamut) = match frame {
-            MediaFrame::CpuRgba(cpu) => (ImageUpload::Srgb8(cpu), true, None),
-            MediaFrame::RawRgba(cpu) => (ImageUpload::Srgb8(cpu), false, None),
-            MediaFrame::WideRgba { frame, gamut } => {
-                (ImageUpload::Srgb8(frame), false, Some(*gamut))
-            }
-            MediaFrame::LinearRgba(linear) => (ImageUpload::Linear(linear), false, None),
-            MediaFrame::Yuv(_) => {
-                return Err(internal("an image resolver returned a video frame"));
-            }
-            #[cfg(feature = "ffmpeg")]
-            MediaFrame::GpuVideo(_) => {
-                return Err(internal("an image resolver returned a GPU frame"));
-            }
-        };
-        let native = match upload {
-            ImageUpload::Srgb8(cpu) => (cpu.width, cpu.height),
-            ImageUpload::Linear(linear) => (linear.width, linear.height),
-        };
-        // A copy at another size is stored straight, which is known before the cache is asked.
-        let stored_premultiplied = premultiplied && native == (size.width, size.height);
-        let encoded = matches!(upload, ImageUpload::Srgb8(_));
-        let texture = match self.media_cache.get(&key) {
-            Some(texture) => texture,
-            None => {
-                let format = if encoded {
-                    UPLOAD_FORMAT
-                } else {
-                    wgpu::TextureFormat::Rgba16Float
-                };
-                let texture =
-                    super::renderer::create_media_texture(self.rec.device(), size, format);
-                let write = |bytes: &[u8]| {
-                    self.rec.queue().write_texture(
-                        texture.as_image_copy(),
-                        bytes,
-                        wgpu::TexelCopyBufferLayout {
-                            offset: 0,
-                            bytes_per_row: Some(
-                                size.width * format.block_copy_size(None).unwrap_or(4),
-                            ),
-                            rows_per_image: Some(size.height),
-                        },
-                        size.as_extent(),
-                    );
-                };
-                match upload {
-                    ImageUpload::Srgb8(cpu) => {
-                        write(&super::image_size::rgba8_at(cpu, premultiplied, size));
-                    }
-                    ImageUpload::Linear(linear) => {
-                        write(bytemuck::cast_slice(&super::image_size::linear_at(
-                            linear, size,
-                        )));
-                    }
-                }
-                self.media_cache.insert(key.clone(), Arc::clone(&texture));
-                texture
-            }
-        };
-        let tex = self.adopted_media(texture, Some(key));
-        let params = IngestParams::new(stored_premultiplied, encoded, gamut);
-        self.ingest(tex, size, &params)
-    }
-
-    /// `tex` of `size` in the working space, as `params` says it is stored.
-    fn ingest(&mut self, tex: TexRef, size: Size, params: &IngestParams) -> crate::Result<TexRef> {
-        let target = self.storage_target(size);
-        self.spatial_pass("ingest", INGEST_SHADER, tex, params, target, size)?;
-        Ok(target)
-    }
-
-    /// The texture of an image, which holds the pixels `image` names, or of a video plane.
-    fn adopted_media(
-        &mut self,
-        texture: Arc<wgpu::Texture>,
-        image: Option<super::MediaTextureKey>,
-    ) -> TexRef {
-        let rec = &mut *self.rec;
-        let tick = self.st.tick;
-        let (tex, last_used, _) = self
-            .st
-            .media
-            .entry(Arc::as_ptr(&texture) as usize)
-            .or_insert_with(|| (rec.adopt(texture), tick, image));
-        *last_used = tick;
-        *tex
-    }
-
-    /// A CPU video frame in the working space, from a pooled 8-bit texture it is written to before
-    /// the frame's passes run.
-    fn cpu_video_texture(
-        &mut self,
-        frame: Arc<CpuMediaFrame>,
-        size: Size,
-        premultiplied: bool,
-    ) -> crate::Result<TexRef> {
-        let usage = TextureDesc::sampled(size, UPLOAD_FORMAT).usage;
-        let tex = self.rec.acquire_written_early(size, UPLOAD_FORMAT, usage);
-        self.st.video_uploads.push(VideoUpload { tex, frame, size });
-        self.ingest(tex, size, &IngestParams::new(premultiplied, true, None))
-    }
-
-    /// The texture of a frame decoded on the CPU, either as RGBA or as YUV planes.
-    fn cpu_frame_texture(
-        &mut self,
-        frame: MediaFrame,
-        size: Size,
-        alpha: AlphaMode,
-    ) -> crate::Result<TexRef> {
-        match frame {
-            MediaFrame::CpuRgba(frame) => self.cpu_video_texture(frame, size, true),
-            MediaFrame::RawRgba(frame) => {
-                self.cpu_video_texture(frame, size, alpha == AlphaMode::Premultiplied)
-            }
-            MediaFrame::Yuv(frame) => self.yuv_video_texture(frame, size, alpha),
-            MediaFrame::WideRgba { .. } | MediaFrame::LinearRgba(_) => {
-                Err(internal("a video resolver returned an image frame"))
-            }
-            #[cfg(feature = "ffmpeg")]
-            MediaFrame::GpuVideo(_) => Err(internal("a CPU frame was expected, not a GPU one")),
-        }
-    }
-
-    /// Writes a CPU YUV frame's planes to pooled textures before the frame's passes run, and
-    /// converts them to RGBA.
-    fn yuv_video_texture(
-        &mut self,
-        frame: Arc<YuvFrame>,
-        size: Size,
-        alpha: AlphaMode,
-    ) -> crate::Result<TexRef> {
-        frame
-            .validate()
-            .map_err(|details| internal(&format!("a YUV frame can't be read: {details}")))?;
-        let max = self.rec.device().limits().max_texture_dimension_2d;
-        if frame.format.width > max || frame.format.height > max {
-            return Err(RenderError::Limit {
-                details: format!(
-                    "a {}x{} YUV frame is larger than this device's {max}-pixel texture limit",
-                    frame.format.width, frame.format.height
-                ),
-            }
-            .into());
-        }
-        let wide = frame.format.bytes_per_sample() == 2;
-        let rec = &mut *self.rec;
-        let uploads = &mut self.st.yuv_uploads;
-        let planes = frame.layout.map_with_shape(&frame.format, |plane, shape| {
-            let format = match (shape.channels, wide) {
-                (1, false) => wgpu::TextureFormat::R8Uint,
-                (_, false) => wgpu::TextureFormat::Rg8Uint,
-                (1, true) => wgpu::TextureFormat::R16Uint,
-                (_, true) => wgpu::TextureFormat::Rg16Uint,
-            };
-            let plane_size = Size::new(shape.width, shape.height);
-            let tex = rec.acquire_written_early(
-                plane_size,
-                format,
-                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            );
-            uploads.push(YuvUpload {
-                tex,
-                frame: Arc::clone(&frame),
-                offset: plane.offset,
-                // `validate` rejects strides that don't fit.
-                stride: plane.stride as u32,
-                shape,
-            });
-            tex
-        });
-        self.yuv_to_rgba(&planes, &frame.format, size, alpha)
-    }
-
-    /// Converts YUV planes into a texture of `size` in the working space, showing the frame
-    /// `format` describes upright and stretched to it by nearest neighbour. Colour that `alpha`
-    /// says is already premultiplied is divided by alpha before decoding. Plane textures hold
-    /// unsigned-integer samples (`R8Uint`, `Rg8Uint` for interleaved chroma, or their 16-bit forms)
-    /// with the frame at their top left, and any texture this frame's passes can read will do:
-    /// pooled ones written before the passes, or adopted ones a decoder filled on the GPU.
-    pub(crate) fn yuv_to_rgba(
-        &mut self,
-        planes: &YuvPlanes<TexRef>,
-        format: &YuvFormat,
-        size: Size,
-        alpha: AlphaMode,
-    ) -> crate::Result<TexRef> {
-        let program = self.program(
-            "yuv-to-rgba",
-            YUV_TO_RGBA_SHADER,
-            "cs_main",
-            YUV_TO_RGBA_LAYOUT,
-        )?;
-        let (u, v, interleaved) = match planes.chroma {
-            YuvChroma::Interleaved(chroma) => (chroma, chroma, true),
-            YuvChroma::Planar { u, v } => (u, v, false),
-        };
-        // An absent alpha plane binds luma in its place, which the shader doesn't read.
-        let alpha_plane = planes.alpha.unwrap_or(planes.luma);
-        let uniform = self.rec.uniform(&YuvUniform::new(
-            format,
-            interleaved,
-            planes.alpha.is_some(),
-            alpha == AlphaMode::Premultiplied,
-        ));
-        let target = self.storage_target(size);
-        self.rec.compute(
-            program,
-            &[
-                (0, Res::Tex(planes.luma)),
-                (1, Res::Tex(u)),
-                (2, Res::Tex(v)),
-                (3, Res::Tex(alpha_plane)),
-                (4, uniform),
-                (5, Res::Tex(target)),
-            ],
-            dispatch_for(size),
-        );
-        Ok(target)
-    }
-
-    /// The texture `media_in` node `node_id` shows `source_frame` of the video `resolver` names
-    /// through, taking the frame from `frame` the first time this frame shows it.
-    pub(crate) fn video_texture(
-        &mut self,
-        node_id: NodeId,
-        identity: &MediaIdentity,
-        source_frame: u32,
-        frame: impl FnOnce() -> crate::Result<MediaFrame>,
-        size: Size,
-        alpha: AlphaMode,
-    ) -> crate::Result<TexRef> {
-        let instance = (self.graph_key(), self.path, node_id);
-        let key = (
-            instance,
-            identity.clone(),
-            source_frame,
-            (size.width, size.height),
-            alpha == AlphaMode::Premultiplied,
-        );
-        if let Some(tex) = self.st.video_frames.get(&key) {
-            return Ok(*tex);
-        }
-        let tex = self.decoded_video_texture(instance, frame()?, size, alpha)?;
-        self.st.video_frames.insert(key, tex);
-        Ok(tex)
-    }
-
-    /// The texture a video frame shows through. A GPU frame is imported now, ahead of this frame's
-    /// submission in queue order, which settles its source on the GPU. One the renderer can't use
-    /// moves its source to the CPU, unless the source has already imported a GPU frame, even earlier
-    /// in this output frame, which fails the render instead.
-    fn decoded_video_texture(
-        &mut self,
-        #[cfg_attr(not(feature = "ffmpeg"), allow(unused_variables))] instance: InstanceKey,
-        frame: MediaFrame,
-        size: Size,
-        alpha: AlphaMode,
-    ) -> crate::Result<TexRef> {
-        match frame {
-            frame @ (MediaFrame::CpuRgba(_)
-            | MediaFrame::RawRgba(_)
-            | MediaFrame::WideRgba { .. }
-            | MediaFrame::LinearRgba(_)
-            | MediaFrame::Yuv(_)) => self.cpu_frame_texture(frame, size, alpha),
-            #[cfg(feature = "ffmpeg")]
-            MediaFrame::GpuVideo(frame) => {
-                // Imports copy into their slot's textures before the frame's passes run, so each
-                // distinct frame a source shows this frame needs a slot of its own.
-                let imported = self.st.frame_imports.entry(instance).or_default();
-                let key = (instance, *imported);
-                *imported += 1;
-                let tick = self.st.tick;
-                let next = &mut self.st.next_video_import;
-                let slot = self.st.video_imports.entry(key).or_insert_with(|| {
-                    *next += 1;
-                    (*next, tick)
-                });
-                slot.1 = tick;
-                let slot = slot.0;
-                let imported = self
-                    .importer
-                    .import(self.renderer, self.imports, slot, &frame)
-                    .and_then(|imported| {
-                        if frame.settle_on_gpu() {
-                            Ok(imported)
-                        } else {
-                            Err("its source moved to the CPU".to_string())
-                        }
-                    });
-                match imported {
-                    Ok(imported) => {
-                        let planes = imported
-                            .planes
-                            .map_with_shape(&imported.format, |texture, _| {
-                                self.adopted_media(Arc::clone(texture), None)
-                            });
-                        self.yuv_to_rgba(&planes, &imported.format, size, alpha)
-                    }
-                    Err(reason) => {
-                        let cpu = frame
-                            .decode_on_cpu(&reason)
-                            .map_err(|error| cpu_retry_failed(error, &reason))?;
-                        self.cpu_frame_texture(cpu, size, alpha)
-                    }
-                }
-            }
-        }
     }
 
     /// Whether analytic motion blur applies. It is off inside a `motion_blur` that samples, whose
@@ -2802,71 +2064,6 @@ fn static_candidate(node: &NodeKind) -> Staticness {
     }
 }
 
-fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<()> {
-    match node {
-        NodeKind::MediaIn(node) => node.programs(programs),
-        NodeKind::Background(node) => node.programs(programs),
-        NodeKind::FractalNoise(node) => node.programs(programs),
-        NodeKind::Text(node) => node.programs(programs),
-        NodeKind::Path(node) => node.programs(programs),
-        NodeKind::Shape(node) => node.programs(programs),
-        NodeKind::Boolean(node) => node.programs(programs),
-        NodeKind::Merge(node) => node.programs(programs),
-        NodeKind::RasterMultiMerge(node) => node.programs(programs),
-        NodeKind::Blur(node) => node.programs(programs),
-        NodeKind::ColorGrade(node) => node.programs(programs),
-        NodeKind::Exposure(node) => node.programs(programs),
-        NodeKind::HueSaturation(node) => node.programs(programs),
-        NodeKind::Levels(node) => node.programs(programs),
-        NodeKind::Opacity(node) => node.programs(programs),
-        NodeKind::TimeRemap(_) => Ok(()),
-        NodeKind::Transform(node) => node.programs(programs),
-        NodeKind::MotionBlur(node) => node.programs(programs),
-        NodeKind::Crop(node) => node.programs(programs),
-        NodeKind::Resize(node) => node.programs(programs),
-        NodeKind::Shadow(node) => node.programs(programs),
-        NodeKind::Glow(node) => node.programs(programs),
-        NodeKind::DirectionalBlur(node) => node.programs(programs),
-        NodeKind::RadialBlur(node) => node.programs(programs),
-        NodeKind::ZoomBlur(node) => node.programs(programs),
-        NodeKind::DisplacementMap(node) => node.programs(programs),
-        NodeKind::WgslShader(node) => node.programs(programs),
-        NodeKind::Switch(node) => node.programs(programs),
-        NodeKind::Clip(_) => programs.spatial("clip-crop", CLIP_CROP_SHADER),
-        NodeKind::MediaOutput(node) => node.programs(programs),
-        #[cfg(feature = "3d")]
-        NodeKind::Render3d(node) => node.programs(programs),
-        #[cfg(not(feature = "3d"))]
-        NodeKind::Render3d(_) => Ok(()),
-        #[cfg(feature = "3d")]
-        NodeKind::Light3d(light) => crate::node::scene::render::light_programs(light, programs),
-        #[cfg(feature = "3d")]
-        NodeKind::Shape3d(shape) => crate::node::scene::render::catcher_programs(
-            &shape.params.material.shadow_catcher,
-            programs,
-        ),
-        #[cfg(feature = "3d")]
-        NodeKind::ImagePlane3d(plane) => crate::node::scene::render::catcher_programs(
-            &plane.params.material.shadow_catcher,
-            programs,
-        ),
-        #[cfg(feature = "3d")]
-        NodeKind::Text3d(text) => crate::node::scene::render::catcher_programs(
-            &text.params.material.shadow_catcher,
-            programs,
-        ),
-        #[cfg(not(feature = "3d"))]
-        NodeKind::Shape3d(_)
-        | NodeKind::ImagePlane3d(_)
-        | NodeKind::Text3d(_)
-        | NodeKind::Light3d(_) => Ok(()),
-        NodeKind::Model3d(_)
-        | NodeKind::Camera3d(_)
-        | NodeKind::Merge3d(_)
-        | NodeKind::Instance3d(_) => Ok(()),
-    }
-}
-
 /// Fails, blaming `node`, when `size` is larger than the device's `max` texture dimension.
 pub(crate) fn ensure_texture_fits(
     node: &NodeKind,
@@ -2893,8 +2090,9 @@ pub(crate) fn ensure_texture_fits(
 /// allows. The textures its inputs acquire are theirs to check.
 fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
     let outer = cx.rec.replace_largest_acquired_texture(Size::new(0, 0));
-    let raster =
-        record_kind(node, cx).map_err(|error| locate_media_failure(node, &cx.scope, error));
+    let raster = node
+        .record(cx)
+        .map_err(|error| locate_media_failure(node, &cx.scope, error));
     let largest = cx.rec.replace_largest_acquired_texture(outer);
     let raster = raster?;
     let max = cx.rec.device().limits().max_texture_dimension_2d;
@@ -2939,66 +2137,6 @@ pub(crate) fn locate_media_failure(
         param,
     };
     error.media_used_as(&kinds, || crate::media::MediaLocation::Node(at))
-}
-
-fn record_kind(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
-    match node {
-        NodeKind::MediaIn(node) => node.record(cx),
-        NodeKind::Background(node) => node.record(cx),
-        NodeKind::FractalNoise(node) => node.record(cx),
-        NodeKind::Text(node) => node.record(cx),
-        NodeKind::Path(node) => node.record(cx),
-        NodeKind::Shape(node) => node.record(cx),
-        NodeKind::Boolean(node) => node.record(cx),
-        NodeKind::Merge(node) => node.record(cx),
-        NodeKind::RasterMultiMerge(node) => node.record(cx),
-        NodeKind::Blur(node) => node.record(cx),
-        NodeKind::ColorGrade(node) => node.record(cx),
-        NodeKind::Exposure(node) => node.record(cx),
-        NodeKind::HueSaturation(node) => node.record(cx),
-        NodeKind::Levels(node) => node.record(cx),
-        NodeKind::Opacity(node) => node.record(cx),
-        NodeKind::TimeRemap(node) => cx.record_time_remap(node),
-        NodeKind::Transform(node) => node.record(cx),
-        NodeKind::MotionBlur(node) => node.record(cx),
-        NodeKind::Crop(node) => node.record(cx),
-        NodeKind::Resize(node) => node.record(cx),
-        NodeKind::Shadow(node) => node.record(cx),
-        NodeKind::Glow(node) => node.record(cx),
-        NodeKind::DirectionalBlur(node) => node.record(cx),
-        NodeKind::RadialBlur(node) => node.record(cx),
-        NodeKind::ZoomBlur(node) => node.record(cx),
-        NodeKind::DisplacementMap(node) => node.record(cx),
-        NodeKind::WgslShader(node) => node.record(cx),
-        NodeKind::Switch(node) => node.record(cx),
-        NodeKind::Clip(node) => cx.record_clip(node),
-        NodeKind::MediaOutput(node) => node.record(cx),
-        #[cfg(feature = "3d")]
-        NodeKind::Render3d(node) => node.record(cx),
-        #[cfg(not(feature = "3d"))]
-        NodeKind::Render3d(node) => Err(RenderError::NodeEvaluation {
-            node_id: node.id,
-            node_kind: "Render3d",
-            details: crate::error::NO_3D_SUPPORT.to_string(),
-        }
-        .into()),
-        // Validation keeps a scene out of every raster input, and `render_3d` reads its scene
-        // without recording it.
-        NodeKind::Shape3d(_)
-        | NodeKind::ImagePlane3d(_)
-        | NodeKind::Text3d(_)
-        | NodeKind::Model3d(_)
-        | NodeKind::Camera3d(_)
-        | NodeKind::Light3d(_)
-        | NodeKind::Merge3d(_)
-        | NodeKind::Instance3d(_) => Err(RenderError::NodeEvaluation {
-            node_id: node.id(),
-            node_kind: "Scene",
-            details: "a scene node outputs a scene, not a raster; draw it through a render_3d"
-                .to_string(),
-        }
-        .into()),
-    }
 }
 
 #[cfg(test)]
