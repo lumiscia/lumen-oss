@@ -92,4 +92,6 @@ try {
 
 `diagnostics` is empty for every other failure. Diagnostic codes are public API, and new ones can appear in a patch release, so handle codes you don't know by their `severity`. The [engine README](https://github.com/lumiscia/lumen-oss/tree/main/crates/engine#diagnostics) lists them.
 
+The [3D guide](https://github.com/lumiscia/lumen-oss/blob/main/docs/3d.md) covers the 3D scene nodes, `render_3d` and glTF models.
+
 See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.

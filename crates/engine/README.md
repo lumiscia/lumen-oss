@@ -164,6 +164,8 @@ volume adds one of every 512 samples to; past either, loading the preview fails 
 
 ## 3D depth and normals
 
+The [3D guide](../../docs/3d.md) covers the scene nodes; this section covers what `render_3d` can output besides colour.
+
 `render_3d`'s `output` picks what its raster holds: `color`, the lit scene (the default), `depth`
 or `normal`. A node has one output, so a composition that wants colour and depth draws the same
 scene with two `render_3d` nodes. The second shares what the first loaded and uploaded: models,

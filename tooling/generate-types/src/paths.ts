@@ -16,3 +16,5 @@ export const generatedMetaTypesPath = path.join(
   repoRoot,
   "packages/lumen-types/src/generated/meta.ts",
 );
+
+export const nodeReferencePath = path.join(repoRoot, "docs/node-reference.md");

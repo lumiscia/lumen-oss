@@ -28,6 +28,27 @@ LUMISCIA_API_KEY=... pnpm --filter @lumiscia/example-node start
 
 `start` builds the packages and the example, and exits with an error without `LUMISCIA_API_KEY`. `LUMISCIA_BASE_URL` points it at another API. `lumen-server` has no media upload, so it needs a different `media` than the one in `src/index.ts`.
 
+## 3D
+
+`3d` writes three compositions that `lumen-local` renders on a local GPU. See the [3D guide](../docs/3d.md) for the nodes they use.
+
+- `layers`: 2D layers (a gradient, text, hills and a dot) at different depths under a camera that swings and dollies in.
+- `animated-model`: the glTF fox running its `Run` clip over a shadow catcher, with an orbiting camera.
+- `video-on-model`: `assets/clip.mp4` on the material of a model, a sheet that swings about its vertical axis.
+
+From the repository root:
+
+```bash
+pnpm install
+pnpm --filter @lumiscia/example-3d start   # writes examples/3d/compositions/*.json
+cargo run -p lumen-local -- --composition examples/3d/compositions/animated-model.json --output animated-model.mp4
+cargo run -p lumen-local -- --composition examples/3d/compositions/layers.json --output layers.png --frame 60
+```
+
+Run `lumen-local` from the repository root: the compositions name their media by paths under it, and `lumen-local` reads media from the directory it runs in unless `--media-root` says otherwise.
+
+`animated-model` uses the glTF sample fox in `crates/engine/tests/fixtures/Fox.glb`, which is CC BY 4.0; its credits are in `Fox.README.md` beside it. `video-on-model` uses `crates/3d/tests/fixtures/grid.glb`, a sheet the model reader's tests generate, licensed like this repository.
+
 `assets/clip.mp4` is a synthetic 640×360 H.264/AAC clip made for this repository and licensed like it (Apache-2.0):
 
 ```bash
