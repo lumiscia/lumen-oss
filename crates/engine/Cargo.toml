@@ -59,5 +59,8 @@ tempfile = "3.23.0"
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }
 pollster = "1.0.1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 js-sys = "0.3"

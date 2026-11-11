@@ -112,6 +112,31 @@ impl FfmpegError {
         )
     }
 
+    /// Whether FFmpeg found no file at the input's path.
+    pub fn is_missing_file(&self) -> bool {
+        self.code == Some(ffi::sys::AVERROR(libc::ENOENT))
+    }
+
+    /// Whether this FFmpeg lacks the container format, protocol or codec the input needs, or
+    /// refuses it as outside what it may read.
+    pub fn is_unsupported(&self) -> bool {
+        self.operation == "avcodec_find_decoder"
+            || (self.operation == "avformat_open_input"
+                && format::is_unsupported_message(&self.message))
+    }
+
+    /// Whether FFmpeg read the input and found it malformed, or in no format it recognises.
+    pub fn is_invalid_data(&self) -> bool {
+        // AVERROR_INVALIDDATA is FFERRTAG('I', 'N', 'D', 'A').
+        const INVALID_DATA: i32 = -(0x49 | 0x4e << 8 | 0x44 << 16 | 0x41 << 24);
+        self.code == Some(INVALID_DATA)
+    }
+
+    /// Whether the input opened but has no video or audio stream, as asked.
+    pub fn lacks_stream(&self) -> bool {
+        matches!(self.operation, "best_video_stream" | "best_audio_stream")
+    }
+
     /// Whether the operation ran out of memory, file descriptors or a device that is in use, which
     /// can pass. Hardware encoders report a full session limit or exhausted device memory this way.
     pub fn is_resource_exhaustion(&self) -> bool {

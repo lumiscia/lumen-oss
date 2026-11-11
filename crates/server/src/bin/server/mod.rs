@@ -22,7 +22,11 @@ use lumen_server::render::{
 pub(super) use media_staging::{MediaClient, validate_media_manifest};
 pub(super) use util::{current_timestamp, input_hash, new_render_id};
 
-use self::{assets::JobAssets, media_staging::stage_remote_media, util::sanitize_error_message};
+use self::{
+    assets::JobAssets,
+    media_staging::stage_remote_media,
+    util::{hide_server_paths, sanitize_error_message},
+};
 
 pub struct RenderJob {
     pub id: String,
@@ -137,7 +141,7 @@ where
         }
         RenderJobError {
             code: error.code().to_string(),
-            message: sanitize_error_message(&without_staging_path(&message, &staged_path)),
+            message: client_message(&error, &staged_path),
             retryable: error.retryable(),
         }
     })?;
@@ -159,6 +163,26 @@ where
         bytes: rendered.bytes,
         format: rendered.format,
         render_ms,
+    })
+}
+
+/// What a client is told of `error`: the whole chain, without where the server keeps its files.
+fn client_message(error: &ServerRenderError, staged_path: &Path) -> String {
+    let written = error
+        .engine_error()
+        .and_then(|engine| engine.media_failure())
+        .map(|failure| failure.source.as_str());
+    client_text(&error_chain(error), written, staged_path)
+}
+
+/// `message`, a render's error chain, as a client sees it. A media failure, which names `written`
+/// as the composition wrote it, is shown without any path of the server, wherever it keeps the
+/// file.
+fn client_text(message: &str, written: Option<&str>, staged_path: &Path) -> String {
+    let message = without_staging_path(message, staged_path);
+    sanitize_error_message(&match written {
+        Some(written) => hide_server_paths(&message, written),
+        None => message,
     })
 }
 
@@ -185,4 +209,35 @@ fn error_chain(error: &ServerRenderError) -> String {
         source = cause.source();
     }
     message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_media_failure_shows_no_server_path_to_a_client() {
+        let staged = Path::new("/var/tmp/lumen-job-1");
+        let asset = "audio `asset:voice` failed: avformat_open_input: /srv/lumen/assets/ab12/voice: No such file";
+        let plain = "failed to render: audio `tone.wav` failed: /data/media/tone.wav: Invalid data";
+        let own = "failed to render: video `/var/tmp/lumen-job-1/clip.mp4` failed";
+        for (message, shown) in [
+            (
+                asset,
+                "audio `asset:voice` failed: avformat_open_input: <path>: No such file",
+            ),
+            (
+                plain,
+                "failed to render: audio `tone.wav` failed: <path>: Invalid data",
+            ),
+            (own, "failed to render: video `clip.mp4` failed"),
+        ] {
+            assert_eq!(client_text(message, Some(""), staged), shown);
+        }
+        // Text that is not a media failure is kept, as a diagnostic pointer is not a path.
+        assert_eq!(
+            client_text("bad value at /nodes/1/params", None, staged),
+            "bad value at /nodes/1/params"
+        );
+    }
 }

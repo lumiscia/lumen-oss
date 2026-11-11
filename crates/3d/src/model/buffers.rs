@@ -78,11 +78,15 @@ impl Budget {
             .filter(|&total| total <= self.limit)
             .ok_or_else(|| {
                 if self.limit < self.max {
-                    ModelError::TooLarge(format!(
-                        "the model's {} decode to more than the {} bytes a file of its size \
-                         may",
-                        self.what, self.limit
-                    ))
+                    ModelError::TooLarge {
+                        details: format!(
+                            "the model's {} decode to more than the {} bytes a file of its size \
+                             may",
+                            self.what, self.limit
+                        ),
+                        limit: self.limit as u64,
+                        actual: None,
+                    }
                 } else {
                     too_large(&format!("bytes of {}", self.data), self.max)
                 }

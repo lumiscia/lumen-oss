@@ -1,4 +1,4 @@
-import type { LumenDiagnostic } from "@lumiscia/lumen-types";
+import type { LumenDiagnostic, MediaFailure } from "@lumiscia/lumen-types";
 
 import { LumenAudioEngine } from "../audio-engine.js";
 import { clockPositionMs, epochNow, fitClock, type PreviewClock } from "../clock.js";
@@ -19,7 +19,7 @@ import { assetHint } from "../asset-hint.js";
 import { createModuleWorker } from "../module-worker.js";
 import type { LumenPreviewContext, LumenPreviewErrorCode } from "../preview.js";
 import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../worker-host.js";
-import { describeError, reportConsoleError } from "./errors.js";
+import { describeError, errorMediaFailure, reportConsoleError } from "./errors.js";
 import {
   absoluteUrl,
   resolvePreviewInputs,
@@ -472,14 +472,18 @@ export class LumenPreviewSession {
     }
   }
 
-  #loadFailed(error: unknown, diagnostics: readonly LumenDiagnostic[] = []): void {
+  #loadFailed(
+    error: unknown,
+    diagnostics: readonly LumenDiagnostic[] = [],
+    media: MediaFailure | null = errorMediaFailure(error),
+  ): void {
     this.#loading = false;
     this.#pause();
     this.#range = null;
     this.#timeline = null;
     this.#inputs.onStats?.(EMPTY_PREVIEW_STATS);
     this.preview.update({ isLoaded: false });
-    this.#reportError("load_failed", "load", error, diagnostics);
+    this.#reportError("load_failed", "load", error, diagnostics, media);
   }
 
   #receive(event: LumenPreviewWorkerEvent): void {
@@ -489,7 +493,7 @@ export class LumenPreviewSession {
         break;
       case "load-failed":
         if (event.loadId === this.#loadId) {
-          this.#loadFailed(event.message, event.diagnostics);
+          this.#loadFailed(event.message, event.diagnostics, event.media);
         }
         break;
       case "frame":
@@ -499,7 +503,7 @@ export class LumenPreviewSession {
         if (event.loadId === this.#loadId) {
           this.#settleSeeks(false);
           this.#pause();
-          this.#reportError("render_failed", "render", event.message);
+          this.#reportError("render_failed", "render", event.message, [], event.media);
         }
         break;
       case "ended":
@@ -774,11 +778,12 @@ export class LumenPreviewSession {
     scope: string,
     error: unknown,
     diagnostics: readonly LumenDiagnostic[] = [],
+    media: MediaFailure | null = errorMediaFailure(error),
   ): void {
     reportConsoleError(scope, error);
     const message = describeError(error);
     this.preview.update({ error: message, errorCode: code });
-    this.#inputs.onError?.({ code, message, diagnostics });
+    this.#inputs.onError?.({ code, message, diagnostics, media });
   }
 
   #post(message: LumenPreviewWorkerCommand, transfer: Transferable[] = []): void {

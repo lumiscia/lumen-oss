@@ -87,11 +87,15 @@ impl Expansion {
             .saturating_mul(COMPRESSED_IMAGE_PIXELS_PER_BYTE)
             .max(MIN_COMPRESSED_IMAGE_PIXELS);
         if self.pixels > allowed {
-            return Err(ModelError::TooLarge(format!(
-                "the model's KTX2 and WebP images decode to more than the {allowed} pixels their \
-                 {} bytes may",
-                self.bytes
-            )));
+            return Err(ModelError::TooLarge {
+                details: format!(
+                    "the model's KTX2 and WebP images decode to more than the {allowed} pixels \
+                     their {} bytes may",
+                    self.bytes
+                ),
+                limit: allowed,
+                actual: Some(self.pixels),
+            });
         }
         Ok(())
     }

@@ -68,6 +68,80 @@ pub(crate) fn input_hash(
 /// with, which are what a client needs to act on.
 pub(super) const MAX_ERROR_MESSAGE_CHARS: usize = 1024;
 
+/// `message` without the absolute file paths in it, each replaced by `<path>`, except `written`,
+/// a source as the composition wrote it, which the client knows: where the server keeps its files
+/// is not for a client to learn.
+pub(super) fn hide_server_paths(message: &str, written: &str) -> String {
+    // Only a source that would be hidden needs keeping.
+    if written.is_empty() || hide_paths(written) == written {
+        return hide_paths(message);
+    }
+    message
+        .split(written)
+        .map(hide_paths)
+        .collect::<Vec<_>>()
+        .join(written)
+}
+
+/// Whether `text` starts as an absolute path does: with `/`, a `file:` URL, a Windows drive or
+/// a UNC share.
+fn starts_a_path(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    text.starts_with('/')
+        || text.starts_with("\\\\")
+        || text.starts_with("file:")
+        || (bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\'))
+}
+
+/// A path starts after whitespace, a quote or a bracket. In quotes it runs to the closing quote,
+/// spaces included; otherwise to the end of its line, a bracket, a comma, a quote or the `: `
+/// that an error puts after a file's name, so the rest of a name with spaces is hidden with it at
+/// the cost of the words between. A lone `/segment` is not taken for a path.
+fn hide_paths(message: &str) -> String {
+    const QUOTES: &str = "`'\"";
+    const OPENERS: &str = "([=";
+    const ENDERS: &str = ")]<>,;\n";
+    let mut hidden = String::with_capacity(message.len());
+    let mut previous: Option<char> = None;
+    let mut rest = message;
+    while let Some(c) = rest.chars().next() {
+        let at_start =
+            previous.is_none_or(|p| p.is_whitespace() || QUOTES.contains(p) || OPENERS.contains(p));
+        if !(at_start && starts_a_path(rest)) {
+            hidden.push(c);
+            previous = Some(c);
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        let end = match previous.filter(|&p| QUOTES.contains(p)) {
+            Some(quote) => rest.find([quote, '\n']),
+            None => rest
+                .char_indices()
+                .find(|&(at, c)| {
+                    ENDERS.contains(c)
+                        || QUOTES.contains(c)
+                        || (c == ':' && rest[at + 1..].starts_with(' '))
+                })
+                .map(|(at, _)| at),
+        }
+        .unwrap_or(rest.len());
+        let word = &rest[..end];
+        let path = word.trim_end_matches(['.', ' ']);
+        if path.starts_with('/') && path.matches('/').count() < 2 {
+            hidden.push_str(word);
+        } else {
+            hidden.push_str("<path>");
+            hidden.push_str(&word[path.len()..]);
+        }
+        previous = word.chars().last();
+        rest = &rest[end..];
+    }
+    hidden
+}
+
 pub(super) fn sanitize_error_message(message: &str) -> String {
     let trimmed = message.trim();
     if trimmed.chars().count() <= MAX_ERROR_MESSAGE_CHARS {
@@ -79,6 +153,51 @@ pub(super) fn sanitize_error_message(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_paths_are_hidden_and_other_text_is_kept() {
+        assert_eq!(
+            hide_server_paths(
+                "audio `asset:a` failed: avformat_open_input: /var/lib/lumen/assets/ab12/file.wav: No such file (path `/srv/media/a b.wav`)",
+                "asset:a"
+            ),
+            "audio `asset:a` failed: avformat_open_input: <path>: No such file (path `<path>`)"
+        );
+        let kept = "image `https://x.test/a/b.png` is 3/4 of a/b, see `/root` or C: and file";
+        assert_eq!(hide_server_paths(kept, ""), kept);
+        // A name with spaces is hidden whole, and so are the other forms of a path.
+        for (message, hidden) in [
+            (
+                "open '/srv/private media/assets/key/content' failed",
+                "open '<path>' failed",
+            ),
+            (
+                "open /srv/private media/assets/key/content: No such file",
+                "open <path>: No such file",
+            ),
+            ("at file:///srv/private/assets/content.", "at <path>."),
+            (
+                r"read C:\lumen\assets\a b.wav: denied (\\host\share\x)",
+                "read <path>: denied (<path>)",
+            ),
+            (
+                "see D:/lumen/assets/a.wav, then stop",
+                "see <path>, then stop",
+            ),
+        ] {
+            assert_eq!(hide_server_paths(message, "asset:a"), hidden);
+            // A source that is no path keeps nothing back.
+            assert_eq!(hide_server_paths(message, "/"), hidden);
+        }
+        // The path the composition wrote is its own to read back.
+        assert_eq!(
+            hide_server_paths(
+                "image `/tmp/a/x.png` not found at /srv/m/x.png",
+                "/tmp/a/x.png"
+            ),
+            "image `/tmp/a/x.png` not found at <path>"
+        );
+    }
 
     #[test]
     fn timestamps_are_rfc3339_in_utc() {

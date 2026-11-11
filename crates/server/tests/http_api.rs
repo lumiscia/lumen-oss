@@ -1527,7 +1527,8 @@ fn media_uploads_are_probed_once_their_bytes_are_complete() {
     assert!(
         truncated["rejectionReason"]
             .as_str()
-            .is_some_and(|reason| reason.starts_with("the model could not be read")),
+            .is_some_and(|reason| reason.starts_with("the model could not be read")
+                && reason.ends_with("(media.decode)")),
         "{truncated}"
     );
 
@@ -1693,19 +1694,19 @@ fn renders_and_checks_resolve_asset_ids() {
     for (composition, code) in [
         (
             image_composition(&format!("asset:{MISSING_MEDIA_ID}")),
-            "asset.not_found",
+            "media.not_found",
         ),
         (
             image_composition(&format!("asset:{pending}")),
-            "asset.not_found",
+            "media.not_found",
         ),
         (
             image_composition(&format!("asset:{rejected}")),
-            "asset.not_found",
+            "media.not_found",
         ),
         (
             media_composition("video", &format!("asset:{image}")),
-            "asset.wrong_kind",
+            "media.wrong_kind",
         ),
     ] {
         let body = json!({ "composition": composition });
@@ -1753,7 +1754,7 @@ fn media_expires_after_its_ttl_except_while_a_render_holds_it() {
         server.check(&json!({ "composition": image_composition(&format!("asset:{held}")) }));
     assert_eq!(
         codes_and_paths(&checked["diagnostics"]),
-        asset_source_error("asset.not_found")
+        asset_source_error("media.not_found")
     );
 
     media.release.send(()).expect("release staging");

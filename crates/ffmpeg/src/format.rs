@@ -174,6 +174,10 @@ const IMAGE2_CODECS: [sys::AVCodecID; 2] = [
 
 const UNSUPPORTED_INPUT: &str = "container format or protocol is not supported";
 
+pub(crate) fn is_unsupported_message(message: &str) -> bool {
+    message == UNSUPPORTED_INPUT
+}
+
 /// The demuxers `path` can be opened with. `image2` is only safe with `pattern_type=none`, which makes
 /// it read `path` itself instead of expanding `%d` and globs. Given a name with no file behind it,
 /// that option leaves an empty stream that opens successfully, so `image2` also needs a real file.

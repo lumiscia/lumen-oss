@@ -5,13 +5,13 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use foldhash::HashMap;
-use lumen_3d::environment::{self, Equirect};
+use lumen_3d::environment::{self, EnvironmentError, Equirect};
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
 use super::collect::{evictions, storage_buffer};
-use crate::error::{LumenError, MediaError};
+use crate::error::{LumenError, MediaError, MediaFailure};
 use crate::gpu::frame_graph::FrameCx;
-use crate::media::EnvironmentResolver;
+use crate::media::{AssetKind, EnvironmentResolver, sniff};
 
 /// The bytes of environment maps the cache keeps on the GPU beyond those the latest frame drew or
 /// a kept output drew.
@@ -43,18 +43,6 @@ pub(crate) struct EnvironmentCache {
     brdf: Option<BufRef>,
 }
 
-enum LoadError {
-    Media(MediaError),
-    /// Why the file isn't a map that can be drawn.
-    Map(String),
-}
-
-impl From<MediaError> for LoadError {
-    fn from(error: MediaError) -> Self {
-        Self::Media(error)
-    }
-}
-
 impl EnvironmentCache {
     /// The map `resolver` serves, with its background if `background`, marked drawn in `tick`.
     /// Its file is read again only to add a background it was first loaded without.
@@ -62,9 +50,10 @@ impl EnvironmentCache {
         &mut self,
         rec: &mut Recorder,
         tick: u64,
+        source: &str,
         resolver: &dyn EnvironmentResolver,
         background: bool,
-    ) -> Result<LoadedEnvironment, LoadError> {
+    ) -> Result<LoadedEnvironment, MediaError> {
         if let Some(cached) = self.maps.get_mut(resolver.id())
             && (!background || cached.environment.background.is_some())
         {
@@ -72,13 +61,19 @@ impl EnvironmentCache {
             return Ok(cached.environment);
         }
         let bytes = resolver.data()?;
-        let map = environment::decode(&bytes).map_err(|error| LoadError::Map(error.to_string()))?;
+        let map = environment::decode(&bytes)
+            .map_err(|error| environment_failure(source, &bytes, error))?;
         drop(bytes);
         let max = rec.device().limits().max_texture_dimension_2d;
         if map.width().max(map.height()) > max {
-            return Err(LoadError::Map(format!(
-                "the map is larger than this device's {max}-pixel texture limit"
-            )));
+            return Err(MediaFailure::too_large(
+                source,
+                format!("the map is larger than this device's {max}-pixel texture limit"),
+                u64::from(max),
+                Some(u64::from(map.width().max(map.height()))),
+            )
+            .wanting(&[AssetKind::Environment])
+            .into());
         }
         let mut cached = match self.maps.remove(resolver.id()) {
             Some(cached) => {
@@ -212,6 +207,32 @@ fn upload(rec: &mut Recorder, label: &'static str, levels: &[&Equirect]) -> TexR
     rec.adopt(Arc::new(texture))
 }
 
+/// Why `bytes`, the file `source`, is not an environment map that can be read.
+fn environment_failure(source: &str, bytes: &[u8], error: EnvironmentError) -> MediaError {
+    let wanted = [AssetKind::Environment];
+    let failure = match error {
+        EnvironmentError::Unsupported(_) if !environment::is_environment_magic(bytes) => {
+            match sniff(bytes).other_than(AssetKind::Environment) {
+                Some(found) => MediaFailure::wrong_kind(
+                    source,
+                    &wanted,
+                    found,
+                    "the file is not a Radiance .hdr or OpenEXR .exr map",
+                ),
+                None => MediaFailure::decode(source, error.to_string()),
+            }
+        }
+        EnvironmentError::Invalid(details) => MediaFailure::decode(source, details),
+        EnvironmentError::Unsupported(details) => MediaFailure::unsupported(source, details),
+        EnvironmentError::TooLarge {
+            details,
+            limit,
+            actual,
+        } => MediaFailure::too_large(source, details, limit, actual),
+    };
+    failure.wanting(&wanted).into()
+}
+
 /// The environment map `source` that `render_3d` node `node_id` lights its scene with, with its
 /// background if `background`, or none for an empty source.
 pub(super) fn environment(
@@ -223,22 +244,73 @@ pub(super) fn environment(
     if source.is_empty() {
         return Ok(None);
     }
-    let media = cx
-        .media()
-        .ok_or_else(|| MediaError::source_not_found(source, "this render has no media store"))?;
-    let resolver = media.get_environment_resolver(source)?;
+    let at = cx.node_param(node_id, "environment_map");
+    let in_node = |error: MediaError| {
+        LumenError::from(error).media_used_as(&[AssetKind::Environment], || at.clone())
+    };
+    let media = cx.media().ok_or_else(|| {
+        in_node(MediaError::source_not_found(
+            source,
+            "this render has no media store",
+        ))
+    })?;
+    let resolver = media.get_environment_resolver(source).map_err(in_node)?;
     let tick = cx.tick();
     let (rec, cache) = cx.scene_cache();
     let loaded = cache
         .environments
-        .load(rec, tick, &*resolver, background)
-        .map_err(|failure| match failure {
-            LoadError::Media(error) => LumenError::from(error),
-            LoadError::Map(details) => super::render::render_error(
-                node_id,
-                format!("environment map `{source}`: {details}"),
-            ),
-        })?;
+        .load(rec, tick, source, &*resolver, background)
+        .map_err(in_node)?;
     cx.drew_model(resolver.id());
     Ok(Some(loaded))
+}
+
+#[cfg(test)]
+mod tests {
+    use lumen_3d::environment;
+
+    use super::environment_failure;
+    use crate::error::MediaReason;
+    use crate::media::AssetKind;
+
+    /// What reading `bytes` as an environment map fails with: its code and the kind found.
+    fn read_as_environment(bytes: &[u8]) -> (&'static str, Option<AssetKind>) {
+        let error = environment::decode(bytes).expect_err("not a readable map");
+        let error = environment_failure("sky.hdr", bytes, error);
+        let failure = error.failure().expect("a media failure");
+        assert_eq!(failure.wanted, [AssetKind::Environment]);
+        assert_eq!(failure.source, "sky.hdr");
+        (failure.code(), failure.found)
+    }
+
+    #[test]
+    fn an_environment_map_that_cant_be_read_fails_by_what_the_file_is() {
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&[0; 32]);
+        assert_eq!(
+            read_as_environment(&png),
+            ("media.wrong_kind", Some(AssetKind::Image))
+        );
+        assert_eq!(
+            read_as_environment(b"not a map at all"),
+            ("media.decode", None)
+        );
+        assert_eq!(
+            read_as_environment(b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 4 +X 8\n"),
+            ("media.decode", None)
+        );
+    }
+
+    #[test]
+    fn an_environment_map_over_a_limit_reports_the_limit_and_the_size() {
+        let bytes = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 100000\n";
+        let error = environment::decode(bytes).expect_err("over the limit");
+        let error = environment_failure("sky.hdr", bytes, error);
+        let failure = error.failure().unwrap();
+        assert_eq!(failure.code(), "media.too_large");
+        assert!(matches!(
+            failure.reason,
+            MediaReason::TooLarge { limit, actual: Some(100_000), .. } if limit == 8192
+        ));
+    }
 }

@@ -244,10 +244,14 @@ fn check_frame(frame: &[u8], length: u64) -> Result<(), ModelError> {
     let window = window.or(content).unwrap_or(length);
     let allowed = length.next_power_of_two().clamp(1 << 10, MAX_WINDOW);
     if window > allowed {
-        return Err(ModelError::TooLarge(format!(
-            "a KTX2 image in the model has a level of {length} bytes whose Zstandard window is \
-             {window} bytes, more than the {allowed} it may be"
-        )));
+        return Err(ModelError::TooLarge {
+            details: format!(
+                "a KTX2 image in the model has a level of {length} bytes whose Zstandard window is \
+                 {window} bytes, more than the {allowed} it may be"
+            ),
+            limit: allowed,
+            actual: Some(window),
+        });
     }
     Ok(())
 }

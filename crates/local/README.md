@@ -52,7 +52,7 @@ composition.json: 1 errors, 1 warnings
 The [engine README](../engine/README.md#diagnostics) lists the codes and what only a render finds.
 
 Sources are paths under the media root. `lumen-local` has no asset store, so an `asset:<id>`
-reference, which only resolves on the host that issued it, is an `asset.not_found` error in both
+reference, which only resolves on the host that issued it, is an `media.not_found` error in both
 `--check` and a render; reference the file by its path instead.
 
 ## Platform Notes

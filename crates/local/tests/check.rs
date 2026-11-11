@@ -68,6 +68,6 @@ fn asset_references_are_errors_without_an_asset_store() {
     let report: Value = serde_json::from_slice(&output.stdout).expect("JSON report");
     let diagnostics = report["diagnostics"].as_array().expect("diagnostics");
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    assert_eq!(diagnostics[0]["code"], json!("asset.not_found"));
+    assert_eq!(diagnostics[0]["code"], json!("media.not_found"));
     assert_eq!(diagnostics[0]["path"], json!("/nodes/0/params/font_family"));
 }

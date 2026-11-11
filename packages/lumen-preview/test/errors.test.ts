@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createLumenPreviewRuntime, type LumenPreviewBindings } from "../src/index.js";
-import { LumenMediaError } from "../src/media/errors.js";
+import {
+  LumenMediaError,
+  type LumenMediaErrorCode,
+  type LumenMediaErrorKinds,
+} from "../src/media/errors.js";
 import { ImageSession } from "../src/media/image-session.js";
-import { describeError } from "../src/session/errors.js";
+import { describeError, errorMediaFailure } from "../src/session/errors.js";
 
 function controllerFailingWith(error: unknown) {
   const renders: unknown[] = [];
@@ -74,5 +78,59 @@ describe("preview errors", () => {
     expect((error as LumenMediaError).message).toBe(
       'image source "logo" failed to decode: failed to load media source: 404 Not Found',
     );
+  });
+});
+
+describe("media failures from the bindings", () => {
+  it("reads the structured fields the bindings attach to an error", () => {
+    const media = {
+      code: "media.too_large",
+      source: "hero.glb",
+      wanted: ["model"],
+      details: "the model is larger than the 512 MiB a model may be",
+      limit: 536_870_912,
+      actual: 600_000_000,
+    };
+    const thrown = Object.assign(new Error("model `hero.glb` is too large"), {
+      code: "media.too_large",
+      media,
+    });
+
+    expect(errorMediaFailure(thrown)).toEqual(media);
+    expect(errorMediaFailure(new Error("device lost"))).toBeNull();
+    expect(errorMediaFailure("plain text")).toBeNull();
+
+    const browserSide = new LumenMediaError("unsupported_container", "no demuxer for it", {
+      sourceId: "clip",
+    });
+    expect(errorMediaFailure(browserSide)).toEqual({
+      code: "media.unsupported",
+      source: "clip",
+      wanted: [],
+      details: "no demuxer for it",
+    });
+    expect(errorMediaFailure(new LumenMediaError("decode_failed", "no source"))).toBeNull();
+
+    // Each browser-side reason agrees with the engine's, with the kinds it knows.
+    const mapped = (code: LumenMediaErrorCode, kinds: LumenMediaErrorKinds = {}) =>
+      errorMediaFailure(new LumenMediaError(code, "x", { sourceId: "clip", ...kinds }))?.code;
+    expect(mapped("source_not_registered")).toBe("media.not_found");
+    expect(mapped("invalid_source")).toBe("media.not_found");
+    expect(mapped("track_not_found")).toBe("media.not_found");
+    expect(mapped("no_video_track", { wanted: ["video"], found: "audio" })).toBe(
+      "media.wrong_kind",
+    );
+    expect(mapped("track_not_decodable")).toBe("media.unsupported");
+    expect(mapped("decode_failed")).toBe("media.decode");
+    expect(
+      errorMediaFailure(
+        new LumenMediaError("no_video_track", "x", {
+          sourceId: "clip",
+          wanted: ["video"],
+          found: "audio",
+        }),
+      ),
+    ).toMatchObject({ wanted: ["video"], found: "audio" });
+    expect(errorMediaFailure(Object.assign(new Error("x"), { media: { code: 3 } }))).toBeNull();
   });
 });

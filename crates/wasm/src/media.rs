@@ -7,11 +7,11 @@ use std::{
 };
 
 use lumen_engine::{
-    error::MediaError,
+    error::{MediaError, MediaFailure},
     media::{
-        CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver, MediaFrame,
-        MediaStore, ModelResolver, TextSession, VideoFrameRequirement, VideoFrameResolver,
-        VideoMetadata, YuvFrame,
+        AssetKind, CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver,
+        MediaFrame, MediaStore, ModelResolver, TextSession, VideoFrameRequirement,
+        VideoFrameResolver, VideoMetadata, YuvFrame,
     },
 };
 /// Total bytes of decoded video frames kept across all streams of one media store.
@@ -553,11 +553,13 @@ impl MediaStore for WasmMediaStore {
         &self,
         source: &str,
     ) -> Result<Box<dyn EnvironmentResolver>, MediaError> {
-        Err(MediaError::source_not_found(
+        Err(MediaFailure::unsupported(
             source,
             "the browser preview has no environment maps; render this composition on a Lumen \
              server",
-        ))
+        )
+        .wanting(&[AssetKind::Environment])
+        .into())
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {

@@ -1,4 +1,4 @@
-import type { LumenDiagnostic } from "@lumiscia/lumen-types";
+import type { LumenDiagnostic, MediaFailure } from "@lumiscia/lumen-types";
 import { epochNow, type PreviewClock } from "./clock.js";
 import {
   createLumenPreviewRuntime,
@@ -13,7 +13,7 @@ import type { LumenPreviewErrorCode } from "./preview.js";
 import { resolvePlaybackRange, type LumenPreviewRange } from "./playback-range.js";
 import { PreviewRunner } from "./runner.js";
 import { assetHint } from "./asset-hint.js";
-import { describeError, errorDiagnostics } from "./session/errors.js";
+import { describeError, errorDiagnostics, errorMediaFailure } from "./session/errors.js";
 import { PlaybackFpsMeter } from "./session/stats.js";
 
 type InitPreview = (options: { module_or_path: string }) => Promise<object>;
@@ -100,6 +100,8 @@ export type LumenPreviewWorkerEvent =
   | {
       diagnostics: LumenDiagnostic[];
       loadId: number;
+      /** The media source that couldn't be used, when that is why the load failed. */
+      media: MediaFailure | null;
       message: string;
       type: "load-failed";
     }
@@ -114,6 +116,8 @@ export type LumenPreviewWorkerEvent =
     }
   | {
       loadId: number;
+      /** The media source that couldn't be used, when that is why the frame failed. */
+      media: MediaFailure | null;
       message: string;
       type: "render-failed";
     }
@@ -175,7 +179,12 @@ export function createLumenPreviewWorkerHost({
         scope.postMessage({ loadId, playbackRevision, seekId, type: "ended" });
       },
       onFailure: (error) => {
-        scope.postMessage({ loadId, message: describeError(error), type: "render-failed" });
+        scope.postMessage({
+          loadId,
+          media: errorMediaFailure(error),
+          message: describeError(error),
+          type: "render-failed",
+        });
       },
       onFrame: (frame, seekId, renderMs) => {
         lastRenderMs = renderMs ?? lastRenderMs;
@@ -330,6 +339,7 @@ export function createLumenPreviewWorkerHost({
         scope.postMessage({
           diagnostics: errorDiagnostics(error),
           loadId,
+          media: errorMediaFailure(error),
           message: describeError(error),
           type: "load-failed",
         });

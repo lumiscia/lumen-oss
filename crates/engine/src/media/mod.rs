@@ -7,10 +7,13 @@ pub mod ffmpeg;
 pub mod image;
 
 mod asset;
+#[cfg(all(test, feature = "image", feature = "ffmpeg"))]
+mod failures;
 mod inventory;
 mod pixels;
 mod prediction;
 mod resolver;
+mod sniff;
 mod store;
 mod yuv;
 
@@ -36,6 +39,7 @@ pub use resolver::{
     CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver, MediaFrame,
     ModelResolver, VideoFrameResolver, VideoMetadata,
 };
+pub use sniff::{Sniff, sniff, sniff_kind};
 pub use store::{MediaStore, TextSession};
 pub use yuv::{
     ChromaSubsampling, Rotation, YuvChroma, YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix,

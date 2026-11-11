@@ -96,7 +96,7 @@ On the CPU upload path, frames are read back through a ring of three buffers whi
 
 #### Error codes
 
-A failed render is a `ServerRenderError`. `code()` is an `ErrorCode` to match on, `as_str()` gives the string the HTTP binary returns, `Display` is a message, and `source()` is the error that caused it. A failure in the engine has the engine's diagnostic code, such as `media.not_found`, `media.decode` or `render.gpu`, from the [engine's table](../engine/README.md), and `engine_error()` returns the engine error itself. Only `render.gpu` is retryable among them. The other codes are failures of this library:
+A failed render is a `ServerRenderError`. `code()` is an `ErrorCode` to match on, `as_str()` gives the string the HTTP binary returns, `Display` is a message, and `source()` is the error that caused it. A failure in the engine has the engine's diagnostic code, such as `media.not_found`, `media.decode` or `render.gpu`, from the [engine's table](../engine/README.md), and `engine_error()` returns the engine error itself. Of them, `render.gpu` is retryable, and so is a media failure that was a shortage that can pass (out of memory or file descriptors), which is a `media.decode`. The other codes are failures of this library:
 
 | Code                      | Meaning                                                                                                                                                                          |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -200,7 +200,7 @@ A failed request answers with its status and `{ "code": "...", "error": "..." }`
 }
 ```
 
-`POST /renders/check` takes the same body as `POST /renders` and checks the composition without rendering it or downloading its media. It answers `200` with `{ "ok": false, "diagnostics": [...] }`, where `ok` is `false` only when there is an error. Warnings, such as `font.fallback` for a text family no font answers to, leave it `true` and never fail a render. Fonts resolve as a render on this host would: from `--font-dir` or `LUMEN_FONT_DIR`, the system fonts, or a manifest alias the composition names as a family. `asset:` references are checked against the uploaded media, with the same `asset.not_found` and `asset.wrong_kind` errors a render would be refused with. An invalid manifest returns `422`, as it does for `POST /renders`; `quality` and `codec` are not checked.
+`POST /renders/check` takes the same body as `POST /renders` and checks the composition without rendering it or downloading its media. It answers `200` with `{ "ok": false, "diagnostics": [...] }`, where `ok` is `false` only when there is an error. Warnings, such as `font.fallback` for a text family no font answers to, leave it `true` and never fail a render. Fonts resolve as a render on this host would: from `--font-dir` or `LUMEN_FONT_DIR`, the system fonts, or a manifest alias the composition names as a family. `asset:` references are checked against the uploaded media, with the same `media.not_found` and `media.wrong_kind` errors a render would be refused with. An invalid manifest returns `422`, as it does for `POST /renders`; `quality` and `codec` are not checked.
 
 `path` is a JSON pointer into the composition, `node` the node's id when there is one, and `message` free-form, trimmed and cut at 1024 characters like every error message. Codes are public and stable; clients must accept codes they don't know. The [engine README](../engine/README.md#diagnostics) lists the codes, the compatibility rules, and what only a render finds.
 
@@ -307,7 +307,7 @@ Images report `width` and `height`; audio `durationMs`, `sampleRate` and `channe
 
 `GET /media/:id/content` serves the file with its declared content type only when that agrees with its kind, and as `application/octet-stream` otherwise, with `X-Content-Type-Options: nosniff`.
 
-Only `validated` media resolves. An id that is unknown, expired, deleted, `pending` or `rejected` is `asset.not_found`, and media of another kind than the field reads, such as an image as a video, is `asset.wrong_kind`. Both are refused when the render is requested.
+Only `validated` media resolves. An id that is unknown, expired, deleted, `pending` or `rejected` is `media.not_found`, and media of another kind than the field reads, such as an image as a video, is `media.wrong_kind`. Both are refused when the render is requested.
 
 Media is kept in `--media-dir`, one directory per id, and survives a restart until it expires; multipart uploads in progress don't. Files and records are written to a temporary file and renamed into place. Each upload expires `--media-ttl` after it was created, as its `expiresAt` says. From then on every lookup treats it as missing, and a sweep deletes it within a minute, or within the TTL when that is shorter. A render keeps each asset it resolves until it ends: the references in its composition when it is accepted, and any an expression names while it renders. A `DELETE` removes the media's record before it answers, so it stays deleted after a restart. Media that expires or is deleted while a render holds it reads as missing to everything else, and is removed once the last render holding it ends.
 
