@@ -1698,8 +1698,16 @@ fn read_animations(
             if !finite {
                 return Err(invalid("an animation's values aren't finite numbers"));
             }
-            if let Values::Weights { values, .. } = &values {
-                check_weights(values)?;
+            // A cubic key is its in-tangents, its weights and its out-tangents, and only the
+            // weights are held to the limit.
+            if let Values::Weights { values, count, .. } = &values {
+                if cubic {
+                    for key in values.chunks(3 * count) {
+                        check_weights(&key[*count..2 * count])?;
+                    }
+                } else {
+                    check_weights(values)?;
+                }
             }
             duration = duration.max(last);
             channels.push(Channel {

@@ -2202,6 +2202,22 @@ fn weights_past_the_limit_and_displacements_a_float_cant_reach_with_them_are_err
         }]);
     });
     assert_eq!(keyed.unwrap_err(), past);
+    // A cubic key's tangents are slopes, which the limit on weights leaves alone.
+    let cubic = |weight: f32| {
+        edit(&|glb| {
+            let times = glb.accessor(FLOAT, "SCALAR", 2, &floats(&[0.0, 1.0]));
+            let keys = [
+                2e4, 2e4, 0.0, 0.0, -2e4, 0.0, 0.0, 0.0, weight, 0.0, 0.0, 0.0,
+            ];
+            let values = glb.accessor(FLOAT, "SCALAR", 12, &floats(&keys));
+            glb.json["animations"] = json!([{
+                "samplers": [{ "input": times, "output": values, "interpolation": "CUBICSPLINE" }],
+                "channels": [{ "sampler": 0, "target": { "node": 0, "path": "weights" } }],
+            }]);
+        })
+    };
+    assert!(cubic(1.0).is_ok(), "{:?}", cubic(1.0));
+    assert_eq!(cubic(1e5).unwrap_err(), past);
     // Each finite, but at the largest weight they move a vertex past what a float holds.
     let far = edit(&|glb| {
         let accessor = glb.accessor(FLOAT, "VEC3", 3, &floats(&[0.0, 0.0, 3e35].repeat(3)));
