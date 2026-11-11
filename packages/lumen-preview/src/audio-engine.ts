@@ -11,28 +11,37 @@ export const LUMEN_AUDIO_SAMPLE_RATE = 48_000;
 export const LUMEN_AUDIO_CHANNELS = 2;
 const MS_PER_SECOND = 1_000;
 
-export interface AudioEngineTrack {
-  id: string;
-  muted: boolean;
-  solo: boolean;
-  volume: number;
-}
-
-export interface AudioEngineClip {
-  durationMs: number;
-  id: string;
+/** An audio clip as one instance of its composition plays it, with times in samples. */
+export interface AudioEngineVoice {
+  duration: number;
+  fadeIn: number;
+  fadeOut: number;
   sourceId: string;
-  sourceStartMs: number;
-  startMs: number;
-  trackId: string;
-  volume: number;
+  sourceStart: number;
 }
 
+/**
+ * Timeline samples `start + i` for `i` below `frames`, where a voice plays its clip at
+ * `position + step * i` samples from the clip's start, sounding only between `from` and `to`, at a
+ * gain moving linearly from `gain[0]` to `gain[1]`.
+ */
+export interface AudioEngineSegment {
+  frames: number;
+  from: number;
+  gain: [number, number];
+  position: number;
+  start: number;
+  step: number;
+  to: number;
+  voice: number;
+}
+
+/** What the engine planned for a composition's audio over its timeline, which the mixer loops. */
 export interface AudioEngineTimeline {
-  clips: AudioEngineClip[];
   durationFrames: number;
   fps: number;
-  tracks: AudioEngineTrack[];
+  segments: AudioEngineSegment[];
+  voices: AudioEngineVoice[];
 }
 
 /** The part of the timeline that plays, `endMs` exclusive. It repeats when `loop` is set. */
@@ -533,7 +542,7 @@ export class LumenAudioEngine {
   }
 
   #hasClips(): boolean {
-    return (this.#timeline?.clips.length ?? 0) > 0;
+    return (this.#timeline?.segments.length ?? 0) > 0;
   }
 
   /** Returns whether the mix changed. */

@@ -29,6 +29,16 @@ pub struct TimeRemap {
     pub source: Option<NodeId>,
 }
 
+impl TimeRemapParams {
+    /// The loop's first frame and its length, widened so any `i64` bounds are exact, or `None`
+    /// when looping is off or the range is empty.
+    pub fn loop_range(&self) -> Option<(i128, i128)> {
+        let start = i128::from(self.loop_start);
+        let span = i128::from(self.loop_end) - start;
+        (self.loop_enabled && span > 0).then_some((start, span))
+    }
+}
+
 const MAX_FRAME: f64 = 9_007_199_254_740_992.0;
 
 /// Returns the (possibly fractional) source frame. Consumers that index media floor it themselves.
@@ -56,9 +66,7 @@ pub fn remap_frame(node_id: NodeId, params: &TimeRemapParams) -> crate::Result<f
     let frame = params.frame.max(0.0);
     let mut whole = frame.floor() as i128;
     let fraction = frame - frame.floor();
-    if params.loop_enabled && params.loop_end > params.loop_start {
-        let start = i128::from(params.loop_start);
-        let span = i128::from(params.loop_end) - start;
+    if let Some((start, span)) = params.loop_range() {
         whole = start + (whole - start).rem_euclid(span);
     }
     let whole = whole.max(0) as f64;

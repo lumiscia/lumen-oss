@@ -1,5 +1,26 @@
 {
   "$defs": {
+    "audio": {
+      "additionalProperties": true,
+      "description": "Audio tracks and clips. A template's audio plays wherever a `clip` plays the template, following the clip's start, duration, offset, speed and end.",
+      "properties": {
+        "clips": {
+          "items": {
+            "$ref": "#/$defs/audioClip"
+          },
+          "type": "array"
+        },
+        "tracks": {
+          "items": {
+            "$ref": "#/$defs/audioTrack"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["tracks", "clips"],
+      "type": "object",
+      "x-lumen-type": "AudioTimeline"
+    },
     "audioClip": {
       "additionalProperties": true,
       "not": {
@@ -19,6 +40,16 @@
       "properties": {
         "duration_ms": {
           "minimum": 1,
+          "type": "integer"
+        },
+        "fade_in_ms": {
+          "description": "Milliseconds the clip rises from silence over at its start, on an equal-power curve.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fade_out_ms": {
+          "description": "Milliseconds the clip falls to silence over at its end, on an equal-power curve.",
+          "minimum": 0,
           "type": "integer"
         },
         "id": {
@@ -45,9 +76,17 @@
           "type": "string"
         },
         "volume": {
-          "maximum": 3.4028234663852886e38,
-          "minimum": 0,
-          "type": "number"
+          "anyOf": [
+            {
+              "maximum": 3.4028234663852886e38,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Gain, 1 by default. An expression is evaluated in the time of the composition the audio is in, and reads `frame`, `time`, `fps`, `width`, `height` and props."
         }
       },
       "required": ["id", "source_id", "track_id", "start_ms", "duration_ms"],
@@ -70,9 +109,17 @@
           "type": "boolean"
         },
         "volume": {
-          "maximum": 3.4028234663852886e38,
-          "minimum": 0,
-          "type": "number"
+          "anyOf": [
+            {
+              "maximum": 3.4028234663852886e38,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Gain, 1 by default. An expression is evaluated in the time of the composition the audio is in, and reads `frame`, `time`, `fps`, `width`, `height` and props."
         }
       },
       "required": ["id"],
@@ -201,6 +248,9 @@
       "additionalProperties": false,
       "description": "A composition a `clip` plays. Without `render_settings` it takes the root's size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's fps.",
       "properties": {
+        "audio": {
+          "$ref": "#/$defs/audio"
+        },
         "connections": {
           "items": {
             "$ref": "#/$defs/connection"
@@ -1336,23 +1386,7 @@
       "type": "string"
     },
     "audio": {
-      "additionalProperties": true,
-      "properties": {
-        "clips": {
-          "items": {
-            "$ref": "#/$defs/audioClip"
-          },
-          "type": "array"
-        },
-        "tracks": {
-          "items": {
-            "$ref": "#/$defs/audioTrack"
-          },
-          "type": "array"
-        }
-      },
-      "required": ["tracks", "clips"],
-      "type": "object"
+      "$ref": "#/$defs/audio"
     },
     "compositions": {
       "additionalProperties": {

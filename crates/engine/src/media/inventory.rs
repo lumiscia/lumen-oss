@@ -157,8 +157,18 @@ pub(crate) fn walk<'a>(composition: &'a Composition, f: &mut dyn FnMut(Found<'a>
     for (template, scene) in scenes {
         walk_nodes(template, scene, f);
     }
-    if let Some(audio) = composition.audio() {
-        for (index, clip) in audio.clips.iter().enumerate() {
+    let timelines = std::iter::once((None, composition.audio())).chain(
+        composition
+            .compositions()
+            .iter()
+            .map(|(name, template)| (Some(name.as_str()), template.audio.as_ref())),
+    );
+    for (template, audio) in timelines {
+        for (index, clip) in audio
+            .map_or(&[][..], |audio| &audio.clips)
+            .iter()
+            .enumerate()
+        {
             clip.for_each_media_source(&mut |source| {
                 if let MediaValue::Literal(value) = source.value
                     && !value.is_empty()
@@ -167,7 +177,7 @@ pub(crate) fn walk<'a>(composition: &'a Composition, f: &mut dyn FnMut(Found<'a>
                         source: value,
                         kinds: source.kinds,
                         at: MediaLocation::AudioClip {
-                            template: None,
+                            template: template.map(str::to_string),
                             track: clip.track_id.clone(),
                             clip: clip.id.clone(),
                             index,

@@ -2,7 +2,7 @@ import { lumenSchemaVersion } from "@lumiscia/lumen-types";
 import { describe, expect, test } from "vitest";
 
 import { Composition } from "../src/composition.js";
-import { frame, hex, progress, uppercase, vec2 } from "../src/expression.js";
+import { frame, hex, progress, time, tween, uppercase, vec2, when } from "../src/expression.js";
 import { defineComposition } from "../src/template.js";
 
 describe("Composition schema version", () => {
@@ -178,6 +178,47 @@ describe("Composition audio", () => {
         },
       ],
       tracks: [{ id: "music", name: "Music", solo: true, volume: 0.5 }],
+    });
+  });
+
+  test("takes expression gains and fades in seconds", () => {
+    const composition = new Composition({ timeline: { durationSeconds: 10 } });
+
+    composition
+      .addAudioTrack({ id: "music", gain: when(time.gte(2).and(time.lt(6)), 0.25, 1) })
+      .addAudio({ source: "music.mp3", start: 0, duration: 10, trackId: "music", fadeIn: 1 })
+      .addAudio({
+        source: "voice.wav",
+        start: 2,
+        duration: 4,
+        gain: tween(0, 1, 60, 15),
+        fadeOut: 0.5,
+      });
+
+    expect(composition.toJSON().audio).toEqual({
+      clips: [
+        {
+          duration_ms: 10_000,
+          fade_in_ms: 1_000,
+          id: "music-clip-1",
+          source_id: "music.mp3",
+          start_ms: 0,
+          track_id: "music",
+        },
+        {
+          duration_ms: 4_000,
+          fade_out_ms: 500,
+          id: "main-clip-1",
+          source_id: "voice.wav",
+          start_ms: 2_000,
+          track_id: "main",
+          volume: "=tween(0, 1, 60, 15)",
+        },
+      ],
+      tracks: [
+        { id: "music", volume: "=if(((time >= 2) && (time < 6)), 0.25, 1)" },
+        { id: "main" },
+      ],
     });
   });
 

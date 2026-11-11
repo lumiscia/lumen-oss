@@ -212,20 +212,21 @@ describe("LumenAudioWorkletProcessor", () => {
     const { mixTimelineChunk } = await import("../src/audio-worker.js");
     const seconds = 1;
     const timeline = {
-      clips: [
-        {
-          durationMs: 500,
-          id: "clip",
-          sourceId: "tone",
-          sourceStartMs: 0,
-          startMs: 250,
-          trackId: "track",
-          volume: 1,
-        },
-      ],
       durationFrames: 30 * seconds,
       fps: 30,
-      tracks: [{ id: "track", muted: false, solo: false, volume: 1 }],
+      segments: [
+        {
+          frames: 24_000,
+          from: 0,
+          gain: [1, 1] as [number, number],
+          position: 0,
+          start: 12_000,
+          step: 1,
+          to: 24_000,
+          voice: 0,
+        },
+      ],
+      voices: [{ duration: 24_000, fadeIn: 0, fadeOut: 0, sourceId: "tone", sourceStart: 0 }],
     };
     const sources = new Map([["tone", new Float32Array(96_000).fill(0.5)]]);
     const start = 30_000;

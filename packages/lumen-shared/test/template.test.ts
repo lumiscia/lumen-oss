@@ -83,6 +83,35 @@ describe("defineComposition", () => {
     ]);
   });
 
+  test("carries the template's own audio, which each clip plays in its own time", () => {
+    const whoosh = defineComposition({
+      name: "whoosh",
+      duration: 30,
+      props: { level: prop.number(1) },
+      build: (composition, { level }) => {
+        composition.addAudio({ source: "whoosh.wav", start: 0, duration: 0.5, gain: level });
+        return composition.addNode({ type: "background" });
+      },
+    });
+    const root = new Composition();
+    root.addNode(whoosh.clip({ start: 0 }));
+    root.addNode(whoosh.clip({ start: 30, speed: 2, props: { level: 0.5 } }));
+
+    expect(root.toJSON().compositions?.whoosh?.audio).toEqual({
+      clips: [
+        {
+          duration_ms: 500,
+          id: "main-clip-1",
+          source_id: "whoosh.wav",
+          start_ms: 0,
+          track_id: "main",
+          volume: "=prop('level')",
+        },
+      ],
+      tracks: [{ id: "main" }],
+    });
+  });
+
   test("registers nested templates and rejects a second template of the same name", () => {
     const strip = defineComposition({
       name: "strip",

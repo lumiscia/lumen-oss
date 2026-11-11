@@ -77,6 +77,9 @@ pub struct CompositionBuilder {
 pub struct CompositionTemplate {
     pub scene: Scene,
     pub props: BTreeMap<String, PropDef>,
+    /// Plays wherever a `clip` plays the template, in the clip's time.
+    #[structural_hash(skip)] // Audio is independent of what frames record and of GPU caches.
+    pub audio: Option<AudioTimeline>,
 }
 
 /// A prop a template declares, which `prop('name')` reads inside it.
@@ -194,6 +197,18 @@ impl Composition {
 
     pub fn audio(&self) -> Option<&AudioTimeline> {
         self.parts.audio.as_ref()
+    }
+
+    /// Whether the root or any template has an audio clip, so a render may have sound.
+    pub fn has_audio(&self) -> bool {
+        std::iter::once(self.audio())
+            .chain(
+                self.compositions()
+                    .values()
+                    .map(|template| template.audio.as_ref()),
+            )
+            .flatten()
+            .any(|audio| !audio.clips.is_empty())
     }
 
     pub fn output_settings(&self) -> &OutputSettings {
@@ -351,13 +366,47 @@ impl CompositionBuilder {
         if let Some(audio) = &self.audio {
             errors.extend(
                 audio
-                    .problems()
+                    .problems(None)
                     .into_iter()
                     .map(|details| GraphValidationError::InvalidAudio { details }.into()),
             );
         }
+        for (name, template) in &self.compositions {
+            let Some(audio) = &template.audio else {
+                continue;
+            };
+            errors.extend(
+                audio
+                    .problems(Some(&template.props))
+                    .into_iter()
+                    .map(|details| {
+                        LumenError::from(GraphValidationError::InTemplate {
+                            template: name.clone(),
+                            error: Box::new(GraphValidationError::InvalidAudio { details }.into()),
+                        })
+                    }),
+            );
+        }
         if let Some(templates) = self.template_cycle() {
             errors.push(GraphValidationError::TemplateCycle { templates }.into());
+        } else {
+            let played = crate::audio::played_templates(&self.scene, &self.compositions);
+            if played > crate::audio::MAX_PLAYED_TEMPLATES {
+                let limit = crate::audio::MAX_PLAYED_TEMPLATES;
+                let played = if played == u64::MAX {
+                    "more times than can be counted".to_string()
+                } else {
+                    format!("{played} times")
+                };
+                errors.push(
+                    GraphValidationError::InvalidAudio {
+                        details: format!(
+                            "clips play templates with sound {played}, counting the clips inside the templates they play, and at most {limit} are supported. Play a template with sound fewer times, or put its sound on the root's timeline"
+                        ),
+                    }
+                    .into(),
+                );
+            }
         }
 
         if errors.is_empty() {
@@ -538,36 +587,48 @@ fn as_clip(node: &NodeKind) -> Option<&Clip> {
 fn prop_read_problem(node: &NodeKind, props: Option<&BTreeMap<String, PropDef>>) -> Option<String> {
     let mut problem = None;
     node.for_each_expression(&mut |expression| {
-        let source = &expression.source;
-        crate::expr::functions::visit(expression.ast(), &mut |node| {
-            let ExprNode::Builtin(BuiltinFn::Prop, args) = node else {
-                return;
-            };
-            let [ExprNode::Literal(ExpressionValue::String(name))] = args.as_slice() else {
+        if problem.is_none() {
+            problem = prop_problem(expression, props);
+        }
+    });
+    problem
+}
+
+/// [`prop_read_problem`] for one expression.
+pub(crate) fn prop_problem(
+    expression: &crate::expr::Expression,
+    props: Option<&BTreeMap<String, PropDef>>,
+) -> Option<String> {
+    let mut problem = None;
+    let source = &expression.source;
+    crate::expr::functions::visit(expression.ast(), &mut |node| {
+        let ExprNode::Builtin(BuiltinFn::Prop, args) = node else {
+            return;
+        };
+        let [ExprNode::Literal(ExpressionValue::String(name))] = args.as_slice() else {
+            problem.get_or_insert_with(|| {
+                format!("`prop` takes the prop's name as a string literal, in `={source}`")
+            });
+            return;
+        };
+        match props {
+            None => {
                 problem.get_or_insert_with(|| {
-                    format!("`prop` takes the prop's name as a string literal, in `={source}`")
+                    format!(
+                        "`prop('{name}')` is only available inside a composition template, in `={source}`"
+                    )
                 });
-                return;
-            };
-            match props {
-                None => {
-                    problem.get_or_insert_with(|| {
-                        format!(
-                            "`prop('{name}')` is only available inside a composition template, in `={source}`"
-                        )
-                    });
-                }
-                Some(props) if !props.contains_key(name) => {
-                    problem.get_or_insert_with(|| {
-                        format!(
-                            "unknown prop `{name}` in `={source}`; {}",
-                            declared_props(props)
-                        )
-                    });
-                }
-                Some(_) => {}
             }
-        });
+            Some(props) if !props.contains_key(name) => {
+                problem.get_or_insert_with(|| {
+                    format!(
+                        "unknown prop `{name}` in `={source}`; {}",
+                        declared_props(props)
+                    )
+                });
+            }
+            Some(_) => {}
+        }
     });
     problem
 }

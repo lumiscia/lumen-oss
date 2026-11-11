@@ -101,20 +101,21 @@ async function createAudio() {
   });
   engine.loadAudioTimeline(
     JSON.stringify({
-      clips: [
-        {
-          durationMs: 600_000,
-          id: "clip",
-          sourceId: "voice",
-          sourceStartMs: 0,
-          startMs: 0,
-          trackId: "track",
-          volume: 1,
-        },
-      ],
       durationFrames: 18_000,
       fps: 30,
-      tracks: [{ id: "track", muted: false, solo: false, volume: 1 }],
+      segments: [
+        {
+          frames: 28_800_000,
+          from: 0,
+          gain: [1, 1],
+          position: 0,
+          start: 0,
+          step: 1,
+          to: 28_800_000,
+          voice: 0,
+        },
+      ],
+      voices: [{ duration: 28_800_000, fadeIn: 0, fadeOut: 0, sourceId: "voice", sourceStart: 0 }],
     }),
   );
 

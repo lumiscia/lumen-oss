@@ -60,13 +60,14 @@ export function defineComposition<TProps extends PropDeclarations = Record<never
   const composition = new Composition();
   composition.addOutput(options.build(composition, reads));
 
-  const { connections, nodes } = composition.toJSON();
+  const { audio, connections, nodes } = composition.toJSON();
   const template: CompositionTemplate = {
     ...(size === undefined ? {} : { render_settings: { height: size.height, width: size.width } }),
     ...(duration === undefined
       ? {}
       : { timeline: { duration_frames: duration, ...(fps === undefined ? {} : { fps }) } }),
     ...(Object.keys(props).length === 0 ? {} : { props }),
+    ...(audio === undefined ? {} : { audio }),
     nodes,
     connections,
   };
