@@ -26,4 +26,4 @@ const composition = new Composition().addOutput(
 
 `@lumiscia/lumen-types` adds `nodeInputPorts`, each kind's input ports with their kind and whether they take a list, and `NodeParamPortNameClash`, which is `never`: the generated types stop compiling if a kind ever gives a param and an input port the same name.
 
-Breaking: `addNode` given an object it has already added, at the top or as an input, returns that node instead of adding a copy. Pass a fresh object, such as `{ ...input }`, for another node. A failed `addNode` still leaves the composition as it was, nested values included.
+`addNode` itself still adds a node every time it is called. A failed `addNode` leaves the composition as it was, nested values included.

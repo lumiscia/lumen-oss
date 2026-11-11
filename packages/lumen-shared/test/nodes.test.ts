@@ -92,8 +92,35 @@ describe("Composition with node values", () => {
       { from_node: 0, to_node: 2, to_port: "overlay" },
       { from_node: 2, to_node: 3, to_port: "source" },
     ]);
-    expect(composition.addNode(shared)).toBe(composition.addNode(shared));
-    expect(composition.toJSON().nodes).toHaveLength(4);
+  });
+
+  test("addNode always adds its own node, and a value it added is that node to later readers", () => {
+    const composition = new Composition();
+    const base = { type: "text" as const, params: { content: "first" } };
+    const first = composition.addNode(base);
+    base.params.content = "second";
+    const second = composition.addNode(base);
+    expect(second).not.toBe(first);
+    expect(composition.toJSON().nodes.map((node) => node.params)).toEqual([
+      { content: "first" },
+      { content: "second" },
+    ]);
+
+    composition.addOutput(n.blur({ source: base }));
+    expect(composition.toJSON().connections[0]).toEqual({
+      from_node: first.id,
+      to_node: 2,
+      to_port: "source",
+    });
+  });
+
+  test("adds a chain thousands of nodes deep", () => {
+    let source: NodeInput<"text" | "blur"> = n.text();
+    for (let index = 0; index < 5_000; index += 1) {
+      source = n.blur({ source });
+    }
+    const composition = new Composition().addOutput(source);
+    expect(composition.toJSON().nodes).toHaveLength(5_002);
   });
 
   test("feeds one scene to two render_3d nodes with their own params", () => {

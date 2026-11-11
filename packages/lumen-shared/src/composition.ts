@@ -49,6 +49,14 @@ const owners = new WeakMap<object, Composition>();
 
 let dependenciesOf: (composition: Composition) => Pick<ClipTemplate, "compositions" | "functions">;
 
+/** Every node or node value `node` reads, in port order. */
+function sourcesOf(node: NodeInput): NodeSource[] {
+  const inputs = (node.inputs ?? {}) as Readonly<
+    Record<string, NodeSource | readonly NodeSource[]>
+  >;
+  return Object.values(inputs).flat();
+}
+
 /** Captures what `composition`, a template's built nodes, has registered so far. */
 export function captureClipTemplate(
   name: string,
@@ -95,8 +103,8 @@ export class Composition {
   /**
    * Adds a node. `inputs` connects nodes to its ports in order, as `connect` would after it; a
    * variadic port such as `layers` takes an array. An input may be a node value, added before
-   * this node and after the values it reads in turn. A value this composition has already added,
-   * here or as an input, is that node: adding it again returns the node.
+   * this node and after the values it reads in turn. A value read by several inputs is one node.
+   * `node` itself is always added, so adding the same object twice makes two nodes.
    */
   addNode<TKind extends NodeKind>(
     node: NodeInput<TKind> & { readonly type: TKind },
@@ -107,7 +115,7 @@ export class Composition {
     const compositions = this.#compositions.size;
     const functions = this.#functions.size;
     try {
-      return this.#add(node as NodeInput, new Set()) as CompositionNode<TKind>;
+      return this.#add(node as NodeInput) as CompositionNode<TKind>;
     } catch (error) {
       // A failed addition leaves the composition as it was, nested values included.
       for (const added of this.#nodes.splice(nodes)) {
@@ -132,15 +140,44 @@ export class Composition {
     return this;
   }
 
-  /** Adds `node` after the values it reads; `reading` holds the values whose inputs are being added. */
-  #add(node: NodeInput, reading: Set<object>): CompositionNode {
-    const existing = this.#values.get(node);
-    if (existing !== undefined && owners.get(existing) === this) {
-      return existing;
+  /**
+   * Adds `root` after the node values it reads, each of those once however many inputs read it.
+   * `root` itself is always a new node.
+   */
+  #add(root: NodeInput): CompositionNode {
+    // Values whose inputs are being added. Meeting one again means it reads itself.
+    const reading = new Set<NodeInput>();
+    const stack: { readonly node: NodeInput; expanded: boolean }[] = [
+      { node: root, expanded: false },
+    ];
+    let added: CompositionNode | undefined;
+    for (let top = stack.at(-1); top !== undefined; top = stack.at(-1)) {
+      const { node } = top;
+      if (top.expanded) {
+        stack.pop();
+        reading.delete(node);
+        added = this.#addResolved(node);
+        continue;
+      }
+      if (node !== root && this.#valueNode(node) !== undefined) {
+        stack.pop();
+        continue;
+      }
+      if (reading.has(node)) {
+        throw new Error(`A \`${node.type}\` node value reads itself through its inputs.`);
+      }
+      reading.add(node);
+      top.expanded = true;
+      const values = sourcesOf(node).filter((source) => this.#isValue(source));
+      for (const value of values.reverse()) {
+        stack.push({ node: value as NodeInput, expanded: false });
+      }
     }
-    if (reading.has(node)) {
-      throw new Error(`A \`${node.type}\` node value reads itself through its inputs.`);
-    }
+    return added as CompositionNode;
+  }
+
+  /** Adds `node`, whose node values have all been added. */
+  #addResolved(node: NodeInput): CompositionNode {
     const {
       [clipTemplate]: template,
       inputs,
@@ -148,14 +185,12 @@ export class Composition {
     } = node as NodeInput & {
       readonly [clipTemplate]?: ClipTemplate;
     };
-    reading.add(node);
     const sources = Object.entries(
       (inputs ?? {}) as Readonly<Record<string, NodeSource | readonly NodeSource[]>>,
     ).map(([toPort, from]) => ({
       toPort,
-      fromNodes: [from].flat().map((source) => this.#sourceId(source, reading)),
+      fromNodes: [from].flat().map((source) => this.#sourceId(source)),
     }));
-    reading.delete(node);
 
     const id = input.id ?? this.#nextFreeNodeId();
     if (this.#nodeIds.has(id)) {
@@ -176,7 +211,9 @@ export class Composition {
     }
     this.#nodes.push(nextNode);
     owners.set(nextNode, this);
-    this.#values.set(node, nextNode);
+    if (this.#valueNode(node) === undefined) {
+      this.#values.set(node, nextNode);
+    }
     for (const { toPort, fromNodes } of sources) {
       for (const fromNode of fromNodes) {
         this.#connections.push({ from_node: fromNode, to_node: id, to_port: toPort });
@@ -185,12 +222,23 @@ export class Composition {
     return nextNode;
   }
 
-  /** The id of a node of this composition, or of the node a node value becomes. */
-  #sourceId(source: NodeSource, reading: Set<object>): number {
-    if (typeof source === "number" || owners.has(source) || !("type" in source)) {
+  /** The node of this composition that the node value `value` became. */
+  #valueNode(value: NodeInput): CompositionNode | undefined {
+    const node = this.#values.get(value);
+    return node !== undefined && owners.get(node) === this ? node : undefined;
+  }
+
+  /** Whether `source` is a node value rather than an id or a node of a composition. */
+  #isValue(source: NodeSource): boolean {
+    return typeof source !== "number" && !owners.has(source) && "type" in source;
+  }
+
+  /** The id of a node of this composition, or of the node a node value became. */
+  #sourceId(source: NodeSource): number {
+    if (!this.#isValue(source)) {
       return this.#ownedNodeId(source as NodeReference);
     }
-    return this.#add(source as NodeInput, reading).id;
+    return (this.#valueNode(source as NodeInput) as CompositionNode).id;
   }
 
   /** Checks that `template` fits and returns the function that registers it. */
