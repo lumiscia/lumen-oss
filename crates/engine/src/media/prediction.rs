@@ -215,22 +215,27 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
 mod tests {
     use crate::{media::AssetKind, node::NodeKind};
 
-    /// Prediction maps frames for `media_in` alone. A node that declares another param reading
-    /// images or videos needs its own case in `collect_node`.
+    /// Prediction maps frames for `media_in` alone, from the one source its `resolve` reads. A
+    /// node that declares another param reading images or videos, or a second such param on
+    /// `media_in`, needs its own case in `collect_node`.
     #[test]
-    fn media_in_is_the_only_node_that_reads_images_or_videos() {
+    fn media_in_source_is_the_only_param_that_reads_images_or_videos() {
         let readers: Vec<_> = NodeKind::schemas()
             .into_iter()
-            .filter(|schema| {
-                schema.properties.iter().any(|property| {
-                    property.media.is_some_and(|media| {
-                        media.kinds.contains(&AssetKind::Image)
-                            || media.kinds.contains(&AssetKind::Video)
+            .flat_map(|schema| {
+                schema
+                    .properties
+                    .iter()
+                    .filter(|property| {
+                        property.media.is_some_and(|media| {
+                            media.kinds.contains(&AssetKind::Image)
+                                || media.kinds.contains(&AssetKind::Video)
+                        })
                     })
-                })
+                    .map(|property| (schema.kind, property.id))
+                    .collect::<Vec<_>>()
             })
-            .map(|schema| schema.kind)
             .collect();
-        assert_eq!(readers, ["media_in"]);
+        assert_eq!(readers, [("media_in", "source")]);
     }
 }

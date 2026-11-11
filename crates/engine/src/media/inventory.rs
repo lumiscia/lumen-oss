@@ -586,7 +586,33 @@ mod tests {
                     schema.kind,
                     property.id
                 );
+                // The schema's `source_id` role and `#[media(...)]` mark the same params.
+                assert_eq!(
+                    property.constraints.role == Some("source_id"),
+                    property.media.is_some(),
+                    "`{}.{}` has one of `role = \"source_id\"` and `#[media(...)]` without the other",
+                    schema.kind,
+                    property.id
+                );
             }
         }
+    }
+
+    #[test]
+    fn a_template_name_too_long_to_repeat_is_rejected() {
+        let document = |name: &str| {
+            serde_json::json!({
+                "timeline": { "duration_frames": 1 },
+                "render_settings": { "width": 1, "height": 1 },
+                "nodes": [],
+                "connections": [],
+                "compositions": { name: { "nodes": [], "connections": [] } },
+            })
+        };
+        let error = crate::json::parse_value(&document(&"a".repeat(257)))
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("257 bytes long; the most is 256"), "{error}");
     }
 }

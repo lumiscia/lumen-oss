@@ -450,6 +450,19 @@ fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
     let mut graph = build_nodes(&document.nodes, &mut errors);
     let mut templates = BTreeMap::new();
     for (name, template) in &document.compositions {
+        if name.len() > MAX_TEMPLATE_NAME_BYTES {
+            errors.push(
+                DocumentError::Invalid {
+                    pointer: "/compositions".to_string(),
+                    details: format!(
+                        "a name in `compositions` is {} bytes long; the most is \
+                         {MAX_TEMPLATE_NAME_BYTES}",
+                        name.len()
+                    ),
+                }
+                .into(),
+            );
+        }
         let mut template_errors = Vec::new();
         let built = build_template(template, &timeline, &render_settings, &mut template_errors);
         errors.extend(
@@ -505,6 +518,10 @@ fn end_phase(errors: &mut Vec<LumenError>) -> Result<(), Vec<LumenError>> {
 }
 
 /// `error` found in template `name`, with its message and path in the template.
+/// The longest name a template in `compositions` may have. Whatever lists a composition's parts
+/// repeats the name for each, so it is kept short.
+const MAX_TEMPLATE_NAME_BYTES: usize = 256;
+
 fn in_template(name: &str, error: LumenError) -> LumenError {
     GraphValidationError::InTemplate {
         template: name.to_string(),
