@@ -179,16 +179,18 @@ environment and mipmaps.
   +Y up, +Z towards the camera. Each component `n` is stored as `n * 0.5 + 0.5`, opaque; where
   nothing is drawn it is transparent.
 
-Both are data rather than colour: values are stored as they are, with no transfer function, so a
-node reading the raster, such as `merge`'s luma mask or a `wgsl_shader`, reads the value itself.
+Both are data rather than colour: values go into the working space as they are, with no transfer
+function, so a node reading the raster, such as `merge`'s luma mask or a `wgsl_shader`, reads the
+value itself. An 8-bit output encodes them as it does light, so a depth of 0.5 is code 188.
 Opaque surfaces, `text_3d` and instances included, draw into them everywhere, masked ones where
 they reach their cutoff, and blended ones, such as image planes, where their alpha reaches half,
 the same rule that decides where they block shadows. Shadow catchers draw too, since they hide
 what is behind them. Each pixel holds the nearest surface at its centre: `supersample` is ignored,
 so an edge is never averaged into a value no surface has.
 
-Rasters hold 8 bits a channel, so depth has 256 steps between `depth_near` and `depth_far`. Set them
-around the part of the scene an effect needs, not to the camera's default 0.05 to 1000.
+Rasters hold half floats, so depth steps by 1/2048 between 0.5 and 1, and more finely below. Set
+`depth_near` and `depth_far` around the part of the scene an effect needs, not to the camera's
+default 0.05 to 1000.
 
 Fog, with existing nodes, fades the scene into a colour by its depth:
 
