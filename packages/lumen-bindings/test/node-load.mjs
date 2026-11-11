@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { LumenPreviewController, createLumenBindings } from "@lumiscia/lumen-bindings/node";
 
-const { LumenPreviewController: Controller, check } = await createLumenBindings().preview();
+const {
+  LumenPreviewController: Controller,
+  check,
+  modelInfo,
+} = await createLumenBindings().preview();
 assert.equal(Controller, LumenPreviewController);
 
 const controller = new Controller();
@@ -42,5 +47,12 @@ assert.throws(
   () => controller.loadComposition("{"),
   (error) => error instanceof Error && error.diagnostics[0]?.code === "document.syntax",
 );
+
+const grid = readFileSync(new URL("../../../crates/3d/tests/fixtures/grid.glb", import.meta.url));
+const info = modelInfo(new Uint8Array(grid));
+assert.equal(info.animations[0]?.name, "bend");
+assert.ok(info.animations[0].duration > 0);
+assert.equal(info.materials.length, 1);
+assert.throws(() => modelInfo(new Uint8Array(8)), /the model could not be read/);
 
 console.log("@lumiscia/lumen-bindings/node loaded the web wasm build");

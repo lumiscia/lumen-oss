@@ -26,6 +26,7 @@ mod buffers;
 mod draco;
 mod glb;
 mod image;
+mod info;
 #[cfg(feature = "ktx2")]
 mod ktx2;
 #[cfg(feature = "meshopt")]
@@ -43,6 +44,7 @@ use crate::{Blending, MAX_SCENE_NODES, Maps, SkinVertex, Vertex};
 use animation::Animation;
 pub use animation::Playback;
 pub use bounds::SkinBounds;
+pub use info::{AnimationInfo, MaterialInfo, ModelInfo};
 
 /// The largest file read.
 pub const MAX_MODEL_BYTES: usize = 512 << 20;
@@ -292,6 +294,21 @@ pub struct Pose {
     pub skins: Vec<(usize, u32)>,
 }
 
+/// The most names an error lists.
+const LISTED_NAMES: usize = 20;
+
+/// `it has` the first [`LISTED_NAMES`] of `count` `names`, or says it has none of `what`.
+fn listed(names: impl Iterator<Item = String>, count: usize, what: &str) -> String {
+    if count == 0 {
+        return format!("it has no {what}");
+    }
+    let mut list: Vec<String> = names.take(LISTED_NAMES).collect();
+    if count > LISTED_NAMES {
+        list.push(format!("and {} more", count - LISTED_NAMES));
+    }
+    format!("it has {}", list.join(", "))
+}
+
 impl ModelScene {
     pub fn materials(&self) -> &[Material] {
         &self.materials
@@ -308,19 +325,14 @@ impl ModelScene {
             .iter()
             .position(|material| material.name == name)
             .ok_or_else(|| {
-                let names: Vec<String> = self
+                let names = self
                     .materials
                     .iter()
-                    .map(|material| format!("`{}`", material.name))
-                    .collect();
-                if names.is_empty() {
-                    format!("the model has no material `{name}`; it has no materials")
-                } else {
-                    format!(
-                        "the model has no material `{name}`; it has {}",
-                        names.join(", ")
-                    )
-                }
+                    .map(|material| format!("`{}`", material.name));
+                format!(
+                    "the model has no material `{name}`; {}",
+                    listed(names, self.materials.len(), "materials")
+                )
             })
     }
 
@@ -341,7 +353,7 @@ impl ModelScene {
                 .filter(|&index| index < self.animations.len())
         };
         by_name.or_else(by_index).map(Some).ok_or_else(|| {
-            let clips: Vec<String> = self
+            let clips = self
                 .animations
                 .iter()
                 .enumerate()
@@ -351,16 +363,11 @@ impl ModelScene {
                     } else {
                         format!("{index} `{}`", animation.name)
                     }
-                })
-                .collect();
-            if clips.is_empty() {
-                format!("the model has no animation `{selector}`; it has no animations")
-            } else {
-                format!(
-                    "the model has no animation `{selector}`; it has {}",
-                    clips.join(", ")
-                )
-            }
+                });
+            format!(
+                "the model has no animation `{selector}`; {}",
+                listed(clips, self.animations.len(), "animations")
+            )
         })
     }
 

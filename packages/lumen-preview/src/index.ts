@@ -1,4 +1,4 @@
-import type { LumenDiagnostic } from "@lumiscia/lumen-types";
+import type { LumenDiagnostic, LumenModelInfo } from "@lumiscia/lumen-types";
 
 import { LumenMediaBridge } from "./media/index.js";
 export { defaultAudioWorkerUrl, defaultAudioWorkletUrl, LumenAudioEngine } from "./audio-engine.js";
@@ -92,6 +92,12 @@ export interface LumenPreviewBindings {
    * provides.
    */
   check(compositionJson: string, fonts?: string[] | null): LumenDiagnostic[];
+  /**
+   * The animation clips and materials of a binary glTF (`.glb`), which a `model_3d` selects with
+   * `animation` and `texture_material`. Reads the file as a render would and throws on one it
+   * cannot read.
+   */
+  modelInfo(bytes: Uint8Array): LumenModelInfo;
   LumenPreviewController: new () => LumenPreviewControllerBinding;
 }
 

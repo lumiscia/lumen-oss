@@ -259,6 +259,29 @@ describe("Lumen media uploads", () => {
     expect(requests[1]?.init.body).toBeInstanceOf(Blob);
   });
 
+  test("a model upload reports its kind, clips and materials", async () => {
+    const model = {
+      id: "media 1",
+      kind: "model",
+      metadata: {
+        animations: [{ index: 0, name: "Walk", duration: 0.5 }],
+        materials: [{ index: 0, hasBaseColorTexture: true }],
+      },
+    };
+    const { stub } = recordingFetch((request) =>
+      new URL(request.url).pathname === "/v1/media"
+        ? { media: model, uploadUrl: "/v1/media/media%201/content" }
+        : { media: model },
+    );
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    const uploaded = await lumen.uploadMedia({ body: new Uint8Array(3), fileName: "fox.glb" });
+
+    expect(uploaded.kind).toBe("model");
+    expect(uploaded.metadata?.animations?.map((clip) => clip.name)).toEqual(["Walk"]);
+    expect(uploaded.metadata?.materials?.[0]?.hasBaseColorTexture).toBe(true);
+  });
+
   test("a stream goes up in multipart parts with the upload id in the path", async () => {
     const sizes: number[] = [];
     let completed: unknown;

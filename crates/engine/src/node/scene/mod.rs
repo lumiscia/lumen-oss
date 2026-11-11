@@ -231,7 +231,9 @@ pub struct Model3dParams {
     /// alias, or `asset:<id>` for a model asset of the host's.
     #[meta(role = "source_id")]
     pub source: String,
-    /// The animation clip to play, by its name or else its index; empty plays none.
+    /// The animation clip to play, by its name or else its index; empty plays none. A model's
+    /// clips are listed in the `animations` of its upload's `metadata` on a host that takes
+    /// uploads, and by `modelInfo` in the browser bindings.
     #[meta()]
     pub animation: String,
     /// Playback speed multiplier.
@@ -243,7 +245,9 @@ pub struct Model3dParams {
     /// Plays the clip again from its start once it ends, rather than holding its last pose.
     #[meta()]
     pub animation_loop: bool,
-    /// The material, by name, whose surfaces show the `texture` input instead, unlit.
+    /// The material, by name, whose surfaces show the `texture` input instead, unlit. A model's
+    /// materials are listed in the `materials` of its upload's `metadata` on a host that takes
+    /// uploads, and by `modelInfo` in the browser bindings.
     #[meta()]
     pub texture_material: String,
     /// Blocks light from lights that cast shadows, in the posed shape and where masked or blended
