@@ -298,6 +298,9 @@ pub enum MediaError {
     #[code("audio.unknown_track")]
     #[error("audio clip `{clip}` names unknown track `{track}`")]
     UnknownAudioTrack { clip: String, track: String },
+    #[code("audio.limit")]
+    #[error("audio: {details}")]
+    AudioLimit { details: String },
     #[code("asset.not_found")]
     #[error("asset `{id}` is not one this host has")]
     AssetNotFound { id: String },

@@ -152,15 +152,22 @@ function timelineJson(...sourceIds: string[]): string {
   const timeline: AudioEngineTimeline = {
     durationFrames: 240,
     fps: 24,
-    tracks: [{ id: "track", muted: false, solo: false, volume: 1 }],
-    clips: sourceIds.map((sourceId) => ({
-      durationMs: 1_000,
-      id: sourceId,
+    segments: sourceIds.map((_, voice) => ({
+      frames: 48_000,
+      from: 0,
+      gain: [1, 1],
+      position: 0,
+      start: 0,
+      step: 1,
+      to: 48_000,
+      voice,
+    })),
+    voices: sourceIds.map((sourceId) => ({
+      duration: 48_000,
+      fadeIn: 0,
+      fadeOut: 0,
       sourceId,
-      sourceStartMs: 0,
-      startMs: 0,
-      trackId: "track",
-      volume: 1,
+      sourceStart: 0,
     })),
   };
   return JSON.stringify(timeline);

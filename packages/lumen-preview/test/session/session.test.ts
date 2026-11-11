@@ -25,12 +25,12 @@ const audio = vi.hoisted(() => ({
   positionMs: 0,
 }));
 
-// Follows the engine: an identical timeline is left playing, only clips play, and the position wraps
-// round the range, or round the whole timeline when it has none.
+// Follows the engine: an identical timeline is left playing, only segments play, and the position
+// wraps round the range, or round the whole timeline when it has none.
 vi.mock("../../src/audio-engine.js", () => ({
   LumenAudioEngine: class {
     range: FakeRange | null = null;
-    timeline: { clips: unknown[]; durationFrames: number; fps: number } | null = null;
+    timeline: { durationFrames: number; fps: number; segments: unknown[] } | null = null;
     timelineJson: string | null = null;
     loadAudioTimeline = vi.fn((json: string | null) => {
       if (json === this.timelineJson) {
@@ -44,7 +44,7 @@ vi.mock("../../src/audio-engine.js", () => ({
     });
     play = vi.fn((ms?: number) => {
       audio.positionMs = this.wrap(ms ?? audio.positionMs);
-      audio.playing = (this.timeline?.clips.length ?? 0) > 0;
+      audio.playing = (this.timeline?.segments.length ?? 0) > 0;
     });
     constructor(readonly options: { onClockChange: () => void }) {
       audio.instances.push(this);
@@ -124,10 +124,10 @@ class FakeCanvas {
 /** What the engine serializes, which includes the length, so a new length is a new timeline. */
 function audioTimeline(totalFrames: number, clip: string | null = "music", fps = 10): string {
   return JSON.stringify({
-    clips: clip === null ? [] : [{ id: clip }],
     durationFrames: totalFrames,
     fps,
-    tracks: [],
+    segments: clip === null ? [] : [{ voice: 0 }],
+    voices: clip === null ? [] : [{ sourceId: clip }],
   });
 }
 

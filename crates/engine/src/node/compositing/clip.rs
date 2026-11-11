@@ -174,7 +174,7 @@ impl Clip {
 
     /// The template this clip plays in `scope` with its `media_output` node, or `None` when it
     /// plays its source.
-    fn template<'a>(
+    pub(crate) fn template<'a>(
         &self,
         scope: &Scope<'a>,
     ) -> crate::Result<Option<(&'a CompositionTemplate, NodeId)>> {
@@ -290,7 +290,7 @@ impl Clip {
 
     /// The template's props for this instance: each value this clip sets, evaluated at `ctx`,
     /// or the template's default.
-    fn instance_props(
+    pub(crate) fn instance_props(
         &self,
         template: &CompositionTemplate,
         ctx: &ExpressionContext<'_>,

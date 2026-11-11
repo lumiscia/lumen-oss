@@ -19,7 +19,7 @@ use serde::{
 use serde_json::{Number, Value};
 
 use crate::{
-    audio::{AudioClip, AudioTimeline, AudioTrack, default_volume, deserialize_gain},
+    audio::{AudioClip, AudioGain, AudioTimeline, AudioTrack},
     composition::{
         Composition, CompositionBuilder, CompositionTemplate, OutputCodec, OutputSettings, PropDef,
         PropKind, RenderSettings, Scene, TimelineSettings,
@@ -187,6 +187,8 @@ struct TemplateJson {
     timeline: Option<Object<TimelineJson>>,
     #[serde(default)]
     props: BTreeMap<String, Object<PropDefJson>>,
+    #[serde(default, deserialize_with = "present")]
+    audio: Option<Object<AudioJson>>,
     nodes: Vec<Object<NodeJson>>,
     connections: Vec<Object<ConnectionJson>>,
 }
@@ -224,8 +226,19 @@ struct ConnectionJson {
 /// Keys other than the clips' retired timing keys are ignored, here and on tracks and clips.
 #[derive(Deserialize)]
 struct AudioJson {
-    tracks: Vec<Object<AudioTrack>>,
+    tracks: Vec<Object<AudioTrackJson>>,
     clips: Vec<Object<AudioClipJson>>,
+}
+
+#[derive(Deserialize)]
+struct AudioTrackJson {
+    id: String,
+    #[serde(default)]
+    muted: bool,
+    #[serde(default)]
+    solo: bool,
+    #[serde(default)]
+    volume: GainJson,
 }
 
 #[derive(Deserialize)]
@@ -237,40 +250,136 @@ struct AudioClipJson {
     duration_ms: u64,
     #[serde(default)]
     source_start_ms: u64,
-    #[serde(default = "default_volume", deserialize_with = "deserialize_gain")]
-    volume: f32,
-    #[serde(default, deserialize_with = "retired_clip_time")]
-    start_frame: (),
-    #[serde(default, deserialize_with = "retired_clip_time")]
-    duration_frames: (),
-    #[serde(default, deserialize_with = "retired_clip_time")]
-    source_start_seconds: (),
+    #[serde(default)]
+    volume: GainJson,
+    #[serde(default)]
+    fade_in_ms: u64,
+    #[serde(default)]
+    fade_out_ms: u64,
+    #[serde(
+        rename = "start_frame",
+        default,
+        deserialize_with = "retired_clip_time"
+    )]
+    _start_frame: (),
+    #[serde(
+        rename = "duration_frames",
+        default,
+        deserialize_with = "retired_clip_time"
+    )]
+    _duration_frames: (),
+    #[serde(
+        rename = "source_start_seconds",
+        default,
+        deserialize_with = "retired_clip_time"
+    )]
+    _source_start_seconds: (),
 }
 
-impl From<AudioClipJson> for AudioClip {
-    fn from(clip: AudioClipJson) -> Self {
-        let AudioClipJson {
-            id,
-            source_id,
-            track_id,
-            start_ms,
-            duration_ms,
-            source_start_ms,
-            volume,
-            start_frame: (),
-            duration_frames: (),
-            source_start_seconds: (),
-        } = clip;
-        Self {
-            id,
-            source_id,
-            track_id,
-            start_ms,
-            duration_ms,
-            source_start_ms,
-            volume,
+/// A volume as the document holds it: a number of at least 0, or an `=expression` parsed once
+/// the composition's functions are known.
+enum GainJson {
+    Value(f32),
+    Expr(String),
+}
+
+impl Default for GainJson {
+    fn default() -> Self {
+        Self::Value(1.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for GainJson {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let expected = "must be a number of at least 0 or an `=expression`";
+        match Value::deserialize(deserializer)? {
+            // Negative gains are rejected before narrowing could round them to zero.
+            Value::Number(number) => match number.as_f64() {
+                Some(gain) if gain < 0.0 => {
+                    Err(D::Error::custom(format!("must be at least 0, got {gain}")))
+                }
+                Some(gain) => Ok(Self::Value(gain as f32)),
+                None => Err(D::Error::custom(expected)),
+            },
+            Value::String(text) => match classify_string(&text) {
+                Some(StringParam::Expression(source)) => Ok(Self::Expr(source.to_string())),
+                _ => Err(D::Error::custom(format!("{expected}, got \"{text}\""))),
+            },
+            other => Err(D::Error::custom(format!("{expected}, got {other}"))),
         }
     }
+}
+
+impl GainJson {
+    /// The gain, or the error for the expression at `pointer` that doesn't parse.
+    fn gain(&self, pointer: String) -> Result<AudioGain, LumenError> {
+        match self {
+            Self::Value(gain) => Ok(AudioGain::Value(*gain)),
+            Self::Expr(source) => crate::expr::Expression::parse(source)
+                .map(AudioGain::Expr)
+                .map_err(|error| {
+                    DocumentError::Invalid {
+                        details: format!("`{}`: `={source}`: {error}", dotted(&pointer)),
+                        pointer,
+                    }
+                    .into()
+                }),
+        }
+    }
+}
+
+/// `/audio/clips/0/volume` as `audio.clips[0].volume`, as document errors name values.
+fn dotted(pointer: &str) -> String {
+    let mut path = String::new();
+    for segment in pointer.split('/').skip(1) {
+        if segment.bytes().all(|byte| byte.is_ascii_digit()) {
+            path.push_str(&format!("[{segment}]"));
+        } else {
+            if !path.is_empty() {
+                path.push('.');
+            }
+            path.push_str(segment);
+        }
+    }
+    path
+}
+
+/// The audio timeline, adding the expressions that don't parse to `errors`.
+fn audio_timeline(audio: &AudioJson, errors: &mut Vec<LumenError>) -> AudioTimeline {
+    let mut gain = |gain: &GainJson, pointer: String| {
+        gain.gain(pointer).unwrap_or_else(|error| {
+            errors.push(error);
+            AudioGain::Value(0.0)
+        })
+    };
+    let tracks = audio
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(index, track)| AudioTrack {
+            id: track.id.clone(),
+            muted: track.muted,
+            solo: track.solo,
+            volume: gain(&track.volume, format!("/audio/tracks/{index}/volume")),
+        })
+        .collect();
+    let clips = audio
+        .clips
+        .iter()
+        .enumerate()
+        .map(|(index, clip)| AudioClip {
+            id: clip.id.clone(),
+            source_id: clip.source_id.clone(),
+            track_id: clip.track_id.clone(),
+            start_ms: clip.start_ms,
+            duration_ms: clip.duration_ms,
+            source_start_ms: clip.source_start_ms,
+            volume: gain(&clip.volume, format!("/audio/clips/{index}/volume")),
+            fade_in_ms: clip.fade_in_ms,
+            fade_out_ms: clip.fade_out_ms,
+        })
+        .collect();
+    AudioTimeline { tracks, clips }
 }
 
 /// An optional key that must hold a value when it is there, so `null` fails as the schema says.
@@ -472,6 +581,10 @@ fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
         );
         templates.insert(name.clone(), built);
     }
+    let audio = document
+        .audio
+        .as_ref()
+        .map(|audio| audio_timeline(audio, &mut errors));
     drop(function_scope);
     end_phase(&mut errors)?;
 
@@ -488,14 +601,6 @@ fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
     }
     end_phase(&mut errors)?;
 
-    let audio = document.audio.map(|Object(audio)| AudioTimeline {
-        tracks: audio.tracks.into_iter().map(|track| track.0).collect(),
-        clips: audio
-            .clips
-            .into_iter()
-            .map(|clip| AudioClip::from(clip.0))
-            .collect(),
-    });
     CompositionBuilder {
         scene: Scene {
             graph,
@@ -688,6 +793,10 @@ fn build_template(
             render_settings,
         },
         props,
+        audio: template
+            .audio
+            .as_ref()
+            .map(|audio| audio_timeline(audio, errors)),
     }
 }
 
@@ -713,9 +822,15 @@ fn asset_errors(
                 MediaLocation::Node(at) => {
                     crate::diagnostic::at_param(root, at.template.as_deref(), at.node, &at.param)
                 }
-                MediaLocation::AudioClip { index, .. } => {
-                    (format!("/audio/clips/{index}/source_id"), None)
-                }
+                MediaLocation::AudioClip {
+                    template, index, ..
+                } => (
+                    format!(
+                        "{}/audio/clips/{index}/source_id",
+                        crate::diagnostic::scene_pointer(template.as_deref())
+                    ),
+                    None,
+                ),
             };
             errors.push(Diagnostic::from_located_error(&error.into(), located));
         }
@@ -877,7 +992,7 @@ mod tests {
         .unwrap();
         let mut builder = composition.into_builder();
         let audio = builder.audio.as_mut().unwrap();
-        audio.tracks[0].volume = f32::NAN;
+        audio.tracks[0].volume = f32::NAN.into();
         let errors = builder.build().unwrap_err();
         assert!(
             errors[0].to_string().contains("track `main` volume"),
@@ -1110,8 +1225,8 @@ mod tests {
 
         let comp = parse_audio(serde_json::json!(-0.0), serde_json::json!(2.5)).unwrap();
         let audio = comp.audio().unwrap();
-        assert_eq!(audio.tracks[0].volume, 0.0);
-        assert_eq!(audio.clips[0].volume, 2.5);
+        assert_eq!(audio.tracks[0].volume, 0.0.into());
+        assert_eq!(audio.clips[0].volume, 2.5.into());
 
         for (invalid, track, clip) in [
             (

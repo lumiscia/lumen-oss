@@ -8,7 +8,6 @@ use anyhow::{Context, anyhow};
 use lumen_engine::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMixer, duration_samples},
     composition::Composition,
-    error::LumenError,
 };
 use lumen_ffmpeg::{
     AudioEncoderConfig, AudioFrame, CpuVideoFrame, EncoderQuality, FfmpegError, MuxedEncoder,
@@ -188,15 +187,15 @@ pub(super) fn write_composited_audio(
     cancel: &CancelToken,
     mut write_frame: impl FnMut(AudioFrame) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let Some(audio) = composition.audio().filter(|_| has_audio(composition)) else {
+    if !has_audio(composition) {
         return Ok(());
-    };
+    }
 
     let total_samples = duration_samples(
         composition.timeline().duration_frames,
         composition.timeline().fps,
     );
-    let mixer = AudioMixer::new(audio, media_store);
+    let mut mixer = AudioMixer::new(composition, media_store);
     let mut start_sample = 0_u64;
     let chunk_frames = (AUDIO_SAMPLE_RATE as usize).saturating_mul(30);
 
@@ -208,7 +207,6 @@ pub(super) fn write_composited_audio(
             .unwrap_or(chunk_frames);
         let mixed = mixer
             .mix_range(start_sample, frames)
-            .map_err(LumenError::from)
             .with_context(|| format!("audio mix failed at sample {start_sample}"))?;
         write_frame(audio_frame_from_buffer(&mixed))?;
         start_sample = start_sample.saturating_add(frames as u64);
@@ -218,10 +216,7 @@ pub(super) fn write_composited_audio(
 }
 
 pub(super) fn has_audio(composition: &Composition) -> bool {
-    composition
-        .audio()
-        .as_ref()
-        .is_some_and(|audio| !audio.clips.is_empty())
+    composition.has_audio()
 }
 
 fn audio_frame_from_buffer(buffer: &AudioBuffer) -> AudioFrame {
