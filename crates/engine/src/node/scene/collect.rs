@@ -533,6 +533,9 @@ pub(super) struct Collected {
     indices: u64,
     /// How many `instance_3d` nodes hold the scene being collected.
     nesting: u32,
+    /// The most objects an `instance_3d` may bring the scene to, which is what the nodes holding it
+    /// leave room for once they have copied it.
+    instance_room: usize,
 }
 
 impl Collected {
@@ -546,6 +549,7 @@ impl Collected {
             reached: 0,
             indices: 0,
             nesting: 0,
+            instance_room: MAX_SCENE_NODES,
         }
     }
 

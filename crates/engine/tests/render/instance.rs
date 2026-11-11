@@ -353,6 +353,44 @@ fn a_count_outside_the_limit_is_rejected_where_it_is_written() {
 }
 
 #[test]
+fn nested_copies_past_the_object_limit_fail_before_the_inner_ones_are_placed() {
+    // The inner placement fails if it is ever evaluated.
+    let error = render_error(vec![
+        shape(1, json!({})),
+        instance(
+            2,
+            1,
+            json!({ "count": 1000, "position": "=vec3(if(instance >= 0, glyph, 0), 0, 0)" }),
+        ),
+        instance(3, 2, json!({ "count": 1000 })),
+    ]);
+    assert!(error.contains("node 2"), "{error}");
+    assert!(
+        error.contains("more than 100000 objects, copied by the instance_3d nodes holding them"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_empty_scene_is_not_placed() {
+    // The placement fails if it is ever evaluated.
+    let composition: Composition = render_3d(vec![
+        shape(1, json!({})),
+        instance(2, 1, json!({ "count": 0 })),
+        instance(
+            3,
+            2,
+            json!({ "count": 1000, "position": "=vec3(if(instance >= 0, glyph, 0), 0, 0)" }),
+        ),
+    ])
+    .into();
+    gpu()
+        .renderer()
+        .render_frame_at(&composition, 0.0, &TestMedia::default())
+        .expect("the render succeeds");
+}
+
+#[test]
 fn copies_of_a_scene_past_the_object_limit_fail_before_they_are_made() {
     let error = render_error(vec![
         shape(1, json!({})),
@@ -367,14 +405,6 @@ fn copies_of_a_scene_past_the_object_limit_fail_before_they_are_made() {
         ),
         "{error}"
     );
-
-    let error = render_error(vec![
-        shape(1, json!({})),
-        instance(2, 1, json!({ "count": 400 })),
-        instance(3, 2, json!({ "count": 400 })),
-    ]);
-    assert!(error.contains("node 3"), "{error}");
-    assert!(error.contains("more than 100000 objects"), "{error}");
 }
 
 #[test]

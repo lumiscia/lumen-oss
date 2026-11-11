@@ -82,18 +82,25 @@ impl Collected {
         let mut inner = Collected::new(self.render_id);
         inner.reached = self.reached;
         inner.nesting = self.nesting + 1;
+        inner.instance_room =
+            self.instance_room.saturating_sub(self.scene.objects.len()) / count as usize;
         inner.add(cx, input)?;
         self.reached = inner.reached;
 
         let copies = u64::from(count);
         let objects = self.scene.objects.len() as u64 + inner.scene.objects.len() as u64 * copies;
-        if objects > MAX_SCENE_NODES as u64 {
+        if objects > self.instance_room as u64 {
             return Err(instance_error(
                 node.id,
                 format!(
                     "{count} instances of a scene of {} objects make a scene of more than \
-                     {MAX_SCENE_NODES} objects",
-                    inner.scene.objects.len()
+                     {MAX_SCENE_NODES} objects{}",
+                    inner.scene.objects.len(),
+                    if self.nesting > 0 {
+                        ", copied by the instance_3d nodes holding them"
+                    } else {
+                        ""
+                    }
                 ),
             ));
         }
@@ -124,8 +131,14 @@ impl Collected {
             .reserve(inner.scene.objects.len() * count as usize);
         self.skins.reserve(inner.skins.len() * count as usize);
 
+        // A scene with nothing to draw has nothing to place.
+        let placed = if inner.scene.objects.is_empty() {
+            0
+        } else {
+            count
+        };
         let mut scoped = cx.expr();
-        for index in 0..count {
+        for index in 0..placed {
             scoped.instance = Some(InstanceScope { index, count });
             let ctx = DelegateEvalContext {
                 node_id: node.id,
