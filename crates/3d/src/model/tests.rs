@@ -22,6 +22,15 @@ const UNSIGNED_SHORT: u32 = 5123;
 const UNSIGNED_BYTE: u32 = 5121;
 
 impl Glb {
+    /// The `.glb` in `bytes`, whose binary chunk, if any, follows its JSON.
+    fn parse(bytes: &[u8]) -> Self {
+        let length = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        Self {
+            json: serde_json::from_slice(&bytes[20..20 + length]).unwrap(),
+            bin: bytes.get(28 + length..).unwrap_or_default().to_vec(),
+        }
+    }
+
     /// One triangle in the XY plane, placed by node 0 of the default scene.
     fn triangle() -> Self {
         let mut glb = Self {
@@ -779,24 +788,33 @@ fn models_needing_what_this_reader_lacks_are_rejected_naming_it() {
     let mut external = Glb::triangle();
     external.json["buffers"][0]["uri"] = json!("triangle.bin");
     let mut required = Glb::triangle();
-    required.json["extensionsUsed"] = json!(["KHR_draco_mesh_compression"]);
-    required.json["extensionsRequired"] = json!(["KHR_draco_mesh_compression"]);
+    required.json["extensionsUsed"] = json!(["KHR_texture_transform"]);
+    required.json["extensionsRequired"] = json!(["KHR_texture_transform"]);
     let mut optional = Glb::triangle();
-    optional.json["extensionsUsed"] = json!(["KHR_draco_mesh_compression"]);
-    for (glb, expected) in [
+    optional.json["extensionsUsed"] = json!(["KHR_texture_transform"]);
+    let mut cases = vec![
         (
             external,
-            "the model refers to a file outside itself, `triangle.bin`; pack everything into one .glb",
+            "the model refers to a file outside itself, `triangle.bin`; pack everything into one .glb"
+                .to_string(),
         ),
         (
             required,
-            "the model requires the glTF extension KHR_draco_mesh_compression, which isn't supported",
+            "the model requires the glTF extension KHR_texture_transform, which isn't supported"
+                .to_string(),
         ),
-    ] {
-        assert_eq!(
-            glb.read().unwrap_err(),
-            ModelError::Unsupported(expected.to_string())
-        );
+    ];
+    // A compressed model whose decoder the crate is built without.
+    for (fixture, extension, enabled) in COMPRESSED {
+        if !enabled {
+            cases.push((
+                Glb::parse(fixture),
+                format!("the model requires the glTF extension {extension}, which isn't supported"),
+            ));
+        }
+    }
+    for (glb, expected) in cases {
+        assert_eq!(glb.read().unwrap_err(), ModelError::Unsupported(expected));
     }
     optional
         .read()
@@ -1004,6 +1022,17 @@ fn number_paths(value: &Value, path: String, out: &mut Vec<String>) {
     }
 }
 
+/// Writes two of the models these tests build to `fuzz/seeds`, for the fuzz targets.
+#[test]
+#[ignore = "writes the fuzz seeds"]
+fn write_fuzz_seeds() {
+    let rich = textured(skinned(), &png(2, 2, [255, 0, 0, 255]));
+    for (name, glb) in [("triangle", Glb::triangle()), ("rich", rich)] {
+        let path = format!("{}/fuzz/seeds/{name}.glb", env!("CARGO_MANIFEST_DIR"));
+        std::fs::write(path, glb.bytes()).unwrap();
+    }
+}
+
 #[test]
 fn corrupted_files_return_without_panicking() {
     // Numbers at the edges of what counts, offsets, indices and component types may hold.
@@ -1033,10 +1062,23 @@ fn corrupted_files_return_without_panicking() {
     // How many mutations end where: the pre-deserialisation scan, glTF deserialising, the reader
     // afterwards, or a model that reads.
     let mut split = [0usize; 4];
-    for glb in [Glb::triangle(), rich] {
+    // Each model, how many rounds to mutate it, and the range of its binary chunk to mutate: for
+    // a compressed copy of the grid, its compressed payload.
+    let mut models = vec![(Glb::triangle(), 1500, None), (rich, 1500, None)];
+    for (fixture, extension, enabled) in COMPRESSED {
+        if enabled {
+            let glb = Glb::parse(fixture);
+            let view = glb.json.pointer(&payload(&glb, extension)).unwrap();
+            let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
+            let length = view["byteLength"].as_u64().unwrap() as usize;
+            models.push((glb, 100, Some(offset..offset + length)));
+        }
+    }
+    for (glb, rounds, payload) in models {
         let mut paths = Vec::new();
         number_paths(&glb.json, String::new(), &mut paths);
-        for round in 0..1500 {
+        let payload = payload.unwrap_or(0..glb.bin.len());
+        for round in 0..rounds {
             let mut json = glb.json.clone();
             let mut bin = glb.bin.clone();
             for _ in 0..1 + next() % 2 {
@@ -1045,7 +1087,7 @@ fn corrupted_files_return_without_panicking() {
                     *json.pointer_mut(path).unwrap() =
                         boundaries[next() as usize % boundaries.len()].clone();
                 } else {
-                    let at = next() as usize % bin.len();
+                    let at = payload.start + next() as usize % payload.len();
                     bin[at] = next() as u8;
                 }
             }
@@ -1116,4 +1158,584 @@ fn each_joints_bounds_hold_the_vertices_it_moves_before_posing() {
         crate::Bounds::of([Vec3::Y]),
         "the joint the unweighted vertex names doesn't take it"
     );
+}
+
+/// `grid.glb`, from `tests/fixtures`: a skinned and animated grid with normals, texture
+/// coordinates and a 16 x 16 texture, of which the other `grid-*.glb` there are compressed copies.
+const GRID: &[u8] = include_bytes!("../../tests/fixtures/grid.glb");
+/// Each compressed copy of [`GRID`], the extension it requires, and whether the crate is built to
+/// read it.
+const COMPRESSED: [(&[u8], &str, bool); 5] = [
+    (
+        include_bytes!("../../tests/fixtures/grid-draco.glb"),
+        "KHR_draco_mesh_compression",
+        cfg!(feature = "draco"),
+    ),
+    (
+        include_bytes!("../../tests/fixtures/grid-meshopt.glb"),
+        "EXT_meshopt_compression",
+        cfg!(feature = "meshopt"),
+    ),
+    (
+        include_bytes!("../../tests/fixtures/grid-etc1s.glb"),
+        "KHR_texture_basisu",
+        cfg!(feature = "ktx2"),
+    ),
+    (
+        include_bytes!("../../tests/fixtures/grid-uastc.glb"),
+        "KHR_texture_basisu",
+        cfg!(feature = "ktx2"),
+    ),
+    (
+        include_bytes!("../../tests/fixtures/grid-webp.glb"),
+        "EXT_texture_webp",
+        cfg!(feature = "webp"),
+    ),
+];
+
+/// A corner of a drawn triangle: its position and normal in model space, and its texture
+/// coordinates.
+type Corner = [f32; 8];
+
+/// Each triangle `model` draws with its first clip at `seconds`, or at rest, wound as it is drawn.
+fn drawn_triangles(model: &Model, seconds: Option<f32>) -> Vec<[Corner; 3]> {
+    let pose = model.scene.pose(seconds.map(|seconds| Playback {
+        clip: 0,
+        seconds,
+        looped: false,
+    }));
+    let mut triangles = Vec::new();
+    for posed in &pose.primitives {
+        let corner = |index: u32| -> Corner {
+            let vertex = model.geometry.vertices[index as usize];
+            let matrix = match posed.first_joint {
+                Some(first) => {
+                    let skin = model.geometry.skin[index as usize];
+                    (0..4).fold(Mat4::ZERO, |sum, i| {
+                        let joint = pose.joints[first as usize + usize::from(skin.joints[i])];
+                        sum + joint * (f32::from(skin.weights[i]) / 65535.0)
+                    })
+                }
+                None => posed.world,
+            };
+            let position = matrix.transform_point3(vertex.position.into());
+            let normal = matrix
+                .transform_vector3(vertex.normal.into())
+                .normalize_or_zero();
+            [
+                position.x,
+                position.y,
+                position.z,
+                normal.x,
+                normal.y,
+                normal.z,
+                vertex.uv[0],
+                vertex.uv[1],
+            ]
+        };
+        let primitive = posed.primitive;
+        let indices = &model.geometry.indices[primitive.first_index as usize..]
+            [..primitive.index_count as usize];
+        triangles.extend(indices.chunks(3).map(|triangle| {
+            [
+                corner(triangle[0]),
+                corner(triangle[1]),
+                corner(triangle[2]),
+            ]
+        }));
+    }
+    triangles
+}
+
+/// Whether `a` and `b` draw the same triangles, in any order and starting from any corner, with
+/// positions within `position` of each other, normals within 0.02 and texture coordinates within
+/// 0.002.
+fn same_triangles(a: &[[Corner; 3]], b: &[[Corner; 3]], position: f32) -> bool {
+    let close = |a: &Corner, b: &Corner| {
+        let tolerances = [position, position, position, 0.02, 0.02, 0.02, 0.002, 0.002];
+        a.iter()
+            .zip(b)
+            .zip(tolerances)
+            .all(|((a, b), tolerance)| (a - b).abs() <= tolerance)
+    };
+    a.len() == b.len()
+        && a.iter().all(|triangle| {
+            b.iter().any(|other| {
+                (0..3).any(|turn| (0..3).all(|i| close(&triangle[i], &other[(i + turn) % 3])))
+            })
+        })
+}
+
+/// The mean difference of `a`'s and `b`'s bytes.
+fn mean_difference(a: &[u8], b: &[u8]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let total: u64 = a
+        .iter()
+        .zip(b)
+        .map(|(&a, &b)| u64::from(a.abs_diff(b)))
+        .sum();
+    total as f64 / a.len() as f64
+}
+
+/// Asserts `compressed` draws what `original` does, at rest and partway through its first clip,
+/// with positions within `position`, and that its first texture differs on average by less than
+/// `texture` of 255.
+fn assert_reads_as(original: &Model, compressed: &Model, position: f32, texture: f64, name: &str) {
+    for seconds in [None, Some(0.5)] {
+        assert!(
+            same_triangles(
+                &drawn_triangles(original, seconds),
+                &drawn_triangles(compressed, seconds),
+                position
+            ),
+            "{name} at {seconds:?}"
+        );
+    }
+    let (expected, decoded) = (&original.textures[0], &compressed.textures[0]);
+    assert_eq!(
+        (
+            decoded.width,
+            decoded.height,
+            decoded.srgb,
+            decoded.levels.len()
+        ),
+        (
+            expected.width,
+            expected.height,
+            expected.srgb,
+            expected.levels.len()
+        ),
+        "{name}"
+    );
+    let difference = mean_difference(&expected.levels[0], &decoded.levels[0]);
+    assert!(difference < texture, "{name}: {difference}");
+}
+
+#[test]
+fn compressed_models_read_as_their_originals_do() {
+    let original = Model::from_glb(GRID).unwrap();
+    for (fixture, extension, enabled) in COMPRESSED {
+        if enabled {
+            let compressed =
+                Model::from_glb(fixture).unwrap_or_else(|error| panic!("{extension}: {error}"));
+            // Positions quantized to 14 bits of the grid's extent of 2; ETC1S is the lossiest.
+            assert_reads_as(&original, &compressed, 2e-3, 12.0, extension);
+        }
+    }
+}
+
+#[cfg(any(feature = "draco", all(feature = "meshopt", feature = "ktx2")))]
+#[test]
+fn compressed_foxes_read_as_the_fox_does() {
+    // The fox is about 150 units long, its positions quantized to 14 bits of that.
+    const FOX_TOLERANCE: f32 = 0.1;
+    let fox = Model::from_glb(include_bytes!("../../../engine/tests/fixtures/Fox.glb")).unwrap();
+    #[cfg(feature = "draco")]
+    assert_reads_as(
+        &fox,
+        &Model::from_glb(include_bytes!(
+            "../../../engine/tests/fixtures/Fox-draco.glb"
+        ))
+        .unwrap(),
+        FOX_TOLERANCE,
+        0.5,
+        "Fox-draco",
+    );
+    #[cfg(all(feature = "meshopt", feature = "ktx2"))]
+    assert_reads_as(
+        &fox,
+        &Model::from_glb(include_bytes!(
+            "../../../engine/tests/fixtures/Fox-meshopt-ktx2.glb"
+        ))
+        .unwrap(),
+        FOX_TOLERANCE,
+        12.0,
+        "Fox-meshopt-ktx2",
+    );
+}
+
+/// The JSON pointer to the object giving the byte offset and length, in the binary chunk, of
+/// `glb`'s first payload compressed for `extension`.
+fn payload(glb: &Glb, extension: &str) -> String {
+    let view = match extension {
+        "KHR_draco_mesh_compression" => {
+            &glb.json["meshes"][0]["primitives"][0]["extensions"][extension]["bufferView"]
+        }
+        "EXT_meshopt_compression" => return format!("/bufferViews/1/extensions/{extension}"),
+        _ => &glb.json["images"][0]["bufferView"],
+    };
+    format!("/bufferViews/{view}")
+}
+
+#[test]
+fn truncated_or_corrupted_compressed_payloads_are_errors() {
+    for (fixture, extension, enabled) in COMPRESSED {
+        if !enabled {
+            continue;
+        }
+        let glb = Glb::parse(fixture);
+        let at = payload(&glb, extension);
+        let view = glb.json.pointer(&at).unwrap();
+        let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let length = view["byteLength"].as_u64().unwrap() as usize;
+        let mut truncated = Glb {
+            json: glb.json.clone(),
+            bin: glb.bin.clone(),
+        };
+        truncated.json.pointer_mut(&at).unwrap()["byteLength"] = json!(length / 2);
+        let mut corrupted = Glb {
+            json: glb.json.clone(),
+            bin: glb.bin.clone(),
+        };
+        corrupted.bin[offset + length / 2..offset + length].fill(0xFF);
+        for (glb, how) in [(truncated, "truncated"), (corrupted, "corrupted")] {
+            let error = glb.read().unwrap_err();
+            assert!(
+                matches!(error, ModelError::Invalid(_)),
+                "{extension} {how}: {error:?}"
+            );
+        }
+    }
+}
+
+/// An edit to the JSON and binary chunk of one of [`COMPRESSED`], by its index there, and the error
+/// the edited file reads to.
+type Case = (usize, fn(&mut Value, &mut Vec<u8>), ModelError);
+
+/// Asserts each of `cases` whose decoder the crate is built with.
+fn assert_cases(cases: Vec<Case>) {
+    for (index, edit, expected) in cases {
+        let (fixture, extension, enabled) = COMPRESSED[index];
+        if enabled {
+            let mut glb = Glb::parse(fixture);
+            edit(&mut glb.json, &mut glb.bin);
+            assert_eq!(
+                read_without_panicking(&glb.bytes()).unwrap_err(),
+                expected,
+                "{extension}"
+            );
+        }
+    }
+}
+
+const MESHOPT: &str = "EXT_meshopt_compression";
+/// The level index and header fields of `grid-*.glb`'s KTX2 image, which starts its binary chunk.
+const KTX2_LEVEL_0_UNCOMPRESSED: usize = 96;
+const KTX2_WIDTH: usize = 20;
+/// The canvas size of `grid-webp.glb`'s image, less one, as two 24-bit fields.
+const WEBP_CANVAS: usize = 24;
+
+#[test]
+fn compressed_data_disagreeing_with_its_declared_counts_is_an_error() {
+    let draco = || {
+        invalid(
+            "a Draco-compressed primitive decodes to a different number of vertices or indices than its accessors declare",
+        )
+    };
+    assert_cases(vec![
+        // One vertex more, and one triangle more, than the Draco stream holds.
+        (
+            0,
+            |json, _| json["accessors"][1]["count"] = json!(82),
+            draco(),
+        ),
+        (
+            0,
+            |json, _| json["accessors"][0]["count"] = json!(387),
+            draco(),
+        ),
+        // A meshopt view's count disagreeing with its length, and with its data.
+        (
+            1,
+            |json, _| json["bufferViews"][1]["extensions"][MESHOPT]["count"] = json!(80),
+            invalid(
+                "a meshopt-compressed buffer view decodes to a different length than its buffer view has",
+            ),
+        ),
+        (
+            1,
+            |json, _| {
+                json["bufferViews"][1]["extensions"][MESHOPT]["count"] = json!(40);
+                json["bufferViews"][1]["byteLength"] = json!(40 * 8);
+            },
+            invalid("a meshopt-compressed buffer view in the model is corrupt: decode error -3"),
+        ),
+        // A UASTC level declaring more blocks than its size has.
+        (
+            3,
+            |_, bin| bin[KTX2_LEVEL_0_UNCOMPRESSED] = 255,
+            invalid("a KTX2 image in the model is corrupt: a level's length doesn't fit its size"),
+        ),
+    ]);
+}
+
+#[test]
+fn compressed_data_past_its_budget_is_rejected_before_decoding() {
+    let budget = |what: &str| {
+        ModelError::TooLarge(format!(
+            "the model's {what} decode to more than the 16777216 bytes a file of its size may"
+        ))
+    };
+    let pixels = |bytes: usize| {
+        ModelError::TooLarge(format!(
+            "the model's KTX2 and WebP images decode to more than the 8388608 pixels their \
+             {bytes} bytes may"
+        ))
+    };
+    assert_cases(vec![
+        (
+            0,
+            |json, _| {
+                for accessor in 1..6 {
+                    json["accessors"][accessor]["count"] = json!(300_000);
+                }
+            },
+            budget("Draco meshes"),
+        ),
+        (
+            1,
+            |json, _| {
+                json["bufferViews"][1]["extensions"][MESHOPT]["count"] = json!(2_200_000);
+                json["bufferViews"][1]["byteLength"] = json!(2_200_000 * 8);
+            },
+            budget("meshopt buffer views"),
+        ),
+        (
+            2,
+            |_, bin| bin[KTX2_WIDTH..][..8].copy_from_slice(&[0, 32, 0, 0, 0, 32, 0, 0]),
+            pixels(671),
+        ),
+        (
+            4,
+            |_, bin| {
+                bin[WEBP_CANVAS..][..6].copy_from_slice(&[0x3F, 0x1F, 0, 0x3F, 0x1F, 0]);
+                let frame = webp_frame(bin);
+                bin[frame..][..4].copy_from_slice(&[0x40, 0x1F, 0x40, 0x1F]);
+            },
+            pixels(182),
+        ),
+    ]);
+}
+
+/// Where the width and height of the lossy frame of `grid-webp.glb`'s image are in `bin`.
+fn webp_frame(bin: &[u8]) -> usize {
+    bin.windows(4).position(|kind| kind == b"VP8 ").unwrap() + 8 + 6
+}
+
+/// A Zstandard frame of `blocks` RLE blocks of `block` bytes each, with a window of
+/// `2^window_log` bytes.
+fn rle_frame(window_log: u8, blocks: usize, block: u32) -> Vec<u8> {
+    let mut frame = 0xFD2F_B528u32.to_le_bytes().to_vec();
+    frame.extend([0, (window_log - 10) << 3]);
+    for index in 0..blocks {
+        let last = u32::from(index + 1 == blocks);
+        frame.extend(&(block << 3 | 1 << 1 | last).to_le_bytes()[..3]);
+        frame.push(0x55);
+    }
+    frame
+}
+
+/// `grid-uastc.glb` with its full-size level replaced by `frame`.
+fn uastc_level(frame: Vec<u8>) -> Glb {
+    let mut glb = Glb::parse(COMPRESSED[3].0);
+    let level = u64::from_le_bytes(glb.bin[80..88].try_into().unwrap()) as usize;
+    glb.bin[level..][..frame.len()].copy_from_slice(&frame);
+    glb.bin[88..96].copy_from_slice(&(frame.len() as u64).to_le_bytes());
+    glb
+}
+
+/// `grid-etc1s.glb` with its image declaring 2048 x 2048 pixels, and with a copy of that image
+/// as its metallic-roughness texture when `twice`.
+fn large_etc1s(twice: bool) -> Glb {
+    let mut glb = Glb::parse(COMPRESSED[2].0);
+    glb.bin[KTX2_WIDTH..][..8].copy_from_slice(&[0, 8, 0, 0, 0, 8, 0, 0]);
+    if twice {
+        let length = glb.json["bufferViews"][0]["byteLength"].as_u64().unwrap() as usize;
+        let image = glb.bin[..length].to_vec();
+        let view = glb.view(&image);
+        glb.json["images"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "bufferView": view, "mimeType": "image/ktx2" }));
+        glb.json["textures"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "extensions": { "KHR_texture_basisu": { "source": 1 } } }));
+        glb.json["materials"][0]["pbrMetallicRoughness"]["metallicRoughnessTexture"] =
+            json!({ "index": 1 });
+    }
+    glb
+}
+
+/// Reads `bytes`, asserting that nothing panics on the way, caught or not.
+fn read_without_panicking(bytes: &[u8]) -> Result<Model, ModelError> {
+    thread_local!(static PANICKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            PANICKED.set(true);
+            previous(info);
+        }));
+    });
+    PANICKED.set(false);
+    let model = Model::from_glb(bytes);
+    assert!(!PANICKED.get(), "reading the model panicked");
+    model
+}
+
+#[test]
+fn zstandard_levels_are_bounded_by_their_declared_length() {
+    if !cfg!(feature = "ktx2") {
+        return;
+    }
+    // A 1 GiB window, and 1 KiB blocks running far past the level's 256 bytes.
+    assert_eq!(
+        read_without_panicking(&uastc_level(rle_frame(30, 20, 128 << 10)).bytes()).unwrap_err(),
+        ModelError::TooLarge(
+            "a KTX2 image in the model has a level of 256 bytes whose Zstandard window is \
+             1073741824 bytes, more than the 1024 it may be"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        read_without_panicking(&uastc_level(rle_frame(10, 20, 1 << 10)).bytes()).unwrap_err(),
+        invalid(
+            "a KTX2 image in the model is corrupt: a level inflates to another length than it declares"
+        )
+    );
+    // The level's own length, inflated from a frame of 1 KiB window, reads.
+    let mut exact = rle_frame(10, 1, 256);
+    exact[5] = 0;
+    let model = read_without_panicking(&uastc_level(exact).bytes()).unwrap();
+    assert_eq!(model.textures[0].width, 16);
+}
+
+#[test]
+fn webp_images_are_one_still_image_the_size_of_their_canvas() {
+    if !cfg!(feature = "webp") {
+        return;
+    }
+    let mut inner = Glb::parse(COMPRESSED[4].0);
+    let frame = webp_frame(&inner.bin);
+    inner.bin[frame..][..4].copy_from_slice(&[0xFF, 0x3F, 0xFF, 0x3F]);
+    let mut animated = Glb::parse(COMPRESSED[4].0);
+    animated.bin[WEBP_CANVAS - 4] |= 0x02;
+    for (glb, expected) in [
+        (
+            inner,
+            invalid(
+                "a WebP image in the model is corrupt: its image is another size than its canvas",
+            ),
+        ),
+        (
+            animated,
+            unsupported("an image in the model is an animated WebP"),
+        ),
+    ] {
+        assert_eq!(read_without_panicking(&glb.bytes()).unwrap_err(), expected);
+    }
+}
+
+#[test]
+fn compressed_images_share_one_pixel_budget() {
+    if !cfg!(feature = "ktx2") {
+        return;
+    }
+    assert_ne!(
+        read_without_panicking(&large_etc1s(false).bytes())
+            .err()
+            .map(|error| matches!(error, ModelError::TooLarge(_))),
+        Some(true),
+        "one 2048 x 2048 image fits the floor"
+    );
+    assert_eq!(
+        read_without_panicking(&large_etc1s(true).bytes()).unwrap_err(),
+        ModelError::TooLarge(
+            "the model's KTX2 and WebP images decode to more than the 8388608 pixels their 1342 \
+             bytes may"
+                .to_string()
+        )
+    );
+}
+
+#[test]
+fn draco_streams_hold_only_named_attributes_and_fallbacks_read_first() {
+    if !cfg!(feature = "draco") {
+        return;
+    }
+    const DRACO: &str = "KHR_draco_mesh_compression";
+    assert_cases(vec![
+        (
+            0,
+            |json, _| {
+                let primitive = &mut json["meshes"][0]["primitives"][0];
+                primitive["attributes"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("TEXCOORD_0");
+                primitive["extensions"][DRACO]["attributes"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("TEXCOORD_0");
+            },
+            invalid("a Draco-compressed primitive holds other attributes than its extension names"),
+        ),
+        // Normals read from an accessor that fails, beside a corrupt stream: the accessor fails
+        // first.
+        (
+            0,
+            |json, bin| {
+                let primitive = &mut json["meshes"][0]["primitives"][0];
+                primitive["extensions"][DRACO]["attributes"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("NORMAL");
+                json["accessors"][2]["bufferView"] = json!(9);
+                bin.fill(0xFF);
+            },
+            invalid("a buffer view index is out of range"),
+        ),
+    ]);
+}
+
+/// Files made to reach past the reader's limits, from `tests/fixtures/review-*.glb`.
+#[test]
+fn files_made_to_reach_past_the_limits_are_errors_without_panicking() {
+    let webp = |why: &str| invalid(format!("a WebP image in the model is corrupt: {why}"));
+    let files: [(&[u8], bool, ModelError); 4] = [
+        (
+            include_bytes!("../../tests/fixtures/review-zstd.glb"),
+            cfg!(feature = "ktx2"),
+            ModelError::TooLarge(
+                "a KTX2 image in the model has a level of 256 bytes whose Zstandard window is \
+                 1073741824 bytes, more than the 1024 it may be"
+                    .to_string(),
+            ),
+        ),
+        (
+            include_bytes!("../../tests/fixtures/review-webp-size.glb"),
+            cfg!(feature = "webp"),
+            webp("its image is another size than its canvas"),
+        ),
+        (
+            include_bytes!("../../tests/fixtures/review-animated.glb"),
+            cfg!(feature = "webp"),
+            unsupported("an image in the model is an animated WebP"),
+        ),
+        (
+            include_bytes!("../../tests/fixtures/review-floor.glb"),
+            cfg!(feature = "webp"),
+            ModelError::TooLarge(
+                "the model's KTX2 and WebP images decode to more than the 8388608 pixels their \
+                 880 bytes may"
+                    .to_string(),
+            ),
+        ),
+    ];
+    for (bytes, enabled, expected) in files {
+        if enabled {
+            assert_eq!(read_without_panicking(bytes).unwrap_err(), expected);
+        }
+    }
 }

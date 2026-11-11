@@ -1415,6 +1415,41 @@ fn a_textured_model_shows_its_base_colour_map() {
     ]);
 }
 
+#[cfg(all(feature = "3d-draco", feature = "3d-meshopt", feature = "3d-ktx2"))]
+#[test]
+fn compressed_foxes_render_as_the_fox_does() {
+    let gpu = gpu();
+    let composition: Composition = render_3d(vec![fox(1, json!({ "animation": "Walk" }))])
+        .frames(4)
+        .fps(4.0)
+        .into();
+    let frame = |bytes: &[u8]| {
+        let media = TestMedia::default().model("fox.glb", bytes.to_vec());
+        render(&mut gpu.renderer(), &composition, 1.0, &media).rgba
+    };
+    let plain = frame(include_bytes!("../fixtures/Fox.glb"));
+    for (name, bytes) in [
+        (
+            "Fox-draco",
+            include_bytes!("../fixtures/Fox-draco.glb").as_slice(),
+        ),
+        (
+            "Fox-meshopt-ktx2",
+            include_bytes!("../fixtures/Fox-meshopt-ktx2.glb").as_slice(),
+        ),
+    ] {
+        let compressed = frame(bytes);
+        let sum: u64 = plain
+            .iter()
+            .zip(&compressed)
+            .map(|(a, b)| u64::from(a.abs_diff(*b)))
+            .sum();
+        // Running rather than walking differs by about 14.
+        let difference = sum as f64 / plain.len() as f64;
+        assert!(difference < 2.0, "{name}: {difference}");
+    }
+}
+
 #[test]
 fn a_skinned_model_playing_a_clip_poses_anew_each_frame_and_a_still_one_is_kept() {
     let gpu = gpu();
