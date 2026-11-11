@@ -188,6 +188,18 @@ impl AvFrame {
         unsafe { (*self.ptr.as_ptr()).color_range }
     }
 
+    pub(crate) fn color_primaries(&self) -> sys::AVColorPrimaries {
+        unsafe { (*self.ptr.as_ptr()).color_primaries }
+    }
+
+    pub(crate) fn color_trc(&self) -> sys::AVColorTransferCharacteristic {
+        unsafe { (*self.ptr.as_ptr()).color_trc }
+    }
+
+    pub(crate) fn chroma_location(&self) -> sys::AVChromaLocation {
+        unsafe { (*self.ptr.as_ptr()).chroma_location }
+    }
+
     #[cfg(feature = "metal")]
     pub(crate) fn data(&self, plane: usize) -> *mut u8 {
         unsafe { (*self.ptr.as_ptr()).data[plane] }

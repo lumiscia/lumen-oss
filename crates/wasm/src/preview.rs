@@ -718,10 +718,7 @@ fn yuv_frame(input: YuvInput<'_>, data: Vec<u8>) -> Result<YuvFrame, String> {
             subsampling: kind.subsampling,
             depth: kind.depth,
             msb_aligned: false,
-            color: YuvColor {
-                matrix: yuv_matrix(matrix, height),
-                full_range,
-            },
+            color: YuvColor::sdr(yuv_matrix(matrix, height), full_range),
             rotation,
         },
         layout: YuvLayout {

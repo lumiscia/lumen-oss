@@ -42,8 +42,9 @@ pub use gpu::{
     VulkanVideoFrame,
 };
 pub use video::{
-    ColorMatrix, ColorTags, CpuVideoFrame, DecodeMode, DecodedVideoFrame, EncodeMode, PixelFormat,
-    VideoCodec, VideoDecoder, VideoDecoderConfig, YuvSubsampling, YuvVideoFrame,
+    ChromaLocation, ColorMatrix, ColorPrimaries, ColorTags, ColorTransfer, CpuVideoFrame,
+    DecodeMode, DecodedVideoFrame, EncodeMode, PixelFormat, VideoCodec, VideoDecoder,
+    VideoDecoderConfig, YuvSubsampling, YuvVideoFrame,
 };
 
 pub type Result<T> = std::result::Result<T, FfmpegError>;

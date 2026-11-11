@@ -42,7 +42,7 @@ pub use resolver::{
 pub use sniff::{Sniff, sniff, sniff_kind};
 pub use store::{MediaResolver, MediaStore, ResolvedMedia, ResolverKind, TextSession, resolve_as};
 pub use yuv::{
-    ChromaSubsampling, Rotation, YuvChroma, YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix,
-    YuvPlane, YuvPlanes,
+    ChromaSubsampling, ColorPrimaries, Rotation, TransferFunction, YuvChroma, YuvColor, YuvFormat,
+    YuvFrame, YuvLayout, YuvMatrix, YuvPlane, YuvPlanes,
 };
 pub(crate) use yuv::{PlaneShape, YuvUniform};

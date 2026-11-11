@@ -85,12 +85,155 @@ pub enum ColorMatrix {
     Other,
 }
 
-/// The colour tags FFmpeg read for a decoded frame.
+/// The `AVColorPrimaries` of a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorPrimaries {
+    Bt709,
+    Bt470bg,
+    Smpte170m,
+    Smpte240m,
+    Bt2020,
+    /// DCI-P3, with the DCI white point.
+    Smpte431,
+    /// Display P3: the P3 primaries with a D65 white point.
+    Smpte432,
+    Unspecified,
+    /// Any other tag, by FFmpeg's name for it.
+    Other(&'static str),
+}
+
+/// The `AVColorTransferCharacteristic` of a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorTransfer {
+    Bt709,
+    Smpte170m,
+    Bt2020_10,
+    Bt2020_12,
+    /// IEC 61966-2-1, the sRGB curve.
+    Srgb,
+    /// SMPTE ST 2084, the PQ curve.
+    Smpte2084,
+    /// ARIB STD-B67, the HLG curve.
+    AribStdB67,
+    Unspecified,
+    /// Any other tag, by FFmpeg's name for it.
+    Other(&'static str),
+}
+
+/// Where chroma samples sit relative to luma, the `AVChromaLocation` of a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChromaLocation {
+    Unspecified,
+    Left,
+    Center,
+    TopLeft,
+    Top,
+    BottomLeft,
+    Bottom,
+}
+
+/// The colour tags FFmpeg read for a decoded frame or a stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColorTags {
     pub matrix: ColorMatrix,
     /// `AVCOL_RANGE_JPEG`, or a JPEG pixel format: samples span the whole code range.
     pub full_range: bool,
+    pub primaries: ColorPrimaries,
+    pub transfer: ColorTransfer,
+    pub chroma_location: ChromaLocation,
+}
+
+impl ColorTags {
+    /// Tags with only a matrix and range set, and the rest unspecified.
+    pub fn new(matrix: ColorMatrix, full_range: bool) -> Self {
+        Self {
+            matrix,
+            full_range,
+            primaries: ColorPrimaries::Unspecified,
+            transfer: ColorTransfer::Unspecified,
+            chroma_location: ChromaLocation::Unspecified,
+        }
+    }
+
+    pub(crate) fn from_av(
+        matrix: sys::AVColorSpace,
+        full_range: bool,
+        primaries: sys::AVColorPrimaries,
+        transfer: sys::AVColorTransferCharacteristic,
+        chroma_location: sys::AVChromaLocation,
+    ) -> Self {
+        use sys::{
+            AVChromaLocation as Loc, AVColorPrimaries as Pri, AVColorTransferCharacteristic as Trc,
+        };
+        let matrix = match matrix {
+            AVCOL_SPC_BT709 => ColorMatrix::Bt709,
+            AVCOL_SPC_BT470BG => ColorMatrix::Bt470bg,
+            AVCOL_SPC_SMPTE170M => ColorMatrix::Smpte170m,
+            AVCOL_SPC_FCC => ColorMatrix::Fcc,
+            AVCOL_SPC_SMPTE240M => ColorMatrix::Smpte240m,
+            AVCOL_SPC_BT2020_NCL => ColorMatrix::Bt2020Ncl,
+            AVCOL_SPC_BT2020_CL => ColorMatrix::Bt2020Cl,
+            _ => ColorMatrix::Other,
+        };
+        let primaries = match primaries {
+            Pri::AVCOL_PRI_BT709 => ColorPrimaries::Bt709,
+            Pri::AVCOL_PRI_BT470BG => ColorPrimaries::Bt470bg,
+            Pri::AVCOL_PRI_SMPTE170M => ColorPrimaries::Smpte170m,
+            Pri::AVCOL_PRI_SMPTE240M => ColorPrimaries::Smpte240m,
+            Pri::AVCOL_PRI_BT2020 => ColorPrimaries::Bt2020,
+            Pri::AVCOL_PRI_SMPTE431 => ColorPrimaries::Smpte431,
+            Pri::AVCOL_PRI_SMPTE432 => ColorPrimaries::Smpte432,
+            Pri::AVCOL_PRI_UNSPECIFIED | Pri::AVCOL_PRI_RESERVED0 | Pri::AVCOL_PRI_RESERVED => {
+                ColorPrimaries::Unspecified
+            }
+            other => {
+                ColorPrimaries::Other(static_name(unsafe { sys::av_color_primaries_name(other) }))
+            }
+        };
+        let transfer = match transfer {
+            Trc::AVCOL_TRC_BT709 => ColorTransfer::Bt709,
+            Trc::AVCOL_TRC_SMPTE170M => ColorTransfer::Smpte170m,
+            Trc::AVCOL_TRC_BT2020_10 => ColorTransfer::Bt2020_10,
+            Trc::AVCOL_TRC_BT2020_12 => ColorTransfer::Bt2020_12,
+            Trc::AVCOL_TRC_IEC61966_2_1 => ColorTransfer::Srgb,
+            Trc::AVCOL_TRC_SMPTE2084 => ColorTransfer::Smpte2084,
+            Trc::AVCOL_TRC_ARIB_STD_B67 => ColorTransfer::AribStdB67,
+            Trc::AVCOL_TRC_UNSPECIFIED | Trc::AVCOL_TRC_RESERVED0 | Trc::AVCOL_TRC_RESERVED => {
+                ColorTransfer::Unspecified
+            }
+            other => {
+                ColorTransfer::Other(static_name(unsafe { sys::av_color_transfer_name(other) }))
+            }
+        };
+        let chroma_location = match chroma_location {
+            Loc::AVCHROMA_LOC_LEFT => ChromaLocation::Left,
+            Loc::AVCHROMA_LOC_CENTER => ChromaLocation::Center,
+            Loc::AVCHROMA_LOC_TOPLEFT => ChromaLocation::TopLeft,
+            Loc::AVCHROMA_LOC_TOP => ChromaLocation::Top,
+            Loc::AVCHROMA_LOC_BOTTOMLEFT => ChromaLocation::BottomLeft,
+            Loc::AVCHROMA_LOC_BOTTOM => ChromaLocation::Bottom,
+            _ => ChromaLocation::Unspecified,
+        };
+        Self {
+            matrix,
+            full_range,
+            primaries,
+            transfer,
+            chroma_location,
+        }
+    }
+}
+
+/// A name FFmpeg returns from its static tables, or `"unknown"` for none.
+fn static_name(name: *const std::ffi::c_char) -> &'static str {
+    if name.is_null() {
+        return "unknown";
+    }
+    // SAFETY: FFmpeg's colour names are string literals in libavutil, which lives as long as the
+    // process.
+    unsafe { std::ffi::CStr::from_ptr(name) }
+        .to_str()
+        .unwrap_or("unknown")
 }
 
 /// A frame in CPU memory. RGBA rows are `stride` bytes apart. A YUV 4:2:0 frame (`Nv12`, `P010`,
@@ -854,6 +997,11 @@ enum YuvSource {
     Reshape(sys::AVPixelFormat, YuvShape),
 }
 
+/// Whether frames of `format` decode as YUV. The rest (RGB, grey, palette) decode as 8-bit RGBA.
+pub(crate) fn decodes_as_yuv(format: sys::AVPixelFormat) -> bool {
+    yuv_source(format).is_some()
+}
+
 /// How to take a frame of `format` as YUV, or `None` if it isn't a YUV format.
 fn yuv_source(format: sys::AVPixelFormat) -> Option<YuvSource> {
     let descriptor = unsafe { sys::av_pix_fmt_desc_get(format).as_ref()? };
@@ -885,7 +1033,7 @@ fn yuv_source(format: sys::AVPixelFormat) -> Option<YuvSource> {
     })
 }
 
-fn is_full_range_format(format: sys::AVPixelFormat) -> bool {
+pub(crate) fn is_full_range_format(format: sys::AVPixelFormat) -> bool {
     matches!(
         format,
         AV_PIX_FMT_YUVJ411P
@@ -1100,20 +1248,13 @@ fn is_full_range(frame: &AvFrame) -> bool {
 }
 
 fn color_tags(frame: &AvFrame) -> ColorTags {
-    let matrix = match frame.colorspace() {
-        AVCOL_SPC_BT709 => ColorMatrix::Bt709,
-        AVCOL_SPC_BT470BG => ColorMatrix::Bt470bg,
-        AVCOL_SPC_SMPTE170M => ColorMatrix::Smpte170m,
-        AVCOL_SPC_FCC => ColorMatrix::Fcc,
-        AVCOL_SPC_SMPTE240M => ColorMatrix::Smpte240m,
-        AVCOL_SPC_BT2020_NCL => ColorMatrix::Bt2020Ncl,
-        AVCOL_SPC_BT2020_CL => ColorMatrix::Bt2020Cl,
-        _ => ColorMatrix::Other,
-    };
-    ColorTags {
-        matrix,
-        full_range: is_full_range(frame),
-    }
+    ColorTags::from_av(
+        frame.colorspace(),
+        is_full_range(frame),
+        frame.color_primaries(),
+        frame.color_trc(),
+        frame.chroma_location(),
+    )
 }
 
 /// Rotates tightly packed RGBA clockwise, returning the new width, height and pixels.
@@ -1553,10 +1694,7 @@ mod sample_tests {
             msb_aligned,
             interleaved_chroma,
             has_alpha: false,
-            color: ColorTags {
-                matrix: ColorMatrix::Other,
-                full_range: false,
-            },
+            color: ColorTags::new(ColorMatrix::Other, false),
             rotation: 0,
             data,
         }

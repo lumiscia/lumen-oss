@@ -90,19 +90,19 @@ fn gpu_frame_format(
     subsampling: crate::media::ChromaSubsampling,
     depth: u8,
     msb_aligned: bool,
-) -> YuvFormat {
+) -> Result<YuvFormat, String> {
     use crate::media::Rotation;
 
     let (width, height) = frame.dimensions();
-    YuvFormat {
+    Ok(YuvFormat {
         width,
         height,
         subsampling,
         depth,
         msb_aligned,
-        color: crate::media::ffmpeg::yuv_color(frame.color_tags(), height),
+        color: crate::media::ffmpeg::yuv_color(frame.color_tags(), height)?,
         rotation: Rotation::from_degrees(frame.rotation()).unwrap_or_default(),
-    }
+    })
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
@@ -207,7 +207,7 @@ impl MetalMediaImporter {
                 chroma: crate::media::YuvChroma::Interleaved(chroma),
                 alpha: None,
             },
-            format: gpu_frame_format(&frame.frame, subsampling, depth, wide),
+            format: gpu_frame_format(&frame.frame, subsampling, depth, wide)?,
         })
     }
 }
@@ -318,7 +318,7 @@ fn import_vulkan(
             chroma: crate::media::YuvChroma::Interleaved(Arc::clone(&texture.chroma)),
             alpha: None,
         },
-        format: gpu_frame_format(&frame.frame, subsampling, layout.depth, layout.depth > 8),
+        format: gpu_frame_format(&frame.frame, subsampling, layout.depth, layout.depth > 8)?,
     })
 }
 

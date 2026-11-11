@@ -10,10 +10,11 @@ use lumen_ffmpeg::{
 };
 
 use crate::{
-    error::MediaError,
+    error::{MediaError, MediaFailure},
     media::{
-        AssetKind, ChromaSubsampling, CpuMediaFrame, GpuVideoMediaFrame, MediaFrame, Rotation,
-        VideoFrameResolver, VideoMetadata, YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix,
+        AssetKind, ChromaSubsampling, ColorPrimaries, CpuMediaFrame, GpuVideoMediaFrame,
+        MediaFrame, Rotation, TransferFunction, VideoFrameResolver, VideoMetadata, YuvColor,
+        YuvFormat, YuvFrame, YuvLayout, YuvMatrix,
         resolver::{CpuRetry, PixelOrigin, SettledOrigin},
     },
 };
@@ -134,6 +135,8 @@ struct LibavStreamDecoder {
     seek: Option<PendingSeek>,
     sent_eof: bool,
     gpu_decode_status: GpuDecodeStatus,
+    /// What the stream's colour tags ask for that it is read without.
+    color_warning: Option<String>,
     origin: SettledOrigin,
     /// A decode failure after GPU frames were drawn. The stream can't continue from a lost packet
     /// and the CPU would change the pixels, so every later decode fails the same way.
@@ -194,6 +197,9 @@ impl LibavStreamDecoder {
             .best_video_stream()
             .map_err(|err| open_failure(&source, AssetKind::Video, &err))?;
         let stream_index = stream.stream_index;
+        if stream.color.matrix == lumen_ffmpeg::ColorMatrix::Bt2020Cl {
+            return Err(MediaFailure::unsupported(&source, CONSTANT_LUMINANCE).into());
+        }
         let time_base_seconds = stream
             .time_base
             .as_f64()
@@ -250,6 +256,7 @@ impl LibavStreamDecoder {
             seek: None,
             sent_eof: false,
             gpu_decode_status,
+            color_warning: unsupported_color(stream.color, stream.decodes_as_yuv),
             origin: SettledOrigin::default(),
             mid_render_failure: None,
         })
@@ -537,7 +544,8 @@ impl LibavStreamDecoder {
             },
             depth: decoded.depth,
             msb_aligned: decoded.msb_aligned,
-            color: yuv_color(decoded.color, decoded.height),
+            color: yuv_color(decoded.color, decoded.height)
+                .map_err(|details| MediaFailure::unsupported(&self.source, details))?,
             rotation: Rotation::from_degrees(decoded.rotation).unwrap_or_default(),
         };
         let (layout, _) = YuvLayout::packed(&format, decoded.interleaved_chroma, decoded.has_alpha);
@@ -695,7 +703,7 @@ enum WorkerRequest {
 }
 
 /// What the worker reports once its decoder is open.
-type Startup = Result<(VideoMetadata, GpuDecodeStatus), MediaError>;
+type Startup = Result<(VideoMetadata, GpuDecodeStatus, Option<String>), MediaError>;
 
 fn run_decode_worker(
     source: String,
@@ -707,7 +715,11 @@ fn run_decode_worker(
     let mut worker = match LibavStreamDecoder::open(source, options) {
         Ok(mut decoder) => {
             decoder.worker = Some(request_tx);
-            let _ = startup_tx.send(Ok((decoder.metadata(), decoder.gpu_decode_status.clone())));
+            let _ = startup_tx.send(Ok((
+                decoder.metadata(),
+                decoder.gpu_decode_status.clone(),
+                decoder.color_warning.clone(),
+            )));
             VideoDecodeWorker::new(decoder)
         }
         Err(error) => {
@@ -784,6 +796,7 @@ pub struct FfmpegVideoResolver {
     id: String,
     metadata: VideoMetadata,
     decode_status: GpuDecodeStatus,
+    color_warning: Option<String>,
     request_tx: mpsc::Sender<WorkerRequest>,
     worker_handle: Mutex<Option<thread::JoinHandle<()>>>,
     scheduled_frames: Mutex<HashSet<u32>>,
@@ -812,7 +825,7 @@ impl FfmpegVideoResolver {
                 "video decode worker stopped while opening".to_string(),
             ))
         });
-        let (metadata, decode_status) = match startup {
+        let (metadata, decode_status, color_warning) = match startup {
             Ok(opened) => opened,
             Err(error) => {
                 let _ = worker_handle.join();
@@ -824,6 +837,7 @@ impl FfmpegVideoResolver {
             id: source,
             metadata,
             decode_status,
+            color_warning,
             request_tx,
             worker_handle: Mutex::new(Some(worker_handle)),
             scheduled_frames: Mutex::new(HashSet::new()),
@@ -853,6 +867,10 @@ impl Drop for FfmpegVideoResolver {
 impl VideoFrameResolver for FfmpegVideoResolver {
     fn metadata(&self) -> VideoMetadata {
         self.metadata
+    }
+
+    fn color_warning(&self) -> Option<&str> {
+        self.color_warning.as_deref()
     }
 
     fn enqueue_frame(&self, frame: u32) -> Result<(), MediaError> {
@@ -915,20 +933,74 @@ impl VideoFrameResolver for FfmpegVideoResolver {
     }
 }
 
-/// The colour FFmpeg's tags describe. FCC and SMPTE 240M have no matrix of their own, so they read
-/// as the nearest one, and a frame with no usable tag reads by its coded height.
-pub(crate) fn yuv_color(tags: lumen_ffmpeg::ColorTags, height: u32) -> YuvColor {
-    use lumen_ffmpeg::ColorMatrix;
+const CONSTANT_LUMINANCE: &str = "BT.2020 constant-luminance YCbCr is not supported; re-encode it with BT.2020 non-constant luminance (FFmpeg `-colorspace bt2020nc`)";
+
+/// The colour FFmpeg's tags describe, or why it can't be read. FCC and SMPTE 240M have no matrix of
+/// their own, so they read as the nearest one, and a frame with no usable matrix tag reads by its
+/// coded height. Primaries and transfers the renderer doesn't convert read as BT.709 and SDR,
+/// which `unsupported_color` names.
+pub(crate) fn yuv_color(tags: lumen_ffmpeg::ColorTags, height: u32) -> Result<YuvColor, String> {
+    use lumen_ffmpeg::{ColorMatrix, ColorPrimaries as Primaries, ColorTransfer as Transfer};
     let matrix = match tags.matrix {
         ColorMatrix::Bt709 | ColorMatrix::Smpte240m => YuvMatrix::Bt709,
         ColorMatrix::Bt470bg | ColorMatrix::Smpte170m | ColorMatrix::Fcc => YuvMatrix::Bt601,
-        ColorMatrix::Bt2020Ncl | ColorMatrix::Bt2020Cl => YuvMatrix::Bt2020,
+        ColorMatrix::Bt2020Ncl => YuvMatrix::Bt2020,
+        ColorMatrix::Bt2020Cl => return Err(CONSTANT_LUMINANCE.to_string()),
         ColorMatrix::Other => YuvMatrix::untagged(height),
     };
-    YuvColor {
+    let primaries = match tags.primaries {
+        Primaries::Bt2020 => ColorPrimaries::Bt2020,
+        Primaries::Smpte432 => ColorPrimaries::DisplayP3,
+        Primaries::Smpte431 => ColorPrimaries::DciP3,
+        _ => ColorPrimaries::Bt709,
+    };
+    let transfer = match tags.transfer {
+        Transfer::Smpte2084 => TransferFunction::Pq,
+        Transfer::AribStdB67 => TransferFunction::Hlg,
+        _ => TransferFunction::Sdr,
+    };
+    Ok(YuvColor {
         matrix,
         full_range: tags.full_range,
+        primaries,
+        transfer,
+    })
+}
+
+/// The tags in `tags` that `yuv_color` reads without converting, as a sentence for a warning.
+/// A stream that doesn't decode as YUV has none of its tags converted.
+fn unsupported_color(tags: lumen_ffmpeg::ColorTags, decodes_as_yuv: bool) -> Option<String> {
+    use lumen_ffmpeg::{ColorPrimaries as Primaries, ColorTransfer as Transfer};
+    let wide = matches!(
+        tags.primaries,
+        Primaries::Bt2020 | Primaries::Smpte431 | Primaries::Smpte432 | Primaries::Other(_)
+    );
+    let hdr = matches!(
+        tags.transfer,
+        Transfer::Smpte2084 | Transfer::AribStdB67 | Transfer::Other(_)
+    );
+    if !decodes_as_yuv {
+        return (wide || hdr).then(|| {
+            "it is RGB or grey video, which is read as 8-bit sRGB whatever its primaries and \
+             transfer, which the renderer converts for YUV video only"
+                .to_string()
+        });
     }
+    let transfer = match tags.transfer {
+        Transfer::Other(name) => Some(format!("its `{name}` transfer is read as SDR")),
+        _ => None,
+    };
+    let primaries = match tags.primaries {
+        Primaries::Other(name) => Some(format!("its `{name}` primaries are read as BT.709")),
+        _ => None,
+    };
+    let notes: Vec<_> = [transfer, primaries].into_iter().flatten().collect();
+    (!notes.is_empty()).then(|| {
+        format!(
+            "{}, which the renderer doesn't convert",
+            notes.join(" and ")
+        )
+    })
 }
 
 fn resolve_stream_fps(stream: &VideoStreamInfo, source: &str) -> Result<f64, MediaError> {
@@ -1889,6 +1961,91 @@ mod tests {
             );
             let _ = fs::remove_file(path);
         }
+    }
+
+    #[test]
+    fn hdr_and_wide_gamut_tags_reach_the_frame_and_unconverted_ones_warn() {
+        const SD: &str = "testsrc2=s=64x48:r=30:d=0.2";
+        let cases = [
+            (
+                "pq.mp4",
+                "color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
+                ColorPrimaries::Bt2020,
+                TransferFunction::Pq,
+                None,
+            ),
+            (
+                "hlg_p3.mp4",
+                "color_primaries=smpte432:color_trc=arib-std-b67:colorspace=bt709",
+                ColorPrimaries::DisplayP3,
+                TransferFunction::Hlg,
+                None,
+            ),
+            (
+                "log.mp4",
+                "color_primaries=film:color_trc=log100:colorspace=bt709",
+                ColorPrimaries::Bt709,
+                TransferFunction::Sdr,
+                Some(
+                    "its `log100` transfer is read as SDR and its `film` primaries are read as \
+                     BT.709, which the renderer doesn't convert",
+                ),
+            ),
+            (
+                "untagged.mp4",
+                "colorspace=bt709",
+                ColorPrimaries::Bt709,
+                TransferFunction::Sdr,
+                None,
+            ),
+        ];
+        for (name, params, primaries, transfer, warning) in cases {
+            let Some(path) = encode_clip(name, SD, &["-vf", &format!("setparams={params}")]) else {
+                return;
+            };
+            let resolver = open_cpu(&path).expect("open clip");
+            assert_eq!(resolver.color_warning(), warning, "{name}");
+            let color = yuv_frame(resolver.frame(0).expect("decode frame"))
+                .format
+                .color;
+            assert_eq!(
+                (color.primaries, color.transfer),
+                (primaries, transfer),
+                "{name}"
+            );
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn hdr_video_that_is_not_yuv_warns_that_it_is_read_as_srgb() {
+        use lumen_ffmpeg::{ColorMatrix, ColorTags, ColorTransfer};
+        let sdr = ColorTags::new(ColorMatrix::Other, true);
+        let pq = ColorTags {
+            transfer: ColorTransfer::Smpte2084,
+            ..sdr
+        };
+        assert_eq!(unsupported_color(sdr, false), None);
+        assert_eq!(unsupported_color(pq, true), None);
+        let warning = unsupported_color(pq, false).expect("a warning");
+        assert!(warning.contains("read as 8-bit sRGB"), "{warning}");
+    }
+
+    #[test]
+    fn constant_luminance_sources_are_rejected_when_opened() {
+        let Some(path) = encode_clip(
+            "constant_luminance.mp4",
+            "testsrc2=s=64x48:r=30:d=0.2",
+            &["-vf", "setparams=colorspace=bt2020c"],
+        ) else {
+            return;
+        };
+        let Err(MediaError::Failed(failure)) = open_cpu(&path) else {
+            panic!("a constant-luminance source opens");
+        };
+        assert_eq!(failure.reason.code(), "media.unsupported");
+        assert!(failure.to_string().contains("bt2020nc"), "{failure}");
+        let _ = fs::remove_file(path);
     }
 
     #[test]

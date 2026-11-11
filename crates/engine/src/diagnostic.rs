@@ -61,6 +61,7 @@ impl Diagnostic {
             Warning::FontFallback { node_id, .. }
             | Warning::NoOutlines { node_id, .. }
             | Warning::ShadowLimit { node_id, .. }
+            | Warning::UnsupportedVideoColor { node_id, .. }
             | Warning::ModelPrimitivesSkipped { node_id, .. } => Some(*node_id),
         };
         Self {

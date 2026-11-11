@@ -140,6 +140,8 @@ onError: ({ code, diagnostics }) => {
 },
 ```
 
+Video in the preview isn't colour-managed past its YUV matrix yet. Frames in a YUV layout the engine converts are read as SDR with BT.709 primaries, so PQ and HLG video looks dark and flat and BT.2020 or P3 video looks less saturated than in a render. Frames the browser hands over as RGB are converted by the browser, as it decides for HDR. Renders tone-map HDR video and convert wide-gamut primaries.
+
 Diagnostic codes are public API, and new ones can appear in a patch release, so handle codes you don't know by their `severity`. The [engine README](https://github.com/lumiscia/lumen-oss/tree/main/crates/engine#diagnostics) lists them.
 
 ## Playback controls
