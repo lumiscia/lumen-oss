@@ -762,6 +762,17 @@ pub enum Warning {
         /// The lights left without shadows, in scene order.
         lights: Vec<NodeId>,
     },
+    /// A `model_3d`'s model has primitives that aren't triangle lists, which aren't drawn.
+    #[code("scene.model_primitives_skipped")]
+    #[error("{}model_3d node {node_id}: model `{model}` has primitives of points, lines, or triangle strips or fans, which aren't drawn ({count} left out)", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
+    ModelPrimitivesSkipped {
+        /// The template the node is in, or `None` at the root.
+        template: Option<String>,
+        node_id: NodeId,
+        /// The model's source.
+        model: String,
+        count: usize,
+    },
 }
 
 #[cfg(test)]

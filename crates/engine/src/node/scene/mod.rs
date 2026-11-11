@@ -279,6 +279,21 @@ pub struct Model3dParams {
     /// Darkens where shadows fall on its lit surfaces.
     #[meta()]
     pub receive_shadows: bool,
+    /// Adds the model's own `KHR_lights_punctual` lights to the scene, where its nodes place
+    /// them, as `light_3d` nodes there would light it: a directional light's intensity, in lux, and
+    /// a point or spot light's, in candela, are `light_3d` intensities as they are, so a point
+    /// light of intensity `I` lights a surface `d` metres away as a directional one of `I / d²`
+    /// does. A spot light's cone fades from its inner angle out to its outer one. They cast no
+    /// shadows, and a scene they light gets no default lights.
+    #[meta()]
+    pub lights: bool,
+    /// The model's camera to view the scene from, by its name or else its index, placed by the
+    /// first node that places it, without that node's scale; empty uses none. It counts as a
+    /// `camera_3d` at this node, so the first camera in the scene still wins. Its aspect ratio is
+    /// the output's. A model's cameras are listed in the `cameras` of its upload's `metadata` on
+    /// a host that takes uploads, and by `modelInfo` in the browser bindings.
+    #[meta()]
+    pub camera: String,
     #[meta(flatten)]
     pub placement: Placement3d,
 }
@@ -294,14 +309,19 @@ impl Default for Model3dParams {
             texture_material: String::new(),
             cast_shadows: true,
             receive_shadows: true,
+            lights: false,
+            camera: String::new(),
             placement: Placement3d::default(),
         }
     }
 }
 
-/// A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, skins and
-/// animation clips. A raster wired into `texture` shows on the surfaces of the material
-/// `texture_material` names, such as a screen. The model's own lights and cameras are left out.
+/// A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex
+/// colours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets
+/// and animation clips. A raster wired into `texture` shows on the surfaces of the material
+/// `texture_material` names, such as a screen. The model's own lights and a camera are added with
+/// `lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a
+/// `scene.model_primitives_skipped` warning.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "model_3d",

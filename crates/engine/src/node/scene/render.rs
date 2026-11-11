@@ -4,8 +4,8 @@
 
 use bytemuck::{Pod, Zeroable};
 use lumen_3d::{
-    Blending, Bounds, Camera, Draws, Filter, LightKind, Lighting, Map, Object, Projection, Row,
-    Sampler, ShadowAtlas, Wrap,
+    Blending, Bounds, Camera, Draws, Filter, LightKind, Lighting, Map, MapUv, Object, Projection,
+    Row, Sampler, ShadowAtlas, Wrap,
 };
 use lumen_gpu::{
     DEPTH_FORMAT, DepthTest, LayoutEntry, LayoutKind, RenderTargetSpec, Res, Size, TargetLoad,
@@ -56,6 +56,8 @@ const LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(24, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
     LayoutEntry::staged(26, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
     LayoutEntry::staged(27, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
+    LayoutEntry::staged(28, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
 ];
 /// What drawing the environment behind the scene binds.
 const BACKGROUND_LAYOUT: &[LayoutEntry] = &[
@@ -79,6 +81,8 @@ const SHADOW_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(10, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
     LayoutEntry::staged(15, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
     LayoutEntry::staged(20, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(28, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
 ];
 
 const CLAMP_SAMPLER: u64 = 0x3d00_0001;
@@ -102,6 +106,9 @@ pub(crate) const FLAG_EMISSIVE_MAP: u32 = 1024;
 pub(crate) const FLAG_OCCLUSION_MAP: u32 = 2048;
 pub(crate) const FLAG_RECEIVE_SHADOWS: u32 = 4096;
 pub(crate) const FLAG_SHADOW_CATCHER: u32 = 8192;
+pub(crate) const FLAG_VERTEX_COLORS: u32 = 16384;
+/// The object's maps read through its rows of the map coordinates table.
+pub(crate) const FLAG_MAP_UVS: u32 = 32768;
 pub(crate) const LIGHT_DIRECTIONAL: u32 = 0;
 pub(crate) const LIGHT_POINT: u32 = 1;
 pub(crate) const LIGHT_SPOT: u32 = 2;
@@ -186,6 +193,28 @@ pub(crate) struct GpuObject {
     pub(crate) alpha_cutoff: f32,
     pub(crate) normal_scale: f32,
     pub(crate) occlusion_strength: f32,
+    /// Where the mesh's vertex extras start in its vertex data, in words, or `u32::MAX` for a
+    /// mesh without any.
+    pub(crate) extras: u32,
+    /// Where the object's morph target displacements start in its mesh's vertex data, in words.
+    pub(crate) first_delta: u32,
+    /// The mesh vertex whose displacements come first.
+    pub(crate) morph_vertex: u32,
+    /// 0 for an object without morph targets.
+    pub(crate) morph_targets: u32,
+    pub(crate) first_weight: u32,
+    /// Where the object's five rows of the map coordinates table start.
+    pub(crate) first_map_uv: u32,
+    _pad: [u32; 2],
+}
+
+/// One map's row of the map coordinates table; keep in sync with `MapUv` in `scene.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(crate) struct GpuMapUv {
+    /// The transform's first row, then the set of texture coordinates it reads.
+    pub(crate) first: [f32; 4],
+    pub(crate) second: [f32; 4],
 }
 
 /// Keep in sync with `Run` in `scene.wgsl`.
@@ -253,9 +282,29 @@ const VARIANTS: [(DepthTest, Option<wgpu::Face>); 6] = [
     (DepthTest::Read, None),
 ];
 
-fn gpu_object(object: &Object<GpuMesh, TexRef>, row: &Row) -> GpuObject {
+/// `object`'s row of the object table, adding its maps' rows of the map coordinates table to
+/// `map_uvs` when any moves its coordinates or reads the second set.
+fn gpu_object(
+    object: &Object<GpuMesh, TexRef>,
+    row: &Row,
+    map_uvs: &mut Vec<GpuMapUv>,
+) -> GpuObject {
     let surface = &object.surface;
     let mut flags = 0;
+    let first_map_uv = map_uvs.len() as u32;
+    if surface.map_uvs != [MapUv::default(); 5] {
+        flags |= FLAG_MAP_UVS;
+        map_uvs.extend(surface.map_uvs.iter().map(|uv| {
+            let [first, second] = uv.transform;
+            GpuMapUv {
+                first: [first[0], first[1], first[2], f32::from(uv.set)],
+                second: [second[0], second[1], second[2], 0.0],
+            }
+        }));
+    }
+    if surface.vertex_colors {
+        flags |= FLAG_VERTEX_COLORS;
+    }
     if surface.unlit {
         flags |= FLAG_UNLIT;
     }
@@ -313,8 +362,20 @@ fn gpu_object(object: &Object<GpuMesh, TexRef>, row: &Row) -> GpuObject {
         alpha_cutoff,
         normal_scale: surface.normal_scale,
         occlusion_strength: surface.occlusion_strength,
+        extras: object.mesh.extras.unwrap_or(u32::MAX),
+        first_delta: object.morph.map_or(0, |(morph, _)| {
+            object.mesh.morphs + morph.first_delta * MORPH_DELTA_WORDS
+        }),
+        morph_vertex: object.morph.map_or(0, |(morph, _)| morph.first_vertex),
+        morph_targets: object.morph.map_or(0, |(morph, _)| morph.targets),
+        first_weight: object.morph.map_or(0, |(_, weight)| weight),
+        first_map_uv,
+        _pad: [0; 2],
     }
 }
+
+/// The words of one [`lumen_3d::MorphDelta`].
+pub(crate) const MORPH_DELTA_WORDS: u32 = (size_of::<lumen_3d::MorphDelta>() / 4) as u32;
 
 fn sampler_key(sampler: &Sampler) -> u64 {
     let wrap = |wrap: Wrap| match wrap {
@@ -635,12 +696,22 @@ impl RecordNode for Render3d {
             supersample,
         ));
         let lights = cx.rec.storage_parts(&[bytemuck::cast_slice(&lights)]);
+        let mut map_uvs = Vec::new();
         let objects: Vec<GpuObject> = draws
             .rows
             .iter()
-            .map(|row| gpu_object(&scene.objects[row.object], row))
+            .map(|row| gpu_object(&scene.objects[row.object], row, &mut map_uvs))
             .collect();
         let objects = cx.rec.storage_parts(&[bytemuck::cast_slice(&objects)]);
+        if map_uvs.is_empty() {
+            map_uvs.push(GpuMapUv::zeroed());
+        }
+        let map_uvs = cx.rec.storage_parts(&[bytemuck::cast_slice(&map_uvs)]);
+        let mut weights = scene.weights.clone();
+        if weights.is_empty() {
+            weights.push(0.0);
+        }
+        let weights = cx.rec.storage_parts(&[bytemuck::cast_slice(&weights)]);
         let mut joints: Vec<[[f32; 4]; 4]> = scene
             .joints
             .iter()
@@ -732,11 +803,13 @@ impl RecordNode for Render3d {
                         (8, joints),
                         (
                             9,
-                            Res::Buffer(run.key.mesh.skin.unwrap_or(run.key.mesh.vertices)),
+                            Res::Buffer(run.key.mesh.data.unwrap_or(run.key.mesh.vertices)),
                         ),
                         (10, Res::Tex(base_color)),
                         (15, Res::Sampler(base_color_sampler)),
                         (20, shadow_views),
+                        (28, weights),
+                        (29, map_uvs),
                     ];
                     let load = if cast == 0 {
                         TargetLoad::Clear
@@ -831,7 +904,7 @@ impl RecordNode for Render3d {
                 (8, joints),
                 (
                     9,
-                    Res::Buffer(run.key.mesh.skin.unwrap_or(run.key.mesh.vertices)),
+                    Res::Buffer(run.key.mesh.data.unwrap_or(run.key.mesh.vertices)),
                 ),
                 (20, shadow_views),
                 (21, Res::Tex(shadow_map)),
@@ -840,6 +913,8 @@ impl RecordNode for Render3d {
                 (24, Res::Tex(environment_map)),
                 (26, Res::Sampler(environment_sampler)),
                 (27, environment_brdf),
+                (28, weights),
+                (29, map_uvs),
             ];
             for (slot, map) in (0..).zip(maps) {
                 let (texture, sampler) = match map {

@@ -69,6 +69,19 @@ impl Light {
     }
 }
 
+impl Light {
+    /// The light moved by `world`.
+    pub fn placed(self, world: &Mat4) -> Self {
+        Self {
+            position: world.transform_point3(self.position),
+            direction: world
+                .transform_vector3(self.direction)
+                .normalize_or(Vec3::NEG_Z),
+            ..self
+        }
+    }
+}
+
 /// How a scene is lit: the lights that shine from somewhere, and the ambient light from all
 /// around.
 #[derive(Debug, Clone, PartialEq)]

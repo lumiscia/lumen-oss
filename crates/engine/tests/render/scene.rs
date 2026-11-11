@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
 
-const SIZE: (u32, u32) = (64, 64);
-const CENTER: u32 = 32;
+pub(super) const SIZE: (u32, u32) = (64, 64);
+pub(super) const CENTER: u32 = 32;
 const CLEAR: [u8; 4] = [0, 0, 0, 0];
 const RED: [u8; 4] = [255, 0, 0, 255];
 const GREEN: [u8; 4] = [0, 255, 0, 255];
@@ -19,7 +19,7 @@ fn render_3d(scene_nodes: Vec<Value>) -> Scene {
     render_3d_with(json!({}), scene_nodes)
 }
 
-fn render_3d_with(params: Value, scene_nodes: Vec<Value>) -> Scene {
+pub(super) fn render_3d_with(params: Value, scene_nodes: Vec<Value>) -> Scene {
     let last = scene_nodes.last().expect("a scene node")["id"].clone();
     let mut nodes = scene_nodes;
     nodes
@@ -35,7 +35,7 @@ fn flat(id: u32, params: Value, color: [u8; 4]) -> Value {
     json!({ "id": id, "type": "shape_3d", "params": params })
 }
 
-fn merge(id: u32, objects: &[u32], params: Value) -> Value {
+pub(super) fn merge(id: u32, objects: &[u32], params: Value) -> Value {
     json!({ "id": id, "type": "merge_3d", "params": params, "in": { "objects": objects } })
 }
 
@@ -553,7 +553,7 @@ fn plane(id: u32, source: u32, params: Value) -> Value {
 
 /// A camera that sees 4 units across the canvas however far away, so that a plane 4 units wide
 /// fills the frame and maps its texels to pixels.
-fn ortho(id: u32, params: Value) -> Value {
+pub(super) fn ortho(id: u32, params: Value) -> Value {
     let mut camera = json!({ "projection": "orthographic", "ortho_height": 4 });
     for (name, value) in params.as_object().expect("params") {
         camera[name] = value.clone();
@@ -1335,7 +1335,7 @@ fn unlit(name: &str, color: [f32; 4]) -> Value {
     })
 }
 
-fn model(id: u32, params: Value) -> Value {
+pub(super) fn model(id: u32, params: Value) -> Value {
     json!({ "id": id, "type": "model_3d", "params": params })
 }
 
@@ -1828,7 +1828,7 @@ impl GroundView {
     }
 }
 
-fn light(id: u32, params: Value) -> Value {
+pub(super) fn light(id: u32, params: Value) -> Value {
     json!({ "id": id, "type": "light_3d", "params": params })
 }
 
@@ -1839,7 +1839,7 @@ fn casting(params: &Value, cast: bool) -> Value {
     params
 }
 
-fn frame_of(scene: Scene, media: &TestMedia) -> Frame {
+pub(super) fn frame_of(scene: Scene, media: &TestMedia) -> Frame {
     render(&mut gpu().renderer(), &scene.into(), 0.0, media)
 }
 

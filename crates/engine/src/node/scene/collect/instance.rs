@@ -1,10 +1,10 @@
 //! Collects an `instance_3d`: its input scene is walked once, and its objects are copied once per
-//! instance, sharing the input's meshes, textures and joint matrices.
+//! instance, sharing the input's meshes, textures, joint matrices and morph target weights.
 
 use lumen_3d::glam::Mat4;
-use lumen_3d::{Camera, Light, MAX_SCENE_NODES};
+use lumen_3d::{Camera, MAX_SCENE_NODES};
 
-use super::{Collected, Extent, MAX_SCENE_JOINTS, PosedSkin, placement};
+use super::{Collected, Extent, MAX_SCENE_JOINTS, MAX_SCENE_WEIGHTS, PosedSkin, placement};
 use crate::error::{ExpressionError, LumenError, RenderError};
 use crate::expr::InstanceScope;
 use crate::gpu::frame_graph::FrameCx;
@@ -40,17 +40,6 @@ fn at_instance(error: LumenError, index: u32) -> LumenError {
             }),
         }),
         error => error,
-    }
-}
-
-/// `light` as `world` places it.
-fn placed_light(light: Light, world: &Mat4) -> Light {
-    Light {
-        position: world.transform_point3(light.position),
-        direction: world
-            .transform_vector3(light.direction)
-            .normalize_or(lumen_3d::glam::Vec3::NEG_Z),
-        ..light
     }
 }
 
@@ -124,6 +113,17 @@ impl Collected {
             ));
         }
         self.scene.joints.extend_from_slice(&inner.scene.joints);
+        let weight_base = self.scene.weights.len();
+        if weight_base + inner.scene.weights.len() > MAX_SCENE_WEIGHTS {
+            return Err(instance_error(
+                node.id,
+                format!(
+                    "the scene's morphed models have more than {MAX_SCENE_WEIGHTS} morph target \
+                     weights together"
+                ),
+            ));
+        }
+        self.scene.weights.extend_from_slice(&inner.scene.weights);
         self.scene
             .objects
             .reserve(inner.scene.objects.len() * count as usize);
@@ -154,12 +154,16 @@ impl Collected {
                 root: world * skin.root,
                 joint_bounds: skin.joint_bounds.clone(),
                 skin: skin.skin,
+                weight: skin.weight,
             }));
             for (object, extent) in inner.scene.objects.iter().zip(&inner.extents) {
                 let mut object = object.clone();
                 object.world = world * object.world;
                 object.center = world.transform_point3(object.center);
                 object.first_joint = object.first_joint.map(|joint| joint + joint_base as u32);
+                if let Some((_, weight)) = &mut object.morph {
+                    *weight += weight_base as u32;
+                }
                 let extent = match *extent {
                     Extent::Skin(skin) => Extent::Skin(first_skin + skin),
                     Extent::Local(bounds) => Extent::Local(bounds),
@@ -171,7 +175,7 @@ impl Collected {
         self.indices += inner.indices * copies;
 
         for (light, node) in inner.scene.lights.into_iter().zip(inner.light_nodes) {
-            self.scene.lights.push(placed_light(light, &parent));
+            self.scene.lights.push(light.placed(&parent));
             self.light_nodes.push(node);
         }
         if self.scene.camera.is_none() {

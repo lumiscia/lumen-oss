@@ -103,6 +103,52 @@ impl<T> Maps<T> {
     }
 }
 
+/// Which of a mesh's texture coordinates a map reads, and how they are moved first, as
+/// `KHR_texture_transform` moves them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapUv {
+    /// 0 reads the first set, 1 the second.
+    pub set: u8,
+    /// The rows of an affine transform of `(u, v, 1)`: the map reads at
+    /// `(rows[0] · (u, v, 1), rows[1] · (u, v, 1))`.
+    pub transform: [[f32; 3]; 2],
+}
+
+impl Default for MapUv {
+    /// The first set, unmoved.
+    fn default() -> Self {
+        Self {
+            set: 0,
+            transform: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        }
+    }
+}
+
+impl MapUv {
+    /// `KHR_texture_transform`'s scale, then rotation in radians, then offset, of texture
+    /// coordinates in `set`.
+    pub fn new(set: u8, offset: [f32; 2], rotation: f32, scale: [f32; 2]) -> Self {
+        let (sin, cos) = rotation.sin_cos();
+        Self {
+            set,
+            transform: [
+                [cos * scale[0], sin * scale[1], offset[0]],
+                [-sin * scale[0], cos * scale[1], offset[1]],
+            ],
+        }
+    }
+}
+
+/// Where a morphed mesh's vertices find their morph targets' displacements: vertex
+/// `first_vertex + i` reads `targets` [`MorphDelta`](crate::MorphDelta)s from
+/// `first_delta + i * targets`, one per target in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Morph {
+    pub first_delta: u32,
+    pub first_vertex: u32,
+    pub targets: u32,
+}
+
 /// How an object's surface is shaded, in linear light.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Surface<T> {
@@ -112,6 +158,11 @@ pub struct Surface<T> {
     /// the mesh's texture coordinates.
     pub texture: Option<T>,
     pub maps: Maps<T>,
+    /// The texture coordinates each map reads: base colour, metallic-roughness, normal, emissive
+    /// and occlusion.
+    pub map_uvs: [MapUv; 5],
+    /// Multiplies the base colour by the mesh's vertex colours.
+    pub vertex_colors: bool,
     /// 0 is a dielectric, 1 a bare metal.
     pub metallic: f32,
     /// 0 is a mirror finish, 1 fully diffuse.
@@ -147,6 +198,8 @@ impl<T> Default for Surface<T> {
             base_color: [1.0; 4],
             texture: None,
             maps: Maps::default(),
+            map_uvs: [MapUv::default(); 5],
+            vertex_colors: false,
             metallic: 0.0,
             roughness: 0.5,
             emissive: [0.0; 3],
@@ -183,6 +236,9 @@ pub struct Object<M, T> {
     pub center: Vec3,
     /// Where the object's joint matrices start in the scene's `joints`, for a skinned object.
     pub first_joint: Option<u32>,
+    /// For a morphed object, where its displacements are and where its weights start in the
+    /// scene's `weights`.
+    pub morph: Option<(Morph, u32)>,
     /// What the object covers in world space, at least, which shadows are fitted to. A scene
     /// without lights casting shadows may leave it empty.
     pub bounds: Bounds,
@@ -197,6 +253,8 @@ pub struct Scene<M, T> {
     pub camera: Option<Camera>,
     /// Skinned objects' joint matrices, which take their vertices to world space.
     pub joints: Vec<Mat4>,
+    /// Morphed objects' morph target weights.
+    pub weights: Vec<f32>,
 }
 
 impl<M, T> Default for Scene<M, T> {
@@ -206,6 +264,7 @@ impl<M, T> Default for Scene<M, T> {
             lights: Vec::new(),
             camera: None,
             joints: Vec::new(),
+            weights: Vec::new(),
         }
     }
 }

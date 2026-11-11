@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use foldhash::HashMap;
 use lumen_3d::glam::{Mat4, Vec3};
-use lumen_3d::model::{Material, Model, ModelError, ModelScene, Playback, SkinBounds, Texture};
+use lumen_3d::model::{
+    Material, Model, ModelError, ModelScene, Playback, Reach, SkinBounds, Texture,
+};
 use lumen_3d::{
     Blending, Bounds, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive,
     Projection, Scene, Shadow, Surface, Transform,
@@ -26,16 +28,22 @@ const MODEL_BUDGET_BYTES: u64 = 256 << 20;
 
 /// The most joint matrices one frame's scene may hold.
 const MAX_SCENE_JOINTS: usize = 1 << 16;
+/// The most morph target weights one frame's scene may hold.
+const MAX_SCENE_WEIGHTS: usize = 1 << 20;
 /// The shortest a directional light's shadows reach from the camera.
 const MIN_SHADOW_DISTANCE: f32 = 0.01;
 
-/// A mesh's vertices and indices on the GPU, which the scene shader pulls vertices from, and the
-/// joints and weights of a skinned one's vertices.
+/// A mesh's vertices and indices on the GPU, which the scene shader pulls vertices from, and what
+/// else a model's vertices hold, in 32-bit words: a skinned one's joints and weights from the
+/// start, then its vertex extras from `extras`, then its morph targets' displacements from
+/// `morphs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct GpuMesh {
     pub(crate) vertices: BufRef,
     pub(crate) indices: BufRef,
-    pub(crate) skin: Option<BufRef>,
+    pub(crate) data: Option<BufRef>,
+    pub(crate) extras: Option<u32>,
+    pub(crate) morphs: u32,
 }
 
 pub(super) fn storage_buffer(rec: &mut Recorder, label: &str, contents: &[u8]) -> BufRef {
@@ -59,12 +67,14 @@ impl GpuMesh {
                 bytemuck::cast_slice(&mesh.vertices),
             ),
             indices: storage_buffer(rec, "lumen 3d indices", bytemuck::cast_slice(&mesh.indices)),
-            skin: None,
+            data: None,
+            extras: None,
+            morphs: 0,
         }
     }
 
     pub(super) fn forget(&self, rec: &mut Recorder) {
-        for buffer in [self.vertices, self.indices].into_iter().chain(self.skin) {
+        for buffer in [self.vertices, self.indices].into_iter().chain(self.data) {
             rec.forget_buffer(buffer);
         }
     }
@@ -77,8 +87,8 @@ struct LoadedModel {
     mesh: GpuMesh,
     /// One per texture of the model, in its order.
     textures: Arc<[TexRef]>,
-    /// The bounds of each primitive's vertices, by its first index and index count.
-    bounds: Arc<HashMap<(u32, u32), Bounds>>,
+    /// The reach of each primitive's vertices, by its first index and index count.
+    bounds: Arc<HashMap<(u32, u32), Reach>>,
     /// Each skin's bounds before posing.
     joint_bounds: Arc<Vec<SkinBounds>>,
 }
@@ -305,10 +315,21 @@ fn upload_model(
 ) -> Result<(LoadedModel, u64), MediaError> {
     let limits = rec.device().limits();
     let geometry = &model.geometry;
+    let data = [
+        bytemuck::cast_slice::<_, u8>(&geometry.skin),
+        bytemuck::cast_slice(&geometry.extras),
+        bytemuck::cast_slice(&geometry.morphs),
+    ]
+    .concat();
+    let words = |bytes: usize| (bytes / 4) as u32;
+    let extras =
+        (!geometry.extras.is_empty()).then(|| words(size_of_val(geometry.skin.as_slice())));
+    let morphs =
+        words(size_of_val(geometry.skin.as_slice()) + size_of_val(geometry.extras.as_slice()));
     let parts: [&[u8]; 3] = [
         bytemuck::cast_slice(&geometry.vertices),
         bytemuck::cast_slice(&geometry.indices),
-        bytemuck::cast_slice(&geometry.skin),
+        &data,
     ];
     let largest = parts
         .iter()
@@ -347,19 +368,20 @@ fn upload_model(
         .wanting(&[AssetKind::Model])
         .into());
     }
-    let bounds = primitive_bounds(&model);
+    let bounds = model.scene.primitive_bounds(&model.geometry);
     let joint_bounds = model.scene.joint_bounds(&model.geometry);
     let mut bytes = parts.iter().map(|part| part.len() as u64).sum::<u64>()
-        + (bounds.len() * size_of::<((u32, u32), Bounds)>()) as u64
+        + (bounds.len() * size_of::<((u32, u32), Reach)>()) as u64
         + joint_bounds
             .iter()
-            .map(|skin| ((skin.joints.len() + 1) * size_of::<Bounds>()) as u64)
+            .map(|skin| ((skin.joints.len() + 1) * size_of::<Reach>()) as u64)
             .sum::<u64>();
     let mesh = GpuMesh {
         vertices: storage_buffer(rec, "lumen 3d model vertices", parts[0]),
         indices: storage_buffer(rec, "lumen 3d model indices", parts[1]),
-        skin: (!geometry.skin.is_empty())
-            .then(|| storage_buffer(rec, "lumen 3d model skin", parts[2])),
+        data: (!data.is_empty()).then(|| storage_buffer(rec, "lumen 3d model vertex data", &data)),
+        extras,
+        morphs,
     };
     let textures = model
         .textures
@@ -377,33 +399,10 @@ fn upload_model(
         scene: Arc::new(model.scene),
         mesh,
         textures,
-        bounds: Arc::new(bounds),
+        bounds: Arc::new(bounds.into_iter().collect()),
         joint_bounds: Arc::new(joint_bounds),
     };
     Ok((loaded, bytes))
-}
-
-/// The bounds of the vertices of each primitive `model` draws, by its first index and index count.
-fn primitive_bounds(model: &Model) -> HashMap<(u32, u32), Bounds> {
-    let geometry = &model.geometry;
-    let mut bounds = HashMap::default();
-    for posed in model.scene.pose(None).primitives {
-        let primitive = posed.primitive;
-        bounds
-            .entry((primitive.first_index, primitive.index_count))
-            .or_insert_with(|| {
-                let start = primitive.first_index as usize;
-                let indices = geometry
-                    .indices
-                    .get(start..start + primitive.index_count as usize)
-                    .unwrap_or_default();
-                Bounds::of(indices.iter().filter_map(|&index| {
-                    let vertex = geometry.vertices.get(index as usize)?;
-                    Some(Vec3::from(vertex.position))
-                }))
-            });
-    }
-    bounds
 }
 
 /// What a unit primitive covers, centred on the origin.
@@ -505,11 +504,11 @@ fn surface(
     })
 }
 
-/// How a model's `material` shades, reading the model's `textures`.
+/// How a model's `material` shades `primitive`, reading the model's `textures`.
 fn model_surface(
     material: &Material,
     textures: &[TexRef],
-    flat_normals: bool,
+    primitive: &lumen_3d::model::Primitive,
     params: &super::Model3dParams,
 ) -> Surface<TexRef> {
     Surface {
@@ -517,6 +516,8 @@ fn model_surface(
         texture: None,
         // Reading checked that every map names one of the model's textures.
         maps: material.maps.map(|&texture| textures[texture]),
+        map_uvs: material.map_uvs,
+        vertex_colors: primitive.vertex_colors,
         metallic: material.metallic,
         roughness: material.roughness,
         emissive: material.emissive,
@@ -525,7 +526,7 @@ fn model_surface(
         blending: material.blending,
         unlit: material.unlit,
         double_sided: material.double_sided,
-        flat_normals,
+        flat_normals: primitive.flat_normals,
         cast_shadows: params.cast_shadows,
         receive_shadows: params.receive_shadows,
         shadow_catcher: false,
@@ -550,12 +551,14 @@ enum Extent {
 }
 
 /// A skin posed in the scene: where its joint matrices start in the scene's joints, the model
-/// matrix they are placed by, and its joints' bounds before posing.
+/// matrix they are placed by, its joints' bounds before posing, and the largest size of the
+/// weights morphing the primitives it moves.
 struct PosedSkin {
     first_joint: usize,
     root: Mat4,
     joint_bounds: Arc<Vec<SkinBounds>>,
     skin: usize,
+    weight: f32,
 }
 
 /// The scene a `render_3d` draws, as far as its nodes have been walked.
@@ -615,10 +618,12 @@ impl Collected {
                     .joints
                     .iter()
                     .zip(posed)
-                    .filter(|(bounds, _)| !bounds.is_empty())
+                    .filter(|(reach, _)| !reach.still.is_empty())
                     .fold(
-                        bounds.unmoved.transformed(&skin.root),
-                        |all, (bounds, joint)| all.union(bounds.transformed(&(skin.root * *joint))),
+                        bounds.unmoved.at(skin.weight).transformed(&skin.root),
+                        |all, (reach, joint)| {
+                            all.union(reach.at(skin.weight).transformed(&(skin.root * *joint)))
+                        },
                     )
             })
             .collect();
@@ -698,6 +703,7 @@ impl Collected {
                         surface,
                         center: world.transform_point3(Vec3::ZERO),
                         first_joint: None,
+                        morph: None,
                         bounds: Bounds::EMPTY,
                     },
                     Extent::Local(UNIT_BOUNDS),
@@ -718,6 +724,7 @@ impl Collected {
                             surface,
                             center: world.transform_point3((local.min + local.max) * 0.5),
                             first_joint: None,
+                            morph: None,
                             bounds: Bounds::EMPTY,
                         },
                         Extent::Local(local),
@@ -754,6 +761,7 @@ impl Collected {
                         surface,
                         center: world.transform_point3(Vec3::ZERO),
                         first_joint: None,
+                        morph: None,
                         bounds: Bounds::EMPTY,
                     },
                     Extent::Local(Bounds {
@@ -859,7 +867,11 @@ impl Collected {
             .map_err(in_node)?;
         cx.drew_model(resolver.id());
         let scene = &model.scene;
+        if scene.skipped_primitives() > 0 {
+            cx.note_skipped_primitives(node.id, source, scene.skipped_primitives());
+        }
         let clip = scene.animation(&params.animation).map_err(error)?;
+        let camera = scene.camera(&params.camera).map_err(error)?;
         let replaced = match (params.texture_material.as_str(), node.texture) {
             ("", None) => None,
             ("", Some(_)) => {
@@ -898,7 +910,41 @@ impl Collected {
                 ),
             ));
         }
+        let first_weight = self.scene.weights.len();
+        if first_weight + pose.weights.len() > MAX_SCENE_WEIGHTS {
+            return Err(super::render::render_error(
+                self.render_id,
+                format!(
+                    "the scene's morphed models have more than {MAX_SCENE_WEIGHTS} morph target \
+                     weights together"
+                ),
+            ));
+        }
+        self.scene.weights.extend_from_slice(&pose.weights);
         let root = parent * placement(&params.placement).matrix();
+        if params.lights {
+            self.scene
+                .lights
+                .extend(pose.lights.iter().map(|light| light.placed(&root)));
+            self.light_nodes
+                .extend(std::iter::repeat_n(node.id, pose.lights.len()));
+        }
+        if let Some(camera) = camera
+            && let Some(&(_, world)) = pose.cameras.iter().find(|(index, _)| *index == camera)
+            && let Some(model_camera) = scene.cameras().get(camera)
+        {
+            // A camera keeps its node's place and turn, but not its scale.
+            let (_, rotation, translation) = (root * world).to_scale_rotation_translation();
+            let world = Mat4::from_rotation_translation(rotation, translation);
+            if world.is_finite() {
+                self.scene.camera.get_or_insert(Camera {
+                    world,
+                    projection: model_camera.projection,
+                    near: model_camera.near,
+                    far: model_camera.far,
+                });
+            }
+        }
         // Each skin's joint matrices start, in the pose, at the first joint of the primitives it
         // moves, and later skins' start later.
         let first_skin = self.skins.len();
@@ -908,6 +954,7 @@ impl Collected {
                 root,
                 joint_bounds: model.joint_bounds.clone(),
                 skin,
+                weight: 0.0,
             }));
         let skin_of = |start: u32| {
             pose.skins
@@ -917,14 +964,14 @@ impl Collected {
         };
         self.scene.joints.extend(pose.joints.iter().copied());
         let default = Material::default();
-        for posed in pose.primitives {
+        for posed in &pose.primitives {
             let primitive = posed.primitive;
+            let weight = pose.weight_scale(posed);
             let material = primitive
                 .material
                 .and_then(|index| scene.materials().get(index))
                 .unwrap_or(&default);
-            let mut surface =
-                model_surface(material, &model.textures, primitive.flat_normals, &params);
+            let mut surface = model_surface(material, &model.textures, &primitive, &params);
             if let Some((replaced, raster)) = replaced
                 && primitive.material == Some(replaced)
             {
@@ -941,15 +988,18 @@ impl Collected {
             let local = model
                 .bounds
                 .get(&(primitive.first_index, primitive.index_count))
-                .copied()
-                .unwrap_or(Bounds::EMPTY);
+                .map_or(Bounds::EMPTY, |reach| reach.at(weight));
             // A skinned primitive's joints place it within the model, so only the model is placed.
             let world = match posed.first_joint {
                 Some(_) => root,
                 None => root * posed.world,
             };
             let extent = match posed.first_joint.and_then(skin_of) {
-                Some(skin) => Extent::Skin(skin),
+                Some(skin) => {
+                    let posed_skin = &mut self.skins[skin];
+                    posed_skin.weight = posed_skin.weight.max(weight);
+                    Extent::Skin(skin)
+                }
                 None => Extent::Local(local),
             };
             self.push(
@@ -961,6 +1011,10 @@ impl Collected {
                     surface,
                     center: world.transform_point3(primitive.center),
                     first_joint: posed.first_joint.map(|joint| joint + first_joint as u32),
+                    morph: primitive
+                        .morph
+                        .zip(posed.first_weight)
+                        .map(|(morph, weight)| (morph, weight + first_weight as u32)),
                     bounds: Bounds::EMPTY,
                 },
                 extent,
