@@ -18,7 +18,11 @@ use crate::server::{
     sanitized_diagnostics, validate_media_manifest,
 };
 
-use super::{errors::ApiError, state::AppState, ws::render_socket_session};
+use super::{
+    errors::ApiError,
+    state::{AppState, RenderTicket},
+    ws::render_socket_session,
+};
 
 #[derive(Debug, serde::Serialize)]
 pub(super) struct HealthResponse {
@@ -38,6 +42,10 @@ pub(super) async fn create_render(
     input: Result<Json<RenderJobInput>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let Json(input) = input?;
+    // Held from here, so a refused request has taken nothing and an invalid one gives its place back.
+    let ticket = state
+        .reserve_render()
+        .ok_or_else(|| ApiError::queue_full(state.max_queued_renders()))?;
     if input.webhook_url.is_some() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -100,6 +108,7 @@ pub(super) async fn create_render(
     spawn_render_task(
         state,
         record,
+        ticket,
         RenderJob {
             id,
             composition,
@@ -177,6 +186,30 @@ pub(super) async fn get_render(
     }))
 }
 
+/// Cancels a queued or running render. A queued render ends as `cancelled` before the response, so
+/// it answers `200`; a running one answers `202` with its current status and ends at its next frame
+/// boundary. A render that has already ended is returned as it is with `200`, so repeating the
+/// request is harmless and a finished render keeps its result.
+pub(super) async fn cancel_render(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<GetRenderResponse>), ApiError> {
+    let record = state.get(&id).ok_or_else(ApiError::not_found)?;
+    state.cancel(&record);
+    let status = record.status.borrow().clone();
+    let code = if status.is_terminal() {
+        StatusCode::OK
+    } else {
+        StatusCode::ACCEPTED
+    };
+    Ok((
+        code,
+        Json(GetRenderResponse {
+            render: ApiRenderJob::new(&record, &status),
+        }),
+    ))
+}
+
 pub(super) async fn get_render_progress(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -216,7 +249,9 @@ pub(super) async fn get_render_artifact(
             );
             Ok((StatusCode::OK, headers, artifact.bytes).into_response())
         }
-        RenderStatus::Failed { error, .. } => Err(ApiError::rejected(StatusCode::CONFLICT, error)),
+        RenderStatus::Failed { error, .. } | RenderStatus::Cancelled { error, .. } => {
+            Err(ApiError::rejected(StatusCode::CONFLICT, error))
+        }
         _ => Err(ApiError::new(
             StatusCode::CONFLICT,
             "artifact_not_ready",
@@ -225,14 +260,37 @@ pub(super) async fn get_render_artifact(
     }
 }
 
-fn spawn_render_task(state: AppState, record: Arc<RenderRecord>, job: RenderJob) {
+fn spawn_render_task(
+    state: AppState,
+    record: Arc<RenderRecord>,
+    ticket: RenderTicket,
+    job: RenderJob,
+) {
     tokio::spawn(async move {
-        let _render_slot = state
-            .render_slots
-            .acquire()
-            .await
-            .expect("render slots are never closed");
-        record.status.send_replace(RenderStatus::Staging);
+        let _render_slot = match ticket {
+            RenderTicket::Running(permit) => permit,
+            RenderTicket::Waiting(spot) => {
+                let permit = tokio::select! {
+                    permit = Arc::clone(&state.render_slots).acquire_owned() => {
+                        permit.expect("render slots are never closed")
+                    }
+                    () = record.cancellation.cancelled() => return,
+                };
+                drop(spot);
+                permit
+            }
+        };
+        // A render cancelled while queued has already ended.
+        let started = record.status.send_if_modified(|status| {
+            let queued = matches!(status, RenderStatus::Queued);
+            if queued {
+                *status = RenderStatus::Staging;
+            }
+            queued
+        });
+        if !started {
+            return;
+        }
 
         let progress_record = Arc::clone(&record);
         let min_delta = state.progress_min_delta;
@@ -241,6 +299,7 @@ fn spawn_render_task(state: AppState, record: Arc<RenderRecord>, job: RenderJob)
             job,
             &state.media_client,
             &state.render_config,
+            &record.cancellation,
             move |event| {
                 progress_record.set_frame(
                     event.frame,

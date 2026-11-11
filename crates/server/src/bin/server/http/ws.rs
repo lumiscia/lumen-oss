@@ -67,6 +67,10 @@ fn render_event(id: &str, status: &RenderStatus) -> serde_json::Value {
                 "retryable": error.retryable,
             },
         }),
+        RenderStatus::Cancelled { .. } => serde_json::json!({
+            "type": "render.cancelled",
+            "renderId": id,
+        }),
     }
 }
 

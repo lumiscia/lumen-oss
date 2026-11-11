@@ -48,6 +48,21 @@ match render_project_mp4(&composition, &options, &mut |_| {}) {
 }
 ```
 
+To stop a render, give it a `CancelToken` and call `cancel()` on a clone of it from anywhere. The render checks it before each frame, so it stops within a frame, closes its encoder, removes its temporary output, releases its media, and ends with `ErrorCode::Cancelled`. `Mp4Render::set_cancel` does the same for a render opened by hand.
+
+```rust
+use lumen_server::render::{CancelToken, RenderOptions};
+
+let cancel = CancelToken::new();
+let options = RenderOptions { cancel: cancel.clone(), ..RenderOptions::default() };
+let watcher = std::thread::spawn(move || {
+    // ... when the job is withdrawn:
+    cancel.cancel();
+});
+```
+
+On the CPU upload path, frames are read back through a ring of three buffers while the next ones render, so memory stays at three frames and frames reach the encoder in order.
+
 `LocalMediaStore::new(root, &config)` and `check_composition(payload, staged, assets, &config)` take the same config.
 
 #### Error codes
@@ -63,6 +78,7 @@ A failed render is a `ServerRenderError`. `code()` is an `ErrorCode` to match on
 | `render_failed`           | The GPU work around the engine failed, such as reading a frame back. Retryable.                                                                                                  |
 | `encode_failed`           | The encoder failed to open, encode or finish. Retryable when it ran out of memory, file descriptors or hardware encoder sessions, not when its options or the encoder are wrong. |
 | `output_io`               | The output file couldn't be created, written or read back. Retryable when the host ran out of memory or file descriptors.                                                        |
+| `render_cancelled`        | The render's `CancelToken` was cancelled. Not a failure, and not retryable.                                                                                                      |
 
 These codes replace the ones earlier versions returned:
 
@@ -139,11 +155,13 @@ A failed request answers with its status and `{ "code": "...", "error": "..." }`
 
 A render that fails after being accepted keeps why. `GET /renders/:id` and `GET /renders/:id/progress` return it as `render.error`: `{ "code": "...", "message": "...", "retryable": false }`. The `progress` object has the same as `error`, `errorCode` and `retryable`, and the WebSocket's `render.failed` event carries it as `error`. The code is one of the [render error codes](#error-codes), or a media staging code such as `media_download_failed`.
 
-`GET /renders/:id/artifact` returns `409` with `artifact_not_ready` until the render succeeds, and `409` with the render's own error code if it failed. A succeeded render also reports the artifact's relative URL as `render.outputUrl`. `render.status` is `queued`, `processing`, `succeeded` or `failed`.
+`GET /renders/:id/artifact` returns `409` with `artifact_not_ready` until the render succeeds, and `409` with the render's own error code if it failed or was cancelled. A succeeded render also reports the artifact's relative URL as `render.outputUrl`. `render.status` is `queued`, `processing`, `succeeded`, `failed` or `cancelled`.
+
+`POST /renders/:id/cancel` cancels a queued or running render. A queued render ends as `cancelled` before the response and never starts, so it answers `200`. A running render answers `202` with its current status and stops at its next frame boundary, then closes its encoder, deletes its temporary output, releases its media and frees its slot; poll it or watch its socket for `cancelled`. A render that has already ended, including one cancelled before, answers `200` unchanged, so repeating the request is harmless and a finished render keeps its result. A render that finishes in the moment the request arrives may still end as `succeeded`. An unknown or evicted id is `404` with `render_not_found`. A cancelled render reports `render.status` `cancelled` and the code `render_cancelled` with `retryable: false` as its `error`, `progress.errorCode` and `retryable`, and the socket sends `{ "type": "render.cancelled", "renderId": "r_123" }` and closes.
 
 S3-compatible artifact storage is planned for a future self-hosted release. For now, the HTTP binary's in-memory artifact storage is intended for local development and single-process testing, not durable production delivery. Only the most recent `--retained-renders` finished renders (default 16, `LUMEN_SERVER_RETAINED_RENDERS`) are kept, and their artifacts stay in memory until then. Older renders are dropped, record and artifact together, and return `404`.
 
-Renders run in submission order, `--max-concurrent-renders` at a time (default 1, `LUMEN_SERVER_MAX_CONCURRENT_RENDERS`). Later renders stay `queued` until a slot frees. Raise it only if the GPU has the memory for parallel renders. A running render also waits before its first frame while others hold most of the Vulkan contexts NVIDIA's driver allows a process: at most 14 NVENC renders or `h264_vulkan` renders that keep frames on the GPU, 9 `h264_vulkan` renders that upload frames, or 6 of those with hardware decode. GPU memory can still run out first. Renders then usually fail with an error, but it has also hung the driver on a Blackwell card, so stay within what the card's memory holds.
+Renders run in submission order, `--max-concurrent-renders` at a time (default 1, `LUMEN_SERVER_MAX_CONCURRENT_RENDERS`). Later renders stay `queued` until a slot frees. Raise it only if the GPU has the memory for parallel renders. At most `--max-queued-renders` renders wait for a slot (default 32, `LUMEN_SERVER_MAX_QUEUED_RENDERS`); a `POST /renders` past that is refused at once with `503` and `render_queue_full`, before its composition is checked or anything is kept for it, so a burst can't pile up work or memory. `503` rather than `429` because the limit is the server's capacity, shared by every client, not a rate a client exceeded. There is no `Retry-After`: how long the queue takes to drain depends on the renders in it. `0` queues nothing, and a render is refused unless a slot is free. A running render also waits before its first frame while others hold most of the Vulkan contexts NVIDIA's driver allows a process: at most 14 NVENC renders or `h264_vulkan` renders that keep frames on the GPU, 9 `h264_vulkan` renders that upload frames, or 6 of those with hardware decode. GPU memory can still run out first. Renders then usually fail with an error, but it has also hung the driver on a Blackwell card, so stay within what the card's memory holds.
 
 ### Quality config
 
@@ -270,7 +288,7 @@ Fonts are found by the family name inside each font file, not by file name, in t
 
 A family that none of them has is logged once per render as a warning, and text using it falls back to the bundled font. A composition can only read fonts that are in the font directory or the system fonts, never other files on the server. A font directory is trusted, so it follows symlinks.
 
-`GET /renders/:id/progress` and `GET /renders/:id/socket` mirror the hosted progress shape. The WebSocket sends the render's current status when it connects, then each change, and closes after the render succeeds or fails. It sends SDK render events like:
+`GET /renders/:id/progress` and `GET /renders/:id/socket` mirror the hosted progress shape. The WebSocket sends the render's current status when it connects, then each change, and closes after the render succeeds, fails or is cancelled. It sends SDK render events like:
 
 ```json
 {
@@ -286,6 +304,7 @@ The binary exposes:
 - `POST /renders`
 - `POST /renders/check`
 - `GET /renders/:id`
+- `POST /renders/:id/cancel`
 - `GET /renders/:id/progress`
 - `GET /renders/:id/socket`
 - `GET /renders/:id/artifact`
@@ -334,6 +353,7 @@ baseline, not a hardware performance target.
 | `--bind <addr>`                   | `LUMEN_SERVER_BIND`                   | `127.0.0.1:8080`            | Address to listen on. A non-loopback address requires a token.                                                          |
 | `--token <token>`                 | `LUMEN_SERVER_TOKEN`                  | none                        | Bearer token required on every route except `/health`.                                                                  |
 | `--max-concurrent-renders <n>`    | `LUMEN_SERVER_MAX_CONCURRENT_RENDERS` | 1                           | Renders that run at once.                                                                                               |
+| `--max-queued-renders <n>`        | `LUMEN_SERVER_MAX_QUEUED_RENDERS`     | 32                          | Renders that may wait for a slot. More are refused with `503`; `0` queues nothing.                                      |
 | `--retained-renders <n>`          | `LUMEN_SERVER_RETAINED_RENDERS`       | 16                          | Finished renders kept in memory.                                                                                        |
 | `--allow-media-host <host>`       | `LUMEN_SERVER_ALLOW_MEDIA_HOSTS`      | none                        | Hosts allowed to resolve to non-public addresses. Repeatable, or comma-separated in the variable.                       |
 | `--progress-min-delta <fraction>` | `LUMEN_SERVER_PROGRESS_MIN_DELTA`     | 0.02                        | Minimum progress increase between non-terminal updates.                                                                 |

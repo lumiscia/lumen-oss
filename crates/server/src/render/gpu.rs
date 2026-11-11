@@ -10,7 +10,7 @@ use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, media:
 use lumen_ffmpeg::{QualityConfig, QualityRequest, VideoEncoderChoice};
 
 use super::{
-    ErrorCode, RenderOptions, RenderProgress, ServerRenderError,
+    CancelToken, ErrorCode, RenderOptions, RenderProgress, ServerRenderError,
     device_budget::DeviceReservation,
     encode_target::{EncodeTarget, OpenedTarget},
     media::{LocalMediaStore, media_root},
@@ -25,6 +25,9 @@ pub fn render_project_mp4(
     options: &RenderOptions,
     on_progress: &mut dyn FnMut(RenderProgress),
 ) -> Result<Vec<u8>, ServerRenderError> {
+    if options.cancel.is_cancelled() {
+        return Err(ServerRenderError::cancelled());
+    }
     let media_root = media_root(options.media_root.as_deref())?;
     if let Some(dir) = options.config.font_dir()
         && !dir.is_dir()
@@ -62,6 +65,7 @@ pub fn render_project_mp4(
     if let Some(glyphs) = options.max_text_glyphs {
         render.set_max_text_glyphs(glyphs);
     }
+    render.set_cancel(options.cancel.clone());
     render.run(on_progress)?;
 
     fs::read(&output_path).map_err(|err| output_io("failed to read encoded output", err))
@@ -101,6 +105,7 @@ pub struct Mp4Render<'a> {
     path: &'static str,
     media_store: LocalMediaStore,
     renderer: GpuCompositionRenderer,
+    cancel: CancelToken,
     // Last, so everything holding a device closes before its room is given back.
     _devices: DeviceReservation<'static>,
 }
@@ -146,6 +151,7 @@ impl<'a> Mp4Render<'a> {
             path,
             media_store,
             renderer,
+            cancel: CancelToken::default(),
             _devices: devices,
         };
         render
@@ -161,6 +167,12 @@ impl<'a> Mp4Render<'a> {
         self.renderer.set_max_text_glyphs(glyphs);
     }
 
+    /// Stops [`run`](Self::run) with [`ErrorCode::Cancelled`] before the next frame once `cancel`
+    /// is cancelled.
+    pub fn set_cancel(&mut self, cancel: CancelToken) {
+        self.cancel = cancel;
+    }
+
     /// The encoder that opened, which is a later candidate when an earlier one wouldn't.
     pub fn encoder(&self) -> &str {
         &self.encoder
@@ -171,7 +183,8 @@ impl<'a> Mp4Render<'a> {
         self.path
     }
 
-    /// Renders and encodes every frame, then the audio, and finishes the output.
+    /// Renders and encodes every frame, then the audio, and finishes the output. Cancelling stops
+    /// it at the next frame boundary.
     pub fn run(
         mut self,
         on_progress: &mut dyn FnMut(RenderProgress),
@@ -180,6 +193,9 @@ impl<'a> Mp4Render<'a> {
         let total_frames = self.composition.timeline().duration_frames;
         let mut timing = RenderTiming::default();
         for frame in 0..total_frames {
+            if self.cancel.is_cancelled() {
+                return Err(ServerRenderError::cancelled());
+            }
             prefetch_media_frames(self.composition, &self.media_store, frame);
             self.target.write_frame(
                 &mut self.renderer,
@@ -335,6 +351,55 @@ mod tests {
 
         assert_eq!(error.code(), ErrorCode::EncodeFailed, "{error}");
         assert!(!error.retryable(), "{error}");
+    }
+
+    fn frames(count: u32) -> Composition {
+        super::super::parse_composition(&serde_json::json!({
+            "timeline": { "fps": 24, "duration_frames": count },
+            "render_settings": { "width": 16, "height": 16 },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255], "width": 16, "height": 16 } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+        }))
+        .unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cancelling_stops_at_the_next_frame_and_leaves_no_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let cancel = CancelToken::new();
+        let options = RenderOptions {
+            config: RenderConfig {
+                temp_dir: Some(temp.path().to_path_buf()),
+                ..RenderConfig::default()
+            },
+            encoder: libx264(),
+            cancel: cancel.clone(),
+            ..RenderOptions::default()
+        };
+
+        let mut rendered = 0;
+        let error = render_project_mp4(&frames(50), &options, &mut |progress| {
+            rendered = progress.frame;
+            if progress.frame == 3 {
+                cancel.cancel();
+            }
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::Cancelled, "{error}");
+        assert!(!error.retryable());
+        assert_eq!(rendered, 3);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+
+        let error = render_project_mp4(&frames(50), &options, &mut |_| {
+            panic!("a cancelled token renders nothing")
+        })
+        .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::Cancelled, "{error}");
     }
 
     #[test]

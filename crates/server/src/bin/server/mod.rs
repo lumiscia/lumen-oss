@@ -7,15 +7,15 @@ mod util;
 use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
 
 pub use types::{
-    ApiRenderJob, Artifact, CheckInput, CheckResponse, CreateRenderResponse, GetRenderResponse,
-    RenderJobError, RenderJobInput, RenderProgressResponse, RenderQueueState, RenderRecord,
-    RenderStatus, sanitized_diagnostics,
+    ApiRenderJob, Artifact, Cancellation, CheckInput, CheckResponse, CreateRenderResponse,
+    GetRenderResponse, RenderJobError, RenderJobInput, RenderProgressResponse, RenderQueueState,
+    RenderRecord, RenderStatus, sanitized_diagnostics,
 };
 
 use lumen_engine::composition::Composition;
 use lumen_ffmpeg::VideoEncoderChoice;
 use lumen_server::render::{
-    RenderConfig, RenderOptions, RenderProgress, ServerRenderError, render_project_mp4,
+    ErrorCode, RenderConfig, RenderOptions, RenderProgress, ServerRenderError, render_project_mp4,
 };
 
 pub(super) use media_staging::{MediaClient, validate_media_manifest};
@@ -43,6 +43,7 @@ pub async fn execute_render_job<F>(
     job: RenderJob,
     media_client: &MediaClient,
     config: &RenderConfig,
+    cancellation: &Cancellation,
     mut on_progress: F,
 ) -> Result<CompletedRender, RenderJobError>
 where
@@ -58,7 +59,10 @@ where
         assets,
     } = job;
     tracing::info!(job_id, media_count = media.len(), "starting render request");
-    let staged_media = stage_remote_media(media_client, media).await?;
+    let staged_media = tokio::select! {
+        staged = stage_remote_media(media_client, media) => staged?,
+        () = cancellation.cancelled() => return Err(RenderJobError::cancelled()),
+    };
     let media_stage_ms = stage_started.elapsed().as_millis();
     tracing::info!(job_id, media_stage_ms, "staged render media");
 
@@ -69,6 +73,7 @@ where
         encoder: Some(encoder),
         assets: Some(assets),
         max_text_glyphs: Some(max_text_glyphs),
+        cancel: cancellation.token(),
     };
 
     let output_width = composition.render_settings().width;
@@ -114,7 +119,11 @@ where
     })?
     .map_err(|error| {
         let message = error_chain(&error);
-        tracing::warn!(job_id, code = %error.code(), error = %message, "render failed");
+        if error.code() == ErrorCode::Cancelled {
+            tracing::info!(job_id, "render cancelled");
+        } else {
+            tracing::warn!(job_id, code = %error.code(), error = %message, "render failed");
+        }
         RenderJobError {
             code: error.code().to_string(),
             message: sanitize_error_message(&without_staging_path(&message, &staged_path)),

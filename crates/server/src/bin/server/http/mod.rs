@@ -27,8 +27,8 @@ use self::{
         put_content, put_part, start_multipart,
     },
     routes::{
-        check_render, create_render, get_render, get_render_artifact, get_render_progress, health,
-        render_socket,
+        cancel_render, check_render, create_render, get_render, get_render_artifact,
+        get_render_progress, health, render_socket,
     },
     state::AppState,
 };
@@ -51,6 +51,11 @@ pub struct Args {
     /// Renders that may run at once. Later renders stay queued until a slot frees.
     #[arg(long, env = "LUMEN_SERVER_MAX_CONCURRENT_RENDERS", default_value = "1")]
     pub max_concurrent_renders: NonZeroUsize,
+
+    /// Renders that may wait for a slot at once. Past it, `POST /renders` answers `503` until one
+    /// starts or is cancelled. `0` queues nothing: a render is refused unless a slot is free.
+    #[arg(long, env = "LUMEN_SERVER_MAX_QUEUED_RENDERS", default_value = "32")]
+    pub max_queued_renders: usize,
 
     /// Finished renders kept in memory. Beyond this, the oldest record and artifact are dropped.
     #[arg(long, env = "LUMEN_SERVER_RETAINED_RENDERS", default_value = "16")]
@@ -226,6 +231,7 @@ fn router(state: AppState) -> Router {
         .route("/renders", post(create_render))
         .route("/renders/check", post(check_render))
         .route("/renders/{id}", get(get_render))
+        .route("/renders/{id}/cancel", post(cancel_render))
         .route("/renders/{id}/progress", get(get_render_progress))
         .route("/renders/{id}/socket", get(render_socket))
         .route("/renders/{id}/artifact", get(get_render_artifact))

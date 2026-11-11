@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use axum::body::Bytes;
+use lumen_server::render::{CancelToken, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 
 use super::util::{MAX_ERROR_MESSAGE_CHARS, sanitize_error_message};
 
@@ -87,11 +88,53 @@ impl RenderJobError {
         }
     }
 
+    pub fn cancelled() -> Self {
+        Self {
+            code: ErrorCode::Cancelled.as_str().to_string(),
+            message: "the render was cancelled".to_string(),
+            retryable: false,
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.code == ErrorCode::Cancelled.as_str()
+    }
+
     pub fn invalid_quality(message: &str) -> Self {
         Self {
             code: "invalid_quality".to_string(),
             message: sanitize_error_message(message),
             retryable: false,
+        }
+    }
+}
+
+/// Asks one render to stop. The render library checks the token between frames, and the tasks
+/// around it wait on [`Cancellation::cancelled`].
+#[derive(Default)]
+pub struct Cancellation {
+    token: CancelToken,
+    notify: Notify,
+}
+
+impl Cancellation {
+    pub fn cancel(&self) {
+        self.token.cancel();
+        self.notify.notify_waiters();
+    }
+
+    pub fn token(&self) -> CancelToken {
+        self.token.clone()
+    }
+
+    /// Completes once [`cancel`](Self::cancel) has been called, immediately if it already was.
+    pub async fn cancelled(&self) {
+        loop {
+            let notified = self.notify.notified();
+            if self.token.is_cancelled() {
+                return;
+            }
+            notified.await;
         }
     }
 }
@@ -103,6 +146,7 @@ pub struct RenderRecord {
     pub created_at: String,
     pub input_hash: String,
     pub status: watch::Sender<RenderStatus>,
+    pub cancellation: Cancellation,
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +164,11 @@ pub enum RenderStatus {
         error: RenderJobError,
         progress: f32,
     },
+    /// Stopped on request. `error` holds the `render_cancelled` code.
+    Cancelled {
+        error: RenderJobError,
+        progress: f32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -132,7 +181,10 @@ pub struct Artifact {
 
 impl RenderStatus {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Succeeded { .. } | Self::Failed { .. })
+        matches!(
+            self,
+            Self::Succeeded { .. } | Self::Failed { .. } | Self::Cancelled { .. }
+        )
     }
 
     /// `0` to `1`. Rendering fills `0.05` to `0.99`, and only success reaches `1`.
@@ -145,7 +197,7 @@ impl RenderStatus {
                 (0.05 + 0.90 * ratio).clamp(0.0, 0.99)
             }
             Self::Succeeded { .. } => 1.0,
-            Self::Failed { progress, .. } => *progress,
+            Self::Failed { progress, .. } | Self::Cancelled { progress, .. } => *progress,
         }
     }
 
@@ -155,6 +207,7 @@ impl RenderStatus {
             Self::Staging | Self::Rendering { .. } => "processing",
             Self::Succeeded { .. } => "succeeded",
             Self::Failed { .. } => "failed",
+            Self::Cancelled { .. } => "cancelled",
         }
     }
 
@@ -165,12 +218,13 @@ impl RenderStatus {
             Self::Rendering { .. } => "rendering",
             Self::Succeeded { .. } => "completed",
             Self::Failed { .. } => "failed",
+            Self::Cancelled { .. } => "cancelled",
         }
     }
 
     fn error(&self) -> Option<&RenderJobError> {
         match self {
-            Self::Failed { error, .. } => Some(error),
+            Self::Failed { error, .. } | Self::Cancelled { error, .. } => Some(error),
             _ => None,
         }
     }
@@ -190,6 +244,7 @@ impl RenderRecord {
             created_at,
             input_hash,
             status: watch::Sender::new(RenderStatus::Queued),
+            cancellation: Cancellation::default(),
         }
     }
 

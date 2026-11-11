@@ -16,6 +16,7 @@ use super::{
     encoder::{EncoderSink, has_audio, write_composited_audio},
     gpu::{RenderTiming, create_gpu_renderer},
     media::LocalMediaStore,
+    readback::ReadbackRing,
 };
 
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
@@ -32,8 +33,11 @@ mod vulkan;
 /// frame at a time and owns what has to happen between submitting it and encoding it.
 #[allow(clippy::large_enum_variant)]
 pub(super) enum EncodeTarget {
-    /// Reads frames back and encodes them on a writer thread.
-    Cpu(EncoderSink),
+    /// Reads frames back through a ring of buffers and encodes them on a writer thread.
+    Cpu {
+        sink: EncoderSink,
+        ring: ReadbackRing,
+    },
     /// Converts frames to NV12 on the render device, which the encoder shares.
     #[cfg(all(target_os = "linux", feature = "vulkan"))]
     Vulkan(vulkan::VulkanTarget),
@@ -170,6 +174,10 @@ impl EncodeTarget {
             }
             encoder_start_failed(err)
         })?;
+        let ring = ReadbackRing::new(
+            &renderer.gpu_renderer().device,
+            lumen_gpu::Size::new(settings.width, settings.height),
+        );
         if let Some(error) = unavailable {
             tracing::warn!(
                 "{name} can't keep frames on the GPU, uploading them instead: {error:#}"
@@ -177,7 +185,7 @@ impl EncodeTarget {
         }
         Ok(OpenedTarget {
             renderer,
-            target: Self::Cpu(sink),
+            target: Self::Cpu { sink, ring },
             encoder: name.to_string(),
             path: "cpu_upload",
             devices,
@@ -202,22 +210,16 @@ impl EncodeTarget {
         timing: &mut RenderTiming,
     ) -> Result<(), ServerRenderError> {
         match self {
-            Self::Cpu(sink) => {
+            Self::Cpu { sink, ring } => {
                 let (raster, _submission) =
                     render_raster(renderer, composition, media_store, frame, timing)?;
                 poll(renderer, frame, timing, None)?;
-                let size = checked_size(composition, &raster, frame)?;
-                let pixels = timed(&mut timing.readback, || {
-                    renderer
-                        .gpu_renderer()
-                        .read_texture_rgba8(&raster.texture, size)
+                checked_size(composition, &raster, frame)?;
+                let read = timed(&mut timing.readback, || {
+                    ring.push(renderer.gpu_renderer(), &raster.texture, frame)
                 })
-                .map_err(|err| {
-                    render_failed(format!("failed reading rendered pixels for frame {frame}"))
-                        .caused_by(err)
-                })?;
-                timed(&mut timing.encode_send, || sink.send_frame(frame, pixels))
-                    .map_err(|err| encode_failed(format!("{err:#}")))
+                .map_err(readback_failed)?;
+                send_read(sink, read, timing)
             }
             #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(target) => {
@@ -245,7 +247,13 @@ impl EncodeTarget {
         #[cfg(not(all(target_os = "macos", feature = "metal")))]
         let _ = renderer;
         match self {
-            Self::Cpu(mut sink) => {
+            Self::Cpu { mut sink, mut ring } => {
+                while let Some(read) =
+                    timed(&mut timing.readback, || ring.pop(renderer.gpu_renderer()))
+                        .map_err(readback_failed)?
+                {
+                    send_read(&mut sink, Some(read), timing)?;
+                }
                 timed(&mut timing.audio_mix, || {
                     write_composited_audio(composition, media_store, |frame| sink.send_audio(frame))
                 })
@@ -298,6 +306,23 @@ fn timed<T>(total: &mut Duration, work: impl FnOnce() -> T) -> T {
     let result = work();
     *total += started.elapsed();
     result
+}
+
+/// A frame the readback ring returned, handed to the encoder.
+fn send_read(
+    sink: &mut EncoderSink,
+    read: Option<(u32, Vec<u8>)>,
+    timing: &mut RenderTiming,
+) -> Result<(), ServerRenderError> {
+    let Some((frame, pixels)) = read else {
+        return Ok(());
+    };
+    timed(&mut timing.encode_send, || sink.send_frame(frame, pixels))
+        .map_err(|err| encode_failed(format!("{err:#}")))
+}
+
+fn readback_failed(err: anyhow::Error) -> ServerRenderError {
+    render_failed("failed reading rendered pixels back".to_string()).caused_by(err)
 }
 
 fn render_failed(message: String) -> ServerRenderError {
