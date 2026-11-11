@@ -2018,15 +2018,59 @@ impl<'a> FrameCx<'a> {
         .into())
     }
 
-    /// The size image `source`, of `native` size, is decoded at for `node_id` to show it: reduced
-    /// to fit the size limit, with a warning once per composition, and to twice the most the
-    /// composition shows it at when that is under half its size.
-    pub(crate) fn image_size(&mut self, node_id: NodeId, source: &str, native: Size) -> Size {
+    /// The size image `source`, of `native` size, is decoded at for `node_id` to show it (see
+    /// [`super::image_size::decoded_size`]), with a warning once per composition when it is
+    /// reduced to fit the size limit. Fails as `media.too_large` when it is past the device's
+    /// limit and can't be reduced.
+    pub(crate) fn image_size(
+        &mut self,
+        node_id: NodeId,
+        source: &str,
+        native: Size,
+    ) -> crate::Result<Size> {
+        use super::image_size::{Decoded, decoded_size};
         let shown = Arc::clone(
             self.st
                 .shown_sizes
                 .get_or_insert_with(|| super::image_size::ShownSizes::of(self.composition)),
         );
+        let device_max = self.rec.device().limits().max_texture_dimension_2d.max(1);
+        let size = match decoded_size(&shown, source, native, self.max_image_side, device_max) {
+            Decoded::Native => native,
+            Decoded::Reduced { size, limited } => {
+                if limited {
+                    self.warn_image_reduced(node_id, source, native, size);
+                }
+                size
+            }
+            Decoded::TooLarge => {
+                let side = native.width.max(native.height);
+                return Err(crate::error::MediaFailure::too_large(
+                    source,
+                    format!(
+                        "it is {}x{} pixels, over the {device_max}-pixel texture limit of this \
+                         device, and only an image every use of which is a `resize` to a literal \
+                         size, in the root composition, is shown reduced to its aspect ratio",
+                        native.width, native.height
+                    ),
+                    u64::from(device_max),
+                    Some(u64::from(side)),
+                )
+                .into());
+            }
+        };
+        Ok(size)
+    }
+
+    fn warn_image_reduced(&mut self, node_id: NodeId, source: &str, native: Size, size: Size) {
+        // Warnings stop at a fixed number of sources, so a composition of many large images
+        // doesn't fill the diagnostics.
+        const WARNED_SOURCES: usize = 32;
+        if self.st.reduced_images.len() >= WARNED_SOURCES
+            || !self.st.reduced_images.insert(source.to_string())
+        {
+            return;
+        }
         let limit = self
             .rec
             .device()
@@ -2034,25 +2078,21 @@ impl<'a> FrameCx<'a> {
             .max_texture_dimension_2d
             .min(self.max_image_side)
             .max(1);
-        let (size, limited) = super::image_size::decoded_size(&shown, source, native, limit);
-        if limited && self.st.reduced_images.insert(source.to_string()) {
-            let warning = crate::error::Warning::ImageReduced {
-                template: self.scope.template_name().map(str::to_string),
-                node_id,
-                image: source.to_string(),
-                width: native.width,
-                height: native.height,
-                reduced_width: size.width,
-                reduced_height: size.height,
-                limit,
-            };
-            tracing::warn!(target: "lumen_render", "{warning}");
-            let path = crate::diagnostic::scene_pointer(self.scope.template_name());
-            self.st
-                .diagnostics
-                .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        }
-        size
+        let warning = crate::error::Warning::ImageReduced {
+            template: self.scope.template_name().map(str::to_string),
+            node_id,
+            image: source.to_string(),
+            width: native.width,
+            height: native.height,
+            reduced_width: size.width,
+            reduced_height: size.height,
+            limit,
+        };
+        tracing::warn!(target: "lumen_render", "{warning}");
+        let path = crate::diagnostic::scene_pointer(self.scope.template_name());
+        self.st
+            .diagnostics
+            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
     }
 
     /// An image in the working space at `size`, the size of `key`. Its 8-bit texture is uploaded

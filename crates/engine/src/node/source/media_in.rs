@@ -249,7 +249,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
             MediaInKind::Image { image_id } => {
                 let (identity, resolver) = resolve_as::<dyn ImageResolver>(media, &image_id)?;
                 cx.read_source(AssetKind::Image, &image_id, Some(&identity));
-                size = cx.image_size(self.id, &image_id, size);
+                size = cx.image_size(self.id, &image_id, size)?;
                 let key = MediaTextureKey {
                     identity,
                     width: size.width,

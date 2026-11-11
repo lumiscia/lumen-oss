@@ -1,10 +1,13 @@
-//! The size an image is decoded at: no larger than the device or host allows, and, where every
-//! use of it bounds how large it is shown, no larger than twice that.
+//! The size an image is decoded at: where every use of it bounds how large it is shown, no
+//! larger than twice that, and no larger than the device or host allows.
 //!
-//! A `media_in` raster is the size its image is decoded at, so only a node that maps its whole
-//! source into a rectangle of its own, a `resize` with a literal size and mode, can take an image
-//! decoded smaller and draw the same picture. Anything else that reads the image, or reads it in
-//! a template, keeps it at its native size.
+//! A `media_in` raster is the size its image is decoded at, and nodes read a raster's texels as
+//! its pixels, so a reduced image would change what most of them draw. Only a `resize` with a
+//! literal size and mode maps its whole source into a rectangle of its own, and draws the same
+//! picture from an image reduced to its exact aspect ratio. So an image is reduced only when every
+//! use of it is such a resize in the root composition, and only to a size with its aspect ratio.
+//! Any other use keeps the image at its native size, which past the device's texture limit can't
+//! be shown.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -116,32 +119,68 @@ impl ShownSizes {
     }
 }
 
-/// The size image `source`, of `native` size, is decoded at, and whether `max_side` reduced it:
-/// half its size or less when the composition shows it at under a quarter, and never past
-/// `max_side` on a side. Its aspect ratio stays, to within a pixel.
+/// The size an image is decoded at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Decoded {
+    Native,
+    /// Reduced to `size`, which has the native aspect ratio exactly, and to fit the size limit
+    /// when `limited`.
+    Reduced {
+        size: Size,
+        limited: bool,
+    },
+    /// Past the device's limit, and either used where it can't be reduced or without a smaller
+    /// size of its aspect ratio within the limit.
+    TooLarge,
+}
+
+/// The size image `source`, of `native` size, is decoded at. Where the composition lets it be
+/// reduced, that is twice the size it is shown at when that is under half its own, and within
+/// `host_max` and `device_max` on a side. Elsewhere it keeps its size, if `device_max` allows.
 pub(crate) fn decoded_size(
     shown: &ShownSizes,
     source: &str,
     native: Size,
-    max_side: u32,
-) -> (Size, bool) {
-    let mut factor = match shown.scale(source, native) {
-        Some(scale) if scale < REDUCE_BELOW => HEADROOM * scale,
-        _ => 1.0,
+    host_max: u32,
+    device_max: u32,
+) -> Decoded {
+    let longest = native.width.max(native.height);
+    let fallback = if longest > device_max {
+        Decoded::TooLarge
+    } else {
+        Decoded::Native
     };
-    let longest = f64::from(native.width.max(native.height));
-    let limited = longest * factor > f64::from(max_side);
-    if limited {
-        factor = f64::from(max_side) / longest;
-    }
-    if factor >= 1.0 {
-        return (native, false);
-    }
-    // The epsilon keeps a side exactly at the limit from rounding past it.
-    let side = |extent: u32| {
-        ((f64::from(extent) * factor - 1e-6).ceil() as u32).clamp(1, extent.min(max_side))
+    let Some(scale) = shown.scale(source, native) else {
+        return fallback;
     };
-    (Size::new(side(native.width), side(native.height)), limited)
+    // Sizes with the native aspect ratio are multiples of the ratio in lowest terms.
+    let multiples = gcd(native.width, native.height);
+    let unit = Size::new(native.width / multiples, native.height / multiples);
+    let shown_multiple = if scale < REDUCE_BELOW {
+        // The epsilon keeps an exact multiple from rounding up past it.
+        ((f64::from(multiples) * HEADROOM * scale - 1e-9).ceil() as u32).max(1)
+    } else {
+        multiples
+    };
+    let limit_multiple = host_max.min(device_max) / unit.width.max(unit.height);
+    let multiple = shown_multiple.min(limit_multiple);
+    if multiple == 0 {
+        return fallback;
+    }
+    if multiple >= multiples {
+        return Decoded::Native;
+    }
+    Decoded::Reduced {
+        size: Size::new(unit.width * multiple, unit.height * multiple),
+        limited: limit_multiple < shown_multiple,
+    }
+}
+
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a.max(1)
 }
 
 /// The most each node's output is magnified on its way to a graph's output, `f64::INFINITY` when
@@ -489,37 +528,88 @@ mod tests {
     #[test]
     fn an_image_is_reduced_to_twice_its_shown_size_only_under_half_of_it() {
         let native = Size::new(4000, 3000);
-        let decoded = |shown: &ShownSizes| decoded_size(shown, "photo", native, 16384).0;
+        let decoded = |shown: &ShownSizes| decoded_size(shown, "photo", native, 16384, 16384);
+        let reduced = |width, height| Decoded::Reduced {
+            size: Size::new(width, height),
+            limited: false,
+        };
         assert_eq!(
             decoded(&fitted(400.0, 300.0, ResizeMode::Stretch)),
-            Size::new(800, 600)
+            reduced(800, 600)
         );
         // Fill covers the rectangle, so its longer scale counts.
         assert_eq!(
             decoded(&fitted(400.0, 100.0, ResizeMode::Fill)),
-            Size::new(800, 600)
+            reduced(800, 600)
         );
+        // 2 × 4000 / 30 is 266.7, rounded up to a multiple of 4:3.
         assert_eq!(
             decoded(&fitted(400.0, 100.0, ResizeMode::Fit)),
-            Size::new(267, 200)
+            reduced(268, 201)
         );
-        assert_eq!(decoded(&fitted(2100.0, 300.0, ResizeMode::Stretch)), native);
-        assert_eq!(decoded(&ShownSizes::default()), native);
+        assert_eq!(
+            decoded(&fitted(2100.0, 300.0, ResizeMode::Stretch)),
+            Decoded::Native
+        );
+        assert_eq!(decoded(&ShownSizes::default()), Decoded::Native);
     }
 
     #[test]
-    fn an_image_past_the_limit_fits_it_on_its_longer_side() {
-        let (size, limited) =
-            decoded_size(&ShownSizes::default(), "photo", Size::new(16385, 3), 16384);
-        assert_eq!(size, Size::new(16384, 3));
-        assert!(limited);
-        let (size, limited) = decoded_size(
-            &fitted(400.0, 300.0, ResizeMode::Stretch),
-            "photo",
-            Size::new(4000, 3000),
-            1000,
+    fn a_reduced_image_keeps_its_aspect_ratio_exactly_or_its_size() {
+        // 1000 × 9 has no smaller size of its aspect ratio.
+        assert_eq!(
+            decoded_size(
+                &fitted(100.0, 100.0, ResizeMode::Fit),
+                "photo",
+                Size::new(1000, 9),
+                16384,
+                16384
+            ),
+            Decoded::Native
         );
-        assert_eq!(size, Size::new(800, 600));
-        assert!(!limited);
+    }
+
+    #[test]
+    fn an_image_past_the_limit_is_reduced_only_where_its_uses_allow() {
+        let wide = Size::new(32768, 2);
+        assert_eq!(
+            decoded_size(
+                &fitted(100.0, 1.0, ResizeMode::Fill),
+                "photo",
+                wide,
+                16384,
+                16384
+            ),
+            Decoded::Reduced {
+                size: Size::new(16384, 1),
+                limited: true,
+            }
+        );
+        assert_eq!(
+            decoded_size(&ShownSizes::default(), "photo", wide, 16384, 16384),
+            Decoded::TooLarge
+        );
+        // A host's lower limit keeps an image it can't reduce at its own size.
+        assert_eq!(
+            decoded_size(
+                &ShownSizes::default(),
+                "photo",
+                Size::new(3200, 1600),
+                1600,
+                16384
+            ),
+            Decoded::Native
+        );
+        // Past the device's limit with no smaller size of its aspect ratio within it.
+        assert_eq!(
+            decoded_size(
+                &fitted(100.0, 1.0, ResizeMode::Fill),
+                "photo",
+                Size::new(16385, 3),
+                16384,
+                16384
+            ),
+            Decoded::TooLarge
+        );
     }
 }

@@ -1,5 +1,5 @@
-//! The size images are decoded at: reduced to fit the size limit, and to twice the size the
-//! composition shows them at when every use bounds it.
+//! The size images are decoded at: where every use is a literal resize, reduced to their aspect
+//! ratio to fit the size limit, and to twice the size the composition shows them at.
 
 use lumen_engine::composition::Composition;
 use lumen_engine::diagnostic::Severity;
@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 use crate::support::{TestMedia, gpu, render, scene};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
-const CLEAR: [u8; 4] = [0; 4];
 
 /// A gradient smooth enough that sampling it at any scale gives the colour at the sample.
 fn gradient(width: u32, height: u32) -> Vec<u8> {
@@ -58,12 +57,20 @@ fn an_image_past_the_size_limit_renders_reduced_with_a_warning() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
     renderer.set_max_image_side(16);
-    let composition = scene((32, 16), json!([photo_in()])).frames(2).into();
+    let composition = scene(
+        (32, 16),
+        json!([photo_in(), resized(2, json!(32), json!(16))]),
+    )
+    .frames(2)
+    .into();
     let media = TestMedia::default().image("photo", 32, 16, RED.repeat(32 * 16));
     for frame in 0..2 {
         let shown = render(&mut renderer, &composition, f64::from(frame), &media);
-        assert_eq!(shown.pixel(15, 7), RED);
-        assert_eq!(shown.pixel(16, 8), CLEAR);
+        assert_eq!(shown.pixel(0, 0), RED);
+        assert_eq!(shown.pixel(31, 15), RED);
+        if frame == 0 {
+            assert_eq!(renderer.frame_graph_stats().adopted_bytes, 16 * 8 * 4);
+        }
     }
     let warnings = renderer.take_diagnostics();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
@@ -79,7 +86,66 @@ fn an_image_past_the_size_limit_renders_reduced_with_a_warning() {
 }
 
 #[test]
-fn an_image_wider_than_the_device_allows_renders_reduced() {
+fn an_image_past_the_size_limit_a_transform_places_keeps_its_own_size() {
+    let gpu = gpu();
+    let composition = shown_at(
+        (64, 32),
+        json!([
+            photo_in(),
+            { "id": 2, "type": "transform", "in": { "source": 1 },
+              "params": { "scale_x": 0.25, "scale_y": 0.25 } },
+        ]),
+    );
+    let media = photo(64, 32);
+    let mut renderer = gpu.renderer();
+    let unlimited = render(&mut renderer, &composition, 0.0, &media);
+
+    let mut renderer = gpu.renderer();
+    renderer.set_max_image_side(32);
+    let limited = render(&mut renderer, &composition, 0.0, &media);
+    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 64 * 32 * 4);
+    assert_eq!(limited.rgba, unlimited.rgba);
+    assert!(renderer.take_diagnostics().is_empty());
+}
+
+#[test]
+fn an_image_is_reduced_only_to_its_own_aspect_ratio() {
+    let gpu = gpu();
+    // 1000 × 9 fits 100 × 0.9 here. No smaller size has its aspect ratio, so it keeps its own.
+    let fit = |after: Value| {
+        shown_at(
+            (100, 100),
+            json!([
+                photo_in(),
+                { "id": 2, "type": "resize", "in": { "source": 1 },
+                  "params": { "width": 100, "height": 100, "mode": "fit" } },
+                after,
+            ]),
+        )
+    };
+    let media = photo(1000, 9);
+    let mut renderer = gpu.renderer();
+    let bounded = render(
+        &mut renderer,
+        &fit(json!({ "id": 3, "type": "opacity", "in": { "source": 2 } })),
+        0.0,
+        &media,
+    );
+    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 1000 * 9 * 4);
+
+    let mut renderer = gpu.renderer();
+    let unbounded = render(
+        &mut renderer,
+        &fit(json!({ "id": 3, "type": "transform", "in": { "source": 2 },
+                     "params": { "scale_x": "=1", "scale_y": "=1" } })),
+        0.0,
+        &media,
+    );
+    assert_eq!(bounded.rgba, unbounded.rgba);
+}
+
+#[test]
+fn an_image_wider_than_the_device_allows_renders_reduced_through_a_resize() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
     let limit = renderer
@@ -87,11 +153,15 @@ fn an_image_wider_than_the_device_allows_renders_reduced() {
         .device
         .limits()
         .max_texture_dimension_2d;
-    let width = limit + 1;
-    let composition = scene((32, 16), json!([photo_in()])).into();
-    let media = TestMedia::default().image("photo", width, 1, RED.repeat(width as usize));
+    let width = limit * 2;
+    let composition = shown_at(
+        (32, 16),
+        json!([photo_in(), resized(2, json!(32), json!(16))]),
+    );
+    let media = TestMedia::default().image("photo", width, 2, RED.repeat(width as usize * 2));
     let shown = render(&mut renderer, &composition, 0.0, &media);
     assert_eq!(shown.pixel(0, 0), RED);
+    assert_eq!(shown.pixel(31, 15), RED);
     assert_eq!(
         renderer.frame_graph_stats().adopted_bytes,
         u64::from(limit) * 4
@@ -99,6 +169,37 @@ fn an_image_wider_than_the_device_allows_renders_reduced() {
     let warnings = renderer.take_diagnostics();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert_eq!(warnings[0].code, "media.image_reduced");
+}
+
+#[test]
+fn warnings_of_reduced_images_stop_at_32_sources() {
+    let gpu = gpu();
+    let mut nodes = Vec::new();
+    let mut layers = Vec::new();
+    let mut media = TestMedia::default();
+    for index in 0..40u32 {
+        let source = format!("photo{index}");
+        let (image, resize) = (index * 2 + 1, index * 2 + 2);
+        nodes.push(json!({ "id": image, "type": "media_in",
+                           "params": { "kind": "image", "source": source } }));
+        nodes.push(
+            json!({ "id": resize, "type": "resize", "in": { "source": image },
+                           "params": { "width": 4, "height": 2 } }),
+        );
+        layers.push(resize);
+        media = media.image(&source, 4, 2, RED.repeat(8));
+    }
+    nodes.push(json!({ "id": 100, "type": "raster_multimerge", "in": { "layers": layers } }));
+    let composition = shown_at((4, 2), Value::Array(nodes));
+    let mut renderer = gpu.renderer();
+    renderer.set_max_image_side(2);
+    let shown = render(&mut renderer, &composition, 0.0, &media);
+    assert_eq!(shown.pixel(3, 1), RED);
+    // Every image is reduced, to 2 × 1, and only the first 32 warn.
+    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 40 * 2 * 4);
+    let warnings = renderer.take_diagnostics();
+    assert_eq!(warnings.len(), 32);
+    assert!(warnings.iter().all(|w| w.code == "media.image_reduced"));
 }
 
 #[test]
