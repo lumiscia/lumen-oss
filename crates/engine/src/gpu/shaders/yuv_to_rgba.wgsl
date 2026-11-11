@@ -1,5 +1,7 @@
-// YUV planes to premultiplied RGBA, rotated upright and stretched to the output by nearest
-// neighbour. Each pixel uses its own luma and the chroma sample covering it, as swscale does.
+// YUV planes to linear, premultiplied RGBA, rotated upright and stretched to the output by nearest
+// neighbour. Each pixel uses its own luma and the chroma sample covering it, as swscale does. The
+// matrix gives sRGB-encoded R'G'B', which is decoded with the sRGB curve. Requires the colour
+// chunk.
 struct Params {
     coded_width: u32,
     coded_height: u32,
@@ -31,7 +33,7 @@ struct Params {
 @group(0) @binding(2) var chroma_v: texture_2d<u32>;
 @group(0) @binding(3) var alpha: texture_2d<u32>;
 @group(0) @binding(4) var<uniform> params: Params;
-@group(0) @binding(5) var output: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(5) var output: texture_storage_2d<rgba16float, write>;
 
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -75,6 +77,9 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (params.has_alpha != 0u) {
         a = min(f32(textureLoad(alpha, coded, 0).x >> shift) * params.a_scale, 1.0);
     }
-    let color = select(rgb * a, rgb, params.premultiplied != 0u);
-    textureStore(output, id.xy, vec4<f32>(color, a));
+    var straight = rgb;
+    if (params.premultiplied != 0u) {
+        straight = select(vec3<f32>(0.0), min(rgb / a, vec3<f32>(1.0)), a > 0.0);
+    }
+    textureStore(output, id.xy, vec4<f32>(lumen_srgb_to_linear(straight) * a, a));
 }

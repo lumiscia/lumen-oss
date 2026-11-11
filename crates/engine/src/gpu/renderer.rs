@@ -115,6 +115,16 @@ fn texture_bytes(key: &MediaTextureKey) -> u64 {
     u64::from(key.width) * u64::from(key.height) * 4
 }
 
+/// How `media_output` writes a frame's output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OutputEncoding {
+    /// Shows the output over black at full alpha, for encoders that drop alpha. Otherwise alpha is
+    /// kept and the encoded colour premultiplied by it.
+    pub(crate) opaque: bool,
+    /// Dithers the quantisation to 8 bits.
+    pub(crate) dither: bool,
+}
+
 /// What recording has cost, across every frame so far.
 #[derive(Debug, Clone, Copy)]
 pub struct FrameGraphStats {
@@ -142,6 +152,7 @@ pub struct GpuCompositionRenderer {
     text_atlas: Arc<Mutex<lumen_text::GlyphAtlas>>,
     text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
+    output_encoding: OutputEncoding,
     reuse_static_output: bool,
     full_frame_sources: bool,
     single_tile_repeats: bool,
@@ -182,6 +193,10 @@ impl GpuCompositionRenderer {
             ))),
             text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            output_encoding: OutputEncoding {
+                opaque: false,
+                dither: true,
+            },
             reuse_static_output: true,
             full_frame_sources: false,
             single_tile_repeats: false,
@@ -252,13 +267,28 @@ impl GpuCompositionRenderer {
         }
     }
 
+    /// Sets whether the output is shown over black at full alpha, as encoders that drop alpha need.
+    /// Off by default: the output keeps its alpha, with its sRGB-encoded colour premultiplied by it.
+    pub fn set_opaque_output(&mut self, opaque: bool) {
+        self.output_encoding.opaque = opaque;
+    }
+
+    /// Sets whether quantising the output to 8 bits adds an ordered dither, which breaks up banding
+    /// in smooth gradients. It is on by default, and smaller than half a code step, so colours that
+    /// land on a code keep it. Float outputs are never quantised.
+    pub fn set_output_dither(&mut self, enabled: bool) {
+        self.output_encoding.dither = enabled;
+    }
+
     /// Builds every program `composition` may record with, so that a literal shader that doesn't
     /// compile fails here, before any frame renders.
     pub fn compile(&mut self, composition: &Composition) -> crate::Result<()> {
         self.compile_with_output_format(composition, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
     }
 
-    /// `compile`, for frames whose output is in `output_format`.
+    /// `compile`, for frames whose output is in `output_format`. The output is sRGB-encoded: an
+    /// 8-bit format takes it quantised once, an `*Srgb` format encodes it as it stores, and a float
+    /// format takes it unquantised, for a converter that quantises it itself.
     pub fn compile_with_output_format(
         &mut self,
         composition: &Composition,
@@ -476,6 +506,7 @@ impl GpuCompositionRenderer {
             frame,
             media: Some(media),
             output_format: self.output_format,
+            output_encoding: self.output_encoding,
             full_frame_sources: self.full_frame_sources,
             single_tile_repeats: self.single_tile_repeats,
             retain_static: self.reuse_static_output,

@@ -46,8 +46,16 @@ pub fn gpu() -> Gpu {
 }
 
 impl Gpu {
-    /// A production renderer with nothing held yet, on the shared device.
+    /// A production renderer with nothing held yet, on the shared device. Its output isn't
+    /// dithered, so pixels are the exact rounding of the working space.
     pub fn renderer(&self) -> GpuCompositionRenderer {
+        let mut renderer = self.dithered_renderer();
+        renderer.set_output_dither(false);
+        renderer
+    }
+
+    /// A production renderer with its default output dither.
+    pub fn dithered_renderer(&self) -> GpuCompositionRenderer {
         GpuCompositionRenderer::from_renderer(lumen_gpu::Renderer::from_device_with_adapter_info(
             self.0.device.clone(),
             self.0.queue.clone(),

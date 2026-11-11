@@ -1,8 +1,10 @@
 //! GPU-native graph renderer.
 //!
 //! Each frame walks the graph from the media output and records what its nodes draw, against
-//! pooled textures, bump buffers and cached programs.
+//! pooled textures, bump buffers and cached programs. Rasters are linear, premultiplied
+//! [`WORKING_COLOR_FORMAT`] textures; `media_output` encodes them to sRGB for the output.
 
+pub(crate) mod color;
 pub(crate) mod frame_graph;
 #[cfg(feature = "ffmpeg")]
 mod media;
@@ -17,6 +19,7 @@ mod shader_layouts;
 mod target;
 mod types;
 
+pub use color::WORKING_COLOR_FORMAT;
 pub use renderer::{
     DEFAULT_MAX_TEXT_GLYPHS, FrameGraphStats, GpuCompositionRenderer, MAX_TEXT_GLYPHS_CEILING,
 };

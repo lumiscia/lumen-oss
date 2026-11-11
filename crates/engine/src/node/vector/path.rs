@@ -11,6 +11,7 @@ use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, Node
 
 pub(crate) const PATH_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("../../gpu/shaders/color.wgsl"),
     include_str!("paint/paint.wgsl"),
     include_str!("drawable.wgsl"),
     include_str!("vector_common.wgsl"),

@@ -6,6 +6,7 @@ use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("../../gpu/shaders/color.wgsl"),
     include_str!("../../gpu/shaders/sampling.wgsl"),
     include_str!("blend.wgsl"),
     include_str!("raster_multimerge.wgsl")
@@ -53,7 +54,7 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
     lumen_gpu::LayoutEntry::compute(
         3,
-        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+        crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE,
     ),
 ];
 

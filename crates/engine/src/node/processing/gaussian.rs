@@ -180,10 +180,7 @@ const RECORD_RESOLVE_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(3, lumen_gpu::LayoutKind::Uniform),
     lumen_gpu::LayoutEntry::compute(4, lumen_gpu::LayoutKind::Sampler),
-    lumen_gpu::LayoutEntry::compute(
-        6,
-        lumen_gpu::LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
-    ),
+    lumen_gpu::LayoutEntry::compute(6, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
 
 fn record_shader(shifted: bool) -> &'static str {

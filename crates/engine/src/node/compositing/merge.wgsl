@@ -18,19 +18,19 @@ struct MergeParams {
 @group(0) @binding(1) var overlay_tex: texture_2d<f32>;
 @group(0) @binding(2) var mask_tex: texture_2d<f32>;
 @group(0) @binding(3) var<uniform> params: MergeParams;
-@group(0) @binding(4) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(4) var output_tex: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(5) var raw_mask_tex: texture_2d<f32>;
 
 const MASK_MODE_LUMA: u32 = 1u;
 const REC709_LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
 // Matte value of one texel of the (possibly blurred) mask. Luma is taken over black: the
-// Rec. 709 weights applied to the premultiplied colour, so antialiased edges keep their
-// coverage. Both alpha and luma are linear in the premultiplied channels, so the blur can
-// run on the colour and be reduced to a matte afterwards.
+// Rec. 709 luminance of the linear, premultiplied colour, sRGB-encoded, so a grey's matte is its
+// code value and antialiased edges keep their coverage. Alpha and luminance are linear in the
+// premultiplied channels, so the blur can run on the colour and be reduced to a matte afterwards.
 fn matte_of(texel: vec4<f32>) -> f32 {
     if (params.mask_mode == MASK_MODE_LUMA) {
-        return dot(texel.rgb, REC709_LUMA);
+        return lumen_linear_to_srgb(vec3<f32>(max(dot(texel.rgb, REC709_LUMA), 0.0))).x;
     }
     return texel.a;
 }
