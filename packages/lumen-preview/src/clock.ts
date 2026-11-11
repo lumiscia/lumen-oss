@@ -1,3 +1,5 @@
+import type { PlaybackRange } from "./playback-range.js";
+
 /** A playback position that moves by itself: `originMs` at `atEpochMs`, advancing at `rate`. */
 export interface PreviewClock {
   atEpochMs: number;
@@ -14,10 +16,13 @@ export function clockPositionMs(clock: PreviewClock, nowEpochMs: number): number
   return clock.originMs + (nowEpochMs - clock.atEpochMs) * clock.rate;
 }
 
-/** A parked clock past the end of a timeline waits on its last frame. A running one loops. */
-export function fitClock(clock: PreviewClock, durationFrames: number, fps: number): PreviewClock {
-  const lastFrameMs = (Math.max(durationFrames - 1, 0) * 1_000) / fps;
-  return clock.rate === 0 && clock.originMs > lastFrameMs
-    ? { ...clock, originMs: lastFrameMs }
-    : clock;
+/** A parked clock outside the range waits on its nearest frame. A running one is left to the range. */
+export function fitClock(clock: PreviewClock, range: PlaybackRange, fps: number): PreviewClock {
+  if (clock.rate !== 0) {
+    return clock;
+  }
+  const firstFrameMs = (range.inFrame * 1_000) / fps;
+  const lastFrameMs = (Math.max(range.outFrame - 1, 0) * 1_000) / fps;
+  const originMs = Math.min(Math.max(clock.originMs, firstFrameMs), lastFrameMs);
+  return originMs === clock.originMs ? clock : { ...clock, originMs };
 }

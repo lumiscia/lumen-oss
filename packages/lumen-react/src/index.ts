@@ -13,8 +13,11 @@ export type {
   LumenPreviewFonts,
   LumenPreviewMedia,
   LumenPreviewMediaEntry,
+  LumenPreviewRange,
   LumenPreviewStats,
   LumenPreviewStatsCallback,
+  LumenPreviewTimeUpdate,
+  LumenPreviewTimeUpdateCallback,
   MediaRegistration,
   MediaSourceInput,
 } from "@lumiscia/lumen-preview";

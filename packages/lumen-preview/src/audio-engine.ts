@@ -2,6 +2,7 @@ import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
 import type { MediaSourceInput } from "./media/types.js";
 import { assetHint } from "./asset-hint.js";
 import { createModuleWorker } from "./module-worker.js";
+import { mod } from "./playback-range.js";
 
 const AUDIO_FALLBACK =
   "If it isn't served there, serve `dist/audio-worker.js` from `@lumiscia/lumen-preview` beside `dist/audio-engine.js`, or pass `audio.workerModuleUrl` to `mountPreview`.";
@@ -34,6 +35,13 @@ export interface AudioEngineTimeline {
   tracks: AudioEngineTrack[];
 }
 
+/** The part of the timeline that plays, `endMs` exclusive. It repeats when `loop` is set. */
+export interface AudioPlaybackRange {
+  endMs: number;
+  loop: boolean;
+  startMs: number;
+}
+
 export interface AudioSourceRegistration {
   id: string;
   kind: "audio";
@@ -54,6 +62,10 @@ export interface LumenAudioEngineOptions {
 // yet or with a mixer that has nothing to send. After that the position runs without it for the rest
 // of the playback, and audio joins at that position if it ever arrives.
 const AUDIO_START_BUDGET_MS = 1_000;
+
+// How quickly the output level follows a volume or mute change. About 50 ms to settle, which is too
+// slow to click and too fast to notice.
+const GAIN_TIME_CONSTANT_S = 0.015;
 
 // How long the worklet may report an underrun before the audio is given up on. A mix restarted by a
 // source that is still arriving over a slow connection can take several seconds to refill, so this
@@ -97,11 +109,18 @@ type WorkletMessage =
   | {
       generation: number;
       holdFrames: number;
+      rate: number;
+      rateRevision: number;
       startSample: number;
       type: "play";
     }
   | {
       type: "pause";
+    }
+  | {
+      rate: number;
+      rateRevision: number;
+      type: "rate";
     };
 
 type WorkletEventMessage =
@@ -113,6 +132,9 @@ type WorkletEventMessage =
       contextTime: number;
       currentSample: number;
       generation: number;
+      rate: number;
+      /** The rate change the worklet had heard when it reported. */
+      rateRevision: number;
       stalled: boolean;
       type: "position";
     };
@@ -126,6 +148,10 @@ type AudioWorkerMessage =
       id: string;
       samples: Float32Array;
       type: "set-source";
+    }
+  | {
+      range: AudioPlaybackRange | null;
+      type: "set-range";
     }
   | {
       timeline: AudioEngineTimeline | null;
@@ -146,13 +172,19 @@ const LUMEN_AUDIO_LOOKAHEAD_FRAMES = LUMEN_AUDIO_SAMPLE_RATE * 2;
 export class LumenAudioEngine {
   #context: AudioContext | null = null;
   #disposed = false;
+  #gain: GainNode | null = null;
   // Every stop or restart bumps this, and async work or chunks from an older value are dropped.
   #generation = 0;
   #initialization: Promise<AudioWorkletNode | null> | null = null;
+  #muted = false;
   #node: AudioWorkletNode | null = null;
   #pausedMs = 0;
   #playback: PlaybackClock | null = null;
   #queuedChunkStarts = new Set<number>();
+  #range: AudioPlaybackRange | null = null;
+  #rate = 1;
+  // Bumped by every rate change, so a report from before one is told apart even at the same rate.
+  #rateRevision = 0;
   #sources = new Map<string, AudioSourceEntry>();
   // Only the latest sync reports failures, because a newer one may have replaced those sources.
   #sourceSync = 0;
@@ -160,6 +192,7 @@ export class LumenAudioEngine {
   #stallTimer: ReturnType<typeof setTimeout> | null = null;
   #timeline: AudioEngineTimeline | null = null;
   #timelineJson: string | null = null;
+  #volume = 1;
   #worker: Worker | null = null;
   readonly #options: LumenAudioEngineOptions;
 
@@ -265,12 +298,71 @@ export class LumenAudioEngine {
     return null;
   }
 
-  #restartMix(): void {
+  #restartMix(positionMs = this.currentTimeMs()): void {
     if (this.#playback && !this.#audioAbandoned) {
       const holdUntil = Math.max(this.#playback.holdUntil, performance.now());
-      this.#start(this.currentTimeMs(), holdUntil);
+      this.#start(positionMs, holdUntil);
       this.#options.onClockChange?.();
     }
+  }
+
+  /**
+   * Plays the timeline `rate` times as fast, with pitch following speed. The position carries on
+   * from where it is, without a restart.
+   */
+  setRate(rate: number): void {
+    if (rate === this.#rate) {
+      return;
+    }
+    const playback = this.#playback;
+    if (playback) {
+      this.#playback = this.#rebased(playback);
+    }
+    this.#rate = rate;
+    this.#rateRevision += 1;
+    if (playback && this.#node) {
+      this.#post(this.#node, { type: "rate", rate, rateRevision: this.#rateRevision });
+    }
+  }
+
+  /**
+   * Plays only this part of the timeline, wrapping round it or stopping at its end. Null plays the
+   * whole timeline, looping. Audio playing restarts at its position, which the range fits.
+   */
+  setRange(range: AudioPlaybackRange | null): void {
+    if (
+      range?.startMs === this.#range?.startMs &&
+      range?.endMs === this.#range?.endMs &&
+      range?.loop === this.#range?.loop
+    ) {
+      return;
+    }
+    const positionMs = this.currentTimeMs();
+    this.#range = range;
+    this.#worker?.postMessage({ type: "set-range", range });
+    this.#pausedMs = this.#fitMs(this.#pausedMs);
+    if (this.#audioAbandoned && this.#playback) {
+      // The elapsed time counted under the old range must not be read again under the new one.
+      this.#playback = { ...this.#playback, holdUntil: performance.now(), ms: positionMs };
+    }
+    this.#restartMix(positionMs);
+  }
+
+  /** The output level is `volume`, or silence while `muted`. Either changes without a click. */
+  setVolume(volume: number, muted: boolean): void {
+    this.#volume = volume;
+    this.#muted = muted;
+    if (this.#gain && this.#context) {
+      this.#gain.gain.setTargetAtTime(
+        this.#gainTarget(),
+        this.#context.currentTime,
+        GAIN_TIME_CONSTANT_S,
+      );
+    }
+  }
+
+  #gainTarget(): number {
+    return this.#muted ? 0 : this.#volume;
   }
 
   play(fromMs = this.#pausedMs): void {
@@ -279,7 +371,7 @@ export class LumenAudioEngine {
 
   #start(fromMs: number, holdUntil: number): void {
     this.#halt();
-    this.#pausedMs = this.#wrapMs(fromMs);
+    this.#pausedMs = this.#fitMs(fromMs);
     if (this.#disposed || !this.#hasClips()) {
       return;
     }
@@ -299,7 +391,14 @@ export class LumenAudioEngine {
         }
         const startSample = msToLumenAudioSample(this.currentTimeMs());
         const holdFrames = msToLumenAudioSample(Math.max(holdUntil - performance.now(), 0));
-        this.#post(node, { type: "play", generation, holdFrames, startSample });
+        this.#post(node, {
+          type: "play",
+          generation,
+          holdFrames,
+          rate: this.#rate,
+          rateRevision: this.#rateRevision,
+          startSample,
+        });
         this.#queueChunks(startSample);
       })
       .catch((error: unknown) => {
@@ -318,7 +417,7 @@ export class LumenAudioEngine {
   seekMs(ms: number): void {
     const wasPlaying = this.isPlaying();
     this.#halt();
-    this.#pausedMs = this.#wrapMs(ms);
+    this.#pausedMs = this.#fitMs(ms);
     if (wasPlaying) {
       this.play(this.#pausedMs);
     }
@@ -326,18 +425,28 @@ export class LumenAudioEngine {
 
   currentTimeMs(): number {
     const playback = this.#playback;
-    if (!playback) {
-      return this.#pausedMs;
-    }
+    return playback ? this.#fitMs(this.#movedMs(playback)) : this.#pausedMs;
+  }
+
+  /** Where the playback has got to, counting on past the end of the range it repeats. */
+  #movedMs(playback: PlaybackClock): number {
     if (!playback.workletReported) {
-      return this.#wrapMs(playback.ms + msPastHold(playback));
+      return playback.ms + msPastHold(playback) * this.#rate;
     }
     if (playback.stalled || !this.#context) {
-      return this.#wrapMs(playback.ms);
+      return playback.ms;
     }
-    return this.#wrapMs(
-      playback.ms + (this.#context.currentTime - playback.contextTime) * MS_PER_SECOND,
+    return (
+      playback.ms + (this.#context.currentTime - playback.contextTime) * MS_PER_SECOND * this.#rate
     );
+  }
+
+  /** The same position, counted from now, so a different rate applies only from here on. */
+  #rebased(playback: PlaybackClock): PlaybackClock {
+    const ms = this.#movedMs(playback);
+    return playback.workletReported && this.#context
+      ? { ...playback, contextTime: this.#context.currentTime, ms }
+      : { ...playback, holdUntil: Math.max(playback.holdUntil, performance.now()), ms };
   }
 
   isPlaying(): boolean {
@@ -361,6 +470,8 @@ export class LumenAudioEngine {
     this.#halt();
     this.#node?.disconnect();
     this.#node = null;
+    this.#gain?.disconnect();
+    this.#gain = null;
     this.#initialization = null;
     this.#clearSources();
     this.#worker?.terminate();
@@ -473,12 +584,16 @@ export class LumenAudioEngine {
         )}`,
       );
     }
-    node.connect(context.destination);
+    node.connect(this.#outputGain());
     node.port.onmessage = (event: MessageEvent<WorkletEventMessage>) => {
       const message = event.data;
       if (message.type === "error") {
         console.error("[LumenAudioEngine]", message.message ?? "audio worklet failed");
-      } else if (message.generation === this.#generation && this.#playback) {
+      } else if (
+        message.generation === this.#generation &&
+        message.rateRevision === this.#rateRevision &&
+        this.#playback
+      ) {
         const wasRunning = this.isClockRunning();
         this.#playback = {
           ...this.#playback,
@@ -496,6 +611,16 @@ export class LumenAudioEngine {
     };
     this.#node = node;
     return node;
+  }
+
+  #outputGain(): GainNode {
+    if (!this.#gain) {
+      const context = this.#getContext();
+      this.#gain = context.createGain();
+      this.#gain.gain.value = this.#gainTarget();
+      this.#gain.connect(context.destination);
+    }
+    return this.#gain;
   }
 
   #getContext(): AudioContext {
@@ -545,6 +670,7 @@ export class LumenAudioEngine {
       this.#options.onClockChange?.();
     };
     worker.postMessage({ type: "set-timeline", timeline: this.#timeline });
+    worker.postMessage({ type: "set-range", range: this.#range });
     this.#worker = worker;
     return worker;
   }
@@ -553,14 +679,26 @@ export class LumenAudioEngine {
     this.#ensureAudioWorker().postMessage(message, transfer);
   }
 
-  #wrapMs(ms: number): number {
+  /** Wrapped round a looping range, or held inside one that isn't. */
+  #fitMs(ms: number): number {
+    const range = this.#range ?? this.#wholeTimeline();
+    if (!range || !(range.endMs > range.startMs)) {
+      return Math.max(0, ms);
+    }
+    return range.loop
+      ? range.startMs + mod(ms - range.startMs, range.endMs - range.startMs)
+      : Math.min(Math.max(ms, range.startMs), range.endMs);
+  }
+
+  #wholeTimeline(): AudioPlaybackRange | null {
     const timeline = this.#timeline;
-    const durationMs = timeline
-      ? (timeline.durationFrames / Math.max(timeline.fps, 1)) * MS_PER_SECOND
-      : Number.NaN;
-    return Number.isFinite(durationMs) && durationMs > 0
-      ? Math.max(0, ms) % durationMs
-      : Math.max(0, ms);
+    return timeline
+      ? {
+          endMs: (timeline.durationFrames / Math.max(timeline.fps, 1)) * MS_PER_SECOND,
+          loop: true,
+          startMs: 0,
+        }
+      : null;
   }
 
   #queueChunks(fromSample: number): void {
@@ -572,7 +710,7 @@ export class LumenAudioEngine {
       }
     }
 
-    const throughSample = fromSample + LUMEN_AUDIO_LOOKAHEAD_FRAMES;
+    const throughSample = fromSample + LUMEN_AUDIO_LOOKAHEAD_FRAMES * this.#rate;
     for (
       let startSample = firstChunk;
       startSample <= throughSample;

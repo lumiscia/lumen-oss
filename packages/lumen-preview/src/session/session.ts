@@ -2,6 +2,17 @@ import type { LumenDiagnostic } from "@lumiscia/lumen-types";
 
 import { LumenAudioEngine } from "../audio-engine.js";
 import { clockPositionMs, epochNow, fitClock, type PreviewClock } from "../clock.js";
+import {
+  DEFAULT_PLAYBACK,
+  describeRangeMisfit,
+  rangeFrame,
+  rangeMs,
+  readPlaybackSettings,
+  resolvePlaybackRange,
+  type LumenPreviewRange,
+  type PlaybackRange,
+  type PlaybackSettings,
+} from "../playback-range.js";
 import type { MediaRegistration, MediaSourceInput } from "../media/index.js";
 import { sameMediaInput } from "../media/source.js";
 import { assetHint } from "../asset-hint.js";
@@ -67,11 +78,24 @@ export class LumenPreviewSession {
   // A seek made without a loaded timeline, applied once one loads.
   #pendingSeek: number | null = null;
   #pendingSeeks = new Map<number, (presented: boolean) => void>();
+  // Counts the changes that make a queued `ended` stale: loop, range, rate, pause and play. The
+  // worker follows it through the clocks it is sent, and its `ended` events name the one they ended under.
+  #playbackRevision = 0;
+  // The last options that were valid, which are the ones in effect.
+  #playback: PlaybackSettings = DEFAULT_PLAYBACK;
   #playing = false;
+  // The part of the loaded timeline being played.
+  #range: PlaybackRange | null = null;
+  // Why the options last failed validation, and what was last said about a range that didn't fit.
+  // The same message isn't reported again, so a callback that re-renders can't loop.
+  #optionFailure: string | null = null;
+  #rangeMisfit: string | null = null;
   // Why the inputs last failed to resolve. The same failure isn't reported again, so a callback that
   // re-renders with the same inputs can't loop.
   #resolveFailure: string | null = null;
   #seekId = 0;
+  // The frame onTimeUpdate last reported, so a frame already shown isn't reported again.
+  #reportedFrame: number | null = null;
   #startup: AbortController | null = null;
   #sentFonts: ReadonlyMap<string, MediaSourceInput> = new Map();
   #sentMedia: ReadonlyMap<string, MediaRegistration> = new Map();
@@ -90,6 +114,28 @@ export class LumenPreviewSession {
     this.#wasmUrl = wasmUrl;
     this.#workerUrl = workerUrl;
     this.#inputs = inputs;
+  }
+
+  get loop(): boolean {
+    return this.#playback.loop;
+  }
+
+  get muted(): boolean {
+    return this.#playback.muted;
+  }
+
+  /** The range being played, or null for the whole composition. */
+  get range(): LumenPreviewRange | null {
+    const { range } = this.#playback;
+    return range && { in: range.in, out: range.out };
+  }
+
+  get rate(): number {
+    return this.#playback.rate;
+  }
+
+  get volume(): number {
+    return this.#playback.volume;
   }
 
   /** Replaces whatever this session was showing. Resolves when started or failed; never rejects. */
@@ -155,17 +201,28 @@ export class LumenPreviewSession {
       play: () => this.#play(),
       seek: (frame) => this.#seek(frame),
     });
+    this.#applyPlayback(this.#readPlayback(this.#inputs));
     this.#syncInputs();
   }
 
-  /** Replaces every input; one left out returns to its default. */
+  /**
+   * Replaces every input; one left out returns to its default. Playback options that can't be used
+   * reject the whole update, also while the worker is starting: it is reported through the
+   * callbacks in effect, and everything in effect stays as it was.
+   */
   update(inputs: LumenPreviewSessionInputs): void {
+    const playback = this.#readPlayback(inputs);
+    if (!playback) {
+      return;
+    }
     this.#inputs = inputs;
     // A session still starting applies these once its worker is ready.
-    if (this.#worker) {
-      this.#syncOptions();
-      this.#syncInputs();
+    if (!this.#worker) {
+      return;
     }
+    this.#syncOptions();
+    this.#applyPlayback(playback);
+    this.#syncInputs();
   }
 
   dispose(): void {
@@ -188,8 +245,14 @@ export class LumenPreviewSession {
     this.#clock = PARKED_CLOCK;
     this.#loaded = null;
     this.#loading = false;
+    this.#optionFailure = null;
     this.#pendingSeek = null;
+    this.#playback = DEFAULT_PLAYBACK;
+    this.#playbackRevision = 0;
     this.#playing = false;
+    this.#range = null;
+    this.#rangeMisfit = null;
+    this.#reportedFrame = null;
     this.#resolveFailure = null;
     // The next worker counts its seeks from zero.
     this.#seekId = 0;
@@ -214,6 +277,109 @@ export class LumenPreviewSession {
       this.#workerOptions = options;
       this.#post({ ...options, type: "set-options" });
     }
+  }
+
+  /** The playback options `inputs` ask for, or null after reporting why they can't be used. */
+  #readPlayback(inputs: LumenPreviewSessionInputs): PlaybackSettings | null {
+    let next: PlaybackSettings;
+    try {
+      next = readPlaybackSettings(inputs);
+    } catch (error) {
+      const message = describeError(error);
+      if (message !== this.#optionFailure) {
+        this.#optionFailure = message;
+        this.#reportError("invalid_option", "options", error);
+      }
+      return null;
+    }
+    if (this.#optionFailure !== null) {
+      this.#optionFailure = null;
+      if (this.preview.getSnapshot().errorCode === "invalid_option") {
+        this.preview.update({ error: null, errorCode: null });
+      }
+    }
+    return next;
+  }
+
+  /** Applies the playback options that changed. */
+  #applyPlayback(next: PlaybackSettings | null): void {
+    if (!next) {
+      return;
+    }
+    const previous = this.#playback;
+    this.#playback = next;
+    if (next.volume !== previous.volume || next.muted !== previous.muted) {
+      this.#audio?.setVolume(next.volume, next.muted);
+    }
+    if (next.rate !== previous.rate) {
+      this.#changeRate(next.rate);
+    }
+    if (next.loop !== previous.loop || !sameRange(next.range, previous.range)) {
+      this.#changeRange();
+    }
+  }
+
+  /** Playback carries on from where it is, at the new speed. */
+  #changeRate(rate: number): void {
+    const positionMs = this.#positionMs();
+    this.#audio?.setRate(rate);
+    if (!this.#playing) {
+      return;
+    }
+    this.#playbackRevision += 1;
+    this.#clock = this.#audio?.isPlaying()
+      ? audioClock(this.#audio, rate)
+      : { atEpochMs: epochNow(), originMs: positionMs, rate };
+    this.#postClock(this.#clock);
+  }
+
+  /**
+   * Playback carries on from the position it had under the old loop and range, which both clocks
+   * are rebased to. A playhead outside the new range moves to its start.
+   */
+  #changeRange(): void {
+    const timeline = this.#timeline;
+    const positionMs = timeline ? this.#positionMs() : 0;
+    const range = timeline ? this.#applyRange(timeline) : null;
+    if (timeline) {
+      this.#placeClock(positionMs);
+    }
+    const { loop, range: requested } = this.#playback;
+    this.#playbackRevision += 1;
+    this.#post({
+      clock: this.#clock,
+      loop,
+      range: requested,
+      revision: this.#playbackRevision,
+      type: "set-playback",
+    });
+    if (!timeline || !range) {
+      return;
+    }
+    const frame = frameAt(positionMs, timeline.fps);
+    if (frame < range.inFrame || frame >= range.outFrame) {
+      void this.#seek(range.inFrame);
+    } else {
+      this.#correctClock();
+    }
+  }
+
+  /** Fits the requested range to the timeline, and tells the audio. */
+  #applyRange(timeline: { fps: number; totalFrames: number }): PlaybackRange {
+    const { loop, range: requested } = this.#playback;
+    const misfit = describeRangeMisfit(requested, timeline.totalFrames);
+    if (misfit !== null && misfit !== this.#rangeMisfit) {
+      console.warn(`[LumenPreviewSession] ${misfit}`);
+    }
+    this.#rangeMisfit = misfit;
+    const range = resolvePlaybackRange(requested, loop, timeline.totalFrames);
+    this.#range = range;
+    this.#audio?.setRange({
+      endMs: (range.outFrame * 1_000) / timeline.fps,
+      loop: range.loop,
+      startMs: (range.inFrame * 1_000) / timeline.fps,
+    });
+    return range;
   }
 
   /** Loads only when something the worker reads changed, so unchanged inputs can be passed freely. */
@@ -254,6 +420,7 @@ export class LumenPreviewSession {
     const loadId = ++this.#loadId;
     this.#loaded = next;
     this.#settleSeeks(false);
+    this.#reportedFrame = null;
 
     if (next.compositionJson === null) {
       this.#loading = false;
@@ -261,6 +428,7 @@ export class LumenPreviewSession {
       this.#playing = false;
       this.#stopCorrections();
       this.#clock = PARKED_CLOCK;
+      this.#range = null;
       this.#timeline = null;
       this.#audio?.loadAudioTimeline(null);
       this.#post({ loadId, type: "unload" });
@@ -307,6 +475,7 @@ export class LumenPreviewSession {
   #loadFailed(error: unknown, diagnostics: readonly LumenDiagnostic[] = []): void {
     this.#loading = false;
     this.#pause();
+    this.#range = null;
     this.#timeline = null;
     this.#inputs.onStats?.(EMPTY_PREVIEW_STATS);
     this.preview.update({ isLoaded: false });
@@ -331,6 +500,15 @@ export class LumenPreviewSession {
           this.#settleSeeks(false);
           this.#pause();
           this.#reportError("render_failed", "render", event.message);
+        }
+        break;
+      case "ended":
+        if (
+          event.loadId === this.#loadId &&
+          event.seekId === this.#seekId &&
+          event.playbackRevision === this.#playbackRevision
+        ) {
+          this.#onEnded();
         }
         break;
       case "ready":
@@ -358,18 +536,17 @@ export class LumenPreviewSession {
     const audioChanged = this.#audio?.loadAudioTimeline(event.audioTimelineJson) ?? false;
     this.#syncAudioSources();
 
-    const lastFrame = Math.max(totalFrames - 1, 0);
-    const loopMs = (totalFrames * 1_000) / fps;
+    const range = this.#applyRange(this.#timeline);
+    const lastFrame = range.outFrame - 1;
+    const lastFrameMs = (lastFrame * 1_000) / fps;
     const restartAudio = audioChanged && this.#playing;
     let frame = this.preview.getSnapshot().frame;
     if (pending !== null || restartAudio) {
-      // Playback carries on round the new loop, as the worker would.
+      // Playback carries on round the new range, as the worker would.
       const originMs =
         pending !== null
-          ? (Math.min(pending, lastFrame) * 1_000) / fps
-          : loopMs > 0
-            ? positionMs % loopMs
-            : 0;
+          ? (clampFrame(pending, range) * 1_000) / fps
+          : Math.min(rangeMs(positionMs, range, fps), lastFrameMs);
       if (restartAudio) {
         this.#audio?.play(originMs);
       } else {
@@ -377,16 +554,16 @@ export class LumenPreviewSession {
       }
       this.#placeClock(originMs);
       this.#postSeek();
-      frame = Math.min(frameAt(originMs, fps), lastFrame);
+      frame = clampFrame(frameAt(originMs, fps), range);
     } else if (this.#playing) {
       this.#correctClock();
-      // The frame on screen stands until the worker shows the next, unless it's past the new end.
-      if (frame > lastFrame) {
-        frame = Math.min(frameAt(this.#positionMs(), fps), lastFrame);
+      // The frame on screen stands until the worker shows the next, unless it's outside the range.
+      if (frame < range.inFrame || frame > lastFrame) {
+        frame = rangeFrame(frameAt(this.#positionMs(), fps), range);
       }
     } else {
       // The worker fits its clock the same way.
-      this.#clock = fitClock(this.#clock, totalFrames, fps);
+      this.#clock = fitClock(this.#clock, range, fps);
       if (audioChanged) {
         this.#audio?.seekMs(this.#clock.originMs);
       }
@@ -400,7 +577,8 @@ export class LumenPreviewSession {
     });
     this.preview.update({
       // Newer inputs that didn't resolve keep their error over this earlier load.
-      ...(this.#resolveFailure === null && { error: null, errorCode: null }),
+      ...(this.#resolveFailure === null &&
+        this.#optionFailure === null && { error: null, errorCode: null }),
       frame,
       height: event.height,
       isLoaded: true,
@@ -429,6 +607,14 @@ export class LumenPreviewSession {
         ? { error: null, errorCode: null }
         : {};
     this.preview.update({ frame: event.frame, ...recovered });
+    // A seek to the frame on screen is answered without showing anything.
+    if (event.frame !== this.#reportedFrame) {
+      this.#reportedFrame = event.frame;
+      this.#inputs.onTimeUpdate?.({
+        frame: event.frame,
+        timeMs: (event.frame * 1_000) / this.#timeline.fps,
+      });
+    }
     this.#inputs.onStats?.({
       actualFps: event.actualFps,
       frame: event.frame,
@@ -439,10 +625,16 @@ export class LumenPreviewSession {
   }
 
   #play(): void {
-    if (!this.#timeline || this.#playing) {
+    const range = this.#range;
+    if (!this.#timeline || !range || this.#playing) {
       return;
     }
+    // Playing from the last frame of a range that doesn't loop starts it again.
+    if (!range.loop && frameAt(this.#positionMs(), this.#timeline.fps) >= range.outFrame - 1) {
+      void this.#seek(range.inFrame);
+    }
     this.#playing = true;
+    this.#playbackRevision += 1;
     this.#audio?.play(this.#positionMs());
     this.#correctClock();
     this.#correctionTimer = setInterval(() => this.#correctClock(), CLOCK_CORRECTION_INTERVAL_MS);
@@ -455,11 +647,34 @@ export class LumenPreviewSession {
     }
     const originMs = this.#positionMs();
     this.#playing = false;
+    this.#playbackRevision += 1;
     this.#audio?.pause();
     this.#stopCorrections();
     this.#clock = { atEpochMs: epochNow(), originMs, rate: 0 };
-    this.#post({ clock: this.#clock, type: "clock" });
+    if (this.#range && this.#timeline) {
+      this.#clock = fitClock(this.#clock, this.#range, this.#timeline.fps);
+    }
+    this.#postClock(this.#clock);
     this.preview.update({ isPlaying: false });
+  }
+
+  /** Playback ran out of range: it stops on the last frame, as a pause there would. */
+  #onEnded(): void {
+    const range = this.#range;
+    const timeline = this.#timeline;
+    if (!this.#playing || !range || !timeline) {
+      return;
+    }
+    const lastFrame = range.outFrame - 1;
+    const lastFrameMs = (lastFrame * 1_000) / timeline.fps;
+    this.#playing = false;
+    this.#audio?.pause();
+    this.#audio?.seekMs(lastFrameMs);
+    this.#stopCorrections();
+    this.#clock = { atEpochMs: epochNow(), originMs: lastFrameMs, rate: 0 };
+    this.#postClock(this.#clock);
+    this.preview.update({ frame: lastFrame, isPlaying: false });
+    this.#inputs.onEnded?.();
   }
 
   #seek(frame: number): Promise<boolean> {
@@ -470,7 +685,10 @@ export class LumenPreviewSession {
       this.preview.update({ frame: this.#pendingSeek });
       return Promise.resolve(false);
     }
-    const target = Math.max(0, Math.min(Math.round(frame), timeline.totalFrames - 1));
+    const target = clampFrame(
+      Math.max(0, Math.round(frame)),
+      this.#range ?? { inFrame: 0, loop: false, outFrame: timeline.totalFrames },
+    );
     const originMs = (target * 1_000) / timeline.fps;
     this.#audio?.seekMs(originMs);
     this.#placeClock(originMs);
@@ -483,7 +701,7 @@ export class LumenPreviewSession {
     this.#clock = {
       atEpochMs: epochNow(),
       originMs,
-      rate: this.#playing && !this.#audio?.isPlaying() ? 1 : 0,
+      rate: this.#playing && !this.#audio?.isPlaying() ? this.#playback.rate : 0,
     };
   }
 
@@ -501,23 +719,28 @@ export class LumenPreviewSession {
     const audio = this.#audio;
     let next: PreviewClock | null = null;
     if (audio?.isPlaying()) {
-      next = audioClock(audio);
+      next = audioClock(audio, this.#playback.rate);
     } else if (this.#clock.rate === 0) {
-      next = { atEpochMs: epochNow(), originMs: this.#clock.originMs, rate: 1 };
+      next = { atEpochMs: epochNow(), originMs: this.#clock.originMs, rate: this.#playback.rate };
     }
     if (next) {
       this.#clock = next;
-      this.#post({ clock: next, type: "clock" });
+      this.#postClock(next);
     }
   }
 
-  /** Wrapped into the timeline, as the worker loops over it. */
+  #postClock(clock: PreviewClock): void {
+    this.#post({ clock, revision: this.#playbackRevision, type: "clock" });
+  }
+
+  /** Wrapped into the range, or held at its end, as the worker shows it. */
   #positionMs(): number {
     const ms = this.#audio?.isPlaying()
       ? this.#audio.currentTimeMs()
       : clockPositionMs(this.#clock, epochNow());
-    const loopMs = this.#timeline ? (this.#timeline.totalFrames * 1_000) / this.#timeline.fps : 0;
-    return loopMs > 0 ? Math.max(ms, 0) % loopMs : Math.max(ms, 0);
+    return this.#range && this.#timeline
+      ? rangeMs(Math.max(ms, 0), this.#range, this.#timeline.fps)
+      : Math.max(ms, 0);
   }
 
   #stopCorrections(): void {
@@ -630,12 +853,21 @@ function startWorker(
   });
 }
 
-function audioClock(audio: LumenAudioEngine): PreviewClock {
+function audioClock(audio: LumenAudioEngine, rate: number): PreviewClock {
   return {
     atEpochMs: epochNow(),
     originMs: audio.currentTimeMs(),
-    rate: audio.isClockRunning() ? 1 : 0,
+    rate: audio.isClockRunning() ? rate : 0,
   };
+}
+
+/** A seek lands inside the range, whether or not it loops. */
+function clampFrame(frame: number, range: PlaybackRange): number {
+  return Math.max(range.inFrame, Math.min(frame, range.outFrame - 1));
+}
+
+function sameRange(left: LumenPreviewRange | null, right: LumenPreviewRange | null): boolean {
+  return left?.in === right?.in && left?.out === right?.out;
 }
 
 // Matches the worker's rounding, so a frame's own start time doesn't land on the frame before.

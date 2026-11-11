@@ -1,3 +1,5 @@
+import { mod, rangeFrame, type PlaybackRange } from "./playback-range.js";
+
 type FrameRequirementSource = {
   durationFrames: () => number;
   load: (requirementsJson: string) => Promise<void>;
@@ -8,6 +10,7 @@ export class FrameRequirementLoader {
   #generation = 0;
   #lookaheadCount = 8;
   readonly #pending = new Map<number, Promise<void>>();
+  #range: PlaybackRange | null = null;
   readonly #source: FrameRequirementSource;
 
   constructor(source: FrameRequirementSource) {
@@ -17,6 +20,12 @@ export class FrameRequirementLoader {
   reset(): void {
     this.#generation += 1;
     this.#pending.clear();
+  }
+
+  /** Keeps lookahead inside the range being played, wrapping round it only when it loops. */
+  setRange(range: PlaybackRange | null): void {
+    this.#range = range;
+    this.reset();
   }
 
   setLookaheadCount(lookaheadCount: number): void {
@@ -44,7 +53,11 @@ export class FrameRequirementLoader {
       if (generation !== this.#generation) {
         return;
       }
-      await this.loadFrame(frame + offset);
+      const next = this.#lookaheadFrame(frame + offset);
+      if (next === null) {
+        return;
+      }
+      await this.loadFrame(next);
     }
   }
 
@@ -83,12 +96,21 @@ export class FrameRequirementLoader {
     }
   }
 
+  /** Null once the lookahead runs past the end of a range that doesn't loop. */
+  #lookaheadFrame(frame: number): number | null {
+    const range = this.#range;
+    if (!range) {
+      return frame;
+    }
+    return !range.loop && frame >= range.outFrame ? null : rangeFrame(frame, range);
+  }
+
   #normalizeFrame(frame: number): number {
     const totalFrames = this.#source.durationFrames();
     if (totalFrames <= 0) {
       return frame;
     }
 
-    return ((frame % totalFrames) + totalFrames) % totalFrames;
+    return mod(frame, totalFrames);
   }
 }

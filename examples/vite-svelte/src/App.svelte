@@ -42,10 +42,11 @@
     const preview = createLumenPreview();
     const media = { clip: clipUrl };
     const fonts = { Roboto: robotoUrl };
+    let loop = $state(false);
 </script>
 
 <main>
-    <Player {preview} {composition} {media} {fonts} class="stage" />
+    <Player {preview} {composition} {media} {fonts} {loop} class="stage" />
     <div class="controls">
         <button
             type="button"
@@ -54,6 +55,7 @@
         >
             {!preview.state.isLoaded ? "Loading" : preview.state.isPlaying ? "Pause" : "Play"}
         </button>
+        <label><input type="checkbox" bind:checked={loop} /> Loop</label>
         <span>Frame {preview.state.frame} / {preview.state.totalFrames}</span>
         {#if preview.state.error}
             <pre>{preview.state.error}</pre>

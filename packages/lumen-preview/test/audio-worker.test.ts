@@ -126,3 +126,67 @@ describe("mixTimelineChunk looping", () => {
     expect(Array.from(later)).toEqual(Array.from(first));
   });
 });
+
+describe("mixTimelineChunk over a range", () => {
+  // One second of a ramp on a one second timeline, so each sample says where it came from.
+  const timeline = {
+    clips: [
+      {
+        durationMs: 1_000,
+        id: "clip",
+        sourceId: "ramp",
+        sourceStartMs: 0,
+        startMs: 0,
+        trackId: "track",
+        volume: 1,
+      },
+    ],
+    durationFrames: 10,
+    fps: 10,
+    tracks: [{ id: "track", muted: false, solo: false, volume: 1 }],
+  };
+  const sources = new Map([
+    [
+      "ramp",
+      Float32Array.from({ length: 96_000 }, (_, index) => (Math.floor(index / 2) + 1) / 1e5),
+    ],
+  ]);
+  const whole = (start: number, frames: number) =>
+    mixTimelineChunk(timeline, sources, start, frames);
+  const range = { endMs: 200, loop: true, startMs: 100 };
+  const FRAMES = 256;
+
+  it("repeats a looping range from its start", () => {
+    const length = 4_800;
+    const second = mixTimelineChunk(timeline, sources, 4_800 + length + 1_000, FRAMES, range);
+    expectSamples(second, Array.from(whole(4_800 + 1_000, FRAMES)));
+  });
+
+  it("joins the end of a range to its start without a gap", () => {
+    const start = 4_800 + 4_800 - 100;
+    const joined = mixTimelineChunk(timeline, sources, start, FRAMES, range);
+    const expected = [...whole(9_500, 100), ...whole(4_800, FRAMES - 100)];
+    expectSamples(joined, expected);
+  });
+
+  it("goes silent at the end of a range that doesn't loop", () => {
+    const once = { ...range, loop: false };
+    const tail = mixTimelineChunk(timeline, sources, 9_600 - 100, FRAMES, once);
+    expectSamples(tail, [
+      ...whole(9_500, 100),
+      ...Array.from({ length: (FRAMES - 100) * 2 }, () => 0),
+    ]);
+    expectSamples(
+      mixTimelineChunk(timeline, sources, 20_000, FRAMES, once),
+      Array.from({ length: FRAMES * 2 }, () => 0),
+    );
+  });
+
+  it("starts a range that doesn't loop where it begins", () => {
+    const once = { ...range, loop: false };
+    expectSamples(
+      mixTimelineChunk(timeline, sources, 6_000, FRAMES, once),
+      Array.from(whole(6_000, FRAMES)),
+    );
+  });
+});

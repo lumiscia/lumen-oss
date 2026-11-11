@@ -3,6 +3,8 @@ import type { LumenDiagnostic } from "@lumiscia/lumen-types";
 export type LumenPreviewErrorCode =
   /** A source named in the composition's audio couldn't be decoded. The video keeps playing. */
   | "audio_failed"
+  /** An option has a value it can't use, such as a `rate` outside the supported range. */
+  | "invalid_option"
   /** The composition, or a media source or font it needs, failed to load. */
   | "load_failed"
   | "render_failed"

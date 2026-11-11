@@ -3,6 +3,7 @@ const SAMPLE_RATE = 48_000;
 const CLIP_EDGE_FADE_SAMPLES = 384;
 
 let timeline = null;
+let range = null;
 const sources = new Map();
 
 globalThis.onmessage = (event) => {
@@ -17,6 +18,9 @@ globalThis.onmessage = (event) => {
     case "set-timeline":
       timeline = message.timeline;
       break;
+    case "set-range":
+      range = message.range;
+      break;
     case "request-chunk":
       postChunk(message);
       break;
@@ -27,7 +31,7 @@ function postChunk({ chunkFrames, generation, startSample }) {
   if (!timeline) {
     return;
   }
-  const samples = mixTimelineChunk(timeline, sources, startSample, chunkFrames);
+  const samples = mixTimelineChunk(timeline, sources, startSample, chunkFrames, range);
   globalThis.postMessage(
     {
       type: "chunk",
@@ -43,23 +47,45 @@ function postChunk({ chunkFrames, generation, startSample }) {
 }
 
 /**
- * Mixes interleaved stereo for the export mixer's rules, looping over the timeline's duration.
+ * Mixes interleaved stereo for the export mixer's rules. Playback sample `startSample` is a
+ * position in the timeline that keeps counting past the end of `range`: a looping range repeats,
+ * and one that doesn't is silent from its end. Without `range` the whole timeline loops.
  * `crates/engine/src/audio.rs` writes the fixtures `audio-worker.test.ts` checks this against.
+ *
+ * @param {{ startMs: number, endMs: number, loop: boolean } | null} [range] `endMs` is exclusive.
  */
-export function mixTimelineChunk(nextTimeline, nextSources, startSample, frames) {
+export function mixTimelineChunk(nextTimeline, nextSources, startSample, frames, range = null) {
   const output = new Float32Array(frames * CHANNELS);
   const durationMs = (nextTimeline.durationFrames / Math.max(nextTimeline.fps, 1)) * 1_000;
-  const loopSamples =
-    Number.isFinite(durationMs) && durationMs > 0
-      ? (durationMs * SAMPLE_RATE) / 1_000
+  const startMs = range ? range.startMs : 0;
+  const endMs = range ? range.endMs : durationMs;
+  const loop = range ? range.loop : true;
+  const rangeStart = (startMs * SAMPLE_RATE) / 1_000;
+  const rangeSamples =
+    Number.isFinite(endMs) && endMs > startMs
+      ? ((endMs - startMs) * SAMPLE_RATE) / 1_000
       : Number.POSITIVE_INFINITY;
+  const firstSample = Math.floor(rangeStart);
+  const endSample = Math.floor(rangeStart + rangeSamples);
 
   let outputFrame = 0;
   while (outputFrame < frames) {
     const sample = startSample + outputFrame;
-    const [loopStart, loopEnd] = loopBounds(sample, loopSamples);
-    const timelineStart = sample - loopStart;
-    const segmentFrames = Math.min(frames - outputFrame, loopEnd - sample);
+    let timelineStart;
+    let segmentFrames;
+    if (loop) {
+      const [loopStart, loopEnd] = loopBounds(sample, rangeStart, rangeSamples);
+      timelineStart = firstSample + sample - loopStart;
+      segmentFrames = Math.min(frames - outputFrame, loopEnd - sample);
+    } else if (sample >= endSample) {
+      break;
+    } else if (sample < firstSample) {
+      outputFrame += Math.min(frames - outputFrame, firstSample - sample);
+      continue;
+    } else {
+      timelineStart = sample;
+      segmentFrames = Math.min(frames - outputFrame, endSample - sample);
+    }
     mixTimelineRange(
       nextTimeline,
       nextSources,
@@ -132,17 +158,17 @@ function mixTimelineRange(
   }
 }
 
-// Loop k covers playback samples [floor(k * loopSamples), floor((k + 1) * loopSamples)), so a
+// Loop k covers playback samples [floor(start + k * length), floor(start + (k + 1) * length)), so a
 // fractional loop length stays in phase with the millisecond clock across repetitions.
-function loopBounds(sample, loopSamples) {
-  if (!Number.isFinite(loopSamples)) {
+function loopBounds(sample, start, length) {
+  if (!Number.isFinite(length)) {
     return [0, Number.POSITIVE_INFINITY];
   }
-  let loop = Math.floor(sample / loopSamples);
-  if (sample >= Math.floor((loop + 1) * loopSamples)) {
+  let loop = Math.floor((sample - start) / length);
+  if (sample >= Math.floor(start + (loop + 1) * length)) {
     loop += 1;
   }
-  return [Math.floor(loop * loopSamples), Math.floor((loop + 1) * loopSamples)];
+  return [Math.floor(start + loop * length), Math.floor(start + (loop + 1) * length)];
 }
 
 function msToSample(ms) {
