@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { LumenPreviewBindings } from "../src/index.js";
+import type { LumenPreviewBindings } from "../src/runtime.js";
 import {
   createLumenPreviewWorkerHost,
   type LumenPreviewWorkerCommand,
