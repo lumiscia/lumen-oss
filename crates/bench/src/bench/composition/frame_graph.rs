@@ -17,8 +17,8 @@ use lumen_engine::{
     error::MediaError,
     gpu::GpuCompositionRenderer,
     media::{
-        CpuMediaFrame, FontResolver, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
-        VideoMetadata,
+        AssetKind, CpuMediaFrame, FontResolver, MediaFrame, MediaIdentity, MediaResolver,
+        MediaStore, ResolvedMedia, VideoFrameResolver, VideoMetadata,
     },
 };
 use serde_json::{Value, json};
@@ -687,38 +687,31 @@ impl std::fmt::Debug for Fixture {
 }
 
 impl MediaStore for Fixture {
-    fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
-        self.bench.get_image_resolver(source)
-    }
-
-    fn get_video_resolver(
-        &self,
-        stream_id: &str,
-    ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
-        let video = self.video.as_ref().filter(|_| stream_id == "video");
-        video
-            .map(|video| Box::new(video.clone()) as Box<dyn VideoFrameResolver>)
-            .ok_or_else(|| MediaError::source_not_found(stream_id, "the bench has no such video"))
-    }
-
-    fn font_resolver_id(&self, font_family: &str) -> Option<String> {
-        self.fonts.as_ref()?.resolver_id(font_family)
-    }
-
-    fn get_font_resolver(
-        &self,
-        font_family: &str,
-    ) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
-        Ok(self
-            .fonts
-            .as_ref()
-            .and_then(|fonts| fonts.resolver(font_family)))
+    fn resolve(&self, source: &str, kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
+        let missing = || MediaError::source_not_found(source, "the bench has no such media");
+        match kind {
+            AssetKind::Image => self.bench.resolve(source, kind),
+            AssetKind::Video => {
+                let video = self.video.as_ref().filter(|_| source == "video");
+                let video = video.ok_or_else(missing)?;
+                Ok(ResolvedMedia::new(
+                    video.identity.clone(),
+                    MediaResolver::Video(Box::new(video.clone())),
+                ))
+            }
+            AssetKind::Font => self
+                .fonts
+                .as_ref()
+                .and_then(|fonts| fonts.resolve(source))
+                .ok_or_else(missing),
+            _ => Err(missing()),
+        }
     }
 }
 
 /// Fonts of one directory, matched by family name.
 struct FontDir {
-    database: fontdb::Database,
+    database: Arc<fontdb::Database>,
     source: String,
 }
 
@@ -730,7 +723,7 @@ impl FontDir {
         let mut database = fontdb::Database::new();
         database.load_fonts_dir(path);
         Ok(Self {
-            database,
+            database: Arc::new(database),
             source: path.display().to_string(),
         })
     }
@@ -747,46 +740,44 @@ impl FontDir {
             .collect()
     }
 
-    fn resolver_id(&self, family: &str) -> Option<String> {
-        (!self.faces(family).is_empty()).then(|| format!("bench-font:{family}:{}", self.source))
-    }
-
-    fn resolver(&self, family: &str) -> Option<Box<dyn FontResolver>> {
-        let mut data: Vec<Vec<u8>> = Vec::new();
-        for face in self.faces(family) {
-            self.database.with_face_data(face, |bytes, _| {
-                if !data.iter().any(|existing| existing.as_slice() == bytes) {
-                    data.push(bytes.to_vec());
-                }
-            })?;
-        }
-        (!data.is_empty()).then(|| {
-            Box::new(FontFiles {
-                id: format!("bench-font:{family}:{}", self.source),
-                data,
-            }) as Box<dyn FontResolver>
+    /// The faces of `family`, which are read only when a text system loads them.
+    fn resolve(&self, family: &str) -> Option<ResolvedMedia> {
+        let faces = self.faces(family);
+        (!faces.is_empty()).then(|| {
+            ResolvedMedia::new(
+                MediaIdentity::of_key(&format!("bench-font:{family}:{}", self.source)),
+                MediaResolver::Font(Box::new(FontFaces {
+                    database: Arc::clone(&self.database),
+                    faces,
+                })),
+            )
         })
     }
 }
 
-struct FontFiles {
-    id: String,
-    data: Vec<Vec<u8>>,
+struct FontFaces {
+    database: Arc<fontdb::Database>,
+    faces: Vec<fontdb::ID>,
 }
 
-impl FontResolver for FontFiles {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
+impl FontResolver for FontFaces {
     fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
-        Ok(self.data.clone())
+        let mut data: Vec<Vec<u8>> = Vec::new();
+        for face in &self.faces {
+            self.database.with_face_data(*face, |bytes, _| {
+                if !data.iter().any(|existing| existing.as_slice() == bytes) {
+                    data.push(bytes.to_vec());
+                }
+            });
+        }
+        Ok(data)
     }
 }
 
 /// A video of a few distinct frames held in memory, so decoding costs nothing in the comparison.
 #[derive(Clone)]
 struct MemoryVideo {
+    identity: MediaIdentity,
     frames: Arc<Vec<Arc<CpuMediaFrame>>>,
     frame_count: u32,
 }
@@ -816,6 +807,7 @@ impl MemoryVideo {
             })
             .collect();
         Self {
+            identity: MediaIdentity::unique(),
             frames: Arc::new(frames),
             frame_count,
         }
@@ -823,10 +815,6 @@ impl MemoryVideo {
 }
 
 impl VideoFrameResolver for MemoryVideo {
-    fn id(&self) -> &str {
-        "memory-video"
-    }
-
     fn metadata(&self) -> VideoMetadata {
         VideoMetadata {
             width: self.frames[0].width,

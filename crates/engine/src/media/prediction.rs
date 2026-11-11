@@ -180,7 +180,10 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
                 loop_mode,
                 ..
             } => {
-                let resolver = self.media_store.get_video_resolver(&stream_id)?;
+                let (_, resolver) = super::resolve_as::<dyn super::VideoFrameResolver>(
+                    self.media_store,
+                    &stream_id,
+                )?;
                 let metadata = resolver.metadata();
                 let source_frame = media_in::map_to_source_frame(
                     self.frame,

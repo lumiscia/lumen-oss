@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
@@ -9,7 +10,7 @@ use lumen_engine::{
     expr::{Expression, ExpressionContext},
     gpu::GpuCompositionRenderer,
     graph::Graph,
-    media::{FontResolver, MediaStore},
+    media::{AssetKind, FontResolver, MediaIdentity, MediaResolver, MediaStore, ResolvedMedia},
     node::{
         Deferred, NodeId, NodeKind,
         media_output::MediaOutput,
@@ -108,7 +109,9 @@ pub fn run() -> anyhow::Result<()> {
         ));
     }
     let repeats = repeats.unwrap_or(1);
-    let media = BenchMedia { fonts };
+    let media = BenchMedia {
+        fonts: Arc::new(fonts),
+    };
     let mut summary = SummaryReport::new(
         "Text benchmark summary",
         [
@@ -170,27 +173,29 @@ enum CaseOutcome {
 /// Media with no images or video, whose `--font` files load for any font family.
 #[derive(Debug)]
 struct BenchMedia {
-    fonts: Vec<Vec<u8>>,
+    fonts: Arc<Vec<Vec<u8>>>,
 }
 
 impl MediaStore for BenchMedia {
-    fn font_resolver_id(&self, _: &str) -> Option<String> {
-        (!self.fonts.is_empty()).then(|| "bench".to_string())
-    }
-    fn get_font_resolver(&self, _: &str) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
-        Ok((!self.fonts.is_empty())
-            .then(|| Box::new(BenchFonts(self.fonts.clone())) as Box<dyn FontResolver>))
+    fn resolve(&self, source: &str, kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
+        if kind != AssetKind::Font || self.fonts.is_empty() {
+            return Err(MediaError::source_not_found(
+                source,
+                "the bench has no media",
+            ));
+        }
+        Ok(ResolvedMedia::new(
+            MediaIdentity::of_key("bench"),
+            MediaResolver::Font(Box::new(BenchFonts(Arc::clone(&self.fonts)))),
+        ))
     }
 }
 
-struct BenchFonts(Vec<Vec<u8>>);
+struct BenchFonts(Arc<Vec<Vec<u8>>>);
 
 impl FontResolver for BenchFonts {
-    fn id(&self) -> &str {
-        "bench"
-    }
     fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
-        Ok(self.0.clone())
+        Ok(self.0.to_vec())
     }
 }
 
@@ -209,7 +214,7 @@ fn run_case(
     let mut request = lumen_text::TextLayoutRequest::new(content.clone());
     request.max_width = Some(1300.0);
     let mut system = lumen_text::TextSystem::new();
-    for font in &media.fonts {
+    for font in media.fonts.iter() {
         system.load_font_data(font.clone());
     }
     let layout = system.shape(&request).place([0.0; 2]);
@@ -440,4 +445,22 @@ fn run_measurement_case(case: BenchCase, iterations: usize) -> anyhow::Result<Be
         elapsed: started.elapsed(),
         workload: "2 measurements/iteration".to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resolved_font_shares_the_benchs_bytes() {
+        let media = BenchMedia {
+            fonts: Arc::new(vec![vec![0; 1 << 20]]),
+        };
+        let resolved = media.resolve("Any", AssetKind::Font).unwrap();
+        assert_eq!(Arc::strong_count(&media.fonts), 2);
+        let MediaResolver::Font(font) = resolved.resolver else {
+            panic!("a font");
+        };
+        assert_eq!(font.data().unwrap(), *media.fonts);
+    }
 }

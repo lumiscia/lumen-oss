@@ -3265,6 +3265,78 @@ fn a_clip_that_has_not_begun_is_kept_until_it_does() {
     assert!(skipped > 0);
 }
 
+/// Renders frames 0 and 1 of `composition` with `before`, so that frame 1 is kept, then frame 2
+/// with `after`, which serves one of its sources as other bytes under a new identity. Frame 2
+/// must show them as a renderer that never saw `before` does.
+fn kept_then_replaced(composition: &Composition, before: &TestMedia, after: &TestMedia) {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let first = render(&mut renderer, composition, 0.0, before);
+    assert!(render(&mut renderer, composition, 1.0, before).rgba == first.rgba);
+    assert!(
+        renderer.skipped_pass_count() > 0,
+        "the unchanged frame is kept"
+    );
+    let replaced = render(&mut renderer, composition, 2.0, after);
+    assert!(replaced.rgba != first.rgba, "the new bytes show");
+    let expected = render(&mut gpu.reference(), composition, 2.0, after);
+    assert!(replaced.rgba == expected.rgba);
+}
+
+#[test]
+fn an_environment_kept_as_a_static_frame_is_drawn_again_when_its_map_changes() {
+    let composition: Composition = render_3d_with(
+        lit_by("sky.hdr", json!({ "environment_background": true })),
+        vec![sphere(json!({}))],
+    )
+    .frames(3)
+    .into();
+    let map = |level: f32| environment_file(16, 8, move |_| Vec3::splat(level));
+    let dim = TestMedia::default().environment_with_id("sky.hdr", "dim", map(0.2));
+    let bright = TestMedia::default().environment_with_id("sky.hdr", "bright", map(0.8));
+    kept_then_replaced(&composition, &dim, &bright);
+}
+
+fn solid_plate(media: TestMedia, id: &str, color: [u8; 4]) -> TestMedia {
+    media.image_with_id("plate", id, 4, 4, color.repeat(16))
+}
+
+#[test]
+fn a_planes_image_kept_as_a_static_frame_is_drawn_again_when_it_changes() {
+    let mut nodes = vec![plate(10)];
+    nodes.extend(framed(10));
+    let composition: Composition = render_3d(nodes).frames(3).into();
+    let red = solid_plate(TestMedia::default(), "red", RED);
+    let green = solid_plate(TestMedia::default(), "green", GREEN);
+    kept_then_replaced(&composition, &red, &green);
+}
+
+#[test]
+fn a_planes_image_kept_while_a_model_holds_its_pose_is_drawn_again_when_it_changes() {
+    let walk = json!({ "animation": "Walk", "animation_loop": false });
+    let nodes = vec![
+        fox(1, walk),
+        plate(10),
+        plane(11, 10, json!({ "width": 1, "position": [0, 0, 1] })),
+        merge(12, &[1, 11], json!({})),
+    ];
+    let composition: Composition = render_3d(nodes).frames(14).fps(8.0).into();
+    let red = solid_plate(fox_media(), "red", RED);
+    let green = solid_plate(fox_media(), "green", GREEN);
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    // The walk ends by frame 9, after which the pose holds and the scene is kept.
+    for frame in 0..12 {
+        render(&mut renderer, &composition, f64::from(frame), &red);
+    }
+    let held = render(&mut renderer, &composition, 12.0, &red);
+    assert_eq!(renderer.recorded_pass_count(), 0, "the held pose is kept");
+    let replaced = render(&mut renderer, &composition, 13.0, &green);
+    assert!(replaced.rgba != held.rgba, "the new image shows");
+    let expected = render(&mut gpu.reference(), &composition, 13.0, &green);
+    assert!(replaced.rgba == expected.rgba);
+}
+
 #[test]
 fn a_model_kept_as_a_static_frame_is_drawn_again_when_its_file_changes() {
     let gpu = gpu();

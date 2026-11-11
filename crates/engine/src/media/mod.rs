@@ -9,6 +9,7 @@ pub mod image;
 mod asset;
 #[cfg(all(test, feature = "image", feature = "ffmpeg"))]
 mod failures;
+mod identity;
 mod inventory;
 mod pixels;
 mod prediction;
@@ -24,6 +25,7 @@ pub use asset::{
     ASSET_SCHEME, Asset, AssetKind, AssetResolver, NoAssets, asset_id, resolve_asset,
     resolve_asset_of,
 };
+pub use identity::MediaIdentity;
 #[cfg(feature = "image")]
 pub use image::ImageFileResolver;
 pub use inventory::{
@@ -40,7 +42,7 @@ pub use resolver::{
     ModelResolver, VideoFrameResolver, VideoMetadata,
 };
 pub use sniff::{Sniff, sniff, sniff_kind};
-pub use store::{MediaStore, TextSession};
+pub use store::{MediaResolver, MediaStore, ResolvedMedia, ResolverKind, TextSession, resolve_as};
 pub use yuv::{
     ChromaSubsampling, Rotation, YuvChroma, YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix,
     YuvPlane, YuvPlanes,

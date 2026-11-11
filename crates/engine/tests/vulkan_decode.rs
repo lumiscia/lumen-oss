@@ -24,7 +24,10 @@ use lumen_engine::{
     error::MediaError,
     ffmpeg::{FfmpegResolverOptions, FfmpegVideoResolver},
     gpu::GpuCompositionRenderer,
-    media::{MediaFrame, MediaStore, VideoFrameResolver, VideoMetadata},
+    media::{
+        AssetKind, MediaFrame, MediaIdentity, MediaResolver, MediaStore, ResolvedMedia,
+        VideoFrameResolver, VideoMetadata,
+    },
 };
 use lumen_gpu::wgpu;
 use serde_json::{Value, json};
@@ -135,10 +138,6 @@ impl Store {
 struct SharedVideo(Arc<FfmpegVideoResolver>);
 
 impl VideoFrameResolver for SharedVideo {
-    fn id(&self) -> &str {
-        self.0.id()
-    }
-
     fn metadata(&self) -> VideoMetadata {
         self.0.metadata()
     }
@@ -149,11 +148,11 @@ impl VideoFrameResolver for SharedVideo {
 }
 
 impl MediaStore for Store {
-    fn get_video_resolver(
-        &self,
-        stream_id: &str,
-    ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
-        Ok(Box::new(SharedVideo(self.resolver(stream_id))))
+    fn resolve(&self, source: &str, _: AssetKind) -> Result<ResolvedMedia, MediaError> {
+        Ok(ResolvedMedia::new(
+            MediaIdentity::of_file(source),
+            MediaResolver::Video(Box::new(SharedVideo(self.resolver(source)))),
+        ))
     }
 }
 

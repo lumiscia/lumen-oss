@@ -18,23 +18,17 @@ struct CachedImage {
 
 #[derive(Debug, Clone)]
 pub struct ImageFileResolver {
-    id: String,
     cached: CachedImage,
 }
 
 impl ImageFileResolver {
     pub fn open(source: impl Into<String>) -> Result<Self, MediaError> {
-        let source = source.into();
-        let cached = load_cached_image(&source)?;
-        Ok(Self { id: source, cached })
+        let cached = load_cached_image(&source.into())?;
+        Ok(Self { cached })
     }
 }
 
 impl ImageResolver for ImageFileResolver {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn metadata(&self) -> ImageMetadata {
         self.cached.metadata
     }

@@ -50,18 +50,21 @@ struct AtlasRegion {
 /// Identifies the cached texture of an image.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MediaTextureKey {
-    /// The image's resolver ID, which changes when its pixels do.
-    pub source: String,
+    /// The image's identity, which changes when its pixels do.
+    pub identity: crate::media::MediaIdentity,
     pub width: u32,
     pub height: u32,
 }
 
 impl MediaTextureKey {
     /// The key of the texture an image is drawn from at its own size.
-    pub(crate) fn of_image(resolver: &dyn crate::media::ImageResolver) -> Self {
+    pub(crate) fn of_image(
+        identity: crate::media::MediaIdentity,
+        resolver: &dyn crate::media::ImageResolver,
+    ) -> Self {
         let metadata = resolver.metadata();
         Self {
-            source: resolver.id().to_string(),
+            identity,
             width: metadata.width.max(1),
             height: metadata.height.max(1),
         }

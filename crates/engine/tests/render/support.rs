@@ -12,8 +12,9 @@ use lumen_engine::{
     error::MediaError,
     gpu::{BoundFrame, GpuCompositionRenderer},
     media::{
-        CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver, MediaFrame,
-        MediaStore, ModelResolver, TextSession, VideoFrameResolver, VideoMetadata, YuvFrame,
+        AssetKind, CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver,
+        MediaFrame, MediaIdentity, MediaResolver, MediaStore, ModelResolver, ResolvedMedia,
+        TextSession, VideoFrameResolver, VideoMetadata, YuvFrame,
     },
     node::NodeKind,
 };
@@ -119,12 +120,12 @@ impl From<Scene> for Composition {
 
 #[derive(Debug, Default, Clone)]
 pub struct TestMedia {
-    /// Resolver ID and pixels by source.
+    /// The identity key and pixels by source.
     images: HashMap<String, (String, Arc<CpuMediaFrame>)>,
     /// The size and pixels of every frame by source.
     still_videos: HashMap<String, ((u32, u32), MediaFrame)>,
     numbered_video: Option<String>,
-    /// Font data and resolver ID by family.
+    /// The identity key and font data by family.
     fonts: HashMap<String, (String, Arc<Vec<u8>>)>,
     /// Present once a font is added. Fonts load into it, so they reach only this media and its
     /// clones, and not the process-wide session.
@@ -132,12 +133,12 @@ pub struct TestMedia {
     font_requests: Arc<AtomicUsize>,
     /// How many image resolvers were asked for, shared with its clones.
     image_requests: Arc<AtomicUsize>,
-    /// Resolver ID and file of each model by source.
+    /// Identity key and file of each model by source.
     models: HashMap<String, (String, Arc<Vec<u8>>)>,
     /// How many times model bytes were read, shared with its clones.
     model_loads: Arc<AtomicUsize>,
-    /// Environment map files by source.
-    environments: HashMap<String, Arc<Vec<u8>>>,
+    /// Identity key and file of each environment map by source.
+    environments: HashMap<String, (String, Arc<Vec<u8>>)>,
     /// How many times environment map bytes were read, shared with its clones.
     environment_loads: Arc<AtomicUsize>,
 }
@@ -147,8 +148,8 @@ impl TestMedia {
         self.image_with_id(source, source, width, height, rgba)
     }
 
-    /// Like `image`, under the resolver ID `id`. The engine tells two images of one source apart by
-    /// their IDs, so give an ID per distinct pixels.
+    /// Like `image`, as the identity keyed `id`. The engine tells two images of one source apart by
+    /// their identities, so give an ID per distinct pixels.
     pub fn image_with_id(
         mut self,
         source: &str,
@@ -193,7 +194,7 @@ impl TestMedia {
         self
     }
 
-    /// Serves `data` as the font `family` under the resolver ID `id`. Use names no other row or
+    /// Serves `data` as the font `family`, as the identity keyed `id`. Use names no other row or
     /// bundled font has, and an ID per distinct data.
     pub fn font(mut self, family: &str, id: &str, data: Vec<u8>) -> Self {
         self.session.get_or_insert_with(Default::default);
@@ -211,7 +212,7 @@ impl TestMedia {
         }
     }
 
-    /// How many times a font resolver was asked for, across this media and its clones.
+    /// How many times font data was read, across this media and its clones.
     pub fn font_requests(&self) -> usize {
         self.font_requests.load(Ordering::Relaxed)
     }
@@ -225,8 +226,8 @@ impl TestMedia {
         self.model_with_id(source, source, bytes)
     }
 
-    /// Like `model`, under the resolver ID `id`. The engine tells two files of one source apart by
-    /// their IDs, so give an ID per distinct file.
+    /// Like `model`, under the identity key `id`. The engine tells two files of one source apart
+    /// by their identities, so give a key per distinct file.
     #[cfg(feature = "3d")]
     pub fn model_with_id(mut self, source: &str, id: &str, bytes: Vec<u8>) -> Self {
         self.models
@@ -240,9 +241,15 @@ impl TestMedia {
     }
 
     #[cfg(feature = "3d")]
-    pub fn environment(mut self, source: &str, bytes: Vec<u8>) -> Self {
+    pub fn environment(self, source: &str, bytes: Vec<u8>) -> Self {
+        self.environment_with_id(source, source, bytes)
+    }
+
+    /// Like `environment`, under the identity key `id`, as `model_with_id`.
+    #[cfg(feature = "3d")]
+    pub fn environment_with_id(mut self, source: &str, id: &str, bytes: Vec<u8>) -> Self {
         self.environments
-            .insert(source.to_string(), Arc::new(bytes));
+            .insert(source.to_string(), (id.to_string(), Arc::new(bytes)));
         self
     }
 
@@ -288,16 +295,11 @@ pub fn hdr_file(width: u32, height: u32, texels: &[[f32; 3]]) -> Vec<u8> {
 }
 
 struct TestEnvironment {
-    id: String,
     data: Arc<Vec<u8>>,
     loads: Arc<AtomicUsize>,
 }
 
 impl EnvironmentResolver for TestEnvironment {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn data(&self) -> Result<Vec<u8>, MediaError> {
         self.loads.fetch_add(1, Ordering::Relaxed);
         Ok(self.data.to_vec())
@@ -348,16 +350,13 @@ pub fn roboto_scaled(family: &str, scale: u16) -> Vec<u8> {
 }
 
 struct TestFont {
-    id: String,
     data: Arc<Vec<u8>>,
+    reads: Arc<AtomicUsize>,
 }
 
 impl FontResolver for TestFont {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         Ok(if self.data.is_empty() {
             Vec::new()
         } else {
@@ -367,16 +366,11 @@ impl FontResolver for TestFont {
 }
 
 struct TestModel {
-    id: String,
     data: Arc<Vec<u8>>,
     loads: Arc<AtomicUsize>,
 }
 
 impl ModelResolver for TestModel {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn data(&self) -> Result<Vec<u8>, MediaError> {
         self.loads.fetch_add(1, Ordering::Relaxed);
         Ok(self.data.to_vec())
@@ -384,92 +378,71 @@ impl ModelResolver for TestModel {
 }
 
 impl MediaStore for TestMedia {
-    fn get_environment_resolver(
-        &self,
-        source: &str,
-    ) -> Result<Box<dyn EnvironmentResolver>, MediaError> {
-        let data = self
-            .environments
-            .get(source)
-            .ok_or_else(|| MediaError::source_not_found(source, "not registered"))?;
-        Ok(Box::new(TestEnvironment {
-            id: source.to_string(),
-            data: Arc::clone(data),
-            loads: Arc::clone(&self.environment_loads),
-        }))
-    }
-
-    fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
-        let (id, data) = self
-            .models
-            .get(source)
-            .ok_or_else(|| MediaError::source_not_found(source, "not registered"))?;
-        Ok(Box::new(TestModel {
-            id: id.clone(),
-            data: Arc::clone(data),
-            loads: Arc::clone(&self.model_loads),
-        }))
-    }
-
-    fn get_image_resolver(
-        &self,
-        source: &str,
-    ) -> Result<Box<dyn ImageResolver>, lumen_engine::error::MediaError> {
-        self.image_requests.fetch_add(1, Ordering::Relaxed);
-        let (id, frame) = self.images.get(source).ok_or_else(|| {
-            lumen_engine::error::MediaError::source_not_found(source, "not registered")
-        })?;
-        Ok(Box::new(TestImage {
-            id: id.clone(),
-            frame: Arc::clone(frame),
-        }))
-    }
-
-    fn get_video_resolver(
-        &self,
-        stream_id: &str,
-    ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
-        if let Some((size, frame)) = self.still_videos.get(stream_id) {
-            return Ok(Box::new(StillVideo {
-                id: stream_id.to_string(),
-                size: *size,
-                frame: frame.clone(),
-            }));
-        }
-        (self.numbered_video.as_deref() == Some(stream_id))
-            .then(|| {
-                Box::new(NumberedVideo {
-                    id: stream_id.to_string(),
-                }) as _
-            })
-            .ok_or_else(|| {
-                lumen_engine::error::MediaError::source_not_found(stream_id, "not registered")
-            })
-    }
-
-    fn font_resolver_id(&self, family: &str) -> Option<String> {
-        Some(self.fonts.get(family)?.0.clone())
-    }
-
-    fn get_font_resolver(
-        &self,
-        family: &str,
-    ) -> Result<Option<Box<dyn FontResolver>>, lumen_engine::error::MediaError> {
-        let Some((id, data)) = self.fonts.get(family) else {
-            // As an asset store does, an id it doesn't hold is an error rather than a fallback.
-            return match lumen_engine::media::asset_id(family) {
-                Some(_) => Err(lumen_engine::error::MediaError::source_not_found(
-                    family,
-                    "this host has no asset with that id",
-                )),
-                None => Ok(None),
-            };
+    fn resolve(&self, source: &str, kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
+        let missing = || MediaError::source_not_found(source, "not registered");
+        let by_source = || MediaIdentity::of_key(source);
+        let (identity, resolver) = match kind {
+            AssetKind::Image => {
+                self.image_requests.fetch_add(1, Ordering::Relaxed);
+                let (id, frame) = self.images.get(source).ok_or_else(missing)?;
+                let image = TestImage {
+                    frame: Arc::clone(frame),
+                };
+                (
+                    MediaIdentity::of_key(id),
+                    MediaResolver::Image(Box::new(image)),
+                )
+            }
+            AssetKind::Video => {
+                let video: Box<dyn VideoFrameResolver> =
+                    if let Some((size, frame)) = self.still_videos.get(source) {
+                        Box::new(StillVideo {
+                            size: *size,
+                            frame: frame.clone(),
+                        })
+                    } else if self.numbered_video.as_deref() == Some(source) {
+                        Box::new(NumberedVideo)
+                    } else {
+                        return Err(missing());
+                    };
+                (by_source(), MediaResolver::Video(video))
+            }
+            AssetKind::Font => {
+                let (id, data) = self.fonts.get(source).ok_or_else(missing)?;
+                let font = TestFont {
+                    data: Arc::clone(data),
+                    reads: Arc::clone(&self.font_requests),
+                };
+                (
+                    MediaIdentity::of_key(id),
+                    MediaResolver::Font(Box::new(font)),
+                )
+            }
+            AssetKind::Model => {
+                let (id, data) = self.models.get(source).ok_or_else(missing)?;
+                let model = TestModel {
+                    data: Arc::clone(data),
+                    loads: Arc::clone(&self.model_loads),
+                };
+                (
+                    MediaIdentity::of_key(id),
+                    MediaResolver::Model(Box::new(model)),
+                )
+            }
+            AssetKind::Environment => {
+                let (id, data) = self.environments.get(source).ok_or_else(missing)?;
+                let environment = TestEnvironment {
+                    data: Arc::clone(data),
+                    loads: Arc::clone(&self.environment_loads),
+                };
+                (
+                    MediaIdentity::of_key(id),
+                    MediaResolver::Environment(Box::new(environment)),
+                )
+            }
+            AssetKind::Audio => return Err(missing()),
         };
-        self.font_requests.fetch_add(1, Ordering::Relaxed);
-        Ok(Some(Box::new(TestFont {
-            id: id.clone(),
-            data: Arc::clone(data),
-        })))
+        Ok(ResolvedMedia::new(identity, resolver))
     }
 
     fn text_session(&self) -> Option<&TextSession> {
@@ -478,15 +451,10 @@ impl MediaStore for TestMedia {
 }
 
 struct TestImage {
-    id: String,
     frame: Arc<CpuMediaFrame>,
 }
 
 impl ImageResolver for TestImage {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn metadata(&self) -> ImageMetadata {
         ImageMetadata {
             width: self.frame.width,
@@ -500,16 +468,11 @@ impl ImageResolver for TestImage {
 }
 
 struct StillVideo {
-    id: String,
     size: (u32, u32),
     frame: MediaFrame,
 }
 
 impl VideoFrameResolver for StillVideo {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn metadata(&self) -> VideoMetadata {
         VideoMetadata {
             width: self.size.0,
@@ -524,15 +487,9 @@ impl VideoFrameResolver for StillVideo {
     }
 }
 
-struct NumberedVideo {
-    id: String,
-}
+struct NumberedVideo;
 
 impl VideoFrameResolver for NumberedVideo {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn metadata(&self) -> VideoMetadata {
         VideoMetadata {
             width: 1,

@@ -6,8 +6,9 @@ use lumen_engine::{
     error::{GraphValidationError, LumenError},
     graph::{Connection, Graph},
     media::{
-        CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore, VideoFrameResolver,
-        VideoMetadata, collect_frame_requirements,
+        AssetKind, CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaIdentity,
+        MediaResolver, MediaStore, ResolvedMedia, VideoFrameResolver, VideoMetadata,
+        collect_frame_requirements,
     },
     node::{
         Deferred, Node, NodeId, NodeKind,
@@ -86,12 +87,18 @@ impl TestMediaStore {
 }
 
 impl MediaStore for TestMediaStore {
-    fn get_image_resolver(
+    fn resolve(
         &self,
         source: &str,
-    ) -> Result<Box<dyn ImageResolver>, lumen_engine::error::MediaError> {
+        _: AssetKind,
+    ) -> Result<ResolvedMedia, lumen_engine::error::MediaError> {
         (source == self.id)
-            .then(|| Box::new(self.clone()) as Box<dyn ImageResolver>)
+            .then(|| {
+                ResolvedMedia::new(
+                    MediaIdentity::of_key(&self.id),
+                    MediaResolver::Image(Box::new(self.clone())),
+                )
+            })
             .ok_or_else(|| {
                 lumen_engine::error::MediaError::source_not_found(source, "not the test image")
             })
@@ -99,10 +106,6 @@ impl MediaStore for TestMediaStore {
 }
 
 impl ImageResolver for TestMediaStore {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn metadata(&self) -> ImageMetadata {
         ImageMetadata {
             width: self.frame.width,
@@ -113,6 +116,14 @@ impl ImageResolver for TestMediaStore {
     fn frame(&self) -> Result<MediaFrame, lumen_engine::error::MediaError> {
         Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
     }
+}
+
+/// `video` as the source `clip`.
+fn clip(video: impl VideoFrameResolver + 'static) -> ResolvedMedia {
+    ResolvedMedia::new(
+        MediaIdentity::of_key("clip"),
+        MediaResolver::Video(Box::new(video)),
+    )
 }
 
 fn build(graph: Graph) -> Result<Composition, Vec<LumenError>> {
@@ -387,19 +398,17 @@ fn media_prediction_visits_shared_inputs_once() {
     #[derive(Debug, Default)]
     struct CountingStore(AtomicUsize);
     impl MediaStore for CountingStore {
-        fn get_video_resolver(
+        fn resolve(
             &self,
             _: &str,
-        ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
+            _: AssetKind,
+        ) -> Result<ResolvedMedia, lumen_engine::error::MediaError> {
             self.0.fetch_add(1, Ordering::Relaxed);
-            Ok(Box::new(OneFrameVideo))
+            Ok(clip(OneFrameVideo))
         }
     }
     struct OneFrameVideo;
     impl VideoFrameResolver for OneFrameVideo {
-        fn id(&self) -> &str {
-            "clip"
-        }
         fn metadata(&self) -> VideoMetadata {
             VideoMetadata {
                 width: 8,
@@ -434,18 +443,16 @@ fn media_prediction_follows_a_videos_range_and_loop_mode() {
     #[derive(Debug)]
     struct TenFrameStore;
     impl MediaStore for TenFrameStore {
-        fn get_video_resolver(
+        fn resolve(
             &self,
             _: &str,
-        ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
-            Ok(Box::new(TenFrameVideo))
+            _: AssetKind,
+        ) -> Result<ResolvedMedia, lumen_engine::error::MediaError> {
+            Ok(clip(TenFrameVideo))
         }
     }
     struct TenFrameVideo;
     impl VideoFrameResolver for TenFrameVideo {
-        fn id(&self) -> &str {
-            "clip"
-        }
         fn metadata(&self) -> VideoMetadata {
             VideoMetadata {
                 width: 8,
@@ -513,18 +520,16 @@ fn media_prediction_sees_a_video_shown_on_an_image_plane() {
     #[derive(Debug)]
     struct Store;
     impl MediaStore for Store {
-        fn get_video_resolver(
+        fn resolve(
             &self,
             _: &str,
-        ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
-            Ok(Box::new(Video))
+            _: AssetKind,
+        ) -> Result<ResolvedMedia, lumen_engine::error::MediaError> {
+            Ok(clip(Video))
         }
     }
     struct Video;
     impl VideoFrameResolver for Video {
-        fn id(&self) -> &str {
-            "clip"
-        }
         fn metadata(&self) -> VideoMetadata {
             VideoMetadata {
                 width: 8,

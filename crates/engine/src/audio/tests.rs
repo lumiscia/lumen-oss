@@ -1,39 +1,68 @@
-use std::{collections::HashMap, f64::consts::FRAC_PI_2, sync::Arc};
+use std::{
+    collections::HashMap,
+    f64::consts::FRAC_PI_2,
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::{composition::Composition, error::MediaError};
+use crate::{composition::Composition, error::MediaError, media::MediaIdentity};
 
 #[derive(Debug, Default)]
 struct TestProvider {
-    sources: HashMap<String, Arc<AudioBuffer>>,
+    sources: RwLock<HashMap<String, (MediaIdentity, Arc<AudioBuffer>)>>,
+    /// How many ranges were read from any source.
+    reads: Arc<AtomicUsize>,
 }
 
 impl TestProvider {
     fn with(sources: &[(&str, AudioBuffer)]) -> Self {
-        Self {
-            sources: sources
-                .iter()
-                .map(|(id, buffer)| (id.to_string(), Arc::new(buffer.clone())))
-                .collect(),
+        let provider = Self::default();
+        for (source, buffer) in sources {
+            provider.set(source, source, buffer.clone());
         }
+        provider
+    }
+
+    /// Serves `buffer` as `source`, under the identity keyed `id`.
+    fn set(&self, source: &str, id: &str, buffer: AudioBuffer) {
+        let served = (MediaIdentity::of_key(id), Arc::new(buffer));
+        self.sources
+            .write()
+            .unwrap()
+            .insert(source.to_string(), served);
     }
 }
 
 impl crate::media::MediaStore for TestProvider {
-    fn get_audio_resolver(&self, source_id: &str) -> Result<Box<dyn AudioResolver>, MediaError> {
-        self.sources
-            .get(source_id)
+    fn resolve(
+        &self,
+        source: &str,
+        _: crate::media::AssetKind,
+    ) -> Result<crate::media::ResolvedMedia, MediaError> {
+        let (identity, buffer) = self
+            .sources
+            .read()
+            .unwrap()
+            .get(source)
             .cloned()
-            .map(|buffer| Box::new(TestResolver { buffer }) as Box<dyn AudioResolver>)
-            .ok_or_else(|| MediaError::source_not_found(source_id, "not registered"))
+            .ok_or_else(|| MediaError::source_not_found(source, "not registered"))?;
+        let reads = Arc::clone(&self.reads);
+        Ok(crate::media::ResolvedMedia::new(
+            identity,
+            crate::media::MediaResolver::Audio(Box::new(TestResolver { buffer, reads })),
+        ))
     }
 }
 
 struct TestResolver {
     buffer: Arc<AudioBuffer>,
+    reads: Arc<AtomicUsize>,
 }
 
 impl AudioResolver for TestResolver {
@@ -42,6 +71,7 @@ impl AudioResolver for TestResolver {
         start_sample: u64,
         frames: usize,
     ) -> Result<Arc<AudioBuffer>, MediaError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         let start = usize::try_from(start_sample).unwrap_or(usize::MAX);
         let end = start.saturating_add(frames).min(self.buffer.frames());
         let channels = self
@@ -181,6 +211,36 @@ fn audible_span(samples: &[f32], threshold: f32) -> Option<(usize, usize)> {
         .iter()
         .rposition(|sample| sample.abs() > threshold)?;
     Some((first, last))
+}
+
+#[test]
+fn a_source_with_a_new_identity_is_read_again_and_an_unchanged_one_is_not() {
+    let provider = TestProvider::with(&[("tone", constant(0.5, 1.0))]);
+    let document = document(
+        30.0,
+        30,
+        Some(audio(vec![audio_clip("a", "tone", 0, 1_000, json!({}))])),
+        json!({}),
+        vec![],
+    );
+    let composition = composition(&document);
+    let mut mixer = AudioMixer::new(&composition, &provider);
+    let first = mixer.mix_range(1_000, 4).unwrap();
+    let reads = provider.reads.load(Ordering::Relaxed);
+    assert_eq!(
+        mixer.mix_range(1_000, 4).unwrap().channels(),
+        first.channels()
+    );
+    assert_eq!(
+        provider.reads.load(Ordering::Relaxed),
+        reads,
+        "blocks are kept"
+    );
+
+    provider.set("tone", "louder", constant(0.25, 1.0));
+    let replaced = mixer.mix_range(1_000, 4).unwrap();
+    assert_eq!(replaced.channels()[0], vec![0.25; 4]);
+    assert!(provider.reads.load(Ordering::Relaxed) > reads);
 }
 
 #[test]
@@ -1228,20 +1288,19 @@ fn mix_fixture(
     frames: usize,
 ) -> MixFixture {
     let composition = composition(&document);
-    let provider = TestProvider {
-        sources: sources
-            .iter()
-            .map(|(id, pattern, frames)| {
-                let channel = |index: usize| {
-                    (0..*frames)
-                        .map(|frame| pattern[frame % pattern.len()][index])
-                        .collect::<Vec<_>>()
-                };
-                let buffer = AudioBuffer::from_channels(vec![channel(0), channel(1)]);
-                (id.to_string(), Arc::new(buffer))
-            })
-            .collect(),
-    };
+    let provider = TestProvider::default();
+    for (id, pattern, frames) in &sources {
+        let channel = |index: usize| {
+            (0..*frames)
+                .map(|frame| pattern[frame % pattern.len()][index])
+                .collect::<Vec<_>>()
+        };
+        provider.set(
+            id,
+            id,
+            AudioBuffer::from_channels(vec![channel(0), channel(1)]),
+        );
+    }
     let expected = AudioMixer::new(&composition, &provider)
         .mix_range(start_sample, frames)
         .unwrap()
