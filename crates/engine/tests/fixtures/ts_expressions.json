@@ -175,6 +175,36 @@
       "expression": "=(vec2(1e-7, 1e+21) + vec2(0, 0.30000000000000004))",
       "expected": [1e-7, 1e21]
     },
-    "colour_tuple": { "expression": "=lerp(rgb(255, 0, 0), #0000ff80, 0)", "expected": "#ff0000ff" }
+    "when_number": { "expression": "=if(((frame >= 30) && (frame < 60)), 1, 0.35)", "expected": 1 },
+    "when_colour": {
+      "expression": "=if((frame > 60), #ff0000, rgb(0, 0, 255))",
+      "expected": "#0000ffff"
+    },
+    "when_vec2": {
+      "expression": "=if((frame <= 44), vec2(1, 2), vec2(3, frame))",
+      "expected": [3, 45]
+    },
+    "when_string": {
+      "expression": "=if((vec2(1, 2) == vec2(1, 2)), 'yes', 'no')",
+      "expected": "yes"
+    },
+    "when_number_condition": { "expression": "=if(mod(frame, 2), 7, 8)", "expected": 7 },
+    "when_logic": {
+      "expression": "=if(((((frame < 10) || (frame == 45)) && (frame != 3)) && (!(frame > 60))), 2, 3)",
+      "expected": 2
+    },
+    "raw_operand_not": { "expression": "=if((!(frame > 100)), 1, 0)", "expected": 1 },
+    "raw_operand_and": {
+      "expression": "=if(((frame > 0 || frame < -10) && (frame < 5)), 1, 0)",
+      "expected": 0
+    },
+    "raw_operand_mul": { "expression": "=((frame + 5) * 2)", "expected": 100 },
+    "when_boolean_eq": { "expression": "=if(((frame > 1) == (frame > 2)), 1, 0)", "expected": 1 },
+    "when_colour_neq": { "expression": "=if((#ff0000 != rgb(255, 0, 0)), 1, 0)", "expected": 0 },
+    "colour_tuple": {
+      "expression": "=lerp(rgb(255, 0, 0), #0000ff80, 0)",
+      "expected": "#ff0000ff"
+    },
+    "node": { "expression": "=(node(0, 'font_size') - 54)", "expected": 0.5 }
   }
 }
