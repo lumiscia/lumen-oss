@@ -1376,8 +1376,9 @@
       "x-lumen-keyType": "`${string}(${string})`"
     },
     "lumenSchemaVersion": {
-      "const": "0.1.0",
-      "description": "Version of the composition format. Absent means the current version."
+      "description": "The Lumen major.minor the composition was written for, such as `0.6`; an engine reads only its own line. Absent means the engine's own version.",
+      "pattern": "^0\\.6(\\.[0-9]+)?$",
+      "type": "string"
     },
     "metadata": {
       "additionalProperties": true,
@@ -8851,6 +8852,7 @@
       "span_count"
     ]
   },
+  "x-lumen-lumenSchemaVersion": "0.6",
   "x-lumen-portKinds": ["raster", "scene"],
   "x-lumen-schemaVersion": 1
 }

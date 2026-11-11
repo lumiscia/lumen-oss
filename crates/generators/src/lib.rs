@@ -10,6 +10,7 @@ use lumen_engine::node::{
 };
 use serde_json::{Map, Value, json};
 
+/// The version of the generated definitions' own format.
 const SCHEMA_VERSION: u32 = 1;
 
 /// Writes `composition.schema.json` into `out_dir`.
@@ -38,9 +39,12 @@ fn render_schema() -> Result<String> {
         .values()
         .map(node_schema_json)
         .collect::<Result<Vec<_>>>()?;
+    let lumen_version = lumen_engine::SCHEMA_VERSION;
+    let lumen_version_pattern = format!("^{}(\\.[0-9]+)?$", lumen_version.replace('.', "\\."));
     let mut schema = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "x-lumen-schemaVersion": SCHEMA_VERSION,
+        "x-lumen-lumenSchemaVersion": lumen_version,
         "x-lumen-expressions": expressions_json(),
         "x-lumen-portKinds": PortKind::ALL.map(PortKind::name),
         "type": "object",
@@ -52,8 +56,9 @@ fn render_schema() -> Result<String> {
                 "type": "string"
             },
             "lumenSchemaVersion": {
-                "description": "Version of the composition format. Absent means the current version.",
-                "const": "0.1.0"
+                "description": format!("The Lumen major.minor the composition was written for, such as `{lumen_version}`; an engine reads only its own line. Absent means the engine's own version."),
+                "type": "string",
+                "pattern": lumen_version_pattern
             },
             "metadata": {
                 "type": "object",

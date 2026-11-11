@@ -1,11 +1,12 @@
-import type {
-  CompositionNode,
-  CompositionTemplate,
-  Connection,
-  LumenComposition,
-  NodeInputPortKind,
-  NodeInputPortName,
-  NodeKind,
+import {
+  lumenSchemaVersion,
+  type CompositionNode,
+  type CompositionTemplate,
+  type Connection,
+  type LumenComposition,
+  type NodeInputPortKind,
+  type NodeInputPortName,
+  type NodeKind,
 } from "@lumiscia/lumen-types";
 
 import { Expr, type FunctionDefinition } from "./expression.js";
@@ -76,7 +77,6 @@ export class Composition {
   readonly #values = new WeakMap<object, CompositionNode>();
   #nextNodeId = 0;
   #audio: LumenComposition["audio"];
-  #lumenSchemaVersion: LumenComposition["lumenSchemaVersion"] | undefined;
   #metadata: LumenComposition["metadata"] | undefined;
   #renderSettings: LumenComposition["render_settings"];
   #timeline: LumenComposition["timeline"];
@@ -95,7 +95,6 @@ export class Composition {
       tracks: options.audio.tracks.map((track) => ({ ...track })),
     };
     this.#metadata = options.metadata;
-    this.#lumenSchemaVersion = options.lumenSchemaVersion;
     this.#renderSettings = renderSettings(options.renderSettings);
     this.#timeline = timeline(options.timeline);
   }
@@ -385,6 +384,7 @@ export class Composition {
           }
         : {}),
       connections: [...this.#connections],
+      lumenSchemaVersion,
       ...(this.#functions.size > 0
         ? {
             functions: Object.fromEntries(
@@ -396,9 +396,6 @@ export class Composition {
       render_settings: this.#renderSettings,
       timeline: this.#timeline,
       ...(this.#audio !== undefined ? { audio: this.#audio } : {}),
-      ...(this.#lumenSchemaVersion !== undefined
-        ? { lumenSchemaVersion: this.#lumenSchemaVersion }
-        : {}),
       ...(this.#metadata !== undefined ? { metadata: this.#metadata } : {}),
     };
   }

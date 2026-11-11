@@ -17,6 +17,14 @@ Browser/WASM preview paths are separate and use WebGPU-facing code.
 
 JSON composition parsing is always available. In JSON params, a string starting with `=` is an expression (`"=frame * 2"`); a leading `==` escapes a literal string starting with `=` (`"==wow"` is the text `=wow`).
 
+## Document format
+
+A composition may declare `"lumenSchemaVersion": "0.6"`. It equals the Lumen `major.minor` the
+document was written for, and an engine reads only its own line: `lumen_engine::SCHEMA_VERSION`
+is that value, and a full `major.minor.patch` of the same line is read too. A document from
+another line fails with `document.schema_version`, naming both versions. 0.x minor releases are
+breaking, so there is no migration between lines. Absent means the engine's own version.
+
 ## Asset references
 
 A source field can name a file in the host's asset store as `asset:<id>`: `media_in`'s `source`,
@@ -109,7 +117,7 @@ literal: one the store doesn't have is `asset.not_found`, and one of another kin
 | Code                                 | Severity | Found by      | Meaning                                                                                                                                                                                                   |
 | ------------------------------------ | -------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `document.syntax`                    | error    | check         | The text is not JSON.                                                                                                                                                                                     |
-| `document.schema_version`            | error    | check         | `lumenSchemaVersion` is not a string, or names a version this engine doesn't read.                                                                                                                        |
+| `document.schema_version`            | error    | check         | `lumenSchemaVersion` is not a string, or names a version outside this engine's Lumen line.                                                                                                                |
 | `document.invalid`                   | error    | check         | A key or value outside node params has the wrong shape, is missing or is unknown.                                                                                                                         |
 | `expression.function`                | error    | check         | A function in `functions` doesn't parse, or is defined twice or recursively.                                                                                                                              |
 | `node.unknown_type`                  | error    | check         | A node's `type` is not a node type.                                                                                                                                                                       |

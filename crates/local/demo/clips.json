@@ -1,5 +1,5 @@
 {
-  "lumenSchemaVersion": "0.1.0",
+  "lumenSchemaVersion": "0.6",
   "metadata": { "name": "Clips" },
   "timeline": { "fps": 30, "duration_frames": 300 },
   "render_settings": { "width": 1280, "height": 720 },

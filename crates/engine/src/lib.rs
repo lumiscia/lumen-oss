@@ -27,5 +27,6 @@ pub use media::ffmpeg;
 pub use media::image;
 
 pub mod json;
+pub use json::SCHEMA_VERSION;
 
 pub(crate) type Result<T> = std::result::Result<T, LumenError>;

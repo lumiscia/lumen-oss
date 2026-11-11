@@ -39,7 +39,10 @@ pub(crate) use property::{
 pub use property::{parse_color, try_parse_color};
 
 const DEFAULT_FPS: f32 = 30.0;
-const SCHEMA_VERSION: &str = "0.1.0";
+
+/// The `major.minor` of the Lumen release line this engine reads. A composition's
+/// `lumenSchemaVersion` must name it, as `major.minor` or `major.minor.patch`.
+pub const SCHEMA_VERSION: &str = "0.6";
 
 /// A struct read only from a JSON object. A derived `Deserialize` alone also reads a positional
 /// array, which the schema rejects.
@@ -513,11 +516,26 @@ fn in_template(name: &str, error: LumenError) -> LumenError {
 fn check_schema_version(root: &Value) -> Result<(), LumenError> {
     let details = match root.get("lumenSchemaVersion") {
         None => return Ok(()),
-        Some(Value::String(version)) if version == SCHEMA_VERSION => return Ok(()),
-        Some(Value::String(version)) => format!("unsupported Lumen schema version `{version}`"),
-        Some(_) => "`lumenSchemaVersion` must be a string".to_string(),
+        Some(Value::String(version)) if reads_schema_version(version) => return Ok(()),
+        Some(Value::String(version)) => format!(
+            "this composition declares schema version {version}; this engine reads \
+             {SCHEMA_VERSION}, so it was written for a different Lumen version"
+        ),
+        Some(_) => format!(
+            "`lumenSchemaVersion` must be a string such as \"{SCHEMA_VERSION}\", the Lumen \
+             version the composition was written for"
+        ),
     };
     Err(DocumentError::SchemaVersion { details }.into())
+}
+
+/// Whether `version` is [`SCHEMA_VERSION`], or that `major.minor` with a numeric patch.
+fn reads_schema_version(version: &str) -> bool {
+    version == SCHEMA_VERSION
+        || version
+            .strip_prefix(SCHEMA_VERSION)
+            .and_then(|rest| rest.strip_prefix('.'))
+            .is_some_and(|patch| !patch.is_empty() && patch.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn json_type(value: &Value) -> &'static str {
@@ -1406,20 +1424,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_unknown_schema_version() {
-        let json = r#"{
-            "lumenSchemaVersion": "99.0.0",
-            "timeline": { "fps": 30, "duration_frames": 1 },
-            "render_settings": { "width": 100, "height": 100 },
-            "nodes": [],
-            "connections": []
-        }"#;
-
-        let err = parse(json).unwrap_err().to_string();
-        assert!(err.contains("unsupported Lumen schema version `99.0.0`"));
-    }
-
-    #[test]
     fn parse_rejects_cyclic_composition() {
         let json = r#"{
             "timeline": { "fps": 30, "duration_frames": 1 },
@@ -1456,23 +1460,98 @@ mod tests {
         )
     }
 
+    fn parse_with_schema_version(version: Value) -> Result<(), String> {
+        let mut value: Value = serde_json::from_str(&composition_json(
+            r#"{ "duration_frames": 1 }"#,
+            r#"{ "width": 1, "height": 1 }"#,
+        ))
+        .unwrap();
+        value["lumenSchemaVersion"] = version;
+        parse_value(&value)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
     #[test]
-    fn schema_version_is_absent_or_current() {
-        let with_version = |version: Value| {
-            let mut value: Value = serde_json::from_str(&composition_json(
-                r#"{ "duration_frames": 1 }"#,
-                r#"{ "width": 1, "height": 1 }"#,
-            ))
-            .unwrap();
-            value["lumenSchemaVersion"] = version;
-            parse_value(&value)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        };
-        assert_eq!(with_version(serde_json::json!("0.1.0")), Ok(()));
+    fn schema_version_is_absent_or_the_engines_line() {
+        let own = SCHEMA_VERSION;
+        assert_eq!(parse_with_schema_version(Value::from(own)), Ok(()));
         assert_eq!(
-            with_version(serde_json::json!(1)),
-            Err("`lumenSchemaVersion` must be a string".to_string())
+            parse_with_schema_version(Value::from(format!("{own}.0"))),
+            Ok(())
+        );
+        assert_eq!(
+            parse_with_schema_version(Value::from(format!("{own}.17"))),
+            Ok(())
+        );
+
+        let absent: Value = serde_json::from_str(&composition_json(
+            r#"{ "duration_frames": 1 }"#,
+            r#"{ "width": 1, "height": 1 }"#,
+        ))
+        .unwrap();
+        assert!(absent.get("lumenSchemaVersion").is_none());
+        assert!(parse_value(&absent).is_ok());
+    }
+
+    #[test]
+    fn other_schema_versions_name_both_versions() {
+        let own = SCHEMA_VERSION;
+        let (major, minor) = own.split_once('.').unwrap();
+        let minor: u64 = minor.parse().unwrap();
+        let versions = [
+            "0.1.0".to_string(),
+            format!("{major}.{}", minor + 1),
+            format!("1{own}"),
+            String::new(),
+            format!("{own}.x"),
+            format!("v{own}"),
+            format!(" {own} "),
+            format!("{own}0"),
+            format!("{own}."),
+            format!("{own}.1.2"),
+            format!("{own}.-1"),
+        ];
+        for version in &versions {
+            let error = parse_with_schema_version(Value::from(version.as_str())).unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "this composition declares schema version {version}; this engine reads \
+                     {own}, so it was written for a different Lumen version"
+                ),
+                "{version:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_string_schema_version_says_what_it_must_be() {
+        let error = parse_with_schema_version(serde_json::json!(1)).unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "`lumenSchemaVersion` must be a string such as \"{SCHEMA_VERSION}\", the Lumen \
+                 version the composition was written for"
+            )
+        );
+    }
+
+    #[test]
+    fn schema_version_does_not_lag_the_crate_version() {
+        let number = |value: &str| value.parse::<u64>().unwrap();
+        let (major, minor) = SCHEMA_VERSION.split_once('.').unwrap();
+        let crate_line = (
+            number(env!("CARGO_PKG_VERSION_MAJOR")),
+            number(env!("CARGO_PKG_VERSION_MINOR")),
+        );
+        assert!(
+            crate_line <= (number(major), number(minor)),
+            "lumen-engine is {} but SCHEMA_VERSION is {SCHEMA_VERSION}; run \
+             `just set-schema-version {}.{}`",
+            env!("CARGO_PKG_VERSION"),
+            crate_line.0,
+            crate_line.1,
         );
     }
 
