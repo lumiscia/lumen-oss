@@ -1,5 +1,6 @@
 import { Composition } from "@lumiscia/lumen-shared";
 import { Player, createLumenPreview, useLumenPreview } from "@lumiscia/lumen-react";
+import { useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import clipUrl from "../../assets/clip.mp4?url";
@@ -137,6 +138,7 @@ const fonts = { Roboto: robotoUrl };
 
 function App() {
   const state = useLumenPreview(preview);
+  const [loop, setLoop] = useState(false);
 
   return (
     <main>
@@ -145,6 +147,7 @@ function App() {
         composition={is3d ? scene3d : composition}
         media={media}
         fonts={fonts}
+        loop={loop}
         className="stage"
       />
       <div className="controls">
@@ -155,6 +158,9 @@ function App() {
         >
           {!state.isLoaded ? "Loading" : state.isPlaying ? "Pause" : "Play"}
         </button>
+        <label>
+          <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} /> Loop
+        </label>
         <span>
           Frame {state.frame} / {state.totalFrames}
         </span>

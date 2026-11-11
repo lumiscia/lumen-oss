@@ -27,6 +27,24 @@ pnpm add @lumiscia/lumen-svelte @lumiscia/lumen-shared
 <button disabled={!preview.state.isLoaded} onclick={() => preview.play()}>Play</button>
 ```
 
+`Player` also takes `loop`, `rate` (0.25 to 4), `volume` (0 to 1), `muted` and `range` (`{ in, out }` in frames, `out` exclusive). They change live, without a remount or a restart of playback. `onEnded` is called once when playback reaches the end of the range without `loop`, and `onTimeUpdate` with `{ frame, timeMs }` for each frame shown; neither touches `preview.state`.
+
+```svelte
+<Player
+  {preview}
+  {composition}
+  {loop}
+  {rate}
+  {volume}
+  {muted}
+  range={{ in: 30, out: 90 }}
+  onEnded={() => (playing = false)}
+  onTimeUpdate={({ frame }) => (scrubber = frame)}
+/>
+```
+
+[`@lumiscia/lumen-preview`](https://github.com/lumiscia/lumen-oss/tree/main/packages/lumen-preview#playback-controls) lists what each does and what is rejected.
+
 Pass `media` and `fonts` (name to URL) to `Player` when the composition uses them. `examples/vite-svelte` is a complete app.
 
 The preview renders in a worker, which loads the wasm renderer. Both come from `@lumiscia/lumen-bindings`, a dependency of this package, and Vite or plain ESM finds them next to it. They can be on another origin, such as a CDN, that sends CORS headers. A worker on another origin starts from a `blob:` URL that imports it, so a Content Security Policy must allow `blob:` and that origin in `worker-src`. A page that serves them elsewhere passes `workerUrl` and `wasmUrl` to `Player`, pointing at `@lumiscia/lumen-bindings/worker` and `@lumiscia/lumen-bindings/wasm`. With a bundler, its asset imports give those URLs:

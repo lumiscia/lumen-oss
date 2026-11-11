@@ -1,5 +1,10 @@
 export { LumenPreviewSession, mountPreview } from "./session.js";
-export type { LumenPreviewStats, LumenPreviewStatsCallback } from "./stats.js";
+export type {
+  LumenPreviewStats,
+  LumenPreviewStatsCallback,
+  LumenPreviewTimeUpdate,
+  LumenPreviewTimeUpdateCallback,
+} from "./stats.js";
 export type {
   LumenPreviewComposition,
   LumenPreviewFonts,

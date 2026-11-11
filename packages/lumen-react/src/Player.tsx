@@ -24,17 +24,39 @@ export function Player({
   workerUrl,
   composition,
   fonts,
+  loop,
   lookaheadCount,
   logLevel,
   media,
+  muted,
+  onEnded,
   onError,
   onStats,
+  onTimeUpdate,
+  range,
+  rate,
+  volume,
   className,
   style,
 }: PlayerProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<LumenPreviewSession | null>(null);
-  const inputs = { composition, fonts, lookaheadCount, logLevel, media, onError, onStats };
+  const inputs = {
+    composition,
+    fonts,
+    loop,
+    lookaheadCount,
+    logLevel,
+    media,
+    muted,
+    onEnded,
+    onError,
+    onStats,
+    onTimeUpdate,
+    range,
+    rate,
+    volume,
+  };
   const wasm = String(wasmUrl ?? defaults.wasmUrl);
   const worker = String(workerUrl ?? defaults.workerUrl);
 
@@ -51,7 +73,24 @@ export function Player({
 
   useEffect(() => {
     sessionRef.current?.update(inputs);
-  }, [composition, fonts, lookaheadCount, logLevel, media, onError, onStats]);
+  }, [
+    composition,
+    fonts,
+    loop,
+    lookaheadCount,
+    logLevel,
+    media,
+    muted,
+    onEnded,
+    onError,
+    onStats,
+    onTimeUpdate,
+    // A range written inline in JSX is a new object on every render.
+    range?.in,
+    range?.out,
+    rate,
+    volume,
+  ]);
 
   return <div ref={hostRef} className={className} style={style} />;
 }

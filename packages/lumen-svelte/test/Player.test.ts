@@ -11,7 +11,13 @@ import Harness from "./PlayerHarness.svelte";
 
 interface MockSession {
   host: HTMLElement;
-  options: { preview: unknown; wasmUrl: unknown; workerUrl: unknown };
+  options: {
+    loop?: boolean;
+    preview: unknown;
+    rate?: number;
+    wasmUrl: unknown;
+    workerUrl: unknown;
+  };
   dispose: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
 }
@@ -67,6 +73,59 @@ describe("Player", () => {
     flushSync();
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.update).toHaveBeenLastCalledWith(expect.objectContaining({ composition }));
+
+    await unmount(component);
+  });
+
+  it("updates the playback options of the current session without mounting again", async () => {
+    const component = mount(Harness, {
+      target: document.body,
+      props: { initialPreview: createLumenPreview() },
+    });
+    flushSync();
+    const onEnded = vi.fn();
+    const onTimeUpdate = vi.fn();
+
+    component.setOptions({
+      loop: true,
+      muted: true,
+      onEnded,
+      onTimeUpdate,
+      range: { in: 10, out: 40 },
+      rate: 2,
+      volume: 0.5,
+    });
+    flushSync();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.dispose).not.toHaveBeenCalled();
+    expect(sessions[0]?.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        loop: true,
+        muted: true,
+        onEnded,
+        onTimeUpdate,
+        range: { in: 10, out: 40 },
+        rate: 2,
+        volume: 0.5,
+      }),
+    );
+
+    component.setOptions({ rate: 0.5 });
+    flushSync();
+    expect(sessions[0]?.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ loop: undefined, rate: 0.5, range: undefined }),
+    );
+
+    await unmount(component);
+  });
+
+  it("starts a session with the playback options", async () => {
+    const component = mount(Harness, {
+      target: document.body,
+      props: { initialPreview: createLumenPreview(), initialOptions: { loop: true, rate: 2 } },
+    });
+    flushSync();
+    expect(sessions[0]?.options).toMatchObject({ loop: true, rate: 2 });
 
     await unmount(component);
   });

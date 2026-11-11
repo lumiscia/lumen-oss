@@ -17,17 +17,19 @@ function deferred<T = void>() {
 
 const calls: string[] = [];
 const drawn: string[] = [];
+const shown: number[] = [];
 let gpuReady = deferred();
 
 /** Draws whichever composition is loaded once its GPU device is ready, as the wasm controller does. */
 class FakeController {
   #composition: string | null = null;
+  #frame = 0;
   #models = new Set<string>();
   audioTimeline() {
     return undefined;
   }
   currentFrame() {
-    return 0;
+    return this.#frame;
   }
   durationFrames() {
     return 30;
@@ -47,7 +49,9 @@ class FakeController {
   removeModelSource(id: string) {
     this.#models.delete(id);
   }
-  setFrame() {}
+  setFrame(frame: number) {
+    this.#frame = frame;
+  }
   setLogLevel() {}
   width() {
     return 1;
@@ -66,6 +70,7 @@ class FakeController {
   async renderNow() {
     await gpuReady.promise;
     drawn.push(this.#composition ?? "nothing");
+    shown.push(this.#frame);
   }
 }
 
@@ -90,6 +95,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
 beforeEach(() => {
   calls.length = 0;
   drawn.length = 0;
+  shown.length = 0;
   sent.length = 0;
   gpuReady = deferred();
   vi.stubGlobal("navigator", { gpu: { requestAdapter: async () => ({}) } });
@@ -135,5 +141,40 @@ describe("createLumenPreviewWorkerHost", () => {
     await settle();
     expect(calls.slice(3)).toEqual(["model fox", "load B"]);
     expect(drawn.at(-1)).toBe("B");
+  });
+
+  it("plays only the range it's given, and says when a range that doesn't loop has ended", async () => {
+    gpuReady.resolve();
+    receive({ logLevel: "off", lookaheadCount: 0, type: "start", wasmUrl: "lumen.wasm" });
+    await settle();
+    receive({ canvas: {} as OffscreenCanvas, type: "attach-canvas" });
+    receive({
+      clock: { atEpochMs: 0, originMs: 0, rate: 0 },
+      loop: false,
+      range: { in: 10, out: 14 },
+      revision: 3,
+      type: "set-playback",
+    });
+
+    receive({ clock: { atEpochMs: 0, originMs: 0, rate: 0 }, revision: 4, type: "clock" });
+
+    // 30 fps: frame 10 starts at 333 ms.
+    const startMs = (10 * 1_000) / 30;
+    receive({
+      clock: { atEpochMs: performance.timeOrigin + performance.now(), originMs: startMs, rate: 1 },
+      compositionJson: "A",
+      fonts: [],
+      keepFonts: [],
+      keepMedia: [],
+      loadId: 1,
+      media: [],
+      type: "load",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(shown).toEqual([10, 11, 12, 13]);
+    expect(sent.filter((event) => event.type === "ended")).toEqual([
+      { loadId: 1, playbackRevision: 4, seekId: 0, type: "ended" },
+    ]);
   });
 });

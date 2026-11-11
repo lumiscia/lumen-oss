@@ -48,6 +48,11 @@ async function createAudio() {
       onstatechange = null;
       state = "running";
       close = async () => {};
+      createGain = () => ({
+        connect() {},
+        disconnect() {},
+        gain: { setTargetAtTime() {}, value: 1 },
+      });
       resume = () => state.resume();
       get currentTime() {
         return state.now / 1_000;

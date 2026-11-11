@@ -10,11 +10,18 @@
         workerUrl,
         composition,
         fonts,
+        loop,
         lookaheadCount,
         logLevel,
         media,
+        muted,
+        onEnded,
         onError,
         onStats,
+        onTimeUpdate,
+        range,
+        rate,
+        volume,
         class: className,
         style,
     }: PlayerProps = $props();
@@ -22,11 +29,18 @@
     const inputs = () => ({
         composition,
         fonts,
+        loop,
         lookaheadCount,
         logLevel,
         media,
+        muted,
+        onEnded,
         onError,
         onStats,
+        onTimeUpdate,
+        range,
+        rate,
+        volume,
     });
 
     const wasm = $derived(String(wasmUrl ?? defaults.wasmUrl));
