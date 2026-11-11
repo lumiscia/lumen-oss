@@ -70,6 +70,15 @@ fn jpeg(rgb: &[u8], width: u32, height: u32, icc: Vec<u8>) -> Vec<u8> {
 
 /// An RGB profile that converts colour only through an A2B0 lookup table.
 fn lookup_table_profile() -> Vec<u8> {
+    let mut lookup = with_lookup_table(ColorProfile::new_srgb());
+    lookup.red_trc = None;
+    lookup.green_trc = None;
+    lookup.blue_trc = None;
+    profile(lookup)
+}
+
+/// `profile` with an A2B0 lookup table that keeps each colour, beside its matrix and curves.
+fn with_lookup_table(mut profile: ColorProfile) -> ColorProfile {
     use moxcms::{LutDataType, LutStore, LutType, LutWarehouse, Matrix3d};
 
     let lut = LutDataType {
@@ -92,12 +101,8 @@ fn lookup_table_profile() -> Vec<u8> {
         output_table: LutStore::Store16([0, u16::MAX].repeat(3)),
         lut_type: LutType::Lut16,
     };
-    let mut lookup = ColorProfile::new_srgb();
-    lookup.red_trc = None;
-    lookup.green_trc = None;
-    lookup.blue_trc = None;
-    lookup.lut_a_to_b_perceptual = Some(LutWarehouse::Lut(lut));
-    profile(lookup)
+    profile.lut_a_to_b_perceptual = Some(LutWarehouse::Lut(lut));
+    profile
 }
 
 fn srgb_decode(encoded: f64) -> f64 {
@@ -220,6 +225,11 @@ fn profiles_that_cant_be_honoured_warn_once_and_render_as_srgb() {
     for (name, icc, why) in [
         ("corrupt", corrupt, "can't be read"),
         ("lookup tables", lookup_table_profile(), "lookup tables"),
+        (
+            "lookup tables beside a matrix",
+            profile(with_lookup_table(ColorProfile::new_display_p3())),
+            "lookup tables",
+        ),
     ] {
         let file = png(&pixels, width, height, Some(icc));
         let media = TestMedia::default().image_file("photo", &file);
@@ -250,6 +260,19 @@ fn profiles_that_cant_be_honoured_warn_once_and_render_as_srgb() {
     }
 }
 
+fn png16(rgb: &[u16], width: u32, height: u32) -> Vec<u8> {
+    let mut file = Vec::new();
+    PngEncoder::new(&mut file)
+        .write_image(
+            bytemuck::cast_slice(rgb),
+            width,
+            height,
+            ExtendedColorType::Rgb16,
+        )
+        .expect("encode 16-bit PNG");
+    file
+}
+
 #[test]
 fn a_16_bit_gradient_keeps_more_than_256_levels() {
     const WIDTH: u32 = 1024;
@@ -259,15 +282,7 @@ fn a_16_bit_gradient_keeps_more_than_256_levels() {
             [value, value, value]
         })
         .collect();
-    let mut file = Vec::new();
-    PngEncoder::new(&mut file)
-        .write_image(
-            bytemuck::cast_slice(&samples),
-            WIDTH,
-            1,
-            ExtendedColorType::Rgb16,
-        )
-        .expect("encode 16-bit PNG");
+    let file = png16(&samples, WIDTH, 1);
     let media = TestMedia::default().image_file("ramp", &file);
     let composition = scene(
         (WIDTH, 1),
@@ -289,6 +304,49 @@ fn a_16_bit_gradient_keeps_more_than_256_levels() {
     }
     // Half floats take 8 bytes a pixel.
     assert_eq!(renderer.cache_stats().image_textures, u64::from(WIDTH) * 8);
+}
+
+#[test]
+fn a_16_bit_image_shrunk_by_a_transform_is_averaged_in_linear_light() {
+    // Single-texel black and white squares, which a quarter of their size averages to half white.
+    const SIZE: u32 = 256;
+    let samples: Vec<u16> = (0..SIZE * SIZE)
+        .flat_map(|index| {
+            let value = if (index % SIZE + index / SIZE).is_multiple_of(2) {
+                u16::MAX
+            } else {
+                0
+            };
+            [value, value, value]
+        })
+        .collect();
+    let media = TestMedia::default().image_file("plate", &png16(&samples, SIZE, SIZE));
+    let composition = scene(
+        (SIZE, SIZE),
+        json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "plate" } },
+            { "id": 2, "type": "transform", "in": { "source": 1 },
+              "params": { "scale_x": 0.25, "scale_y": 0.25, "translate_x": 0.125, "translate_y": 0.125 } },
+        ]),
+    )
+    .into();
+    let mut renderer = gpu().renderer();
+    let shown = render_working_space(&mut renderer, &composition, 0.0, &media);
+    assert_eq!(
+        renderer.cache_stats().image_textures,
+        u64::from(SIZE * SIZE) * 8,
+        "the image is half floats"
+    );
+    let (low, high) = ((SIZE - 64) / 2 + 2, (SIZE + 64) / 2 - 2);
+    for y in low..high {
+        for x in low..high {
+            let texel = shown[(y * SIZE + x) as usize];
+            assert!(
+                texel[..3].iter().all(|value| (value - 0.5).abs() <= 0.01) && texel[3] == 1.0,
+                "({x}, {y}) is {texel:?}"
+            );
+        }
+    }
 }
 
 #[test]

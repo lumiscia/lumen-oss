@@ -3,7 +3,9 @@
 //! other profile is read as sRGB, and why is reported for a warning.
 
 use half::{f16, vec::HalfBitsVecExt};
-use moxcms::{ColorProfile, DataColorSpace, ParsingOptions, ProfileClass, ToneReprCurve};
+use moxcms::{
+    ColorProfile, DataColorSpace, ParsingOptions, ProfileClass, ToneCurveEvaluator, ToneReprCurve,
+};
 
 use super::yuv::icc_colorants_to_bt709;
 use crate::gpu::color::{linear_to_srgb, srgb_to_linear};
@@ -16,6 +18,16 @@ pub(crate) const MAX_PROFILE_BYTES: usize = 1 << 20;
 /// primaries to be read as BT.709's. sRGB profiles in circulation, such as HP's IEC 61966-2.1,
 /// are about 3e-4 from it, from rounding and their own adaptation to D50.
 const BT709_TOLERANCE: f64 = 1e-3;
+
+/// The largest magnitude an element of a profile's matrix to BT.709 may have. ACES AP0, the
+/// widest primaries in common use, needs 2.52 and ProPhoto 2.03; a profile past this doesn't
+/// describe a real RGB space, and colour within `0..=1` stays within 24 after the matrix.
+const MAX_GAMUT_ELEMENT: f64 = 8.0;
+
+/// The largest finite half float, which linear light is clipped to.
+const HALF_MAX: f32 = 65504.0;
+
+type Curve = Box<dyn ToneCurveEvaluator + Send + Sync>;
 
 /// How an image's samples become the working space's linear BT.709.
 #[derive(Debug, Clone, PartialEq)]
@@ -53,27 +65,43 @@ impl ImageColor {
     /// above 1.
     pub(crate) fn to_linear(&self, mut rgba: Vec<u16>, premultiplied: bool) -> Vec<f16> {
         let tables = self.tables();
-        let gamut = self
-            .gamut
-            .map(|rows| rows.map(|row| row.map(|value| value as f32)));
-        let convert = |texels: &mut [u16]| {
+        let gamut = self.gamut_f32();
+        in_bands(&mut rgba, |_, texels| {
             for texel in texels.as_chunks_mut::<4>().0 {
                 convert_texel(texel, &tables, gamut.as_ref(), premultiplied);
             }
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let threads = std::thread::available_parallelism().map_or(1, usize::from);
-            let band = (rgba.len() / 4).div_ceil(threads).max(1) * 4;
-            std::thread::scope(|scope| {
-                for texels in rgba.chunks_mut(band) {
-                    scope.spawn(|| convert(texels));
-                }
-            });
-        }
-        #[cfg(target_arch = "wasm32")]
-        convert(&mut rgba);
+        });
         rgba.reinterpret_into()
+    }
+
+    /// `rgba`, float samples in this colour, straight unless `premultiplied`, as straight linear
+    /// BT.709 half floats. A sample that isn't finite is 0, a negative one is clipped at 0, and
+    /// one above 1 keeps its light, up to the largest half float.
+    pub(crate) fn float_to_linear(&self, rgba: &[f32], premultiplied: bool) -> Vec<f16> {
+        let curves = self.curves.as_ref().map(|curves| {
+            curves
+                .each_ref()
+                .map(|curve| curve.make_linear_evaluator().ok())
+        });
+        let gamut = self.gamut_f32();
+        let mut linear = vec![f16::ZERO; rgba.len()];
+        in_bands(&mut linear, |start, texels| {
+            let source = &rgba[start..start + texels.len()];
+            for (texel, source) in texels
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(source.as_chunks::<4>().0)
+            {
+                *texel = float_texel(*source, curves.as_ref(), gamut.as_ref(), premultiplied);
+            }
+        });
+        linear
+    }
+
+    fn gamut_f32(&self) -> Option<[[f32; 3]; 3]> {
+        self.gamut
+            .map(|rows| rows.map(|row| row.map(|value| value as f32)))
     }
 
     /// Each channel's linear light for every 16-bit sample.
@@ -142,6 +170,62 @@ fn convert_texel(
     texel[3] = f16::from_f32(f32::from(alpha) / 65535.0).to_bits();
 }
 
+/// One texel of float samples as straight linear BT.709 half floats. `curves` are each channel's,
+/// `None` for the sRGB curve, and a channel whose curve can't be evaluated takes the sRGB one.
+fn float_texel(
+    source: [f32; 4],
+    curves: Option<&[Option<Curve>; 3]>,
+    gamut: Option<&[[f32; 3]; 3]>,
+    premultiplied: bool,
+) -> [f16; 4] {
+    let alpha = finite_or_zero(source[3]).clamp(0.0, 1.0);
+    let mut light = [0.0_f32; 3];
+    for (channel, light) in light.iter_mut().enumerate() {
+        let mut sample = finite_or_zero(source[channel]).max(0.0);
+        if premultiplied {
+            sample = if alpha > 0.0 { sample / alpha } else { 0.0 };
+        }
+        let curve = curves.and_then(|curves| curves[channel].as_ref());
+        let value = match curve {
+            Some(curve) => curve.evaluate_value(sample),
+            None => srgb_to_linear(sample),
+        };
+        // A finite sample whose light overflows is as bright as a half float holds.
+        *light = if value.is_nan() {
+            0.0
+        } else {
+            value.clamp(0.0, HALF_MAX)
+        };
+    }
+    if let Some(gamut) = gamut {
+        light =
+            gamut.map(|row| (row[0] * light[0] + row[1] * light[1] + row[2] * light[2]).max(0.0));
+    }
+    [light[0], light[1], light[2], alpha].map(|value| f16::from_f32(value.min(HALF_MAX)))
+}
+
+fn finite_or_zero(value: f32) -> f32 {
+    if value.is_finite() { value } else { 0.0 }
+}
+
+/// Runs `convert` on `samples` in bands of whole texels, with each band's offset, a band to a
+/// thread where there are threads.
+fn in_bands<T: Send>(samples: &mut [T], convert: impl Fn(usize, &mut [T]) + Sync) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let threads = std::thread::available_parallelism().map_or(1, usize::from);
+        let band = (samples.len() / 4).div_ceil(threads).max(1) * 4;
+        let convert = &convert;
+        std::thread::scope(|scope| {
+            for (index, texels) in samples.chunks_mut(band).enumerate() {
+                scope.spawn(move || convert(index * band, texels));
+            }
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    convert(0, samples);
+}
+
 /// A curve's output as linear light: within `0..=1`, and 0 where it isn't a number.
 fn linear_light(value: f32) -> f32 {
     if value.is_nan() {
@@ -169,6 +253,14 @@ fn read(bytes: &[u8], grey: bool) -> Result<ImageColor, String> {
             profile.profile_class
         ));
     }
+    // A CMM uses a profile's A2B tags in preference to its matrix and curves, which are then at
+    // most an approximation of them.
+    if profile.lut_a_to_b_perceptual.is_some()
+        || profile.lut_a_to_b_colorimetric.is_some()
+        || profile.lut_a_to_b_saturation.is_some()
+    {
+        return Err(unsupported_lookup());
+    }
     let (curves, gamut) = match (profile.color_space, grey) {
         (DataColorSpace::Rgb, false) => {
             let (Some(red), Some(green), Some(blue)) =
@@ -180,9 +272,15 @@ fn read(bytes: &[u8], grey: bool) -> Result<ImageColor, String> {
                 return Err(unsupported_lookup());
             }
             let gamut = icc_colorants_to_bt709(profile.colorant_matrix().v);
-            if !gamut.iter().flatten().all(|value| value.is_finite()) {
+            if !gamut
+                .iter()
+                .flatten()
+                .all(|value| value.is_finite() && value.abs() <= MAX_GAMUT_ELEMENT)
+            {
                 return Err(
-                    "its ICC profile's primaries are degenerate, so it is read as sRGB".to_string(),
+                    "its ICC profile's primaries aren't those of a real RGB space, so it is read \
+                     as sRGB"
+                        .to_string(),
                 );
             }
             ([red.clone(), green.clone(), blue.clone()], gamut)
@@ -228,8 +326,8 @@ fn read(bytes: &[u8], grey: bool) -> Result<ImageColor, String> {
 }
 
 fn unsupported_lookup() -> String {
-    "its ICC profile converts colour with lookup tables rather than a matrix and tone curves, \
-     which Lumen doesn't read, so it is read as sRGB"
+    "its ICC profile converts colour with lookup tables, which Lumen doesn't read, so it is read \
+     as sRGB"
         .to_string()
 }
 
@@ -272,6 +370,15 @@ pub(crate) mod tests {
 
     /// An RGB profile that converts colour only through an A2B0 lookup table.
     pub(crate) fn lookup_table_profile() -> Vec<u8> {
+        let mut profile = with_lookup_table(ColorProfile::new_srgb());
+        profile.red_trc = None;
+        profile.green_trc = None;
+        profile.blue_trc = None;
+        encoded(profile)
+    }
+
+    /// `profile` with an A2B0 lookup table that keeps each colour, beside its matrix and curves.
+    pub(crate) fn with_lookup_table(mut profile: ColorProfile) -> ColorProfile {
         let identity = Matrix3d {
             v: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         };
@@ -293,12 +400,8 @@ pub(crate) mod tests {
             output_table: LutStore::Store16([0, u16::MAX].repeat(3)),
             lut_type: LutType::Lut16,
         };
-        let mut profile = ColorProfile::new_srgb();
-        profile.red_trc = None;
-        profile.green_trc = None;
-        profile.blue_trc = None;
         profile.lut_a_to_b_perceptual = Some(LutWarehouse::Lut(lut));
-        encoded(profile)
+        profile
     }
 
     fn max_difference(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> f64 {
@@ -392,7 +495,10 @@ pub(crate) mod tests {
         too_many_tags[128..132].copy_from_slice(&u32::MAX.to_be_bytes());
         let mut nan_curve = ColorProfile::new_srgb();
         nan_curve.red_trc = Some(ToneReprCurve::Parametric(vec![f32::NAN]));
-        let cases: [(&str, Vec<u8>, bool); 10] = [
+        // The largest colorant the profile's fixed point holds, which takes red past half floats.
+        let mut huge_red = ColorProfile::new_display_p3();
+        huge_red.red_colorant.x = 30000.0;
+        let cases: [(&str, Vec<u8>, bool); 12] = [
             ("empty", Vec::new(), false),
             ("truncated header", p3[..64].to_vec(), false),
             ("truncated tags", p3[..p3.len() / 2].to_vec(), false),
@@ -405,6 +511,12 @@ pub(crate) mod tests {
             ("too many tags", too_many_tags, false),
             ("CMYK", cmyk, false),
             ("lookup tables", lookup_table_profile(), false),
+            (
+                "lookup tables beside a matrix",
+                encoded(with_lookup_table(ColorProfile::new_display_p3())),
+                false,
+            ),
+            ("huge colorants", encoded(huge_red), false),
             ("grey profile on RGB", std::mem::take(&mut grey), false),
             ("RGB profile on grey", p3.clone(), true),
         ];
@@ -417,6 +529,48 @@ pub(crate) mod tests {
             let linear = color.to_linear(vec![u16::MAX; 4], false);
             assert!(linear.iter().all(|value| value.is_finite()), "{linear:?}");
         }
+    }
+
+    #[test]
+    fn the_widest_real_rgb_spaces_are_read() {
+        for (name, profile) in [
+            ("BT.2020", ColorProfile::new_bt2020()),
+            ("ProPhoto", ColorProfile::new_pro_photo_rgb()),
+            ("ACES 2065-1", ColorProfile::new_aces_aces_2065_1_linear()),
+        ] {
+            let color = ImageColor::of_profile(&encoded(profile), false).expect(name);
+            assert!(color.gamut.is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn float_samples_keep_light_above_one_and_drop_what_isnt_a_number() {
+        let rgba = [
+            [2.0, 0.5, -0.25, 1.0],
+            [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1.0],
+            [1e30, 0.0, 0.0, f32::NAN],
+            [0.5, 0.25, 0.0, 0.5],
+        ];
+        let srgb = ImageColor::SRGB.float_to_linear(rgba.as_flattened(), false);
+        let texels = srgb.as_chunks::<4>().0;
+        let close = |got: f16, expected: f32| (got.to_f32() - expected).abs() <= expected * 1e-3;
+        assert!(close(texels[0][0], srgb_to_linear(2.0)), "{:?}", texels[0]);
+        assert!(texels[0][0].to_f32() > 4.0);
+        assert!(close(texels[0][1], srgb_to_linear(0.5)));
+        assert_eq!(texels[0][2].to_f32(), 0.0);
+        assert_eq!(texels[1].map(f16::to_f32), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(texels[2].map(f16::to_f32), [HALF_MAX, 0.0, 0.0, 0.0]);
+        // Premultiplied samples are divided by their alpha first.
+        let premultiplied = ImageColor::SRGB.float_to_linear(&rgba[3], true);
+        assert!(close(premultiplied[0], 1.0) && close(premultiplied[1], srgb_to_linear(0.5)));
+        // A profile's curve is evaluated past 1 too.
+        let adobe = ImageColor::of_profile(&adobe_rgb(), false).expect("read Adobe RGB");
+        let linear = adobe.float_to_linear(&[2.0, 2.0, 2.0, 1.0], false);
+        let white = 2.0_f32.powf(ADOBE_GAMMA);
+        assert!(
+            linear[..3].iter().all(|&value| close(value, white)),
+            "{linear:?}"
+        );
     }
 
     #[test]
@@ -437,7 +591,8 @@ pub(crate) mod tests {
             }
             profile.truncate(next() as usize % (profile.len() + 1) + 128.min(profile.len()));
             if let Ok(color) = ImageColor::of_profile(&profile, false) {
-                let linear = color.to_linear(vec![0, 30000, u16::MAX, u16::MAX], false);
+                let mut linear = color.to_linear(vec![0, 30000, u16::MAX, u16::MAX], false);
+                linear.extend(color.float_to_linear(&[0.0, 0.5, 2.0, 1.0], false));
                 assert!(linear.iter().all(|value| value.is_finite()), "{linear:?}");
             }
         }

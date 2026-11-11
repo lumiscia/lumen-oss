@@ -57,10 +57,13 @@ So an 8-bit image passed straight through comes out unchanged, and 50% white ove
   grey profiles convert to BT.709 in linear light, colour outside BT.709 clipped at zero and
   kept above 1. An 8-bit image whose profile matches sRGB (every 8-bit code within half a code)
   is read as untagged; one with the sRGB curve in other primaries, such as Display P3, keeps its
-  8-bit texture and converts on the GPU. 16-bit PNG and TIFF, float TIFF (read as encoded, as
-  before), and 8-bit images with another curve are converted on the CPU to linear half floats,
-  8 bytes a pixel. Lookup-table, CMYK, mismatched, oversized (past 1 MiB) or malformed profiles
-  read as sRGB with a `media.color_unsupported` warning.
+  8-bit texture and converts on the GPU. 16-bit PNG and TIFF, float TIFF (read as encoded with
+  the image's curve, values above 1 kept, negative ones clipped, non-numbers black), and 8-bit
+  images with another curve are converted on the CPU to linear half floats, 8 bytes a pixel,
+  within the 512 MiB one image may take to decode and convert. Profiles with A2B lookup tables
+  (even beside a matrix), CMYK, mismatched, implausible (a matrix element to BT.709 past 8),
+  oversized (past 1 MiB) or malformed profiles read as sRGB with a `media.color_unsupported`
+  warning.
 - `wgsl_shader` inputs are linear and premultiplied, its output is `rgba16float`, and its prelude
   has `lumen_srgb_to_linear` and `lumen_linear_to_srgb`.
 
