@@ -79,8 +79,9 @@ pub(crate) struct AvPacket {
 impl AvPacket {
     pub(crate) fn new() -> Result<Self> {
         let ptr = unsafe { sys::av_packet_alloc() };
-        let ptr = NonNull::new(ptr)
-            .ok_or_else(|| FfmpegError::new("av_packet_alloc", "failed to allocate packet"))?;
+        let ptr = NonNull::new(ptr).ok_or_else(|| {
+            FfmpegError::out_of_memory("av_packet_alloc", "failed to allocate packet")
+        })?;
         Ok(Self { ptr })
     }
 
@@ -135,8 +136,9 @@ pub(crate) struct AvFrame {
 impl AvFrame {
     pub(crate) fn new() -> Result<Self> {
         let ptr = unsafe { sys::av_frame_alloc() };
-        let ptr = NonNull::new(ptr)
-            .ok_or_else(|| FfmpegError::new("av_frame_alloc", "failed to allocate frame"))?;
+        let ptr = NonNull::new(ptr).ok_or_else(|| {
+            FfmpegError::out_of_memory("av_frame_alloc", "failed to allocate frame")
+        })?;
         Ok(Self { ptr })
     }
 

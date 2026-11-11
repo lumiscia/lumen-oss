@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    env,
     path::{Component, Path, PathBuf},
     sync::{Arc, PoisonError, RwLock},
 };
@@ -18,9 +17,13 @@ use lumen_engine::{
     },
 };
 
-use super::fonts::{FontCatalog, ResolvedFont};
+use super::{
+    ErrorCode, GpuSettings, RenderConfig, ServerRenderError,
+    fonts::{FontCatalog, ResolvedFont},
+};
 
-pub const MEDIA_ROOT_ENV: &str = "LUMEN_MEDIA_ROOT";
+/// The variable the binaries read [`RenderConfig::hardware_decode`] from, with
+/// [`is_enabled_flag`].
 pub const HARDWARE_DECODE_ENV: &str = "LUMEN_HARDWARE_DECODE";
 
 /// Serves one render's media from under `root`, with its fonts, and the assets `asset:` sources
@@ -30,6 +33,7 @@ pub struct LocalMediaStore {
     assets: Arc<dyn AssetResolver>,
     explain_missing_sources: bool,
     pub(super) video_options: FfmpegResolverOptions,
+    pub(super) gpu: GpuSettings,
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
     videos: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
@@ -38,13 +42,12 @@ pub struct LocalMediaStore {
 }
 
 impl LocalMediaStore {
-    pub fn new(root: PathBuf, font_dir: Option<&Path>) -> Self {
-        let video_options = video_resolver_options_from_env();
-        let fonts = FontCatalog::new(font_dir, &root);
+    pub fn new(root: PathBuf, config: &RenderConfig) -> Self {
+        let video_options = FfmpegResolverOptions::with_hardware_decode(config.hardware_decode);
+        let fonts = FontCatalog::new(config.font_dir(), &root);
         tracing::info!(
             media_root = %root.display(),
             prefer_hardware_decode = video_options.prefer_hardware_decode,
-            hardware_decode_env = env::var(HARDWARE_DECODE_ENV).ok().as_deref().unwrap_or("<unset>"),
             "created local media store"
         );
         Self {
@@ -52,6 +55,7 @@ impl LocalMediaStore {
             assets: Arc::new(NoAssets),
             explain_missing_sources: false,
             video_options,
+            gpu: config.gpu.clone(),
             audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
             videos: RwLock::new(HashMap::new()),
@@ -182,14 +186,8 @@ impl std::fmt::Debug for LocalMediaStore {
     }
 }
 
-fn video_resolver_options_from_env() -> FfmpegResolverOptions {
-    match env::var(HARDWARE_DECODE_ENV) {
-        Ok(value) => FfmpegResolverOptions::with_hardware_decode(matches_env_flag(&value)),
-        Err(_) => FfmpegResolverOptions::default(),
-    }
-}
-
-fn matches_env_flag(value: &str) -> bool {
+/// Whether a variable's `value` turns its setting on: `1`, `true`, `yes` or `on`, in any case.
+pub fn is_enabled_flag(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
@@ -332,16 +330,17 @@ fn read_limited(path: &Path, kind: &str, limit: usize) -> Result<Vec<u8>, String
     Ok(bytes)
 }
 
-pub(super) fn media_root(override_root: Option<&Path>) -> anyhow::Result<PathBuf> {
-    let path = match override_root {
-        Some(path) => path.to_path_buf(),
-        None => {
-            let raw = env::var(MEDIA_ROOT_ENV).unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(raw)
-        }
-    };
-    path.canonicalize()
-        .with_context(|| format!("failed to resolve media root from {MEDIA_ROOT_ENV}"))
+/// `root`, or the current directory, made absolute.
+pub(super) fn media_root(root: Option<&Path>) -> Result<PathBuf, ServerRenderError> {
+    let root = root.unwrap_or(Path::new("."));
+    root.canonicalize().map_err(|error| {
+        ServerRenderError::new(
+            ErrorCode::InvalidConfig,
+            format!("failed to resolve media root `{}`", root.display()),
+            false,
+        )
+        .caused_by(error)
+    })
 }
 
 fn resolve_local_path_with_root(source: &str, root: &Path) -> anyhow::Result<PathBuf> {
@@ -407,7 +406,10 @@ mod tests {
     fn a_source_outside_the_root_fails_like_a_missing_one() {
         let outside = tempfile::NamedTempFile::new().unwrap();
         let root = tempfile::tempdir().unwrap();
-        let store = LocalMediaStore::new(root.path().canonicalize().unwrap(), None);
+        let store = LocalMediaStore::new(
+            root.path().canonicalize().unwrap(),
+            &RenderConfig::default(),
+        );
         let outside = outside.path().display().to_string();
         let failure = |source: &str| match store.get_image_resolver(source) {
             Ok(_) => panic!("{source} should not open"),
@@ -429,7 +431,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         std::fs::write(root.join("corrupt.png"), b"not a png").unwrap();
-        let store = LocalMediaStore::new(root.clone(), None).explaining_missing_sources();
+        let store = LocalMediaStore::new(root.clone(), &RenderConfig::default())
+            .explaining_missing_sources();
         let failure = |source: &str| match store.get_image_resolver(source) {
             Ok(_) => panic!("{source} should not open"),
             Err(error) => error.to_string(),
@@ -458,7 +461,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("assets/fonts")).unwrap();
         std::fs::write(root.path().join("assets/fonts/Roboto.ttf"), font).unwrap();
-        let store = LocalMediaStore::new(root.path().canonicalize().unwrap(), None);
+        let store = LocalMediaStore::new(
+            root.path().canonicalize().unwrap(),
+            &RenderConfig::default(),
+        );
         (root, store)
     }
 
@@ -508,13 +514,53 @@ mod tests {
     }
 
     #[test]
+    fn a_store_takes_its_font_directory_and_decode_switch_from_its_config() {
+        const INTER: &[u8] = include_bytes!("../../../text/assets/inter/InterVariable-Latin.ttf");
+        let fonts = tempfile::tempdir().unwrap();
+        std::fs::write(fonts.path().join("inter.ttf"), INTER).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let config = RenderConfig {
+            font_dir: Some(fonts.path().to_path_buf()),
+            hardware_decode: true,
+            gpu: GpuSettings {
+                force_fallback_adapter: true,
+                ..GpuSettings::default()
+            },
+            ..RenderConfig::default()
+        };
+
+        let store = LocalMediaStore::new(root.path().canonicalize().unwrap(), &config);
+
+        let id = store.font_resolver_id("Inter").expect("Inter");
+        assert!(id.contains(&fonts.path().display().to_string()), "{id}");
+        assert!(store.video_options.prefer_hardware_decode);
+        assert!(store.gpu.force_fallback_adapter);
+        let default = LocalMediaStore::new(root.path().to_path_buf(), &RenderConfig::default());
+        assert!(!default.video_options.prefer_hardware_decode);
+        assert!(!default.gpu.force_fallback_adapter);
+    }
+
+    #[test]
+    fn enabled_flags_are_the_usual_yes_words() {
+        for value in ["1", "true", "YES", " on "] {
+            assert!(is_enabled_flag(value), "{value}");
+        }
+        for value in ["", "0", "off", "enabled"] {
+            assert!(!is_enabled_flag(value), "{value}");
+        }
+    }
+
+    #[test]
     fn a_changed_font_file_changes_the_resolver_id() {
         let (root, store) = job_with_roboto(ROBOTO);
         let before = store.font_resolver_id("Roboto").unwrap();
         let changed = [ROBOTO, &[0]].concat();
         std::fs::write(root.path().join("assets/fonts/Roboto.ttf"), changed).unwrap();
 
-        let next_job = LocalMediaStore::new(root.path().canonicalize().unwrap(), None);
+        let next_job = LocalMediaStore::new(
+            root.path().canonicalize().unwrap(),
+            &RenderConfig::default(),
+        );
         assert_ne!(next_job.font_resolver_id("Roboto").unwrap(), before);
     }
 
@@ -522,7 +568,10 @@ mod tests {
     fn a_font_staged_under_its_alias_serves_the_family_of_that_name() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("brand"), ROBOTO).unwrap();
-        let store = LocalMediaStore::new(root.path().canonicalize().unwrap(), None);
+        let store = LocalMediaStore::new(
+            root.path().canonicalize().unwrap(),
+            &RenderConfig::default(),
+        );
 
         let resolver = store.get_font_resolver("brand").unwrap().unwrap();
         assert_eq!(resolver.data().unwrap(), vec![ROBOTO.to_vec()]);
@@ -573,14 +622,14 @@ mod tests {
         std::fs::write(&sky, b"#?RADIANCE").unwrap();
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
-        let store = LocalMediaStore::new(root.clone(), None).with_assets(Arc::new(Assets(
-            HashMap::from([
+        let store = LocalMediaStore::new(root.clone(), &RenderConfig::default()).with_assets(
+            Arc::new(Assets(HashMap::from([
                 ("logo", Asset::Image(image.clone())),
                 ("brand", Asset::Font(vec![font])),
                 ("fox", Asset::Model(fox.clone())),
                 ("sky", Asset::Environment(sky)),
-            ]),
-        )));
+            ]))),
+        );
         let image_error = |source: &str| match store.get_image_resolver(source) {
             Ok(_) => panic!("{source} should not open"),
             Err(error) => error,
@@ -617,7 +666,7 @@ mod tests {
         let wrong_font = store.get_font_resolver("asset:logo").err().unwrap();
         assert_eq!(wrong_font.code(), "asset.wrong_kind");
 
-        let without_assets = LocalMediaStore::new(root, None);
+        let without_assets = LocalMediaStore::new(root, &RenderConfig::default());
         let missing = without_assets
             .get_font_resolver("asset:brand")
             .err()

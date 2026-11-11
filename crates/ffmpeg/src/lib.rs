@@ -72,6 +72,14 @@ impl FfmpegError {
         }
     }
 
+    /// An allocation FFmpeg reports only as a null pointer. It carries `ENOMEM`, so it reads as
+    /// [`is_resource_exhaustion`](Self::is_resource_exhaustion).
+    pub(crate) fn out_of_memory(operation: &'static str, message: impl Into<String>) -> Self {
+        let mut error = Self::new(operation, message);
+        error.code = Some(ffi::sys::AVERROR(libc::ENOMEM));
+        error
+    }
+
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
         self.path = Some(path.into());
         self
@@ -90,6 +98,32 @@ impl FfmpegError {
     pub fn with_stream_index(mut self, stream_index: usize) -> Self {
         self.stream_index = Some(stream_index);
         self
+    }
+
+    /// Whether opening or writing the output failed, rather than the codec.
+    pub fn is_output_failure(&self) -> bool {
+        matches!(
+            self.operation,
+            "avio_open"
+                | "avformat_write_header"
+                | "av_interleaved_write_frame"
+                | "av_write_trailer"
+                | "avio_closep"
+        )
+    }
+
+    /// Whether the operation ran out of memory, file descriptors or a device that is in use, which
+    /// can pass. Hardware encoders report a full session limit or exhausted device memory this way.
+    pub fn is_resource_exhaustion(&self) -> bool {
+        const ERRNOS: [i32; 5] = [
+            libc::ENOMEM,
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::EAGAIN,
+            libc::EBUSY,
+        ];
+        self.code
+            .is_some_and(|code| ERRNOS.iter().any(|&errno| code == ffi::sys::AVERROR(errno)))
     }
 }
 
@@ -135,6 +169,35 @@ pub fn raise_open_file_limit() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn failed(operation: &'static str, errno: i32) -> FfmpegError {
+        ffi::error_from_code(operation, ffi::sys::AVERROR(errno))
+    }
+
+    #[test]
+    fn resource_exhaustion_is_a_shortage_that_can_pass() {
+        for errno in [
+            libc::ENOMEM,
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::EAGAIN,
+            libc::EBUSY,
+        ] {
+            assert!(failed("avcodec_open2", errno).is_resource_exhaustion());
+        }
+        assert!(!failed("avcodec_open2", libc::EINVAL).is_resource_exhaustion());
+        assert!(!failed("avio_open", libc::ENOENT).is_resource_exhaustion());
+        assert!(!FfmpegError::new("avcodec_open2", "no code").is_resource_exhaustion());
+        assert!(FfmpegError::out_of_memory("av_frame_alloc", "null").is_resource_exhaustion());
+    }
+
+    #[test]
+    fn output_failures_are_the_operations_on_the_output() {
+        for operation in ["avio_open", "avformat_write_header", "av_write_trailer"] {
+            assert!(failed(operation, libc::ENOENT).is_output_failure());
+        }
+        assert!(!failed("avcodec_open2", libc::ENOENT).is_output_failure());
+    }
 
     #[test]
     fn display_includes_every_context_field_that_is_set() {

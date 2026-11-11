@@ -3,7 +3,7 @@ use std::ffi::{CStr, c_void};
 use anyhow::{Context, Result, bail};
 use ash::vk;
 
-use crate::Renderer;
+use crate::{GpuSettings, Renderer};
 
 // VK_KHR_video_encode_av1 is newer than ash's Vulkan headers.
 const AV1_ENCODE_EXTENSION: &CStr = c"VK_KHR_video_encode_av1";
@@ -37,31 +37,40 @@ enum VideoRequirement {
 
 impl Renderer {
     /// Creates a Vulkan renderer whose device has Vulkan Video encode queues, extensions and
-    /// features, so an encoder can share it.
+    /// features, so an encoder can share it. Uses [`GpuSettings::from_env`].
     pub async fn new_vulkan_video() -> Result<(Self, VulkanVideoDevice)> {
-        Self::open_vulkan_video(VideoRequirement::Encode).await
+        Self::new_vulkan_video_with_settings(&GpuSettings::from_env()).await
+    }
+
+    /// [`Renderer::new_vulkan_video`] with `settings`, reading no environment variables.
+    pub async fn new_vulkan_video_with_settings(
+        settings: &GpuSettings,
+    ) -> Result<(Self, VulkanVideoDevice)> {
+        Self::open_vulkan_video(VideoRequirement::Encode, settings).await
     }
 
     /// Creates a Vulkan renderer whose device has Vulkan Video decode queues and extensions, so a
-    /// decoder can share it.
+    /// decoder can share it. Uses [`GpuSettings::from_env`].
     pub async fn new_vulkan_decode() -> Result<(Self, VulkanVideoDevice)> {
-        Self::open_vulkan_video(VideoRequirement::Decode).await
+        Self::new_vulkan_decode_with_settings(&GpuSettings::from_env()).await
     }
 
-    async fn open_vulkan_video(requirement: VideoRequirement) -> Result<(Self, VulkanVideoDevice)> {
-        let mut instance_desc = crate::renderer::instance_descriptor();
+    /// [`Renderer::new_vulkan_decode`] with `settings`, reading no environment variables.
+    pub async fn new_vulkan_decode_with_settings(
+        settings: &GpuSettings,
+    ) -> Result<(Self, VulkanVideoDevice)> {
+        Self::open_vulkan_video(VideoRequirement::Decode, settings).await
+    }
+
+    async fn open_vulkan_video(
+        requirement: VideoRequirement,
+        settings: &GpuSettings,
+    ) -> Result<(Self, VulkanVideoDevice)> {
+        let mut instance_desc = settings.instance_descriptor();
         instance_desc.backends = wgpu::Backends::VULKAN;
         let instance = wgpu::Instance::new(instance_desc);
         let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::from_env()
-                    .unwrap_or(wgpu::PowerPreference::HighPerformance),
-                compatible_surface: None,
-                force_fallback_adapter: crate::renderer::env_flag(
-                    "LUMEN_GPU_FORCE_FALLBACK_ADAPTER",
-                ),
-                apply_limit_buckets: false,
-            })
+            .request_adapter(&settings.adapter_options())
             .await
             .context("no Vulkan wgpu adapter")?;
         let adapter_info = adapter.get_info();

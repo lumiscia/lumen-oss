@@ -195,8 +195,27 @@ pub struct QualityRequest {
     pub codec: Option<EncodeCodec>,
     /// Settings every candidate uses in place of a preset's, from lumen-local's rate-control flags.
     pub settings: Option<EncoderQuality>,
-    /// The one encoder to use, with no fallback. `LUMEN_VIDEO_ENCODER` when `None`.
+    /// The one encoder to use, with no fallback.
     pub encoder: Option<String>,
+}
+
+impl QualityRequest {
+    /// Pins the encoder `LUMEN_VIDEO_ENCODER` names unless the request already pins one. Only
+    /// binaries call this: [`QualityConfig::resolve`] reads no environment.
+    pub fn with_env_encoder(self) -> Self {
+        self.with_encoder_fallback(env::var(ENCODER_ENV).ok().as_deref())
+    }
+
+    fn with_encoder_fallback(mut self, fallback: Option<&str>) -> Self {
+        let pinned = [self.encoder.as_deref(), fallback]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .find(|name| !name.is_empty())
+            .map(str::to_string);
+        self.encoder = pinned;
+        self
+    }
 }
 
 impl Default for QualityConfig {
@@ -327,24 +346,19 @@ impl QualityConfig {
     /// in this FFmpeg build, or when the pinned encoder isn't in the build or doesn't fit the
     /// request's codec or the preset.
     pub fn resolve(&self, request: &QualityRequest) -> Result<VideoEncoderChoice, String> {
-        self.resolve_with(
-            request,
-            env::var(ENCODER_ENV).ok().as_deref(),
-            encoder_codec,
-        )
+        self.resolve_with(request, encoder_codec)
     }
 
     fn resolve_with(
         &self,
         request: &QualityRequest,
-        from_env: Option<&str>,
         codec_of: impl Fn(&str) -> Result<EncodeCodec, String>,
     ) -> Result<VideoEncoderChoice, String> {
-        let pinned = [request.encoder.as_deref(), from_env]
-            .into_iter()
-            .flatten()
+        let pinned = request
+            .encoder
+            .as_deref()
             .map(str::trim)
-            .find(|name| !name.is_empty());
+            .filter(|name| !name.is_empty());
         let name = request.preset.as_deref().unwrap_or(&self.default_preset);
         let preset = self.presets.get(name).ok_or_else(|| {
             format!(
@@ -560,7 +574,8 @@ mod tests {
             request: &QualityRequest,
             from_env: Option<&str>,
         ) -> Result<VideoEncoderChoice, String> {
-            self.resolve_with(request, from_env, codec_by_name)
+            let request = request.clone().with_encoder_fallback(from_env);
+            self.resolve_with(&request, codec_by_name)
         }
     }
 
@@ -727,11 +742,31 @@ mod tests {
     }
 
     #[test]
+    fn a_request_without_an_encoder_takes_the_fallback() {
+        let pin = |encoder: Option<&str>, fallback: Option<&str>| {
+            QualityRequest {
+                encoder: encoder.map(str::to_string),
+                ..QualityRequest::default()
+            }
+            .with_encoder_fallback(fallback)
+            .encoder
+        };
+        assert_eq!(pin(None, None), None);
+        assert_eq!(pin(None, Some(" libx264 ")).as_deref(), Some("libx264"));
+        assert_eq!(
+            pin(Some("libx265"), Some("libx264")).as_deref(),
+            Some("libx265")
+        );
+        assert_eq!(pin(Some(" "), Some("libx264")).as_deref(), Some("libx264"));
+        assert_eq!(pin(None, Some("")), None);
+    }
+
+    #[test]
     fn a_codec_needs_one_candidate_in_this_build() {
         let config = QualityConfig::built_in();
         let hevc = request(None, Some(EncodeCodec::Hevc));
         let error = config
-            .resolve_with(&hevc, None, |_| Err("not built".to_string()))
+            .resolve_with(&hevc, |_| Err("not built".to_string()))
             .unwrap_err();
         assert!(error.contains("libx265"), "{error}");
         // A missing candidate before an available one is left to fall through at look-up.
@@ -739,7 +774,7 @@ mod tests {
             "libx265" => Ok(EncodeCodec::Hevc),
             _ => Err("not built".to_string()),
         };
-        let choice = config.resolve_with(&hevc, None, only_software).unwrap();
+        let choice = config.resolve_with(&hevc, only_software).unwrap();
         assert_eq!(encoders(&choice), EncodeCodec::Hevc.default_encoders());
     }
 

@@ -11,9 +11,7 @@ use lumen_ffmpeg::{
     VideoEncoderConfig,
 };
 
-use super::{
-    RenderError, RenderTiming, encode_failed, has_audio, poll_failed, render_failed, timed,
-};
+use super::{RenderTiming, ServerRenderError, encode_failed, has_audio, poll_failed, timed};
 use crate::render::media::LocalMediaStore;
 
 const FRAMES_IN_FLIGHT: usize = 3;
@@ -33,11 +31,12 @@ pub(in crate::render) struct MetalTarget {
 impl MetalTarget {
     pub(super) fn open(
         composition: &Composition,
+        gpu: &lumen_gpu::GpuSettings,
         output: &Path,
         encoder: &str,
         quality: &EncoderQuality,
     ) -> anyhow::Result<(GpuCompositionRenderer, Self)> {
-        let renderer = pollster::block_on(GpuCompositionRenderer::new())
+        let renderer = pollster::block_on(GpuCompositionRenderer::new_with_settings(gpu))
             .context("failed to initialize wgpu renderer")?;
         renderer.check_output_size(composition)?;
         let settings = composition.render_settings();
@@ -76,11 +75,13 @@ impl MetalTarget {
         media_store: &LocalMediaStore,
         frame: u32,
         timing: &mut RenderTiming,
-    ) -> Result<(), RenderError> {
+    ) -> Result<(), ServerRenderError> {
         let target = self
             .pool
             .acquire(renderer.gpu_renderer(), frame)
-            .map_err(|err| render_failed(format!("failed to acquire frame {frame}: {err}")))?;
+            .map_err(|err| {
+                ServerRenderError::engine(format!("failed to acquire frame {frame}"), err)
+            })?;
         let submitted = timed(&mut timing.render, || {
             renderer.render_frame_into_external(
                 composition,
@@ -89,7 +90,7 @@ impl MetalTarget {
                 target.external_texture(),
             )
         })
-        .map_err(|err| render_failed(format!("render failed at frame {frame}: {err}")))?;
+        .map_err(|err| ServerRenderError::engine(format!("render failed at frame {frame}"), err))?;
         self.pending.push_back(PendingFrame {
             frame,
             target,
@@ -106,7 +107,7 @@ impl MetalTarget {
         mut self,
         renderer: &GpuCompositionRenderer,
         timing: &mut RenderTiming,
-    ) -> Result<MuxedEncoder, RenderError> {
+    ) -> Result<MuxedEncoder, ServerRenderError> {
         while !self.pending.is_empty() {
             self.encode_oldest(renderer, timing)?;
         }
@@ -117,7 +118,7 @@ impl MetalTarget {
         &mut self,
         renderer: &GpuCompositionRenderer,
         timing: &mut RenderTiming,
-    ) -> Result<(), RenderError> {
+    ) -> Result<(), ServerRenderError> {
         let Some(PendingFrame {
             frame,
             target,

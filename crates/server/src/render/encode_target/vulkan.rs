@@ -13,7 +13,7 @@ use lumen_ffmpeg::{
 use lumen_gpu::wgpu::SubmissionIndex;
 
 use super::{
-    RenderError, RenderTiming, checked_size, encode_failed, has_audio, poll, render_failed,
+    RenderTiming, ServerRenderError, checked_size, encode_failed, has_audio, poll, render_failed,
     render_raster, timed,
 };
 use crate::render::{encoder::warn_if_container_cropped, media::LocalMediaStore};
@@ -41,7 +41,9 @@ impl VulkanTarget {
                 "NV12 frames need even dimensions, got {width}x{height}"
             ));
         }
-        let (renderer, device) = pollster::block_on(GpuCompositionRenderer::new_vulkan_video())?;
+        let (renderer, device) = pollster::block_on(
+            GpuCompositionRenderer::new_vulkan_video_with_settings(&media_store.gpu),
+        )?;
         renderer.check_output_size(composition)?;
         let target =
             VulkanVideoTarget::nv12(renderer.gpu_renderer(), lumen_gpu::Size::new(width, height));
@@ -78,7 +80,7 @@ impl VulkanTarget {
         media_store: &LocalMediaStore,
         frame: u32,
         timing: &mut RenderTiming,
-    ) -> Result<(), RenderError> {
+    ) -> Result<(), ServerRenderError> {
         let (raster, submission) =
             render_raster(renderer, composition, media_store, frame, timing)?;
         checked_size(composition, &raster, frame)?;

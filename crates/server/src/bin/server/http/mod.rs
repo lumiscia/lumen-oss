@@ -15,6 +15,10 @@ use axum::{
     routing::{get, post, put},
 };
 use clap::Parser;
+use lumen_server::render::{
+    FONT_DIR_ENV, GpuSettings, HARDWARE_DECODE_ENV, RenderConfig, existing_font_dir,
+    is_enabled_flag,
+};
 
 use self::{
     auth::require_token,
@@ -117,6 +121,27 @@ pub struct Args {
     /// checked, deleted or expired. Past it, `POST /media` answers `503` until one of them ends.
     #[arg(long, env = "LUMEN_SERVER_MEDIA_MAX_PENDING", default_value = "100")]
     pub media_max_pending: NonZeroUsize,
+
+    /// Directory of fonts, looked up before the system fonts. Must exist.
+    #[arg(long, env = FONT_DIR_ENV, value_name = "PATH", value_parser = existing_font_dir)]
+    pub font_dir: Option<PathBuf>,
+}
+
+impl Args {
+    /// What renders take from this host: the font directory, and `LUMEN_HARDWARE_DECODE` and the
+    /// GPU settings from the environment.
+    fn render_config(&self) -> RenderConfig {
+        RenderConfig {
+            font_dir: self
+                .font_dir
+                .clone()
+                .filter(|dir| !dir.as_os_str().is_empty()),
+            hardware_decode: std::env::var(HARDWARE_DECODE_ENV)
+                .is_ok_and(|value| is_enabled_flag(&value)),
+            gpu: GpuSettings::from_env(),
+            temp_dir: Some(std::env::temp_dir()),
+        }
+    }
 }
 
 fn parse_duration(raw: &str) -> Result<Duration, String> {
@@ -159,7 +184,8 @@ pub async fn run(mut args: Args) -> anyhow::Result<()> {
         );
     }
     let bind = args.bind;
-    let state = AppState::new(args)?;
+    let render_config = args.render_config();
+    let state = AppState::new(args, render_config)?;
     spawn_media_sweep(&state);
     let app = router(state);
 
