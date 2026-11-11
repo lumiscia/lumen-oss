@@ -150,14 +150,14 @@ fn an_image_replaced_by_one_of_another_size_renders_at_the_new_size() {
         &mut renderer,
         &composition,
         0.0,
-        &plate("plate", CANVAS, RED),
+        &plate("plate#large", CANVAS, RED),
     );
     assert_eq!(large.pixel(CORNER.0, CORNER.1), RED);
     let small = render(
         &mut renderer,
         &composition,
         1.0,
-        &plate("plate", (2, 2), BLUE),
+        &plate("plate#small", (2, 2), BLUE),
     );
     assert_eq!(small.pixel(1, 1), BLUE);
     assert_eq!(small.pixel(CORNER.0, CORNER.1), CLEAR);
