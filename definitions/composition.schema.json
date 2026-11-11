@@ -7212,6 +7212,563 @@
           },
           {
             "additionalProperties": false,
+            "description": "Text from its font's outlines, extruded into a solid with the material params of a\n`shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes\nit, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing\n+Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the\npoint of its box at `position`. Its geometry is built again only when the text, font, layout,\ndepth or bevel change, so animating its transform or material costs no more than for a\n`shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the\n`glyph_*` params of a `text` node have no counterpart.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "alignment_horizontal": {
+                    "default": "center",
+                    "description": "How lines align with each other, and which point of the text's box sits at `position`:\nits left edge, centre or right edge. Justified lines anchor at the left edge.",
+                    "enum": ["left", "center", "right", "justify"],
+                    "title": "Alignment Horizontal",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Left",
+                        "name": "left",
+                        "value": 0
+                      },
+                      {
+                        "label": "Center",
+                        "name": "center",
+                        "value": 1
+                      },
+                      {
+                        "label": "Right",
+                        "name": "right",
+                        "value": 2
+                      },
+                      {
+                        "label": "Justify",
+                        "name": "justify",
+                        "value": 3
+                      }
+                    ],
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "TextAlignmentHorizontal"
+                  },
+                  "alignment_vertical": {
+                    "default": "middle",
+                    "description": "Which point of the text's box sits at `position` vertically: the top of its first line,\nits middle, or the bottom of its last line.",
+                    "enum": ["top", "middle", "bottom"],
+                    "title": "Alignment Vertical",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Top",
+                        "name": "top",
+                        "value": 0
+                      },
+                      {
+                        "label": "Middle",
+                        "name": "middle",
+                        "value": 1
+                      },
+                      {
+                        "label": "Bottom",
+                        "name": "bottom",
+                        "value": 2
+                      }
+                    ],
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "TextAlignmentVertical"
+                  },
+                  "bevel_segments": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 4,
+                    "description": "Steps of the bevel's quarter-round profile, up to 16: 1 is a flat 45° chamfer, and 0 is no\nbevel.",
+                    "title": "Bevel Segments",
+                    "x-lumen-constraints": {
+                      "max": 16.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "bevel_size": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "How far the bevel rounds off each glyph's edges in world units, in from the outline and in\nfrom the front and back, up to half of `depth`; 0 is none. The outline keeps its size\nwhere the sides meet the bevel. A glyph whose strokes are too thin for the bevel gets the\nwidest one that fits it, so at regular weights bevels past about 0.04 of the font size\nstop growing on most glyphs.",
+                    "title": "Bevel Size",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.005
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "cast_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,\nsuch as a bulb around a point light, needs this off.",
+                    "title": "Cast Shadows",
+                    "x-lumen-kind": "bool"
+                  },
+                  "color": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/color"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [255, 255, 255, 255],
+                    "description": "Base colour, which an image plane's raster is multiplied by. Must be a solid color; a\ngradient fails `check`.",
+                    "title": "Color",
+                    "x-lumen-constraints": {
+                      "role": "color"
+                    },
+                    "x-lumen-kind": "color"
+                  },
+                  "content": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "Text",
+                    "description": "Text to extrude, in one style. Line breaks start new lines. Whitespace is not drawn, and\nglyphs that their font draws from colour or bitmap tables, such as emoji, have no outline\nand are left out with a `font.no_outlines` warning. A node extrudes at most as many glyphs\nas the host's text glyph limit lets a `text` node draw, 16384 unless the host sets\nanother, and at most 4000000 vertices and 12000000 indices; more is a render error.",
+                    "title": "Content",
+                    "x-lumen-constraints": {
+                      "multiline": true,
+                      "recommendedRows": 4
+                    },
+                    "x-lumen-kind": "string"
+                  },
+                  "depth": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.25,
+                    "description": "Thickness along Z in world units, centred on `position`, so the front faces +Z at half of\nit. 0 is flat.",
+                    "title": "Depth",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "double_sided": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Draws the back of each face too.",
+                    "title": "Double Sided",
+                    "x-lumen-kind": "bool"
+                  },
+                  "emissive": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Light the surface gives off on its own, as a multiple of its base colour.",
+                    "title": "Emissive",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "font_family": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "Roboto",
+                    "description": "Font family name, or `asset:<id>` for a font asset of the host's. A family no font answers\nto falls back as a `text` node's does.",
+                    "title": "Font Family",
+                    "x-lumen-constraints": {
+                      "format": "font_family"
+                    },
+                    "x-lumen-kind": "string"
+                  },
+                  "font_features": {
+                    "$ref": "#/$defs/fontFeatures",
+                    "default": {},
+                    "description": "OpenType features by four-character tag, such as `{ \"tnum\": 1, \"liga\": 0 }`. 0 turns a\nfeature off, 1 turns it on and larger values select an alternate. Values take literals\nor expressions, but the whole map cannot be an expression.",
+                    "title": "Font Features",
+                    "x-lumen-kind": "font_features"
+                  },
+                  "font_size": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Font size in world units: the height of the font's em square, so capitals are about 0.7\nof it tall. At 1, the default, a word is about as tall as a default `shape_3d` box is\nwide. 0 draws nothing.",
+                    "title": "Font Size",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "font_style": {
+                    "anyOf": [
+                      {
+                        "enum": ["normal", "italic", "oblique"],
+                        "type": "string",
+                        "x-lumen-type": "TextFontStyle"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "normal",
+                    "description": "Font style.",
+                    "title": "Font Style",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Normal",
+                        "name": "normal",
+                        "value": 0
+                      },
+                      {
+                        "label": "Italic",
+                        "name": "italic",
+                        "value": 1
+                      },
+                      {
+                        "label": "Oblique",
+                        "name": "oblique",
+                        "value": 2
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "font_weight": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 400,
+                    "description": "Font weight. Variable fonts render any value in their weight range.",
+                    "title": "Font Weight",
+                    "x-lumen-constraints": {
+                      "max": 1000.0,
+                      "min": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "letter_spacing": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Extra space after every glyph in world units. Negative values tighten the text.",
+                    "title": "Letter Spacing",
+                    "x-lumen-constraints": {
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "line_height": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Distance between lines in world units. Use 0 for 1.2 × the font size.",
+                    "title": "Line Height",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "max_width": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Maximum line width in world units, at which lines wrap. Use 0 for automatic width.",
+                    "title": "Max Width",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "metallic": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "0 is a dielectric such as plastic, 1 a bare metal.",
+                    "title": "Metallic",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "opacity": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.",
+                    "title": "Opacity",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "position": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Position in world units along X, Y and Z, in the parent's space.",
+                    "title": "Position",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "receive_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Darkens where shadows fall on it. An unlit surface shows none.",
+                    "title": "Receive Shadows",
+                    "x-lumen-kind": "bool"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned\nX, then roll about the turned Z.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "roughness": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.5,
+                    "description": "0 is a mirror finish, 1 fully diffuse.",
+                    "title": "Roughness",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0, 1.0],
+                    "description": "Scale multiplier along X, Y and Z, applied before the rotation.",
+                    "title": "Scale",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "shadow_catcher": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows\nnone of its colours, hides what is behind it wherever that alpha isn't 0, and casts no\nshadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
+                    "title": "Shadow Catcher",
+                    "x-lumen-kind": "bool"
+                  },
+                  "text_transform": {
+                    "anyOf": [
+                      {
+                        "enum": ["none", "uppercase", "lowercase", "capitalize"],
+                        "type": "string",
+                        "x-lumen-type": "TextTransform"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "none",
+                    "description": "Case applied to the text.",
+                    "title": "Text Transform",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "None",
+                        "name": "none",
+                        "value": 0
+                      },
+                      {
+                        "label": "Uppercase",
+                        "name": "uppercase",
+                        "value": 1
+                      },
+                      {
+                        "label": "Lowercase",
+                        "name": "lowercase",
+                        "value": 2
+                      },
+                      {
+                        "label": "Capitalize",
+                        "name": "capitalize",
+                        "value": 3
+                      }
+                    ],
+                    "x-lumen-kind": "enum"
+                  },
+                  "unlit": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Shows the base colour as is, ignoring lights.",
+                    "title": "Unlit",
+                    "x-lumen-kind": "bool"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "text_3d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Text 3D",
+            "type": "object",
+            "x-lumen-category": "scene",
+            "x-lumen-inputs": [],
+            "x-lumen-outputs": [
+              {
+                "kind": "scene",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Evaluates a raster input at another frame.",
             "properties": {
               "id": {

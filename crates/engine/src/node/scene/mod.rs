@@ -11,6 +11,11 @@ mod environment;
 mod instance;
 #[cfg(feature = "3d")]
 pub(crate) mod render;
+mod text_3d;
+#[cfg(feature = "3d")]
+mod text_mesh;
+
+pub use text_3d::{Text3d, Text3dParams, Text3dParamsDelegate};
 
 pub use instance::{Instance3d, Instance3dParams, InstanceCount, MAX_INSTANCES};
 

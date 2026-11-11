@@ -215,14 +215,17 @@ fn walk_nodes<'a>(template: Option<&str>, scene: &'a Scene, f: &mut dyn FnMut(Fo
                 at: at(id, param),
             }),
         });
-        if let NodeKind::Text(text) = node {
-            for (param, family) in crate::node::source::text::literal_font_families(text) {
-                if !family.is_empty() {
-                    f(Found::Font {
-                        family,
-                        at: at(id, &param),
-                    });
-                }
+        let families = match node {
+            NodeKind::Text(text) => crate::node::source::text::literal_font_families(text),
+            NodeKind::Text3d(text) => text.literal_font_families(),
+            _ => Vec::new(),
+        };
+        for (param, family) in families {
+            if !family.is_empty() {
+                f(Found::Font {
+                    family,
+                    at: at(id, &param),
+                });
             }
         }
     }

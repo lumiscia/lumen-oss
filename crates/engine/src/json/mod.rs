@@ -2408,6 +2408,24 @@ mod tests {
         parse_value(&document).unwrap();
     }
 
+    #[cfg(feature = "3d")]
+    #[test]
+    fn check_warns_of_a_text_3d_family_the_host_cannot_resolve() {
+        let document = scene_document(
+            serde_json::json!([
+                { "id": 4, "type": "text_3d", "params": { "font_family": "Brand" } },
+                { "id": 5, "type": "text_3d", "params": { "font_family": "Known" } }
+            ]),
+            serde_json::json!([]),
+        );
+        let known = |family: &str| family == "Known";
+        let diagnostics = check_value(&document, Some(&known), None);
+        assert_eq!(
+            codes_and_paths(&diagnostics),
+            [("font.fallback", "/nodes/3/params/font_family", Some(4))]
+        );
+    }
+
     #[derive(Debug)]
     struct Assets;
 

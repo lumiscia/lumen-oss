@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "model_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "model_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "model" | "video";
 
@@ -1538,6 +1538,10 @@ export type TemplateRenderSettings = {
   readonly height: number;
   readonly width: number;
 };
+export type Text3dAlignmentHorizontal = TextAlignmentHorizontal;
+export type Text3dAlignmentVertical = TextAlignmentVertical;
+export type Text3dFontStyle = TextFontStyle;
+export type Text3dTextTransform = TextTransform;
 export type TextAlignmentHorizontal = "left" | "center" | "right" | "justify";
 export type TextAlignmentVertical = "top" | "middle" | "bottom";
 /** Text to render: a string, or spans that each override the node's text style. */
@@ -2615,6 +2619,129 @@ export interface TextNode extends CompositionNodeBase<"text"> {
   };
 }
 
+/**
+ * Text from its font's outlines, extruded into a solid with the material params of a
+ * `shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes
+ * it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
+ * +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the
+ * point of its box at `position`. Its geometry is built again only when the text, font, layout,
+ * depth or bevel change, so animating its transform or material costs no more than for a
+ * `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the
+ * `glyph_*` params of a `text` node have no counterpart.
+ */
+export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
+  readonly params?: {
+    /**
+     * How lines align with each other, and which point of the text's box sits at `position`:
+     * its left edge, centre or right edge. Justified lines anchor at the left edge.
+     */
+    readonly alignment_horizontal?: TextAlignmentHorizontal;
+    /**
+     * Which point of the text's box sits at `position` vertically: the top of its first line,
+     * its middle, or the bottom of its last line.
+     */
+    readonly alignment_vertical?: TextAlignmentVertical;
+    /**
+     * Steps of the bevel's quarter-round profile, up to 16: 1 is a flat 45° chamfer, and 0 is no
+     * bevel.
+     */
+    readonly bevel_segments?: ExpressionValue<number>;
+    /**
+     * How far the bevel rounds off each glyph's edges in world units, in from the outline and in
+     * from the front and back, up to half of `depth`; 0 is none. The outline keeps its size
+     * where the sides meet the bevel. A glyph whose strokes are too thin for the bevel gets the
+     * widest one that fits it, so at regular weights bevels past about 0.04 of the font size
+     * stop growing on most glyphs.
+     */
+    readonly bevel_size?: ExpressionValue<number>;
+    /**
+     * Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is
+     * at least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,
+     * such as a bulb around a point light, needs this off.
+     */
+    readonly cast_shadows?: ExpressionValue<boolean>;
+    /**
+     * Base colour, which an image plane's raster is multiplied by. Must be a solid color; a
+     * gradient fails `check`.
+     */
+    readonly color?: ExpressionValue<Color>;
+    /**
+     * Text to extrude, in one style. Line breaks start new lines. Whitespace is not drawn, and
+     * glyphs that their font draws from colour or bitmap tables, such as emoji, have no outline
+     * and are left out with a `font.no_outlines` warning. A node extrudes at most as many glyphs
+     * as the host's text glyph limit lets a `text` node draw, 16384 unless the host sets
+     * another, and at most 4000000 vertices and 12000000 indices; more is a render error.
+     */
+    readonly content?: ExpressionValue<string>;
+    /**
+     * Thickness along Z in world units, centred on `position`, so the front faces +Z at half of
+     * it. 0 is flat.
+     */
+    readonly depth?: ExpressionValue<number>;
+    /** Draws the back of each face too. */
+    readonly double_sided?: ExpressionValue<boolean>;
+    /** Light the surface gives off on its own, as a multiple of its base colour. */
+    readonly emissive?: ExpressionValue<number>;
+    /**
+     * Font family name, or `asset:<id>` for a font asset of the host's. A family no font answers
+     * to falls back as a `text` node's does.
+     */
+    readonly font_family?: ExpressionValue<string>;
+    /**
+     * OpenType features by four-character tag, such as `{ "tnum": 1, "liga": 0 }`. 0 turns a
+     * feature off, 1 turns it on and larger values select an alternate. Values take literals
+     * or expressions, but the whole map cannot be an expression.
+     */
+    readonly font_features?: FontFeatures;
+    /**
+     * Font size in world units: the height of the font's em square, so capitals are about 0.7
+     * of it tall. At 1, the default, a word is about as tall as a default `shape_3d` box is
+     * wide. 0 draws nothing.
+     */
+    readonly font_size?: ExpressionValue<number>;
+    /** Font style. */
+    readonly font_style?: ExpressionValue<TextFontStyle>;
+    /** Font weight. Variable fonts render any value in their weight range. */
+    readonly font_weight?: ExpressionValue<number>;
+    /** Extra space after every glyph in world units. Negative values tighten the text. */
+    readonly letter_spacing?: ExpressionValue<number>;
+    /** Distance between lines in world units. Use 0 for 1.2 × the font size. */
+    readonly line_height?: ExpressionValue<number>;
+    /** Maximum line width in world units, at which lines wrap. Use 0 for automatic width. */
+    readonly max_width?: ExpressionValue<number>;
+    /** 0 is a dielectric such as plastic, 1 a bare metal. */
+    readonly metallic?: ExpressionValue<number>;
+    /** Opacity multiplier. Anything below 1 is drawn blended, after opaque objects. */
+    readonly opacity?: ExpressionValue<number>;
+    /** Position in world units along X, Y and Z, in the parent's space. */
+    readonly position?: ExpressionValue<Vec3>;
+    /** Darkens where shadows fall on it. An unlit surface shows none. */
+    readonly receive_shadows?: ExpressionValue<boolean>;
+    /**
+     * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
+     * X, then roll about the turned Z.
+     */
+    readonly rotation?: ExpressionValue<Vec3>;
+    /** 0 is a mirror finish, 1 fully diffuse. */
+    readonly roughness?: ExpressionValue<number>;
+    /** Scale multiplier along X, Y and Z, applied before the rotation. */
+    readonly scale?: ExpressionValue<Vec3>;
+    /**
+     * Shows nothing but the shadows falling on it, as transparent black that darkens what the
+     * render is composited over by as much light as the shadows take away, times the colour's
+     * alpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows
+     * none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no
+     * shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
+     * footage behind it.
+     */
+    readonly shadow_catcher?: ExpressionValue<boolean>;
+    /** Case applied to the text. */
+    readonly text_transform?: ExpressionValue<TextTransform>;
+    /** Shows the base colour as is, ignoring lights. */
+    readonly unlit?: ExpressionValue<boolean>;
+  };
+}
+
 /** Evaluates a raster input at another frame. */
 export interface TimeRemapNode extends CompositionNodeBase<"time_remap"> {
   readonly params?: {
@@ -2722,6 +2849,7 @@ export interface CompositionNodeByKind {
   readonly "shape_3d": Shape3dNode;
   readonly "switch": SwitchNode;
   readonly "text": TextNode;
+  readonly "text_3d": Text3dNode;
   readonly "time_remap": TimeRemapNode;
   readonly "transform": TransformNode;
   readonly "wgsl_shader": WgslShaderNode;
@@ -2831,6 +2959,9 @@ export interface CompositionNodeInputByKind {
   readonly "text": Omit<TextNode, "id"> & {
     readonly id?: number;
   };
+  readonly "text_3d": Omit<Text3dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "time_remap": Omit<TimeRemapNode, "id"> & {
     readonly id?: number;
   };
@@ -2880,6 +3011,7 @@ export interface NodeInputPortNameByKind {
   readonly "shape_3d": never;
   readonly "switch": "layers";
   readonly "text": never;
+  readonly "text_3d": never;
   readonly "time_remap": "source";
   readonly "transform": "source";
   readonly "wgsl_shader": "source";
@@ -2921,6 +3053,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "shape_3d": never;
   readonly "switch": "layers";
   readonly "text": never;
+  readonly "text_3d": never;
   readonly "time_remap": never;
   readonly "transform": never;
   readonly "wgsl_shader": "source";
@@ -2962,6 +3095,7 @@ export interface NodeOutputKindByKind {
   readonly "shape_3d": "scene";
   readonly "switch": "raster";
   readonly "text": "raster";
+  readonly "text_3d": "scene";
   readonly "time_remap": "raster";
   readonly "transform": "raster";
   readonly "wgsl_shader": "raster";
@@ -3003,6 +3137,7 @@ export interface NodeInputPortKindByKind {
   readonly "shape_3d": {};
   readonly "switch": { readonly "layers": "raster" };
   readonly "text": {};
+  readonly "text_3d": {};
   readonly "time_remap": { readonly "source": "raster" };
   readonly "transform": { readonly "source": "raster" };
   readonly "wgsl_shader": { readonly "source": "raster" };
@@ -3168,6 +3303,17 @@ export const nodeInputPorts = {
   "switch": { "layers": { kind: "raster", variadic: true } },
   /** Produces a text source. */
   "text": {},
+  /**
+   * Text from its font's outlines, extruded into a solid with the material params of a
+   * `shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes
+   * it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
+   * +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the
+   * point of its box at `position`. Its geometry is built again only when the text, font, layout,
+   * depth or bevel change, so animating its transform or material costs no more than for a
+   * `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the
+   * `glyph_*` params of a `text` node have no counterpart.
+   */
+  "text_3d": {},
   /** Evaluates a raster input at another frame. */
   "time_remap": { "source": { kind: "raster", variadic: false } },
   /** Transforms a raster into the composition canvas bounds. */
@@ -3233,6 +3379,7 @@ export const nodeMediaSources = {
   "shape_3d": {},
   "switch": {},
   "text": {},
+  "text_3d": {},
   "time_remap": {},
   "transform": {},
   "wgsl_shader": {},
