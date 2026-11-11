@@ -997,6 +997,11 @@ enum YuvSource {
     Reshape(sys::AVPixelFormat, YuvShape),
 }
 
+/// Whether frames of `format` decode as YUV. The rest (RGB, grey, palette) decode as 8-bit RGBA.
+pub(crate) fn decodes_as_yuv(format: sys::AVPixelFormat) -> bool {
+    yuv_source(format).is_some()
+}
+
 /// How to take a frame of `format` as YUV, or `None` if it isn't a YUV format.
 fn yuv_source(format: sys::AVPixelFormat) -> Option<YuvSource> {
     let descriptor = unsafe { sys::av_pix_fmt_desc_get(format).as_ref()? };

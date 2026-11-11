@@ -256,7 +256,7 @@ impl LibavStreamDecoder {
             seek: None,
             sent_eof: false,
             gpu_decode_status,
-            color_warning: unsupported_color(stream.color),
+            color_warning: unsupported_color(stream.color, stream.decodes_as_yuv),
             origin: SettledOrigin::default(),
             mid_render_failure: None,
         })
@@ -968,8 +968,24 @@ pub(crate) fn yuv_color(tags: lumen_ffmpeg::ColorTags, height: u32) -> Result<Yu
 }
 
 /// The tags in `tags` that `yuv_color` reads without converting, as a sentence for a warning.
-fn unsupported_color(tags: lumen_ffmpeg::ColorTags) -> Option<String> {
+/// A stream that doesn't decode as YUV has none of its tags converted.
+fn unsupported_color(tags: lumen_ffmpeg::ColorTags, decodes_as_yuv: bool) -> Option<String> {
     use lumen_ffmpeg::{ColorPrimaries as Primaries, ColorTransfer as Transfer};
+    let wide = matches!(
+        tags.primaries,
+        Primaries::Bt2020 | Primaries::Smpte431 | Primaries::Smpte432 | Primaries::Other(_)
+    );
+    let hdr = matches!(
+        tags.transfer,
+        Transfer::Smpte2084 | Transfer::AribStdB67 | Transfer::Other(_)
+    );
+    if !decodes_as_yuv {
+        return (wide || hdr).then(|| {
+            "it is RGB or grey video, which is read as 8-bit sRGB whatever its primaries and \
+             transfer, which the renderer converts for YUV video only"
+                .to_string()
+        });
+    }
     let transfer = match tags.transfer {
         Transfer::Other(name) => Some(format!("its `{name}` transfer is read as SDR")),
         _ => None,
@@ -1999,6 +2015,20 @@ mod tests {
             );
             let _ = fs::remove_file(path);
         }
+    }
+
+    #[test]
+    fn hdr_video_that_is_not_yuv_warns_that_it_is_read_as_srgb() {
+        use lumen_ffmpeg::{ColorMatrix, ColorTags, ColorTransfer};
+        let sdr = ColorTags::new(ColorMatrix::Other, true);
+        let pq = ColorTags {
+            transfer: ColorTransfer::Smpte2084,
+            ..sdr
+        };
+        assert_eq!(unsupported_color(sdr, false), None);
+        assert_eq!(unsupported_color(pq, true), None);
+        let warning = unsupported_color(pq, false).expect("a warning");
+        assert!(warning.contains("read as 8-bit sRGB"), "{warning}");
     }
 
     #[test]

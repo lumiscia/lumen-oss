@@ -108,6 +108,9 @@ pub struct VideoStreamInfo {
     /// Clockwise rotation in degrees (0, 90, 180 or 270) that RGBA decode applies to each frame, and that YUV decode reports on each.
     pub rotation: u32,
     pub pixel_format: PixelFormat,
+    /// Whether frames decode as YUV, which keeps their sample depth and colour tags. Frames of
+    /// other formats (RGB, grey, palette) decode as 8-bit RGBA with no tags.
+    pub decodes_as_yuv: bool,
     /// Whether the stream carries alpha, in its pixel format or in a VP8 or VP9 alpha layer.
     pub has_alpha: bool,
     pub time_base: Rational,
@@ -382,6 +385,7 @@ impl InputContext {
                 height,
                 rotation,
                 pixel_format: PixelFormat::from_av_pixel_format(format),
+                decodes_as_yuv: crate::video::decodes_as_yuv(format),
                 has_alpha: self.has_alpha_layer(index) || pixel_format_has_alpha(format),
                 time_base: (*stream).time_base.into(),
                 avg_frame_rate: (*stream).avg_frame_rate.into(),
