@@ -1326,6 +1326,18 @@ fn media_uploads_are_probed_once_their_bytes_are_complete() {
     assert_eq!(font["kind"], "font", "{font}");
     assert_eq!(font["metadata"]["families"], json!(["Roboto"]));
 
+    let fox = include_bytes!("../../engine/tests/fixtures/Fox.glb");
+    let model = upload(&server, "fox.glb", "model/gltf-binary", fox);
+    assert_eq!(model["kind"], "model", "{model}");
+    let truncated = upload(&server, "fox.glb", "model/gltf-binary", &fox[..4096]);
+    assert_eq!(truncated["status"], "rejected", "{truncated}");
+    assert!(
+        truncated["rejectionReason"]
+            .as_str()
+            .is_some_and(|reason| reason.starts_with("the model could not be read")),
+        "{truncated}"
+    );
+
     let fake = upload(&server, "fake.png", "image/png", b"not media");
     assert_eq!(fake["status"], "rejected", "{fake}");
     assert!(fake["rejectionReason"].is_string(), "{fake}");

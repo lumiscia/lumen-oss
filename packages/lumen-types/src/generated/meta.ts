@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "model_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 
 export const schemaVersion = 1 as const;
 
@@ -1970,6 +1970,40 @@ export interface Merge3dNode extends CompositionNodeBase<"merge_3d"> {
 }
 
 /**
+ * A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, skins and
+ * animation clips. A raster wired into `texture` shows on the surfaces of the material
+ * `texture_material` names, such as a screen. The model's own lights and cameras are left out.
+ */
+export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
+  readonly params?: {
+    /** The animation clip to play, by its name or else its index; empty plays none. */
+    readonly animation?: ExpressionValue<string>;
+    /** Plays the clip again from its start once it ends, rather than holding its last pose. */
+    readonly animation_loop?: ExpressionValue<boolean>;
+    /** Seconds into the clip at the clip's first frame. */
+    readonly animation_offset?: ExpressionValue<number>;
+    /** Playback speed multiplier. */
+    readonly animation_speed?: ExpressionValue<number>;
+    /** Position in world units along X, Y and Z, in the parent's space. */
+    readonly position?: ExpressionValue<Vec3>;
+    /**
+     * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
+     * X, then roll about the turned Z.
+     */
+    readonly rotation?: ExpressionValue<Vec3>;
+    /** Scale multiplier along X, Y and Z, applied before the rotation. */
+    readonly scale?: ExpressionValue<Vec3>;
+    /**
+     * A binary glTF (`.glb`) file with its buffers and images inside it: a path or `media`
+     * alias, or `asset:<id>` for a model asset of the host's.
+     */
+    readonly source?: ExpressionValue<string>;
+    /** The material, by name, whose surfaces show the `texture` input instead, unlit. */
+    readonly texture_material?: ExpressionValue<string>;
+  };
+}
+
+/**
  * Blurs everything that moves in its source, including what analytic motion blur can't see:
  * animated sizes, path data, motion upstream of a transform and motion inside video. Analytic
  * motion blur in the source is off while it samples, and so is a `motion_blur` inside it.
@@ -2465,6 +2499,7 @@ export interface CompositionNodeByKind {
   readonly "media_output": MediaOutputNode;
   readonly "merge": MergeNode;
   readonly "merge_3d": Merge3dNode;
+  readonly "model_3d": Model3dNode;
   readonly "motion_blur": MotionBlurNode;
   readonly "opacity": OpacityNode;
   readonly "path": PathNode;
@@ -2544,6 +2579,9 @@ export interface CompositionNodeInputByKind {
   readonly "merge_3d": Omit<Merge3dNode, "id"> & {
     readonly id?: number;
   };
+  readonly "model_3d": Omit<Model3dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "motion_blur": Omit<MotionBlurNode, "id"> & {
     readonly id?: number;
   };
@@ -2615,6 +2653,7 @@ export interface NodeInputPortNameByKind {
   readonly "media_output": "source";
   readonly "merge": "base" | "mask" | "overlay";
   readonly "merge_3d": "objects";
+  readonly "model_3d": "texture";
   readonly "motion_blur": "source";
   readonly "opacity": "source";
   readonly "path": never;
@@ -2654,6 +2693,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "media_output": never;
   readonly "merge": never;
   readonly "merge_3d": "objects";
+  readonly "model_3d": never;
   readonly "motion_blur": never;
   readonly "opacity": never;
   readonly "path": never;
@@ -2693,6 +2733,7 @@ export interface NodeOutputKindByKind {
   readonly "media_output": "raster";
   readonly "merge": "raster";
   readonly "merge_3d": "scene";
+  readonly "model_3d": "scene";
   readonly "motion_blur": "raster";
   readonly "opacity": "raster";
   readonly "path": "raster";
@@ -2732,6 +2773,7 @@ export interface NodeInputPortKindByKind {
   readonly "media_output": { readonly "source": "raster" };
   readonly "merge": { readonly "base": "raster"; readonly "overlay": "raster"; readonly "mask": "raster" };
   readonly "merge_3d": { readonly "objects": "scene" };
+  readonly "model_3d": { readonly "texture": "raster" };
   readonly "motion_blur": { readonly "source": "raster" };
   readonly "opacity": { readonly "source": "raster" };
   readonly "path": {};

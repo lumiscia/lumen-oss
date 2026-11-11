@@ -44,6 +44,7 @@ axum = { version = "0.8.7", default-features = false, features = [
   "ws",
 ], optional = true }
 lumen-engine = { workspace = true, features = ["3d", "ffmpeg", "image"] }
+lumen-3d = { workspace = true }
 lumen-gpu = { workspace = true }
 lumen-ffmpeg = { workspace = true }
 lumen-text = { workspace = true }

@@ -15,11 +15,12 @@ pub enum MediaKind {
     Video,
     Audio,
     Font,
+    Model,
 }
 
 /// What the check found. Each kind fills its own fields: images their size; video its size, frame
 /// rate, frames, duration, codec and audio; audio its duration, rate and channels; fonts their
-/// families and faces.
+/// families and faces. Models fill none.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMetadata {
@@ -55,7 +56,7 @@ pub struct FontFace {
     pub style: String,
 }
 
-const UNREADABLE: &str = "not an image, video, audio file or font that lumen can read";
+const UNREADABLE: &str = "not an image, video, audio file, font or model that lumen can read";
 
 /// The kind and metadata of the file at `path`, or why it was rejected. The extension and declared
 /// content type play no part.
@@ -67,6 +68,9 @@ pub fn probe(path: &Path) -> Result<(MediaKind, MediaMetadata), String> {
     let head = &head[..read];
     let hide_path = |message: String| message.replace(&*path.to_string_lossy(), "the file");
 
+    if head.starts_with(b"glTF") {
+        return probe_model(path).map(|metadata| (MediaKind::Model, metadata));
+    }
     if let Some(font) = font_magic(head) {
         return probe_font(path, font).map(|metadata| (MediaKind::Font, metadata));
     }
@@ -145,6 +149,24 @@ fn probe_font(path: &Path, magic: FontMagic) -> Result<MediaMetadata, String> {
         faces: Some(faces),
         ..MediaMetadata::default()
     })
+}
+
+/// A binary glTF, read as renders read it.
+fn probe_model(path: &Path) -> Result<MediaMetadata, String> {
+    let limit = lumen_3d::model::MAX_MODEL_BYTES;
+    let size = fs::metadata(path)
+        .map_err(|error| format!("the file could not be read: {error}"))?
+        .len();
+    if size > limit as u64 {
+        return Err(format!(
+            "the model is larger than the {} MiB a model may be",
+            limit >> 20
+        ));
+    }
+    let bytes = fs::read(path).map_err(|error| format!("the file could not be read: {error}"))?;
+    lumen_3d::model::Model::from_glb(&bytes)
+        .map_err(|error| format!("the model could not be read: {error}"))?;
+    Ok(MediaMetadata::default())
 }
 
 /// Video when a stream of more than one frame decodes; audio when only sound does, which counts

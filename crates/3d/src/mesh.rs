@@ -15,6 +15,17 @@ pub struct Vertex {
     pub uv: [f32; 2],
 }
 
+/// How a skinned vertex follows its skin's joints, kept apart from [`Vertex`] so that meshes
+/// without a skin don't carry it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Pod, Zeroable)]
+pub struct SkinVertex {
+    /// Indices into the skin's joints.
+    pub joints: [u16; 4],
+    /// How much each joint moves the vertex, as 16-bit fractions of 1.
+    pub weights: [u16; 4],
+}
+
 /// Triangles over shared vertices, wound counter-clockwise seen from the side their normals face.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Mesh {

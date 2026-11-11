@@ -1,7 +1,7 @@
 // Draws objects of a 3D scene into a linear, premultiplied float target. One draw covers a run of
 // objects from the object table, and each vertex of the draw belongs to the object whose range of
 // the run's vertices it falls in. Vertices are pulled from storage: `indices` holds a mesh's
-// vertex indices, one per vertex its objects draw.
+// vertex indices, from each object's first, one per vertex the object draws.
 
 const PI: f32 = 3.14159265;
 
@@ -11,6 +11,17 @@ const FLAG_BLEND: u32 = 2u;
 const FLAG_MIRRORED: u32 = 4u;
 // The bound raster texture colours the object.
 const FLAG_RASTER: u32 = 8u;
+// Drawn only where its alpha reaches `alpha_cutoff`, and opaque there.
+const FLAG_MASK: u32 = 16u;
+// Its vertices move by their joints, which take them to the space `model` places.
+const FLAG_SKINNED: u32 = 32u;
+// Each face is lit by its own normal rather than the vertices'.
+const FLAG_FLAT_NORMALS: u32 = 64u;
+const FLAG_BASE_COLOR_MAP: u32 = 128u;
+const FLAG_METALLIC_ROUGHNESS_MAP: u32 = 256u;
+const FLAG_NORMAL_MAP: u32 = 512u;
+const FLAG_EMISSIVE_MAP: u32 = 1024u;
+const FLAG_OCCLUSION_MAP: u32 = 2048u;
 
 const LIGHT_DIRECTIONAL: u32 = 0u;
 const LIGHT_SPOT: u32 = 2u;
@@ -47,12 +58,26 @@ struct Object {
     flags: u32,
     // Where the object's vertices start among all the table's.
     first_vertex: u32,
+    // Where the object's indices start in `indices`.
+    first_index: u32,
+    // Where a skinned object's joints start in `joints`.
+    first_joint: u32,
+    alpha_cutoff: f32,
+    normal_scale: f32,
+    occlusion_strength: f32,
 }
 
 struct Vertex {
     position: array<f32, 3>,
     normal: array<f32, 3>,
     uv: array<f32, 2>,
+}
+
+// Four joints, relative to the object's first, and their weights, packed two 16-bit values to
+// a word.
+struct SkinVertex {
+    joints: array<u32, 2>,
+    weights: array<u32, 2>,
 }
 
 // The rows of the object table a draw covers, and where their vertices start.
@@ -85,6 +110,20 @@ struct Light {
 // A Lumen raster: premultiplied and sRGB-encoded.
 @group(0) @binding(6) var raster_tex: texture_2d<f32>;
 @group(0) @binding(7) var raster_sampler: sampler;
+@group(0) @binding(8) var<storage, read> joints: array<mat4x4<f32>>;
+// One per vertex of a skinned mesh.
+@group(0) @binding(9) var<storage, read> skins: array<SkinVertex>;
+// A material's maps. Base colour and emissive are sRGB textures, read as linear light.
+@group(0) @binding(10) var base_color_map: texture_2d<f32>;
+@group(0) @binding(11) var metallic_roughness_map: texture_2d<f32>;
+@group(0) @binding(12) var normal_map: texture_2d<f32>;
+@group(0) @binding(13) var emissive_map: texture_2d<f32>;
+@group(0) @binding(14) var occlusion_map: texture_2d<f32>;
+@group(0) @binding(15) var base_color_sampler: sampler;
+@group(0) @binding(16) var metallic_roughness_sampler: sampler;
+@group(0) @binding(17) var normal_sampler: sampler;
+@group(0) @binding(18) var emissive_sampler: sampler;
+@group(0) @binding(19) var occlusion_sampler: sampler;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -109,15 +148,56 @@ fn object_of(slot: u32) -> u32 {
     return run.first + low;
 }
 
+// The weighted blend of `skin`'s joints, or none when its weights are all zero.
+fn skinning(skin: SkinVertex, first_joint: u32) -> mat4x4<f32> {
+    let ids = vec4<u32>(
+        skin.joints[0] & 0xffffu,
+        skin.joints[0] >> 16u,
+        skin.joints[1] & 0xffffu,
+        skin.joints[1] >> 16u,
+    );
+    let weights = vec4<f32>(unpack2x16unorm(skin.weights[0]), unpack2x16unorm(skin.weights[1]));
+    let total = weights.x + weights.y + weights.z + weights.w;
+    if (total <= 0.0) {
+        return mat4x4<f32>(
+            vec4<f32>(1.0, 0.0, 0.0, 0.0),
+            vec4<f32>(0.0, 1.0, 0.0, 0.0),
+            vec4<f32>(0.0, 0.0, 1.0, 0.0),
+            vec4<f32>(0.0, 0.0, 0.0, 1.0),
+        );
+    }
+    var blended = joints[first_joint + ids.x] * (weights.x / total);
+    for (var i = 1u; i < 4u; i += 1u) {
+        blended += joints[first_joint + ids[i]] * (weights[i] / total);
+    }
+    return blended;
+}
+
+// What turns normals as `m` turns positions, up to their length: its cofactor matrix, negated
+// where `m` mirrors so normals keep facing out.
+fn normal_turn(m: mat4x4<f32>) -> mat3x3<f32> {
+    let x = m[0].xyz;
+    let y = m[1].xyz;
+    let z = m[2].xyz;
+    let sign = select(1.0, -1.0, dot(x, cross(y, z)) < 0.0);
+    return mat3x3<f32>(cross(y, z) * sign, cross(z, x) * sign, cross(x, y) * sign);
+}
+
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
     let slot = index + run.base;
     let oi = object_of(slot);
     let o = objects[oi];
-    let vertex = vertices[indices[slot - o.first_vertex]];
-    let position = vec3<f32>(vertex.position[0], vertex.position[1], vertex.position[2]);
-    let normal = vec3<f32>(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
-    let world = o.model * vec4<f32>(position, 1.0);
+    let vertex_index = indices[o.first_index + slot - o.first_vertex];
+    let vertex = vertices[vertex_index];
+    var position = vec4<f32>(vertex.position[0], vertex.position[1], vertex.position[2], 1.0);
+    var normal = vec3<f32>(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
+    if ((o.flags & FLAG_SKINNED) != 0u) {
+        let skin = skinning(skins[vertex_index], o.first_joint);
+        position = skin * position;
+        normal = normal_turn(skin) * normal;
+    }
+    let world = o.model * position;
     var out: VsOut;
     out.clip = globals.view_proj * world;
     out.world = world.xyz;
@@ -235,20 +315,66 @@ fn raster_texel(uv: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(srgb_to_linear(straight), texel.a);
 }
 
+// The normal map's normal at `uv`, tilting `n` in the tangent frame the derivatives of the
+// surface's position and texture coordinates give, or `n` itself where they give none.
+fn mapped_normal(
+    n: vec3<f32>,
+    uv: vec2<f32>,
+    world_dx: vec3<f32>,
+    world_dy: vec3<f32>,
+    uv_dx: vec2<f32>,
+    uv_dy: vec2<f32>,
+    scale: f32,
+) -> vec3<f32> {
+    let texel = textureSampleGrad(normal_map, normal_sampler, uv, uv_dx, uv_dy).xyz * 2.0 - 1.0;
+    let dy_perp = cross(world_dy, n);
+    let dx_perp = cross(n, world_dx);
+    // Solving for the frame divides by this determinant. Only its sign is kept, which orients the
+    // frame; with `dpdy` pointing down the screen it is negative where `n` faces the viewer.
+    let side = select(1.0, -1.0, dot(n, cross(world_dx, world_dy)) < 0.0);
+    let t = (dy_perp * uv_dx.x + dx_perp * uv_dy.x) * side;
+    let b = (dy_perp * uv_dx.y + dx_perp * uv_dy.y) * side;
+    let size = max(dot(t, t), dot(b, b));
+    if (size <= 0.0) {
+        return n;
+    }
+    let frame = inverseSqrt(size);
+    // A normal map's +Y points up the image, towards lower V.
+    let tilted = unit((t * texel.x - b * texel.y) * frame * scale + n * texel.z);
+    return select(n, tilted, any(tilted != vec3<f32>(0.0)));
+}
+
+fn has(flags: u32, flag: u32) -> bool {
+    return (flags & flag) != 0u;
+}
+
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     // Derivatives need uniform control flow, so they come before anything branches.
     let uv_dx = dpdx(in.uv);
     let uv_dy = dpdy(in.uv);
+    let world_dx = dpdx(in.world);
+    let world_dy = dpdy(in.world);
     let o = objects[in.object];
-    let raster = (o.flags & FLAG_RASTER) != 0u;
+    let raster = has(o.flags, FLAG_RASTER);
     var texel = vec4<f32>(1.0);
     if (raster) {
         texel = raster_texel(pixel_centre_uv(in.clip.xy, in.uv, uv_dx, uv_dy));
     }
+    var emissive = o.emissive * texel.rgb;
+    if (has(o.flags, FLAG_EMISSIVE_MAP)) {
+        emissive *= textureSampleGrad(emissive_map, emissive_sampler, in.uv, uv_dx, uv_dy).rgb;
+    }
+    if (has(o.flags, FLAG_BASE_COLOR_MAP)) {
+        texel *= textureSampleGrad(base_color_map, base_color_sampler, in.uv, uv_dx, uv_dy);
+    }
     var base = o.base_color * texel;
-    let emissive = o.emissive * texel.rgb;
-    if ((o.flags & FLAG_BLEND) == 0u) {
+    if (has(o.flags, FLAG_MASK)) {
+        if (base.a < o.alpha_cutoff) {
+            discard;
+        }
+        base.a = 1.0;
+    } else if (!has(o.flags, FLAG_BLEND)) {
         base.a = 1.0;
     }
     if ((o.flags & FLAG_UNLIT) != 0u) {
@@ -258,19 +384,42 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     }
 
     let v = view_direction(in.world);
+    // Whether this is the back of the surface by its winding, which is lit by its normal reversed.
+    let back = front == has(o.flags, FLAG_MIRRORED);
     // A normal the world matrix flattened away, on a face it left without area, faces the viewer.
     var n = v;
-    let normal = unit(in.normal);
-    if (any(normal != vec3<f32>(0.0))) {
-        n = normal;
-        let mirrored = (o.flags & FLAG_MIRRORED) != 0u;
-        if (front == mirrored) {
-            n = -n;
+    if (has(o.flags, FLAG_FLAT_NORMALS)) {
+        let face = unit(cross(world_dx, world_dy));
+        if (any(face != vec3<f32>(0.0))) {
+            n = select(face, -face, dot(face, v) < 0.0);
+        }
+    } else {
+        let normal = unit(in.normal);
+        if (any(normal != vec3<f32>(0.0))) {
+            n = select(normal, -normal, back);
         }
     }
+    if (has(o.flags, FLAG_NORMAL_MAP)) {
+        // The map tilts the surface's own side; its back is lit by that tilted normal reversed.
+        let side = select(1.0, -1.0, back);
+        n = side * mapped_normal(side * n, in.uv, world_dx, world_dy, uv_dx, uv_dy, o.normal_scale);
+    }
     let n_dot_v = max(dot(n, v), 1e-4);
-    let metallic = clamp(o.metallic, 0.0, 1.0);
-    let roughness = clamp(o.roughness, 0.03, 1.0);
+    var metallic = o.metallic;
+    var roughness = o.roughness;
+    if (has(o.flags, FLAG_METALLIC_ROUGHNESS_MAP)) {
+        let texel = textureSampleGrad(metallic_roughness_map, metallic_roughness_sampler, in.uv, uv_dx, uv_dy);
+        roughness *= texel.g;
+        metallic *= texel.b;
+    }
+    metallic = clamp(metallic, 0.0, 1.0);
+    roughness = clamp(roughness, 0.03, 1.0);
+    // How much of the light from all around reaches the surface.
+    var occlusion = 1.0;
+    if (has(o.flags, FLAG_OCCLUSION_MAP)) {
+        let texel = textureSampleGrad(occlusion_map, occlusion_sampler, in.uv, uv_dx, uv_dy);
+        occlusion = 1.0 + o.occlusion_strength * (texel.r - 1.0);
+    }
     let alpha = roughness * roughness;
     let diffuse_color = base.rgb * (1.0 - metallic);
     let f0 = mix(vec3<f32>(0.04), base.rgb, metallic);
@@ -312,8 +461,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
 
     let reflected = reflect(-v, n);
     let blurred = normalize(mix(reflected, n, alpha * alpha));
-    color += diffuse_color * diffuse_environment(n);
-    color += specular_environment(blurred, roughness) * env_brdf(f0, roughness, n_dot_v);
+    color += diffuse_color * diffuse_environment(n) * occlusion;
+    color += specular_environment(blurred, roughness) * env_brdf(f0, roughness, n_dot_v) * occlusion;
     color += emissive;
     return vec4<f32>(fogged(display(color), in.world) * base.a, base.a);
 }

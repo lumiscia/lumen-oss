@@ -1,5 +1,5 @@
 //! The order a scene's objects draw in, and the runs of them one draw covers: consecutive objects
-//! that bind the same mesh, texture and pipeline, laid out in one table whose rows a shader finds from the
+//! that bind the same mesh, textures and pipeline, laid out in one table whose rows a shader finds from the
 //! vertex it is drawing.
 
 use std::collections::HashMap;
@@ -8,7 +8,7 @@ use std::hash::Hash;
 
 use glam::{Mat3, Mat4};
 
-use crate::{Blending, MAX_SCENE_NODES, Object, mirrors, normal_matrix};
+use crate::{Blending, MAX_SCENE_NODES, Maps, Object, mirrors, normal_matrix};
 
 /// What objects drawn together share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -19,6 +19,7 @@ pub struct DrawKey<M, T> {
     pub mirrored: bool,
     pub mesh: M,
     pub texture: Option<T>,
+    pub maps: Maps<T>,
 }
 
 impl<M: Copy, T: Copy> DrawKey<M, T> {
@@ -29,6 +30,7 @@ impl<M: Copy, T: Copy> DrawKey<M, T> {
             mirrored: mirrors(&object.world),
             mesh: object.mesh,
             texture: object.surface.texture,
+            maps: object.surface.maps,
         }
     }
 }
@@ -156,18 +158,14 @@ mod tests {
         Object {
             world: Mat4::from_translation(Vec3::new(0.0, 0.0, z)),
             mesh,
+            first_index: 0,
             index_count: 6,
             surface: Surface {
-                base_color: [1.0; 4],
-                texture: None,
-                metallic: 0.0,
-                roughness: 0.5,
-                emissive: [0.0; 3],
                 blending,
-                unlit: false,
-                double_sided: false,
+                ..Surface::default()
             },
             center: Vec3::new(0.0, 0.0, z),
+            first_joint: None,
         }
     }
 

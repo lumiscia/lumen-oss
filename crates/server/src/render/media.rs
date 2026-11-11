@@ -12,8 +12,8 @@ use lumen_engine::{
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
     media::{
-        Asset, AssetKind, AssetResolver, FontResolver, ImageResolver, MediaStore, NoAssets,
-        TextSession, VideoFrameResolver, asset_id, resolve_asset,
+        Asset, AssetKind, AssetResolver, FontResolver, ImageResolver, MediaStore, ModelResolver,
+        NoAssets, TextSession, VideoFrameResolver, asset_id, resolve_asset,
     },
 };
 
@@ -81,9 +81,10 @@ impl LocalMediaStore {
     fn stored_source(&self, source: &str, kind: AssetKind) -> Result<String, MediaError> {
         if let Some(id) = asset_id(source) {
             return match resolve_asset(&*self.assets, id, kind)? {
-                Asset::Image(path) | Asset::Video(path) | Asset::Audio(path) => {
-                    Ok(path.to_string_lossy().to_string())
-                }
+                Asset::Image(path)
+                | Asset::Video(path)
+                | Asset::Audio(path)
+                | Asset::Model(path) => Ok(path.to_string_lossy().to_string()),
                 Asset::Font(_) => unreachable!("resolve_asset returns the kind it is asked for"),
             };
         }
@@ -212,6 +213,11 @@ impl MediaStore for LocalMediaStore {
         Ok(Box::new(self.audio_resolver(&resolved)?))
     }
 
+    fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
+        let resolved = self.stored_source(source, AssetKind::Model)?;
+        Ok(Box::new(ModelFileResolver::open(resolved)?))
+    }
+
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {
         let font = self.resolved_font(font_family).ok().flatten()?;
         Some(font.id().to_string())
@@ -235,6 +241,55 @@ impl MediaStore for LocalMediaStore {
     fn text_session(&self) -> Option<&TextSession> {
         Some(&self.text)
     }
+}
+
+/// A model file, read only when a render hasn't loaded the model its ID names.
+struct ModelFileResolver {
+    path: String,
+    /// The path, length and modification time, so that a changed file reloads.
+    id: String,
+}
+
+impl ModelFileResolver {
+    fn open(path: String) -> Result<Self, MediaError> {
+        let metadata = std::fs::metadata(&path)
+            .map_err(|error| MediaError::source_not_found(&path, error.to_string()))?;
+        let id = format!("{path}:{}:{:?}", metadata.len(), metadata.modified().ok());
+        Ok(Self { path, id })
+    }
+}
+
+impl ModelResolver for ModelFileResolver {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> Result<Vec<u8>, MediaError> {
+        read_model(Path::new(&self.path)).map_err(|details| MediaError::Decode {
+            media_source: self.path.clone(),
+            details,
+        })
+    }
+}
+
+/// The bytes of the model file at `path`, refusing one larger than a model may be before reading
+/// it.
+fn read_model(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    let limit = lumen_3d::model::MAX_MODEL_BYTES;
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > limit {
+        return Err(format!(
+            "the model is larger than the {} MiB a model may be",
+            limit >> 20
+        ));
+    }
+    Ok(bytes)
 }
 
 pub(super) fn media_root(override_root: Option<&Path>) -> anyhow::Result<PathBuf> {
@@ -472,12 +527,15 @@ mod tests {
         std::fs::write(&image, b"not a png").unwrap();
         let font = assets.path().join("brand");
         std::fs::write(&font, ROBOTO).unwrap();
+        let fox = assets.path().join("fox");
+        std::fs::write(&fox, b"glTF").unwrap();
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let store = LocalMediaStore::new(root.clone(), None).with_assets(Arc::new(Assets(
             HashMap::from([
                 ("logo", Asset::Image(image.clone())),
                 ("brand", Asset::Font(vec![font])),
+                ("fox", Asset::Model(fox.clone())),
             ]),
         )));
         let image_error = |source: &str| match store.get_image_resolver(source) {
@@ -490,6 +548,19 @@ mod tests {
         assert!(decode.to_string().contains(&image.display().to_string()));
         assert_eq!(image_error("asset:other").code(), "asset.not_found");
         assert_eq!(image_error("asset:brand").code(), "asset.wrong_kind");
+        let model = |source: &str| {
+            store
+                .get_model_resolver(source)
+                .map(|model| model.id().to_string())
+        };
+        let id = model("asset:fox").unwrap();
+        std::fs::write(&fox, b"glTF, changed").unwrap();
+        assert_ne!(
+            model("asset:fox").unwrap(),
+            id,
+            "a changed file has a new ID"
+        );
+        assert_eq!(model("asset:logo").unwrap_err().code(), "asset.wrong_kind");
         let font = store.get_font_resolver("asset:brand").unwrap().unwrap();
         assert_eq!(font.data().unwrap(), vec![ROBOTO.to_vec()]);
         assert_eq!(

@@ -2,7 +2,10 @@
 //! target, then a resolve into the node's raster.
 
 use bytemuck::{Pod, Zeroable};
-use lumen_3d::{Camera, Draws, LightKind, Lighting, Object, Projection, Row};
+use lumen_3d::{
+    Blending, Camera, Draws, Filter, LightKind, Lighting, Map, Object, Projection, Row, Sampler,
+    Wrap,
+};
 use lumen_gpu::{
     DEPTH_FORMAT, DepthTest, LayoutEntry, LayoutKind, RenderTargetSpec, Res, Size, TargetLoad,
     TexRef, TextureDomain, wgpu,
@@ -29,15 +32,37 @@ const LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(5, wgpu::ShaderStages::VERTEX, LayoutKind::Uniform),
     LayoutEntry::staged(6, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
     LayoutEntry::staged(7, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
+    LayoutEntry::staged(8, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(9, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(10, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(11, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(12, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(13, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(14, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(15, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
+    LayoutEntry::staged(16, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
+    LayoutEntry::staged(17, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
+    LayoutEntry::staged(18, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
+    LayoutEntry::staged(19, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
 ];
 
 const CLAMP_SAMPLER: u64 = 0x3d00_0001;
+/// Map samplers' keys are this with their settings in the low byte.
+const MAP_SAMPLERS: u64 = 0x3d01_0000;
 
 pub(crate) const FLAG_UNLIT: u32 = 1;
 pub(crate) const FLAG_BLEND: u32 = 2;
 pub(crate) const FLAG_MIRRORED: u32 = 4;
 /// The bound texture is the object's raster.
 pub(crate) const FLAG_RASTER: u32 = 8;
+pub(crate) const FLAG_MASK: u32 = 16;
+pub(crate) const FLAG_SKINNED: u32 = 32;
+pub(crate) const FLAG_FLAT_NORMALS: u32 = 64;
+pub(crate) const FLAG_BASE_COLOR_MAP: u32 = 128;
+pub(crate) const FLAG_METALLIC_ROUGHNESS_MAP: u32 = 256;
+pub(crate) const FLAG_NORMAL_MAP: u32 = 512;
+pub(crate) const FLAG_EMISSIVE_MAP: u32 = 1024;
+pub(crate) const FLAG_OCCLUSION_MAP: u32 = 2048;
 pub(crate) const LIGHT_DIRECTIONAL: u32 = 0;
 pub(crate) const LIGHT_POINT: u32 = 1;
 pub(crate) const LIGHT_SPOT: u32 = 2;
@@ -88,7 +113,11 @@ pub(crate) struct GpuObject {
     pub(crate) roughness: f32,
     pub(crate) flags: u32,
     pub(crate) first_vertex: u32,
-    _pad: u32,
+    pub(crate) first_index: u32,
+    pub(crate) first_joint: u32,
+    pub(crate) alpha_cutoff: f32,
+    pub(crate) normal_scale: f32,
+    pub(crate) occlusion_strength: f32,
 }
 
 /// Keep in sync with `Run` in `scene.wgsl`.
@@ -134,8 +163,32 @@ fn gpu_object(object: &Object<GpuMesh, TexRef>, row: &Row) -> GpuObject {
     if surface.unlit {
         flags |= FLAG_UNLIT;
     }
-    if surface.blending == lumen_3d::Blending::Blend {
-        flags |= FLAG_BLEND;
+    let mut alpha_cutoff = 0.0;
+    match surface.blending {
+        Blending::Opaque => {}
+        Blending::Mask { cutoff } => {
+            flags |= FLAG_MASK;
+            alpha_cutoff = cutoff;
+        }
+        Blending::Blend => flags |= FLAG_BLEND,
+    }
+    if object.first_joint.is_some() {
+        flags |= FLAG_SKINNED;
+    }
+    if surface.flat_normals {
+        flags |= FLAG_FLAT_NORMALS;
+    }
+    let maps = &surface.maps;
+    for (map, flag) in [
+        (&maps.base_color, FLAG_BASE_COLOR_MAP),
+        (&maps.metallic_roughness, FLAG_METALLIC_ROUGHNESS_MAP),
+        (&maps.normal, FLAG_NORMAL_MAP),
+        (&maps.emissive, FLAG_EMISSIVE_MAP),
+        (&maps.occlusion, FLAG_OCCLUSION_MAP),
+    ] {
+        if map.is_some() {
+            flags |= flag;
+        }
     }
     if lumen_3d::mirrors(&object.world) {
         flags |= FLAG_MIRRORED;
@@ -153,7 +206,56 @@ fn gpu_object(object: &Object<GpuMesh, TexRef>, row: &Row) -> GpuObject {
         roughness: surface.roughness,
         flags,
         first_vertex: row.first_vertex,
-        _pad: 0,
+        first_index: object.first_index,
+        first_joint: object.first_joint.unwrap_or(0),
+        alpha_cutoff,
+        normal_scale: surface.normal_scale,
+        occlusion_strength: surface.occlusion_strength,
+    }
+}
+
+fn sampler_key(sampler: &Sampler) -> u64 {
+    let wrap = |wrap: Wrap| match wrap {
+        Wrap::Repeat => 0,
+        Wrap::MirroredRepeat => 1,
+        Wrap::ClampToEdge => 2,
+    };
+    let filter = |filter: Filter| match filter {
+        Filter::Nearest => 0,
+        Filter::Linear => 1,
+    };
+    let mipmap = sampler.mipmap.map_or(0, |mipmap| 1 + filter(mipmap));
+    MAP_SAMPLERS
+        | wrap(sampler.wrap_u)
+        | wrap(sampler.wrap_v) << 2
+        | filter(sampler.mag) << 4
+        | filter(sampler.min) << 5
+        | mipmap << 6
+}
+
+fn sampler_descriptor(sampler: &Sampler) -> wgpu::SamplerDescriptor<'static> {
+    let wrap = |wrap: Wrap| match wrap {
+        Wrap::Repeat => wgpu::AddressMode::Repeat,
+        Wrap::MirroredRepeat => wgpu::AddressMode::MirrorRepeat,
+        Wrap::ClampToEdge => wgpu::AddressMode::ClampToEdge,
+    };
+    let filter = |filter: Filter| match filter {
+        Filter::Nearest => wgpu::FilterMode::Nearest,
+        Filter::Linear => wgpu::FilterMode::Linear,
+    };
+    wgpu::SamplerDescriptor {
+        label: Some("lumen 3d map sampler"),
+        address_mode_u: wrap(sampler.wrap_u),
+        address_mode_v: wrap(sampler.wrap_v),
+        mag_filter: filter(sampler.mag),
+        min_filter: filter(sampler.min),
+        mipmap_filter: match sampler.mipmap {
+            Some(Filter::Linear) => wgpu::MipmapFilterMode::Linear,
+            _ => wgpu::MipmapFilterMode::Nearest,
+        },
+        // Without mipmapping, only the full-size level is read.
+        lod_max_clamp: if sampler.mipmap.is_some() { 32.0 } else { 0.0 },
+        ..wgpu::SamplerDescriptor::default()
     }
 }
 
@@ -270,6 +372,15 @@ impl RecordNode for Render3d {
             .map(|row| gpu_object(&scene.objects[row.object], row))
             .collect();
         let objects = cx.rec.storage_parts(&[bytemuck::cast_slice(&objects)]);
+        let mut joints: Vec<[[f32; 4]; 4]> = scene
+            .joints
+            .iter()
+            .map(|joint| joint.to_cols_array_2d())
+            .collect();
+        if joints.is_empty() {
+            joints.push([[0.0; 4]; 4]);
+        }
+        let joints = cx.rec.storage_parts(&[bytemuck::cast_slice(&joints)]);
 
         let color = cx.rec.acquire(
             target_size,
@@ -289,7 +400,8 @@ impl RecordNode for Render3d {
             min_filter: wgpu::FilterMode::Linear,
             ..wgpu::SamplerDescriptor::default()
         });
-        // Objects without a raster still bind a texture, which their shader doesn't read.
+        // Objects without a raster or a map still bind a texture and sampler in its place, which
+        // their shader doesn't read, as meshes without skins bind their vertices.
         let unread = cx.transparent(size).tex;
         for (drawn, run) in draws.runs.iter().enumerate() {
             let depth_test = if run.key.blend {
@@ -317,6 +429,41 @@ impl RecordNode for Render3d {
                 base: run.base,
                 _pad: 0,
             });
+            let maps = &run.key.maps;
+            let maps = [
+                maps.base_color,
+                maps.metallic_roughness,
+                maps.normal,
+                maps.emissive,
+                maps.occlusion,
+            ];
+            let mut bindings = vec![
+                (0, globals),
+                (1, objects),
+                (2, Res::Buffer(run.key.mesh.vertices)),
+                (3, Res::Buffer(run.key.mesh.indices)),
+                (4, lights),
+                (5, rows),
+                (6, Res::Tex(run.key.texture.unwrap_or(unread))),
+                (7, Res::Sampler(clamp)),
+                (8, joints),
+                (
+                    9,
+                    Res::Buffer(run.key.mesh.skin.unwrap_or(run.key.mesh.vertices)),
+                ),
+            ];
+            for (slot, map) in (0..).zip(maps) {
+                let (texture, sampler) = match map {
+                    Some(Map { texture, sampler }) => (
+                        texture,
+                        cx.rec
+                            .sampler(sampler_key(&sampler), || sampler_descriptor(&sampler)),
+                    ),
+                    None => (unread, clamp),
+                };
+                bindings.push((10 + slot, Res::Tex(texture)));
+                bindings.push((15 + slot, Res::Sampler(sampler)));
+            }
             let load = if drawn == 0 {
                 TargetLoad::Clear
             } else {
@@ -324,16 +471,7 @@ impl RecordNode for Render3d {
             };
             cx.rec.draw_with_depth(
                 program,
-                &[
-                    (0, globals),
-                    (1, objects),
-                    (2, Res::Buffer(run.key.mesh.vertices)),
-                    (3, Res::Buffer(run.key.mesh.indices)),
-                    (4, lights),
-                    (5, rows),
-                    (6, Res::Tex(run.key.texture.unwrap_or(unread))),
-                    (7, Res::Sampler(clamp)),
-                ],
+                &bindings,
                 color,
                 load,
                 depth,

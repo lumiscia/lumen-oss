@@ -18,6 +18,8 @@ pub enum AssetKind {
     Video,
     Audio,
     Font,
+    /// A binary glTF (`.glb`) 3D model.
+    Model,
 }
 
 impl fmt::Display for AssetKind {
@@ -27,6 +29,7 @@ impl fmt::Display for AssetKind {
             Self::Video => "a video",
             Self::Audio => "audio",
             Self::Font => "a font",
+            Self::Model => "a model",
         })
     }
 }
@@ -39,6 +42,7 @@ pub enum Asset {
     Audio(PathBuf),
     /// One family: the files of its faces, among which weight and style choose.
     Font(Vec<PathBuf>),
+    Model(PathBuf),
 }
 
 impl Asset {
@@ -48,6 +52,7 @@ impl Asset {
             Self::Video(_) => AssetKind::Video,
             Self::Audio(_) => AssetKind::Audio,
             Self::Font(_) => AssetKind::Font,
+            Self::Model(_) => AssetKind::Model,
         }
     }
 }

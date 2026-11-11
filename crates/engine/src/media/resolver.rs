@@ -164,3 +164,10 @@ pub trait FontResolver: Send + Sync {
 
     fn data(&self) -> Result<Vec<Vec<u8>>, MediaError>;
 }
+
+/// A 3D model file. Models load once per ID, which must change whenever the file's bytes do.
+pub trait ModelResolver: Send + Sync {
+    fn id(&self) -> &str;
+
+    fn data(&self) -> Result<Vec<u8>, MediaError>;
+}
