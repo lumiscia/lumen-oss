@@ -163,6 +163,15 @@ pub fn parse_composition(payload: &serde_json::Value) -> Result<Composition, Ser
     })
 }
 
+/// Held by a test while it opens GPU devices. Several of the library's tests doing so at once
+/// crash some Vulkan drivers inside `vkSetDebugUtilsObjectNameEXT`.
+#[cfg(test)]
+pub(crate) fn gpu_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GPU: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    GPU.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod output_tests;
 

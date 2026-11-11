@@ -197,7 +197,13 @@ impl SequencePattern {
             digits
                 if digits.starts_with('0') && digits.bytes().all(|byte| byte.is_ascii_digit()) =>
             {
-                Some(digits.parse::<usize>().unwrap_or(0))
+                match digits.parse::<usize>() {
+                    Ok(width) if width <= MAX_PATTERN_WIDTH => Some(width),
+                    _ => bail!(
+                        "the frame number in `{file_name}` is padded to more than \
+                         {MAX_PATTERN_WIDTH} digits"
+                    ),
+                }
             }
             _ => bail!(
                 "unsupported frame number pattern in `{file_name}`; use %d or %0Nd, such as %05d"
@@ -221,6 +227,9 @@ impl SequencePattern {
         format!("{}{frame:0width$}{}", self.before, self.after)
     }
 }
+
+/// The widest a `%0Nd` pattern may pad a frame number.
+const MAX_PATTERN_WIDTH: usize = 20;
 
 fn parse_frames(raw: &str) -> Result<FrameRange, String> {
     let invalid = || format!("expected START..END, such as 30..60, 30.. or ..60, got `{raw}`");
@@ -1036,6 +1045,8 @@ mod tests {
             "a_%5d.png",
             "a_%d_%d.png",
             "a_%d%%.png",
+            "a_%021d.png",
+            "a_%099999999999999999999999d.png",
         ] {
             assert!(SequencePattern::parse(invalid).is_err(), "{invalid}");
         }

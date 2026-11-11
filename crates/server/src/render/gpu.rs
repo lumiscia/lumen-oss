@@ -464,6 +464,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn encoder_that_cannot_open_is_not_retryable() {
+        let _gpu = crate::render::gpu_test_guard();
         let options = RenderOptions {
             // libx264 only checks `tune` when it opens.
             encoder: Some(VideoEncoderChoice::single(
@@ -498,6 +499,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn cancelling_stops_at_the_next_frame_and_leaves_no_output() {
+        let _gpu = crate::render::gpu_test_guard();
         let temp = tempfile::tempdir().unwrap();
         let cancel = CancelToken::new();
         let options = RenderOptions {
@@ -534,6 +536,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn cancelling_after_the_last_frame_still_stops_the_render() {
+        let _gpu = crate::render::gpu_test_guard();
         let temp = tempfile::tempdir().unwrap();
         let cancel = CancelToken::new();
         let options = RenderOptions {
@@ -559,6 +562,7 @@ mod tests {
 
     #[test]
     fn an_unknown_encoder_is_an_invalid_render_profile() {
+        let _gpu = crate::render::gpu_test_guard();
         let options = RenderOptions {
             encoder: Some(VideoEncoderChoice::single(
                 "definitely_not_an_encoder",
@@ -579,6 +583,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn media_resolves_in_the_root_the_options_name_with_the_engine_code_when_missing() {
+        let _gpu = crate::render::gpu_test_guard();
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("hero.png"), TINY_PNG).unwrap();
         let options = RenderOptions {

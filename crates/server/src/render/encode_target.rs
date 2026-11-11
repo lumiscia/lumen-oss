@@ -533,6 +533,7 @@ mod start_failure_tests {
 
     #[test]
     fn an_output_in_a_missing_directory_is_output_io() {
+        let _gpu = crate::render::gpu_test_guard();
         let missing = std::env::temp_dir()
             .join("lumen-no-such-dir")
             .join("out.mp4");
@@ -598,6 +599,7 @@ mod tests {
     /// on NVIDIA the CUDA context are up.
     #[test]
     fn a_cuda_target_that_will_not_open_leaves_a_working_cpu_upload() {
+        let _gpu = crate::render::gpu_test_guard();
         let composition = super::super::parse_composition(&serde_json::json!({
             "timeline": { "fps": 24, "duration_frames": 3 },
             "render_settings": { "width": 16, "height": 16 },

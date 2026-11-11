@@ -1,10 +1,6 @@
 //! Renders each output kind on the machine's GPU and reads the results back.
 
-use std::{
-    fs,
-    path::Path,
-    sync::{Mutex, MutexGuard, PoisonError},
-};
+use std::{fs, path::Path, sync::MutexGuard};
 
 use lumen_engine::composition::Composition;
 use lumen_ffmpeg::{
@@ -90,10 +86,6 @@ fn write_voice(directory: &Path) {
     fs::write(directory.join("voice.wav"), wav).unwrap();
 }
 
-/// Held by a test while it renders. Several of these tests rendering at once, on top of the
-/// library's other GPU tests, crash some Vulkan drivers inside `vkSetDebugUtilsObjectNameEXT`.
-static GPU: Mutex<()> = Mutex::new(());
-
 struct Setup {
     _serial: MutexGuard<'static, ()>,
     media: tempfile::TempDir,
@@ -102,7 +94,7 @@ struct Setup {
 
 impl Setup {
     fn new() -> Self {
-        let serial = GPU.lock().unwrap_or_else(PoisonError::into_inner);
+        let serial = crate::render::gpu_test_guard();
         let media = tempfile::tempdir().unwrap();
         write_voice(media.path());
         Self {

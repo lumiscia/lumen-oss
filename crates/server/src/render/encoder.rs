@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use lumen_engine::{
-    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMixer, duration_samples},
+    audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, AudioBuffer, AudioMixer},
     composition::Composition,
 };
 use lumen_ffmpeg::{
@@ -180,6 +180,14 @@ impl std::fmt::Display for AudioCancelled {
 
 impl std::error::Error for AudioCancelled {}
 
+/// The sample `frame` starts at, at the rate the video is encoded with, so audio and video cover
+/// the same time.
+fn frame_sample(frame: u32, fps: Rational) -> u64 {
+    let (numerator, denominator) = (fps.numerator as u128, fps.denominator as u128);
+    let samples = u128::from(frame) * denominator * u128::from(AUDIO_SAMPLE_RATE);
+    ((samples * 2 + numerator) / (numerator * 2)) as u64
+}
+
 /// Mixes the audio of `frames`, a range of the timeline's frames, a chunk at a time. The output
 /// starts at the sample the first frame starts at and ends where the last one does, so it lasts as
 /// long as the frames do. Stops with [`AudioCancelled`] before the chunk that follows a
@@ -195,10 +203,10 @@ pub(super) fn write_composited_audio(
         return Ok(());
     }
 
-    let fps = composition.timeline().fps;
-    let end_sample = duration_samples(frames.end, fps);
+    let fps = Rational::from_fps(f64::from(composition.timeline().fps))?;
+    let end_sample = frame_sample(frames.end, fps);
     let mut mixer = AudioMixer::new(composition, media_store);
-    let mut start_sample = duration_samples(frames.start, fps);
+    let mut start_sample = frame_sample(frames.start, fps);
     let chunk_frames = (AUDIO_SAMPLE_RATE as usize).saturating_mul(30);
 
     while start_sample < end_sample {
@@ -258,6 +266,16 @@ mod tests {
             writer_handle: Some(writer_handle),
         });
         assert!(closed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_frame_starts_at_the_sample_the_encoded_video_reaches() {
+        let ntsc = Rational::from_fps(29.97).unwrap();
+        assert_eq!(
+            frame_sample(60_000, ntsc) - frame_sample(30_000, ntsc),
+            48_048_000
+        );
+        assert_eq!(frame_sample(1, Rational::new(30, 1)), 1_600);
     }
 
     #[test]
