@@ -71,9 +71,9 @@ impl Diagnostic {
     /// `warning` as a diagnostic about the value at `path`.
     pub fn from_warning(warning: &Warning, path: String) -> Self {
         let node = match warning {
-            Warning::FontFallback { node_id, .. } | Warning::ShadowLimit { node_id, .. } => {
-                Some(*node_id)
-            }
+            Warning::FontFallback { node_id, .. }
+            | Warning::NoOutlines { node_id, .. }
+            | Warning::ShadowLimit { node_id, .. } => Some(*node_id),
         };
         Self {
             severity: Severity::Warning,

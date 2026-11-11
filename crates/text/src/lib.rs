@@ -11,6 +11,7 @@ mod atlas;
 mod decorate;
 mod gpu;
 mod msdf;
+mod outline;
 mod shape;
 mod transform;
 
@@ -20,6 +21,7 @@ pub use decorate::{
 };
 pub use gpu::*;
 pub use msdf::MSDF_PX_RANGE;
+pub use outline::{GlyphOutline, OutlineCommand};
 pub use shape::{
     FontFeature, GlyphKey, ShapedText, TextAlign, TextFontStyle, TextGlyph, TextItem, TextLayout,
     TextLayoutRequest, TextMeasurement, TextOverflow, TextSegment, TextSpan,
