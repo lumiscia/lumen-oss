@@ -2,6 +2,7 @@
 //! and HLG sources are tone-mapped to SDR with the BT.2390 EETF, 203 nits as SDR white and a
 //! 1000-nit peak. Expected values are worked out here from the standards' formulas.
 
+use lumen_engine::gpu::RenderTarget;
 use lumen_engine::media::{
     ChromaSubsampling, ColorPrimaries, Rotation, TransferFunction, YuvColor, YuvFormat, YuvFrame,
     YuvLayout, YuvMatrix,
@@ -306,7 +307,7 @@ fn a_video_whose_colour_tags_are_not_converted_warns_once() {
     let mut renderer = gpu().renderer();
     render_working_space(&mut renderer, &composition, 0.0, &media);
     renderer
-        .render_frame_at(&composition, 1.0, &media)
+        .render(&composition, 1.0, &media, RenderTarget::Owned)
         .expect("frame 1 renders");
     let warnings = renderer.take_diagnostics();
     assert_eq!(warnings.len(), 1, "{warnings:?}");

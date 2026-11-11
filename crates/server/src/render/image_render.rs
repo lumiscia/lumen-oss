@@ -114,13 +114,14 @@ impl<'a> ImageRender<'a> {
         for (index, frame) in self.frames.clone().enumerate() {
             self.cancel.check()?;
             prefetch_media_frames(self.composition, &self.media_store, frame);
-            let (raster, _submission) = render_raster(
+            let raster = render_raster(
                 &mut self.renderer,
                 self.composition,
                 &self.media_store,
                 frame,
                 &mut timing,
-            )?;
+            )?
+            .raster;
             let size = checked_size(self.composition, &raster, frame)?;
             let pixels = timed(&mut timing.readback, || {
                 self.renderer

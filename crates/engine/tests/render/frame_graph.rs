@@ -5,7 +5,10 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer};
+use lumen_engine::{
+    composition::Composition,
+    gpu::{GpuCompositionRenderer, RenderTarget, RenderedFrame},
+};
 use lumen_gpu::{ExternalTexture, wgpu};
 use serde_json::{Value, json};
 
@@ -254,11 +257,11 @@ fn a_held_external_target_keeps_its_frame_while_the_pool_turns_over() {
         let texture = target(&renderer, desc);
         held.push(
             renderer
-                .render_frame_into_external(
+                .render(
                     &composition,
                     frame,
                     &media,
-                    ExternalTexture::from_texture(texture),
+                    RenderTarget::External(ExternalTexture::from_texture(texture)),
                 )
                 .unwrap(),
         );
@@ -271,7 +274,7 @@ fn a_held_external_target_keeps_its_frame_while_the_pool_turns_over() {
     assert!(stats.recorder.textures_destroyed > 0, "the pool evicted");
     for (frame, submitted) in held.iter().enumerate() {
         submitted.wait(&renderer.gpu_renderer().device).unwrap();
-        let shown = read_rgba8(renderer.gpu_renderer(), submitted.texture(), size);
+        let shown = read_rgba8(renderer.gpu_renderer(), &submitted.raster.texture, size);
         let expected = render(&mut reference, &composition, frame as f64, &media).rgba;
         assert!(shown == expected, "frame {frame} changed while it was held");
     }
@@ -318,11 +321,11 @@ fn a_target_of_another_size_or_format_is_refused() {
                 view_formats: &[],
             });
         let error = renderer
-            .render_frame_into_external(
+            .render(
                 &composition,
                 0,
                 &media,
-                ExternalTexture::from_texture(texture),
+                RenderTarget::External(ExternalTexture::from_texture(texture)),
             )
             .map(drop)
             .unwrap_err()
@@ -354,17 +357,17 @@ fn a_target_used_again_shows_the_frame_rendered_into_it_last() {
         .collect();
     for frame in 0..9u32 {
         let submitted = renderer
-            .render_frame_into_external(
+            .render(
                 &composition,
                 frame,
                 &media,
-                ExternalTexture::new(ring[frame as usize % 3].clone()),
+                RenderTarget::External(ExternalTexture::new(ring[frame as usize % 3].clone())),
             )
             .unwrap();
         submitted.wait(&renderer.gpu_renderer().device).unwrap();
         let shown = read_rgba8(
             renderer.gpu_renderer(),
-            submitted.texture(),
+            &submitted.raster.texture,
             desc.domain.storage_size,
         );
         let expected = render(&mut reference, &composition, f64::from(frame), &media).rgba;
@@ -392,17 +395,17 @@ fn a_kept_output_is_copied_to_the_target_and_stays_kept() {
     let desc = renderer.output_desc().unwrap();
     for frame in 1..4 {
         let submitted = renderer
-            .render_frame_into_external(
+            .render(
                 &composition,
                 frame,
                 &media,
-                ExternalTexture::from_texture(target(&renderer, desc)),
+                RenderTarget::External(ExternalTexture::from_texture(target(&renderer, desc))),
             )
             .unwrap();
         submitted.wait(&renderer.gpu_renderer().device).unwrap();
         let shown = read_rgba8(
             renderer.gpu_renderer(),
-            submitted.texture(),
+            &submitted.raster.texture,
             desc.domain.storage_size,
         );
         assert!(shown == expected, "frame {frame} differs");
@@ -602,9 +605,11 @@ fn a_frame_with_nothing_to_record_still_returns_its_own_submission() {
     let mut conversions: Vec<Arc<AtomicBool>> = Vec::new();
     let mut expected = None;
     for frame in 0..5 {
-        let bound = renderer.bind_frame(&composition, frame, &media).unwrap();
-        renderer.upload_bound_frame(&bound).unwrap();
-        let (raster, submission) = renderer.submit_render().unwrap();
+        let bound = renderer
+            .bind_frame(&composition, frame, &media, RenderTarget::Owned)
+            .unwrap();
+        renderer.upload_frame(&bound).unwrap();
+        let RenderedFrame { raster, submission } = renderer.submit_frame(&bound).unwrap();
         assert_eq!(renderer.recorded_pass_count() == 0, frame > 0);
         assert_ne!(
             previous.as_ref().map(|index| format!("{index:?}")),

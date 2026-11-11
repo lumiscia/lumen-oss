@@ -3,7 +3,7 @@ use std::path::Path;
 use lumen_engine::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE},
     composition::{BitDepth, Composition},
-    gpu::{CudaNvencTarget, CudaNvencTargetPool, GpuCompositionRenderer},
+    gpu::{CudaNvencTarget, CudaNvencTargetPool, GpuCompositionRenderer, RenderTarget},
 };
 use lumen_ffmpeg::{
     AudioEncoderConfig, EncodeMode, EncoderQuality, GpuBackend, MuxedEncoder, Rational,
@@ -100,11 +100,11 @@ impl CudaTarget {
         timing: &mut RenderTiming,
     ) -> Result<(), ServerRenderError> {
         timed(&mut timing.render, || {
-            renderer.render_frame_into_external(
+            renderer.render(
                 composition,
                 frame,
                 media_store,
-                self.target.external_texture(),
+                RenderTarget::External(self.target.external_texture()),
             )
         })
         .map_err(|err| ServerRenderError::engine(format!("render failed at frame {frame}"), err))?;

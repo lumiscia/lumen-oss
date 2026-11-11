@@ -243,7 +243,12 @@ fn profiles_that_cant_be_honoured_warn_once_and_render_as_srgb() {
         let shown = render_working_space(&mut renderer, &composition, 0.0, &media);
         assert_eq!(shown, untagged, "{name}");
         renderer
-            .render_frame_at(&composition, 1.0, &media)
+            .render(
+                &composition,
+                1.0,
+                &media,
+                lumen_engine::gpu::RenderTarget::Owned,
+            )
             .expect("frame 1 renders");
         let warnings = renderer.take_diagnostics();
         assert_eq!(warnings.len(), 1, "{name}: {warnings:?}");

@@ -4,7 +4,10 @@ use anyhow::Context;
 use lumen_engine::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE},
     composition::Composition,
-    gpu::{GpuCompositionRenderer, MetalVideoToolboxTarget, MetalVideoToolboxTargetPool},
+    gpu::{
+        GpuCompositionRenderer, MetalVideoToolboxTarget, MetalVideoToolboxTargetPool, RenderTarget,
+        RenderedFrame,
+    },
 };
 use lumen_ffmpeg::{
     AudioEncoderConfig, EncodeMode, EncoderQuality, GpuBackend, MuxedEncoder, Rational,
@@ -21,7 +24,7 @@ const FRAMES_IN_FLIGHT: usize = 3;
 struct PendingFrame {
     frame: u32,
     target: MetalVideoToolboxTarget,
-    submitted: lumen_gpu::SubmittedExternalTexture,
+    submitted: RenderedFrame,
 }
 
 pub(in crate::render) struct MetalTarget {
@@ -86,11 +89,11 @@ impl MetalTarget {
                 ServerRenderError::engine(format!("failed to acquire frame {frame}"), err)
             })?;
         let submitted = timed(&mut timing.render, || {
-            renderer.render_frame_into_external(
+            renderer.render(
                 composition,
                 frame,
                 media_store,
-                target.external_texture(),
+                RenderTarget::External(target.external_texture()),
             )
         })
         .map_err(|err| ServerRenderError::engine(format!("render failed at frame {frame}"), err))?;

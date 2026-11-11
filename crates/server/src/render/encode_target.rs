@@ -6,7 +6,10 @@ use std::{
 
 use lumen_engine::{
     composition::Composition,
-    gpu::{GpuCompositionRenderer, RasterHandle, YuvConverter, YuvFormat, YuvLayout},
+    gpu::{
+        GpuCompositionRenderer, RasterHandle, RenderTarget, RenderedFrame, YuvConverter, YuvFormat,
+        YuvLayout,
+    },
 };
 use lumen_ffmpeg::{
     BitDepth, CpuVideoFrame, EncoderCandidate, EncoderFamily, FfmpegError, PixelFormat,
@@ -284,8 +287,8 @@ impl EncodeTarget {
                 converter,
                 ring,
             } => {
-                let (raster, _submission) =
-                    render_raster(renderer, composition, media_store, frame, timing)?;
+                let raster =
+                    render_raster(renderer, composition, media_store, frame, timing)?.raster;
                 poll(renderer, frame, timing, None)?;
                 checked_size(composition, &raster, frame)?;
                 timed(&mut timing.render, || {
@@ -521,16 +524,16 @@ pub(super) fn render_raster(
     media_store: &LocalMediaStore,
     frame: u32,
     timing: &mut RenderTiming,
-) -> Result<(RasterHandle, SubmissionIndex), ServerRenderError> {
+) -> Result<RenderedFrame, ServerRenderError> {
     let failed = |err: lumen_engine::error::LumenError| {
         ServerRenderError::engine(format!("render failed at frame {frame}"), err)
     };
     let bound = timed(&mut timing.bind, || {
-        renderer.bind_frame(composition, frame, media_store)
+        renderer.bind_frame(composition, frame, media_store, RenderTarget::Owned)
     })
     .map_err(failed)?;
-    timed(&mut timing.upload, || renderer.upload_bound_frame(&bound)).map_err(failed)?;
-    timed(&mut timing.render, || renderer.submit_render()).map_err(failed)
+    timed(&mut timing.upload, || renderer.upload_frame(&bound)).map_err(failed)?;
+    timed(&mut timing.render, || renderer.submit_frame(&bound)).map_err(failed)
 }
 
 pub(super) fn checked_size(

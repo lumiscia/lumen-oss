@@ -22,11 +22,10 @@ use std::{
 use lumen_engine::{
     composition::Composition,
     error::MediaError,
-    ffmpeg::{FfmpegResolverOptions, FfmpegVideoResolver},
-    gpu::GpuCompositionRenderer,
+    gpu::{GpuCompositionRenderer, RenderTarget},
     media::{
-        AssetKind, MediaFrame, MediaIdentity, MediaResolver, MediaStore, ResolvedMedia,
-        VideoFrameResolver, VideoMetadata,
+        AssetKind, FfmpegResolverOptions, FfmpegVideoResolver, MediaFrame, MediaIdentity,
+        MediaResolver, MediaStore, ResolvedMedia, VideoFrameResolver, VideoMetadata,
     },
 };
 use lumen_gpu::wgpu;
@@ -318,8 +317,9 @@ fn render(
     store: &Store,
 ) -> Vec<u8> {
     let raster = renderer
-        .render_frame(composition, frame, store)
-        .unwrap_or_else(|error| panic!("frame {frame} does not render: {error}"));
+        .render(composition, frame, store, RenderTarget::Owned)
+        .unwrap_or_else(|error| panic!("frame {frame} does not render: {error}"))
+        .raster;
     let size = raster.domain.storage_size;
     let gpu = renderer.gpu_renderer();
     read_rgba8(gpu, &raster.texture, size)

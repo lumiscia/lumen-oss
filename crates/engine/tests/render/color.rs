@@ -1,7 +1,10 @@
 //! The working space: sources decode to linear light, arithmetic happens there, and the output
 //! encodes back to sRGB once. Expected values come from the sRGB curve, worked out here.
 
-use lumen_engine::{composition::Composition, gpu::OutputAlpha};
+use lumen_engine::{
+    composition::Composition,
+    gpu::{OutputAlpha, RenderTarget},
+};
 use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
@@ -658,7 +661,7 @@ fn a_float_output_is_the_working_space_without_an_output_pass() {
         renderer.set_static_output_reuse(false);
         renderer.compile_with_output_format(&scene, format).unwrap();
         renderer
-            .render_frame_at(&scene, 0.0, &TestMedia::default())
+            .render(&scene, 0.0, &TestMedia::default(), RenderTarget::Owned)
             .unwrap();
         renderer.submitted_pass_count()
     };

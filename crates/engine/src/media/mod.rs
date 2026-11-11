@@ -1,10 +1,10 @@
 //! Media resolver traits, stores, and media planning helpers.
 
 #[cfg(feature = "ffmpeg")]
-pub mod ffmpeg;
+pub(crate) mod ffmpeg;
 
 #[cfg(feature = "image")]
-pub mod image;
+pub(crate) mod image;
 
 mod asset;
 #[cfg(all(test, feature = "image", feature = "ffmpeg"))]

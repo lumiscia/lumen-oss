@@ -1,7 +1,8 @@
 //! How deep a graph may nest before a frame refuses it, on the 2 MiB stack of a default thread.
 
 use lumen_engine::{
-    composition::Composition, diagnostic::Diagnostic, media::collect_frame_requirements,
+    composition::Composition, diagnostic::Diagnostic, gpu::RenderTarget,
+    media::collect_frame_requirements,
 };
 use serde_json::{Value, json};
 
@@ -56,7 +57,7 @@ fn first_frame_error(document: Value) -> Option<Diagnostic> {
         let gpu = gpu();
         let rendered = gpu
             .renderer()
-            .render_frame_at(&composition, 0.0, &media)
+            .render(&composition, 0.0, &media, RenderTarget::Owned)
             .err();
         assert_eq!(
             predicted.as_ref().map(ToString::to_string),
