@@ -18,6 +18,13 @@ wasm-bindings-release:
 generate-types: generate-definitions
     pnpm --filter @lumiscia/generate-types generate
 
+# Sets the Lumen major.minor compositions declare as `lumenSchemaVersion`: the engine constant
+# and every tracked fixture, example and doc, then the generated output. Run it with a release
+# line's new major.minor after its version bump.
+set-schema-version version:
+    pnpm --filter @lumiscia/release-tools set-schema-version {{version}}
+    just generate-types
+
 # Also covers verify-definitions, since the generated schema is among the checked paths.
 verify-typescript-artifacts: generate-types wasm-bindings-debug
     #!/usr/bin/env bash

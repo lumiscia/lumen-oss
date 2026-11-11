@@ -1,8 +1,15 @@
+import { lumenSchemaVersion } from "@lumiscia/lumen-types";
 import { describe, expect, test } from "vitest";
 
 import { Composition } from "../src/composition.js";
 import { frame, hex, progress, uppercase, vec2 } from "../src/expression.js";
 import { defineComposition } from "../src/template.js";
+
+describe("Composition schema version", () => {
+  test("is written as the version the types were generated for", () => {
+    expect(new Composition().toJSON().lumenSchemaVersion).toBe(lumenSchemaVersion);
+  });
+});
 
 describe("Composition node IDs", () => {
   test("skips explicit IDs when allocating automatic IDs", () => {

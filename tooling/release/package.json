@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "sync-cargo-version": "pnpm run build && node dist/sync-cargo-version.js",
+    "set-schema-version": "pnpm run build && node dist/set-schema-version.js",
     "check": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist *.tsbuildinfo"
