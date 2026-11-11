@@ -332,7 +332,7 @@ mod tests {
         levels: u32,
     ) -> Vec<Vec<u8>> {
         let texel_bytes = format.block_copy_size(None).expect("a colour format");
-        let gpu = pollster::block_on(lumen_gpu::Renderer::new()).expect("mip tests need a GPU");
+        let gpu = crate::gpu::test_device::shared().expect("mip tests need a GPU");
         let (device, queue) = (gpu.device.clone(), gpu.queue.clone());
         let make = |size: Size, mips: u32, usage| {
             Arc::new(device.create_texture(&wgpu::TextureDescriptor {

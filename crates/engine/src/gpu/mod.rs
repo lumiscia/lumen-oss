@@ -20,6 +20,8 @@ mod shader_layouts;
     all(target_os = "linux", feature = "ffmpeg", feature = "vulkan")
 ))]
 mod target;
+#[cfg(test)]
+pub(crate) mod test_device;
 mod types;
 mod yuv;
 

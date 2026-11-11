@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn the_nv12_dither_keeps_the_mean_of_fractional_luma() {
-        let gpu = match pollster::block_on(lumen_gpu::Renderer::new()) {
+        let gpu = match crate::gpu::test_device::shared() {
             Ok(gpu) => gpu,
             Err(error) => {
                 eprintln!("no GPU ({error}); skipping NV12 dither test");
