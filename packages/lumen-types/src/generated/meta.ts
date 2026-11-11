@@ -417,7 +417,7 @@ export const expressionBuiltins = [
         "name": "fill"
       }
     ],
-    "doc": "A number as text with exactly `decimals` digits after the point (default 0), so `format(4.3, 2)` is `'4.30'`. Halves round away from zero on the number as written: `format(2.5)` is `'3'`, `format(-2.5)` is `'-3'` and `format(1.005, 2)` is `'1.01'`. A result shorter than `width` characters (default 0) is padded on the left with `fill`, one character (default a space); with a `'0'` fill the sign stays first, so `format(-5, 0, 4, '0')` is `'-005'`. `value` must be finite, `decimals` a whole number in `0..=20` and `width` a whole number in `0..=64`.",
+    "doc": "A number as text with exactly `decimals` digits after the point (default 0), so `format(4.3, 2)` is `'4.30'`. Halves round away from zero on the number as written: `format(2.5)` is `'3'`, `format(-2.5)` is `'-3'` and `format(1.005, 2)` is `'1.01'`. A result shorter than `width` characters (default 0) is padded on the left with `fill`, one Unicode code point (default a space); with a `'0'` fill the sign stays first, so `format(-5, 0, 4, '0')` is `'-005'`. `value` must be finite, `decimals` a whole number in `0..=20` and `width` a whole number in `0..=64`.",
     "maxArgs": 4,
     "minArgs": 1,
     "name": "format",
@@ -430,7 +430,7 @@ export const expressionBuiltins = [
         "name": "parts"
       }
     ],
-    "doc": "Joins strings and numbers into one string. A number shows as it does in a text param, so `concat('frame ', frame / 7)` reads like `=frame / 7`; use `format` for a fixed number of decimals or padding, e.g. `concat('frame ', format(frame, 0, 4, '0'), ' / 1200')`. `+` stays numeric.",
+    "doc": "Joins strings and numbers into one string. A number shows as it does in a text param, so `concat('frame ', frame / 7)` reads like `=frame / 7`; use `format` for a fixed number of decimals or padding, e.g. `concat('frame ', format(frame, 0, 4, '0'), ' / 1200')`. `+` stays numeric. The result can be at most 1 MiB.",
     "maxArgs": null,
     "minArgs": 1,
     "name": "concat",

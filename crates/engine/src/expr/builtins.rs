@@ -157,10 +157,13 @@ pub fn evaluate_builtin(
         BuiltinFn::Concat => {
             let mut text = String::new();
             for part in args {
-                match part {
-                    ExpressionValue::String(part) => text.push_str(part),
-                    other => text.push_str(&other.as_string()),
+                let part = part.as_string();
+                if text.len() + part.len() > MAX_CONCAT_BYTES {
+                    return Err(named(format!(
+                        "the result is longer than {MAX_CONCAT_BYTES} bytes"
+                    )));
                 }
+                text.push_str(&part);
             }
             Ok(ExpressionValue::String(text))
         }
@@ -460,6 +463,9 @@ fn keyframes(t: f64, args: &[ExpressionValue]) -> Result<ExpressionValue, String
 pub(crate) fn key_name(at: impl std::fmt::Display) -> String {
     format!("the key at {at}")
 }
+
+/// The longest string `concat` builds, which keeps nested calls from doubling without end.
+pub(crate) const MAX_CONCAT_BYTES: usize = 1 << 20;
 
 /// How errors name the sides of `lerp` and `tween`.
 pub(crate) const FROM_TO: [&str; 2] = ["`from`", "`to`"];

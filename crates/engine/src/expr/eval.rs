@@ -1088,8 +1088,29 @@ mod tests {
         for source in ["format(0, 20)", "format(1, 0, 64)"] {
             assert!(evaluate(source, 0).is_ok(), "{source}");
         }
+        // Literal arguments are refused before any frame is evaluated.
+        for source in [
+            "format(1, -1)",
+            "format(1, 0, -1)",
+            "format(1, 0, 4, 'ab')",
+            "format(1, 0, 4, '')",
+            "format(1, 0, 4, 0)",
+        ] {
+            assert!(Expression::parse(source).is_err(), "{source}");
+        }
+        // A fill only known at evaluation is checked then.
+        let dynamic = evaluate("format(1, 0, 4, concat('a', 'b'))", 0).unwrap_err();
+        assert!(dynamic.to_string().contains("`fill` must be"), "{dynamic}");
         let nan = evaluate("format(pow(-1, 0.5))", 0).unwrap_err();
         assert!(nan.to_string().contains("`value` must be finite"), "{nan}");
+    }
+
+    #[test]
+    fn concat_refuses_a_result_over_its_limit() {
+        let half = "a".repeat(crate::expr::builtins::MAX_CONCAT_BYTES / 2);
+        assert!(evaluate(&format!("concat('{half}', '{half}')"), 0).is_ok());
+        let error = evaluate(&format!("concat('{half}', '{half}', 'a')"), 0).unwrap_err();
+        assert!(error.to_string().contains("is longer than"), "{error}");
     }
 
     #[test]
