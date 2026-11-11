@@ -2226,6 +2226,49 @@ mod tests {
     }
 
     #[test]
+    fn a_gradient_where_3d_needs_a_solid_color_is_reported_at_its_param() {
+        let gradient = serde_json::json!({
+            "type": "linear",
+            "stops": [{ "offset": 0, "color": "#000000" }, { "offset": 1, "color": "#ffffff" }]
+        });
+        let diagnostics = check_value(
+            &scene_document(
+                serde_json::json!([
+                    { "id": 4, "type": "shape_3d", "params": { "color": gradient } },
+                    { "id": 5, "type": "light_3d", "params": { "color": gradient } },
+                    { "id": 6, "type": "render_3d", "params": { "fog_color": gradient } },
+                    { "id": 7, "type": "image_plane_3d", "params": { "color": gradient } },
+                    { "id": 8, "type": "shape_3d", "params": { "color": "=rgb(1, 2, 3)" } },
+                    { "id": 9, "type": "light_3d", "params": { "color": "#ff0000" } }
+                ]),
+                serde_json::json!([{ "from_node": 3, "to_node": 7, "to_port": "source" }]),
+            ),
+            None,
+            None,
+        );
+        let invalid: Vec<_> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "node.invalid_param")
+            .collect();
+        assert_eq!(
+            invalid
+                .iter()
+                .map(|diagnostic| (diagnostic.path.as_str(), diagnostic.node.map(|node| node.0)))
+                .collect::<Vec<_>>(),
+            [
+                ("/nodes/3/params/color", Some(4)),
+                ("/nodes/4/params/color", Some(5)),
+                ("/nodes/5/params/fog_color", Some(6)),
+                ("/nodes/6/params/color", Some(7)),
+            ]
+        );
+        assert_eq!(
+            invalid[0].message,
+            "node 4: `color` expected a solid color, got a gradient: a gradient can't light a surface"
+        );
+    }
+
+    #[test]
     fn scene_nodes_need_an_engine_built_with_3d() {
         let diagnostics = check_value(
             &scene_document(

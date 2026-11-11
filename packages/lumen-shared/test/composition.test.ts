@@ -105,6 +105,20 @@ describe("Composition inputs", () => {
     expect(composition.toJSON().nodes.every((node) => !("inputs" in node))).toBe(true);
   });
 
+  test("scene ports take bare ids as raster ports do", () => {
+    const composition = new Composition();
+    const box = composition.addNode({ type: "shape_3d" });
+    const sphere = composition.addNode({ type: "shape_3d", params: { shape: "sphere" } });
+    const group = composition.addNode({ type: "merge_3d", inputs: { objects: [box.id, sphere] } });
+    const render = composition.addNode({ type: "render_3d", inputs: { scene: group.id } });
+
+    expect(composition.toJSON().connections).toEqual([
+      { from_node: box.id, to_node: group.id, to_port: "objects" },
+      { from_node: sphere.id, to_node: group.id, to_port: "objects" },
+      { from_node: group.id, to_node: render.id, to_port: "scene" },
+    ]);
+  });
+
   test("a failed addNode leaves the composition and the next automatic ID as they were", () => {
     const composition = new Composition();
     const foreign = new Composition().addNode({ type: "background" });

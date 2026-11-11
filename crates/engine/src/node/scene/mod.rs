@@ -57,8 +57,9 @@ impl Default for Placement3d {
 /// How a surface responds to light.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Material3d {
-    /// Base colour, which an image plane's raster is multiplied by. Must be a solid color.
-    #[meta(role = "color")]
+    /// Base colour, which an image plane's raster is multiplied by. Must be a solid color; a
+    /// gradient fails `check`.
+    #[meta(role = "color", solid)]
     pub color: Paint,
     /// 0 is a dielectric such as plastic, 1 a bare metal.
     #[meta(min = 0, max = 1, step = 0.05)]
@@ -182,10 +183,19 @@ pub struct Shape3d {
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ImagePlane3dParams {
-    /// Width in world units; the height follows the aspect ratio of the source's full display
-    /// size.
+    /// Width in world units, 1 being as wide as a default `shape_3d` box; the height follows the
+    /// aspect ratio of the source's full display size.
     #[meta(min = 0, step = 0.1)]
     pub width: f64,
+    /// Draws the plane with the opaque objects, writing depth, rather than blended. For a source
+    /// with no transparent pixels, this orders the plane correctly against any geometry it
+    /// intersects or crosses in depth. Alpha is then ignored: the colour's alpha, `opacity` and the
+    /// source's alpha. A source pixel that is transparent shows its colour at full opacity, which
+    /// is black for a fully transparent one, and a half-transparent one shows its colour
+    /// undimmed. It casts a shadow over its whole rectangle. A shadow catcher is always drawn as
+    /// one, so this has no effect on it.
+    #[meta()]
+    pub opaque: bool,
     #[meta(flatten)]
     pub placement: Placement3d,
     #[meta(flatten)]
@@ -195,7 +205,8 @@ pub struct ImagePlane3dParams {
 impl Default for ImagePlane3dParams {
     fn default() -> Self {
         Self {
-            width: 1.6,
+            width: 1.0,
+            opaque: false,
             placement: Placement3d::default(),
             material: Material3d::flat(),
         }
@@ -207,6 +218,7 @@ impl Default for ImagePlane3dParams {
 /// ordered by its centre among blended objects, so its transparent parts show what is behind it.
 /// Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers
 /// separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
+/// `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
 /// A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
 /// filtered by `render_3d`'s `supersample`.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
@@ -404,8 +416,8 @@ pub struct Light3dParams {
     /// Kind of light.
     #[meta(kind = "enum", enum_type = Light3dKind)]
     pub light: Light3dKind,
-    /// Light colour. Must be a solid color.
-    #[meta(role = "color")]
+    /// Light colour. Must be a solid color; a gradient fails `check`.
+    #[meta(role = "color", solid)]
     pub color: Paint,
     /// Unitless brightness multiplier; point and spot lights fall off with the square of distance.
     #[meta(min = 0, step = 0.1)]
@@ -550,8 +562,8 @@ pub struct Render3dParams {
     /// How blurred the background is, as a surface of this roughness reflects it: 0 is sharp.
     #[meta(min = 0, max = 1, step = 0.05)]
     pub environment_background_blur: f64,
-    /// Colour surfaces fade to with distance. Must be a solid color.
-    #[meta(role = "color")]
+    /// Colour surfaces fade to with distance. Must be a solid color; a gradient fails `check`.
+    #[meta(role = "color", solid)]
     pub fog_color: Paint,
     /// How quickly surfaces fade into the fog: the fraction of their colour left after `d` world
     /// units is e^(-density * d). 0 turns fog off.
