@@ -18,8 +18,9 @@ use lumen_ffmpeg::{
     VideoEncoderChoice, parse_bitrate,
 };
 use lumen_server::render::{
-    FONT_DIR_ENV, GpuSettings, HARDWARE_DECODE_ENV, LocalMediaStore, Mp4Render, RenderConfig,
-    RenderReport, create_gpu_renderer, existing_font_dir, is_enabled_flag, resolve_encoder,
+    CancelToken, FONT_DIR_ENV, GpuSettings, HARDWARE_DECODE_ENV, LocalMediaStore, Mp4Render,
+    RenderConfig, RenderReport, create_gpu_renderer, existing_font_dir, is_enabled_flag,
+    resolve_encoder,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -457,7 +458,7 @@ fn render_mp4(
     choice: VideoEncoderChoice,
     max_text_glyphs: u32,
 ) -> Result<()> {
-    let mut render = Mp4Render::open(composition, media_store, choice, output)?;
+    let mut render = Mp4Render::open(composition, media_store, choice, output, CancelToken::new())?;
     render.set_max_text_glyphs(max_text_glyphs as usize);
     println!(
         "video_encoder name={} path={}",

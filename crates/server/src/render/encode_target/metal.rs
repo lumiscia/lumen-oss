@@ -11,7 +11,9 @@ use lumen_ffmpeg::{
     VideoEncoderConfig,
 };
 
-use super::{RenderTiming, ServerRenderError, encode_failed, has_audio, poll_failed, timed};
+use super::{
+    CancelToken, RenderTiming, ServerRenderError, encode_failed, has_audio, poll_failed, timed,
+};
 use crate::render::media::LocalMediaStore;
 
 const FRAMES_IN_FLIGHT: usize = 3;
@@ -102,13 +104,16 @@ impl MetalTarget {
         Ok(())
     }
 
-    /// Encodes the frames still in flight and returns the encoder.
+    /// Encodes the frames still in flight and returns the encoder, stopping early once `cancel`
+    /// is cancelled.
     pub(super) fn drain(
         mut self,
         renderer: &GpuCompositionRenderer,
+        cancel: &CancelToken,
         timing: &mut RenderTiming,
     ) -> Result<MuxedEncoder, ServerRenderError> {
         while !self.pending.is_empty() {
+            cancel.check()?;
             self.encode_oldest(renderer, timing)?;
         }
         Ok(self.encoder)

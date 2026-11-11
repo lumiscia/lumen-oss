@@ -36,6 +36,9 @@ pub enum ErrorCode {
     EncodeFailed,
     /// `output_io`: the output couldn't be written or read back.
     OutputIo,
+    /// `render_cancelled`: the render's [`CancelToken`](super::CancelToken) was cancelled. It
+    /// isn't a failure, and rendering again would do the same work.
+    Cancelled,
 }
 
 impl ErrorCode {
@@ -49,6 +52,7 @@ impl ErrorCode {
             Self::RenderFailed => "render_failed",
             Self::EncodeFailed => "encode_failed",
             Self::OutputIo => "output_io",
+            Self::Cancelled => "render_cancelled",
         }
     }
 }
@@ -68,6 +72,11 @@ impl ServerRenderError {
             retryable,
             source: None,
         }
+    }
+
+    /// The render stopped because its token was cancelled.
+    pub(crate) fn cancelled() -> Self {
+        Self::new(ErrorCode::Cancelled, "the render was cancelled", false)
     }
 
     /// An engine failure, while doing what `context` says.
@@ -138,6 +147,7 @@ mod tests {
             (ErrorCode::RenderFailed, "render_failed"),
             (ErrorCode::EncodeFailed, "encode_failed"),
             (ErrorCode::OutputIo, "output_io"),
+            (ErrorCode::Cancelled, "render_cancelled"),
         ];
         for (code, name) in codes {
             assert_eq!(code.as_str(), name);

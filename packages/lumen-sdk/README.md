@@ -43,6 +43,20 @@ const composition = new Composition({ renderSettings: { codec: "hevc", quality: 
 await lumen.render(composition, { quality: "lossless", codec: "h264" });
 ```
 
+A render on `lumen-server` can be stopped with `cancelRender`, which returns the render: `cancelled` if it was still queued, otherwise still `processing` until it stops at its next frame. `waitForRender` and `download` then throw a `LumenError` with the code `render_cancelled`, which is not retryable. A render whose output is already complete may still end `succeeded`. `cancelRender` is for `lumen-server`.
+
+```ts
+import { LumenError } from "@lumiscia/lumen-sdk";
+
+const render = await lumen.render(composition);
+await lumen.cancelRender(render.id);
+try {
+  await lumen.waitForRender(render);
+} catch (error) {
+  if (!(error instanceof LumenError && error.code === "render_cancelled")) throw error;
+}
+```
+
 `examples/node` also uploads a clip with `lumen.uploadMedia` and passes it to `render` as `media`.
 
 Failed requests throw a `LumenError` with a `code` and `status`. When a render is rejected because the composition is invalid, its `diagnostics` say what is wrong and where:

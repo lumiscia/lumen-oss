@@ -5,10 +5,14 @@ mod error;
 mod fonts;
 mod gpu;
 mod media;
+mod readback;
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use lumen_engine::{
@@ -56,6 +60,33 @@ pub struct RenderProgress {
     pub ratio: f32,
 }
 
+/// Stops the renders that hold a clone of it. A render checks it before each frame and, once it is
+/// cancelled, ends with [`ErrorCode::Cancelled`] after releasing its encoder, output and media.
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    /// The cancelled error once the token is cancelled.
+    pub(crate) fn check(&self) -> Result<(), ServerRenderError> {
+        if self.is_cancelled() {
+            return Err(ServerRenderError::cancelled());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RenderOptions {
     pub config: RenderConfig,
@@ -69,6 +100,8 @@ pub struct RenderOptions {
     /// The most glyph, stroke and decoration instances one text node may draw. `None` keeps
     /// [`lumen_engine::gpu::DEFAULT_MAX_TEXT_GLYPHS`].
     pub max_text_glyphs: Option<usize>,
+    /// Cancels the render when [`CancelToken::cancel`] is called on a clone of it.
+    pub cancel: CancelToken,
 }
 
 /// The encoders a render of `composition` tries: `request`'s preset and codec where it names them,

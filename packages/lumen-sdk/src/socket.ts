@@ -1,4 +1,5 @@
 import { LumenError, errorFromResponse, isRecord } from "./errors.js";
+import { isTerminal } from "./render.js";
 import type { RenderProgress, RenderStatus } from "./types.js";
 
 /** Present in Cloudflare Workers, where a socket comes from a `fetch` upgrade. */
@@ -33,8 +34,9 @@ const eventStatuses = new Map<string, RenderStatus>([
   ["render.progress", "processing"],
   ["render.completed", "succeeded"],
   ["render.failed", "failed"],
+  ["render.cancelled", "cancelled"],
 ]);
-const statuses = new Set<unknown>(["queued", "processing", "succeeded", "failed"]);
+const statuses = new Set<unknown>(["queued", "processing", "succeeded", "failed", "cancelled"]);
 
 /**
  * Watches one render's socket until the render ends, the socket closes or fails, `timeoutMs` passes
@@ -88,7 +90,7 @@ export function watchRender(options: {
             return;
           }
           options.onProgress(update);
-          if (update.status === "succeeded" || update.status === "failed") {
+          if (isTerminal(update.status)) {
             end({ end: "ended" });
           }
         });

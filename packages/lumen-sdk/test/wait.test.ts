@@ -11,7 +11,7 @@ import { watchRender } from "../src/socket.js";
 import type { RenderProgress } from "../src/types.js";
 
 function progressBody(
-  status: "queued" | "processing" | "succeeded" | "failed",
+  status: "queued" | "processing" | "succeeded" | "failed" | "cancelled",
   progress: number,
   extra: Record<string, unknown> = {},
 ) {
@@ -175,6 +175,49 @@ describe("Lumen.waitForRender", () => {
       retryable: true,
     });
     expect(FakeSocket.instances).toHaveLength(0);
+  });
+
+  test("a cancelled render throws render_cancelled, and its socket event ends the session", async () => {
+    const { lumen } = scriptedApi((read) =>
+      Response.json(
+        read === 1
+          ? progressBody("processing", 0.3)
+          : progressBody("cancelled", 0.3, {
+              error: "the render was cancelled",
+              errorCode: "render_cancelled",
+              retryable: false,
+            }),
+      ),
+    );
+    const seen: RenderProgress[] = [];
+
+    const waiting = lumen
+      .waitForRender("r1", { onProgress: (progress) => seen.push(progress) })
+      .catch((caught: unknown) => caught);
+    await vi.advanceTimersByTimeAsync(0);
+    const socket = FakeSocket.instances[0]!;
+    socket.say({ type: "render.cancelled", renderId: "r1" });
+
+    const error = await waiting;
+
+    expect(error).toBeInstanceOf(LumenError);
+    expect(error).toMatchObject({
+      code: "render_cancelled",
+      message: "the render was cancelled",
+      renderId: "r1",
+      retryable: false,
+    });
+    expect(socket.closed).toBe(true);
+    expect(seen.at(-1)).toEqual({ id: "r1", status: "cancelled", progress: 0.3 });
+  });
+
+  test("a cancelled render without an error body still raises render_cancelled", async () => {
+    const { lumen } = scriptedApi(() => Response.json(progressBody("cancelled", 0)));
+
+    await expect(lumen.waitForRender("r1")).rejects.toMatchObject({
+      code: "render_cancelled",
+      message: "Render r1 was cancelled.",
+    });
   });
 
   test("a failed render's code is hosted's stage when there is no errorCode", async () => {

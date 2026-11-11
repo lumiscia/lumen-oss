@@ -1,14 +1,19 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use anyhow::{Context, anyhow};
 use lumen_ffmpeg::QualityConfig;
 use lumen_server::render::RenderConfig;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::server::{MediaClient, RenderJobError, RenderRecord, RenderStatus, assets::AssetStore};
+use crate::server::{
+    MediaClient, QueueSpot, RenderJobError, RenderRecord, RenderStatus, assets::AssetStore,
+};
 
 use super::Args;
 
@@ -22,6 +27,8 @@ pub(super) struct AppState {
     pub quality: Arc<QualityConfig>,
     pub render_config: RenderConfig,
     pub render_slots: Arc<Semaphore>,
+    queued_renders: Arc<AtomicUsize>,
+    max_queued_renders: usize,
     renders: Arc<Mutex<RenderRegistry>>,
     retained_renders: usize,
 }
@@ -56,9 +63,31 @@ impl AppState {
             quality: Arc::new(quality),
             render_config,
             render_slots: Arc::new(Semaphore::new(args.max_concurrent_renders.get())),
+            queued_renders: Arc::new(AtomicUsize::new(0)),
+            max_queued_renders: args.max_queued_renders,
             renders: Arc::new(Mutex::new(RenderRegistry::default())),
             retained_renders: args.retained_renders.get(),
         })
+    }
+
+    /// Takes a render slot if one is free, and otherwise a place in the queue for one. `None` when
+    /// `--max-queued-renders` renders are already waiting.
+    pub fn reserve_render(&self) -> Option<RenderTicket> {
+        if let Ok(permit) = Arc::clone(&self.render_slots).try_acquire_owned() {
+            return Some(RenderTicket::Running(permit));
+        }
+        self.queued_renders
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                (queued < self.max_queued_renders).then_some(queued + 1)
+            })
+            .ok()?;
+        Some(RenderTicket::Waiting(QueueSpot::new(Arc::clone(
+            &self.queued_renders,
+        ))))
+    }
+
+    pub fn max_queued_renders(&self) -> usize {
+        self.max_queued_renders
     }
 
     pub fn insert(&self, record: RenderRecord) -> Arc<RenderRecord> {
@@ -81,15 +110,52 @@ impl AppState {
         registry.retain_finished(&record.id, self.retained_renders);
     }
 
-    /// Ends a render as failed at the progress it had reached.
+    /// Ends a render as failed at the progress it had reached, or as cancelled when `error` says
+    /// it was.
     pub fn fail(&self, record: &RenderRecord, error: RenderJobError) {
         let progress = record.status.borrow().progress();
-        self.finish(record, RenderStatus::Failed { error, progress });
+        let status = if error.is_cancelled() {
+            RenderStatus::Cancelled { error, progress }
+        } else {
+            RenderStatus::Failed { error, progress }
+        };
+        self.finish(record, status);
+    }
+
+    /// Asks a render that hasn't ended to stop. A queued render ends here and never starts, and
+    /// its place in the queue is free before it ends; a running one ends when its task sees the
+    /// request, at its next frame boundary.
+    pub fn cancel(&self, record: &RenderRecord) {
+        if record.status.borrow().is_terminal() {
+            return;
+        }
+        record.cancellation.cancel();
+        let mut registry = self.registry();
+        let ended = record.status.send_if_modified(|status| {
+            let queued = matches!(status, RenderStatus::Queued);
+            if queued {
+                record.release_queue_spot();
+                *status = RenderStatus::Cancelled {
+                    error: RenderJobError::cancelled(),
+                    progress: 0.0,
+                };
+            }
+            queued
+        });
+        if ended {
+            registry.retain_finished(&record.id, self.retained_renders);
+        }
     }
 
     fn registry(&self) -> MutexGuard<'_, RenderRegistry> {
         self.renders.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// What lets a render start: a free slot, or a place in the queue for one.
+pub(super) enum RenderTicket {
+    Running(OwnedSemaphorePermit),
+    Waiting(QueueSpot),
 }
 
 #[derive(Default)]
@@ -155,6 +221,27 @@ mod tests {
         assert!(state.get("first").is_none());
         socket.changed().await.unwrap();
         assert!(socket.borrow_and_update().is_terminal());
+    }
+
+    #[test]
+    fn cancelling_a_queued_render_frees_its_place_in_the_queue_at_once() {
+        let state = state(&["--max-concurrent-renders", "1", "--max-queued-renders", "1"]);
+        let _running = state.reserve_render().unwrap();
+        let Some(RenderTicket::Waiting(spot)) = state.reserve_render() else {
+            panic!("the slot is taken, so the render queues");
+        };
+        let queued = state.insert(record("queued"));
+        queued.hold_queue_spot(spot);
+        assert!(state.reserve_render().is_none(), "the queue is full");
+
+        state.cancel(&queued);
+        state.cancel(&queued);
+
+        assert!(matches!(
+            state.reserve_render(),
+            Some(RenderTicket::Waiting(_))
+        ));
+        assert!(queued.status.borrow().is_terminal());
     }
 
     #[test]

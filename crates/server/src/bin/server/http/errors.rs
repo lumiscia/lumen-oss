@@ -79,6 +79,18 @@ impl ApiError {
         rejected
     }
 
+    /// A `503` for a render that would wait behind more than `--max-queued-renders` others. No
+    /// `Retry-After` is sent, since how long the queue takes to drain depends on the renders in it.
+    pub fn queue_full(max_queued: usize) -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "render_queue_full",
+            format!(
+                "every render slot is busy and {max_queued} renders are already waiting; try again later"
+            ),
+        )
+    }
+
     pub fn not_found() -> Self {
         Self::new(
             StatusCode::NOT_FOUND,

@@ -10,7 +10,7 @@ use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, media:
 use lumen_ffmpeg::{QualityConfig, QualityRequest, VideoEncoderChoice};
 
 use super::{
-    ErrorCode, RenderOptions, RenderProgress, ServerRenderError,
+    CancelToken, ErrorCode, RenderOptions, RenderProgress, ServerRenderError,
     device_budget::DeviceReservation,
     encode_target::{EncodeTarget, OpenedTarget},
     media::{LocalMediaStore, media_root},
@@ -25,6 +25,9 @@ pub fn render_project_mp4(
     options: &RenderOptions,
     on_progress: &mut dyn FnMut(RenderProgress),
 ) -> Result<Vec<u8>, ServerRenderError> {
+    if options.cancel.is_cancelled() {
+        return Err(ServerRenderError::cancelled());
+    }
     let media_root = media_root(options.media_root.as_deref())?;
     if let Some(dir) = options.config.font_dir()
         && !dir.is_dir()
@@ -58,7 +61,13 @@ pub fn render_project_mp4(
         )
         .map_err(|message| ServerRenderError::new(ErrorCode::InvalidQuality, message, false))?,
     };
-    let mut render = Mp4Render::open(composition, media_store, choice, &output_path)?;
+    let mut render = Mp4Render::open(
+        composition,
+        media_store,
+        choice,
+        &output_path,
+        options.cancel.clone(),
+    )?;
     if let Some(glyphs) = options.max_text_glyphs {
         render.set_max_text_glyphs(glyphs);
     }
@@ -101,18 +110,21 @@ pub struct Mp4Render<'a> {
     path: &'static str,
     media_store: LocalMediaStore,
     renderer: GpuCompositionRenderer,
+    cancel: CancelToken,
     // Last, so everything holding a device closes before its room is given back.
     _devices: DeviceReservation<'static>,
 }
 
 impl<'a> Mp4Render<'a> {
     /// Opens the first of `choice`'s encoders that starts, on the path that keeps frames on the
-    /// GPU when it has one.
+    /// GPU when it has one. Cancelling `cancel` ends the wait for GPU device room, and stops
+    /// [`run`](Self::run) with [`ErrorCode::Cancelled`].
     pub fn open(
         composition: &'a Composition,
         mut media_store: LocalMediaStore,
         choice: VideoEncoderChoice,
         output: &Path,
+        cancel: CancelToken,
     ) -> Result<Self, ServerRenderError> {
         let (choice, info) = choice
             .look_up(|warning| tracing::warn!("{warning}"))
@@ -125,7 +137,7 @@ impl<'a> Mp4Render<'a> {
             encoder,
             path,
             devices,
-        } = EncodeTarget::open(&choice, composition, &mut media_store, output)?;
+        } = EncodeTarget::open(&choice, composition, &mut media_store, output, &cancel)?;
         tracing::info!(encoder, path, "opened video encoder");
         if let Some(adapter) = renderer.gpu_renderer().adapter_info() {
             tracing::info!(
@@ -146,6 +158,7 @@ impl<'a> Mp4Render<'a> {
             path,
             media_store,
             renderer,
+            cancel,
             _devices: devices,
         };
         render
@@ -171,7 +184,9 @@ impl<'a> Mp4Render<'a> {
         self.path
     }
 
-    /// Renders and encodes every frame, then the audio, and finishes the output.
+    /// Renders and encodes every frame, then the audio, and finishes the output. Cancelling stops
+    /// it at the next frame boundary, audio chunk or drained frame, and before the encoder
+    /// finishes; once the output is complete it is too late.
     pub fn run(
         mut self,
         on_progress: &mut dyn FnMut(RenderProgress),
@@ -180,6 +195,7 @@ impl<'a> Mp4Render<'a> {
         let total_frames = self.composition.timeline().duration_frames;
         let mut timing = RenderTiming::default();
         for frame in 0..total_frames {
+            self.cancel.check()?;
             prefetch_media_frames(self.composition, &self.media_store, frame);
             self.target.write_frame(
                 &mut self.renderer,
@@ -201,6 +217,7 @@ impl<'a> Mp4Render<'a> {
             &self.renderer,
             self.composition,
             &self.media_store,
+            &self.cancel,
             &mut timing,
         )?;
         timing.total = started.elapsed();
@@ -335,6 +352,81 @@ mod tests {
 
         assert_eq!(error.code(), ErrorCode::EncodeFailed, "{error}");
         assert!(!error.retryable(), "{error}");
+    }
+
+    fn frames(count: u32) -> Composition {
+        super::super::parse_composition(&serde_json::json!({
+            "timeline": { "fps": 24, "duration_frames": count },
+            "render_settings": { "width": 16, "height": 16 },
+            "nodes": [
+                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255], "width": 16, "height": 16 } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+        }))
+        .unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cancelling_stops_at_the_next_frame_and_leaves_no_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let cancel = CancelToken::new();
+        let options = RenderOptions {
+            config: RenderConfig {
+                temp_dir: Some(temp.path().to_path_buf()),
+                ..RenderConfig::default()
+            },
+            encoder: libx264(),
+            cancel: cancel.clone(),
+            ..RenderOptions::default()
+        };
+
+        let mut rendered = 0;
+        let error = render_project_mp4(&frames(50), &options, &mut |progress| {
+            rendered = progress.frame;
+            if progress.frame == 3 {
+                cancel.cancel();
+            }
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::Cancelled, "{error}");
+        assert!(!error.retryable());
+        assert_eq!(rendered, 3);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+
+        let error = render_project_mp4(&frames(50), &options, &mut |_| {
+            panic!("a cancelled token renders nothing")
+        })
+        .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::Cancelled, "{error}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cancelling_after_the_last_frame_still_stops_the_render() {
+        let temp = tempfile::tempdir().unwrap();
+        let cancel = CancelToken::new();
+        let options = RenderOptions {
+            config: RenderConfig {
+                temp_dir: Some(temp.path().to_path_buf()),
+                ..RenderConfig::default()
+            },
+            encoder: libx264(),
+            cancel: cancel.clone(),
+            ..RenderOptions::default()
+        };
+
+        let error = render_project_mp4(&frames(4), &options, &mut |progress| {
+            if progress.frame == progress.total_frames {
+                cancel.cancel();
+            }
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::Cancelled, "{error}");
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     }
 
     #[test]
