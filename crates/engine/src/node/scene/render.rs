@@ -614,14 +614,15 @@ impl Render3d {
     ) -> crate::Result<Raster> {
         let scene = &collected.scene;
         let camera = scene.camera.unwrap_or_default();
-        let (near, far) = depth_range(&camera, params);
-        if params.output == Render3dOutput::Depth
-            && far.partial_cmp(&near) != Some(std::cmp::Ordering::Greater)
-        {
-            return Err(render_error(
-                self.id,
-                format!("depth_far ({far}) must be farther than depth_near ({near})"),
-            ));
+        if params.output == Render3dOutput::Depth {
+            let (near, far) =
+                depth_range(&camera, params).map_err(|details| render_error(self.id, details))?;
+            if far <= near {
+                return Err(render_error(
+                    self.id,
+                    format!("depth_far ({far}) must be farther than depth_near ({near})"),
+                ));
+            }
         }
         let draws = Draws::new(&scene.objects, &camera.view())
             .map_err(|error| render_error(self.id, error.to_string()))?;
@@ -1248,13 +1249,26 @@ fn clamp_sampler(cx: &mut FrameCx<'_>) -> lumen_gpu::SamplerRef {
 }
 
 /// The distances along `camera`'s view that depth output maps to 0 and 1: `params`' own, or the
-/// camera's near and far where they are 0.
-fn depth_range(camera: &Camera, params: &super::Render3dParams) -> (f32, f32) {
-    let pick = |value: f64, fallback: f32| if value > 0.0 { value as f32 } else { fallback };
-    (
-        pick(params.depth_near, camera.near),
-        pick(params.depth_far, camera.far),
-    )
+/// camera's near and far where they are 0. A distance that is negative, not a number or more than
+/// a float holds is an error naming its param.
+fn depth_range(camera: &Camera, params: &super::Render3dParams) -> Result<(f32, f32), String> {
+    let pick = |name: &str, value: f64, fallback: f32| {
+        if value == 0.0 {
+            return Ok(fallback);
+        }
+        let distance = value as f32;
+        if value > 0.0 && distance.is_finite() {
+            Ok(distance)
+        } else {
+            Err(format!(
+                "{name} ({value}) must be a distance of 0 or more that a float holds"
+            ))
+        }
+    };
+    Ok((
+        pick("depth_near", params.depth_near, camera.near)?,
+        pick("depth_far", params.depth_far, camera.far)?,
+    ))
 }
 
 /// Gives each raster that objects show smaller than it is a mip chain, in place of the raster in
@@ -1358,7 +1372,8 @@ fn globals(
     supersample: u32,
 ) -> GpuGlobals {
     let axis = |axis: lumen_3d::glam::Vec3| camera.world.transform_vector3(axis).normalize_or(axis);
-    let (depth_near, depth_far) = depth_range(camera, params);
+    // Only depth output reads the range, and it has refused a bad one by now.
+    let (depth_near, depth_far) = depth_range(camera, params).unwrap_or((camera.near, camera.far));
     GpuGlobals {
         view_proj: (camera.projection_matrix(aspect) * camera.view()).to_cols_array_2d(),
         camera_position: camera.position().into(),

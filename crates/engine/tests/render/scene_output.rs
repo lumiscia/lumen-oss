@@ -137,6 +137,45 @@ fn depth_is_the_distance_along_the_view_between_depth_near_and_depth_far() {
             .contains("depth_far (2) must be farther than depth_near (5)"),
         "{error}"
     );
+
+    // A distance that is negative, not a number or past what a float holds names its param,
+    // on the frame it becomes one.
+    for (params, frame, named) in [
+        (
+            json!({ "depth_near": -3, "depth_far": 11 }),
+            0.0,
+            "depth_near (-3)",
+        ),
+        (
+            json!({ "depth_near": "=pow(-1, 0.5)", "depth_far": 11 }),
+            0.0,
+            "depth_near (NaN)",
+        ),
+        (
+            json!({ "depth_near": 3, "depth_far": 1e40 }),
+            0.0,
+            "depth_far (1000000",
+        ),
+        (
+            json!({ "depth_near": 3, "depth_far": "=11 - frame * 20" }),
+            1.0,
+            "depth_far (-9)",
+        ),
+    ] {
+        let mut params = params;
+        params["output"] = json!("depth");
+        let composition = output(params, two_planes(None));
+        let mut renderer = gpu().renderer();
+        if frame > 0.0 {
+            renderer
+                .render_frame_at(&Scene(composition.0.clone()).into(), 0.0, &media)
+                .expect("the range is good on the first frame");
+        }
+        let error = renderer
+            .render_frame_at(&composition.into(), frame, &media)
+            .expect_err("a distance that can't be one fails");
+        assert!(error.to_string().contains(named), "{named}: {error}");
+    }
 }
 
 #[test]
