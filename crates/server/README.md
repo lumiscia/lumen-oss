@@ -22,6 +22,47 @@ Supported targets today are:
 - a library target, `lumen_server`, whose `render` module renders a project payload to an MP4 for embedding in custom render platforms
 - a binary target, `lumen-server`, for local HTTP rendering
 
+### Library
+
+The library reads no environment variables. A `RenderConfig` holds what renders take from the host, and the binaries build it from their flags and environment: `font_dir` from `--font-dir` or `LUMEN_FONT_DIR`, and `hardware_decode` from `LUMEN_HARDWARE_DECODE`. Its default has no font directory and decodes video on the CPU. `RenderOptions::media_root` defaults to the current directory.
+
+```rust
+use lumen_server::render::{ErrorCode, RenderConfig, RenderOptions, render_project_mp4};
+
+let options = RenderOptions {
+    config: RenderConfig {
+        font_dir: Some("/srv/fonts".into()),
+        hardware_decode: true,
+    },
+    media_root: Some(job_dir),
+    ..RenderOptions::default()
+};
+match render_project_mp4(&composition, &options, &mut |_| {}) {
+    Ok(mp4) => store(mp4),
+    Err(error) if error.code() == ErrorCode::Engine("media.not_found") => missing_media(error),
+    Err(error) if error.retryable() => retry_later(),
+    Err(error) => fail(error.code().as_str(), error),
+}
+```
+
+`LocalMediaStore::new(root, &config)` and `check_composition(payload, staged, assets, &config)` take the same config.
+
+#### Error codes
+
+A failed render is a `ServerRenderError`. `code()` is an `ErrorCode` to match on, `as_str()` gives the string the HTTP binary returns, `Display` is a message, and `source()` is the error that caused it. A failure in the engine has the engine's diagnostic code, such as `media.not_found`, `media.decode` or `render.gpu`, from the [engine's table](../engine/README.md), and `engine_error()` returns the engine error itself. Only `render.gpu` is retryable among them. The other codes are failures of this library:
+
+| Code                      | Meaning                                                                                         |
+| ------------------------- | ----------------------------------------------------------------------------------------------- |
+| `invalid_project_payload` | The payload is not a composition. The source is the engine's `ParseError` with its diagnostics. |
+| `invalid_quality`         | The quality preset or codec resolves to no encoder.                                             |
+| `invalid_render_profile`  | An encoder that doesn't exist, or a frame rate the encoder can't take.                          |
+| `invalid_config`          | The config or options name something that isn't there: a media root or font directory.          |
+| `render_failed`           | The GPU work around the engine failed, such as reading a frame back. Retryable.                 |
+| `encode_failed`           | The encoder failed to open, which isn't retryable, or failed to encode or finish, which is.     |
+| `output_io`               | The output file couldn't be created or read back. Retryable.                                    |
+
+### HTTP binary
+
 The exposed Axum API is intentionally binary-owned. The HTTP binary accepts the same public render payload shape as the hosted Lumen API:
 
 ```json
@@ -78,11 +119,11 @@ A failed request answers with its status and `{ "code": "...", "error": "..." }`
 }
 ```
 
-`POST /renders/check` takes the same body as `POST /renders` and checks the composition without rendering it or downloading its media. It answers `200` with `{ "ok": false, "diagnostics": [...] }`, where `ok` is `false` only when there is an error. Warnings, such as `font.fallback` for a text family no font answers to, leave it `true` and never fail a render. Fonts resolve as a render on this host would: from `LUMEN_FONT_DIR`, the system fonts, or a manifest alias the composition names as a family. `asset:` references are checked against the uploaded media, with the same `asset.not_found` and `asset.wrong_kind` errors a render would be refused with. An invalid manifest returns `422`, as it does for `POST /renders`; `quality` and `codec` are not checked.
+`POST /renders/check` takes the same body as `POST /renders` and checks the composition without rendering it or downloading its media. It answers `200` with `{ "ok": false, "diagnostics": [...] }`, where `ok` is `false` only when there is an error. Warnings, such as `font.fallback` for a text family no font answers to, leave it `true` and never fail a render. Fonts resolve as a render on this host would: from `--font-dir` or `LUMEN_FONT_DIR`, the system fonts, or a manifest alias the composition names as a family. `asset:` references are checked against the uploaded media, with the same `asset.not_found` and `asset.wrong_kind` errors a render would be refused with. An invalid manifest returns `422`, as it does for `POST /renders`; `quality` and `codec` are not checked.
 
 `path` is a JSON pointer into the composition, `node` the node's id when there is one, and `message` free-form, trimmed and cut at 1024 characters like every error message. Codes are public and stable; clients must accept codes they don't know. The [engine README](../engine/README.md#diagnostics) lists the codes, the compatibility rules, and what only a render finds.
 
-A render that fails after being accepted keeps why. `GET /renders/:id` and `GET /renders/:id/progress` return it as `render.error`: `{ "code": "...", "message": "...", "retryable": false }`. The `progress` object has the same as `error`, `errorCode` and `retryable`, and the WebSocket's `render.failed` event carries it as `error`.
+A render that fails after being accepted keeps why. `GET /renders/:id` and `GET /renders/:id/progress` return it as `render.error`: `{ "code": "...", "message": "...", "retryable": false }`. The `progress` object has the same as `error`, `errorCode` and `retryable`, and the WebSocket's `render.failed` event carries it as `error`. The code is one of the [render error codes](#error-codes), or a media staging code such as `media_download_failed`.
 
 `GET /renders/:id/artifact` returns `409` with `artifact_not_ready` until the render succeeds, and `409` with the render's own error code if it failed. A succeeded render also reports the artifact's relative URL as `render.outputUrl`. `render.status` is `queued`, `processing`, `succeeded` or `failed`.
 
@@ -210,7 +251,7 @@ Downloads refuse hosts that resolve to private, loopback, link-local, and other 
 Fonts are found by the family name inside each font file, not by file name, in the same order as `lumen-local`:
 
 - a font staged in the job's manifest, named by its alias (`"font_family": "<alias>"`).
-- the directory `LUMEN_FONT_DIR` names, if set. The server refuses to start if it isn't a directory. It is scanned once per render.
+- the directory `--font-dir` or `LUMEN_FONT_DIR` names, if set. The server refuses to start if it isn't a directory. It is scanned once per render.
 - the installed system fonts, scanned the first time a family isn't found above and then kept for the life of the process. The family `Roboto` skips this step, so it is always the bundled font unless the directory has one.
 
 A family that none of them has is logged once per render as a warning, and text using it falls back to the bundled font. A composition can only read fonts that are in the font directory or the system fonts, never other files on the server. A font directory is trusted, so it follows symlinks.
@@ -288,7 +329,7 @@ baseline, not a hardware performance target.
 | `--media-max-pending <n>`         | `LUMEN_SERVER_MEDIA_MAX_PENDING`      | 100                         | Most media waiting for its content at once. More are refused with `503`.                                                |
 | `--max-text-glyphs <n>`           | `LUMEN_SERVER_MAX_TEXT_GLYPHS`        | 16384                       | Most glyph, stroke and decoration instances one text node may draw, from 1 to 1048576. A text over it fails its render. |
 | `--verbose-debug`                 | `LUMEN_SERVER_VERBOSE_DEBUG`          | false                       | Per-frame renderer diagnostics.                                                                                         |
-|                                   | `LUMEN_FONT_DIR`                      | none                        | Directory of fonts, looked up before the system fonts. Must exist.                                                      |
+| `--font-dir <path>`               | `LUMEN_FONT_DIR`                      | none                        | Directory of fonts, looked up before the system fonts. Must exist.                                                      |
 |                                   | `LUMEN_VIDEO_ENCODER`                 | platform default            | Encoder name, used when the render options name none.                                                                   |
 |                                   | `LUMEN_HARDWARE_DECODE`               |                             | `1`, `true`, `yes` or `on` turns GPU video decode on, and any other value turns it off.                                 |
 

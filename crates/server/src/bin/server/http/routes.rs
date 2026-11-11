@@ -141,12 +141,13 @@ pub(super) async fn check_render(
     let Json(input) = input?;
     validate_media_manifest(&input.media)
         .map_err(|error| ApiError::rejected(StatusCode::UNPROCESSABLE_ENTITY, error))?;
-    let assets = state.assets;
+    let (assets, config) = (state.assets, state.render_config);
     let diagnostics = tokio::task::spawn_blocking(move || {
         check_composition(
             &input.composition,
             &|name| input.media.contains_key(name),
             &assets,
+            &config,
         )
     })
     .await
@@ -234,9 +235,19 @@ fn spawn_render_task(state: AppState, record: Arc<RenderRecord>, job: RenderJob)
         let progress_record = Arc::clone(&record);
         let min_delta = state.progress_min_delta;
         let mut woken_at = 0.0;
-        let result = execute_render_job(job, &state.media_client, move |event| {
-            progress_record.set_frame(event.frame, event.total_frames, min_delta, &mut woken_at);
-        })
+        let result = execute_render_job(
+            job,
+            &state.media_client,
+            &state.render_config,
+            move |event| {
+                progress_record.set_frame(
+                    event.frame,
+                    event.total_frames,
+                    min_delta,
+                    &mut woken_at,
+                );
+            },
+        )
         .await;
 
         match result {

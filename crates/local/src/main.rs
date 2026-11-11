@@ -18,8 +18,8 @@ use lumen_ffmpeg::{
     VideoEncoderChoice, parse_bitrate,
 };
 use lumen_server::render::{
-    FONT_DIR_ENV, LocalMediaStore, Mp4Render, RenderReport, create_gpu_renderer, existing_font_dir,
-    resolve_encoder,
+    FONT_DIR_ENV, HARDWARE_DECODE_ENV, LocalMediaStore, Mp4Render, RenderConfig, RenderReport,
+    create_gpu_renderer, existing_font_dir, is_enabled_flag, resolve_encoder,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -159,6 +159,15 @@ impl Cli {
             .filter(|dir| !dir.as_os_str().is_empty())
     }
 
+    /// The font directory, and `LUMEN_HARDWARE_DECODE` from the environment.
+    fn render_config(&self) -> RenderConfig {
+        RenderConfig {
+            font_dir: self.font_dir(),
+            hardware_decode: env::var(HARDWARE_DECODE_ENV)
+                .is_ok_and(|value| is_enabled_flag(&value)),
+        }
+    }
+
     /// The rate control and preset the command line asked for, or `None` if it asked for neither.
     fn quality(&self) -> Option<EncoderQuality> {
         EncoderQuality::from_options(self.bitrate, self.crf, self.qp, self.preset.clone())
@@ -250,10 +259,8 @@ fn check(cli: &Cli) -> Result<bool> {
             cli.composition.display()
         )
     })?;
-    let media_store = LocalMediaStore::new(
-        media_root(cli.media_root.as_deref())?,
-        cli.font_dir().as_deref(),
-    );
+    let media_store =
+        LocalMediaStore::new(media_root(cli.media_root.as_deref())?, &cli.render_config());
     let known_font = |family: &str| media_store.font_resolver_id(family).is_some();
     let diagnostics =
         lumen_engine::json::check(&raw, Some(&known_font), Some(media_store.assets()));
@@ -307,9 +314,8 @@ fn run(cli: &Cli) -> Result<()> {
     let kind = cli.output_kind()?;
     let composition = load_composition(&cli.composition)?;
     let media_root = media_root(cli.media_root.as_deref())?;
-    let font_dir = cli.font_dir();
     let mut media_store =
-        LocalMediaStore::new(media_root, font_dir.as_deref()).explaining_missing_sources();
+        LocalMediaStore::new(media_root, &cli.render_config()).explaining_missing_sources();
 
     match kind {
         OutputKind::Png => render_single_png(

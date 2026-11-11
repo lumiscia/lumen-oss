@@ -13,7 +13,7 @@ use lumen_ffmpeg::{
 use lumen_gpu::wgpu::SubmissionIndex;
 
 use super::{
-    RenderError, RenderTiming, checked_size, encode_failed, has_audio, poll, render_failed,
+    RenderTiming, ServerRenderError, checked_size, encode_failed, has_audio, poll, render_failed,
     render_raster, timed,
 };
 use crate::render::{encoder::warn_if_container_cropped, media::LocalMediaStore};
@@ -78,7 +78,7 @@ impl VulkanTarget {
         media_store: &LocalMediaStore,
         frame: u32,
         timing: &mut RenderTiming,
-    ) -> Result<(), RenderError> {
+    ) -> Result<(), ServerRenderError> {
         let (raster, submission) =
             render_raster(renderer, composition, media_store, frame, timing)?;
         checked_size(composition, &raster, frame)?;

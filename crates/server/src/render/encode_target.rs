@@ -11,7 +11,7 @@ use lumen_ffmpeg::{EncoderCandidate, EncoderFamily, VideoEncoderChoice};
 use lumen_gpu::wgpu::{PollType, SubmissionIndex};
 
 use super::{
-    RenderError,
+    ErrorCode, ServerRenderError,
     device_budget::{DeviceReservation, reserve_devices},
     encoder::{EncoderSink, has_audio, write_composited_audio},
     gpu::{RenderTiming, create_gpu_renderer},
@@ -60,7 +60,7 @@ impl EncodeTarget {
         composition: &Composition,
         media_store: &mut LocalMediaStore,
         output: &Path,
-    ) -> Result<OpenedTarget, RenderError> {
+    ) -> Result<OpenedTarget, ServerRenderError> {
         choice
             .open(
                 |candidate| {
@@ -85,7 +85,7 @@ impl EncodeTarget {
         composition: &Composition,
         media_store: &mut LocalMediaStore,
         output: &Path,
-    ) -> Result<OpenedTarget, RenderError> {
+    ) -> Result<OpenedTarget, ServerRenderError> {
         let (name, quality) = (candidate.encoder.as_str(), &candidate.quality);
         let hardware_decode = media_store.video_options.prefer_hardware_decode;
         let unavailable: Option<anyhow::Error> = match family {
@@ -118,11 +118,13 @@ impl EncodeTarget {
                             devices,
                         });
                     }
-                    Err(error) if error.code == "invalid_fps" => return Err(error),
+                    Err(error) if error.code() == ErrorCode::InvalidRenderProfile => {
+                        return Err(error);
+                    }
                     Err(error) => {
                         // The failed renderer's device goes before its room in the budget does.
                         media_store.video_options.vulkan_device = None;
-                        Some(anyhow::anyhow!(error.message))
+                        Some(anyhow::Error::new(error))
                     }
                 }
             }
@@ -146,11 +148,7 @@ impl EncodeTarget {
         };
 
         let devices = reserve_devices(family, hardware_decode);
-        let renderer = create_gpu_renderer(media_store).map_err(|err| RenderError {
-            code: "render_failed",
-            message: format!("failed to create GPU renderer: {err:#}"),
-            retryable: true,
-        })?;
+        let renderer = create_gpu_renderer(media_store).map_err(gpu_renderer_failed)?;
         let settings = composition.render_settings();
         let sink = EncoderSink::create(
             output,
@@ -167,11 +165,7 @@ impl EncodeTarget {
             {
                 media_store.video_options.vulkan_device = None;
             }
-            RenderError {
-                code: "encode_failed",
-                message: err.to_string(),
-                retryable: false,
-            }
+            ServerRenderError::new(ErrorCode::EncodeFailed, err.to_string(), false)
         })?;
         if let Some(error) = unavailable {
             tracing::warn!(
@@ -203,7 +197,7 @@ impl EncodeTarget {
         media_store: &LocalMediaStore,
         frame: u32,
         timing: &mut RenderTiming,
-    ) -> Result<(), RenderError> {
+    ) -> Result<(), ServerRenderError> {
         match self {
             Self::Cpu(sink) => {
                 let (raster, _submission) =
@@ -216,9 +210,8 @@ impl EncodeTarget {
                         .read_texture_rgba8(&raster.texture, size)
                 })
                 .map_err(|err| {
-                    render_failed(format!(
-                        "failed reading rendered pixels for frame {frame}: {err}"
-                    ))
+                    render_failed(format!("failed reading rendered pixels for frame {frame}"))
+                        .caused_by(err)
                 })?;
                 timed(&mut timing.encode_send, || sink.send_frame(frame, pixels))
                     .map_err(|err| encode_failed(format!("{err:#}")))
@@ -245,7 +238,7 @@ impl EncodeTarget {
         composition: &Composition,
         media_store: &LocalMediaStore,
         timing: &mut RenderTiming,
-    ) -> Result<(), RenderError> {
+    ) -> Result<(), ServerRenderError> {
         #[cfg(not(all(target_os = "macos", feature = "metal")))]
         let _ = renderer;
         match self {
@@ -284,7 +277,7 @@ fn finish_muxed(
     composition: &Composition,
     media_store: &LocalMediaStore,
     timing: &mut RenderTiming,
-) -> Result<(), RenderError> {
+) -> Result<(), ServerRenderError> {
     timed(&mut timing.audio_mix, || {
         write_composited_audio(composition, media_store, |frame| {
             encoder
@@ -304,28 +297,21 @@ fn timed<T>(total: &mut Duration, work: impl FnOnce() -> T) -> T {
     result
 }
 
-fn render_failed(message: String) -> RenderError {
-    RenderError {
-        code: "render_failed",
-        message,
-        retryable: true,
-    }
+fn render_failed(message: String) -> ServerRenderError {
+    ServerRenderError::new(ErrorCode::RenderFailed, message, true)
 }
 
-fn encode_failed(message: String) -> RenderError {
-    RenderError {
-        code: "encode_failed",
-        message,
-        retryable: true,
-    }
+fn encode_failed(message: String) -> ServerRenderError {
+    ServerRenderError::new(ErrorCode::EncodeFailed, message, true)
 }
 
-fn audio_render_failed(err: anyhow::Error) -> RenderError {
-    RenderError {
-        code: "audio_render_failed",
-        message: format!("{err:#}"),
-        retryable: true,
-    }
+fn gpu_renderer_failed(err: anyhow::Error) -> ServerRenderError {
+    render_failed("failed to create GPU renderer".to_string()).caused_by(err)
+}
+
+/// A failure mixing the audio has the engine's code, and one encoding it is `encode_failed`.
+fn audio_render_failed(err: anyhow::Error) -> ServerRenderError {
+    encode_failed("failed to write the audio".to_string()).caused_by(err)
 }
 
 /// Binds, uploads and submits one frame to the renderer's own output texture.
@@ -335,9 +321,9 @@ fn render_raster(
     media_store: &LocalMediaStore,
     frame: u32,
     timing: &mut RenderTiming,
-) -> Result<(RasterHandle, SubmissionIndex), RenderError> {
+) -> Result<(RasterHandle, SubmissionIndex), ServerRenderError> {
     let failed = |err: lumen_engine::error::LumenError| {
-        render_failed(format!("render failed at frame {frame}: {err}"))
+        ServerRenderError::engine(format!("render failed at frame {frame}"), err)
     };
     let bound = timed(&mut timing.bind, || {
         renderer.bind_frame(composition, frame, media_store)
@@ -351,7 +337,7 @@ fn checked_size(
     composition: &Composition,
     raster: &RasterHandle,
     frame: u32,
-) -> Result<lumen_gpu::Size, RenderError> {
+) -> Result<lumen_gpu::Size, ServerRenderError> {
     let size = raster.domain.storage_size;
     let settings = composition.render_settings();
     if (size.width, size.height) != (settings.width, settings.height) {
@@ -368,7 +354,7 @@ fn checked_size(
     all(target_os = "macos", feature = "metal"),
 ))]
 #[cfg(all(target_os = "macos", feature = "metal"))]
-fn poll_failed(frame: u32, err: impl std::fmt::Display) -> RenderError {
+fn poll_failed(frame: u32, err: impl std::fmt::Display) -> ServerRenderError {
     render_failed(format!("GPU poll failed at frame {frame}: {err}"))
 }
 
@@ -378,7 +364,7 @@ fn poll(
     frame: u32,
     timing: &mut RenderTiming,
     until: Option<SubmissionIndex>,
-) -> Result<(), RenderError> {
+) -> Result<(), ServerRenderError> {
     let poll_type = match until {
         Some(submission) => PollType::Wait {
             submission_index: Some(submission),
@@ -456,7 +442,10 @@ mod tests {
             encoder: "libx264".to_string(),
             quality: EncoderQuality::default(),
         };
-        let mut media_store = LocalMediaStore::new(directory.path().to_path_buf(), None);
+        let mut media_store = LocalMediaStore::new(
+            directory.path().to_path_buf(),
+            &crate::render::RenderConfig::default(),
+        );
 
         let OpenedTarget {
             mut renderer,

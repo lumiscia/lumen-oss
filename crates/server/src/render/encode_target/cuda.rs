@@ -11,8 +11,8 @@ use lumen_ffmpeg::{
 };
 
 use super::{
-    RenderError, RenderTiming, create_gpu_renderer, encode_failed, has_audio, poll, render_failed,
-    timed,
+    ErrorCode, RenderTiming, ServerRenderError, create_gpu_renderer, encode_failed,
+    gpu_renderer_failed, has_audio, poll, timed,
 };
 use crate::render::media::LocalMediaStore;
 
@@ -29,37 +29,31 @@ impl CudaTarget {
         output: &Path,
         encoder: &str,
         quality: &EncoderQuality,
-    ) -> Result<(GpuCompositionRenderer, Self), RenderError> {
-        let renderer = create_gpu_renderer(media_store).map_err(|err| RenderError {
-            code: "render_failed",
-            message: format!("failed to create GPU renderer: {err:#}"),
-            retryable: true,
-        })?;
+    ) -> Result<(GpuCompositionRenderer, Self), ServerRenderError> {
+        let renderer = create_gpu_renderer(media_store).map_err(gpu_renderer_failed)?;
         renderer
             .check_output_size(composition)
-            .map_err(|err| RenderError {
-                code: "render_failed",
-                message: err.to_string(),
-                retryable: false,
-            })?;
+            .map_err(|err| ServerRenderError::engine("the output can't be rendered", err))?;
         let settings = composition.render_settings();
         let (width, height) = (settings.width, settings.height);
         let pool = CudaNvencTargetPool::rgba8(
             renderer.gpu_renderer(),
             lumen_gpu::Size::new(width, height),
         )
-        .map_err(|err| RenderError {
-            code: "render_failed",
-            message: format!("failed to create CUDA/NVENC target pool: {err}"),
-            retryable: false,
+        .map_err(|err| {
+            ServerRenderError::new(
+                ErrorCode::RenderFailed,
+                format!("failed to create CUDA/NVENC target pool: {err}"),
+                false,
+            )
         })?;
-        let target = pool
-            .acquire(renderer.gpu_renderer())
-            .map_err(|err| RenderError {
-                code: "render_failed",
-                message: format!("failed to create CUDA/NVENC target: {err}"),
-                retryable: false,
-            })?;
+        let target = pool.acquire(renderer.gpu_renderer()).map_err(|err| {
+            ServerRenderError::new(
+                ErrorCode::RenderFailed,
+                format!("failed to create CUDA/NVENC target: {err}"),
+                false,
+            )
+        })?;
         tracing::info!(
             cuda_ordinal = pool.cuda_ordinal(),
             vulkan_device = %pool.vulkan_device().name,
@@ -68,11 +62,7 @@ impl CudaTarget {
 
         let frame_rate =
             Rational::from_fps(f64::from(composition.timeline().fps)).map_err(|err| {
-                RenderError {
-                    code: "invalid_fps",
-                    message: err.to_string(),
-                    retryable: false,
-                }
+                ServerRenderError::new(ErrorCode::InvalidRenderProfile, err.to_string(), false)
             })?;
         let mut config = VideoEncoderConfig::cpu_rgba(width, height, frame_rate, encoder);
         config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
@@ -82,10 +72,8 @@ impl CudaTarget {
             .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
         let encoder =
             MuxedEncoder::create_with_audio(output.to_string_lossy().to_string(), config, audio)
-                .map_err(|err| RenderError {
-                    code: "encode_failed",
-                    message: err.to_string(),
-                    retryable: false,
+                .map_err(|err| {
+                    ServerRenderError::new(ErrorCode::EncodeFailed, err.to_string(), false)
                 })?;
         Ok((
             renderer,
@@ -104,7 +92,7 @@ impl CudaTarget {
         media_store: &LocalMediaStore,
         frame: u32,
         timing: &mut RenderTiming,
-    ) -> Result<(), RenderError> {
+    ) -> Result<(), ServerRenderError> {
         timed(&mut timing.render, || {
             renderer.render_frame_into_external(
                 composition,
@@ -113,7 +101,7 @@ impl CudaTarget {
                 self.target.external_texture(),
             )
         })
-        .map_err(|err| render_failed(format!("render failed at frame {frame}: {err}")))?;
+        .map_err(|err| ServerRenderError::engine(format!("render failed at frame {frame}"), err))?;
         let converted = timed(&mut timing.render, || {
             self.target.convert(renderer.gpu_renderer())
         });

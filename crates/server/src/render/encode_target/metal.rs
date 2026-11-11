@@ -12,7 +12,7 @@ use lumen_ffmpeg::{
 };
 
 use super::{
-    RenderError, RenderTiming, encode_failed, has_audio, poll_failed, render_failed, timed,
+    RenderTiming, ServerRenderError, encode_failed, has_audio, poll_failed, render_failed, timed,
 };
 use crate::render::media::LocalMediaStore;
 
@@ -76,7 +76,7 @@ impl MetalTarget {
         media_store: &LocalMediaStore,
         frame: u32,
         timing: &mut RenderTiming,
-    ) -> Result<(), RenderError> {
+    ) -> Result<(), ServerRenderError> {
         let target = self
             .pool
             .acquire(renderer.gpu_renderer(), frame)
@@ -106,7 +106,7 @@ impl MetalTarget {
         mut self,
         renderer: &GpuCompositionRenderer,
         timing: &mut RenderTiming,
-    ) -> Result<MuxedEncoder, RenderError> {
+    ) -> Result<MuxedEncoder, ServerRenderError> {
         while !self.pending.is_empty() {
             self.encode_oldest(renderer, timing)?;
         }
@@ -117,7 +117,7 @@ impl MetalTarget {
         &mut self,
         renderer: &GpuCompositionRenderer,
         timing: &mut RenderTiming,
-    ) -> Result<(), RenderError> {
+    ) -> Result<(), ServerRenderError> {
         let Some(PendingFrame {
             frame,
             target,

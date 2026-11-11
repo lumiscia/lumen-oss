@@ -1030,6 +1030,8 @@ fn corrupt_media_errors_do_not_reveal_where_it_is_staged_with_gpu() {
             return;
         };
         assert_eq!(progress["state"], "failed", "{alias}: {progress}");
+        assert_eq!(progress["errorCode"], "media.decode", "{alias}: {progress}");
+        assert_eq!(progress["retryable"], false, "{alias}: {progress}");
         let error = progress["error"].as_str().unwrap_or_default();
         assert!(error.contains(alias), "{alias}: {error}");
         assert!(
