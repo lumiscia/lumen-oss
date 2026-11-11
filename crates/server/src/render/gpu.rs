@@ -283,7 +283,9 @@ impl<'a> Mp4Render<'a> {
             cancel,
             _devices: devices,
         };
-        render.renderer.set_output_alpha(lumen_engine::gpu::OutputAlpha::Opaque);
+        render
+            .renderer
+            .set_output_alpha(lumen_engine::gpu::OutputAlpha::Opaque);
         render
             .renderer
             .compile_with_output_format(composition, render.target.output_format())

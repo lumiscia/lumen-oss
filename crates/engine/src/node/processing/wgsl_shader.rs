@@ -709,7 +709,12 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         let inputs = self.sources.len();
         self.check_input_count()?;
-        programs.compute("wgsl-shader-sanitise", SANITISE_SHADER, "cs_main", SANITISE_LAYOUT)?;
+        programs.compute(
+            "wgsl-shader-sanitise",
+            SANITISE_SHADER,
+            "cs_main",
+            SANITISE_LAYOUT,
+        )?;
         let Deferred::Value(source) = &self.params.shader else {
             return Ok(());
         };

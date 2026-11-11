@@ -514,7 +514,11 @@ fn the_output_dither_keeps_the_mean_of_every_fractional_code() {
             0.0,
             &TestMedia::default(),
         );
-        let reds: Vec<f64> = frame.rgba.chunks(4).map(|pixel| f64::from(pixel[0])).collect();
+        let reds: Vec<f64> = frame
+            .rgba
+            .chunks(4)
+            .map(|pixel| f64::from(pixel[0]))
+            .collect();
         let mean = reds.iter().sum::<f64>() / reds.len() as f64;
         assert!(
             (mean - code).abs() <= 1.0 / 64.0 + 0.01,
@@ -535,13 +539,23 @@ fn quantised_colour_never_exceeds_its_quantised_alpha() {
             ]),
         )
         .into();
-        let frame = render(&mut gpu.dithered_renderer(), &composition, 0.0, &TestMedia::default());
+        let frame = render(
+            &mut gpu.dithered_renderer(),
+            &composition,
+            0.0,
+            &TestMedia::default(),
+        );
         let bad: Vec<_> = frame
             .rgba
             .chunks(4)
             .filter(|pixel| pixel[..3].iter().any(|&c| c > pixel[3]))
             .collect();
-        assert!(bad.is_empty(), "opacity {opacity}: {} pixels like {:?}", bad.len(), bad[0]);
+        assert!(
+            bad.is_empty(),
+            "opacity {opacity}: {} pixels like {:?}",
+            bad.len(),
+            bad[0]
+        );
     }
 }
 
@@ -570,5 +584,9 @@ fn a_float_output_is_the_working_space_without_an_output_pass() {
     };
     let float = passes(lumen_gpu::wgpu::TextureFormat::Rgba16Float);
     let bytes = passes(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm);
-    assert_eq!(float + 1, bytes, "{float} passes to a float output, {bytes} to 8-bit");
+    assert_eq!(
+        float + 1,
+        bytes,
+        "{float} passes to a float output, {bytes} to 8-bit"
+    );
 }

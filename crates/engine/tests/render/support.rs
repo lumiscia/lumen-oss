@@ -679,7 +679,10 @@ pub fn read_rgba16f(
         .flat_map(|row_bytes| row_bytes[..row].chunks(8))
         .map(|texel| {
             std::array::from_fn(|channel| {
-                f16_to_f32(u16::from_le_bytes([texel[channel * 2], texel[channel * 2 + 1]]))
+                f16_to_f32(u16::from_le_bytes([
+                    texel[channel * 2],
+                    texel[channel * 2 + 1],
+                ]))
             })
         })
         .collect()

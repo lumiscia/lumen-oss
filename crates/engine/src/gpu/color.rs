@@ -44,7 +44,11 @@ mod tests {
         assert_eq!(srgb_to_linear(1.0), 1.0);
         assert_eq!(srgb_to_linear(0.0), 0.0);
         for encoded in [0.01, 0.04045, 0.2, 0.5, 1.0, 1.5, 2.0] {
-            assert_eq!(srgb_to_linear(-encoded), -srgb_to_linear(encoded), "{encoded}");
+            assert_eq!(
+                srgb_to_linear(-encoded),
+                -srgb_to_linear(encoded),
+                "{encoded}"
+            );
         }
         assert!((srgb_to_linear(2.0) - 4.9538).abs() < 1e-3);
     }

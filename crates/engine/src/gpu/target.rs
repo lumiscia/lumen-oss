@@ -716,7 +716,9 @@ mod tests {
         let target = VulkanVideoTarget::nv12(&gpu, size, true);
         let pitch = VulkanVideoFrame::nv12_pitch(size.width) as usize;
         for fraction in [0.2, 0.25, 0.4, 0.5, 0.6, 0.75, 0.8] {
-            let grey = f16_bits(crate::gpu::color::srgb_to_linear((60.0 + fraction - 16.0) / 219.0));
+            let grey = f16_bits(crate::gpu::color::srgb_to_linear(
+                (60.0 + fraction - 16.0) / 219.0,
+            ));
             let luma = 16.0 + 219.0 * srgb_encode(f16_value(grey));
             let texel: Vec<u8> = [grey, grey, grey, f16_bits(1.0)]
                 .iter()

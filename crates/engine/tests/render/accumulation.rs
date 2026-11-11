@@ -272,7 +272,12 @@ fn blank_samples_leave_the_domain_where_the_source_draws() {
 fn a_stationary_source_comes_through_every_sample_count_unchanged() {
     let cases = (1..=64)
         .flat_map(|samples| {
-            [[255, 255, 255, 255], [128, 128, 128, 255], [200, 100, 50, 128]].map(|color| {
+            [
+                [255, 255, 255, 255],
+                [128, 128, 128, 255],
+                [200, 100, 50, 128],
+            ]
+            .map(|color| {
                 Case::new(
                     format!("{samples} samples of {color:?}"),
                     blurred(

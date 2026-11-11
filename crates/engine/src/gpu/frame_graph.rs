@@ -2337,7 +2337,12 @@ impl<'a> FrameCx<'a> {
         };
         let size = domain.storage_size;
         let (entry, layout, binding, tex) = if last {
-            ("resolve_main", blur::RESOLVE_LAYOUT, 4, self.storage_target(size))
+            (
+                "resolve_main",
+                blur::RESOLVE_LAYOUT,
+                4,
+                self.storage_target(size),
+            )
         } else {
             let usage = TextureDesc::storage(size, blur::SUM_FORMAT).usage;
             let tex = self.rec.acquire(size, blur::SUM_FORMAT, usage);
