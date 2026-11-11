@@ -65,14 +65,21 @@ impl Renderer {
             .await
             .context("no Vulkan wgpu adapter")?;
         let adapter_info = adapter.get_info();
+        let limits = adapter.limits();
 
         let (open_device, queue_families) = {
             let hal_adapter = unsafe { adapter.as_hal::<wgpu_hal::api::Vulkan>() }
                 .context("wgpu adapter is not using the Vulkan backend")?;
-            open_video_device(&hal_adapter, requirement)?
+            open_video_device(&hal_adapter, requirement, &limits)?
         };
         let (device, queue) = unsafe {
-            adapter.create_device_from_hal(open_device, &wgpu::DeviceDescriptor::default())
+            adapter.create_device_from_hal(
+                open_device,
+                &wgpu::DeviceDescriptor {
+                    required_limits: limits,
+                    ..Default::default()
+                },
+            )
         }
         .context("create wgpu device")?;
 
@@ -169,6 +176,7 @@ type VideoQueueFamilies = Vec<(u32, u32, vk::QueueFlags)>;
 fn open_video_device(
     adapter: &wgpu_hal::vulkan::Adapter,
     requirement: VideoRequirement,
+    limits: &wgpu::Limits,
 ) -> Result<(
     wgpu_hal::OpenDevice<wgpu_hal::api::Vulkan>,
     VideoQueueFamilies,
@@ -362,7 +370,7 @@ fn open_video_device(
     let open_device = unsafe {
         adapter.open_with_callback(
             wgpu::Features::empty(),
-            &wgpu::Limits::default(),
+            limits,
             &wgpu::MemoryHints::default(),
             Some(callback),
         )
