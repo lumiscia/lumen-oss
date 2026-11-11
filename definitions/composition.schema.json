@@ -7212,7 +7212,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Text from its font's outlines, extruded into a solid with the material params of a\n`shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes\nit, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing\n+Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the\npoint of its box at `position`. Its geometry is built again only when the text, font, layout,\ndepth or bevel change, so animating its transform or material costs no more than for a\n`shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the\n`glyph_*` params of a `text` node have no counterpart.",
+            "description": "Text from its font's outlines, extruded into a solid with the material params of a\n`shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes\nit, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing\n+Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the\npoint of its box at `position`. Its geometry is built again only when the text, font, layout or\nbevel change, or its size or depth do with a bevel, so animating its transform or material\ncosts no more than for a `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the\n`glyph_*` params of a `text` node have no counterpart.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -7300,6 +7300,7 @@
                   "bevel_size": {
                     "anyOf": [
                       {
+                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -7356,7 +7357,7 @@
                       }
                     ],
                     "default": "Text",
-                    "description": "Text to extrude, in one style. Line breaks start new lines. Whitespace is not drawn, and\nglyphs that their font draws from colour or bitmap tables, such as emoji, have no outline\nand are left out with a `font.no_outlines` warning. A node extrudes at most as many glyphs\nas the host's text glyph limit lets a `text` node draw, 16384 unless the host sets\nanother, and at most 4000000 vertices and 12000000 indices; more is a render error.",
+                    "description": "Text to extrude, in one style. Line breaks start new lines. Whitespace is not drawn, and\nglyphs that their font draws from colour or bitmap tables, such as emoji, have no outline\nand are left out with a `font.no_outlines` warning. A node extrudes at most as many glyphs\nas the host's text glyph limit lets a `text` node draw, 16384 unless the host sets\nanother, and at most 4000000 vertices and 12000000 indices; more is a render error. One\nglyph builds from an outline of at most 4096 commands, 64 contours and 8192 flattened\npoints, and takes at most 262144 vertices and 786432 indices, and 3072 points where it is\nbevelled; a font with a glyph past any of these fails the render rather than the glyph\nbeing left out.",
                     "title": "Content",
                     "x-lumen-constraints": {
                       "multiline": true,
@@ -7367,6 +7368,7 @@
                   "depth": {
                     "anyOf": [
                       {
+                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -7441,6 +7443,7 @@
                   "font_size": {
                     "anyOf": [
                       {
+                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -7448,7 +7451,7 @@
                       }
                     ],
                     "default": 1.0,
-                    "description": "Font size in world units: the height of the font's em square, so capitals are about 0.7\nof it tall. At 1, the default, a word is about as tall as a default `shape_3d` box is\nwide. 0 draws nothing.",
+                    "description": "Font size in world units: the height of the font's em square, so capitals are about 0.7\nof it tall. At 1, the default, a word is about as tall as a default `shape_3d` box is\nwide. 0 draws nothing, and so does anything under 0.000001. At most 1000000; `depth`,\n`bevel_size`, `max_width`, `letter_spacing` and `line_height` may be at most 100000 times\nit, and at most 1000000 themselves.",
                     "title": "Font Size",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -7527,6 +7530,7 @@
                   "line_height": {
                     "anyOf": [
                       {
+                        "minimum": 0.0,
                         "type": "number"
                       },
                       {
@@ -7545,6 +7549,7 @@
                   "max_width": {
                     "anyOf": [
                       {
+                        "minimum": 0.0,
                         "type": "number"
                       },
                       {

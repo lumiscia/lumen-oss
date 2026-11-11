@@ -2624,9 +2624,9 @@ export interface TextNode extends CompositionNodeBase<"text"> {
  * `shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes
  * it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
  * +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the
- * point of its box at `position`. Its geometry is built again only when the text, font, layout,
- * depth or bevel change, so animating its transform or material costs no more than for a
- * `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the
+ * point of its box at `position`. Its geometry is built again only when the text, font, layout or
+ * bevel change, or its size or depth do with a bevel, so animating its transform or material
+ * costs no more than for a `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the
  * `glyph_*` params of a `text` node have no counterpart.
  */
 export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
@@ -2670,7 +2670,11 @@ export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
      * glyphs that their font draws from colour or bitmap tables, such as emoji, have no outline
      * and are left out with a `font.no_outlines` warning. A node extrudes at most as many glyphs
      * as the host's text glyph limit lets a `text` node draw, 16384 unless the host sets
-     * another, and at most 4000000 vertices and 12000000 indices; more is a render error.
+     * another, and at most 4000000 vertices and 12000000 indices; more is a render error. One
+     * glyph builds from an outline of at most 4096 commands, 64 contours and 8192 flattened
+     * points, and takes at most 262144 vertices and 786432 indices, and 3072 points where it is
+     * bevelled; a font with a glyph past any of these fails the render rather than the glyph
+     * being left out.
      */
     readonly content?: ExpressionValue<string>;
     /**
@@ -2696,7 +2700,9 @@ export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
     /**
      * Font size in world units: the height of the font's em square, so capitals are about 0.7
      * of it tall. At 1, the default, a word is about as tall as a default `shape_3d` box is
-     * wide. 0 draws nothing.
+     * wide. 0 draws nothing, and so does anything under 0.000001. At most 1000000; `depth`,
+     * `bevel_size`, `max_width`, `letter_spacing` and `line_height` may be at most 100000 times
+     * it, and at most 1000000 themselves.
      */
     readonly font_size?: ExpressionValue<number>;
     /** Font style. */
@@ -3308,9 +3314,9 @@ export const nodeInputPorts = {
    * `shape_3d`. The text is shaped as a `text` node with the same font, size and layout shapes
    * it, with its kerning, ligatures, font fallback and wrapping, and lies in the XY plane facing
    * +Z, reading along +X, with `alignment_horizontal` and `alignment_vertical` choosing the
-   * point of its box at `position`. Its geometry is built again only when the text, font, layout,
-   * depth or bevel change, so animating its transform or material costs no more than for a
-   * `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the
+   * point of its box at `position`. Its geometry is built again only when the text, font, layout or
+   * bevel change, or its size or depth do with a bevel, so animating its transform or material
+   * costs no more than for a `shape_3d`. One style covers the whole text: rich text spans, decorations, strokes and the
    * `glyph_*` params of a `text` node have no counterpart.
    */
   "text_3d": {},

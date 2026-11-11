@@ -6,7 +6,7 @@ use std::sync::Arc;
 use foldhash::HashMap;
 use lumen_3d::glam::{Vec2, Vec3};
 use lumen_3d::model::{MAX_INDICES, MAX_VERTICES};
-use lumen_3d::{Bounds, Extrusion, Mesh};
+use lumen_3d::{Bounds, ExtrudeLimit, ExtrudeLimits, Extrusion, LimitExceeded, Mesh};
 use lumen_gpu::Recorder;
 use lumen_text::{GlyphKey, GlyphOutline, OutlineCommand, TextLayoutRequest};
 use lyon_path::iterator::PathIterator;
@@ -14,7 +14,7 @@ use lyon_path::math::point;
 use lyon_path::{Path, PathEvent};
 
 use super::collect::GpuMesh;
-use super::text_3d::Text3dParams;
+use super::text_3d::{MIN_FONT_SIZE, Text3dParams};
 use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::FrameCx;
 use crate::media::MediaStore;
@@ -35,9 +35,22 @@ const MAX_BEVEL_SEGMENTS: u32 = 16;
 const TEXT_BUDGET_BYTES: u64 = 64 << 20;
 /// Most text meshes kept, counting those of text with nothing to draw.
 const MAX_TEXTS: usize = 256;
-/// Glyph meshes kept for building other text from, which are dropped together once there are
-/// more.
+/// Bytes of glyph meshes kept in memory for building other text from, which the least recently
+/// used give way to. A glyph mesh larger than this is not kept.
+const GLYPH_BUDGET_BYTES: u64 = 64 << 20;
+/// Most glyph meshes kept, counting glyphs with nothing to draw.
 const MAX_GLYPH_MESHES: usize = 4096;
+/// Most commands in one glyph's outline.
+const MAX_GLYPH_COMMANDS: usize = 4096;
+/// What one glyph may take to build, from its outline to its mesh. A glyph past any of them fails
+/// the text, naming the limit.
+const GLYPH_LIMITS: ExtrudeLimits = ExtrudeLimits {
+    max_contours: 64,
+    max_points: 8192,
+    max_bevel_points: 3072,
+    max_vertices: 262_144,
+    max_indices: 786_432,
+};
 
 /// A text's mesh on the GPU, with its index count and what it covers before it is placed.
 #[derive(Debug, Clone, Copy)]
@@ -67,8 +80,8 @@ impl TextKey {
             font_generation,
             scale: (params.font_size / SHAPE_EM) as f32,
             extrusion: Extrusion {
-                depth: params.depth.max(0.0) as f32,
-                bevel: params.bevel_size.max(0.0) as f32,
+                depth: params.depth as f32,
+                bevel: params.bevel_size as f32,
                 bevel_segments: params.bevel_segments.min(MAX_BEVEL_SEGMENTS),
             },
             anchor: [
@@ -86,15 +99,31 @@ impl TextKey {
         }
     }
 
-    /// What a glyph's mesh is built from besides the glyph.
-    fn glyph_bits(&self) -> [u32; 4] {
-        let extrusion = &self.extrusion;
-        [
-            self.scale.to_bits(),
-            extrusion.depth.to_bits(),
-            extrusion.bevel.to_bits(),
-            extrusion.bevel_segments,
-        ]
+    /// The extrusion that glyph meshes are built with, in ems, and the factor that scales their Z
+    /// when they are placed. A glyph mesh depends on the text's size and depth only where a
+    /// bevel ties them together, so animating either of a plain extrusion builds nothing again.
+    fn glyph_extrusion(&self) -> (Extrusion, f32) {
+        let Extrusion {
+            depth,
+            bevel,
+            bevel_segments,
+        } = self.extrusion;
+        if depth > 0.0 && bevel > 0.0 && bevel_segments > 0 {
+            let em = self.scale * SHAPE_EM as f32;
+            let extrusion = Extrusion {
+                depth: depth / em,
+                bevel: bevel / em,
+                bevel_segments,
+            };
+            (extrusion, em)
+        } else {
+            let extrusion = Extrusion {
+                depth: if depth > 0.0 { 1.0 } else { 0.0 },
+                bevel: 0.0,
+                bevel_segments: 0,
+            };
+            (extrusion, depth)
+        }
     }
 }
 
@@ -118,12 +147,95 @@ pub(crate) struct TextMeshes {
     glyphs: GlyphMeshes,
 }
 
-/// Each glyph's mesh at a size and extrusion, or `None` for a glyph with no outline, for the
-/// fonts of one generation.
+/// What a glyph's mesh is built from besides the glyph: its extrusion in ems.
+type GlyphBuild = [u32; 3];
+
+struct CachedGlyph {
+    /// `None` for a glyph with no outline.
+    mesh: Option<Arc<Mesh>>,
+    bytes: u64,
+    last_used: u64,
+}
+
+/// Each glyph's mesh in ems at an extrusion, for the fonts of one generation, within
+/// [`GLYPH_BUDGET_BYTES`] and [`MAX_GLYPH_MESHES`].
 #[derive(Default)]
 struct GlyphMeshes {
     font_generation: u64,
-    meshes: HashMap<(GlyphKey, [u32; 4]), Option<Arc<Mesh>>>,
+    meshes: HashMap<(GlyphKey, GlyphBuild), CachedGlyph>,
+    bytes: u64,
+    /// Orders the uses of glyph meshes.
+    clock: u64,
+}
+
+impl GlyphMeshes {
+    /// Forgets every mesh unless they are of `font_generation`'s fonts.
+    fn use_fonts(&mut self, font_generation: u64) {
+        if self.font_generation != font_generation {
+            *self = Self {
+                font_generation,
+                clock: self.clock,
+                ..Self::default()
+            };
+        }
+    }
+
+    /// The mesh of `glyph`, if it is kept, which counts as using it.
+    fn get(&mut self, glyph: &(GlyphKey, GlyphBuild)) -> Option<Option<Arc<Mesh>>> {
+        self.clock += 1;
+        let cached = self.meshes.get_mut(glyph)?;
+        cached.last_used = self.clock;
+        Some(cached.mesh.clone())
+    }
+
+    /// Whether `glyph` is kept and has anything to draw, or `None` if it isn't kept.
+    fn draws(&self, glyph: &(GlyphKey, GlyphBuild)) -> Option<bool> {
+        let cached = self.meshes.get(glyph)?;
+        Some(
+            cached
+                .mesh
+                .as_ref()
+                .is_some_and(|mesh| !mesh.indices.is_empty()),
+        )
+    }
+
+    /// Keeps `mesh` unless it is larger than the budget, freeing the least recently used meshes
+    /// while more than the budget is kept.
+    fn insert(&mut self, glyph: (GlyphKey, GlyphBuild), mesh: Option<Arc<Mesh>>) {
+        let bytes = mesh.as_ref().map_or(0, |mesh| mesh_bytes(mesh));
+        if bytes > GLYPH_BUDGET_BYTES {
+            return;
+        }
+        self.clock += 1;
+        self.bytes += bytes;
+        let replaced = self.meshes.insert(
+            glyph,
+            CachedGlyph {
+                mesh,
+                bytes,
+                last_used: self.clock,
+            },
+        );
+        self.bytes -= replaced.map_or(0, |replaced| replaced.bytes);
+        while self.bytes > GLYPH_BUDGET_BYTES || self.meshes.len() > MAX_GLYPH_MESHES {
+            let Some((&oldest, _)) = self
+                .meshes
+                .iter()
+                .min_by_key(|(_, cached)| cached.last_used)
+            else {
+                break;
+            };
+            self.bytes -= self
+                .meshes
+                .remove(&oldest)
+                .map_or(0, |removed| removed.bytes);
+        }
+    }
+}
+
+fn mesh_bytes(mesh: &Mesh) -> u64 {
+    (std::mem::size_of_val(mesh.vertices.as_slice())
+        + std::mem::size_of_val(mesh.indices.as_slice())) as u64
 }
 
 impl TextMeshes {
@@ -162,10 +274,7 @@ impl TextMeshes {
     /// Adds the text `built` from `key`, drawn in frame `tick`, and returns where it is.
     fn insert(&mut self, rec: &mut Recorder, key: TextKey, built: Built, tick: u64) -> usize {
         let mesh = built.mesh.filter(|mesh| !mesh.indices.is_empty());
-        let bytes = mesh.as_ref().map_or(0, |mesh| {
-            (std::mem::size_of_val(mesh.vertices.as_slice())
-                + std::mem::size_of_val(mesh.indices.as_slice())) as u64
-        });
+        let bytes = mesh.as_ref().map_or(0, mesh_bytes);
         let mesh = mesh.map(|mesh| TextMesh {
             mesh: GpuMesh::upload(rec, &mesh),
             index_count: mesh.indices.len() as u32,
@@ -208,10 +317,10 @@ fn layout(params: &Text3dParams, em: f64) -> TextLayoutParams {
         font_size: em,
         font_weight: params.font_weight,
         font_style: params.font_style,
-        max_width: params.max_width.max(0.0) * pixels,
+        max_width: params.max_width * pixels,
         letter_spacing: params.letter_spacing * pixels,
         font_features: params.font_features.clone(),
-        line_height: params.line_height.max(0.0) * pixels,
+        line_height: params.line_height * pixels,
         alignment_horizontal: params.alignment_horizontal,
         text_transform: params.text_transform,
         ..TextLayoutParams::default()
@@ -225,7 +334,10 @@ pub(super) fn text_mesh(
     node_id: NodeId,
     params: &Text3dParams,
 ) -> crate::Result<Option<TextMesh>> {
-    if !(params.font_size.is_finite() && params.font_size > 0.0) {
+    params
+        .check()
+        .map_err(|details| text_error(node_id, details))?;
+    if params.font_size < MIN_FONT_SIZE {
         return Ok(None);
     }
     let media = cx.media();
@@ -251,13 +363,12 @@ pub(super) fn text_mesh(
     let index = match texts.texts.iter().position(|text| text.key == key) {
         Some(index) => index,
         None => {
-            let built =
-                build(media, &key, &mut texts.glyphs, max_glyphs).map_err(
-                    |failure| match failure {
-                        BuildError::Lumen(error) => error,
-                        BuildError::Limit(details) => text_error(node_id, details),
-                    },
-                )?;
+            let built = build(media, &key, &mut texts.glyphs, max_glyphs, &GLYPH_LIMITS).map_err(
+                |failure| match failure {
+                    BuildError::Lumen(error) => error,
+                    BuildError::Rejected(details) => text_error(node_id, details),
+                },
+            )?;
             texts.insert(rec, key, built, tick)
         }
     };
@@ -278,107 +389,124 @@ struct Built {
 
 enum BuildError {
     Lumen(LumenError),
-    /// Why the text is more than a node may extrude.
-    Limit(String),
+    /// Why the text can't be extruded: it is more than a node or a glyph may take, or its mesh
+    /// is unusable.
+    Rejected(String),
 }
 
 /// Shapes the text of `key` and puts its glyphs' meshes together, building those that `glyphs`
-/// lacks.
+/// lacks. Each glyph is held to `glyph_limits` as it is built, and counts against what the node
+/// may extrude as soon as it is built, so the build stops at the first glyph past either.
 fn build(
     media: Option<&dyn MediaStore>,
     key: &TextKey,
     glyphs: &mut GlyphMeshes,
     max_glyphs: usize,
+    glyph_limits: &ExtrudeLimits,
 ) -> Result<Built, BuildError> {
-    if glyphs.font_generation != key.font_generation || glyphs.meshes.len() > MAX_GLYPH_MESHES {
-        glyphs.meshes.clear();
-        glyphs.font_generation = key.font_generation;
-    }
-    let bits = key.glyph_bits();
-    let (layout, measurement, outlines) = {
+    glyphs.use_fonts(key.font_generation);
+    let (extrusion, z_scale) = key.glyph_extrusion();
+    let build_key: GlyphBuild = [
+        extrusion.depth.to_bits(),
+        extrusion.bevel.to_bits(),
+        extrusion.bevel_segments,
+    ];
+    let (layout, measurement, outlined) = {
         let mut system = text_system(media).map_err(BuildError::Lumen)?;
         let shaped = system.shape_changed(&key.request);
         let layout = shaped.place([0.0, 0.0]);
-        let mut outlines: HashMap<GlyphKey, GlyphOutline> = HashMap::default();
+        // Whether each glyph without a mesh yet has an outline to draw.
+        let mut outlined: HashMap<GlyphKey, bool> = HashMap::default();
         for glyph in &layout.glyphs {
-            let outline_key = glyph.key.outline_key();
-            if !glyphs.meshes.contains_key(&(outline_key, bits)) {
-                outlines
-                    .entry(outline_key)
-                    .or_insert_with(|| system.glyph_outline(outline_key));
+            let glyph = glyph.key.outline_key();
+            if glyphs.draws(&(glyph, build_key)).is_none() {
+                outlined.entry(glyph).or_insert_with(|| {
+                    matches!(system.glyph_outline(glyph), GlyphOutline::Commands(commands)
+                        if !commands.is_empty())
+                });
             }
         }
-        (layout, shaped.measurement, outlines)
+        (layout, shaped.measurement, outlined)
     };
 
-    let draws = |glyph: GlyphKey| match glyphs.meshes.get(&(glyph, bits)) {
-        Some(mesh) => mesh.as_ref().is_some_and(|mesh| !mesh.indices.is_empty()),
-        None => matches!(outlines.get(&glyph), Some(GlyphOutline::Commands(commands))
-            if !commands.is_empty()),
-    };
     let drawn = layout
         .glyphs
         .iter()
-        .filter(|glyph| draws(glyph.key.outline_key()))
+        .filter(|glyph| {
+            let glyph = glyph.key.outline_key();
+            glyphs
+                .draws(&(glyph, build_key))
+                .unwrap_or_else(|| outlined.get(&glyph) == Some(&true))
+        })
         .count();
     if drawn > max_glyphs {
-        return Err(BuildError::Limit(format!(
+        return Err(BuildError::Rejected(format!(
             "text extrudes {drawn} glyphs, more than the limit of {max_glyphs} a text node can \
              draw; split it across nodes, shorten it, or raise the host's text glyph limit \
              (`--max-text-glyphs` of lumen-local and lumen-server, `set_max_text_glyphs` of the \
              renderer)"
         )));
     }
-    let tolerance = (SHAPE_EM * CURVE_TOLERANCE) as f32;
-    for (glyph, outline) in outlines {
-        let mesh = match outline {
-            GlyphOutline::Commands(commands) => Some(Arc::new(lumen_3d::extrude(
-                &flatten(&commands, key.scale, tolerance),
-                &key.extrusion,
-            ))),
-            GlyphOutline::Unavailable => None,
-        };
-        glyphs.meshes.insert((glyph, bits), mesh);
-    }
 
+    let em = key.scale * SHAPE_EM as f32;
     let width = key.request.max_width.unwrap_or(measurement.width);
     let origin = [key.anchor[0] * width, key.anchor[1] * measurement.height];
     let (mut vertex_count, mut index_count, mut skipped) = (0, 0, 0);
     let mut parts = Vec::new();
     for glyph in &layout.glyphs {
-        match glyphs.meshes.get(&(glyph.key.outline_key(), bits)) {
-            Some(Some(mesh)) if !mesh.indices.is_empty() => {
+        let outline_key = glyph.key.outline_key();
+        let mesh = match glyphs.get(&(outline_key, build_key)) {
+            Some(mesh) => mesh,
+            None => {
+                let limits = ExtrudeLimits {
+                    max_vertices: glyph_limits.max_vertices.min(MAX_VERTICES - vertex_count),
+                    max_indices: glyph_limits.max_indices.min(MAX_INDICES - index_count),
+                    ..*glyph_limits
+                };
+                let character = glyph.item.glyph + 1;
+                let mesh = glyph_mesh(media, outline_key, &extrusion, &limits)
+                    .map_err(|failure| failure.in_node(character, &limits, glyph_limits))?;
+                glyphs.insert((outline_key, build_key), mesh.clone());
+                mesh
+            }
+        };
+        match mesh {
+            Some(mesh) if !mesh.indices.is_empty() => {
                 vertex_count += mesh.vertices.len();
                 index_count += mesh.indices.len();
                 if vertex_count > MAX_VERTICES || index_count > MAX_INDICES {
-                    return Err(BuildError::Limit(format!(
-                        "the extruded text has more than {MAX_VERTICES} vertices or \
-                         {MAX_INDICES} indices; split it across nodes, shorten it, or use fewer \
-                         `bevel_segments`"
-                    )));
+                    return Err(BuildError::Rejected(node_limit_message()));
                 }
                 let offset = Vec3::new(
                     (glyph.position[0] - origin[0]) * key.scale,
                     (origin[1] - glyph.position[1]) * key.scale,
                     0.0,
                 );
-                parts.push((offset, Arc::clone(mesh)));
+                parts.push((offset, mesh));
             }
-            Some(None) => skipped += 1,
-            _ => {}
+            Some(_) => {}
+            None => skipped += 1,
         }
     }
     let mut mesh = Mesh {
         vertices: Vec::with_capacity(vertex_count),
         indices: Vec::with_capacity(index_count),
     };
+    let scale = Vec3::new(em, em, z_scale);
     for (offset, part) in parts {
         let base = mesh.vertices.len() as u32;
-        mesh.vertices.extend(part.vertices.iter().map(|vertex| {
+        for vertex in &part.vertices {
             let mut vertex = *vertex;
-            vertex.position = (Vec3::from(vertex.position) + offset).into();
-            vertex
-        }));
+            vertex.position = (Vec3::from(vertex.position) * scale + offset).into();
+            if !(vertex.position.iter().all(|c| c.is_finite())) {
+                return Err(BuildError::Rejected(
+                    "the extruded text has a vertex that is not finite; check the node's sizes, \
+                     which may be too large"
+                        .to_string(),
+                ));
+            }
+            mesh.vertices.push(vertex);
+        }
         mesh.indices
             .extend(part.indices.iter().map(|index| base + index));
     }
@@ -388,9 +516,105 @@ fn build(
     })
 }
 
+fn node_limit_message() -> String {
+    format!(
+        "the extruded text has more than {MAX_VERTICES} vertices or {MAX_INDICES} indices; split \
+         it across nodes, shorten it, or use fewer `bevel_segments`"
+    )
+}
+
+/// Why a glyph's mesh could not be built.
+enum GlyphFailure {
+    Lumen(LumenError),
+    TooManyCommands(usize),
+    Limit(LimitExceeded),
+}
+
+impl GlyphFailure {
+    /// The failure of the glyph of the text's character number `character`, built with `limits`.
+    fn in_node(
+        self,
+        character: u32,
+        limits: &ExtrudeLimits,
+        glyph_limits: &ExtrudeLimits,
+    ) -> BuildError {
+        match self {
+            Self::Lumen(error) => BuildError::Lumen(error),
+            Self::TooManyCommands(commands) => BuildError::Rejected(format!(
+                "the glyph of character {character} has an outline of {commands} commands, more \
+                 than the limit of {MAX_GLYPH_COMMANDS} for one glyph; use another font"
+            )),
+            // The glyph fits what one may take, but not what the node has left.
+            Self::Limit(LimitExceeded {
+                limit: ExtrudeLimit::Vertices,
+                ..
+            }) if limits.max_vertices < glyph_limits.max_vertices => {
+                BuildError::Rejected(node_limit_message())
+            }
+            Self::Limit(LimitExceeded {
+                limit: ExtrudeLimit::Indices,
+                ..
+            }) if limits.max_indices < glyph_limits.max_indices => {
+                BuildError::Rejected(node_limit_message())
+            }
+            Self::Limit(exceeded) => BuildError::Rejected(format!(
+                "the glyph of character {character} is too complex to extrude: it has {exceeded} \
+                 for one glyph; {}",
+                match exceeded.limit {
+                    ExtrudeLimit::BevelPoints => "use a plain `bevel_size` of 0 or another font",
+                    ExtrudeLimit::Vertices | ExtrudeLimit::Indices =>
+                        "use fewer `bevel_segments` or another font",
+                    ExtrudeLimit::Contours | ExtrudeLimit::Points | ExtrudeLimit::Crossings => {
+                        "use another font"
+                    }
+                }
+            )),
+        }
+    }
+}
+
+/// The mesh of the glyph `glyph` in ems, or `None` if its font has no outline for it.
+fn glyph_mesh(
+    media: Option<&dyn MediaStore>,
+    glyph: GlyphKey,
+    extrusion: &Extrusion,
+    limits: &ExtrudeLimits,
+) -> Result<Option<Arc<Mesh>>, GlyphFailure> {
+    let outline = text_system(media)
+        .map_err(GlyphFailure::Lumen)?
+        .glyph_outline(glyph);
+    let GlyphOutline::Commands(commands) = outline else {
+        return Ok(None);
+    };
+    if commands.len() > MAX_GLYPH_COMMANDS {
+        return Err(GlyphFailure::TooManyCommands(commands.len()));
+    }
+    let tolerance = (SHAPE_EM * CURVE_TOLERANCE) as f32;
+    let contours = flatten(&commands, 1.0 / SHAPE_EM as f32, tolerance, limits)
+        .map_err(GlyphFailure::Limit)?;
+    let mesh = lumen_3d::extrude(&contours, extrusion, limits).map_err(GlyphFailure::Limit)?;
+    Ok(Some(Arc::new(mesh)))
+}
+
 /// The closed polygons of an outline in pixels, flattened to within `tolerance` pixels and
-/// scaled by `scale`.
-fn flatten(commands: &[OutlineCommand], scale: f32, tolerance: f32) -> Vec<Vec<Vec2>> {
+/// scaled by `scale`. Fails as soon as the outline has more contours or flattened points than
+/// `limits` allow.
+fn flatten(
+    commands: &[OutlineCommand],
+    scale: f32,
+    tolerance: f32,
+    limits: &ExtrudeLimits,
+) -> Result<Vec<Vec<Vec2>>, LimitExceeded> {
+    let starts = commands
+        .iter()
+        .filter(|command| matches!(command, OutlineCommand::MoveTo(_)))
+        .count();
+    if starts > limits.max_contours {
+        return Err(LimitExceeded {
+            limit: ExtrudeLimit::Contours,
+            max: limits.max_contours,
+        });
+    }
     let mut builder = Path::builder();
     let mut open = false;
     for command in commands {
@@ -423,6 +647,7 @@ fn flatten(commands: &[OutlineCommand], scale: f32, tolerance: f32) -> Vec<Vec<V
     }
     let mut contours = Vec::new();
     let mut current = Vec::new();
+    let mut points = 0;
     let at = |p: lyon_path::math::Point| Vec2::new(p.x, p.y) * scale;
     for event in builder.build().iter().flattened(tolerance) {
         match event {
@@ -431,8 +656,15 @@ fn flatten(commands: &[OutlineCommand], scale: f32, tolerance: f32) -> Vec<Vec<V
             PathEvent::End { .. } => contours.push(std::mem::take(&mut current)),
             _ => {}
         }
+        points += 1;
+        if points > limits.max_points {
+            return Err(LimitExceeded {
+                limit: ExtrudeLimit::Points,
+                max: limits.max_points,
+            });
+        }
     }
-    contours
+    Ok(contours)
 }
 
 #[cfg(test)]
@@ -462,7 +694,13 @@ mod tests {
             &commands,
             1.0 / SHAPE_EM as f32,
             (SHAPE_EM * CURVE_TOLERANCE) as f32,
+            &ExtrudeLimits::NONE,
         )
+        .unwrap()
+    }
+
+    fn extrude(contours: &[Vec<Vec2>], extrusion: &Extrusion) -> Mesh {
+        lumen_3d::extrude(contours, extrusion, &ExtrudeLimits::NONE).unwrap()
     }
 
     fn position(mesh: &Mesh, index: u32) -> Vec3 {
@@ -525,7 +763,7 @@ mod tests {
                     bevel,
                     bevel_segments,
                 };
-                let mesh = lumen_3d::extrude(&contours, &extrusion);
+                let mesh = extrude(&contours, &extrusion);
                 let case = format!("{family} `{glyph}` bevelled {bevel} in {bevel_segments}");
                 assert!(!mesh.indices.is_empty(), "{case}");
                 assert_eq!(open_edges(&mesh), 0, "{case} is closed");
@@ -533,7 +771,7 @@ mod tests {
             }
         }
         // The middle of an "o" is its counter, which no cap covers.
-        let o = lumen_3d::extrude(
+        let o = extrude(
             &outline("o"),
             &Extrusion {
                 depth: 0.3,
@@ -552,6 +790,15 @@ mod tests {
     }
 
     fn built(params: Text3dParams, glyphs: &mut GlyphMeshes, max: usize) -> Result<Built, String> {
+        built_within(params, glyphs, max, &GLYPH_LIMITS)
+    }
+
+    fn built_within(
+        params: Text3dParams,
+        glyphs: &mut GlyphMeshes,
+        max: usize,
+        limits: &ExtrudeLimits,
+    ) -> Result<Built, String> {
         let request = layout(&params, SHAPE_EM).request(&[]);
         let generation = text_system(None).unwrap().font_generation();
         build(
@@ -559,10 +806,11 @@ mod tests {
             &TextKey::new(&params, request, generation),
             glyphs,
             max,
+            limits,
         )
         .map_err(|failure| match failure {
             BuildError::Lumen(error) => error.to_string(),
-            BuildError::Limit(details) => details,
+            BuildError::Rejected(details) => details,
         })
     }
 
@@ -629,5 +877,243 @@ mod tests {
             error.contains("text extrudes 5 glyphs, more than the limit of 4"),
             "{error}"
         );
+    }
+
+    /// Text of every glyph of Roboto in a few of its blocks, past what a node may extrude when
+    /// bevelled.
+    fn every_glyph() -> String {
+        ('!'..='\u{24F}')
+            .chain('\u{2000}'..='\u{2BFF}')
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    }
+
+    fn bevelled(content: &str, bevel_size: f64) -> Text3dParams {
+        Text3dParams {
+            bevel_size,
+            bevel_segments: 16,
+            depth: 0.3,
+            ..text(content)
+        }
+    }
+
+    fn mesh_of(vertices: usize) -> Option<Arc<Mesh>> {
+        let vertex = lumen_3d::Vertex {
+            position: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+            uv: [0.0; 2],
+        };
+        Some(Arc::new(Mesh {
+            vertices: vec![vertex; vertices],
+            indices: vec![0; 3],
+        }))
+    }
+
+    /// The key of the first glyph of an `l`.
+    fn some_glyph() -> GlyphKey {
+        let params = text("l");
+        let request = layout(&params, SHAPE_EM).request(&[]);
+        let layout = text_system(None).unwrap().shape(&request).place([0.0, 0.0]);
+        layout.glyphs[0].key.outline_key()
+    }
+
+    #[test]
+    fn a_glyph_past_a_limit_fails_the_text_naming_it() {
+        let limits = |change: fn(&mut ExtrudeLimits)| {
+            let mut limits = GLYPH_LIMITS;
+            change(&mut limits);
+            built_within(
+                bevelled("@", 0.03),
+                &mut GlyphMeshes::default(),
+                100,
+                &limits,
+            )
+            .err()
+            .expect("the glyph is past the limit")
+        };
+        let contours = limits(|l| l.max_contours = 1);
+        assert!(
+            contours.contains("character 1") && contours.contains("more than 1 contours"),
+            "{contours}"
+        );
+        let points = limits(|l| l.max_points = 50);
+        assert!(points.contains("more than 50 points"), "{points}");
+        let bevel = limits(|l| l.max_bevel_points = 50);
+        assert!(
+            bevel.contains("more than 50 points to fit a bevel to"),
+            "{bevel}"
+        );
+        let vertices = limits(|l| l.max_vertices = 1000);
+        assert!(vertices.contains("more than 1000 vertices"), "{vertices}");
+        let indices = limits(|l| l.max_indices = 1000);
+        assert!(indices.contains("more than 1000 indices"), "{indices}");
+        // Without a bevel, the same glyph needs no fitting.
+        let mut tight = GLYPH_LIMITS;
+        tight.max_bevel_points = 50;
+        assert!(built_within(text("@"), &mut GlyphMeshes::default(), 100, &tight).is_ok());
+    }
+
+    #[test]
+    fn an_outline_past_the_flattening_limits_stops_before_building_its_points() {
+        let square = |size: f32, curves: usize| {
+            let mut commands = vec![OutlineCommand::MoveTo([0.0, 0.0])];
+            for _ in 0..curves {
+                commands.push(OutlineCommand::CurveTo(
+                    [size, 0.0],
+                    [size, size],
+                    [0.0, size],
+                ));
+            }
+            commands.push(OutlineCommand::Close);
+            commands
+        };
+        let limits = ExtrudeLimits {
+            max_points: 1000,
+            ..GLYPH_LIMITS
+        };
+        // Curves ten thousand times the size of a pixel flatten to millions of points.
+        let huge = flatten(&square(1e7, 1), 1.0, 0.128, &limits).unwrap_err();
+        assert_eq!(huge.limit, ExtrudeLimit::Points);
+        assert!(flatten(&square(30.0, 4), 1.0, 0.128, &limits).is_ok());
+        let many: Vec<_> = (0..65)
+            .flat_map(|_| [OutlineCommand::MoveTo([0.0, 0.0]), OutlineCommand::Close])
+            .collect();
+        let many = flatten(&many, 1.0, 0.128, &limits).unwrap_err();
+        assert_eq!(many.limit, ExtrudeLimit::Contours);
+    }
+
+    #[test]
+    fn the_node_limit_stops_the_build_at_the_first_glyph_past_it() {
+        let letters = every_glyph();
+        let distinct = letters.chars().count();
+        let mut glyphs = GlyphMeshes::default();
+        let error = built(bevelled(&letters, 0.03), &mut glyphs, 100_000)
+            .err()
+            .expect("the text has more vertices than a node may extrude");
+        assert!(error.contains("more than 4000000 vertices"), "{error}");
+        assert!(
+            glyphs.meshes.len() < distinct / 2,
+            "{} of {distinct} glyphs were built",
+            glyphs.meshes.len()
+        );
+    }
+
+    #[test]
+    fn glyph_meshes_stay_within_their_budget_and_entry_limit() {
+        let mut glyphs = GlyphMeshes::default();
+        let glyph = |index: u32| {
+            let mut key = some_glyph();
+            key.0.glyph_id = index as u16;
+            (key, [index, 0, 0])
+        };
+        // Meshes of two fifths of the budget each: only two fit.
+        let third =
+            (GLYPH_BUDGET_BYTES * 2 / 5 / std::mem::size_of::<lumen_3d::Vertex>() as u64) as usize;
+        for index in 0..5 {
+            glyphs.insert(glyph(index), mesh_of(third));
+            assert!(glyphs.bytes <= GLYPH_BUDGET_BYTES);
+        }
+        assert_eq!(glyphs.meshes.len(), 2);
+        assert!(glyphs.get(&glyph(4)).is_some() && glyphs.get(&glyph(3)).is_some());
+        assert!(
+            glyphs.get(&glyph(2)).is_none(),
+            "the least recently used goes first"
+        );
+        // A mesh used more recently outlives newer ones.
+        glyphs.get(&glyph(3));
+        glyphs.insert(glyph(5), mesh_of(third));
+        assert!(glyphs.get(&glyph(3)).is_some() && glyphs.get(&glyph(4)).is_none());
+        // A mesh bigger than the whole budget is not kept, and nothing else is freed for it.
+        let before = glyphs.meshes.len();
+        glyphs.insert(glyph(6), mesh_of(third * 3));
+        assert!(glyphs.get(&glyph(6)).is_none() && glyphs.meshes.len() == before);
+        // Glyphs with nothing to keep still count toward the entry limit.
+        for index in 100..100 + 2 * MAX_GLYPH_MESHES as u32 {
+            glyphs.insert(glyph(index), None);
+        }
+        assert!(glyphs.meshes.len() <= MAX_GLYPH_MESHES);
+        glyphs.use_fonts(glyphs.font_generation + 1);
+        assert!(glyphs.meshes.is_empty() && glyphs.bytes == 0);
+    }
+
+    #[test]
+    fn animating_the_bevel_keeps_the_glyph_cache_within_its_budget() {
+        let mut glyphs = GlyphMeshes::default();
+        for step in 0..120 {
+            let bevel = 0.01 + step as f64 * 0.0001;
+            built(bevelled("@&8", bevel), &mut glyphs, 100).unwrap();
+            assert!(glyphs.bytes <= GLYPH_BUDGET_BYTES);
+        }
+        // A build that fails the node's limit leaves the cache within its budget too.
+        let letters = every_glyph();
+        built(bevelled(&letters, 0.02), &mut glyphs, 100_000)
+            .err()
+            .unwrap();
+        assert!(glyphs.bytes <= GLYPH_BUDGET_BYTES && glyphs.meshes.len() <= MAX_GLYPH_MESHES);
+    }
+
+    #[test]
+    fn glyph_meshes_are_in_ems_and_survive_a_change_of_size_or_plain_depth() {
+        let mut glyphs = GlyphMeshes::default();
+        let bounds = |built: Built| {
+            let mesh = built.mesh.unwrap();
+            Bounds::of(mesh.vertices.iter().map(|v| Vec3::from(v.position)))
+        };
+        let small = bounds(built(text("Ab"), &mut glyphs, 100).unwrap());
+        let kept = glyphs.meshes.len();
+        let large = bounds(
+            built(
+                Text3dParams {
+                    font_size: 2.0,
+                    ..text("Ab")
+                },
+                &mut glyphs,
+                100,
+            )
+            .unwrap(),
+        );
+        let deep = bounds(
+            built(
+                Text3dParams {
+                    depth: 0.75,
+                    ..text("Ab")
+                },
+                &mut glyphs,
+                100,
+            )
+            .unwrap(),
+        );
+        assert_eq!(glyphs.meshes.len(), kept, "nothing was built again");
+        assert!((large.max.x - small.max.x * 2.0).abs() < 1e-5);
+        assert!((large.max.y - small.max.y * 2.0).abs() < 1e-5);
+        assert!((small.max.z - 0.125).abs() < 1e-6 && (deep.max.z - 0.375).abs() < 1e-6);
+        assert!((deep.max.x - small.max.x).abs() < 1e-6);
+        // A bevel ties the glyph to the text's size.
+        built(bevelled("A", 0.02), &mut glyphs, 100).unwrap();
+        let kept = glyphs.meshes.len();
+        built(
+            Text3dParams {
+                font_size: 2.0,
+                ..bevelled("A", 0.02)
+            },
+            &mut glyphs,
+            100,
+        )
+        .unwrap();
+        assert_eq!(glyphs.meshes.len(), kept + 1);
+    }
+
+    #[test]
+    fn a_mesh_with_a_vertex_that_is_not_finite_is_not_built() {
+        for depth in [1e40, f64::INFINITY] {
+            let error = built(
+                Text3dParams { depth, ..text("l") },
+                &mut GlyphMeshes::default(),
+                100,
+            )
+            .err()
+            .expect("an infinite depth reaches no mesh");
+            assert!(error.contains("not finite"), "{error}");
+        }
     }
 }

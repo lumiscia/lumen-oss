@@ -1,12 +1,15 @@
 //! Solids extruded from flat outlines, such as a font's glyphs.
 
-use std::f32::consts::FRAC_PI_2;
-
 use std::collections::HashMap;
+use std::f32::consts::FRAC_PI_2;
+use std::fmt;
 
 use glam::{Vec2, Vec3};
 use lyon_tessellation::path::{PathEvent, math::point};
-use lyon_tessellation::{BuffersBuilder, FillOptions, FillRule, FillTessellator, VertexBuffers};
+use lyon_tessellation::{
+    FillGeometryBuilder, FillOptions, FillRule, FillTessellator, FillVertex, GeometryBuilder,
+    GeometryBuilderError, TessellationError, VertexId,
+};
 
 use crate::{Mesh, Vertex};
 
@@ -24,9 +27,84 @@ pub struct Extrusion {
     pub bevel_segments: u32,
 }
 
+/// What bounds the work and the output of [`extrude`], checked while it builds so that an outline
+/// is refused before it takes more than its share of time or memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtrudeLimits {
+    /// Most contours in the outline.
+    pub max_contours: usize,
+    /// Most points over all contours, before and after joining overlapping ones.
+    pub max_points: usize,
+    /// Most points over all contours that a bevel is fitted to. Fitting a bevel tests contours
+    /// against each other, which takes time quadratic in their points.
+    pub max_bevel_points: usize,
+    /// Most vertices in the mesh. Triangulating the outline stops at half this many, which each
+    /// cap takes.
+    pub max_vertices: usize,
+    /// Most indices in the mesh. Triangulating the outline stops at half this many.
+    pub max_indices: usize,
+}
+
+/// Which of [`ExtrudeLimits`] an outline went past.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtrudeLimit {
+    Contours,
+    Points,
+    BevelPoints,
+    /// Points where contours cross each other or themselves, which joining the contours adds.
+    Crossings,
+    Vertices,
+    Indices,
+}
+
+/// An outline that [`extrude`] refused for going past one of its [`ExtrudeLimits`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LimitExceeded {
+    pub limit: ExtrudeLimit,
+    /// The most the limit allows.
+    pub max: usize,
+}
+
+impl fmt::Display for LimitExceeded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let what = match self.limit {
+            ExtrudeLimit::Contours => "contours",
+            ExtrudeLimit::Points => "points",
+            ExtrudeLimit::BevelPoints => "points to fit a bevel to",
+            ExtrudeLimit::Crossings => "points where its contours cross",
+            ExtrudeLimit::Vertices => "vertices",
+            ExtrudeLimit::Indices => "indices",
+        };
+        write!(f, "more than {} {what}", self.max)
+    }
+}
+
+impl std::error::Error for LimitExceeded {}
+
+impl ExtrudeLimits {
+    /// Limits that no outline reaches.
+    pub const NONE: Self = Self {
+        max_contours: usize::MAX,
+        max_points: usize::MAX,
+        max_bevel_points: usize::MAX,
+        max_vertices: usize::MAX,
+        max_indices: usize::MAX,
+    };
+
+    fn check(max: usize, count: usize, limit: ExtrudeLimit) -> Result<(), LimitExceeded> {
+        if count > max {
+            Err(LimitExceeded { limit, max })
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// Neighbouring edges whose directions turn by more than this many degrees meet in a hard
 /// corner; others share one smooth normal.
 const CORNER_ANGLE: f32 = 30.0;
+/// Points that joining overlapping contours may add, per point of the contours, besides 512.
+const CROSSING_ROOM: usize = 4;
 /// The farthest a corner's bevel moves in, in bevel widths, at sharp corners.
 const MAX_MITER: f32 = 3.0;
 /// Halvings of the bevel tried when it is too wide for the outline.
@@ -40,16 +118,29 @@ const BEVEL_CLEARANCE: f32 = 1.25;
 /// the holes of a glyph such as "o" stay open whichever way its contours wind, and contours that
 /// overlap are joined. Points that aren't finite, points repeating the one before and contours
 /// without area are left out, so a degenerate outline gives an empty mesh.
-pub fn extrude(contours: &[Vec<Vec2>], extrusion: &Extrusion) -> Mesh {
+///
+/// Fails with the first of `limits` that the outline goes past, before allocating beyond it. A
+/// bevel is fitted only to outlines of up to `max_bevel_points`; a larger one fails rather than
+/// going without.
+pub fn extrude(
+    contours: &[Vec<Vec2>],
+    extrusion: &Extrusion,
+    limits: &ExtrudeLimits,
+) -> Result<Mesh, LimitExceeded> {
+    ExtrudeLimits::check(limits.max_contours, contours.len(), ExtrudeLimit::Contours)?;
+    let points = |contours: &[Vec<Vec2>]| contours.iter().map(Vec::len).sum::<usize>();
+    ExtrudeLimits::check(limits.max_points, points(contours), ExtrudeLimit::Points)?;
     let contours: Vec<Vec<Vec2>> = contours.iter().filter_map(|c| clean(c)).collect();
-    let contours: Vec<Vec<Vec2>> = outlines(&contours)
+    let contours: Vec<Vec<Vec2>> = outlines(&contours, limits)?
         .iter()
         .filter_map(|c| clean(c))
         .collect();
     let mut mesh = Mesh::default();
     if contours.is_empty() {
-        return mesh;
+        return Ok(mesh);
     }
+    ExtrudeLimits::check(limits.max_contours, contours.len(), ExtrudeLimit::Contours)?;
+    ExtrudeLimits::check(limits.max_points, points(&contours), ExtrudeLimit::Points)?;
 
     let half = extrusion.depth.max(0.0) * 0.5;
     let segments = extrusion.bevel_segments.max(1);
@@ -60,6 +151,11 @@ pub fn extrude(contours: &[Vec<Vec2>], extrusion: &Extrusion) -> Mesh {
     };
     let corners: Vec<Corners> = contours.iter().map(|c| Corners::of(c)).collect();
     let bevel = if bevel > 0.0 {
+        ExtrudeLimits::check(
+            limits.max_bevel_points,
+            points(&contours),
+            ExtrudeLimit::BevelPoints,
+        )?;
         fit_bevel(&contours, &corners, bevel)
     } else {
         0.0
@@ -74,12 +170,12 @@ pub fn extrude(contours: &[Vec<Vec2>], extrusion: &Extrusion) -> Mesh {
             .map(|&inset| corners.inset(contour, inset))
             .collect();
         for band in &profile.bands {
-            wall(&mut mesh, corners, &rings, band);
+            wall(&mut mesh, corners, &rings, band, limits)?;
         }
         caps.push(rings.last().cloned().unwrap_or_default());
     }
-    fill_caps(&mut mesh, &caps, half);
-    mesh
+    fill_caps(&mut mesh, &caps, half, limits)?;
+    Ok(mesh)
 }
 
 /// `contour` without points that aren't finite or that repeat the one before, or `None` when
@@ -124,8 +220,32 @@ fn winding(p: Vec2, contours: &[Vec<Vec2>]) -> i32 {
 /// The boundary of the area `contours` fill by the nonzero rule, as closed contours with that
 /// area on their left and their outside on the right of each edge. Where contours cross, the
 /// boundary turns at the crossing.
-fn outlines(contours: &[Vec<Vec2>]) -> Vec<Vec<Vec2>> {
-    let (points, triangles) = tessellate(contours);
+fn outlines(
+    contours: &[Vec<Vec2>],
+    limits: &ExtrudeLimits,
+) -> Result<Vec<Vec<Vec2>>, LimitExceeded> {
+    // Overlaps in a real outline add a few points each, so joining its contours is given little
+    // room beyond their own points, which stops outlines that cross themselves a great many
+    // times before the work grows with the square of their points.
+    let input_points: usize = contours.iter().map(Vec::len).sum();
+    let allowed = input_points
+        .saturating_mul(CROSSING_ROOM)
+        .saturating_add(512);
+    let (points, triangles) = tessellate(
+        contours,
+        allowed.min(limits.max_vertices / 2),
+        limits.max_indices / 2,
+    )
+    .map_err(|limit| {
+        if limit == ExtrudeLimit::Vertices && allowed < limits.max_vertices / 2 {
+            LimitExceeded {
+                limit: ExtrudeLimit::Crossings,
+                max: allowed,
+            }
+        } else {
+            exceeded(limit, limits)
+        }
+    })?;
     // The edges of the triangles, wound counter-clockwise, that no neighbour shares are the
     // boundary.
     let mut edges: HashMap<(u32, u32), u32> = HashMap::default();
@@ -162,7 +282,7 @@ fn outlines(contours: &[Vec<Vec2>]) -> Vec<Vec<Vec2>> {
             outlines.push(loop_points);
         }
     }
-    outlines
+    Ok(outlines)
 }
 
 /// A point just left of the middle of `contour`'s longest edge.
@@ -434,8 +554,25 @@ impl Profile {
 }
 
 /// Adds the band of side wall between two of `rings` around a contour, wound to face out.
-fn wall(mesh: &mut Mesh, corners: &Corners, rings: &[Vec<Vec2>], band: &Band) {
+fn wall(
+    mesh: &mut Mesh,
+    corners: &Corners,
+    rings: &[Vec<Vec2>],
+    band: &Band,
+    limits: &ExtrudeLimits,
+) -> Result<(), LimitExceeded> {
     let n = corners.edges.len();
+    let hard = corners.smooth.iter().filter(|&&smooth| !smooth).count();
+    ExtrudeLimits::check(
+        limits.max_vertices,
+        mesh.vertices.len().saturating_add(2 * (n + hard)),
+        ExtrudeLimit::Vertices,
+    )?;
+    ExtrudeLimits::check(
+        limits.max_indices,
+        mesh.indices.len().saturating_add(6 * n),
+        ExtrudeLimit::Indices,
+    )?;
     let (from, to) = (&rings[band.from.ring], &rings[band.to.ring]);
     let vertex = |mesh: &mut Mesh, p: Vec2, z: f32, outward: Vec2, row: &Row| {
         let normal =
@@ -472,11 +609,28 @@ fn wall(mesh: &mut Mesh, corners: &Corners, rings: &[Vec<Vec2>], band: &Band) {
         let ([a, d], [b, c]) = (starts[v], ends[(v + 1) % n]);
         mesh.indices.extend([a, b, c, a, c, d]);
     }
+    Ok(())
 }
 
 /// Adds the front cap at `half` and the back cap at `-half` over the area `contours` fill.
-fn fill_caps(mesh: &mut Mesh, contours: &[Vec<Vec2>], half: f32) {
-    let (points, triangles) = tessellate(contours);
+fn fill_caps(
+    mesh: &mut Mesh,
+    contours: &[Vec<Vec2>],
+    half: f32,
+    limits: &ExtrudeLimits,
+) -> Result<(), LimitExceeded> {
+    let (points, triangles) = tessellate(contours, limits.max_vertices / 2, limits.max_indices / 2)
+        .map_err(|limit| exceeded(limit, limits))?;
+    ExtrudeLimits::check(
+        limits.max_vertices,
+        mesh.vertices.len().saturating_add(2 * points.len()),
+        ExtrudeLimit::Vertices,
+    )?;
+    ExtrudeLimits::check(
+        limits.max_indices,
+        mesh.indices.len().saturating_add(2 * triangles.len()),
+        ExtrudeLimit::Indices,
+    )?;
     for side in [1.0_f32, -1.0] {
         let base = mesh.vertices.len() as u32;
         mesh.vertices.extend(points.iter().map(|p| Vertex {
@@ -490,11 +644,58 @@ fn fill_caps(mesh: &mut Mesh, contours: &[Vec<Vec2>], half: f32) {
                 .extend(if side > 0.0 { [i, j, k] } else { [i, k, j] });
         }
     }
+    Ok(())
+}
+
+/// The failure of `limit`, `Vertices` or `Indices`, of a tessellation within `limits`.
+fn exceeded(limit: ExtrudeLimit, limits: &ExtrudeLimits) -> LimitExceeded {
+    let max = match limit {
+        ExtrudeLimit::Indices => limits.max_indices,
+        _ => limits.max_vertices,
+    };
+    LimitExceeded { limit, max }
+}
+
+/// Collects a tessellation's points and triangles, refusing the vertex past `max_vertices`.
+struct Capped {
+    points: Vec<Vec2>,
+    triangles: Vec<u32>,
+    scale: f32,
+    max_vertices: usize,
+    max_indices: usize,
+    too_many_indices: bool,
+}
+
+impl GeometryBuilder for Capped {
+    fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
+        if self.triangles.len() + 3 > self.max_indices {
+            self.too_many_indices = true;
+        } else {
+            self.triangles.extend([a.0, b.0, c.0]);
+        }
+    }
+}
+
+impl FillGeometryBuilder for Capped {
+    fn add_fill_vertex(&mut self, vertex: FillVertex) -> Result<VertexId, GeometryBuilderError> {
+        if self.points.len() >= self.max_vertices {
+            return Err(GeometryBuilderError::TooManyVertices);
+        }
+        let p = vertex.position();
+        self.points.push(Vec2::new(p.x, p.y) / self.scale);
+        Ok(VertexId(self.points.len() as u32 - 1))
+    }
 }
 
 /// The triangles covering the area `contours` fill by the nonzero rule, as points and indices
-/// wound counter-clockwise, or none when the tessellator fails.
-fn tessellate(contours: &[Vec<Vec2>]) -> (Vec<Vec2>, Vec<u32>) {
+/// wound counter-clockwise, or none when the tessellator fails. Fails with the limit passed,
+/// `Vertices` or `Indices`, as soon as the points go past `max_vertices` or the indices past
+/// `max_indices`.
+fn tessellate(
+    contours: &[Vec<Vec2>],
+    max_vertices: usize,
+    max_indices: usize,
+) -> Result<(Vec<Vec2>, Vec<u32>), ExtrudeLimit> {
     // The tessellator's own thresholds suit outlines some hundreds of units across, so outlines
     // are filled at that size, scaled by a power of two that leaves every point as exact.
     let extent = contours
@@ -523,20 +724,26 @@ fn tessellate(contours: &[Vec<Vec2>]) -> (Vec<Vec2>, Vec<u32>) {
                     close: true,
                 }))
         });
-    let mut buffers: VertexBuffers<Vec2, u32> = VertexBuffers::new();
+    let mut buffers = Capped {
+        points: Vec::new(),
+        triangles: Vec::new(),
+        scale,
+        max_vertices,
+        max_indices,
+        too_many_indices: false,
+    };
     let filled = FillTessellator::new().tessellate(
         events,
         &FillOptions::default().with_fill_rule(FillRule::NonZero),
-        &mut BuffersBuilder::new(&mut buffers, |vertex: lyon_tessellation::FillVertex| {
-            let p = vertex.position();
-            Vec2::new(p.x, p.y) / scale
-        }),
+        &mut buffers,
     );
-    if filled.is_err() {
-        return (Vec::new(), Vec::new());
+    match filled {
+        Err(TessellationError::GeometryBuilder(_)) => return Err(ExtrudeLimit::Vertices),
+        Err(_) => return Ok((Vec::new(), Vec::new())),
+        Ok(_) if buffers.too_many_indices => return Err(ExtrudeLimit::Indices),
+        Ok(_) => {}
     }
-    let points = buffers.vertices;
-    let mut triangles = buffers.indices;
+    let (points, mut triangles) = (buffers.points, buffers.triangles);
     // The tessellator winds every triangle one way, so the total area tells which; testing each
     // triangle alone would flip the zero-area ones it leaves between points on one line.
     let area: f32 = triangles
@@ -553,7 +760,7 @@ fn tessellate(contours: &[Vec<Vec2>]) -> (Vec<Vec2>, Vec<u32>) {
             triangle.swap(1, 2);
         }
     }
-    (points, triangles)
+    Ok((points, triangles))
 }
 
 #[cfg(test)]
@@ -561,6 +768,10 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    fn extrude(contours: &[Vec<Vec2>], extrusion: &Extrusion) -> Mesh {
+        super::extrude(contours, extrusion, &ExtrudeLimits::NONE).unwrap()
+    }
 
     fn rectangle(min: Vec2, max: Vec2) -> Vec<Vec2> {
         vec![min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y)]
@@ -766,5 +977,122 @@ mod tests {
         // No depth still draws both caps.
         let flat = extrude(&[rectangle(Vec2::ZERO, Vec2::ONE)], &plain(0.0));
         assert_eq!(flat.indices.len(), 12);
+    }
+
+    fn limits() -> ExtrudeLimits {
+        ExtrudeLimits {
+            max_contours: 64,
+            max_points: 8192,
+            max_bevel_points: 3072,
+            max_vertices: 262_144,
+            max_indices: 786_432,
+        }
+    }
+
+    fn failure(
+        contours: &[Vec<Vec2>],
+        extrusion: &Extrusion,
+        limits: &ExtrudeLimits,
+    ) -> LimitExceeded {
+        super::extrude(contours, extrusion, limits).expect_err("the outline is past a limit")
+    }
+
+    fn bevelled(segments: u32) -> Extrusion {
+        Extrusion {
+            depth: 0.4,
+            bevel: 0.02,
+            bevel_segments: segments,
+        }
+    }
+
+    #[test]
+    fn outlines_past_the_input_limits_fail_before_any_work() {
+        // Fitting a bevel to thousands of small contours takes seconds.
+        let triangles: Vec<Vec<Vec2>> = (0..2000)
+            .map(|i| {
+                let at = Vec2::new((i % 50) as f32, (i / 50) as f32) * 3.0;
+                vec![at, at + Vec2::X, at + Vec2::Y]
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        let error = failure(&triangles, &bevelled(4), &limits());
+        assert_eq!(
+            error,
+            LimitExceeded {
+                limit: ExtrudeLimit::Contours,
+                max: 64
+            }
+        );
+        assert!(start.elapsed().as_millis() < 50);
+        assert_eq!(error.to_string(), "more than 64 contours");
+
+        let points = failure(&[circle(Vec2::ZERO, 1.0, 9000)], &plain(1.0), &limits());
+        assert_eq!(points.limit, ExtrudeLimit::Points);
+    }
+
+    #[test]
+    fn a_bevel_is_fitted_only_to_outlines_within_the_bevel_limit() {
+        let limits = ExtrudeLimits {
+            max_bevel_points: 100,
+            ..limits()
+        };
+        let outline = [circle(Vec2::ZERO, 1.0, 200)];
+        let error = failure(&outline, &bevelled(2), &limits);
+        assert_eq!(
+            error,
+            LimitExceeded {
+                limit: ExtrudeLimit::BevelPoints,
+                max: 100
+            }
+        );
+        assert!(super::extrude(&outline, &plain(1.0), &limits).is_ok());
+    }
+
+    #[test]
+    fn the_mesh_stops_at_its_vertex_and_index_limits_before_it_grows_past_them() {
+        let outline = [circle(Vec2::ZERO, 1.0, 200)];
+        let tight = ExtrudeLimits {
+            max_vertices: 500,
+            ..limits()
+        };
+        assert_eq!(
+            failure(&outline, &bevelled(8), &tight).limit,
+            ExtrudeLimit::Vertices
+        );
+        let tight = ExtrudeLimits {
+            max_indices: 1500,
+            ..limits()
+        };
+        assert_eq!(
+            failure(&outline, &bevelled(8), &tight).limit,
+            ExtrudeLimit::Indices
+        );
+        // A mesh that exactly fits is built.
+        let mesh = extrude(&outline, &bevelled(8));
+        let exact = ExtrudeLimits {
+            max_vertices: mesh.vertices.len(),
+            max_indices: mesh.indices.len(),
+            ..limits()
+        };
+        assert_eq!(
+            super::extrude(&outline, &bevelled(8), &exact).unwrap(),
+            mesh
+        );
+    }
+
+    #[test]
+    fn contours_that_cross_a_great_many_times_stop_at_the_triangulation_limit() {
+        // A star polygon of 1999 points each jumping 800 ahead crosses itself some 800000 times.
+        let points = 1999;
+        let star: Vec<Vec2> = (0..points)
+            .map(|i| {
+                let angle = (i * 800 % points) as f32 / points as f32 * std::f32::consts::TAU;
+                Vec2::from_angle(angle)
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        let error = failure(&[star], &plain(1.0), &limits());
+        assert_eq!(error.limit, ExtrudeLimit::Crossings);
+        assert!(start.elapsed().as_secs() < 2, "{:?}", start.elapsed());
     }
 }

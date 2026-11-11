@@ -127,6 +127,30 @@ fn text_past_the_glyph_limit_is_a_render_error() {
 }
 
 #[test]
+fn numbers_no_text_can_have_are_render_errors_naming_the_param() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let media = TestMedia::default();
+    for (param, value) in [
+        ("depth", "=1e40"),
+        ("bevel_size", "=-frame"),
+        ("font_size", "=1e300"),
+        ("letter_spacing", "=1e12"),
+    ] {
+        let composition = text_3d(json!({ "content": "l", param: value }));
+        let error = renderer
+            .render_frame_at(&composition, 1.0, &media)
+            .expect_err("the value is not a size any text has")
+            .to_string();
+        assert!(
+            error.contains(&format!("`{param}` must be")),
+            "{param}: {error}"
+        );
+        assert!(error.contains("node 1"), "{param}: {error}");
+    }
+}
+
+#[test]
 fn a_family_no_font_answers_to_falls_back_with_a_warning() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();

@@ -703,6 +703,20 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
                 continue;
             }
         };
+        if let NodeKind::Text3d(text) = &node_kind {
+            let invalid = text.literal_param_errors();
+            if !invalid.is_empty() {
+                errors.extend(invalid.into_iter().map(|(param, details)| {
+                    DocumentError::InvalidParam {
+                        node_id: id,
+                        param: param.to_string(),
+                        details,
+                    }
+                    .into()
+                }));
+                continue;
+            }
+        }
         graph.nodes.insert(id, node_kind);
     }
     graph
@@ -2423,6 +2437,33 @@ mod tests {
         assert_eq!(
             codes_and_paths(&diagnostics),
             [("font.fallback", "/nodes/3/params/font_family", Some(4))]
+        );
+    }
+
+    #[cfg(feature = "3d")]
+    #[test]
+    fn check_rejects_text_3d_literals_that_no_text_has() {
+        let document = scene_document(
+            serde_json::json!([
+                { "id": 4, "type": "text_3d", "params": {
+                    "depth": 1e40, "bevel_size": -1, "font_size": 2, "font_weight": 0,
+                    "letter_spacing": -0.1, "line_height": "=2 * 3"
+                } },
+                { "id": 5, "type": "text_3d", "params": { "max_width": 1e300 } }
+            ]),
+            serde_json::json!([]),
+        );
+        let diagnostics = check_value(&document, None, None);
+        let mut found = codes_and_paths(&diagnostics);
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                ("node.invalid_param", "/nodes/3/params/bevel_size", Some(4)),
+                ("node.invalid_param", "/nodes/3/params/depth", Some(4)),
+                ("node.invalid_param", "/nodes/3/params/font_weight", Some(4)),
+                ("node.invalid_param", "/nodes/4/params/max_width", Some(5)),
+            ]
         );
     }
 
