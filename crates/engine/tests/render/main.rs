@@ -12,6 +12,8 @@ mod frame_graph;
 mod geometry;
 mod glow;
 mod harness;
+#[cfg(feature = "3d")]
+mod instance;
 mod media;
 mod motion;
 mod noise;

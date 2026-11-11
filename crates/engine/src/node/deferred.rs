@@ -622,6 +622,7 @@ mod tests {
             graph: None,
             media: None,
             glyph: None,
+            instance: None,
             props: None,
         }
     }

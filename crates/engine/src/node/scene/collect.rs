@@ -1,5 +1,7 @@
 //! Evaluates a scene's nodes at a frame into what `render_3d` draws.
 
+mod instance;
+
 use std::sync::Arc;
 
 use foldhash::HashMap;
@@ -527,6 +529,13 @@ pub(super) struct Collected {
     render_id: NodeId,
     /// Scene nodes walked, counting a node each time it is reached.
     reached: usize,
+    /// Indices the objects draw in all.
+    indices: u64,
+    /// How many `instance_3d` nodes hold the scene being collected.
+    nesting: u32,
+    /// The most objects an `instance_3d` may bring the scene to, which is what the nodes holding it
+    /// leave room for once they have copied it.
+    instance_room: usize,
 }
 
 impl Collected {
@@ -538,10 +547,14 @@ impl Collected {
             skins: Vec::new(),
             render_id,
             reached: 0,
+            indices: 0,
+            nesting: 0,
+            instance_room: MAX_SCENE_NODES,
         }
     }
 
     fn push(&mut self, object: Object<GpuMesh, TexRef>, extent: Extent) {
+        self.indices += u64::from(object.index_count);
         self.scene.objects.push(object);
         self.extents.push(extent);
     }
@@ -628,6 +641,7 @@ impl Collected {
                         .collect(),
                 ));
             }
+            NodeKind::Instance3d(instance) => self.add_instances(cx, instance, parent)?,
             NodeKind::Shape3d(shape) => {
                 let params = shape.params.eval(&ctx)?;
                 let size = vec3(params.size).max(Vec3::ZERO);

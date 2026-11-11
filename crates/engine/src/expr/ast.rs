@@ -291,6 +291,33 @@ impl Expression {
     pub fn ast(&self) -> &ExprNode {
         &self.ast
     }
+
+    /// Whether it may give a different value at a different frame, or reads something beyond
+    /// the frame, composition and its own scope that could change: another node, a template
+    /// prop, or text measured.
+    pub fn is_frame_dependent(&self) -> bool {
+        let mut dependent = false;
+        super::functions::visit(&self.ast, &mut |node| {
+            dependent |= match node {
+                ExprNode::Global(global) => matches!(global, GlobalVar::Frame | GlobalVar::Time),
+                ExprNode::Node(_) | ExprNode::PropertyValue(..) | ExprNode::Param(_) => true,
+                // These count from a frame given implicitly, or read what isn't the arguments.
+                ExprNode::Builtin(builtin, _) => matches!(
+                    builtin,
+                    BuiltinFn::Progress
+                        | BuiltinFn::Tween
+                        | BuiltinFn::Prop
+                        | BuiltinFn::TextWidth
+                        | BuiltinFn::TextHeight
+                ),
+                ExprNode::Literal(_)
+                | ExprNode::Binary(..)
+                | ExprNode::Unary(..)
+                | ExprNode::Conditional(..) => false,
+            };
+        });
+        dependent
+    }
 }
 
 // The plan and reads follow from `ast`, so they are left out of comparisons and debug output.
@@ -321,6 +348,27 @@ impl fmt::Debug for Expression {
 #[cfg(test)]
 mod tests {
     use super::{Expression, ExpressionValue, Reads};
+
+    #[test]
+    fn an_expression_knows_whether_it_depends_on_the_frame() {
+        let dependent = |source: &str| Expression::parse(source).unwrap().is_frame_dependent();
+        for source in [
+            "instance * 2 + sin(instance / instance_count)",
+            "vec3(width, if(instance > 1, 1, 2), noise(1, instance))",
+            "keyframes(instance, key(0, 1), key(4, 2))",
+        ] {
+            assert!(!dependent(source), "{source}");
+        }
+        for source in [
+            "frame",
+            "instance + time",
+            "progress(0, 10) * instance",
+            "tween(0, 1, 0, 10)",
+            "if(instance > 1, 1, frame)",
+        ] {
+            assert!(dependent(source), "{source}");
+        }
+    }
 
     #[test]
     fn an_expression_knows_what_it_reads() {

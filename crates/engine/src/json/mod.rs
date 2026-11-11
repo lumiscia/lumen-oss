@@ -1303,6 +1303,7 @@ mod tests {
                 graph: Some(composition.graph()),
                 media: None,
                 glyph: None,
+                instance: None,
                 props: None,
             };
 

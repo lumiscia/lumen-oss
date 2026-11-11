@@ -453,6 +453,9 @@ export const keyframes = builtins.keyframes as Keyframes;
 /**
  * `glyph`, `word`, `line` and `span` index the glyph a text node is drawing, and the counts
  * number them. They are only valid in the text node's `glyph_*` params.
+ *
+ * `instance` is the index of the copy an `instance_3d` is placing, from 0, and `instanceCount` is
+ * how many there are. They are only valid in that node's `position`, `rotation` and `scale`.
  */
 export const {
   fps,
@@ -460,6 +463,8 @@ export const {
   glyph,
   glyphCount,
   height,
+  instance,
+  instanceCount,
   line,
   lineCount,
   span,
