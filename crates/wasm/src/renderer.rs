@@ -48,6 +48,9 @@ impl SurfaceCompositionRenderer {
         media: &M,
     ) -> Result<lumen_gpu::Size, JsValue> {
         let format = self.gpu.config.format;
+        self.renderer
+            .check_output_size(composition)
+            .map_err(|e| render_error(frame, e))?;
         self.gpu.prepare(
             canvas,
             composition.render_settings().width,
@@ -119,7 +122,10 @@ impl SurfaceGpu {
             .map_err(|error| JsValue::from_str(&format!("no compatible GPU adapter: {error}")))?;
         let config = surface_config(&surface, &adapter, 1, 1)?;
         let (device, queue) = adapter
-            .request_device(&lumen_gpu::wgpu::DeviceDescriptor::default())
+            .request_device(&lumen_gpu::wgpu::DeviceDescriptor {
+                required_limits: adapter.limits(),
+                ..Default::default()
+            })
             .await
             .map_err(|error| JsValue::from_str(&format!("create GPU device failed: {error}")))?;
         Ok(Self {

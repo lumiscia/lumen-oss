@@ -1,3 +1,4 @@
+use crate::gpu::params;
 use crate::node::NodeId;
 
 const SHADER: &str = include_str!("media_output.wgsl");
@@ -11,11 +12,18 @@ pub struct MediaOutput {
     pub source: Option<NodeId>,
 }
 
-const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[lumen_gpu::LayoutEntry::staged(
-    0,
-    lumen_gpu::wgpu::ShaderStages::FRAGMENT,
-    lumen_gpu::LayoutKind::Texture,
-)];
+const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::staged(
+        0,
+        lumen_gpu::wgpu::ShaderStages::FRAGMENT,
+        lumen_gpu::LayoutKind::Texture,
+    ),
+    lumen_gpu::LayoutEntry::staged(
+        1,
+        lumen_gpu::wgpu::ShaderStages::FRAGMENT,
+        lumen_gpu::LayoutKind::Uniform,
+    ),
+];
 
 impl crate::gpu::frame_graph::RecordNode for MediaOutput {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
@@ -35,7 +43,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
         &self,
         cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
-        let source = cx.required_full(self.id, "source", self.source)?;
+        let source = cx.required(self.id, "source", self.source)?;
         let settings = cx.composition().render_settings();
         let size = lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1));
         let format = cx.output_format();
@@ -59,9 +67,12 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
             lumen_gpu::RenderTargetSpec::flat(format, lumen_gpu::wgpu::BlendState::REPLACE),
             0,
         )?;
+        let origin = cx.rec.uniform(&params::SourceOriginParams {
+            origin: source.origin(),
+        });
         cx.rec.draw(
             program,
-            &[(0, lumen_gpu::Res::Tex(source.tex))],
+            &[(0, lumen_gpu::Res::Tex(source.tex)), (1, origin)],
             tex,
             lumen_gpu::TargetLoad::Clear,
             3,

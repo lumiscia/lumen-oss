@@ -261,23 +261,19 @@ impl CompositionBuilder {
     fn validate(&self) -> Result<(), Vec<LumenError>> {
         let mut errors = Vec::new();
 
-        errors.extend(
-            settings_problems(&self.scene)
-                .into_iter()
-                .map(|(field, details)| {
-                    GraphValidationError::InvalidSettings {
-                        template: None,
-                        field,
-                        details,
-                    }
-                    .into()
-                }),
-        );
+        let root_problems = settings_problems(&self.scene);
+        errors.extend(root_problems.iter().map(|(field, details)| {
+            GraphValidationError::InvalidSettings {
+                template: None,
+                field: field.clone(),
+                details: details.clone(),
+            }
+            .into()
+        }));
         match self.scene.graph.validate() {
             Ok(_) => {}
             Err(graph_errors) => errors.extend(graph_errors),
         }
-        let root_problems = settings_problems(&self.scene);
         for (name, template) in &self.compositions {
             // A template that inherits a bad setting from the root is reported once, at the root.
             let inherited = |field: &str| {
@@ -428,36 +424,45 @@ impl CompositionBuilder {
     }
 
     /// A chain of templates that instantiates itself, ending with the template it returns to.
-    /// Each template is searched once.
+    /// Each template is searched once, depth first with a stack of its own, so a long chain of
+    /// templates can't run out of call stack.
     fn template_cycle(&self) -> Option<Vec<String>> {
-        let mut path = Vec::new();
         let mut done = std::collections::BTreeSet::new();
-        self.compositions
-            .keys()
-            .find_map(|name| self.cycle_from(name, &mut path, &mut done))
+        for start in self.compositions.keys() {
+            if done.contains(start.as_str()) {
+                continue;
+            }
+            // The templates being searched, each with the templates it uses that are left to search.
+            let mut path = vec![(start.as_str(), self.used_templates(start))];
+            while let Some((name, used)) = path.last_mut() {
+                let name = *name;
+                let Some(next) = used.next() else {
+                    done.insert(name);
+                    path.pop();
+                    continue;
+                };
+                if let Some(start) = path.iter().position(|(visiting, _)| *visiting == next) {
+                    return Some(
+                        path[start..]
+                            .iter()
+                            .map(|(name, _)| *name)
+                            .chain([next])
+                            .map(str::to_string)
+                            .collect(),
+                    );
+                }
+                // An undefined template is reported by `check_clip`.
+                if !done.contains(next) && self.compositions.contains_key(next) {
+                    path.push((next, self.used_templates(next)));
+                }
+            }
+        }
+        None
     }
 
-    fn cycle_from<'a>(
-        &'a self,
-        name: &'a str,
-        path: &mut Vec<&'a str>,
-        done: &mut std::collections::BTreeSet<&'a str>,
-    ) -> Option<Vec<String>> {
-        if let Some(start) = path.iter().position(|visiting| *visiting == name) {
-            return Some(
-                path[start..]
-                    .iter()
-                    .chain([&name])
-                    .map(|name| name.to_string())
-                    .collect(),
-            );
-        }
-        if done.contains(name) {
-            return None;
-        }
-        // An undefined template is reported by `check_clip`.
-        let template = self.compositions.get(name)?;
-        let mut used = template
+    /// The templates the clips of template `name` play, in order.
+    fn used_templates(&self, name: &str) -> std::vec::IntoIter<&str> {
+        let mut used = self.compositions[name]
             .scene
             .graph
             .nodes
@@ -466,18 +471,10 @@ impl CompositionBuilder {
             .collect::<Vec<_>>();
         used.sort_unstable();
         used.dedup();
-        path.push(name);
-        let cycle = used
-            .into_iter()
-            .find_map(|next| self.cycle_from(next, path, done));
-        path.pop();
-        done.insert(name);
-        cycle
+        used.into_iter()
     }
 }
 
-/// What stops a timeline and canvas from rendering: a frame rate that isn't positive and finite,
-/// and no frames or pixels. Each comes with the JSON pointer of its setting.
 /// The setting at `field`, one of the pointers [`settings_problems`] reports.
 fn setting(scene: &Scene, field: &str) -> Option<f64> {
     match field {
@@ -489,6 +486,8 @@ fn setting(scene: &Scene, field: &str) -> Option<f64> {
     }
 }
 
+/// What stops a timeline and canvas from rendering: a frame rate that isn't positive and finite,
+/// and no frames or pixels. Each comes with the JSON pointer of its setting.
 fn settings_problems(scene: &Scene) -> Vec<(String, String)> {
     let Scene {
         timeline,

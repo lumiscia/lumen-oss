@@ -1,7 +1,7 @@
 use crate::error::RenderError;
 use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
 use crate::node::{
-    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
+    Deferred, DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams,
     processing::RasterSampling,
 };
 
@@ -89,7 +89,7 @@ impl Transform {
         {
             return Err(RenderError::NodeEvaluation {
                 node_id: self.id,
-                node_kind: "Transform",
+                node_kind: <Transform as JsonNode>::KIND,
                 details: "a pivot only applies when `custom_pivot` is on; set custom_pivot: true"
                     .to_string(),
             }
