@@ -4265,7 +4265,7 @@
                       }
                     ],
                     "default": "",
-                    "description": "The animation clip to play, by its name or else its index; empty plays none.",
+                    "description": "The animation clip to play, by its name or else its index; empty plays none. A model's\nclips are listed in the `animations` of its upload's `metadata` on a host that takes\nuploads, and by `modelInfo` in the browser bindings.",
                     "title": "Animation",
                     "x-lumen-kind": "string"
                   },
@@ -4423,7 +4423,7 @@
                       }
                     ],
                     "default": "",
-                    "description": "The material, by name, whose surfaces show the `texture` input instead, unlit.",
+                    "description": "The material, by name, whose surfaces show the `texture` input instead, unlit. A model's\nmaterials are listed in the `materials` of its upload's `metadata` on a host that takes\nuploads, and by `modelInfo` in the browser bindings.",
                     "title": "Texture Material",
                     "x-lumen-kind": "string"
                   }

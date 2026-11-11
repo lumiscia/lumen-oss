@@ -2,6 +2,7 @@
 
 use std::{fs, io::Read, path::Path};
 
+use lumen_3d::model::{AnimationInfo, MaterialInfo, ModelInfo};
 use lumen_engine::media::{
     FfmpegAudioResolver, FfmpegVideoResolver, ImageFileResolver, ImageResolver, VideoFrameResolver,
 };
@@ -21,7 +22,7 @@ pub enum MediaKind {
 
 /// What the check found. Each kind fills its own fields: images their size; video its size, frame
 /// rate, frames, duration, codec and audio; audio its duration, rate and channels; fonts their
-/// families and faces; environment maps their size. Models fill none.
+/// families and faces; environment maps their size; models their animation clips and materials.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaMetadata {
@@ -47,6 +48,10 @@ pub struct MediaMetadata {
     pub families: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub faces: Option<Vec<FontFace>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animations: Option<Vec<AnimationInfo>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materials: Option<Vec<MaterialInfo>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,9 +174,13 @@ fn probe_model(path: &Path) -> Result<MediaMetadata, String> {
         ));
     }
     let bytes = fs::read(path).map_err(|error| format!("the file could not be read: {error}"))?;
-    lumen_3d::model::Model::from_glb(&bytes)
+    let info = ModelInfo::from_glb(&bytes)
         .map_err(|error| format!("the model could not be read: {error}"))?;
-    Ok(MediaMetadata::default())
+    Ok(MediaMetadata {
+        animations: Some(info.animations),
+        materials: Some(info.materials),
+        ..MediaMetadata::default()
+    })
 }
 
 /// A Radiance or OpenEXR environment map, decoded as renders decode it.

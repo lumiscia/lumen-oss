@@ -13,6 +13,8 @@ export type {
   CreateUrlMediaOptions,
   LumenMediaReference,
   LumenOptions,
+  MediaKind,
+  MediaMetadata,
   QualityPreset,
   Render,
   RenderFailure,

@@ -497,6 +497,84 @@ fn clips_are_found_by_name_or_index() {
     );
 }
 
+#[test]
+fn info_lists_clips_and_materials_by_index_with_names_when_the_file_has_them() {
+    let mut glb = Glb::triangle();
+    let times = glb.accessor(FLOAT, "SCALAR", 2, &floats(&[0.0, 1.5]));
+    let values = glb.accessor(FLOAT, "VEC3", 2, &floats(&[0.0; 6]));
+    let clip = |name: Option<&str>| {
+        let mut clip = json!({
+            "samplers": [{ "input": times, "output": values }],
+            "channels": [{ "sampler": 0, "target": { "node": 0, "path": "translation" } }],
+        });
+        if let Some(name) = name {
+            clip["name"] = json!(name);
+        }
+        clip
+    };
+    glb.json["animations"] = json!([clip(Some("spin")), clip(None)]);
+    glb.json["materials"] = json!([
+        { "name": "body" },
+        {},
+        { "name": "screen", "pbrMetallicRoughness": { "baseColorTexture": { "index": 0 } } },
+    ]);
+    glb.json["textures"] = json!([{ "source": 0 }]);
+    let view = glb.view(&png(1, 1, [255; 4]));
+    glb.json["images"] = json!([{ "bufferView": view, "mimeType": "image/png" }]);
+
+    let info = ModelInfo::from_glb(&glb.bytes()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&info).unwrap(),
+        json!({
+            "animations": [
+                { "index": 0, "name": "spin", "duration": 1.5 },
+                { "index": 1, "duration": 1.5 },
+            ],
+            "materials": [
+                { "index": 0, "name": "body", "hasBaseColorTexture": false },
+                { "index": 1, "hasBaseColorTexture": false },
+                { "index": 2, "name": "screen", "hasBaseColorTexture": true },
+            ],
+        })
+    );
+}
+
+#[test]
+fn info_of_a_model_with_neither_is_empty_and_of_a_bad_file_is_an_error() {
+    let info = ModelInfo::from_glb(&Glb::triangle().bytes()).unwrap();
+    assert_eq!(info, ModelInfo::default());
+    assert_eq!(
+        serde_json::to_value(&info).unwrap(),
+        json!({ "animations": [], "materials": [] })
+    );
+    assert!(ModelInfo::from_glb(&Glb::triangle().bytes()[..30]).is_err());
+}
+
+#[test]
+fn info_reads_the_fixture_with_a_clip() {
+    let info = ModelInfo::from_glb(GRID).unwrap();
+    assert_eq!(info.animations.len(), 1);
+    assert_eq!(info.animations[0].name.as_deref(), Some("bend"));
+    assert!(info.animations[0].duration > 0.0);
+}
+
+#[test]
+fn errors_list_at_most_twenty_names() {
+    let mut glb = Glb::triangle();
+    glb.json["materials"] = json!(
+        (0..25)
+            .map(|n| json!({ "name": format!("m{n}") }))
+            .collect::<Vec<_>>()
+    );
+    let scene = glb.read().unwrap().scene;
+    let error = scene.material("missing").unwrap_err();
+    assert!(
+        error.contains("`m19`") && !error.contains("`m20`"),
+        "{error}"
+    );
+    assert!(error.ends_with(", and 5 more"), "{error}");
+}
+
 /// A triangle skinned to a chain of two joints a unit apart along Y, with a clip that moves the
 /// first joint 2 along X at 1 second and turns the second a quarter about Z.
 fn skinned() -> Glb {

@@ -2054,7 +2054,11 @@ export interface Merge3dNode extends CompositionNodeBase<"merge_3d"> {
  */
 export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
   readonly params?: {
-    /** The animation clip to play, by its name or else its index; empty plays none. */
+    /**
+     * The animation clip to play, by its name or else its index; empty plays none. A model's
+     * clips are listed in the `animations` of its upload's `metadata` on a host that takes
+     * uploads, and by `modelInfo` in the browser bindings.
+     */
     readonly animation?: ExpressionValue<string>;
     /** Plays the clip again from its start once it ends, rather than holding its last pose. */
     readonly animation_loop?: ExpressionValue<boolean>;
@@ -2084,7 +2088,11 @@ export interface Model3dNode extends CompositionNodeBase<"model_3d"> {
      * alias, or `asset:<id>` for a model asset of the host's.
      */
     readonly source?: ExpressionValue<string>;
-    /** The material, by name, whose surfaces show the `texture` input instead, unlit. */
+    /**
+     * The material, by name, whose surfaces show the `texture` input instead, unlit. A model's
+     * materials are listed in the `materials` of its upload's `metadata` on a host that takes
+     * uploads, and by `modelInfo` in the browser bindings.
+     */
     readonly texture_material?: ExpressionValue<string>;
   };
 }

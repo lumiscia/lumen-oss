@@ -13,6 +13,7 @@ const contentTypes = new Map(
     bmp: "image/bmp",
     flac: "audio/flac",
     gif: "image/gif",
+    glb: "model/gltf-binary",
     heic: "image/heic",
     jpeg: "image/jpeg",
     jpg: "image/jpeg",

@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["3d", "3d-meshopt"]
-"3d" = ["lumen-engine/3d"]
+"3d" = ["lumen-engine/3d", "dep:lumen-3d"]
 "3d-draco" = ["lumen-engine/3d-draco"]
 "3d-meshopt" = ["lumen-engine/3d-meshopt"]
 "3d-ktx2" = ["lumen-engine/3d-ktx2"]
@@ -27,6 +27,7 @@ web-sys = { version = "0.3", features = [
 ] }
 
 lumen-engine = { workspace = true }
+lumen-3d = { workspace = true, optional = true }
 lumen-gpu = { workspace = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

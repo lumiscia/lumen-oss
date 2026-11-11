@@ -1331,6 +1331,34 @@ fn media_uploads_are_probed_once_their_bytes_are_complete() {
     let fox = include_bytes!("../../engine/tests/fixtures/Fox.glb");
     let model = upload(&server, "fox.glb", "model/gltf-binary", fox);
     assert_eq!(model["kind"], "model", "{model}");
+    let clips: Vec<(&Value, &Value)> = model["metadata"]["animations"]
+        .as_array()
+        .expect("animations")
+        .iter()
+        .map(|clip| (&clip["index"], &clip["name"]))
+        .collect();
+    assert_eq!(
+        clips,
+        [
+            (&json!(0), &json!("Survey")),
+            (&json!(1), &json!("Walk")),
+            (&json!(2), &json!("Run"))
+        ]
+    );
+    assert!(
+        model["metadata"]["animations"][0]["duration"]
+            .as_f64()
+            .is_some_and(|d| d > 0.0)
+    );
+    assert_eq!(
+        model["metadata"]["materials"],
+        json!([{ "index": 0, "name": "fox_material", "hasBaseColorTexture": true }])
+    );
+    let read: Value = server
+        .get(&format!("/media/{}", media_id(&model)))
+        .json()
+        .expect("media body");
+    assert_eq!(read["media"], model);
     let truncated = upload(&server, "fox.glb", "model/gltf-binary", &fox[..4096]);
     assert_eq!(truncated["status"], "rejected", "{truncated}");
     assert!(
