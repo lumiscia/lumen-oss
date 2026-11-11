@@ -638,6 +638,27 @@ pub fn in_working_space(texel: [f32; 4]) -> bool {
     texel.iter().all(|channel| channel.is_finite()) && (0.0..=1.0).contains(&texel[3])
 }
 
+/// Renders `scene` at `at` to a float output, which takes the working space unchanged, and reads
+/// back its texels.
+pub fn render_working_space(
+    renderer: &mut GpuCompositionRenderer,
+    scene: &Composition,
+    at: f64,
+    media: &impl MediaStore,
+) -> Vec<[f32; 4]> {
+    renderer
+        .compile_with_output_format(scene, WORKING_COLOR_FORMAT)
+        .unwrap_or_else(|error| panic!("the scene does not compile: {error}"));
+    let raster = renderer
+        .render_frame_at(scene, at, media)
+        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
+    read_rgba16f(
+        renderer.gpu_renderer(),
+        &raster.texture,
+        raster.domain.storage_size,
+    )
+}
+
 /// The texels of a `WORKING_COLOR_FORMAT` texture.
 pub fn read_rgba16f(
     gpu: &lumen_gpu::Renderer,

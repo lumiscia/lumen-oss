@@ -11,9 +11,8 @@ use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, Node
 /// Most sub-frames a `motion_blur` node renders.
 pub(crate) const MAX_MOTION_BLUR_SAMPLES: i64 = 64;
 
-/// Adds a sample, weighted by one over the number of samples, to the running sum, which is the
-/// average once the last sample is in. The sum is kept in 32-bit float, read with `textureLoad`,
-/// so dozens of samples round once, when the last one writes the working space.
+/// Adds a sample to the running sum, which the last sample divides by the number of samples. The
+/// sum is kept in 32-bit float, read with `textureLoad`, so a still source comes out unchanged.
 pub(crate) const SHADER: &str = include_str!("motion_blur.wgsl");
 
 /// The running sum's format.

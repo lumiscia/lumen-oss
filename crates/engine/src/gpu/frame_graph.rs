@@ -2294,9 +2294,9 @@ impl<'a> FrameCx<'a> {
         Ok(average)
     }
 
-    /// `sample`, weighted by one over `samples`, added to `sum`, over the union of their domains or
-    /// over the sum's alone when the sample is `blank`: the average once every sample is in. The
-    /// sum is `motion_blur::SUM_FORMAT` until the `last` sample, which writes the working space.
+    /// `sample` added to `sum`, over the union of their domains or over the sum's alone when the
+    /// sample is `blank`. The sum is `motion_blur::SUM_FORMAT` until the `last` sample, which
+    /// writes the average of all `samples` to the working space.
     fn add_sample(
         &mut self,
         sum: Option<Raster>,

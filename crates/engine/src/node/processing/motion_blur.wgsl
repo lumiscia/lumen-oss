@@ -17,7 +17,7 @@ fn inside(coord: vec2<i32>, size: vec2<u32>) -> bool {
     return all(coord >= vec2<i32>(0)) && all(coord < vec2<i32>(size));
 }
 
-/// Every sample so far, each weighted by one over the number of samples, summed.
+/// Every sample so far, summed.
 fn total(id: vec2<u32>) -> vec4<f32> {
     var sum = vec4<f32>(0.0);
     let at_sum = vec2<i32>(id) + params.sum_offset;
@@ -26,7 +26,7 @@ fn total(id: vec2<u32>) -> vec4<f32> {
     }
     let at_sample = vec2<i32>(id) + params.sample_offset;
     if (inside(at_sample, textureDimensions(sample_tex))) {
-        sum += textureLoad(sample_tex, at_sample, 0) / f32(params.samples);
+        sum += textureLoad(sample_tex, at_sample, 0);
     }
     return sum;
 }
@@ -39,12 +39,22 @@ fn accumulate_main(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(sum_out, id.xy, total(id.xy));
 }
 
-// Adds the last sample and writes the average to the working space.
+// `value` at the nearest half float, so that storing it doesn't depend on how the device rounds.
+// The mean of equal samples is then that sample exactly, though the division may be a few ulps off.
+fn nearest_half(value: vec4<f32>) -> vec4<f32> {
+    let bits = bitcast<vec4<u32>>(value);
+    let normal = bitcast<vec4<f32>>((bits + vec4<u32>(0x1000u)) & vec4<u32>(0xffffe000u));
+    // Below the smallest normal half, halves are whole multiples of 2^-24.
+    let subnormal = round(value * 16777216.0) / 16777216.0;
+    return select(normal, subnormal, abs(value) < vec4<f32>(6.1035156e-5));
+}
+
+// Adds the last sample and writes the mean to the working space.
 @compute @workgroup_size(8, 8, 1)
 fn resolve_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (any(id.xy >= textureDimensions(output_tex))) {
         return;
     }
-    let average = total(id.xy);
-    textureStore(output_tex, id.xy, vec4<f32>(average.rgb, clamp(average.a, 0.0, 1.0)));
+    let mean = nearest_half(total(id.xy) / f32(params.samples));
+    textureStore(output_tex, id.xy, vec4<f32>(mean.rgb, clamp(mean.a, 0.0, 1.0)));
 }

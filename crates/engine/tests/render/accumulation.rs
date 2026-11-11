@@ -7,7 +7,9 @@ use lumen_engine::{
 use serde_json::{Value, json};
 
 use crate::color::{linear_average, srgb8};
-use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
+use crate::support::{
+    Case, Expect, Frame, Scene, TestMedia, check, gpu, render, render_working_space, scene,
+};
 
 const ORANGE: [u8; 4] = [255, 128, 0, 255];
 
@@ -270,26 +272,23 @@ fn blank_samples_leave_the_domain_where_the_source_draws() {
 
 #[test]
 fn a_stationary_source_comes_through_every_sample_count_unchanged() {
-    let cases = (1..=64)
-        .flat_map(|samples| {
-            [
-                [255, 255, 255, 255],
-                [128, 128, 128, 255],
-                [200, 100, 50, 128],
-            ]
-            .map(|color| {
-                Case::new(
-                    format!("{samples} samples of {color:?}"),
-                    blurred(
-                        samples,
-                        180.0,
-                        json!({ "id": 1, "type": "background", "params": { "paint": color } }),
-                    ),
-                    Expect::Uniform(crate::color::rgba8(crate::color::premultiplied(color))),
-                )
-                .tolerance(0)
-            })
-        })
-        .collect();
-    check(cases);
+    // Compared as float texels, colour and alpha, which 8-bit output would round away.
+    let gpu = gpu();
+    let media = TestMedia::default();
+    for color in [[255, 255, 255, 255], [128, 128, 128, 255], [200, 100, 50, 128]] {
+        let source = json!({ "id": 1, "type": "background", "params": { "paint": color } });
+        let plain: Composition = canvas(json!([source.clone()])).into();
+        let expected = render_working_space(&mut gpu.renderer(), &plain, 0.0, &media);
+        let mut renderer = gpu.renderer();
+        for samples in 1..=64 {
+            let scene: Composition = blurred(samples, 180.0, source.clone()).into();
+            let texels = render_working_space(&mut renderer, &scene, 0.0, &media);
+            assert!(
+                texels == expected,
+                "{samples} samples of {color:?}: {:?}, expected {:?}",
+                texels[0],
+                expected[0]
+            );
+        }
+    }
 }
