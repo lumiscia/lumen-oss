@@ -152,7 +152,8 @@ impl<'a, P: MediaStore> AudioMixer<'a, P> {
         let resolver = match self.resolvers.get(source) {
             Some(resolver) => resolver,
             None => {
-                let resolver = self.provider.get_audio_resolver(source)?;
+                let (_, resolver) =
+                    crate::media::resolve_as::<dyn AudioResolver>(self.provider, source)?;
                 self.resolvers.entry(source.to_string()).or_insert(resolver)
             }
         };

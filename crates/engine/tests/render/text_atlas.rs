@@ -10,7 +10,10 @@ use lumen_engine::{
     error::MediaError,
     expr::{Expression, ExpressionContext},
     gpu::{DEFAULT_MAX_TEXT_GLYPHS, GpuCompositionRenderer, MAX_TEXT_GLYPHS_CEILING},
-    media::{FontResolver, MediaStore, TextSession},
+    media::{
+        AssetKind, FontResolver, MediaIdentity, MediaResolver, MediaStore, ResolvedMedia,
+        TextSession,
+    },
     node::NodeId,
 };
 use lumen_gpu::wgpu;
@@ -873,34 +876,31 @@ fn many_fonts_loaded_while_binding_settle_in_one_render() {
     drawn_in(&gpu, json!(nodes), &media);
 }
 
-/// Gives "Churn" a resolver with a new id each time it is asked, so its font never settles.
+/// Gives "Churn" a new identity each time it is asked, so its font never settles.
 #[derive(Debug, Default)]
 struct ChurningFont {
     asked: AtomicU32,
     session: TextSession,
 }
 
-struct ChurningResolver(String);
+struct ChurningResolver;
 
 impl FontResolver for ChurningResolver {
-    fn id(&self) -> &str {
-        &self.0
-    }
-
     fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
         Ok(vec![font_named(INTER, "Churn")])
     }
 }
 
 impl MediaStore for ChurningFont {
-    fn font_resolver_id(&self, family: &str) -> Option<String> {
-        (family == "Churn").then(|| format!("churn-{}", self.asked.fetch_add(1, Ordering::Relaxed)))
-    }
-
-    fn get_font_resolver(&self, family: &str) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
-        Ok(self
-            .font_resolver_id(family)
-            .map(|id| Box::new(ChurningResolver(id)) as _))
+    fn resolve(&self, family: &str, _: AssetKind) -> Result<ResolvedMedia, MediaError> {
+        if family != "Churn" {
+            return Err(MediaError::source_not_found(family, "not served"));
+        }
+        let asked = self.asked.fetch_add(1, Ordering::Relaxed);
+        Ok(ResolvedMedia::new(
+            MediaIdentity::of_key(&format!("churn-{asked}")),
+            MediaResolver::Font(Box::new(ChurningResolver)),
+        ))
     }
 
     fn text_session(&self) -> Option<&TextSession> {

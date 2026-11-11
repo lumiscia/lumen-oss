@@ -25,8 +25,8 @@ use crate::{
     error::{LumenError, RenderError},
     expr::ExpressionContext,
     media::{
-        CpuMediaFrame, MediaFrame, MediaStore, PlaneShape, YuvChroma, YuvFormat, YuvFrame,
-        YuvPlanes, YuvUniform, premultiply_rgba_in_place_if_needed,
+        AssetKind, CpuMediaFrame, MediaFrame, MediaIdentity, MediaStore, PlaneShape, YuvChroma,
+        YuvFormat, YuvFrame, YuvPlanes, YuvUniform, premultiply_rgba_in_place_if_needed,
     },
     node::{
         Deferred, MediaValue, Node, NodeId, NodeKind,
@@ -226,9 +226,9 @@ type GraphNodeKey = (usize, NodeId);
 /// A node reached along one path, in one sample of the `motion_blur` that path samples, or in
 /// sample 0 outside one.
 type MemoKey = (InstanceKey, u32);
-/// A video frame a `media_in` showed this frame: the node's instance, the ID of the resolver it
+/// A video frame a `media_in` showed this frame: the node's instance, the identity of the video it
 /// read, the source frame, its size and whether its colour is premultiplied.
-type VideoFrameKey = (InstanceKey, String, u32, (u32, u32), bool);
+type VideoFrameKey = (InstanceKey, MediaIdentity, u32, (u32, u32), bool);
 
 /// Whether a node's output is the same on every frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,14 +282,6 @@ impl HoldTrack {
         let previous = frame.ceil() - 1.0;
         self.contains(next) || (previous >= 0.0 && self.contains(previous))
     }
-}
-
-/// A file `render_3d` loads.
-#[cfg(feature = "3d")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum SceneFile {
-    Model,
-    Environment,
 }
 
 struct Slot {
@@ -369,8 +361,9 @@ struct RecordState {
     dummy_float: Option<TexRef>,
     dummy_uint: Option<TexRef>,
     atlas: Option<TexRef>,
-    /// Adopted images by their texture, and the tick that last bound each.
-    media: HashMap<usize, (TexRef, u64)>,
+    /// Adopted images and video planes by their texture, the tick that last bound each, and the
+    /// key of an image's pixels.
+    media: HashMap<usize, (TexRef, u64, Option<super::MediaTextureKey>)>,
     video_uploads: Vec<VideoUpload>,
     yuv_uploads: Vec<YuvUpload>,
     /// The texture of each video frame shown this frame, which samples of a `motion_blur` landing
@@ -386,14 +379,10 @@ struct RecordState {
     #[cfg(feature = "ffmpeg")]
     next_video_import: u32,
     output: Option<Raster>,
-    /// The font resolver of each family text names, which retained text was drawn with.
-    fonts: HashMap<String, Option<String>>,
-    /// The texture of each image source that retained output was drawn from.
-    images: HashMap<String, Option<super::MediaTextureKey>>,
-    /// The ID of the resolver of each model and environment map file that retained output was
-    /// drawn from.
-    #[cfg(feature = "3d")]
-    scene_files: HashMap<(SceneFile, String), String>,
+    /// The identity each source had, as the kind it was read as, when something kept across frames
+    /// read it, or `None` if it didn't resolve. Kept outputs don't read their sources again, so
+    /// these are what notices a source changing under them.
+    kept_sources: HashMap<(AssetKind, String), Option<MediaIdentity>>,
     /// The template, node and family of each font fallback reported for this composition.
     font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
     /// The template and `render_3d` node of each shadow limit reported for this composition.
@@ -538,13 +527,7 @@ impl FrameGraph {
         loop {
             self.drop_pending();
             let generation = font_generation(media);
-            let images_changed = self.images_changed(media);
-            #[cfg(feature = "3d")]
-            let images_changed = self.scene_files_changed(media) || images_changed;
-            if self.state.font_generation != generation
-                || self.fonts_changed(media)
-                || images_changed
-            {
+            if self.state.font_generation != generation || self.kept_sources_changed(media) {
                 self.drop_slots();
                 self.state.font_generation = generation;
             }
@@ -667,7 +650,7 @@ impl FrameGraph {
         self.state.output = None;
         let tick = self.state.tick;
         let recorder = &mut self.recorder;
-        self.state.media.retain(|_, (tex, last_used)| {
+        self.state.media.retain(|_, (tex, last_used, _)| {
             let kept = *last_used != tick;
             if !kept {
                 recorder.forget(*tex);
@@ -806,7 +789,7 @@ impl FrameGraph {
     fn forget_unbound_media(&mut self) {
         let tick = self.state.tick;
         let recorder = &mut self.recorder;
-        self.state.media.retain(|_, (tex, last_used)| {
+        self.state.media.retain(|_, (tex, last_used, _)| {
             let kept = *last_used == tick;
             if !kept {
                 recorder.forget(*tex);
@@ -832,7 +815,7 @@ impl FrameGraph {
             }
             kept
         };
-        self.state.media.retain(|_, (tex, _)| unheld(tex));
+        self.state.media.retain(|_, (tex, ..)| unheld(tex));
         self.state.externals.retain(|_, tex| unheld(tex));
         #[cfg(feature = "ffmpeg")]
         {
@@ -893,7 +876,7 @@ impl FrameGraph {
             state.frame_imports.clear();
             self.imports = GpuMediaImports::default();
         }
-        for (_, (tex, _)) in state.media.drain() {
+        for (_, (tex, ..)) in state.media.drain() {
             self.recorder.forget(tex);
         }
         for (_, tex) in state.externals.drain() {
@@ -902,7 +885,7 @@ impl FrameGraph {
         state.statics.clear();
         state.texts.clear();
         state.paths.clear();
-        state.fonts.clear();
+        state.kept_sources.clear();
         state.font_fallbacks.clear();
         #[cfg(feature = "3d")]
         state.shadow_limits.clear();
@@ -932,54 +915,13 @@ impl FrameGraph {
         self.recorder.release_all();
     }
 
-    /// Whether a family text named now resolves differently. Retained text doesn't shape again,
-    /// so this is what notices a font arriving for it.
-    fn fonts_changed(&mut self, media: Option<&dyn MediaStore>) -> bool {
-        let mut changed = false;
-        for (family, resolver) in &mut self.state.fonts {
-            let current = media.and_then(|media| media.font_resolver_id(family));
-            if *resolver != current {
-                *resolver = current;
-                changed = true;
-            }
-        }
-        changed
-    }
-
-    /// Whether an image source retained output was drawn from now resolves to another texture, as
-    /// when a host replaces the image under the same source or with one of another size.
-    fn images_changed(&mut self, media: Option<&dyn MediaStore>) -> bool {
-        let mut changed = false;
-        for (source, key) in &mut self.state.images {
-            let current = media
-                .and_then(|media| media.get_image_resolver(source).ok())
-                .map(|resolver| super::MediaTextureKey::of_image(&*resolver));
-            if *key != current {
-                *key = current;
-                changed = true;
-            }
-        }
-        changed
-    }
-
-    /// Whether a model or environment map file that retained output was drawn from now has another
-    /// resolver ID, as when it changed on disk or was replaced. Retained output doesn't load files
-    /// again, so this is what notices.
-    #[cfg(feature = "3d")]
-    fn scene_files_changed(&self, media: Option<&dyn MediaStore>) -> bool {
-        self.state.scene_files.iter().any(|((kind, source), id)| {
-            let current = media.and_then(|media| match kind {
-                SceneFile::Model => media
-                    .get_model_resolver(source)
-                    .ok()
-                    .map(|resolver| resolver.id().to_string()),
-                SceneFile::Environment => media
-                    .get_environment_resolver(source)
-                    .ok()
-                    .map(|resolver| resolver.id().to_string()),
-            });
-            current.as_deref() != Some(id.as_str())
-        })
+    /// Whether a source something kept across frames read now has another identity, or resolves
+    /// where it didn't or the other way round, as when a host replaces its bytes or a font arrives.
+    fn kept_sources_changed(&self, media: Option<&dyn MediaStore>) -> bool {
+        self.state
+            .kept_sources
+            .iter()
+            .any(|((kind, source), identity)| source_identity(media, *kind, source) != *identity)
     }
 
     /// The warnings recording has raised since the last call.
@@ -1015,9 +957,7 @@ impl FrameGraph {
 
     fn drop_slots(&mut self) {
         self.state.pending.clear();
-        self.state.images.clear();
-        #[cfg(feature = "3d")]
-        self.state.scene_files.clear();
+        self.state.kept_sources.clear();
         let keys: Vec<_> = self.state.slots.keys().copied().collect();
         for key in keys {
             Self::release_slot(&mut self.recorder, &mut self.state, key);
@@ -1050,6 +990,15 @@ impl FrameGraph {
     pub(crate) fn retained_bytes(&self) -> u64 {
         self.state.retained_bytes
     }
+}
+
+/// The identity of what `media` serves for `source` as `kind`, if it serves anything.
+fn source_identity(
+    media: Option<&dyn MediaStore>,
+    kind: AssetKind,
+    source: &str,
+) -> Option<MediaIdentity> {
+    Some(media?.resolve(source, kind).ok()?.identity)
 }
 
 fn font_generation(media: Option<&dyn MediaStore>) -> Option<u64> {
@@ -1290,18 +1239,6 @@ impl<'a> FrameCx<'a> {
         }
     }
 
-    /// Notes that the model or environment map file `source`, whose resolver has `id`, was drawn,
-    /// and that a kept output recording that drew it is dropped if the file changes.
-    #[cfg(feature = "3d")]
-    pub(crate) fn drew_file(&mut self, kind: SceneFile, source: &str, id: &str) {
-        self.drew_model(id);
-        if self.static_depth > 0 || !self.holds.is_empty() {
-            self.st
-                .scene_files
-                .insert((kind, source.to_string()), id.to_string());
-        }
-    }
-
     /// Notes that the model being drawn holds one pose on `frames`, both ends included, which a
     /// kept output recording now can only be read on.
     #[cfg(feature = "3d")]
@@ -1329,8 +1266,12 @@ impl<'a> FrameCx<'a> {
                 generation: slot.generation,
             });
         }
-        let image = self.st.media.values().any(|(tex, _)| *tex == raster.tex);
-        image.then(|| Stable::Texture(Arc::downgrade(self.rec.texture(raster.tex))))
+        self.st
+            .media
+            .values()
+            .find(|(tex, ..)| *tex == raster.tex)
+            .and_then(|(.., key)| key.clone())
+            .map(Stable::Image)
     }
 
     #[cfg(feature = "3d")]
@@ -1456,7 +1397,7 @@ impl<'a> FrameCx<'a> {
         models: Vec<String>,
     ) {
         // An image's own texture is let go of by frames that don't bind it, so it isn't kept.
-        if self.st.media.values().any(|(tex, _)| *tex == raster.tex) {
+        if self.st.media.values().any(|(tex, ..)| *tex == raster.tex) {
             return;
         }
         // A slot kept for other frames makes way.
@@ -1830,18 +1771,38 @@ impl<'a> FrameCx<'a> {
         Ok(atlas)
     }
 
-    /// Remembers the texture of an image source when what reads it is retained.
-    pub(crate) fn note_image(&mut self, source: &str, key: &super::MediaTextureKey) {
-        if self.static_depth > 0 && !self.st.images.contains_key(source) {
-            self.st.images.insert(source.to_string(), Some(key.clone()));
+    /// Notes that `source` was read as `kind` and had `identity`, so that what is kept of this
+    /// frame is dropped once it has another. It counts while a kept output records, including one
+    /// kept while its models hold a pose; font families count whenever text names them, as text
+    /// instances are kept across frames whatever reads them.
+    pub(crate) fn read_source(
+        &mut self,
+        kind: AssetKind,
+        source: &str,
+        identity: Option<&MediaIdentity>,
+    ) {
+        let kept = self.static_depth > 0 || !self.holds.is_empty() || kind == AssetKind::Font;
+        if kept
+            && !self
+                .st
+                .kept_sources
+                .contains_key(&(kind, source.to_string()))
+        {
+            self.st
+                .kept_sources
+                .insert((kind, source.to_string()), identity.cloned());
         }
     }
 
-    /// Remembers the resolver of a family text names.
+    /// Notes the font family text names, as [`Self::read_source`] does.
     pub(crate) fn note_font(&mut self, family: &str) {
-        if !self.st.fonts.contains_key(family) {
-            let resolver = self.media.and_then(|media| media.font_resolver_id(family));
-            self.st.fonts.insert(family.to_string(), resolver);
+        if !self
+            .st
+            .kept_sources
+            .contains_key(&(AssetKind::Font, family.to_string()))
+        {
+            let identity = source_identity(self.media, AssetKind::Font, family);
+            self.read_source(AssetKind::Font, family, identity.as_ref());
         }
     }
 
@@ -1946,21 +1907,26 @@ impl<'a> FrameCx<'a> {
                     },
                     size.as_extent(),
                 );
-                self.media_cache.insert(key, Arc::clone(&texture));
+                self.media_cache.insert(key.clone(), Arc::clone(&texture));
                 texture
             }
         };
-        Ok(self.adopted_media(texture))
+        Ok(self.adopted_media(texture, Some(key)))
     }
 
-    fn adopted_media(&mut self, texture: Arc<wgpu::Texture>) -> TexRef {
+    /// The texture of an image, which holds the pixels `image` names, or of a video plane.
+    fn adopted_media(
+        &mut self,
+        texture: Arc<wgpu::Texture>,
+        image: Option<super::MediaTextureKey>,
+    ) -> TexRef {
         let rec = &mut *self.rec;
         let tick = self.st.tick;
-        let (tex, last_used) = self
+        let (tex, last_used, _) = self
             .st
             .media
             .entry(Arc::as_ptr(&texture) as usize)
-            .or_insert_with(|| (rec.adopt(texture), tick));
+            .or_insert_with(|| (rec.adopt(texture), tick, image));
         *last_used = tick;
         *tex
     }
@@ -2107,7 +2073,7 @@ impl<'a> FrameCx<'a> {
     pub(crate) fn video_texture(
         &mut self,
         node_id: NodeId,
-        resolver: &str,
+        identity: &MediaIdentity,
         source_frame: u32,
         frame: impl FnOnce() -> crate::Result<MediaFrame>,
         size: Size,
@@ -2116,7 +2082,7 @@ impl<'a> FrameCx<'a> {
         let instance = (self.graph_key(), self.path, node_id);
         let key = (
             instance,
-            resolver.to_string(),
+            identity.clone(),
             source_frame,
             (size.width, size.height),
             alpha == AlphaMode::Premultiplied,
@@ -2174,7 +2140,7 @@ impl<'a> FrameCx<'a> {
                         let planes = imported
                             .planes
                             .map_with_shape(&imported.format, |texture, _| {
-                                self.adopted_media(Arc::clone(texture))
+                                self.adopted_media(Arc::clone(texture), None)
                             });
                         self.yuv_to_rgba(&planes, &imported.format, size, alpha)
                     }

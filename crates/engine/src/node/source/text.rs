@@ -4,10 +4,12 @@ use std::{
     sync::{Arc, LazyLock, Mutex, Weak},
 };
 
-use crate::error::{LumenError, MediaFailure, RenderError};
+use crate::error::{LumenError, MediaFailure, MediaReason, RenderError};
 use crate::expr::{ExpressionContext, GlyphScope};
 use crate::gpu::BoundFrame;
-use crate::media::{AssetKind, FontResolver, MediaStore, TextSession, sniff};
+use crate::media::{
+    AssetKind, FontResolver, MediaIdentity, MediaStore, TextSession, asset_id, resolve_as, sniff,
+};
 use crate::node::vector::{
     drawable::{DrawableMotion, DrawablePlacement, DrawablePlacementDelegate, DrawableTransform},
     paint::Paint,
@@ -1481,34 +1483,29 @@ pub(crate) fn load_font_family(
     let Some(store) = media else {
         return Ok(());
     };
-    let current_id = store.font_resolver_id(font_family);
-    if current_id.is_some() && text_system.family_resolver(font_family) == current_id.as_deref() {
+    let (identity, resolver) = match resolve_as::<dyn FontResolver>(store, font_family) {
+        Ok(resolved) => resolved,
+        // A family the store doesn't have falls back to other fonts, unless it names an asset.
+        Err(error)
+            if asset_id(font_family).is_none()
+                && error.failure().is_some_and(|failure| {
+                    matches!(failure.reason, MediaReason::NotFound { .. })
+                }) =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(LumenError::Media(error)),
+    };
+    if text_system.family_resolver(font_family) == Some(identity.as_str()) {
         return Ok(());
     }
-    let resolver = store
-        .get_font_resolver(font_family)
-        .map_err(LumenError::Media)?;
-    // An ID that no resolver comes with is remembered too, so later binds do not ask again.
-    let Some(resolver_id) = resolver
-        .as_ref()
-        .map(|resolver| resolver.id().to_string())
-        .or(current_id)
-    else {
-        return Ok(());
-    };
-    if text_system.family_resolver(font_family) == Some(resolver_id.as_str()) {
-        return Ok(());
-    }
-    let files = match resolver {
-        Some(resolver) => font_files(font_family, &*resolver)?,
-        None => Vec::new(),
-    };
+    let files = font_files(font_family, &identity, &*resolver)?;
     let heads: Vec<Vec<u8>> = files
         .iter()
         .map(|file| file.iter().take(16).copied().collect())
         .collect();
     text_system
-        .load_family(font_family, &resolver_id, files)
+        .load_family(font_family, identity.as_str(), files)
         .map_err(|_| LumenError::Media(unreadable_font(font_family, &heads).into()))?;
     Ok(())
 }
@@ -1532,8 +1529,12 @@ fn unreadable_font(family: &str, heads: &[Vec<u8>]) -> MediaFailure {
 }
 
 /// The data of `resolver`'s font files, shared with every text system still holding that family
-/// and resolver ID's, so that jobs using one font hold and read it once.
-fn font_files(family: &str, resolver: &dyn FontResolver) -> crate::Result<Vec<Arc<Vec<u8>>>> {
+/// and identity's, so that jobs using one font hold and read it once.
+fn font_files(
+    family: &str,
+    identity: &MediaIdentity,
+    resolver: &dyn FontResolver,
+) -> crate::Result<Vec<Arc<Vec<u8>>>> {
     type Files = HashMap<(String, String), Vec<Weak<Vec<u8>>>>;
     static FILES: LazyLock<Mutex<Files>> = LazyLock::new(Mutex::default);
     let lock = || {
@@ -1543,7 +1544,7 @@ fn font_files(family: &str, resolver: &dyn FontResolver) -> crate::Result<Vec<Ar
             })
         })
     };
-    let key = (family.to_string(), resolver.id().to_string());
+    let key = (family.to_string(), identity.as_str().to_string());
     if let Some(files) = lock()?
         .get(&key)
         .and_then(|files| files.iter().map(Weak::upgrade).collect())
@@ -1604,6 +1605,7 @@ mod tests {
 
     use super::*;
     use crate::error::MediaError;
+    use crate::media::{MediaResolver, ResolvedMedia};
 
     #[test]
     fn a_font_file_that_cant_be_read_fails_by_what_the_file_is() {
@@ -1623,80 +1625,48 @@ mod tests {
         }
     }
 
+    /// Serves Inter as "Known", or every family if `every_family`, all as one identity.
     #[derive(Debug, Default)]
     struct CountingStore {
-        /// `None` serves no resolver under the ID it still gives.
-        data: Option<Vec<u8>>,
-        resolvers: AtomicU64,
+        every_family: bool,
         reads: Arc<AtomicU64>,
     }
 
     struct CountingResolver {
-        id: &'static str,
-        data: Vec<u8>,
+        family: String,
         reads: Arc<AtomicU64>,
     }
 
     impl FontResolver for CountingResolver {
-        fn id(&self) -> &str {
-            self.id
-        }
-
         fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
             self.reads.fetch_add(1, Ordering::Relaxed);
-            Ok(vec![self.data.clone()])
+            Ok(vec![match self.family.as_str() {
+                "Known" | "Inter" => INTER.to_vec(),
+                _ => lumen_text::ROBOTO_REGULAR_BYTES.to_vec(),
+            }])
         }
     }
 
     impl MediaStore for CountingStore {
-        fn font_resolver_id(&self, family: &str) -> Option<String> {
-            (family == "Known").then(|| "counting-store-test-font".to_string())
-        }
-
-        fn get_font_resolver(&self, _: &str) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
-            self.resolvers.fetch_add(1, Ordering::Relaxed);
-            Ok(self.data.clone().map(|data| {
-                Box::new(CountingResolver {
-                    id: "counting-store-test-font",
-                    data,
+        fn resolve(&self, family: &str, kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
+            if kind != AssetKind::Font || !(self.every_family || family == "Known") {
+                return Err(MediaError::source_not_found(family, "not served"));
+            }
+            Ok(ResolvedMedia::new(
+                MediaIdentity::of_key("counting-store-test-font"),
+                MediaResolver::Font(Box::new(CountingResolver {
+                    family: family.to_string(),
                     reads: Arc::clone(&self.reads),
-                }) as _
-            }))
+                })),
+            ))
         }
     }
 
+    const INTER: &[u8] = include_bytes!("../../../../text/assets/inter/InterVariable-Latin.ttf");
+
     #[test]
-    fn stores_are_asked_once_for_a_font_they_do_not_serve() {
+    fn a_font_loads_once_per_identity_and_a_missing_one_falls_back() {
         let store = CountingStore::default();
-        let mut system = lumen_text::TextSystem::new();
-        for _ in 0..3 {
-            load_font_family(&mut system, Some(&store), "Known").unwrap();
-        }
-        assert_eq!(store.resolvers.load(Ordering::Relaxed), 1);
-    }
-
-    /// Serves one font under the default `font_resolver_id`, which gives no ID.
-    #[derive(Debug, Default)]
-    struct NoIdStore(Arc<AtomicU64>);
-
-    impl MediaStore for NoIdStore {
-        fn get_font_resolver(
-            &self,
-            family: &str,
-        ) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
-            Ok((family == "Known").then(|| {
-                Box::new(CountingResolver {
-                    id: "no-id-store-test-font",
-                    data: lumen_text::ROBOTO_REGULAR_BYTES.to_vec(),
-                    reads: Arc::clone(&self.0),
-                }) as _
-            }))
-        }
-    }
-
-    #[test]
-    fn stores_without_resolver_ids_still_load_fonts_once() {
-        let store = NoIdStore::default();
         let mut system = lumen_text::TextSystem::new();
         for _ in 0..3 {
             load_font_family(&mut system, Some(&store), "Known").unwrap();
@@ -1704,55 +1674,31 @@ mod tests {
         }
         assert_eq!(
             system.family_resolver("Known"),
-            Some("no-id-store-test-font")
+            Some(MediaIdentity::of_key("counting-store-test-font").as_str())
         );
         assert_eq!(system.family_resolver("Unknown"), None);
-        assert_eq!(store.0.load(Ordering::Relaxed), 1);
-    }
+        assert_eq!(store.reads.load(Ordering::Relaxed), 1);
 
-    /// Serves another font for each family, all under one ID.
-    #[derive(Debug, Default)]
-    struct OneIdStore(Arc<AtomicU64>);
-
-    impl MediaStore for OneIdStore {
-        fn font_resolver_id(&self, _: &str) -> Option<String> {
-            Some("one-id-store-test-font".to_string())
-        }
-
-        fn get_font_resolver(
-            &self,
-            family: &str,
-        ) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
-            let data: &[u8] = match family {
-                "Inter" => include_bytes!("../../../../text/assets/inter/InterVariable-Latin.ttf"),
-                _ => lumen_text::ROBOTO_REGULAR_BYTES,
-            };
-            Ok(Some(Box::new(CountingResolver {
-                id: "one-id-store-test-font",
-                data: data.to_vec(),
-                reads: Arc::clone(&self.0),
-            })))
-        }
+        let missing = load_font_family(&mut system, Some(&store), "asset:brand").unwrap_err();
+        assert_eq!(missing.code(), "media.not_found");
     }
 
     #[test]
-    fn a_resolver_id_only_shares_a_font_within_its_family() {
-        let store = OneIdStore::default();
+    fn an_identity_only_shares_a_font_within_its_family() {
+        let store = CountingStore {
+            every_family: true,
+            ..Default::default()
+        };
         let mut system = lumen_text::TextSystem::new();
         load_font_family(&mut system, Some(&store), "Inter").unwrap();
         load_font_family(&mut system, Some(&store), "Other").unwrap();
         assert!(system.has_family("Inter"));
-        assert_eq!(store.0.load(Ordering::Relaxed), 2);
+        assert_eq!(store.reads.load(Ordering::Relaxed), 2);
     }
 
     #[test]
     fn text_systems_share_a_font_while_one_holds_it() {
-        let store = CountingStore {
-            data: Some(
-                include_bytes!("../../../../text/assets/inter/InterVariable-Latin.ttf").to_vec(),
-            ),
-            ..Default::default()
-        };
+        let store = CountingStore::default();
         let reads = || store.reads.load(Ordering::Relaxed);
         let load = |system: &mut lumen_text::TextSystem| {
             load_font_family(system, Some(&store), "Known").unwrap();

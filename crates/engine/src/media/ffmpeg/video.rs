@@ -851,10 +851,6 @@ impl Drop for FfmpegVideoResolver {
 }
 
 impl VideoFrameResolver for FfmpegVideoResolver {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn metadata(&self) -> VideoMetadata {
         self.metadata
     }

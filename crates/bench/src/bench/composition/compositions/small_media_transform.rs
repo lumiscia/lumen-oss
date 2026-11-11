@@ -139,7 +139,10 @@ fn small_media_store() -> BenchmarkMediaStore {
 
 #[cfg(test)]
 mod tests {
-    use lumen_engine::{media::MediaStore, node::NodeKind};
+    use lumen_engine::{
+        media::{ImageResolver, resolve_as},
+        node::NodeKind,
+    };
 
     use super::*;
 
@@ -151,7 +154,7 @@ mod tests {
 
         assert_eq!(composition.render_settings().width, 1920);
         assert_eq!(composition.render_settings().height, 1080);
-        let resolver = media.get_image_resolver(MEDIA_ID).unwrap();
+        let (_, resolver) = resolve_as::<dyn ImageResolver>(&media, MEDIA_ID).unwrap();
         assert_eq!(resolver.metadata().width, MEDIA_WIDTH);
         assert_eq!(resolver.metadata().height, MEDIA_HEIGHT);
         assert!(

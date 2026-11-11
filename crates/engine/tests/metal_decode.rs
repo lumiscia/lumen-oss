@@ -15,7 +15,10 @@ use lumen_engine::{
     error::MediaError,
     ffmpeg::{FfmpegResolverOptions, FfmpegVideoResolver},
     gpu::GpuCompositionRenderer,
-    media::{MediaFrame, MediaStore, VideoFrameResolver},
+    media::{
+        AssetKind, MediaFrame, MediaIdentity, MediaResolver, MediaStore, ResolvedMedia,
+        VideoFrameResolver,
+    },
 };
 use serde_json::json;
 
@@ -59,11 +62,11 @@ impl std::fmt::Debug for Store {
 }
 
 impl MediaStore for Store {
-    fn get_video_resolver(
-        &self,
-        stream_id: &str,
-    ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
-        Ok(Box::new(self.resolver(stream_id)?))
+    fn resolve(&self, source: &str, _: AssetKind) -> Result<ResolvedMedia, MediaError> {
+        Ok(ResolvedMedia::new(
+            MediaIdentity::of_file(source),
+            MediaResolver::Video(Box::new(self.resolver(source)?)),
+        ))
     }
 }
 

@@ -23,12 +23,20 @@ impl TestProvider {
 }
 
 impl crate::media::MediaStore for TestProvider {
-    fn get_audio_resolver(&self, source_id: &str) -> Result<Box<dyn AudioResolver>, MediaError> {
-        self.sources
-            .get(source_id)
+    fn resolve(
+        &self,
+        source: &str,
+        _: crate::media::AssetKind,
+    ) -> Result<crate::media::ResolvedMedia, MediaError> {
+        let buffer = self
+            .sources
+            .get(source)
             .cloned()
-            .map(|buffer| Box::new(TestResolver { buffer }) as Box<dyn AudioResolver>)
-            .ok_or_else(|| MediaError::source_not_found(source_id, "not registered"))
+            .ok_or_else(|| MediaError::source_not_found(source, "not registered"))?;
+        Ok(crate::media::ResolvedMedia::new(
+            crate::media::MediaIdentity::of_key(source),
+            crate::media::MediaResolver::Audio(Box::new(TestResolver { buffer })),
+        ))
     }
 }
 

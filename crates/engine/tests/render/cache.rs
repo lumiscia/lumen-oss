@@ -472,8 +472,8 @@ fn a_static_image_is_redrawn_when_replaced_by_one_of_another_size() {
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
     let composition = image_under_animated("logo", true);
     let large = image("logo", "logo#1", RED);
-    // The same id with other dimensions, as a host that resizes an image in place reports.
-    let small = TestMedia::default().image_with_id("logo", "logo#1", 2, 2, BLUE.repeat(4));
+    // A resized image is other bytes, so it has another identity.
+    let small = TestMedia::default().image_with_id("logo", "logo#2", 2, 2, BLUE.repeat(4));
     for (frame, media, color) in [(0, &large, RED), (1, &large, RED), (2, &small, BLUE)] {
         let pixels = render(&mut renderer, &composition, f64::from(frame), media).rgba;
         reference.release_resources();

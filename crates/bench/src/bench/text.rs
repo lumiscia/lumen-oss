@@ -9,7 +9,7 @@ use lumen_engine::{
     expr::{Expression, ExpressionContext},
     gpu::GpuCompositionRenderer,
     graph::Graph,
-    media::{FontResolver, MediaStore},
+    media::{AssetKind, FontResolver, MediaIdentity, MediaResolver, MediaStore, ResolvedMedia},
     node::{
         Deferred, NodeId, NodeKind,
         media_output::MediaOutput,
@@ -174,21 +174,23 @@ struct BenchMedia {
 }
 
 impl MediaStore for BenchMedia {
-    fn font_resolver_id(&self, _: &str) -> Option<String> {
-        (!self.fonts.is_empty()).then(|| "bench".to_string())
-    }
-    fn get_font_resolver(&self, _: &str) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
-        Ok((!self.fonts.is_empty())
-            .then(|| Box::new(BenchFonts(self.fonts.clone())) as Box<dyn FontResolver>))
+    fn resolve(&self, source: &str, kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
+        if kind != AssetKind::Font || self.fonts.is_empty() {
+            return Err(MediaError::source_not_found(
+                source,
+                "the bench has no media",
+            ));
+        }
+        Ok(ResolvedMedia::new(
+            MediaIdentity::of_key("bench"),
+            MediaResolver::Font(Box::new(BenchFonts(self.fonts.clone()))),
+        ))
     }
 }
 
 struct BenchFonts(Vec<Vec<u8>>);
 
 impl FontResolver for BenchFonts {
-    fn id(&self) -> &str {
-        "bench"
-    }
     fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
         Ok(self.0.clone())
     }

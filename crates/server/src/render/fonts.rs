@@ -7,7 +7,7 @@ use std::{
 use fontdb::Source;
 use lumen_engine::{
     error::{MediaError, MediaFailure},
-    media::{AssetKind, FontResolver},
+    media::{AssetKind, FontResolver, MediaIdentity},
 };
 
 /// The variable the binaries read [`RenderConfig::font_dir`](super::RenderConfig::font_dir) from.
@@ -133,11 +133,17 @@ impl FontCatalog {
         if let Ok(mut resolved) = self.resolved.write()
             && let Entry::Vacant(entry) = resolved.entry(family.to_string())
         {
-            if font.is_none() && !family.trim().is_empty() && !is_bundled_family {
-                tracing::warn!(
+            match &font {
+                Some(font) => tracing::info!(
+                    font_family = family,
+                    sources = font.files().len(),
+                    "opened font media resolver"
+                ),
+                None if !family.trim().is_empty() && !is_bundled_family => tracing::warn!(
                     font_family = family,
                     "no font has this family name, so text using it falls back to other fonts"
-                );
+                ),
+                None => {}
             }
             entry.insert(font.clone());
         }
@@ -149,26 +155,21 @@ impl FontCatalog {
 #[derive(Debug, Clone)]
 pub struct ResolvedFont {
     family: String,
-    id: String,
+    identity: MediaIdentity,
     files: Vec<PathBuf>,
 }
 
 impl ResolvedFont {
     pub(super) fn new(family: &str, files: Vec<PathBuf>) -> Self {
-        let identities: Vec<String> = files
-            .iter()
-            .map(|file| {
-                let metadata = std::fs::metadata(file).ok();
-                let len = metadata.as_ref().map(std::fs::Metadata::len);
-                let modified = metadata.and_then(|metadata| metadata.modified().ok());
-                format!("{}:{len:?}:{modified:?}", file.display())
-            })
-            .collect();
         Self {
             family: family.to_string(),
-            id: format!("local-font:{}", identities.join(";")),
+            identity: MediaIdentity::of_files(&files),
             files,
         }
+    }
+
+    pub fn identity(&self) -> &MediaIdentity {
+        &self.identity
     }
 
     pub fn files(&self) -> &[PathBuf] {
@@ -177,10 +178,6 @@ impl ResolvedFont {
 }
 
 impl FontResolver for ResolvedFont {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
         self.files
             .iter()
