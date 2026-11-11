@@ -6,6 +6,7 @@ use lumen_engine::composition::Composition;
 use lumen_engine::gpu::GpuCompositionRenderer;
 use serde_json::{Value, json};
 
+use crate::color::light;
 use crate::support::{Case, Expect, Frame, Gpu, Scene, check, render, scene};
 use crate::text_pixels::{
     Mode, alpha, changes, check_rows, frame_of, frame_with, ink_box, ink_columns, ink_rows,
@@ -945,6 +946,31 @@ fn hairline_strokes_fade_in_with_their_width() {
     assert_grows(&plain, &thinner, &wide, (0.2 - 0.0039062) / 2.0 * 50.0);
 }
 
+/// Like `changes`, in premultiplied linear light on a scale of 0 to 255, where coverage adds up.
+fn light_changes(a: &Frame, b: &Frame) -> (usize, f64) {
+    let pixels = |frame: &Frame| -> Vec<[f64; 4]> {
+        frame
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| light(*pixel))
+            .collect()
+    };
+    pixels(a)
+        .into_iter()
+        .zip(pixels(b))
+        .map(|(a, b)| {
+            (0..4)
+                .map(|channel| (a[channel] - b[channel]).abs() * 255.0)
+                .fold(0.0, f64::max)
+        })
+        .filter(|&change| change > 0.0)
+        .fold((0, 0.0), |(count, most), change| {
+            (count + 1, f64::max(most, change))
+        })
+}
+
 #[test]
 fn distance_field_stroke_follows_its_fill_across_font_sizes() {
     // Growing small text by 0.001 px moves its stroke about as much as its fill. Software
@@ -972,13 +998,13 @@ fn distance_field_stroke_follows_its_fill_across_font_sizes() {
         };
         let size = f64::from(size);
         let plain = draw(size, false);
-        let fill = changes(&draw(size - 0.001, false), &plain).1;
+        let fill = light_changes(&draw(size - 0.001, false), &plain).1;
         let stroked = draw(size, true);
-        let (changed, most) = changes(&draw(size - 0.001, true), &stroked);
+        let (changed, most) = light_changes(&draw(size - 0.001, true), &stroked);
         assert!(mass(&stroked) > mass(&plain), "the stroke adds no coverage");
         assert!(
-            most <= fill + 8,
-            "{changed} pixels changed by up to {most}, against {fill} for the fill"
+            most <= fill + 8.0,
+            "{changed} pixels changed by up to {most:.1}, against {fill:.1} for the fill"
         );
     });
 }

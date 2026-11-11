@@ -5,7 +5,7 @@ use std::f64::consts::{PI, TAU};
 
 use serde_json::{Value, json};
 
-use crate::color::{decode, srgb8};
+use crate::color::{light, srgb8};
 use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
@@ -570,20 +570,8 @@ fn shape_rotation_and_anchor_match_the_transform_node() {
     );
     assert!(mean < 1.0, "mean difference {mean}");
     // Only the resampled edges of the raster may differ noticeably, by less than half the light.
-    let light = |frame: &Frame| -> Vec<f64> {
-        pixels(frame)
-            .flat_map(|pixel| {
-                let alpha = f64::from(pixel[3]) / 255.0;
-                let channel = |code: u8| decode(f64::from(code) / 255.0 / alpha.max(1e-9)) * alpha;
-                [
-                    channel(pixel[0]),
-                    channel(pixel[1]),
-                    channel(pixel[2]),
-                    alpha,
-                ]
-            })
-            .collect()
-    };
+    let light =
+        |frame: &Frame| -> Vec<f64> { pixels(frame).flat_map(|pixel| light(*pixel)).collect() };
     let worst = light(&own)
         .iter()
         .zip(light(&via_node))

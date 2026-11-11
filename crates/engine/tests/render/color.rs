@@ -77,6 +77,18 @@ pub fn opaque(rgb: [f64; 3]) -> [u8; 4] {
     [r, g, b, 255]
 }
 
+/// An output pixel, sRGB-encoded with its colour premultiplied, as premultiplied linear light.
+pub fn light(pixel: [u8; 4]) -> [f64; 4] {
+    let alpha = f64::from(pixel[3]) / 255.0;
+    let channel = |code: u8| decode((f64::from(code) / 255.0 / alpha.max(1e-9)).min(1.0)) * alpha;
+    [
+        channel(pixel[0]),
+        channel(pixel[1]),
+        channel(pixel[2]),
+        alpha,
+    ]
+}
+
 /// Rendered RGBA8 frames, sRGB-encoded with the colour premultiplied, averaged in linear light
 /// and encoded as the output encodes it.
 pub fn linear_average(frames: &[&[u8]]) -> Vec<u8> {
