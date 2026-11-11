@@ -1,0 +1,43 @@
+[package]
+name = "lumen-engine-3d-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+lumen-3d = { package = "lumen-engine-3d", path = "..", features = [
+  "draco",
+  "ktx2",
+  "meshopt",
+  "webp",
+] }
+serde_json = "1.0.149"
+
+# Its own workspace, so normal builds of the repository leave it out.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+# As the workspace's dev profile has it.
+[profile.release.package.basisu]
+overflow-checks = false
+
+[[bin]]
+name = "from_glb"
+path = "fuzz_targets/from_glb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mutated_glb"
+path = "fuzz_targets/mutated_glb.rs"
+test = false
+doc = false
+bench = false

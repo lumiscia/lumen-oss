@@ -43,7 +43,15 @@ axum = { version = "0.8.7", default-features = false, features = [
   "tokio",
   "ws",
 ], optional = true }
-lumen-engine = { workspace = true, features = ["3d", "ffmpeg", "image"] }
+lumen-engine = { workspace = true, features = [
+  "3d",
+  "3d-draco",
+  "3d-ktx2",
+  "3d-meshopt",
+  "3d-webp",
+  "ffmpeg",
+  "image",
+] }
 lumen-3d = { workspace = true, features = ["exr"] }
 lumen-gpu = { workspace = true }
 lumen-ffmpeg = { workspace = true }

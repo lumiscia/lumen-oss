@@ -11,3 +11,11 @@ tests.
   <https://github.com/KhronosGroup/glTF-Sample-Models/pull/150#issuecomment-406300118>, CC BY 4.0.
 
 Licensed under CC BY 4.0, <https://creativecommons.org/licenses/by/4.0/>.
+
+`Fox-draco.glb` and `Fox-meshopt-ktx2.glb` are compressed copies, made from this directory with the
+tools `crates/3d/tests/fixtures/README.md` names:
+
+```sh
+gltf-transform draco Fox.glb Fox-draco.glb
+gltfpack -i Fox.glb -o Fox-meshopt-ktx2.glb -cc -vtf -tc
+```

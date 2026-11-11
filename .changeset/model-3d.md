@@ -61,7 +61,7 @@ What is read from the model:
 What isn't:
 
 - Files outside the `.glb`: a model that refers to one is rejected.
-- Draco and meshopt compression, KTX2 and WebP textures, and `KHR_texture_transform`. A model that requires one of these, or any other extension not listed above, is rejected naming it; one that only uses it optionally loads without it.
+- `KHR_texture_transform`. A model that requires it, or any other extension not listed above, is rejected naming it; one that only uses it optionally loads without it.
 - Morph targets, vertex colours, a second set of texture coordinates, and points and lines. A model with them loads and draws without them.
 - The model's own lights and cameras.
 
