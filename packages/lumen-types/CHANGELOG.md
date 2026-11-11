@@ -1,5 +1,12 @@
 # @lumiscia/lumen-types
 
+## 0.5.1
+
+### Patch Changes
+
+- 6285ab0: Expressions gain the `sine`, `quart`, `quint`, `circ`, `elastic` and `bounce` easing families (`in_`, `out_` and `in_out_` each, e.g. `out_bounce(t)` or `tween(0, 1, 0, 30, 'in_out_elastic')`), and the functions `sign`, `atan2`, `hypot` and `remap`. `@lumiscia/lumen-shared` exports a helper for each.
+- 87164d8: Render errors name the node by its JSON `type`, like `media_in node 3 evaluation failed`, instead of a Rust-style `MediaIn`. `motion_blur` now says in its description that it blurs content that already has motion blur a second time, and `lumen-local --help` no longer reads as if a quality preset targeted 14 Mb/s.
+
 ## 0.5.0
 
 ### Minor Changes

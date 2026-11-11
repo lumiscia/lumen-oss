@@ -25,6 +25,13 @@ macro_rules! node_kinds {
                 vec![$(<$node>::schema(),)+]
             }
 
+            /// The node's `type` in JSON, which errors name the node's kind by.
+            pub(crate) fn kind_name(&self) -> &'static str {
+                match self {
+                    $(Self::$variant(_) => <$node as JsonNode>::KIND,)+
+                }
+            }
+
             /// Builds a node from the `type` and `params` of its JSON.
             pub(crate) fn from_json(
                 kind: &str,
@@ -37,13 +44,6 @@ macro_rules! node_kinds {
                         node_id: id,
                         kind: other.to_string(),
                     }]),
-                }
-            }
-
-            /// The node's `type` in JSON.
-            pub(crate) fn kind_name(&self) -> &'static str {
-                match self {
-                    $(Self::$variant(_) => <$node as JsonNode>::KIND,)+
                 }
             }
 

@@ -346,6 +346,14 @@ pub enum RenderError {
     #[code("render.gpu")]
     #[error("GPU render failed: {details}")]
     Gpu { details: String },
+    #[code("render.too_deeply_nested")]
+    #[error("{}node {node_id} is more than {limit} nodes deep, counting from the output through clips and the compositions they play, so the composition is nested too deeply to render. Flatten it: put many layers in one `raster_multimerge` instead of chaining `merge`s, and combine consecutive transforms or adjustments into one node", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
+    TooDeeplyNested {
+        /// The template the node is in, or `None` at the root.
+        template: Option<String>,
+        node_id: NodeId,
+        limit: u32,
+    },
 }
 
 /// Something that renders, but not as the composition asks. Warnings never fail a render.
