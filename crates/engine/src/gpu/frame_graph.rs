@@ -2155,6 +2155,7 @@ fn is_static_candidate(node: &NodeKind) -> bool {
         NodeKind::WgslShader(_) | NodeKind::MediaOutput(_) => false,
         // A model playing a clip poses differently with the frame.
         NodeKind::Model3d(model) => !model.animates() && !node.has_expressions(),
+        NodeKind::Instance3d(instance) => instance.is_frame_independent(),
         _ => !node.has_expressions(),
     }
 }
@@ -2209,7 +2210,10 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
         ),
         #[cfg(not(feature = "3d"))]
         NodeKind::Shape3d(_) | NodeKind::ImagePlane3d(_) | NodeKind::Light3d(_) => Ok(()),
-        NodeKind::Model3d(_) | NodeKind::Camera3d(_) | NodeKind::Merge3d(_) => Ok(()),
+        NodeKind::Model3d(_)
+        | NodeKind::Camera3d(_)
+        | NodeKind::Merge3d(_)
+        | NodeKind::Instance3d(_) => Ok(()),
     }
 }
 
@@ -2295,7 +2299,8 @@ fn record_kind(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
         | NodeKind::Model3d(_)
         | NodeKind::Camera3d(_)
         | NodeKind::Light3d(_)
-        | NodeKind::Merge3d(_) => Err(RenderError::NodeEvaluation {
+        | NodeKind::Merge3d(_)
+        | NodeKind::Instance3d(_) => Err(RenderError::NodeEvaluation {
             node_id: node.id(),
             node_kind: "Scene",
             details: "a scene node outputs a scene, not a raster; draw it through a render_3d"

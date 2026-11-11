@@ -6,7 +6,7 @@ use std::{
 use crate::{
     error::LumenError,
     expr::{
-        ExpressionContext, GlyphScope,
+        ExpressionContext, GlyphScope, InstanceScope,
         ast::{BinaryOp, BuiltinFn, ExprNode, Expression, ExpressionValue, GlobalVar, UnaryOp},
         builtins::{evaluate_builtin, measure_node, unusable_result},
     },
@@ -320,7 +320,7 @@ fn read_property(
     })?;
     match prop {
         PropertyRead::Expr(inner_expr) => inner_expr
-            .evaluate(&ctx.without_glyph())
+            .evaluate(&ctx.without_scopes())
             .map_err(|error| error.located(node_id, property)),
         PropertyRead::Value(value) => value.ok_or_else(|| {
             LumenError::evaluate(format!(
@@ -389,7 +389,22 @@ fn global_value(global: GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Result
             ))
         })
     };
+    let in_instance = |read: fn(&InstanceScope) -> u32| {
+        ctx.instance
+            .as_ref()
+            .map(read)
+            .map(f64::from)
+            .ok_or_else(|| {
+                LumenError::evaluate(format!(
+                    "`{}` is only available in an instance_3d's position, rotation and scale \
+                     params",
+                    global.name()
+                ))
+            })
+    };
     Ok(ExpressionValue::Number(match global {
+        GlobalVar::Instance => in_instance(|scope| scope.index)?,
+        GlobalVar::InstanceCount => in_instance(|scope| scope.count)?,
         GlobalVar::Frame => ctx.frame,
         GlobalVar::Time => ctx.time_seconds(),
         GlobalVar::Fps => f64::from(ctx.fps),
@@ -519,6 +534,7 @@ mod tests {
             graph: None,
             media: None,
             glyph: None,
+            instance: None,
             props: None,
         }
     }
@@ -560,6 +576,19 @@ mod tests {
         assert_eq!(
             expression.evaluate(&ctx).unwrap(),
             ExpressionValue::Number(87_654_321.0)
+        );
+    }
+
+    #[test]
+    fn instance_globals_read_the_instance_scope_and_fail_outside_it() {
+        let expression = Expression::parse("instance * 10 + instance_count").unwrap();
+        let mut ctx = test_context();
+        let error = expression.evaluate(&ctx).unwrap_err().to_string();
+        assert!(error.contains("`instance` is only available"), "{error}");
+        ctx.instance = Some(crate::expr::InstanceScope { index: 3, count: 7 });
+        assert_eq!(
+            expression.evaluate(&ctx).unwrap(),
+            ExpressionValue::Number(37.0)
         );
     }
 

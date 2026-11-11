@@ -6,7 +6,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
-export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "model_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "model_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 
 export const schemaVersion = 1 as const;
 
@@ -1229,6 +1229,14 @@ export const expressionGlobals = [
   {
     "doc": "Number of spans in the text, or 1 in plain text. Only in a text node's `glyph_*` params.",
     "name": "span_count"
+  },
+  {
+    "doc": "Index of the copy being placed, from 0. Only in an `instance_3d`'s `position`, `rotation` and `scale` params.",
+    "name": "instance"
+  },
+  {
+    "doc": "Number of copies. Only in an `instance_3d`'s `position`, `rotation` and `scale` params.",
+    "name": "instance_count"
   }
 ] as const;
 export type ExpressionGlobalName = (typeof expressionGlobals)[number]["name"];
@@ -1336,7 +1344,9 @@ export const expressionReservedNames = [
   "glyph_count",
   "word_count",
   "line_count",
-  "span_count"
+  "span_count",
+  "instance",
+  "instance_count"
 ] as const;
 
 export type AlphaMode = "straight" | "premultiplied";
@@ -1943,6 +1953,39 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
      * aspect ratio of the source's full display size.
      */
     readonly width?: ExpressionValue<number>;
+  };
+}
+
+/**
+ * Draws its input scene `count` times, each copy placed by `position`, `rotation` and `scale`
+ * evaluated for that copy, where `instance` is the copy's index from 0 and `instance_count` is
+ * `count`: `position = vec3((instance % 10) * 1.5, 0, floor(instance / 10) * 1.5)` lays out a
+ * grid, and a ring, a spiral or a path follow from `sin`, `cos` and `path_point` of
+ * `instance / instance_count`. A copy is placed in the input scene's own space, so it turns and
+ * scales about the origin of the scene's own coordinates.
+ * 
+ * Copies share the input's meshes, textures, materials and joint matrices on the GPU, so every
+ * copy of a skinned model plays the same animation at the same time. Only the objects are copied:
+ * the input's lights and camera appear once, placed as they would be without the node, so
+ * copies don't multiply a scene's lighting. Shadows, fog and the environment treat a copy as any
+ * other object. An `instance_3d` may hold another, which multiplies their counts, up to 8 deep.
+ * A scene draws at most 100000 objects in all, counting each copy's objects, and a count that
+ * would exceed this fails the render. The node is static when its params don't read the frame
+ * and its scene is static.
+ */
+export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
+  readonly params?: {
+    /**
+     * Copies to place, from 0 to 100000. 0 leaves the node's scene out entirely, lights and
+     * cameras too.
+     */
+    readonly count?: ExpressionValue<number>;
+    /** Position in world units along X, Y and Z of each copy, in the scene's own space. Evaluated for every copy, and can read `instance` and `instance_count`. */
+    readonly position?: ExpressionValue<Vec3>;
+    /** Rotation in degrees about X, Y and Z of each copy, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. Evaluated for every copy, and can read `instance` and `instance_count`. */
+    readonly rotation?: ExpressionValue<Vec3>;
+    /** Scale multiplier along X, Y and Z of each copy, applied before the rotation. Evaluated for every copy, and can read `instance` and `instance_count`. */
+    readonly scale?: ExpressionValue<Vec3>;
   };
 }
 
@@ -2644,6 +2687,7 @@ export interface CompositionNodeByKind {
   readonly "glow": GlowNode;
   readonly "hue_saturation": HueSaturationNode;
   readonly "image_plane_3d": ImagePlane3dNode;
+  readonly "instance_3d": Instance3dNode;
   readonly "levels": LevelsNode;
   readonly "light_3d": Light3dNode;
   readonly "media_in": MediaInNode;
@@ -2710,6 +2754,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "image_plane_3d": Omit<ImagePlane3dNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "instance_3d": Omit<Instance3dNode, "id"> & {
     readonly id?: number;
   };
   readonly "levels": Omit<LevelsNode, "id"> & {
@@ -2798,6 +2845,7 @@ export interface NodeInputPortNameByKind {
   readonly "glow": "source";
   readonly "hue_saturation": "source";
   readonly "image_plane_3d": "source";
+  readonly "instance_3d": "scene";
   readonly "levels": "source";
   readonly "light_3d": never;
   readonly "media_in": never;
@@ -2838,6 +2886,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "glow": never;
   readonly "hue_saturation": never;
   readonly "image_plane_3d": never;
+  readonly "instance_3d": never;
   readonly "levels": never;
   readonly "light_3d": never;
   readonly "media_in": never;
@@ -2878,6 +2927,7 @@ export interface NodeOutputKindByKind {
   readonly "glow": "raster";
   readonly "hue_saturation": "raster";
   readonly "image_plane_3d": "scene";
+  readonly "instance_3d": "scene";
   readonly "levels": "raster";
   readonly "light_3d": "scene";
   readonly "media_in": "raster";
@@ -2918,6 +2968,7 @@ export interface NodeInputPortKindByKind {
   readonly "glow": { readonly "source": "raster" };
   readonly "hue_saturation": { readonly "source": "raster" };
   readonly "image_plane_3d": { readonly "source": "raster" };
+  readonly "instance_3d": { readonly "scene": "scene" };
   readonly "levels": { readonly "source": "raster" };
   readonly "light_3d": {};
   readonly "media_in": {};
@@ -3033,6 +3084,24 @@ export const nodeInputPorts = {
    * filtered by `render_3d`'s `supersample`.
    */
   "image_plane_3d": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Draws its input scene `count` times, each copy placed by `position`, `rotation` and `scale`
+   * evaluated for that copy, where `instance` is the copy's index from 0 and `instance_count` is
+   * `count`: `position = vec3((instance % 10) * 1.5, 0, floor(instance / 10) * 1.5)` lays out a
+   * grid, and a ring, a spiral or a path follow from `sin`, `cos` and `path_point` of
+   * `instance / instance_count`. A copy is placed in the input scene's own space, so it turns and
+   * scales about the origin of the scene's own coordinates.
+   * 
+   * Copies share the input's meshes, textures, materials and joint matrices on the GPU, so every
+   * copy of a skinned model plays the same animation at the same time. Only the objects are copied:
+   * the input's lights and camera appear once, placed as they would be without the node, so
+   * copies don't multiply a scene's lighting. Shadows, fog and the environment treat a copy as any
+   * other object. An `instance_3d` may hold another, which multiplies their counts, up to 8 deep.
+   * A scene draws at most 100000 objects in all, counting each copy's objects, and a count that
+   * would exceed this fails the render. The node is static when its params don't read the frame
+   * and its scene is static.
+   */
+  "instance_3d": { "scene": { kind: "scene", variadic: false } },
   /** Remaps raster black, white, gamma, and output range. */
   "levels": { "source": { kind: "raster", variadic: false } },
   /** A light. A scene without any is lit by a default key light and ambient fill. */

@@ -592,7 +592,7 @@ fn measure_text_node(
     node_id: NodeId,
     ctx: &ExpressionContext<'_>,
 ) -> crate::Result<lumen_text::TextMeasurement> {
-    let ctx = &ctx.without_glyph();
+    let ctx = &ctx.without_scopes();
     let graph = ctx.graph.ok_or_else(|| {
         LumenError::evaluate(format!(
             "no graph available to resolve text node `{}`",

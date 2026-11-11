@@ -307,6 +307,8 @@ globals! {
     WordCount "word_count", "Number of words in the text. Only in a text node's `glyph_*` params.";
     LineCount "line_count", "Number of lines in the text. Only in a text node's `glyph_*` params.";
     SpanCount "span_count", "Number of spans in the text, or 1 in plain text. Only in a text node's `glyph_*` params.";
+    Instance "instance", "Index of the copy being placed, from 0. Only in an `instance_3d`'s `position`, `rotation` and `scale` params.";
+    InstanceCount "instance_count", "Number of copies. Only in an `instance_3d`'s `position`, `rotation` and `scale` params.";
 }
 
 /// A call the parser handles itself instead of through `BUILTINS`, listed for documentation.

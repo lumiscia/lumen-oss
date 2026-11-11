@@ -3339,6 +3339,114 @@
           },
           {
             "additionalProperties": false,
+            "description": "Draws its input scene `count` times, each copy placed by `position`, `rotation` and `scale`\nevaluated for that copy, where `instance` is the copy's index from 0 and `instance_count` is\n`count`: `position = vec3((instance % 10) * 1.5, 0, floor(instance / 10) * 1.5)` lays out a\ngrid, and a ring, a spiral or a path follow from `sin`, `cos` and `path_point` of\n`instance / instance_count`. A copy is placed in the input scene's own space, so it turns and\nscales about the origin of the scene's own coordinates.\n\nCopies share the input's meshes, textures, materials and joint matrices on the GPU, so every\ncopy of a skinned model plays the same animation at the same time. Only the objects are copied:\nthe input's lights and camera appear once, placed as they would be without the node, so\ncopies don't multiply a scene's lighting. Shadows, fog and the environment treat a copy as any\nother object. An `instance_3d` may hold another, which multiplies their counts, up to 8 deep.\nA scene draws at most 100000 objects in all, counting each copy's objects, and a count that\nwould exceed this fails the render. The node is static when its params don't read the frame\nand its scene is static.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "count": {
+                    "anyOf": [
+                      {
+                        "minimum": 0.0,
+                        "type": "integer"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1,
+                    "description": "Copies to place, from 0 to 100000. 0 leaves the node's scene out entirely, lights and\ncameras too.",
+                    "title": "Count",
+                    "x-lumen-constraints": {
+                      "max": 100000.0,
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "int"
+                  },
+                  "position": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Position in world units along X, Y and Z of each copy, in the scene's own space. Evaluated for every copy, and can read `instance` and `instance_count`.",
+                    "title": "Position",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Rotation in degrees about X, Y and Z of each copy, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z. Evaluated for every copy, and can read `instance` and `instance_count`.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0, 1.0],
+                    "description": "Scale multiplier along X, Y and Z of each copy, applied before the rotation. Evaluated for every copy, and can read `instance` and `instance_count`.",
+                    "title": "Scale",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec3"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "instance_3d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Instance 3D",
+            "type": "object",
+            "x-lumen-category": "scene",
+            "x-lumen-inputs": [
+              {
+                "kind": "scene",
+                "name": "scene",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "scene",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Remaps raster black, white, gamma, and output range.",
             "properties": {
               "id": {
@@ -8773,6 +8881,14 @@
       {
         "doc": "Number of spans in the text, or 1 in plain text. Only in a text node's `glyph_*` params.",
         "name": "span_count"
+      },
+      {
+        "doc": "Index of the copy being placed, from 0. Only in an `instance_3d`'s `position`, `rotation` and `scale` params.",
+        "name": "instance"
+      },
+      {
+        "doc": "Number of copies. Only in an `instance_3d`'s `position`, `rotation` and `scale` params.",
+        "name": "instance_count"
       }
     ],
     "reserved": [
@@ -8863,7 +8979,9 @@
       "glyph_count",
       "word_count",
       "line_count",
-      "span_count"
+      "span_count",
+      "instance",
+      "instance_count"
     ]
   },
   "x-lumen-lumenSchemaVersion": "0.6",
