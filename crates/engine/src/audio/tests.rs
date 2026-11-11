@@ -1013,6 +1013,29 @@ fn planning_does_not_look_at_clips_that_are_not_playing() {
 }
 
 #[test]
+fn a_templates_audio_sources_are_listed_with_the_template() {
+    let composition = composition(&document(
+        30.0,
+        30,
+        None,
+        json!({ "blip": template(30.0, 30, Some(audio(vec![audio_clip("c", "tone.wav", 0, 100, json!({}))])), vec![]) }),
+        vec![],
+    ));
+    let inventory = composition.media_dependencies();
+    assert_eq!(inventory.media.len(), 1);
+    assert_eq!(inventory.media[0].source, "tone.wav");
+    assert_eq!(
+        inventory.media[0].uses[0].at,
+        crate::media::MediaLocation::AudioClip {
+            template: Some("blip".to_string()),
+            track: "main".to_string(),
+            clip: "c".to_string(),
+            index: 0,
+        }
+    );
+}
+
+#[test]
 fn a_plan_has_a_size_limit() {
     let clips: Vec<Value> = (0..64)
         .map(|index| audio_clip(&format!("c{index}"), "tone", 0, 1_000, json!({})))
