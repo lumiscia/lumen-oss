@@ -133,6 +133,25 @@ fn stats_report_what_each_cache_holds() {
     );
 }
 
+#[test]
+fn image_textures_count_the_size_images_are_decoded_at() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    // Shown at a tenth, a 40 × 30 image is decoded at 8 × 6.
+    let composition: Composition = scene(
+        (4, 3),
+        json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "image" } },
+            { "id": 2, "type": "resize", "in": { "source": 1 },
+              "params": { "width": 4, "height": 3 } },
+        ]),
+    )
+    .into();
+    let media = TestMedia::default().image("image", 40, 30, vec![255; 40 * 30 * 4]);
+    render(&mut renderer, &composition, 0.0, &media);
+    assert_eq!(renderer.cache_stats().image_textures, 8 * 6 * 4);
+}
+
 #[cfg(feature = "3d")]
 mod scene_caches {
     use super::*;
