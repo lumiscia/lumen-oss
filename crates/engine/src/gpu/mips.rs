@@ -91,7 +91,8 @@ struct Entry {
     /// What the chain holds the mips of while that stays the same, or `None` for a chain made
     /// anew each frame.
     holds: Option<Stable>,
-    /// The raster this frame filled the chain from, which another reader of it this frame shares.
+    /// The raster the latest frame to use the chain read it from, which another reader of that
+    /// raster in the same frame shares.
     from: Option<TexRef>,
     /// Filled by the frame being recorded, which may yet be abandoned.
     pending: bool,
@@ -137,6 +138,7 @@ impl MipCache {
                     }))
         }) {
             entry.last_used = tick;
+            entry.from = Some(source);
             return (entry.chain.clone(), true);
         }
         let reusable = self.entries.iter().position(|entry| {

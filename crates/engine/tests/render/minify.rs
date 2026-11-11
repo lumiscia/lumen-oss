@@ -347,40 +347,121 @@ fn what_is_not_shrunk_is_sampled_as_it_always_was() {
 
 #[test]
 fn a_zoom_changes_every_pixel_by_little_at_each_step() {
-    // A white texel alone in black, the most that one pixel can change by as the filter's width and
-    // mip level move, under a pixel centre that stays on it. The scale falls from magnifying,
-    // through the first footprint and the one where a chain starts (4 texels, at scale 0.25) and the
-    // levels rise, to well past a level boundary, at 0.002 a frame.
-    let size = 64;
-    let image = texels(size, |x, y| if (x, y) == (32, 32) { 255 } else { 0 });
-    let frames = 500;
+    // The edge between white and black across the source's longer side, and a white texel alone in
+    // black on a square one, held under the pivot while the scale falls from magnifying, through the
+    // first footprint and the one where a chain starts (4 texels, at scale 0.25) and the levels
+    // rise, to well past a level boundary, at 0.002 a frame: the most that a pixel by it can change
+    // by as the filter's width and mip level move. A thin source has axes that run out of levels
+    // before the other does.
+    for (width, height) in [(64, 64), (3, 512), (512, 5)] {
+        let (cx, cy) = (width / 2, height / 2);
+        let wide = width >= height;
+        let image: Vec<u8> = (0..width * height)
+            .flat_map(|index| {
+                let (x, y) = (index % width, index / width);
+                let on = if width == height {
+                    (x, y) == (cx, cy)
+                } else if wide {
+                    x < cx
+                } else {
+                    y < cy
+                };
+                let value = if on { 255 } else { 0 };
+                [value, value, value, 255]
+            })
+            .collect();
+        let pivot = if width == height {
+            [f64::from(cx) + 0.5, f64::from(cy) + 0.5]
+        } else if wide {
+            [f64::from(cx), f64::from(cy) + 0.5]
+        } else {
+            [f64::from(cx) + 0.5, f64::from(cy)]
+        };
+        let frames = 500;
+        let composition: Composition = scene(
+            (width, height),
+            json!([
+                { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "plate" } },
+                { "id": 2, "type": "transform", "in": { "source": 1 }, "params": {
+                    "scale_x": "=1.1 - 0.002 * frame", "scale_y": "=1.1 - 0.002 * frame",
+                    "custom_pivot": true, "pivot_x": pivot[0], "pivot_y": pivot[1] } },
+            ]),
+        )
+        .frames(frames)
+        .into();
+        let media = TestMedia::default().image("plate", width, height, image);
+        let mut renderer = gpu().renderer();
+        let mut last: Option<Vec<f32>> = None;
+        let mut worst = 0.0_f32;
+        for frame in 0..frames {
+            let texels =
+                render_working_space(&mut renderer, &composition, f64::from(frame), &media);
+            let around: Vec<f32> = (cy.saturating_sub(2)..(cy + 3).min(height))
+                .flat_map(|y| (cx.saturating_sub(2)..(cx + 3).min(width)).map(move |x| (x, y)))
+                .map(|(x, y)| texels[(y * width + x) as usize][0])
+                .collect();
+            if let Some(last) = &last {
+                for (before, after) in last.iter().zip(&around) {
+                    worst = worst.max((before - after).abs());
+                }
+            }
+            last = Some(around);
+        }
+        assert!(
+            worst < 0.02,
+            "{width}x{height}: a pixel changed by {worst} in one step"
+        );
+    }
+}
+
+fn solid(size: u32, color: [u8; 3]) -> Vec<u8> {
+    (0..size * size)
+        .flat_map(|_| [color[0], color[1], color[2], 255])
+        .collect()
+}
+
+#[test]
+fn a_chain_kept_for_one_source_is_not_read_for_another_that_changes() {
+    // A red image through a same-size resize is kept after the first frame, and a transform
+    // shrinks it as it changes. A blue image, brightened more each frame, is a source that changes,
+    // and another transform shrinks it. Each thumbnail must be its own source's colour on every frame.
+    let size = 128;
+    // The scale changes a little each frame so that neither transform is kept.
+    let shrink = |id: u32, source: u32, shift: i32| {
+        json!({ "id": id, "type": "transform", "in": { "source": source },
+                "params": { "scale_x": "=0.1 + 0.001 * frame", "scale_y": "=0.1 + 0.001 * frame",
+                            "translate_x": shift } })
+    };
     let composition: Composition = scene(
         (size, size),
         json!([
-            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "plate" } },
-            { "id": 2, "type": "transform", "in": { "source": 1 }, "params": {
-                "scale_x": "=1.1 - 0.002 * frame", "scale_y": "=1.1 - 0.002 * frame",
-                "custom_pivot": true, "pivot_x": 32.5, "pivot_y": 32.5 } },
+            { "id": 1, "type": "media_in", "params": { "kind": "image", "source": "red" } },
+            { "id": 2, "type": "resize", "in": { "source": 1 },
+              "params": { "width": size, "height": size } },
+            shrink(3, 2, -32),
+            { "id": 4, "type": "media_in", "params": { "kind": "image", "source": "blue" } },
+            { "id": 5, "type": "exposure", "in": { "source": 4 },
+              "params": { "exposure": "=0.2 * frame" } },
+            shrink(6, 5, 32),
+            { "id": 7, "type": "merge", "in": { "base": 3, "overlay": 6 } },
         ]),
     )
-    .frames(frames)
+    .frames(3)
     .into();
-    let media = TestMedia::default().image("plate", size, size, image);
+    let media = TestMedia::default()
+        .image("red", size, size, solid(size, [255, 0, 0]))
+        .image("blue", size, size, solid(size, [0, 0, 255]));
     let mut renderer = gpu().renderer();
-    let mut last: Option<Vec<f32>> = None;
-    let mut worst = 0.0_f32;
-    for frame in 0..frames {
-        let texels = render_working_space(&mut renderer, &composition, f64::from(frame), &media);
-        let around: Vec<f32> = (30..35)
-            .flat_map(|y| (30..35).map(move |x| (x, y)))
-            .map(|(x, y)| texels[y * size as usize + x][0])
-            .collect();
-        if let Some(last) = &last {
-            for (before, after) in last.iter().zip(&around) {
-                worst = worst.max((before - after).abs());
-            }
-        }
-        last = Some(around);
+    for frame in 0..3 {
+        let shown = render(&mut renderer, &composition, f64::from(frame), &media);
+        let (red, blue) = (shown.pixel(32, 64), shown.pixel(96, 64));
+        assert!(
+            red[0] > 200 && red[2] == 0,
+            "frame {frame}: {red:?} is not red"
+        );
+        assert!(
+            blue[2] > 200 && blue[0] == 0,
+            "frame {frame}: {blue:?} is not blue"
+        );
     }
-    assert!(worst < 0.02, "a pixel changed by {worst} in one step");
 }

@@ -10,7 +10,7 @@
 use lumen_gpu::{Size, TexRef};
 
 use crate::gpu::frame_graph::{FrameCx, Raster};
-use crate::gpu::mips::{full_levels, mipped};
+use crate::gpu::mips::mipped;
 use crate::gpu::params::CropParams;
 use crate::node::NodeId;
 
@@ -89,14 +89,15 @@ fn lod(footprint: [f32; 2], size: Size) -> f32 {
 
 /// The fractional mip level whose texel is `extent` texels of the source along `axis`, going by
 /// the sides the levels really have, which round down at each. Zero where a texel of the source
-/// is no less than that.
+/// is no less than that, and no deeper than the level where the axis is one texel across, past
+/// which the texel stops growing.
 fn lod_at(extent: f32, size: Size, axis: usize) -> f32 {
     if extent.is_nan() || extent <= 1.0 {
         return 0.0;
     }
-    let side = [size.width, size.height][axis];
-    let top = full_levels(size) - 1;
-    let ratio = |level: u32| side as f32 / (side >> level).max(1) as f32;
+    let side = [size.width, size.height][axis].max(1);
+    let top = side.ilog2();
+    let ratio = |level: u32| side as f32 / (side >> level) as f32;
     let level = (0..=top)
         .rev()
         .find(|&level| ratio(level) <= extent)
@@ -105,15 +106,13 @@ fn lod_at(extent: f32, size: Size, axis: usize) -> f32 {
         return level as f32;
     }
     let (from, to) = (ratio(level).ln(), ratio(level + 1).ln());
-    if to <= from {
-        return level as f32;
-    }
     level as f32 + ((extent.ln() - from) / (to - from)).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu::mips::full_levels;
 
     const SIZE: Size = Size::new(3840, 2160);
 
@@ -162,6 +161,35 @@ mod tests {
         assert_eq!(lod([16.0, 8.0]), 3.0);
         // Past that it must read a coarser one, whatever it costs the narrow axis.
         assert_eq!(lod([64.0, 1.0]), 2.0);
+    }
+
+    #[test]
+    fn the_level_grows_continuously_where_an_axis_is_down_to_one_texel() {
+        // Past the level where an axis is one texel across, its texel stops growing, so the level
+        // must stop at that one rather than jump to the deepest of the chain.
+        for (width, height) in [(1, 1024), (9, 1024), (3, 512), (1024, 1), (1024, 9)] {
+            let size = Size::new(width, height);
+            let lod = |footprint: [f32; 2]| {
+                Minification::new(footprint, size, true).map_or(0.0, |filter| filter.lod)
+            };
+            let shapes: [fn(f32) -> [f32; 2]; 3] = [|f| [f, f], |f| [f, 1.0], |f| [1.0, f]];
+            for shape in shapes {
+                let mut last = 0.0;
+                for step in 0..4000 {
+                    let next = lod(shape(1.0 + step as f32 * 0.01));
+                    assert!(
+                        next >= last && next - last < 0.1,
+                        "{width}x{height}: {last} to {next} at step {step}"
+                    );
+                    last = next;
+                }
+            }
+        }
+        let thin = Size::new(1, 1024);
+        assert_eq!(lod_at(16.0, thin, 0), lod_at(16.00001, thin, 0));
+        let nine = Size::new(9, 1024);
+        assert!((lod_at(9.0, nine, 0) - 3.0).abs() < 1e-6);
+        assert!(lod_at(8.99, nine, 0) > 2.9);
     }
 
     #[test]
