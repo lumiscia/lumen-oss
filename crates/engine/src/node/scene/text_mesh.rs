@@ -498,7 +498,7 @@ fn build(
         return Err(BuildError::Rejected(format!(
             "text extrudes {drawn} glyphs, more than the limit of {max_glyphs} a text node can \
              draw; split it across nodes, shorten it, or raise the host's text glyph limit \
-             (`--max-text-glyphs` of lumen-local and lumen-server, `set_max_text_glyphs` of the \
+             (`--max-text-glyphs` of the lumen CLI and lumen-server, `set_max_text_glyphs` of the \
              renderer)"
         )));
     }

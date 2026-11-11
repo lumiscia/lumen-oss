@@ -4,7 +4,7 @@ members = [
   "crates/ffmpeg",
   "crates/server",
   "crates/wasm",
-  "crates/local",
+  "crates/cli",
   "crates/bench",
   "crates/generators",
   "crates/macros",

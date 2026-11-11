@@ -35,3 +35,7 @@ packages/lumen-node-specs
 
 examples/node/out.mp4
 examples/3d/compositions
+
+# Built by crates/cli/release/build.sh
+packages/lumen-cli-*/bin
+packages/lumen-cli-*/licenses

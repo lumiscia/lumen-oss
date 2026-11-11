@@ -44,7 +44,7 @@ Hardware Vulkan rendering on AMD, Intel, and NVIDIA should use the same renderer
 
 macOS is an intended native renderer target through Metal. Hardware video encoding is expected to use VideoToolbox where available.
 
-The macOS CI job only compiles `lumen-server` and `lumen-local` with the `metal` feature. Nothing renders or encodes on macOS in CI, so runtime behaviour relies on local development and release validation.
+The macOS CI job only compiles `lumen-server` and `lumen` with the `metal` feature. Nothing renders or encodes on macOS in CI, so runtime behaviour relies on local development and release validation.
 
 ### Windows
 
@@ -78,11 +78,11 @@ A render can also ask for 10 bits per sample with `hevc` or `av1` (`bit_depth`, 
 
 Video with an alpha channel is `prores` in a `.mov` (`prores_ks`, ProRes 4444, `yuva444p10le`) or `vp9` in a `.webm` (`libvpx-vp9`, `yuva420p`, with Opus audio from `libopus`), asked for with `alpha` (`--alpha`). Both are software encoders on every platform: no hardware encoder writes alpha, so asking one for it is an error, as is alpha in an `.mp4` or with `h264`, `hevc` or `av1`. The colour is straight (not premultiplied), as a PNG holds it, and alpha is full range. ProRes and VP9 also encode opaque video in those containers.
 
-An operator's quality config can change the order and the presets' settings; see the [server README](../crates/server/README.md#quality-config). A preset only tries the encoders it has settings for, so `lossless` uses `libx264`, `libx265`, `libvpx-vp9` or NVENC; ProRes has no `lossless` settings. `--encoder` (`lumen-local`) or `LUMEN_VIDEO_ENCODER` pins one encoder, which either opens or fails the render.
+An operator's quality config can change the order and the presets' settings; see the [server README](../crates/server/README.md#quality-config). A preset only tries the encoders it has settings for, so `lossless` uses `libx264`, `libx265`, `libvpx-vp9` or NVENC; ProRes has no `lossless` settings. `--encoder` (`lumen`) or `LUMEN_VIDEO_ENCODER` pins one encoder, which either opens or fails the render.
 
 Encoder names are FFmpeg's own, such as `libx264` or `hevc_nvenc`, and are checked against your FFmpeg build before rendering starts. `*_vaapi` encoders aren't supported, and `av1_vulkan` needs FFmpeg 8.0 or newer. Falling through covers everything that stops an encoder opening: FFmpeg built without it, no Vulkan driver, a device without `VK_KHR_video_encode_queue` or without the codec, a canvas size the hardware rejects, and settings the encoder doesn't support. A failure after the encoder has opened stays an error. The output container must hold the codec: `.mp4` holds `h264`, `hevc` and `av1`, `.mov` holds `prores` and `.webm` holds `vp9`.
 
-`lumen-local` and `lumen-server` render and encode `h264_vulkan` on one Vulkan device, so frames never leave the GPU. If that device can't open they warn and upload frames to the encoder instead. Each logs the encoder it opened and how frames reach it.
+`lumen` and `lumen-server` render and encode `h264_vulkan` on one Vulkan device, so frames never leave the GPU. If that device can't open they warn and upload frames to the encoder instead. Each logs the encoder it opened and how frames reach it.
 
 ### Vulkan encoders
 
@@ -96,7 +96,7 @@ What they all need:
 
 - A Vulkan device with `VK_KHR_video_encode_queue` that supports the codec, and an FFmpeg built with Vulkan. Otherwise the encoder fails to open: the render then moves to the codec's next encoder, and a pinned encoder fails the render. Distribution Mesa builds that leave out patent-encumbered codecs have no H.264 or HEVC encode. A Rocky Linux 10 box with Mesa 25.2 and an AMD 780M offered only AV1.
 - Bitrate or `qp` rate control. `crf` and encoder presets aren't supported. `av1_vulkan`'s `qp` is an AV1 qindex, 0-255.
-- On NVIDIA, `h264_vulkan` can stall forever at a GOP boundary when FFmpeg encodes on more than one queue. `n8.0` and `n9.0.2` do, and no other release was measured. `lumen-local` and `lumen-server` avoid it, with one encode queue when frames stay on the GPU and `async_depth=1` when they are uploaded, which is slower. FFmpeg `master` and `release/9.1` fix it.
+- On NVIDIA, `h264_vulkan` can stall forever at a GOP boundary when FFmpeg encodes on more than one queue. `n8.0` and `n9.0.2` do, and no other release was measured. `lumen` and `lumen-server` avoid it, with one encode queue when frames stay on the GPU and `async_depth=1` when they are uploaded, which is slower. FFmpeg `master` and `release/9.1` fix it.
 - NVIDIA's driver limits the Vulkan contexts one process can hold, 63 on the cards measured, so `lumen-server` makes `h264_vulkan` renders wait: at most 14 when frames stay on the GPU, 9 when they are uploaded, or 6 uploaded with hardware decode. See the [server README](../crates/server/README.md).
 
 ### Hardware decode

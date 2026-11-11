@@ -1,0 +1,31 @@
+{
+  "name": "lumen-cli-ffmpeg",
+  "version-string": "0",
+  "builtin-baseline": "b58529e33332fbb6dfe20317a82009b78ceeab36",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avformat",
+        "dav1d",
+        "gpl",
+        "opus",
+        "svt-av1",
+        "swresample",
+        "swscale",
+        "vpx",
+        "x264",
+        "x265",
+        "zlib"
+      ]
+    },
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": ["nvcodec", "vulkan"],
+      "platform": "linux"
+    }
+  ]
+}

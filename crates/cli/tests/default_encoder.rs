@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-//! Drives the real `lumen-local` binary on lavapipe, which has no Vulkan Video, so the Linux default
+//! Drives the real `lumen` binary on lavapipe, which has no Vulkan Video, so the Linux default
 //! encoder and hardware decode both have to fall back. Skips like the engine's GPU tests when
 //! lavapipe isn't installed.
 
@@ -32,13 +32,13 @@ fn lavapipe_icd() -> Option<PathBuf> {
                 .is_some_and(|name| name.to_string_lossy().starts_with("lvp_icd"))
         });
     if icd.is_none() {
-        eprintln!("lavapipe not installed; skipping lumen-local fallback test");
+        eprintln!("lavapipe not installed; skipping lumen fallback test");
     }
     icd
 }
 
-fn lumen_local(icd: &Path, args: &[&str], configure: impl FnOnce(&mut Command)) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_lumen-local"));
+fn lumen(icd: &Path, args: &[&str], configure: impl FnOnce(&mut Command)) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_lumen"));
     command
         .args(args)
         .env_remove("LUMEN_VIDEO_ENCODER")
@@ -50,7 +50,7 @@ fn lumen_local(icd: &Path, args: &[&str], configure: impl FnOnce(&mut Command)) 
         .env("WGPU_POWER_PREF", "none")
         .env("NO_COLOR", "1");
     configure(&mut command);
-    command.output().expect("run lumen-local")
+    command.output().expect("run lumen")
 }
 
 fn background(paint: [u8; 3]) -> Value {
@@ -215,7 +215,7 @@ fn default_encoder_falls_back_to_libx264_with_one_warning_and_a_correct_video() 
     let composition = write_composition(directory.path(), &two_colour_composition());
     let video = directory.path().join("out.mp4");
 
-    let output = lumen_local(
+    let output = lumen(
         &icd,
         &[
             "--composition",
@@ -261,12 +261,12 @@ fn named_encoders_fail_instead_of_falling_back() {
         video.to_str().unwrap(),
     ];
 
-    let by_flag = lumen_local(
+    let by_flag = lumen(
         &icd,
         &[&base_args[..], &["--encoder", "h264_vulkan"]].concat(),
         |_| {},
     );
-    let by_env = lumen_local(&icd, &base_args, |command| {
+    let by_env = lumen(&icd, &base_args, |command| {
         command.env("LUMEN_VIDEO_ENCODER", "h264_vulkan");
     });
 
@@ -287,7 +287,7 @@ fn hardware_decode_that_cannot_run_falls_back_to_the_cpu_with_one_warning() {
     let composition = write_composition(directory.path(), &video_composition("clip.mp4"));
     let render = |name: &str, hardware_decode: &str| {
         let video = directory.path().join(name);
-        let output = lumen_local(
+        let output = lumen(
             &icd,
             &[
                 "--composition",

@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-//! Renders template audio through the real `lumen-local` binary on lavapipe and checks the
+//! Renders template audio through the real `lumen` binary on lavapipe and checks the
 //! envelope of the encoded sound. Skips like the engine's GPU tests when lavapipe isn't installed.
 
 use std::{
@@ -26,7 +26,7 @@ fn lavapipe_icd() -> Option<PathBuf> {
                 .is_some_and(|name| name.to_string_lossy().starts_with("lvp_icd"))
         });
     if icd.is_none() {
-        eprintln!("lavapipe not installed; skipping lumen-local audio test");
+        eprintln!("lavapipe not installed; skipping lumen audio test");
     }
     icd
 }
@@ -123,7 +123,7 @@ fn template_audio_plays_at_each_clip_placement_and_speed() {
     fs::write(&composition_path, composition().to_string()).expect("write composition");
     let video = directory.path().join("out.mp4");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_lumen-local"))
+    let output = Command::new(env!("CARGO_BIN_EXE_lumen"))
         .args(["--composition", composition_path.to_str().unwrap()])
         .args(["--media-root", directory.path().to_str().unwrap()])
         .args(["--output", video.to_str().unwrap()])
@@ -136,7 +136,7 @@ fn template_audio_plays_at_each_clip_placement_and_speed() {
         .env("WGPU_POWER_PREF", "none")
         .env("NO_COLOR", "1")
         .output()
-        .expect("run lumen-local");
+        .expect("run lumen");
     assert!(
         output.status.success(),
         "{}",

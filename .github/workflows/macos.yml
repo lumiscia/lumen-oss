@@ -38,4 +38,4 @@ jobs:
           echo "PKG_CONFIG_PATH=$(brew --prefix ffmpeg@8)/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Check Metal paths
-        run: cargo check -p lumen-server -p lumen-local --features metal
+        run: cargo check -p lumen-server -p lumen-cli --features metal

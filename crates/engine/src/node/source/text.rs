@@ -423,7 +423,7 @@ impl TextInstance {
             details: format!(
                 "text draws {drawn} glyphs, strokes and decorations, more than the limit of \
                  {max} a text node can draw; split it across nodes, shorten it, or raise the \
-                 host's text glyph limit (`--max-text-glyphs` of lumen-local and lumen-server, \
+                 host's text glyph limit (`--max-text-glyphs` of the lumen CLI and lumen-server, \
                  `set_max_text_glyphs` of the renderer)"
             ),
         }

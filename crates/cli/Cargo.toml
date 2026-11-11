@@ -1,17 +1,18 @@
 [package]
-name = "lumen-local"
+name = "lumen-cli"
 version.workspace = true
 edition.workspace = true
 publish = false
 
 [[bin]]
-name = "lumen-local"
+name = "lumen"
 path = "src/main.rs"
 
 [features]
 default = []
 cuda = ["lumen-server/cuda"]
 metal = ["lumen-server/metal"]
+static-ffmpeg = ["lumen-ffmpeg/static"]
 
 [dependencies]
 anyhow = "1.0.101"

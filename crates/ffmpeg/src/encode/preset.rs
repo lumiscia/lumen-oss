@@ -237,7 +237,7 @@ pub struct QualityRequest {
     /// An alpha channel, which only ProRes and VP9 hold and only their software encoders write.
     /// Unset is opaque.
     pub alpha: Option<bool>,
-    /// Settings every candidate uses in place of a preset's, from lumen-local's rate-control flags.
+    /// Settings every candidate uses in place of a preset's, from the `lumen` rate-control flags.
     pub settings: Option<EncoderQuality>,
     /// The one encoder to use, with no fallback.
     pub encoder: Option<String>,

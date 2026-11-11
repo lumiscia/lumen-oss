@@ -5,6 +5,10 @@
   "fixed": [
     [
       "@lumiscia/lumen-bindings",
+      "@lumiscia/lumen-cli",
+      "@lumiscia/lumen-cli-darwin-arm64",
+      "@lumiscia/lumen-cli-linux-arm64",
+      "@lumiscia/lumen-cli-linux-x64",
       "@lumiscia/lumen-preview",
       "@lumiscia/lumen-react",
       "@lumiscia/lumen-sdk",

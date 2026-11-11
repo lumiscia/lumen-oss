@@ -30,7 +30,7 @@
   <circle class="port" cx="532" cy="150" r="3.5" />
 
   <text class="target" x="612" y="80">On a GPU.</text>
-  <text class="sub" x="613" y="100">lumen-local · Vulkan · Metal</text>
+  <text class="sub" x="613" y="100">lumen CLI · Vulkan · Metal</text>
   <text class="target" x="612" y="152">In a browser.</text>
   <text class="sub" x="613" y="172">WebGPU Player · React · Svelte</text>
   <text class="target" x="612" y="224">On a server.</text>

@@ -12,7 +12,7 @@ This crate is experimental. Benchmarks track renderer development and may change
 - `src/bench/json_parse.rs`: JSON parse + validate timing.
 - `src/bench/decode.rs`, `src/bench/expression.rs`, `src/bench/text.rs`: media decode, expression and text benchmarks.
 
-Render benchmarks build compositions in Rust under `src/bench/composition/compositions/` instead of loading `crates/local/demo/*.json`.
+Render benchmarks build compositions in Rust under `src/bench/composition/compositions/` instead of loading `crates/cli/demo/*.json`.
 
 `lumen-bench-frame-graph` reads fonts, and the `launch` composition, from a directory you pass with `--launch-dir` (it holds `fonts/` and `launch-video.json`). `launch`, `dynamic_text`, `dynamic_path`, `motion_blur`, `shader_switch` and `file:<path>` fail with a clear error without it. `remapped_media` and the named in-process compositions don't need it. `minified_image` (a 3840x2160 image under a transform that animates it to about 480x270, its source kept across frames), `minified_video` (the same with a 3840x2160 video, whose source changes every frame) `shrunk_video` (a 1920x1080 video at about 0.75), `half_video` (the same at about 0.5) and `unscaled_video` (the same at scale 1) and `video_scale:<s>` (the same at scale `s`) measure the filtering of a shrunk source and what it costs one that isn't, and need no directory either. A `file:<path>` composition can also show the in-memory 1920x1080 `video` source that `remapped_media` plays.
 

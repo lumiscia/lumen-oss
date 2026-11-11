@@ -31,11 +31,11 @@ Lumen is the open-source rendering core of [Lumiscia](https://lumiscia.com), a h
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/readme/graph-dark.svg" />
-  <img src=".github/readme/graph-light.svg" width="900" alt="A composition of four nodes, background and text into merge into media_output, fanning out to three targets: on a GPU with lumen-local, in a browser with the WebGPU Player, and on a server with lumen-server." />
+  <img src=".github/readme/graph-light.svg" width="900" alt="A composition of four nodes, background and text into merge into media_output, fanning out to three targets: on a GPU with the lumen CLI, in a browser with the WebGPU Player, and on a server with lumen-server." />
 </picture>
 
 > [!NOTE]
-> **Lumiscia hasn't launched yet.** Until it does, you render with Lumen yourself: a local [`lumen-server`](crates/server/README.md), the `lumen-local` CLI, or the browser `Player`. The SDK already speaks the hosted API, so the same code will point at Lumiscia when it opens.
+> **Lumiscia hasn't launched yet.** Until it does, you render with Lumen yourself: a local [`lumen-server`](crates/server/README.md), the `lumen` CLI, or the browser `Player`. The SDK already speaks the hosted API, so the same code will point at Lumiscia when it opens.
 >
 > Lumen itself is in heavy beta. Crate APIs, schema shapes and node behaviour still change between releases.
 
@@ -92,6 +92,13 @@ console.log((await lumen.waitForRender(render)).url);
 
 Once Lumiscia launches, drop `baseUrl` and pass your Lumiscia API key instead.
 
+To render a composition JSON file without a server, install the [`lumen` CLI](crates/cli/README.md), which comes with FFmpeg built in:
+
+```bash
+npm install -g @lumiscia/lumen-cli
+lumen --composition composition.json --output out.mp4
+```
+
 **3. Preview it.** In the browser with WebGPU, using `@lumiscia/lumen-react` or `@lumiscia/lumen-svelte`:
 
 ```tsx
@@ -139,7 +146,7 @@ Lumen needs a GPU for its main render paths. [docs/support-matrix.md](docs/suppo
 | `crates/gpu`        | `wgpu` resources, programs, passes, Vulkan export     |
 | `crates/ffmpeg`     | Decode, encode, muxing, GPU frame interop             |
 | `crates/server`     | Render library and local HTTP server                  |
-| `crates/local`      | `lumen-local` render and debug CLI                    |
+| `crates/cli`        | `lumen` render and debug CLI                          |
 | `crates/text`       | Text layout and glyph data                            |
 | `crates/3d`         | Meshes, transforms, cameras and draw order for 3D     |
 | `crates/wasm`       | The preview renderer for WebAssembly                  |
@@ -158,6 +165,7 @@ Lumen needs a GPU for its main render paths. [docs/support-matrix.md](docs/suppo
 | `lumen-bindings` | The renderer compiled to WebAssembly      |
 | `lumen-react`    | `Player` for React                        |
 | `lumen-svelte`   | `Player` for Svelte                       |
+| `lumen-cli`      | The `lumen` CLI as prebuilt binaries      |
 
 </td></tr>
 </table>

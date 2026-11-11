@@ -179,6 +179,24 @@ importers:
         specifier: 'catalog:'
         version: 0.27.7
 
+  packages/lumen-cli:
+    optionalDependencies:
+      '@lumiscia/lumen-cli-darwin-arm64':
+        specifier: workspace:*
+        version: link:../lumen-cli-darwin-arm64
+      '@lumiscia/lumen-cli-linux-arm64':
+        specifier: workspace:*
+        version: link:../lumen-cli-linux-arm64
+      '@lumiscia/lumen-cli-linux-x64':
+        specifier: workspace:*
+        version: link:../lumen-cli-linux-x64
+
+  packages/lumen-cli-darwin-arm64: {}
+
+  packages/lumen-cli-linux-arm64: {}
+
+  packages/lumen-cli-linux-x64: {}
+
   packages/lumen-preview:
     dependencies:
       '@lumiscia/lumen-types':

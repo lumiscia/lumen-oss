@@ -27,7 +27,7 @@ use tracing_subscriber::EnvFilter;
 /// or a range of frames to numbered images.
 #[derive(Debug, Parser)]
 #[command(
-    name = "lumen-local",
+    name = "lumen",
     version,
     args_override_self = true,
     group(ArgGroup::new("rate_control").args(["bitrate", "crf", "qp"])),
@@ -441,8 +441,8 @@ fn failure_line(error: &anyhow::Error) -> String {
         .chain()
         .find_map(|cause| cause.downcast_ref::<lumen_engine::error::LumenError>());
     match engine {
-        Some(engine) => format!("lumen-local failed ({}): {error:#}", engine.code()),
-        None => format!("lumen-local failed: {error:#}"),
+        Some(engine) => format!("lumen failed ({}): {error:#}", engine.code()),
+        None => format!("lumen failed: {error:#}"),
     }
 }
 
@@ -552,7 +552,7 @@ fn render_to_partial(output: &Path, render: impl FnOnce(&Path) -> Result<()>) ->
         extension.to_string_lossy().to_ascii_lowercase()
     });
     let suffix = format!(".partial.{extension}");
-    partial.prefix(".lumen-local-").suffix(&suffix);
+    partial.prefix(".lumen-").suffix(&suffix);
     // Without this the rename would leave a new output readable only by its owner, and a render
     // replacing a private output would be readable by others while it runs.
     #[cfg(unix)]
@@ -759,11 +759,11 @@ mod tests {
         let error = anyhow::Error::new(media).context("failed to render");
         assert_eq!(
             failure_line(&error),
-            "lumen-local failed (media.not_found): failed to render: image `logo.png` not found: no such file"
+            "lumen failed (media.not_found): failed to render: image `logo.png` not found: no such file"
         );
         assert_eq!(
             failure_line(&anyhow::anyhow!("disk full")),
-            "lumen-local failed: disk full"
+            "lumen failed: disk full"
         );
     }
 
@@ -911,7 +911,7 @@ mod tests {
     }
 
     fn parse(flags: &[&str]) -> Result<Cli, clap::Error> {
-        let base = ["lumen-local", "--composition", "in.json"];
+        let base = ["lumen", "--composition", "in.json"];
         Cli::try_parse_from(base.into_iter().chain(flags.iter().copied()))
     }
 
