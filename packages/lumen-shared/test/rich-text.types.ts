@@ -48,9 +48,14 @@ composition.addNode({
 
 composition.addNode({
   type: "text",
+  params: { content: [{ text: frame }] },
+});
+
+composition.addNode({
+  type: "text",
   params: {
-    // @ts-expect-error a span's text takes a string, not a number
-    content: [{ text: frame }],
+    // @ts-expect-error a span's text takes a string or a number, not a vec2
+    content: [{ text: vec2(0, 1) }],
   },
 });
 

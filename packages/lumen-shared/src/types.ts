@@ -14,6 +14,7 @@ import type {
   NodeVariadicInputPortName,
   TemplateRenderSettings,
   TextContent,
+  TextSpan,
   Vec2,
   Vec3,
   nodeInputPorts,
@@ -114,9 +115,21 @@ export type ExpressionInput<T> =
 
 type NestedInput<T> = T extends ExpressionString
   ? T
-  : T extends object
-    ? { [K in keyof T]: ExpressionInput<T[K]> }
-    : T;
+  : T extends TextSpan
+    ? TextSpanInput
+    : T extends object
+      ? { [K in keyof T]: ExpressionInput<T[K]> }
+      : T;
+
+/** A number shows as text, so text takes a numeric expression as well as a string one. */
+type TextExpr = Expr<string> | Expr<number>;
+
+/** A span whose `text` also takes a numeric expression. */
+type TextSpanInput = {
+  readonly [K in keyof TextSpan]: K extends "text"
+    ? TextSpan[K] | TextExpr
+    : ExpressionInput<TextSpan[K]>;
+};
 
 /** The `Expr` a param of type `T` takes. A vec3 param takes `vec3(..)`, never a colour. */
 type ParamExpr<T> = [T] extends [boolean]
@@ -130,7 +143,7 @@ type ParamExpr<T> = [T] extends [boolean]
         : [T] extends [string]
           ? Expr<string>
           : [T] extends [TextContent]
-            ? Expr<string>
+            ? TextExpr
             : [T] extends [Color]
               ? Expr<Color>
               : MemberExpr<T>;

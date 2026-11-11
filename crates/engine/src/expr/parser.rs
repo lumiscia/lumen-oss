@@ -734,13 +734,23 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
         {
             return Err(error(details));
         }
-        if let ExprNode::Literal(ExpressionValue::Number(value)) = arg
-            && let Some(details) = range_error(spec.builtin, index, *value)
+        if let Some(value) = literal_number(arg)
+            && let Some(details) = range_error(spec.builtin, index, value)
         {
             return Err(error(details.to_string()));
         }
     }
     match spec.builtin {
+        BuiltinFn::Format => {
+            if let Some(fill) = args.get(3)
+                && (static_kind(fill).is_some_and(|kind| kind != ValueKind::String)
+                    || literal_string(fill).is_some_and(|fill| fill.chars().count() != 1))
+            {
+                return Err(error(
+                    "`fill` must be a string of exactly one character".to_string(),
+                ));
+            }
+        }
         BuiltinFn::CubicBezier => {
             for arg in args {
                 if let ExprNode::Builtin(BuiltinFn::Vec2, handle) = arg

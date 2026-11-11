@@ -4,6 +4,7 @@ use crate::{
         ExpressionContext,
         ast::{BuiltinFn, Easing, ExpressionValue, Key},
         easing::{SPRING_DAMPING, SPRING_STIFFNESS, spring},
+        format::{MAX_DECIMALS, MAX_WIDTH, fixed, pad},
         noise::{noise, random},
         path::{MorphError, morph, sample_path},
         spec::{BuiltinArg, BuiltinSpec, NamedEasing, ValueKind, easing_builtins},
@@ -130,6 +131,42 @@ pub fn evaluate_builtin(
         ),
         BuiltinFn::Uppercase => Ok(ExpressionValue::String(args[0].as_string().to_uppercase())),
         BuiltinFn::Lowercase => Ok(ExpressionValue::String(args[0].as_string().to_lowercase())),
+        BuiltinFn::Format => {
+            let value = checked(0, number(0)?)?;
+            let decimals = checked(1, optional(1, 0.0)?)? as usize;
+            let width = checked(2, optional(2, 0.0)?)? as usize;
+            let fill = match args.get(3) {
+                None => ' ',
+                Some(ExpressionValue::String(fill)) if fill.chars().count() == 1 => {
+                    fill.chars().next().expect("one character")
+                }
+                Some(other) => {
+                    return Err(named(format!(
+                        "`fill` must be a string of exactly one character, got {} `{}`",
+                        other.type_name(),
+                        other.as_string()
+                    )));
+                }
+            };
+            Ok(ExpressionValue::String(pad(
+                fixed(value, decimals),
+                width,
+                fill,
+            )))
+        }
+        BuiltinFn::Concat => {
+            let mut text = String::new();
+            for part in args {
+                let part = part.as_string();
+                if text.len() + part.len() > MAX_CONCAT_BYTES {
+                    return Err(named(format!(
+                        "the result is longer than {MAX_CONCAT_BYTES} bytes"
+                    )));
+                }
+                text.push_str(&part);
+            }
+            Ok(ExpressionValue::String(text))
+        }
         BuiltinFn::Vec2 => Ok(ExpressionValue::Vec2((number(0)?, number(1)?))),
         BuiltinFn::Vec3 => Ok(ExpressionValue::Vec3([number(0)?, number(1)?, number(2)?])),
         BuiltinFn::Rgb | BuiltinFn::Rgba => {
@@ -273,8 +310,9 @@ pub(crate) fn param(spec: &BuiltinSpec, index: usize, second_is_key: bool) -> Op
         .or_else(|| spec.args.last().filter(|_| repeats))
 }
 
-/// Why a `given` value can't be argument `index` of a call to `spec`, if it can't. Only easings
-/// and keys are checked: they go to the params that take them and nowhere else.
+/// Why a `given` value can't be argument `index` of a call to `spec`, if it can't. Easings and
+/// keys go to the params that take them and nowhere else, and text params take strings and
+/// numbers only.
 pub(crate) fn kind_error(
     spec: &BuiltinSpec,
     index: usize,
@@ -292,6 +330,10 @@ pub(crate) fn kind_error(
         )),
         (ValueKind::Key, _) => Some(format!(
             "`{name}` must be a key made with key(at, value), got {}",
+            given.name()
+        )),
+        (ValueKind::Text, ValueKind::Vec2 | ValueKind::Vec3 | ValueKind::Color) => Some(format!(
+            "`{name}` must be a string or number, got {}",
             given.name()
         )),
         (_, ValueKind::Easing) => Some(format!("`{name}` does not take an easing")),
@@ -422,6 +464,9 @@ pub(crate) fn key_name(at: impl std::fmt::Display) -> String {
     format!("the key at {at}")
 }
 
+/// The longest string `concat` builds, which keeps nested calls from doubling without end.
+pub(crate) const MAX_CONCAT_BYTES: usize = 1 << 20;
+
 /// How errors name the sides of `lerp` and `tween`.
 pub(crate) const FROM_TO: [&str; 2] = ["`from`", "`to`"];
 
@@ -437,6 +482,13 @@ pub(crate) fn range_error(builtin: BuiltinFn, index: usize, value: f64) -> Optio
         (BuiltinFn::Noise | BuiltinFn::Random, _) if !value.is_finite() => {
             Some("arguments must be finite numbers")
         }
+        (BuiltinFn::Format, 0) if !value.is_finite() => Some("`value` must be finite"),
+        (BuiltinFn::Format, 1) if !is_count(value, MAX_DECIMALS) => {
+            Some("`decimals` must be a whole number from 0 to 20")
+        }
+        (BuiltinFn::Format, 2) if !is_count(value, MAX_WIDTH) => {
+            Some("`width` must be a whole number from 0 to 64")
+        }
         (BuiltinFn::PathPoint | BuiltinFn::PathAngle, 1) if value.is_nan() => {
             Some("`t` must not be NaN")
         }
@@ -445,6 +497,11 @@ pub(crate) fn range_error(builtin: BuiltinFn, index: usize, value: f64) -> Optio
         }
         _ => None,
     }
+}
+
+/// Whether `value` is a whole number in `0..=max`.
+fn is_count(value: f64, max: f64) -> bool {
+    value.fract() == 0.0 && (0.0..=max).contains(&value)
 }
 
 /// Clamped progress through frames `start..end`; a step at `start` when `end <= start`.
