@@ -193,6 +193,12 @@
       "expression": "=if(((((frame < 10) || (frame == 45)) && (frame != 3)) && (!(frame > 60))), 2, 3)",
       "expected": 2
     },
+    "raw_operand_not": { "expression": "=if((!(frame > 100)), 1, 0)", "expected": 1 },
+    "raw_operand_and": {
+      "expression": "=if(((frame > 0 || frame < -10) && (frame < 5)), 1, 0)",
+      "expected": 0
+    },
+    "raw_operand_mul": { "expression": "=((frame + 5) * 2)", "expected": 100 },
     "when_boolean_eq": { "expression": "=if(((frame > 1) == (frame > 2)), 1, 0)", "expected": 1 },
     "when_colour_neq": { "expression": "=if((#ff0000 != rgb(255, 0, 0)), 1, 0)", "expected": 0 },
     "colour_tuple": {

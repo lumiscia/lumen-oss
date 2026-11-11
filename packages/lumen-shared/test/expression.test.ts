@@ -239,6 +239,12 @@ const cases: Readonly<Record<string, Case>> = {
     expression: when(frame.lt(10).or(frame.eq(45)).and(frame.neq(3)).and(frame.gt(60).not()), 2, 3),
     expected: 2,
   },
+  raw_operand_not: { expression: when(expr<boolean>("frame > 100").not(), 1, 0), expected: 1 },
+  raw_operand_and: {
+    expression: when(expr<boolean>("frame > 0 || frame < -10").and(frame.lt(5)), 1, 0),
+    expected: 0,
+  },
+  raw_operand_mul: { expression: expr<number>("frame + 5").mul(2), expected: 100 },
   when_boolean_eq: { expression: when(frame.gt(1).eq(frame.gt(2)), 1, 0), expected: 1 },
   when_colour_neq: {
     expression: when(hex("#ff0000").neq([255, 0, 0]), 1, 0),
@@ -321,6 +327,13 @@ describe("expression helpers", () => {
     expect(String(hex("#ff0000").neq([255, 0, 0]))).toBe("=(#ff0000 != rgb(255, 0, 0))");
     expect(String(uppercase("a").eq("A"))).toBe("=(uppercase('a') == 'A')");
     expect(String(frame.gt(1).and(mod(frame, 2)))).toBe("=((frame > 1) && mod(frame, 2))");
+  });
+
+  test("bracket raw expressions under an operator", () => {
+    expect(String(expr<boolean>("frame > 1").not())).toBe("=(!(frame > 1))");
+    expect(String(expr<number>("frame + 5").mul(2))).toBe("=((frame + 5) * 2)");
+    expect(String(frame.sub(expr<number>("fps - 1")))).toBe("=(frame - (fps - 1))");
+    expect(String(max(expr<number>("frame + 5"), 2))).toBe("=max(frame + 5, 2)");
   });
 
   test("when lowers to if with the branch type", () => {

@@ -149,7 +149,7 @@ export class Expr<T extends Value = Value> {
   }
 
   not(this: Expr<boolean>): Expr<boolean> {
-    return new Expr(`(!${lower(this)})`);
+    return new Expr(`(!${operand(this)})`);
   }
 
   toString(): ExpressionString {
@@ -162,7 +162,16 @@ export class Expr<T extends Value = Value> {
 }
 
 function binary<T extends Value>(lhs: AnyArg, operator: string, rhs: AnyArg): Expr<T> {
-  return new Expr<T>(`(${lower(lhs)} ${operator} ${lower(rhs)})`);
+  return new Expr<T>(`(${operand(lhs)} ${operator} ${operand(rhs)})`);
+}
+
+/** Expressions made by `expr`, whose source may have operators outside any brackets. */
+const rawExpressions = new WeakSet<Expr>();
+
+/** `value` as one side of an operator, bracketed where its own operators could regroup. */
+function operand(value: AnyArg): string {
+  const source = lower(value);
+  return value instanceof Expr && rawExpressions.has(value) ? `(${source})` : source;
 }
 
 const tupleBuiltins: Readonly<Record<number, string>> = { 2: "vec2", 3: "rgb", 4: "rgba" };
@@ -437,7 +446,7 @@ export const ease = Object.assign(
 
 /**
  * `then` when `condition` is true, otherwise `otherwise`, which lower to `if(..)`. Only the chosen
- * branch is evaluated. The branches share a type, as in `when(frame.gte(30), hex("#fff"), [0, 0, 0])`.
+ * branch is evaluated. The branches share a type, as in `when(frame.gte(30), hex("#ffffff"), [0, 0, 0])`.
  */
 export function when(condition: Condition, then: Num, otherwise: Num): Expr<number>;
 export function when(condition: Condition, then: Arg<Vec2>, otherwise: Arg<Vec2>): Expr<Vec2>;
@@ -487,8 +496,7 @@ export function literal(text: string): string {
 }
 
 /**
- * A raw expression, such as `expr("if(frame > 30, 1, 0)")` or `expr("node(3, 'opacity')")`, for
- * forms the helpers don't cover. `source` has no leading `=`. It takes the type of the param it
+ * A raw expression, such as `expr("text_width(node(3))")`, for forms the helpers don't cover. `source` has no leading `=`. It takes the type of the param it
  * is in, or the one you give, as in `expr<number>(..)`. Given neither, as in
  * `const x = expr("frame")`, it fits any param, and only the engine checks its type.
  */
@@ -496,7 +504,9 @@ export function expr<T extends Value = never>(source: string): Expr<T> {
   if (source.startsWith("=")) {
     throw new TypeError("`expr` takes the expression without its leading `=`.");
   }
-  return new Expr<T>(source);
+  const expression = new Expr<T>(source);
+  rawExpressions.add(expression);
+  return expression;
 }
 
 export type FunctionSignature = `${string}(${string})`;
