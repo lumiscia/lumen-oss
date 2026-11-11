@@ -10,6 +10,7 @@ use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen_engine::{
     composition::Composition,
     diagnostic::{Diagnostic, Severity},
+    gpu::{DEFAULT_MAX_TEXT_GLYPHS, MAX_TEXT_GLYPHS_CEILING},
     media::MediaStore,
 };
 use lumen_ffmpeg::{
@@ -52,7 +53,10 @@ libx264 and libx265 ultrafast..placebo, NVENC p1..p7, libsvtav1 0..13), which mo
 resolved as a render would resolve them. It exits 1 when there are errors; warnings alone exit 0.
 
 LUMEN_HARDWARE_DECODE=1 decodes video on the GPU when the hardware supports it. RUST_LOG sets the \
-log filter (default lumen_engine=warn,lumen_server=warn)."
+log filter (default lumen_engine=warn,lumen_server=warn).
+
+A text node draws at most --max-text-glyphs glyph, stroke and decoration instances (16384 by \
+default, up to 1048576), which bounds the work its text can ask for; whitespace is not drawn."
 )]
 struct Cli {
     /// Composition JSON to render
@@ -114,6 +118,17 @@ struct Cli {
     /// Frame to render [default: 0]. .png only
     #[arg(long, value_name = "N")]
     frame: Option<u32>,
+
+    /// Most glyph, stroke and decoration instances one text node may draw. A text over it fails
+    /// the render
+    #[arg(
+        long,
+        env = "LUMEN_MAX_TEXT_GLYPHS",
+        value_name = "N",
+        default_value_t = DEFAULT_MAX_TEXT_GLYPHS as u32,
+        value_parser = clap::value_parser!(u32).range(1..=MAX_TEXT_GLYPHS_CEILING as i64)
+    )]
+    max_text_glyphs: u32,
 }
 
 enum OutputKind {
@@ -297,13 +312,23 @@ fn run(cli: &Cli) -> Result<()> {
         LocalMediaStore::new(media_root, font_dir.as_deref()).explaining_missing_sources();
 
     match kind {
-        OutputKind::Png => {
-            render_single_png(&composition, &mut media_store, cli.output(), cli.frame)
-        }
+        OutputKind::Png => render_single_png(
+            &composition,
+            &mut media_store,
+            cli.output(),
+            cli.frame,
+            cli.max_text_glyphs,
+        ),
         OutputKind::Mp4 => {
             let choice = cli.encoder_choice(&composition)?;
             render_to_partial(cli.output(), |partial| {
-                render_mp4(&composition, media_store, partial, choice)
+                render_mp4(
+                    &composition,
+                    media_store,
+                    partial,
+                    choice,
+                    cli.max_text_glyphs,
+                )
             })
         }
     }
@@ -384,6 +409,7 @@ fn render_single_png(
     media_store: &mut LocalMediaStore,
     output: &Path,
     frame_override: Option<u32>,
+    max_text_glyphs: u32,
 ) -> Result<()> {
     let frame = frame_override.unwrap_or(0);
     if frame >= composition.timeline().duration_frames {
@@ -394,6 +420,7 @@ fn render_single_png(
     }
 
     let mut renderer = create_gpu_renderer(media_store).context("failed to create GPU renderer")?;
+    renderer.set_max_text_glyphs(max_text_glyphs as usize);
     renderer
         .compile(composition)
         .context("failed to compile composition")?;
@@ -419,8 +446,10 @@ fn render_mp4(
     media_store: LocalMediaStore,
     output: &Path,
     choice: VideoEncoderChoice,
+    max_text_glyphs: u32,
 ) -> Result<()> {
-    let render = Mp4Render::open(composition, media_store, choice, output)?;
+    let mut render = Mp4Render::open(composition, media_store, choice, output)?;
+    render.set_max_text_glyphs(max_text_glyphs as usize);
     println!(
         "video_encoder name={} path={}",
         render.encoder(),
@@ -678,6 +707,18 @@ mod tests {
     #[test]
     fn cli_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn text_glyph_limit_defaults_and_stays_within_the_ceiling() {
+        let limit = |flags: &[&str]| {
+            parse(&[&["--output", "o.png"], flags].concat()).map(|cli| cli.max_text_glyphs)
+        };
+        assert_eq!(limit(&[]).unwrap(), 16_384);
+        assert_eq!(limit(&["--max-text-glyphs", "65536"]).unwrap(), 65_536);
+        for invalid in ["0", "1048577", "many"] {
+            assert!(limit(&["--max-text-glyphs", invalid]).is_err(), "{invalid}");
+        }
     }
 
     #[test]

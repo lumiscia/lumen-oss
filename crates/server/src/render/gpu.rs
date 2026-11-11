@@ -60,7 +60,10 @@ pub fn render_project_mp4(
             retryable: false,
         })?,
     };
-    let render = Mp4Render::open(composition, media_store, choice, &output_path)?;
+    let mut render = Mp4Render::open(composition, media_store, choice, &output_path)?;
+    if let Some(glyphs) = options.max_text_glyphs {
+        render.set_max_text_glyphs(glyphs);
+    }
     render.run(on_progress)?;
 
     fs::read(&output_path).map_err(|err| RenderError {
@@ -160,6 +163,12 @@ impl<'a> Mp4Render<'a> {
                 retryable: false,
             })?;
         Ok(render)
+    }
+
+    /// Sets the most glyph, stroke and decoration instances one text node may draw, as
+    /// [`GpuCompositionRenderer::set_max_text_glyphs`] does.
+    pub fn set_max_text_glyphs(&mut self, glyphs: usize) {
+        self.renderer.set_max_text_glyphs(glyphs);
     }
 
     /// The encoder that opened, which is a later candidate when an earlier one wouldn't.

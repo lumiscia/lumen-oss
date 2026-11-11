@@ -6485,7 +6485,7 @@
                       }
                     ],
                     "default": "",
-                    "description": "Text to render: a string, or spans that each override the style these params give. A\nnode draws at most 2048 glyphs, counting a stroked glyph twice and each decoration rect\nonce; whitespace is not drawn, and more is a render error.",
+                    "description": "Text to render: a string, or spans that each override the style these params give. A\nnode draws at most 16384 glyphs unless the host sets another limit, counting a stroked\nglyph twice and each decoration rect once; whitespace is not drawn, and more is a render\nerror.",
                     "title": "Content",
                     "x-lumen-constraints": {
                       "multiline": true,

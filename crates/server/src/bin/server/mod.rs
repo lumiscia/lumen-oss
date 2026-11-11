@@ -28,6 +28,8 @@ pub struct RenderJob {
     pub composition: Composition,
     pub media: HashMap<String, String>,
     pub encoder: VideoEncoderChoice,
+    /// The most glyph, stroke and decoration instances one text node may draw.
+    pub max_text_glyphs: usize,
     /// The `asset:` references this render resolves, held until it ends.
     pub assets: Arc<JobAssets>,
 }
@@ -51,6 +53,7 @@ where
         composition,
         media,
         encoder,
+        max_text_glyphs,
         assets,
     } = job;
     tracing::info!(job_id, media_count = media.len(), "starting render request");
@@ -63,6 +66,7 @@ where
         media_root: Some(staged_path.clone()),
         encoder: Some(encoder),
         assets: Some(assets),
+        max_text_glyphs: Some(max_text_glyphs),
     };
 
     let output_width = composition.render_settings().width;

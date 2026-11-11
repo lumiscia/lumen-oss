@@ -103,6 +103,7 @@ pub(super) async fn create_render(
             composition,
             media: input.media,
             encoder,
+            max_text_glyphs: state.max_text_glyphs,
             assets,
         },
     );

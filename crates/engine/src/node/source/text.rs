@@ -21,7 +21,7 @@ use super::text_content::{
     FontFeatures, SpanLayout, SpanStyle, SpanStyleDelegate, TextContent, TextContentDelegate,
     TextHighlight, TextLine, TextLineDelegate, TextStroke, TextStrokeAlign,
 };
-use super::text_record::{GpuTextPaint, MAX_TEXT_GLYPHS, TextStyleUniforms};
+use super::text_record::{GpuTextPaint, TextStyleUniforms};
 
 /// A param enum and the conversion to its `lumen_text` twin, which has the same variants.
 macro_rules! text_enum {
@@ -151,8 +151,9 @@ text_enum! {
 #[derive(Debug, Clone, PartialEq, lumen_macros::Delegate)]
 pub struct TextLayoutParams {
     /// Text to render: a string, or spans that each override the style these params give. A
-    /// node draws at most 2048 glyphs, counting a stroked glyph twice and each decoration rect
-    /// once; whitespace is not drawn, and more is a render error.
+    /// node draws at most 16384 glyphs unless the host sets another limit, counting a stroked
+    /// glyph twice and each decoration rect once; whitespace is not drawn, and more is a render
+    /// error.
     #[meta(multiline, recommended_rows = 4)]
     pub content: TextContent,
     /// Font family name, or `asset:<id>` for a font asset of the host's.
@@ -408,18 +409,20 @@ impl crate::gpu::frame_graph::RecordNode for Text {
 }
 
 impl TextInstance {
-    /// Fails when the text draws `drawn` glyph, stroke and decoration instances, more than it
-    /// has room for.
-    fn check_capacity(&self, drawn: usize) -> crate::Result<()> {
-        if drawn <= MAX_TEXT_GLYPHS {
+    /// Fails when the text draws `drawn` glyph, stroke and decoration instances, more than the
+    /// host's limit of `max`.
+    fn check_capacity(&self, drawn: usize, max: usize) -> crate::Result<()> {
+        if drawn <= max {
             return Ok(());
         }
         Err(RenderError::NodeEvaluation {
             node_id: self.node_id,
             node_kind: <Text as JsonNode>::KIND,
             details: format!(
-                "text draws {drawn} glyphs, strokes and decorations, more than the \
-                 {MAX_TEXT_GLYPHS} a text node can draw; split it across nodes or shorten it"
+                "text draws {drawn} glyphs, strokes and decorations, more than the limit of \
+                 {max} a text node can draw; split it across nodes, shorten it, or raise the \
+                 host's text glyph limit (`--max-text-glyphs` of lumen-local and lumen-server, \
+                 `set_max_text_glyphs` of the renderer)"
             ),
         }
         .into())
@@ -435,6 +438,7 @@ impl TextInstance {
         bound: &mut BoundFrame,
         rec: &mut lumen_gpu::Recorder,
         fallbacks: &mut Vec<String>,
+        max_glyphs: usize,
     ) -> crate::Result<TextDraw> {
         let trace_started =
             tracing::enabled!(target: "lumen_text", tracing::Level::TRACE).then(trace_now_ms);
@@ -547,7 +551,7 @@ impl TextInstance {
                 &mut state.decorations,
             );
             decoration_paints.extend(own.into_iter().map(|(paint, span)| (paint, span, 0.0)));
-            self.check_capacity(state.decorations.len())?;
+            self.check_capacity(state.decorations.len(), max_glyphs)?;
             if self.stroked {
                 span_strokes(
                     decorations.stroke.as_ref(),
@@ -597,6 +601,7 @@ impl TextInstance {
                 + prepared.instances.len()
                 + prepared.strokes.len()
                 + prepared.dropped_glyphs,
+            max_glyphs,
         )?;
         let dropped_glyphs = prepared.dropped_glyphs;
         let dropping = dropped_glyphs > 0;

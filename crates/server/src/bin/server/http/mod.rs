@@ -69,6 +69,16 @@ pub struct Args {
     )]
     pub progress_min_delta: f32,
 
+    /// Most glyph, stroke and decoration instances one text node may draw. A text over it fails
+    /// its render, so this bounds the work a composition can ask of its text.
+    #[arg(
+        long,
+        env = "LUMEN_SERVER_MAX_TEXT_GLYPHS",
+        default_value_t = lumen_engine::gpu::DEFAULT_MAX_TEXT_GLYPHS as u32,
+        value_parser = clap::value_parser!(u32).range(1..=lumen_engine::gpu::MAX_TEXT_GLYPHS_CEILING as i64)
+    )]
+    pub max_text_glyphs: u32,
+
     /// JSON file of quality presets and encoder orders, checked at startup. Without it the
     /// built-in presets apply.
     #[arg(long, env = "LUMEN_QUALITY_CONFIG", value_name = "PATH")]

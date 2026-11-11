@@ -48,6 +48,9 @@ pub struct RenderOptions {
     pub encoder: Option<VideoEncoderChoice>,
     /// Where `asset:` sources resolve. Without one, they don't.
     pub assets: Option<Arc<dyn AssetResolver>>,
+    /// The most glyph, stroke and decoration instances one text node may draw. `None` keeps
+    /// [`lumen_engine::gpu::DEFAULT_MAX_TEXT_GLYPHS`].
+    pub max_text_glyphs: Option<usize>,
 }
 
 /// The encoders a render of `composition` tries: `request`'s preset and codec where it names them,
