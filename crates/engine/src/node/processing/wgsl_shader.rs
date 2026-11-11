@@ -16,7 +16,9 @@
 //! `@workgroup_size(8, 8, 1)`, dispatched over input0's size.
 //!
 //! Every input holds linear light with premultiplied alpha, and the output is read the same way.
-//! Values above 1 are brighter than SDR white and are kept. A shader that works on sRGB-encoded
+//! Values above 1 are brighter than SDR white and are kept. The engine clamps the output's alpha
+//! to `0..=1` and its colour to the half-float range, and makes a texel with a NaN channel
+//! transparent black. A shader that works on sRGB-encoded
 //! colour converts with the prelude's `lumen_srgb_to_linear` and `lumen_linear_to_srgb`, which
 //! take and return `vec3<f32>`. A shader that declares `output` itself must declare it
 //! `rgba16float`.
@@ -60,6 +62,34 @@ pub const PRELUDE: &str = concat!(
 @group(0) @binding(4) var input_sampler: sampler;
 "
 );
+
+/// Keeps a shader's output in the working space, as the module documentation describes.
+const SANITISE_SHADER: &str = "
+@group(0) @binding(0) var source: texture_2d<f32>;
+@group(0) @binding(1) var output: texture_storage_2d<rgba16float, write>;
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = textureDimensions(output);
+    if (id.x >= size.x || id.y >= size.y) {
+        return;
+    }
+    let texel = textureLoad(source, vec2<i32>(id.xy), 0);
+    // A comparison with NaN is unreliable once optimised, so the bits are tested instead.
+    let magnitude = bitcast<vec4<u32>>(texel) & vec4<u32>(0x7fffffffu);
+    if (any(magnitude > vec4<u32>(0x7f800000u))) {
+        textureStore(output, vec2<i32>(id.xy), vec4<f32>(0.0));
+        return;
+    }
+    let light = clamp(texel.rgb, vec3<f32>(-65504.0), vec3<f32>(65504.0));
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(light, clamp(texel.a, 0.0, 1.0)));
+}
+";
+
+const SANITISE_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(1, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
+];
 
 const DEFAULT_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -679,6 +709,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         let inputs = self.sources.len();
         self.check_input_count()?;
+        programs.compute("wgsl-shader-sanitise", SANITISE_SHADER, "cs_main", SANITISE_LAYOUT)?;
         let Deferred::Value(source) = &self.params.shader else {
             return Ok(());
         };
@@ -769,8 +800,20 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
             bindings.push((input_binding(index), Res::Tex(input.tex)));
         }
         cx.dispatch(program, &bindings, params::dispatch_for(size));
+        let sanitise = cx.program(
+            "wgsl-shader-sanitise",
+            SANITISE_SHADER,
+            "cs_main",
+            SANITISE_LAYOUT,
+        )?;
+        let sanitised = cx.storage_target(size);
+        cx.dispatch(
+            sanitise,
+            &[(0, Res::Tex(tex)), (1, Res::Tex(sanitised))],
+            params::dispatch_for(size),
+        );
         Ok(crate::gpu::frame_graph::Raster {
-            tex,
+            tex: sanitised,
             domain: first.domain,
             bounds: None,
         })
