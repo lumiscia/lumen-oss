@@ -17,7 +17,9 @@ mod shader_layouts;
 mod target;
 mod types;
 
-pub use renderer::{FrameGraphStats, GpuCompositionRenderer};
+pub use renderer::{
+    DEFAULT_MAX_TEXT_GLYPHS, FrameGraphStats, GpuCompositionRenderer, MAX_TEXT_GLYPHS_CEILING,
+};
 #[cfg(all(target_os = "linux", feature = "ffmpeg", feature = "vulkan"))]
 pub use target::VulkanVideoTarget;
 #[cfg(all(

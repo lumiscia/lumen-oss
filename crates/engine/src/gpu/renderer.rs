@@ -127,6 +127,14 @@ pub struct FrameGraphStats {
     pub programs: usize,
 }
 
+/// Most glyph, stroke and decoration instances one text node draws unless the host sets another
+/// limit: a full 1920 × 1080 frame of 16 px monospace text.
+pub const DEFAULT_MAX_TEXT_GLYPHS: usize = 16_384;
+
+/// Largest text limit a host can set. The instances of a text node are bound as one storage
+/// buffer, and this many fill the 128 MiB that WebGPU guarantees a binding.
+pub const MAX_TEXT_GLYPHS_CEILING: usize = 1 << 20;
+
 pub struct GpuCompositionRenderer {
     renderer: lumen_gpu::Renderer,
     graph: FrameGraph,
@@ -137,6 +145,7 @@ pub struct GpuCompositionRenderer {
     reuse_static_output: bool,
     full_frame_sources: bool,
     single_tile_repeats: bool,
+    max_text_glyphs: usize,
     media_texture_cache: MediaTextureCache,
     #[cfg(feature = "ffmpeg")]
     gpu_media_importer: GpuMediaFrameImporter,
@@ -170,10 +179,19 @@ impl GpuCompositionRenderer {
             reuse_static_output: true,
             full_frame_sources: false,
             single_tile_repeats: false,
+            max_text_glyphs: DEFAULT_MAX_TEXT_GLYPHS,
             media_texture_cache: MediaTextureCache::new(),
             #[cfg(feature = "ffmpeg")]
             gpu_media_importer: GpuMediaFrameImporter::default(),
         }
+    }
+
+    /// Sets the most glyph, stroke and decoration instances one text node may draw, which bounds
+    /// the work a composition can ask of its text. A text over it is a render error. The default is
+    /// [`DEFAULT_MAX_TEXT_GLYPHS`], and values are held to [`MAX_TEXT_GLYPHS_CEILING`]. Set it
+    /// before rendering: frames kept from before are not checked again.
+    pub fn set_max_text_glyphs(&mut self, glyphs: usize) {
+        self.max_text_glyphs = glyphs.min(MAX_TEXT_GLYPHS_CEILING);
     }
 
     /// Bounds what recorded frames keep in pooled textures.
@@ -459,6 +477,7 @@ impl GpuCompositionRenderer {
             text_atlas: &self.text_atlas,
             atlas_texture: &mut self.text_atlas_texture,
             max_rebinds: max_font_rebinds(composition),
+            max_text_glyphs: self.max_text_glyphs,
             #[cfg(feature = "ffmpeg")]
             renderer: &self.renderer,
             #[cfg(feature = "ffmpeg")]

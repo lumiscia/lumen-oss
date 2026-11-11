@@ -357,6 +357,7 @@ pub(crate) struct RecordInput<'a> {
     pub(crate) text_atlas: &'a Arc<Mutex<lumen_text::GlyphAtlas>>,
     pub(crate) atlas_texture: &'a mut Option<Arc<wgpu::Texture>>,
     pub(crate) max_rebinds: usize,
+    pub(crate) max_text_glyphs: usize,
     /// The renderer whose device GPU video frames were decoded on.
     #[cfg(feature = "ffmpeg")]
     pub(crate) renderer: &'a lumen_gpu::Renderer,
@@ -435,6 +436,7 @@ impl FrameGraph {
             text_atlas,
             atlas_texture,
             max_rebinds,
+            max_text_glyphs,
             #[cfg(feature = "ffmpeg")]
             renderer,
             #[cfg(feature = "ffmpeg")]
@@ -486,6 +488,7 @@ impl FrameGraph {
                 static_depth: 0,
                 depth: 0,
                 bound: BoundFrame::new(),
+                max_text_glyphs,
                 text_atlas,
                 atlas_texture: &mut *atlas_texture,
                 #[cfg(feature = "ffmpeg")]
@@ -698,7 +701,7 @@ impl FrameGraph {
             bound.write_atlas_regions(self.recorder.queue(), atlas);
         }
         bound.mark_uploaded()?;
-        self.recorder.upload();
+        self.recorder.upload().map_err(gpu_error)?;
         self.forget_unbound_media();
         Ok(())
     }
@@ -980,6 +983,7 @@ pub(crate) struct FrameCx<'a> {
     /// How many nodes the walk is recording inside.
     depth: u32,
     pub(crate) bound: BoundFrame,
+    max_text_glyphs: usize,
     text_atlas: &'a Arc<Mutex<lumen_text::GlyphAtlas>>,
     atlas_texture: &'a mut Option<Arc<wgpu::Texture>>,
     #[cfg(feature = "ffmpeg")]
@@ -1007,7 +1011,14 @@ impl<'a> FrameCx<'a> {
     pub(crate) fn bind_text(&mut self, text: &TextInstance) -> crate::Result<TextDraw> {
         let expr = self.scope.expr_context(self.frame, self.media);
         let mut fallbacks = Vec::new();
-        let draw = text.bind(expr, self.media, &mut self.bound, self.rec, &mut fallbacks)?;
+        let draw = text.bind(
+            expr,
+            self.media,
+            &mut self.bound,
+            self.rec,
+            &mut fallbacks,
+            self.max_text_glyphs,
+        )?;
         for family in fallbacks {
             self.note_font_fallback(text.node_id, family);
         }

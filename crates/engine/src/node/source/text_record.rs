@@ -22,10 +22,6 @@ fn text_shader() -> String {
     ]
     .concat()
 }
-/// The most glyph, stroke and decoration instances one text node can draw, which bounds the work
-/// it can ask for.
-pub(super) const MAX_TEXT_GLYPHS: usize = 2048;
-
 /// Times the canvas, along each axis, that the layer of animated, motion-blurred text spans,
 /// so that text may sweep the canvas by that much less one canvas over its shutter. Text that
 /// sweeps further is drawn at a lower scale to fit.
