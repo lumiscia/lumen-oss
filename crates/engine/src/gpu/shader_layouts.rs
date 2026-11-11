@@ -286,6 +286,10 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
                 tone_mapping,
                 exposure,
                 supersample,
+                camera_right,
+                depth_near,
+                camera_up,
+                depth_far,
             ),
             layout!(
                 "Object",

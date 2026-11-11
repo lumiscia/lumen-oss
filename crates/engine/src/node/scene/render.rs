@@ -1,11 +1,12 @@
 //! Records `render_3d`: the scene's shadow maps, depth-tested draws of its objects into a
 //! supersampled float target, the environment map behind them if it shows, then a resolve into
-//! the node's raster.
+//! the node's raster. Depth and normal output draw the objects once at the output's size, unlit,
+//! then store what they drew.
 
 use bytemuck::{Pod, Zeroable};
 use lumen_3d::{
-    Blending, Bounds, Camera, Draws, Filter, LightKind, Lighting, Map, MapUv, Object, Projection,
-    Row, Sampler, ShadowAtlas, Wrap,
+    Blending, Bounds, Camera, DrawKey, Draws, Filter, LightKind, Lighting, Map, MapUv, Object,
+    Projection, Row, Sampler, Scene, ShadowAtlas, Wrap,
 };
 use lumen_gpu::{
     DEPTH_FORMAT, DepthTest, LayoutEntry, LayoutKind, RenderTargetSpec, Res, Size, TargetLoad,
@@ -13,13 +14,14 @@ use lumen_gpu::{
 };
 
 use super::collect::{Collected, GpuMesh, solid_linear};
-use super::{Light3d, Render3d};
+use super::{Light3d, Render3d, Render3dOutput, Render3dOutputDelegate};
 use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::{FrameCx, Programs, Raster, RecordNode};
 use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, required_input};
 
 pub(crate) const SHADER: &str = include_str!("scene.wgsl");
 const RESOLVE_SHADER: &str = include_str!("resolve.wgsl");
+const DATA_SHADER: &str = include_str!("data.wgsl");
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 const VERTEX_FRAGMENT: wgpu::ShaderStages =
@@ -56,6 +58,25 @@ const LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(24, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
     LayoutEntry::staged(26, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
     LayoutEntry::staged(27, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
+    LayoutEntry::staged(28, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
+];
+/// What drawing depth or normals binds: the vertices, what cuts out masked and blended surfaces,
+/// and the normal map.
+const DATA_LAYOUT: &[LayoutEntry] = &[
+    LayoutEntry::staged(0, VERTEX_FRAGMENT, LayoutKind::Uniform),
+    LayoutEntry::staged(1, VERTEX_FRAGMENT, LayoutKind::Storage),
+    LayoutEntry::staged(2, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(3, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(5, wgpu::ShaderStages::VERTEX, LayoutKind::Uniform),
+    LayoutEntry::staged(6, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(7, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
+    LayoutEntry::staged(8, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(9, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(10, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(12, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(15, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
+    LayoutEntry::staged(17, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
     LayoutEntry::staged(28, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
     LayoutEntry::staged(29, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
 ];
@@ -130,6 +151,10 @@ pub(crate) struct GpuGlobals {
     pub(crate) exposure: f32,
     pub(crate) supersample: u32,
     _pad: u32,
+    pub(crate) camera_right: [f32; 3],
+    pub(crate) depth_near: f32,
+    pub(crate) camera_up: [f32; 3],
+    pub(crate) depth_far: f32,
 }
 
 /// Keep in sync with `Environment` in `scene.wgsl`.
@@ -234,6 +259,15 @@ struct ResolveParams {
     _pad: [u32; 3],
 }
 
+/// Keep in sync with `Params` in `data.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct DataParams {
+    background: [f32; 4],
+    drawn: u32,
+    _pad: [u32; 3],
+}
+
 fn spec(depth: DepthTest, cull: Option<wgpu::Face>) -> RenderTargetSpec {
     RenderTargetSpec {
         format: Some(COLOR_FORMAT),
@@ -258,6 +292,37 @@ fn background_spec() -> RenderTargetSpec {
             alpha: under,
         },
     )
+}
+
+/// The label and fragment entry point of the programs drawing depth or normal output, and what
+/// the raster holds where nothing is drawn.
+type DataProgram = (&'static str, &'static str, [f32; 4]);
+
+/// How `output` is drawn, unless it is colour.
+fn data_program(output: Render3dOutput) -> Option<DataProgram> {
+    match output {
+        Render3dOutput::Color => None,
+        Render3dOutput::Depth => Some(("scene-3d-depth", "fs_depth", [1.0; 4])),
+        Render3dOutput::Normal => Some(("scene-3d-normal", "fs_normal", [0.0; 4])),
+    }
+}
+
+/// Depth and normals replace what is behind them, whatever the object's blending.
+fn data_spec(cull: Option<wgpu::Face>) -> RenderTargetSpec {
+    RenderTargetSpec {
+        blend: wgpu::BlendState::REPLACE,
+        ..spec(DepthTest::Write, cull)
+    }
+}
+
+/// The faces a run culls: none for a double-sided one, else those pointing away, which wind
+/// clockwise, or counterclockwise once mirrored.
+fn cull(key: &DrawKey<GpuMesh, TexRef>) -> Option<wgpu::Face> {
+    match (key.double_sided, key.mirrored) {
+        (true, _) => None,
+        (false, false) => Some(wgpu::Face::Back),
+        (false, true) => Some(wgpu::Face::Front),
+    }
 }
 
 /// Shadow catchers replace what is under them, so the nearest of overlapping ones shows alone.
@@ -537,6 +602,130 @@ pub(crate) fn catcher_programs(
 }
 
 impl Render3d {
+    /// Draws the depth or normals of `collected`'s objects at `size` with `program`, from
+    /// [`data_program`].
+    fn record_data(
+        &self,
+        cx: &mut FrameCx<'_>,
+        params: &super::Render3dParams,
+        collected: &Collected,
+        size: Size,
+        (label, fragment, background): DataProgram,
+    ) -> crate::Result<Raster> {
+        let scene = &collected.scene;
+        let camera = scene.camera.unwrap_or_default();
+        let (near, far) = depth_range(&camera, params);
+        if params.output == Render3dOutput::Depth
+            && far.partial_cmp(&near) != Some(std::cmp::Ordering::Greater)
+        {
+            return Err(render_error(
+                self.id,
+                format!("depth_far ({far}) must be farther than depth_near ({near})"),
+            ));
+        }
+        let draws = Draws::new(&scene.objects, &camera.view())
+            .map_err(|error| render_error(self.id, error.to_string()))?;
+        let output = cx.storage_target(size);
+        let unread = cx.transparent(size).tex;
+        let data = DataParams {
+            background,
+            drawn: u32::from(!draws.runs.is_empty()),
+            _pad: [0; 3],
+        };
+        if draws.runs.is_empty() {
+            if params.output == Render3dOutput::Normal {
+                return Ok(cx.transparent(size));
+            }
+            cx.spatial_pass("scene-3d-data", DATA_SHADER, unread, &data, output, size)?;
+            return Ok(Raster {
+                tex: output,
+                domain: TextureDomain::full_frame(size),
+                bounds: None,
+            });
+        }
+        let aspect = size.width as f32 / size.height.max(1) as f32;
+        let no_lights = Lighting {
+            direct: Vec::new(),
+            ambient: lumen_3d::glam::Vec3::ZERO,
+        };
+        let globals = cx.rec.uniform(&globals(
+            &camera, aspect, 0, &no_lights, params, [0.0; 4], 1,
+        ));
+        let tables = Tables::new(cx, scene, &draws);
+        let target = cx.rec.acquire(
+            size,
+            COLOR_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let depth = cx
+            .rec
+            .acquire(size, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let clamp = clamp_sampler(cx);
+        for (drawn, (run, &rows)) in draws.runs.iter().zip(&tables.runs).enumerate() {
+            let program = cx.render_program(
+                label,
+                SHADER,
+                "vs_main",
+                fragment,
+                DATA_LAYOUT,
+                data_spec(cull(&run.key)),
+                0,
+            )?;
+            let mut bindings = vec![
+                (0, globals),
+                (1, tables.objects),
+                (2, Res::Buffer(run.key.mesh.vertices)),
+                (3, Res::Buffer(run.key.mesh.indices)),
+                (5, rows),
+                (6, Res::Tex(run.key.texture.unwrap_or(unread))),
+                (7, Res::Sampler(clamp)),
+                (8, tables.joints),
+                (
+                    9,
+                    Res::Buffer(run.key.mesh.data.unwrap_or(run.key.mesh.vertices)),
+                ),
+                (28, tables.weights),
+                (29, tables.map_uvs),
+            ];
+            for (texture, sampler, map) in [
+                (10, 15, run.key.maps.base_color),
+                (12, 17, run.key.maps.normal),
+            ] {
+                let (tex, map_sampler) = match map {
+                    Some(Map { texture, sampler }) => (
+                        texture,
+                        cx.rec
+                            .sampler(sampler_key(&sampler), || sampler_descriptor(&sampler)),
+                    ),
+                    None => (unread, clamp),
+                };
+                bindings.push((texture, Res::Tex(tex)));
+                bindings.push((sampler, Res::Sampler(map_sampler)));
+            }
+            let load = if drawn == 0 {
+                TargetLoad::Clear
+            } else {
+                TargetLoad::Load
+            };
+            cx.rec.draw_with_depth(
+                program,
+                &bindings,
+                target,
+                load,
+                depth,
+                load,
+                run.vertices,
+                1,
+            );
+        }
+        cx.spatial_pass("scene-3d-data", DATA_SHADER, target, &data, output, size)?;
+        Ok(Raster {
+            tex: output,
+            domain: TextureDomain::full_frame(size),
+            bounds: None,
+        })
+    }
+
     /// Whether some frame may draw the environment map behind the scene.
     fn may_show_background(&self) -> bool {
         let params = &self.params;
@@ -550,6 +739,25 @@ impl RecordNode for Render3d {
     /// for those drawing shadow maps and catchers, which the lights and surfaces asking for them
     /// build.
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
+        let output = match self.params.output {
+            Render3dOutputDelegate::Depth => Render3dOutput::Depth,
+            Render3dOutputDelegate::Normal => Render3dOutput::Normal,
+            _ => Render3dOutput::Color,
+        };
+        if let Some((label, fragment, _)) = data_program(output) {
+            for cull in [Some(wgpu::Face::Back), Some(wgpu::Face::Front), None] {
+                programs.render(
+                    label,
+                    SHADER,
+                    "vs_main",
+                    fragment,
+                    DATA_LAYOUT,
+                    data_spec(cull),
+                    0,
+                )?;
+            }
+            return programs.spatial("scene-3d-data", DATA_SHADER);
+        }
         for (depth, cull) in VARIANTS {
             programs.render(
                 "scene-3d",
@@ -598,6 +806,9 @@ impl RecordNode for Render3d {
         }
         let mut collected = Collected::new(self.id);
         collected.add(cx, required_input(self.id, "scene", self.scene)?)?;
+        if let Some(program) = data_program(params.output) {
+            return self.record_data(cx, &params, &collected, size, program);
+        }
         if collected
             .scene
             .lights
@@ -696,31 +907,13 @@ impl RecordNode for Render3d {
             supersample,
         ));
         let lights = cx.rec.storage_parts(&[bytemuck::cast_slice(&lights)]);
-        let mut map_uvs = Vec::new();
-        let objects: Vec<GpuObject> = draws
-            .rows
-            .iter()
-            .map(|row| gpu_object(&scene.objects[row.object], row, &mut map_uvs))
-            .collect();
-        let objects = cx.rec.storage_parts(&[bytemuck::cast_slice(&objects)]);
-        if map_uvs.is_empty() {
-            map_uvs.push(GpuMapUv::zeroed());
-        }
-        let map_uvs = cx.rec.storage_parts(&[bytemuck::cast_slice(&map_uvs)]);
-        let mut weights = scene.weights.clone();
-        if weights.is_empty() {
-            weights.push(0.0);
-        }
-        let weights = cx.rec.storage_parts(&[bytemuck::cast_slice(&weights)]);
-        let mut joints: Vec<[[f32; 4]; 4]> = scene
-            .joints
-            .iter()
-            .map(|joint| joint.to_cols_array_2d())
-            .collect();
-        if joints.is_empty() {
-            joints.push([[0.0; 4]; 4]);
-        }
-        let joints = cx.rec.storage_parts(&[bytemuck::cast_slice(&joints)]);
+        let Tables {
+            objects,
+            map_uvs,
+            weights,
+            joints,
+            runs,
+        } = Tables::new(cx, scene, &draws);
 
         let color = cx.rec.acquire(
             target_size,
@@ -732,32 +925,13 @@ impl RecordNode for Render3d {
             DEPTH_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
-        let clamp = cx.rec.sampler(CLAMP_SAMPLER, || wgpu::SamplerDescriptor {
-            label: Some("lumen 3d raster sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..wgpu::SamplerDescriptor::default()
-        });
+        let clamp = clamp_sampler(cx);
         let mipped_sampler = cx
             .rec
             .sampler(super::mips::RASTER_SAMPLER, super::mips::raster_sampler);
         // Objects without a raster or a map still bind a texture and sampler in its place, which
         // their shader doesn't read, as meshes without skins bind their vertices.
         let unread = cx.transparent(size).tex;
-        let runs: Vec<Res> = draws
-            .runs
-            .iter()
-            .map(|run| {
-                cx.rec.uniform(&GpuRun {
-                    first: run.first,
-                    count: run.count,
-                    base: run.base,
-                    _pad: 0,
-                })
-            })
-            .collect();
         let shadow_views = match &atlas {
             Some(atlas) => cx
                 .rec
@@ -874,11 +1048,7 @@ impl RecordNode for Render3d {
             } else {
                 DepthTest::Write
             };
-            let cull = match (run.key.double_sided, run.key.mirrored) {
-                (true, _) => None,
-                (false, false) => Some(wgpu::Face::Back),
-                (false, true) => Some(wgpu::Face::Front),
-            };
+            let cull = cull(&run.key);
             let (target, variant) = if run.key.shadow_catcher {
                 (catcher_spec(cull), CATCHER_VARIANT)
             } else {
@@ -1002,6 +1172,91 @@ impl RecordNode for Render3d {
     }
 }
 
+/// The storage both of `render_3d`'s ways of drawing `draws` bind: the object table and the
+/// tables it points into, and each run's uniform.
+struct Tables {
+    objects: Res,
+    map_uvs: Res,
+    weights: Res,
+    joints: Res,
+    runs: Vec<Res>,
+}
+
+impl Tables {
+    fn new(
+        cx: &mut FrameCx<'_>,
+        scene: &Scene<GpuMesh, TexRef>,
+        draws: &Draws<GpuMesh, TexRef>,
+    ) -> Self {
+        let mut map_uvs = Vec::new();
+        let objects: Vec<GpuObject> = draws
+            .rows
+            .iter()
+            .map(|row| gpu_object(&scene.objects[row.object], row, &mut map_uvs))
+            .collect();
+        let objects = cx.rec.storage_parts(&[bytemuck::cast_slice(&objects)]);
+        // A storage binding can't be empty.
+        if map_uvs.is_empty() {
+            map_uvs.push(GpuMapUv::zeroed());
+        }
+        let map_uvs = cx.rec.storage_parts(&[bytemuck::cast_slice(&map_uvs)]);
+        let mut weights = scene.weights.clone();
+        if weights.is_empty() {
+            weights.push(0.0);
+        }
+        let weights = cx.rec.storage_parts(&[bytemuck::cast_slice(&weights)]);
+        let mut joints: Vec<[[f32; 4]; 4]> = scene
+            .joints
+            .iter()
+            .map(|joint| joint.to_cols_array_2d())
+            .collect();
+        if joints.is_empty() {
+            joints.push([[0.0; 4]; 4]);
+        }
+        let joints = cx.rec.storage_parts(&[bytemuck::cast_slice(&joints)]);
+        let runs = draws
+            .runs
+            .iter()
+            .map(|run| {
+                cx.rec.uniform(&GpuRun {
+                    first: run.first,
+                    count: run.count,
+                    base: run.base,
+                    _pad: 0,
+                })
+            })
+            .collect();
+        Self {
+            objects,
+            map_uvs,
+            weights,
+            joints,
+            runs,
+        }
+    }
+}
+
+fn clamp_sampler(cx: &mut FrameCx<'_>) -> lumen_gpu::SamplerRef {
+    cx.rec.sampler(CLAMP_SAMPLER, || wgpu::SamplerDescriptor {
+        label: Some("lumen 3d raster sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..wgpu::SamplerDescriptor::default()
+    })
+}
+
+/// The distances along `camera`'s view that depth output maps to 0 and 1: `params`' own, or the
+/// camera's near and far where they are 0.
+fn depth_range(camera: &Camera, params: &super::Render3dParams) -> (f32, f32) {
+    let pick = |value: f64, fallback: f32| if value > 0.0 { value as f32 } else { fallback };
+    (
+        pick(params.depth_near, camera.near),
+        pick(params.depth_far, camera.far),
+    )
+}
+
 /// Gives each raster that objects show smaller than it is a mip chain, in place of the raster in
 /// the objects that show it, so that they are filtered rather than sampled sparsely. Returns the
 /// textures it made.
@@ -1102,6 +1357,8 @@ fn globals(
     fog: [f32; 4],
     supersample: u32,
 ) -> GpuGlobals {
+    let axis = |axis: lumen_3d::glam::Vec3| camera.world.transform_vector3(axis).normalize_or(axis);
+    let (depth_near, depth_far) = depth_range(camera, params);
     GpuGlobals {
         view_proj: (camera.projection_matrix(aspect) * camera.view()).to_cols_array_2d(),
         camera_position: camera.position().into(),
@@ -1116,5 +1373,9 @@ fn globals(
         exposure: (params.exposure as f32).exp2(),
         supersample,
         _pad: 0,
+        camera_right: axis(lumen_3d::glam::Vec3::X).into(),
+        depth_near,
+        camera_up: axis(lumen_3d::glam::Vec3::Y).into(),
+        depth_far,
     }
 }
