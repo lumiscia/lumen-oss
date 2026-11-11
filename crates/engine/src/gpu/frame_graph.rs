@@ -224,13 +224,14 @@ impl Programs<'_> {
     /// Builds a shader from runtime source, which recording it again then finds.
     pub(crate) fn dynamic(
         &mut self,
+        node: NodeId,
         label: &str,
         source: &str,
         inputs: usize,
         build: impl FnOnce() -> crate::Result<ShaderParts>,
     ) -> crate::Result<CachedShader> {
         let shader = self.st.cached_shader(source, inputs, build)?;
-        dynamic_program(self.rec, label, &shader)?;
+        dynamic_program(self.rec, node, label, &shader)?;
         Ok(shader)
     }
 }
@@ -243,8 +244,11 @@ pub(crate) type ShaderParts = (
     Vec<LayoutEntry>,
 );
 
+/// The program of `node`'s shader. The source is the composition's, so a shader the device
+/// refuses is the node's failure rather than the device's.
 fn dynamic_program(
     rec: &mut Recorder,
+    node: NodeId,
     label: &str,
     shader: &CachedShader,
 ) -> crate::Result<ProgramRef> {
@@ -255,7 +259,14 @@ fn dynamic_program(
         "cs_main",
         &shader.layout,
     )
-    .map_err(gpu_error)
+    .map_err(|error| {
+        RenderError::NodeEvaluation {
+            node_id: node,
+            node_kind: "wgsl_shader",
+            details: error.to_string(),
+        }
+        .into()
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -644,12 +655,9 @@ impl FrameGraph {
                 return Ok(bound);
             }
             if rebinds == max_rebinds {
-                return Err(RenderError::Gpu {
-                    details: format!(
-                        "fonts kept loading while frame {frame} was recorded; its text bounds could not settle"
-                    ),
-                }
-                .into());
+                return Err(internal(&format!(
+                    "fonts kept loading while frame {frame} was recorded; its text bounds could not settle"
+                )));
             }
             rebinds += 1;
         }
@@ -1129,11 +1137,41 @@ pub(crate) struct FrameCx<'a> {
     imports: &'a mut GpuMediaImports,
 }
 
-pub(crate) fn gpu_error(error: impl std::fmt::Display) -> crate::error::LumenError {
-    RenderError::Gpu {
-        details: error.to_string(),
+/// The error for a failure of the recorder: `render.limit` when the frame's data doesn't fit the
+/// device, `render.internal` when the recorder was misused, and `render.gpu` otherwise.
+pub(crate) fn gpu_error(error: anyhow::Error) -> crate::error::LumenError {
+    let details = error.to_string();
+    match error.downcast_ref::<lumen_gpu::FrameError>() {
+        Some(lumen_gpu::FrameError::TooLarge(_)) => RenderError::Limit { details },
+        Some(lumen_gpu::FrameError::Misuse(_)) => RenderError::Internal { details },
+        None => RenderError::Gpu { details },
     }
     .into()
+}
+
+fn internal(details: &str) -> crate::error::LumenError {
+    RenderError::Internal {
+        details: details.to_string(),
+    }
+    .into()
+}
+
+/// The media failure of decoding a frame on the CPU after importing it on the GPU failed for
+/// `reason`.
+#[cfg(feature = "ffmpeg")]
+fn cpu_retry_failed(error: crate::error::MediaError, reason: &str) -> crate::error::LumenError {
+    use crate::error::MediaError;
+    match error {
+        MediaError::Failed(mut failure) => {
+            let details = format!(
+                "failed to import GPU media frame: {reason}; decoding it on the CPU also failed: {}",
+                failure.reason.details()
+            );
+            failure.reason = failure.reason.with_details(details);
+            MediaError::Failed(failure).into()
+        }
+        error => error.into(),
+    }
 }
 
 impl<'a> FrameCx<'a> {
@@ -1808,9 +1846,7 @@ impl<'a> FrameCx<'a> {
             self.bound.text_atlas_frame = self
                 .text_atlas
                 .lock()
-                .map_err(|_| RenderError::Gpu {
-                    details: "text atlas lock was poisoned".to_string(),
-                })?
+                .map_err(|_| internal("text atlas lock was poisoned"))?
                 .begin_frame();
             self.bound.text_atlas = Some(Arc::clone(self.text_atlas));
         }
@@ -1896,10 +1932,11 @@ impl<'a> FrameCx<'a> {
 
     pub(crate) fn dynamic_program(
         &mut self,
+        node: NodeId,
         label: &str,
         shader: &CachedShader,
     ) -> crate::Result<ProgramRef> {
-        dynamic_program(self.rec, label, shader)
+        dynamic_program(self.rec, node, label, shader)
     }
 
     /// The param `param` of node `node` in the graph being recorded.
@@ -1944,17 +1981,11 @@ impl<'a> FrameCx<'a> {
             MediaFrame::CpuRgba(cpu) => (cpu, true),
             MediaFrame::RawRgba(cpu) => (cpu, false),
             MediaFrame::Yuv(_) => {
-                return Err(RenderError::Gpu {
-                    details: "an image resolver returned a video frame".to_string(),
-                }
-                .into());
+                return Err(internal("an image resolver returned a video frame"));
             }
             #[cfg(feature = "ffmpeg")]
             MediaFrame::GpuVideo(_) => {
-                return Err(RenderError::Gpu {
-                    details: "an image resolver returned a GPU frame".to_string(),
-                }
-                .into());
+                return Err(internal("an image resolver returned a GPU frame"));
             }
         };
         let texture = match self.media_cache.get(&key) {
@@ -2034,10 +2065,7 @@ impl<'a> FrameCx<'a> {
             }
             MediaFrame::Yuv(frame) => self.yuv_video_texture(frame, size, alpha),
             #[cfg(feature = "ffmpeg")]
-            MediaFrame::GpuVideo(_) => Err(RenderError::Gpu {
-                details: "a CPU frame was expected, not a GPU one".to_string(),
-            }
-            .into()),
+            MediaFrame::GpuVideo(_) => Err(internal("a CPU frame was expected, not a GPU one")),
         }
     }
 
@@ -2049,12 +2077,12 @@ impl<'a> FrameCx<'a> {
         size: Size,
         alpha: AlphaMode,
     ) -> crate::Result<TexRef> {
-        frame.validate().map_err(|details| RenderError::Gpu {
-            details: format!("a YUV frame can't be read: {details}"),
-        })?;
+        frame
+            .validate()
+            .map_err(|details| internal(&format!("a YUV frame can't be read: {details}")))?;
         let max = self.rec.device().limits().max_texture_dimension_2d;
         if frame.format.width > max || frame.format.height > max {
-            return Err(RenderError::Gpu {
+            return Err(RenderError::Limit {
                 details: format!(
                     "a {}x{} YUV frame is larger than this device's {max}-pixel texture limit",
                     frame.format.width, frame.format.height
@@ -2215,11 +2243,9 @@ impl<'a> FrameCx<'a> {
                         self.yuv_to_rgba(&planes, &imported.format, size, alpha)
                     }
                     Err(reason) => {
-                        let cpu = frame.decode_on_cpu(&reason).map_err(|error| RenderError::Gpu {
-                            details: format!(
-                                "failed to import GPU media frame: {reason}; decoding it on the CPU also failed: {error}"
-                            ),
-                        })?;
+                        let cpu = frame
+                            .decode_on_cpu(&reason)
+                            .map_err(|error| cpu_retry_failed(error, &reason))?;
                         self.cpu_frame_texture(cpu, size, alpha)
                     }
                 }

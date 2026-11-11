@@ -392,6 +392,10 @@ fn a_frame_with_more_storage_than_the_device_takes_fails_to_upload() {
     recorder.storage_parts(&[&[0u8; (1 << 16) + 1]]);
     let error = recorder.upload().expect_err("one binding over the limit");
     assert!(error.to_string().contains("doesn't fit the GPU"), "{error}");
+    assert!(matches!(
+        error.downcast_ref::<FrameError>(),
+        Some(FrameError::TooLarge(_))
+    ));
 
     recorder.begin_frame();
     for _ in 0..3 {

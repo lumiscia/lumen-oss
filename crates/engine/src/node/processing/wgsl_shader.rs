@@ -719,7 +719,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
             source.as_str()
         };
         let max_uniform_size = programs.limits().max_uniform_buffer_binding_size;
-        let shader = programs.dynamic(&self.label(), source, inputs, || {
+        let shader = programs.dynamic(self.id, &self.label(), source, inputs, || {
             record_parts(self.id, source, inputs, max_uniform_size)
         })?;
         let Deferred::Value(uniforms) = &self.params.uniforms else {
@@ -779,7 +779,7 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
         };
         // A shader need not write every pixel, and what it leaves must not be another node's.
         let tex = cx.cleared_storage_target(size);
-        let program = cx.dynamic_program(&self.label(), &shader)?;
+        let program = cx.dynamic_program(self.id, &self.label(), &shader)?;
         let uniform = cx.rec.uniform_bytes(&uniforms);
         let globals = cx.rec.uniform(&globals);
         let sampler = cx.sampler(4, || lumen_gpu::wgpu::SamplerDescriptor {

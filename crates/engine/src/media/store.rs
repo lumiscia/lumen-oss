@@ -17,7 +17,7 @@ pub struct TextSession(Mutex<lumen_text::TextSystem>);
 impl TextSession {
     pub(crate) fn lock(&self) -> crate::Result<MutexGuard<'_, lumen_text::TextSystem>> {
         self.0.lock().map_err(|_| {
-            LumenError::Render(RenderError::Gpu {
+            LumenError::Render(RenderError::Internal {
                 details: "text system lock was poisoned".to_string(),
             })
         })

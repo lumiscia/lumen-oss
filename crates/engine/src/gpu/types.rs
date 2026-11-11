@@ -128,7 +128,7 @@ impl BoundFrame {
         if let Some(atlas) = &self.text_atlas {
             atlas
                 .lock()
-                .map_err(|_| crate::error::RenderError::Gpu {
+                .map_err(|_| crate::error::RenderError::Internal {
                     details: "text atlas lock was poisoned".to_string(),
                 })?
                 .commit(self.text_atlas_frame);

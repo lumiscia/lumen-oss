@@ -965,6 +965,25 @@ fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
 }
 
 #[test]
+fn text_whose_data_does_not_fit_the_device_is_a_limit_not_a_gpu_fault() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    renderer.limit_frame_storage(1 << 10, 1 << 16);
+    let text: Composition = scene(
+        (64, 64),
+        json!([text_node(
+            1,
+            json!({ "content": "a".repeat(400), "font_size": 8 })
+        )]),
+    )
+    .into();
+    let error = renderer
+        .render_frame_at(&text, 0.0, &TestMedia::default())
+        .expect_err("400 glyphs over a 1 KiB binding");
+    assert_eq!(error.code(), "render.limit", "{error}");
+}
+
+#[test]
 fn a_raised_text_limit_lets_more_glyphs_through_and_the_default_is_documented() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
