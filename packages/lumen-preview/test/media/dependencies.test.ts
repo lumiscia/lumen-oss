@@ -73,6 +73,16 @@ describe("previewDependencies", () => {
     expect(dependencies).toEqual(["lut:warm.cube", "environment:sky.hdr"]);
   });
 
+  it("takes `.cube` from a URL's path, not from its query", () => {
+    const read = () =>
+      previewDependencies(
+        inventory([], [["environment", "lut"]]),
+        entries({ dusk: { source: "https://a.test/dusk.hdr?grade=warm.cube" } }),
+        new Map(),
+      );
+    expect(read).toThrow("needs a kind");
+  });
+
   it("loads a source read as video and as audio once for each, and nothing unnamed", () => {
     const dependencies = previewDependencies(
       inventory([{ kinds: ["video", "audio"], source: "clip.mp4" }]),

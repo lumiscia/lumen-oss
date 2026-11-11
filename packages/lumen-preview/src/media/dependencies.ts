@@ -206,7 +206,8 @@ function sourceKind(source: MediaSourceInput): MediaSourceKind | undefined {
 }
 
 function isCubeName(source: MediaSourceInput): boolean {
-  return /\.cube(?:[?#]|$)/i.test(sourceName(source));
+  // A query or fragment that happens to end in `.cube` names nothing.
+  return /\.cube$/i.test(sourceName(source).split(/[?#]/, 1)[0] ?? "");
 }
 
 /** The file name or URL a source carries, or an empty string for bytes. */
