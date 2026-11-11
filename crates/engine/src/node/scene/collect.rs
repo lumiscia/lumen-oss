@@ -51,7 +51,7 @@ pub(super) fn storage_buffer(rec: &mut Recorder, label: &str, contents: &[u8]) -
 }
 
 impl GpuMesh {
-    fn upload(rec: &mut Recorder, mesh: &Mesh) -> Self {
+    pub(super) fn upload(rec: &mut Recorder, mesh: &Mesh) -> Self {
         Self {
             vertices: storage_buffer(
                 rec,
@@ -63,7 +63,7 @@ impl GpuMesh {
         }
     }
 
-    fn forget(&self, rec: &mut Recorder) {
+    pub(super) fn forget(&self, rec: &mut Recorder) {
         for buffer in [self.vertices, self.indices].into_iter().chain(self.skin) {
             rec.forget_buffer(buffer);
         }
@@ -100,6 +100,7 @@ pub(crate) struct SceneCache {
     /// A depth texture bound in place of a shadow atlas by scenes without shadows.
     no_shadows: Option<TexRef>,
     pub(super) environments: super::environment::EnvironmentCache,
+    pub(super) texts: super::text_mesh::TextMeshes,
 }
 
 impl SceneCache {
@@ -117,6 +118,7 @@ impl SceneCache {
         }
         self.model_bytes = 0;
         self.environments.release(rec);
+        self.texts.release(rec);
     }
 
     /// Frees environment maps as [`Self::trim`] frees models.
@@ -131,17 +133,19 @@ impl SceneCache {
     }
 
     /// Frees models, least recently drawn first, while the cache holds more than
-    /// [`MODEL_BUDGET_BYTES`], keeping those frame `tick` drew and those `kept` names.
+    /// [`MODEL_BUDGET_BYTES`], keeping those frame `tick` drew and those `kept` names, and frees
+    /// text meshes the same way.
     pub(crate) fn trim<'k>(
         &mut self,
         rec: &mut Recorder,
         tick: u64,
         kept: impl IntoIterator<Item = &'k String>,
     ) {
+        let kept: std::collections::HashSet<&String> = kept.into_iter().collect();
+        self.texts.trim(rec, tick, &kept);
         if self.model_bytes <= MODEL_BUDGET_BYTES {
             return;
         }
-        let kept: std::collections::HashSet<&String> = kept.into_iter().collect();
         let freed = evictions(
             self.models.iter().map(|(id, cached)| {
                 let protected = cached.last_used == tick || kept.contains(id);
@@ -662,6 +666,27 @@ impl Collected {
                     },
                     Extent::Local(UNIT_BOUNDS),
                 );
+            }
+            NodeKind::Text3d(text) => {
+                let params = text.params.eval(&ctx)?;
+                let world = parent * placement(&params.placement).matrix();
+                let surface = surface(node_id, "Text3d", &params.material)?;
+                if let Some(text) = super::text_mesh::text_mesh(cx, node_id, &params)? {
+                    let local = text.bounds;
+                    self.push(
+                        Object {
+                            world,
+                            mesh: text.mesh,
+                            first_index: 0,
+                            index_count: text.index_count,
+                            surface,
+                            center: world.transform_point3((local.min + local.max) * 0.5),
+                            first_joint: None,
+                            bounds: Bounds::EMPTY,
+                        },
+                        Extent::Local(local),
+                    );
+                }
             }
             NodeKind::ImagePlane3d(plane) => {
                 let params = plane.params.eval(&ctx)?;

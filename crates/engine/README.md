@@ -118,8 +118,8 @@ connections, then the graphs, clips, props, settings and audio. Each phase repor
 and a phase with errors ends the check, since later ones would mostly repeat them. At most 50
 diagnostics are reported.
 
-Passing a `known_font` lookup also checks fonts: each family a text node names as a literal that
-the host can't resolve, other than the bundled `Roboto`, is a `font.fallback` warning. Renderers
+Passing a `known_font` lookup also checks fonts: each family a `text` or `text_3d` node names as a literal
+that the host can't resolve, other than the bundled `Roboto`, is a `font.fallback` warning. Renderers
 raise the same warning when shaping falls back, which
 `GpuCompositionRenderer::take_diagnostics` returns once per node and family; its path points at
 the root or template, not the param.
@@ -199,7 +199,8 @@ literal: one the store doesn't have is `asset.not_found`, and one of another kin
 | `settings.invalid`                   | error    | check         | A timeline, canvas or prop default can't render, such as an `fps` of 0.                                                                                                                                   |
 | `audio.invalid`                      | error    | check         | Audio tracks or clips are duplicated, unknown, too many in one composition, or have invalid timing or volume, or a volume expression reads a node, a glyph, text or an undeclared prop.                   |
 | `composition.cycle`                  | error    | check         | Templates instantiate themselves.                                                                                                                                                                         |
-| `font.fallback`                      | warning  | check, render | A text node's font family resolved to no font, so it renders in a fallback.                                                                                                                               |
+| `font.fallback`                      | warning  | check, render | A `text` or `text_3d` node's font family resolved to no font, so it renders in a fallback.                                                                                                                |
+| `font.no_outlines`                   | warning  | render        | A `text_3d` node's glyphs have no outlines to extrude, such as colour emoji, so they are left out.                                                                                                        |
 | `scene.shadow_limit`                 | warning  | render        | A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none.                                                                                                          |
 | `property.invalid_type`              | error    | render        | An expression gave a param a value of the wrong type.                                                                                                                                                     |
 | `expression.parse`                   | error    | render        | An expression built at render time doesn't parse.                                                                                                                                                         |

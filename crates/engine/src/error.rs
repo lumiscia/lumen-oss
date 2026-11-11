@@ -369,6 +369,16 @@ pub enum Warning {
         node_id: NodeId,
         family: String,
     },
+    /// Glyphs of a `text_3d` node have no outlines to extrude, as a font that draws them from
+    /// colour or bitmap tables, such as emoji, has none, so they are left out.
+    #[code("font.no_outlines")]
+    #[error("{}text_3d node {node_id}: {glyphs} glyphs have no outlines to extrude, such as colour emoji, so they are left out", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
+    NoOutlines {
+        /// The template the node is in, or `None` at the root.
+        template: Option<String>,
+        node_id: NodeId,
+        glyphs: usize,
+    },
     /// A `render_3d` scene has more lights casting shadows than it draws shadows for.
     #[code("scene.shadow_limit")]
     #[error("{}render_3d node {node_id}: light nodes {} cast no shadows, past the first 8 lights casting them", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default(), .lights.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]

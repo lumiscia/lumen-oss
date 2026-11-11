@@ -323,6 +323,10 @@ struct RecordState {
     /// The template and `render_3d` node of each shadow limit reported for this composition.
     #[cfg(feature = "3d")]
     shadow_limits: HashSet<(Option<String>, NodeId)>,
+    /// The template and `text_3d` node of each report of glyphs without outlines for this
+    /// composition.
+    #[cfg(feature = "3d")]
+    outline_gaps: HashSet<(Option<String>, NodeId)>,
     /// Warnings not yet taken.
     diagnostics: Vec<crate::diagnostic::Diagnostic>,
     /// Passes reads of retained outputs skipped.
@@ -808,6 +812,8 @@ impl FrameGraph {
         state.font_fallbacks.clear();
         #[cfg(feature = "3d")]
         state.shadow_limits.clear();
+        #[cfg(feature = "3d")]
+        state.outline_gaps.clear();
         state.shaders.clear();
         state.memo.clear();
         state.full_frames.clear();
@@ -1045,8 +1051,35 @@ impl<'a> FrameCx<'a> {
         self.st.shadow_limits.insert(key);
     }
 
+    /// Warns once per composition and `text_3d` node `node_id` that `glyphs` of its glyphs have
+    /// no outlines.
+    #[cfg(feature = "3d")]
+    pub(crate) fn note_missing_outlines(&mut self, node_id: NodeId, glyphs: usize) {
+        let key = (self.scope.template_name().map(str::to_string), node_id);
+        if self.st.outline_gaps.contains(&key) {
+            return;
+        }
+        let warning = crate::error::Warning::NoOutlines {
+            template: key.0.clone(),
+            node_id,
+            glyphs,
+        };
+        tracing::warn!(target: "lumen_text", "{warning}");
+        let path = crate::diagnostic::scene_pointer(key.0.as_deref());
+        self.st
+            .diagnostics
+            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
+        self.st.outline_gaps.insert(key);
+    }
+
+    /// The most glyphs a text node may draw.
+    #[cfg(feature = "3d")]
+    pub(crate) fn max_text_glyphs(&self) -> usize {
+        self.max_text_glyphs
+    }
+
     /// Warns once per composition that `family` fell back for text node `node_id`.
-    fn note_font_fallback(&mut self, node_id: NodeId, family: String) {
+    pub(crate) fn note_font_fallback(&mut self, node_id: NodeId, family: String) {
         let key = (
             self.scope.template_name().map(str::to_string),
             node_id,
@@ -2208,8 +2241,16 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
             &plane.params.material.shadow_catcher,
             programs,
         ),
+        #[cfg(feature = "3d")]
+        NodeKind::Text3d(text) => crate::node::scene::render::catcher_programs(
+            &text.params.material.shadow_catcher,
+            programs,
+        ),
         #[cfg(not(feature = "3d"))]
-        NodeKind::Shape3d(_) | NodeKind::ImagePlane3d(_) | NodeKind::Light3d(_) => Ok(()),
+        NodeKind::Shape3d(_)
+        | NodeKind::ImagePlane3d(_)
+        | NodeKind::Text3d(_)
+        | NodeKind::Light3d(_) => Ok(()),
         NodeKind::Model3d(_)
         | NodeKind::Camera3d(_)
         | NodeKind::Merge3d(_)
@@ -2296,6 +2337,7 @@ fn record_kind(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
         // without recording it.
         NodeKind::Shape3d(_)
         | NodeKind::ImagePlane3d(_)
+        | NodeKind::Text3d(_)
         | NodeKind::Model3d(_)
         | NodeKind::Camera3d(_)
         | NodeKind::Light3d(_)

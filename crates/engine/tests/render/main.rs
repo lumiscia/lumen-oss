@@ -25,6 +25,8 @@ mod scene;
 mod shaders;
 mod support;
 mod sweep_blurs;
+#[cfg(feature = "3d")]
+mod text_3d;
 mod text_atlas;
 mod text_pixels;
 mod text_style;

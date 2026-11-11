@@ -1427,7 +1427,7 @@ pub(crate) fn load_font_families(
 
 /// The families text in `layout` is shaped in: each span's, and the node's when a span leaves its
 /// own unset.
-fn used_font_families(layout: &TextLayoutParams) -> impl Iterator<Item = &str> {
+pub(crate) fn used_font_families(layout: &TextLayoutParams) -> impl Iterator<Item = &str> {
     let spans = &layout.content.0;
     let inherits = spans.is_empty() || spans.iter().any(|span| span.font_family.is_none());
     inherits
