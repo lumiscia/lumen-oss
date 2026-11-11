@@ -206,4 +206,72 @@ mod scene_caches {
             |stats| stats.text_meshes,
         );
     }
+
+    /// A kept output drawn on frame 0, read again on later frames with nothing drawn, keeps the
+    /// model, environment map or text mesh it drew with no budget, and shows the same pixels.
+    #[test]
+    fn a_kept_output_keeps_what_it_drew_with_no_budget() {
+        type Budget = fn(CacheBudgets) -> CacheBudgets;
+        type Held = fn(&CacheStats) -> u64;
+        let fox = include_bytes!("../fixtures/Fox.glb").to_vec();
+        let map = environment_file(32, 16, |_| Vec3::splat(0.5));
+        let cases: [(&str, Value, Value, TestMedia, Budget, Held); 3] = [
+            (
+                "model",
+                json!({}),
+                model(1, json!({ "source": "a.glb" })),
+                TestMedia::default().model("a.glb", fox),
+                |budgets| CacheBudgets {
+                    models: 0,
+                    ..budgets
+                },
+                |stats| stats.models,
+            ),
+            (
+                "environment",
+                json!({ "environment_map": "a.hdr" }),
+                sphere(),
+                TestMedia::default().environment("a.hdr", map),
+                |budgets| CacheBudgets {
+                    environments: 0,
+                    ..budgets
+                },
+                |stats| stats.environments,
+            ),
+            (
+                "text mesh",
+                json!({}),
+                json!({ "id": 1, "type": "text_3d", "params": { "content": "I" } }),
+                TestMedia::default(),
+                |budgets| CacheBudgets {
+                    text_meshes: 0,
+                    ..budgets
+                },
+                |stats| stats.text_meshes,
+            ),
+        ];
+        let gpu = gpu();
+        for (name, params, node, media, zero, held) in cases {
+            let composition: Composition = render_3d_with(params, vec![node]).frames(3).into();
+            let mut renderer = gpu.renderer();
+            renderer.set_cache_budgets(zero(renderer.cache_budgets()));
+            let first = render(&mut renderer, &composition, 0.0, &media);
+            let drawn = held(&renderer.cache_stats());
+            assert!(drawn > 0, "{name}: frame 0 fills the cache");
+            for frame in [1.0, 2.0] {
+                let skipped = renderer.skipped_pass_count();
+                let shown = render(&mut renderer, &composition, frame, &media);
+                assert!(
+                    renderer.skipped_pass_count() > skipped,
+                    "{name}: frame {frame} reads the kept output"
+                );
+                assert_eq!(shown.rgba, first.rgba, "{name}: frame {frame}");
+                assert_eq!(
+                    held(&renderer.cache_stats()),
+                    drawn,
+                    "{name}: frame {frame}"
+                );
+            }
+        }
+    }
 }

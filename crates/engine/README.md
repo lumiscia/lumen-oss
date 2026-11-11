@@ -158,19 +158,22 @@ impl MediaStore for MemoryStore {
 
 A `GpuCompositionRenderer` keeps media and what it derives from them on the GPU between frames,
 so later frames and renders skip decoding, uploading and drawing again. Each cache has a byte
-budget for what the latest frame doesn't use. What the frame uses, and what a kept output was
-drawn from, always stays, and past the budget the least recently used of the rest are freed. The
-budgets are one `CacheBudgets`, set with `set_cache_budgets` and read with `cache_budgets`:
+budget, one field of `CacheBudgets`, set with `set_cache_budgets` and read with `cache_budgets`.
+Past its budget a cache frees entries, least recently used first, until it is back within it or
+only protected entries are left: what the latest frame uses, and for 3D caches what a kept output
+was drawn from. Only `image_textures` counts just idle entries. The others count the cache's
+total, protected entries included, so a large entry in use can free every idle one: a 100 MiB
+table in use frees an idle 40 MiB one under the 128 MiB `luts` budget.
 
-| What it holds                                                                       | Field              | Default |
-| ----------------------------------------------------------------------------------- | ------------------ | ------- |
-| Image textures, by identity and size, that no frame binds                           | `image_textures`   | 256 MiB |
-| Pooled textures frames are done with, which later frames reuse                      | `pooled_textures`  | 384 MiB |
-| Outputs of nodes that don't change with the frame (dropped after 600 frames unread) | `retained_outputs` | 1 GiB   |
-| `.cube` lookup tables                                                               | `luts`             | 128 MiB |
-| 3D models' buffers and textures                                                     | `models`           | 256 MiB |
-| 3D environment maps                                                                 | `environments`     | 256 MiB |
-| Extruded `text_3d` meshes (at most 256)                                             | `text_meshes`      | 64 MiB  |
+| What it holds                                                                                   | Field              | Counts                                  | Default |
+| ----------------------------------------------------------------------------------------------- | ------------------ | --------------------------------------- | ------- |
+| Image textures, by identity and decoded size                                                    | `image_textures`   | only those no frame binds               | 256 MiB |
+| Pooled textures, retained outputs among them; spares are freed by size bucket, not strictly LRU | `pooled_textures`  | total; only spares are freed            | 384 MiB |
+| Outputs of nodes that don't change with the frame (also dropped after 600 frames unread)        | `retained_outputs` | total; those the latest frame read stay | 1 GiB   |
+| `.cube` lookup tables                                                                           | `luts`             | total; those the latest frame used stay | 128 MiB |
+| 3D models: GPU buffers and textures, plus the CPU bounds kept beside them                       | `models`           | total; drawn or kept-output models stay | 256 MiB |
+| 3D environment maps' textures                                                                   | `environments`     | total; as models                        | 256 MiB |
+| Extruded `text_3d` meshes' GPU buffers (at most 256)                                            | `text_meshes`      | total; as models                        | 64 MiB  |
 
 ```rust
 use lumen_engine::gpu::{CacheBudgets, GpuCompositionRenderer};
@@ -184,13 +187,22 @@ renderer.set_cache_budgets(CacheBudgets {
 let stats = renderer.cache_stats(); // bytes each cache holds now
 ```
 
-`cache_stats` reports the bytes each cache holds, what frames use included, and the 64 MiB glyph
-atlas once text is drawn. Its `pooled_textures` count retained outputs too, as those are pooled
-textures. The atlas has a fixed size rather than a budget, and 3D raster mip chains keep 256 MiB
-beyond what the latest frame uses and drop chains unused for 600 frames, which `CacheBudgets` does
-not set yet. `release_resources` frees everything but the atlas, and `release_text_atlas` that
-too. Video decoders and their decoded frames, and decoded images on the CPU, belong to the media
-store and its resolvers: `FfmpegVideoResolver` keeps up to 64 frames or 256 MiB per source.
+`cache_stats` reports the bytes each cache holds, what frames use included, counted as its
+budget counts them, and the 64 MiB glyph atlas once text is drawn. Its `pooled_textures` count
+retained outputs too, as those are pooled textures. `release_resources` frees everything but the
+atlas, and `release_text_atlas` that too.
+
+Not every cache has a byte budget. The atlas, the bundled font faces, built-in 3D shapes and the
+8 KiB environment lighting table (not in `environments`) have fixed sizes. 3D raster mip chains
+keep 256 MiB in total, the latest frame's exempt, and drop chains unused for 600 frames, which
+`CacheBudgets` does not set yet. Runtime programs and shader sources are bounded by count, and
+samplers by the finite set of sampler settings. GPU video frame imports and bind groups are freed
+only when unused for 600 frames or when what they bind goes, and uniform and storage arenas keep
+the capacity of the largest frame. Audio keeps 64 mixed blocks and a resolver per source for the
+mixer's lifetime. Text shaping keeps fonts until reset, and glyph extents, cleared once 16,384
+are cached. A process-wide map shares font files while any text session holds them, with no
+limit on how many, and one fallback text session lives for the process. Video decoders and their decoded frames, and decoded images on the CPU, belong to the
+media store and its resolvers: `FfmpegVideoResolver` keeps up to 64 frames or 256 MiB per source.
 
 ## Audio
 
