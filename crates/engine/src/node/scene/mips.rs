@@ -464,8 +464,9 @@ mod tests {
         assert_eq!(levels_for(Size::new(256, 256), f32::INFINITY), 9);
     }
 
-    /// A texture's levels, `levels` of them, as the GPU fills them from `texels`, premultiplied
-    /// and encoded as rasters are stored, `size` across.
+    /// A texture's levels, `levels` of them, as the GPU fills them from `texels`, `size` across.
+    /// The textures are `Rgba8UnormSrgb`, so the shader reads and writes premultiplied linear
+    /// light, as rasters hold it, and each byte is that light encoded.
     fn gpu_levels(texels: &[u8], size: Size, levels: u32) -> Vec<Vec<u8>> {
         let gpu = pollster::block_on(lumen_gpu::Renderer::new()).expect("mip tests need a GPU");
         let (device, queue) = (gpu.device.clone(), gpu.queue.clone());
@@ -476,7 +477,7 @@ mod tests {
                 mip_level_count: mips,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
                 usage,
                 view_formats: &[],
             }))
@@ -570,22 +571,15 @@ mod tests {
                             continue;
                         }
                         let texel = &texels[(sy * from.0 + sx) * 4..][..4];
-                        let a = f64::from(texel[3]) / 255.0;
-                        if a > 0.0 {
-                            for (sum, &value) in light.iter_mut().zip(texel) {
-                                // Premultiplied linear light of the straight colour.
-                                *sum += decode((f64::from(value) / a).round().min(255.0) as u8)
-                                    * a
-                                    * weight;
-                            }
+                        for (sum, &value) in light.iter_mut().zip(texel) {
+                            *sum += decode(value) * weight;
                         }
-                        alpha += a * weight;
+                        alpha += f64::from(texel[3]) / 255.0 * weight;
                         total += weight;
                     }
                 }
                 for sum in light {
-                    let straight = if alpha > 0.0 { sum / alpha } else { 0.0 };
-                    out.push((encode(straight) * alpha / total).round() as u8);
+                    out.push(encode(sum / total).round() as u8);
                 }
                 out.push((alpha / total * 255.0).round() as u8);
             }
