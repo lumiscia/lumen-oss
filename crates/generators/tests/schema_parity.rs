@@ -356,7 +356,7 @@ fn paint_shader_uniform_and_clip_props_schemas_match_engine_parsing() {
         check(&uniforms.to_string(), composition, valid);
     }
 
-    let demo: Value = serde_json::from_str(include_str!("../../local/demo/clips.json")).unwrap();
+    let demo: Value = serde_json::from_str(include_str!("../../cli/demo/clips.json")).unwrap();
     let clip = demo["nodes"]
         .as_array()
         .unwrap()
@@ -447,7 +447,7 @@ fn repeat_schema_matches_engine_parsing() {
 #[test]
 fn compositions_schema_matches_engine_parsing() {
     let validator = schema_validator();
-    let demo: Value = serde_json::from_str(include_str!("../../local/demo/clips.json")).unwrap();
+    let demo: Value = serde_json::from_str(include_str!("../../cli/demo/clips.json")).unwrap();
     assert!(validator.is_valid(&demo), "clips demo should validate");
     lumen_engine::json::parse_value(&demo).unwrap();
 
