@@ -403,11 +403,7 @@ fn load(args: &Args) -> anyhow::Result<(Composition, Fixture)> {
         name if name.starts_with("file:") => {
             let source = std::fs::read_to_string(&name["file:".len()..])?;
             let composition = lumen_engine::json::parse(&source).context("composition json")?;
-            let fixture = Fixture {
-                video: Some(MemoryVideo::new(1920, 1080, 16, 240)),
-                ..Fixture::fonts(fonts()?)
-            };
-            (composition, fixture)
+            (composition, Fixture::fonts(fonts()?))
         }
         name => {
             let fixture =
