@@ -6,6 +6,7 @@ use crate::gpu::GpuBackend;
 use crate::video::{CpuVideoFrame, EncodeMode, PixelFormat};
 use crate::{FfmpegError, Result};
 use sys::{
+    AVChromaLocation::AVCHROMA_LOC_CENTER,
     AVColorPrimaries::AVCOL_PRI_BT709,
     AVColorRange::AVCOL_RANGE_MPEG,
     AVColorSpace::AVCOL_SPC_BT709,
@@ -219,11 +220,15 @@ impl VideoEncoder {
             (*context).height = height;
             (*context).time_base = time_base;
             (*context).framerate = framerate;
-            (*context).pix_fmt = match (&hw_contexts, config.mode) {
+            let pixel_format = match (&hw_contexts, config.mode) {
                 (Some(contexts), _) => contexts.hw_format,
                 (None, EncodeMode::GpuTexture(GpuBackend::Metal)) => AV_PIX_FMT_VIDEOTOOLBOX,
                 (None, _) => yuv420p(config.bit_depth),
             };
+            let sw_pixel_format = hw_contexts.as_ref().map(|contexts| contexts.sw_format);
+            (*context).pix_fmt = pixel_format;
+            // The frames' chroma is the average of each 2x2 block, which sits at its centre.
+            (*context).chroma_sample_location = AVCHROMA_LOC_CENTER;
             (*context).color_primaries = AVCOL_PRI_BT709;
             (*context).color_trc = AVCOL_TRC_BT709;
             (*context).colorspace = AVCOL_SPC_BT709;
@@ -245,6 +250,18 @@ impl VideoEncoder {
                 (*context).flags |= sys::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
             }
             apply_quality_options(context, &quality, encoder_name)?;
+            // An encoder option can name another pixel format, and with it another bit depth.
+            if (*context).pix_fmt != pixel_format
+                || sw_pixel_format.is_some_and(|format| (*context).sw_pix_fmt != format)
+            {
+                return Err(FfmpegError::new(
+                    "VideoEncoder::new",
+                    format!(
+                        "encoder `{encoder_name}`: its options change the pixel format, which the output's bit depth ({}) sets",
+                        config.bit_depth
+                    ),
+                ));
+            }
             ffi::check(
                 sys::avcodec_open2(context, codec, ptr::null_mut()),
                 "avcodec_open2",
@@ -702,12 +719,20 @@ fn validate_cpu_frame(
         FfmpegError::new(OPERATION, "frame width exceeds the platform integer range")
     })?;
     let (sample, planar) = yuv.unwrap_or((4, false));
-    let row_bytes = width.checked_mul(sample).ok_or_else(|| {
-        FfmpegError::new(
-            OPERATION,
-            "frame row byte length exceeds the platform integer range",
-        )
-    })?;
+    // A chroma row holds a sample pair for every two columns, so an odd width takes a column more.
+    let columns = if yuv.is_some() {
+        width.checked_next_multiple_of(2)
+    } else {
+        Some(width)
+    };
+    let row_bytes = columns
+        .and_then(|columns| columns.checked_mul(sample))
+        .ok_or_else(|| {
+            FfmpegError::new(
+                OPERATION,
+                "frame row byte length exceeds the platform integer range",
+            )
+        })?;
     if frame.stride < row_bytes {
         return Err(FfmpegError::new(
             OPERATION,
@@ -847,6 +872,16 @@ mod tests {
         assert!(fits(PixelFormat::P010, 12));
         assert!(fits(PixelFormat::Nv12, 6));
         assert!(!fits(PixelFormat::Yuv420p10, 11));
+        // An odd width's chroma rows take a column more than its luma rows.
+        let odd = |format, stride: usize| {
+            let frame = CpuVideoFrame {
+                width: 5,
+                ..yuv(format, stride, stride * 8)
+            };
+            validate_cpu_frame(&frame, 5, 5, format).is_ok()
+        };
+        assert!(odd(PixelFormat::Yuv420p10, 12) && !odd(PixelFormat::Yuv420p10, 10));
+        assert!(odd(PixelFormat::Nv12, 6) && !odd(PixelFormat::Nv12, 5));
         let short = yuv(PixelFormat::Yuv420p, 6, 6 * 8 - 1);
         assert!(validate_cpu_frame(&short, 6, 5, PixelFormat::Yuv420p).is_err());
         let error =
