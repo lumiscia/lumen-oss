@@ -1,14 +1,16 @@
 import type {
   Color,
-  CompositionNode,
   CompositionNodeInput,
   CompositionPropDeclaration,
   CompositionTemplate,
   ExpressionString,
   HexColor,
   LumenComposition,
+  NodeInputPortKind,
   NodeInputPortName,
   NodeKind,
+  NodeOutputKind,
+  NodePortKind,
   NodeVariadicInputPortName,
   TemplateRenderSettings,
   TextContent,
@@ -35,13 +37,18 @@ type NodeInputByKind = {
   };
 };
 
-/** A port takes one node; a variadic port such as `layers` takes an array. */
+/**
+ * A port takes one node that outputs what the port takes; a variadic port such as `layers` takes
+ * an array.
+ */
 type NodeInputs<TKind extends NodeKind> = [NodeInputPortName<TKind>] extends [never]
   ? undefined
   : {
       readonly [TPort in NodeInputPortName<TKind>]?: TPort extends NodeVariadicInputPortName<TKind>
-        ? NodeReference | readonly NodeReference[]
-        : NodeReference;
+        ?
+            | NodeReference<NodeInputPortKind<TKind, TPort>>
+            | readonly NodeReference<NodeInputPortKind<TKind, TPort>>[]
+        : NodeReference<NodeInputPortKind<TKind, TPort>>;
     };
 
 /** Lets each param that takes `=...` strings take an `Expr` of the matching type too. */
@@ -95,11 +102,29 @@ type MemberExpr<T> = T extends number
         ? Expr<string>
         : never;
 
-export type NodeReference = number | Pick<CompositionNode, "id">;
+/** The node kinds that output `TOutput`. */
+type NodeKindOutputting<TOutput extends NodePortKind> = {
+  readonly [TKind in NodeKind]: NodeOutputKind<TKind> extends TOutput ? TKind : never;
+}[NodeKind];
 
-/** `toPort` is checked against the target's input ports when `connect` is given the node itself. */
-export interface ConnectOptions<TKind extends NodeKind = NodeKind> {
-  readonly toPort: NodeInputPortName<TKind>;
+/**
+ * A node of the composition, by id or as `addNode` returned it. With `TOutput`, it is one for a
+ * port that takes that kind: a node whose `type` outputs another kind doesn't fit. A bare id isn't
+ * checked.
+ */
+export type NodeReference<TOutput extends NodePortKind = NodePortKind> =
+  | number
+  | { readonly id: number; readonly type?: NodeKindOutputting<TOutput> };
+
+/**
+ * `toPort` is checked against the target's input ports, and the source against what that port
+ * takes, when `connect` is given the node itself.
+ */
+export interface ConnectOptions<
+  TKind extends NodeKind = NodeKind,
+  TPort extends NodeInputPortName<TKind> = NodeInputPortName<TKind>,
+> {
+  readonly toPort: TPort;
 }
 
 export type Size = TemplateRenderSettings;
@@ -229,7 +254,7 @@ export interface CompositionDefinitionOptions<TProps extends PropDeclarations> {
   readonly duration?: number;
   readonly props?: TProps;
   /** Adds the template's nodes and returns the one it outputs. */
-  readonly build: (composition: Composition, props: PropReads<TProps>) => NodeReference;
+  readonly build: (composition: Composition, props: PropReads<TProps>) => NodeReference<"raster">;
 }
 
 /** Where a clip plays its template. `start` and `duration` count the parent's frames. */

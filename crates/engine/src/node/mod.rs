@@ -32,8 +32,8 @@ pub use delegate::{
 pub use ids::NodeId;
 pub use kind::NodeKind;
 pub use param_type::NodeParamType;
-pub use ports::InputPortDef;
 pub(crate) use ports::required_input;
+pub use ports::{InputPortDef, PortKind};
 pub use schema::JsonNode;
 pub use schema::{EnumDef, EnumOptionDef, NodeEnum};
 pub use schema::{NodeCategory, NodeSchemaDef, PropertyDef, PropertyKind};
@@ -44,6 +44,8 @@ pub use shader_uniforms::{ShaderUniformValue, ShaderUniforms};
 pub trait Node: Send + Sync {
     fn id(&self) -> NodeId;
     fn input_port_defs(&self) -> &'static [InputPortDef];
+    /// What the node outputs.
+    fn output_kind(&self) -> PortKind;
     /// The node wired to each input, in the order of `input_port_defs`, with a variadic input
     /// expanded in place. `None` is an unconnected input.
     fn input_ports(&self) -> Vec<Option<NodeId>>;

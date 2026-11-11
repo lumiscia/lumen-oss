@@ -4,7 +4,7 @@
 import type { Color, ExpressionValue, HexColor, Vec2 } from "../values.js";
 
 export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
-export type NodePortKind = "raster_frame";
+export type NodePortKind = "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
 export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 
@@ -2430,9 +2430,86 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "zoom_blur": never;
 }
 
+export interface NodeOutputKindByKind {
+  readonly "background": "raster";
+  readonly "blur": "raster";
+  readonly "boolean": "raster";
+  readonly "clip": "raster";
+  readonly "color_grade": "raster";
+  readonly "crop": "raster";
+  readonly "directional_blur": "raster";
+  readonly "displacement_map": "raster";
+  readonly "exposure": "raster";
+  readonly "fractal_noise": "raster";
+  readonly "glow": "raster";
+  readonly "hue_saturation": "raster";
+  readonly "levels": "raster";
+  readonly "media_in": "raster";
+  readonly "media_output": "raster";
+  readonly "merge": "raster";
+  readonly "motion_blur": "raster";
+  readonly "opacity": "raster";
+  readonly "path": "raster";
+  readonly "radial_blur": "raster";
+  readonly "raster_multimerge": "raster";
+  readonly "resize": "raster";
+  readonly "shadow": "raster";
+  readonly "shape": "raster";
+  readonly "switch": "raster";
+  readonly "text": "raster";
+  readonly "time_remap": "raster";
+  readonly "transform": "raster";
+  readonly "wgsl_shader": "raster";
+  readonly "zoom_blur": "raster";
+}
+
+export interface NodeInputPortKindByKind {
+  readonly "background": {};
+  readonly "blur": { readonly "source": "raster" };
+  readonly "boolean": { readonly "a": "raster"; readonly "b": "raster" };
+  readonly "clip": { readonly "source": "raster" };
+  readonly "color_grade": { readonly "source": "raster" };
+  readonly "crop": { readonly "source": "raster" };
+  readonly "directional_blur": { readonly "source": "raster" };
+  readonly "displacement_map": { readonly "source": "raster"; readonly "map": "raster" };
+  readonly "exposure": { readonly "source": "raster" };
+  readonly "fractal_noise": {};
+  readonly "glow": { readonly "source": "raster" };
+  readonly "hue_saturation": { readonly "source": "raster" };
+  readonly "levels": { readonly "source": "raster" };
+  readonly "media_in": {};
+  readonly "media_output": { readonly "source": "raster" };
+  readonly "merge": { readonly "base": "raster"; readonly "overlay": "raster"; readonly "mask": "raster" };
+  readonly "motion_blur": { readonly "source": "raster" };
+  readonly "opacity": { readonly "source": "raster" };
+  readonly "path": {};
+  readonly "radial_blur": { readonly "source": "raster" };
+  readonly "raster_multimerge": { readonly "layers": "raster" };
+  readonly "resize": { readonly "source": "raster" };
+  readonly "shadow": { readonly "source": "raster" };
+  readonly "shape": {};
+  readonly "switch": { readonly "layers": "raster" };
+  readonly "text": {};
+  readonly "time_remap": { readonly "source": "raster" };
+  readonly "transform": { readonly "source": "raster" };
+  readonly "wgsl_shader": { readonly "source": "raster" };
+  readonly "zoom_blur": { readonly "source": "raster" };
+}
+
 export type CompositionNode<TKind extends NodeKind = NodeKind> = CompositionNodeByKind[TKind];
 export type CompositionNodeInput<TKind extends NodeKind = NodeKind> = CompositionNodeInputByKind[TKind];
 /** The input port names of a node kind, which a connection's `to_port` names. */
 export type NodeInputPortName<TKind extends NodeKind = NodeKind> = NodeInputPortNameByKind[TKind];
 /** The input ports of a node kind that take any number of connections. */
 export type NodeVariadicInputPortName<TKind extends NodeKind = NodeKind> = NodeVariadicInputPortNameByKind[TKind];
+/** What a node kind outputs, which the inputs it is connected to must take. */
+export type NodeOutputKind<TKind extends NodeKind = NodeKind> = NodeOutputKindByKind[TKind];
+/** What input `TPort` of a node kind takes; for a union of kinds, what any of them takes there. */
+export type NodeInputPortKind<
+  TKind extends NodeKind = NodeKind,
+  TPort extends NodeInputPortName<TKind> = NodeInputPortName<TKind>,
+> = TKind extends NodeKind
+  ? TPort extends keyof NodeInputPortKindByKind[TKind]
+    ? NodeInputPortKindByKind[TKind][TPort]
+    : never
+  : never;

@@ -1,4 +1,5 @@
 import { Composition } from "../src/composition.js";
+import type { NodeReference } from "../src/types.js";
 
 const composition = new Composition();
 const background = composition.addNode({ type: "background" });
@@ -8,6 +9,7 @@ const output = composition.addNode({ type: "media_output" });
 composition.connect(background, merge, { toPort: "base" });
 composition.connect(merge, output, { toPort: "source" });
 composition.connect(merge.id, output.id, { toPort: "source" });
+composition.connect<"merge">(background, merge, { toPort: "base" });
 
 // @ts-expect-error the target port is required
 composition.connect(merge, output);
@@ -28,3 +30,11 @@ composition.addNode({ type: "merge", inputs: { source: background } });
 composition.addNode({ type: "merge", inputs: { base: [background, merge] } });
 // @ts-expect-error background has no inputs
 composition.addNode({ type: "background", inputs: { source: merge } });
+
+// Every node so far outputs a raster, which a scene port doesn't take.
+// @ts-expect-error background outputs a raster, not a scene
+const scene: NodeReference<"scene"> = background;
+const sceneById: NodeReference<"scene"> = background.id;
+const raster: NodeReference<"raster"> = merge;
+const any: NodeReference = merge;
+void [scene, sceneById, raster, any];

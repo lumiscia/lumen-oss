@@ -5,8 +5,8 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context, Result, anyhow, bail};
 use lumen_engine::node::{
-    EnumDef, InputPortDef, NodeCategory, NodeKind, NodeParams, NodeSchemaDef, PropertyDef,
-    PropertyKind,
+    EnumDef, InputPortDef, NodeCategory, NodeKind, NodeParams, NodeSchemaDef, PortKind,
+    PropertyDef, PropertyKind,
 };
 use serde_json::{Map, Value, json};
 
@@ -42,6 +42,7 @@ fn render_schema() -> Result<String> {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "x-lumen-schemaVersion": SCHEMA_VERSION,
         "x-lumen-expressions": expressions_json(),
+        "x-lumen-portKinds": PortKind::ALL.map(PortKind::name),
         "type": "object",
         "required": ["timeline", "render_settings", "nodes", "connections"],
         "additionalProperties": true,
@@ -575,7 +576,7 @@ fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {
         "description": schema.description,
         "x-lumen-category": category_name(schema.category),
         "x-lumen-inputs": schema.inputs.iter().map(input_port_json).collect::<Vec<_>>(),
-        "x-lumen-outputs": [{ "name": "output", "kind": "raster_frame" }],
+        "x-lumen-outputs": [{ "name": "output", "kind": schema.output.name() }],
         "type": "object",
         "required": ["id", "type"],
         "properties": {
@@ -594,7 +595,7 @@ fn node_schema_json(schema: &NodeSchemaDef) -> Result<Value> {
 fn input_port_json(input: &InputPortDef) -> Value {
     json!({
         "name": input.name,
-        "kind": "raster_frame",
+        "kind": input.kind.name(),
         "optional": input.optional,
         "variadic": input.variadic,
     })

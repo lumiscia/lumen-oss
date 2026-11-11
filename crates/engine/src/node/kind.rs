@@ -72,6 +72,12 @@ macro_rules! node_kinds {
                 }
             }
 
+            fn output_kind(&self) -> super::PortKind {
+                match self {
+                    $(Self::$variant(node) => node.output_kind(),)+
+                }
+            }
+
             fn input_ports(&self) -> Vec<Option<NodeId>> {
                 match self {
                     $(Self::$variant(node) => node.input_ports(),)+

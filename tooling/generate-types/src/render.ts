@@ -136,6 +136,14 @@ const renderNodeInputPortMapMember = (node: NodeVariant): string =>
 const renderNodeVariadicPortMapMember = (node: NodeVariant): string =>
   `  readonly ${quote(node.kind)}: ${union(uniqueSorted(node.inputs.filter((port) => port.variadic).map((port) => port.name)))};`;
 
+const renderNodeOutputKindMapMember = (node: NodeVariant): string =>
+  `  readonly ${quote(node.kind)}: ${union(uniqueSorted(node.outputs.map((port) => port.kind)))};`;
+
+const renderNodeInputPortKindMapMember = (node: NodeVariant): string => {
+  const ports = node.inputs.map((port) => `readonly ${quote(port.name)}: ${quote(port.kind)}`);
+  return `  readonly ${quote(node.kind)}: ${ports.length === 0 ? "{}" : `{ ${ports.join("; ")} }`};`;
+};
+
 const renderConst = (name: string, value: unknown): string =>
   `export const ${name} = ${JSON.stringify(value, null, 2)} as const;`;
 
@@ -179,7 +187,7 @@ function renderMetaTypes(schema: JsonSchema, context: TypeContext): string {
 
   const categories = uniqueSorted(nodes.map((node) => node.category));
   const portKinds = uniqueSorted(
-    nodes.flatMap((node) => [...node.inputs, ...node.outputs].map((port) => port.kind)),
+    array(schema["x-lumen-portKinds"]).map((kind) => requireString(kind, "a port kind")),
   );
   const paramKinds = uniqueSorted(nodes.flatMap((node) => node.paramKinds.map(([, kind]) => kind)));
   const namedTypes = [...context.declarations.entries()]
@@ -222,12 +230,31 @@ export interface NodeVariadicInputPortNameByKind {
 ${nodes.map(renderNodeVariadicPortMapMember).join("\n")}
 }
 
+export interface NodeOutputKindByKind {
+${nodes.map(renderNodeOutputKindMapMember).join("\n")}
+}
+
+export interface NodeInputPortKindByKind {
+${nodes.map(renderNodeInputPortKindMapMember).join("\n")}
+}
+
 export type CompositionNode<TKind extends NodeKind = NodeKind> = CompositionNodeByKind[TKind];
 export type CompositionNodeInput<TKind extends NodeKind = NodeKind> = CompositionNodeInputByKind[TKind];
 /** The input port names of a node kind, which a connection's \`to_port\` names. */
 export type NodeInputPortName<TKind extends NodeKind = NodeKind> = NodeInputPortNameByKind[TKind];
 /** The input ports of a node kind that take any number of connections. */
 export type NodeVariadicInputPortName<TKind extends NodeKind = NodeKind> = NodeVariadicInputPortNameByKind[TKind];
+/** What a node kind outputs, which the inputs it is connected to must take. */
+export type NodeOutputKind<TKind extends NodeKind = NodeKind> = NodeOutputKindByKind[TKind];
+/** What input \`TPort\` of a node kind takes; for a union of kinds, what any of them takes there. */
+export type NodeInputPortKind<
+  TKind extends NodeKind = NodeKind,
+  TPort extends NodeInputPortName<TKind> = NodeInputPortName<TKind>,
+> = TKind extends NodeKind
+  ? TPort extends keyof NodeInputPortKindByKind[TKind]
+    ? NodeInputPortKindByKind[TKind][TPort]
+    : never
+  : never;
 `;
 }
 

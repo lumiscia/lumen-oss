@@ -42,12 +42,14 @@ struct NodeAttr {
     kind: LitStr,
     name: LitStr,
     category: Ident,
+    output: Option<Ident>,
     docs: Vec<String>,
 }
 
 struct InputAttr {
     field: Ident,
     name: LitStr,
+    scene: bool,
     optional: bool,
     variadic: bool,
 }
@@ -64,6 +66,7 @@ fn parse_node_attr(attrs: &[Attribute]) -> Result<NodeAttr> {
     let mut kind = None;
     let mut name = None;
     let mut category = None;
+    let mut output = None;
 
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("kind") {
@@ -72,6 +75,8 @@ fn parse_node_attr(attrs: &[Attribute]) -> Result<NodeAttr> {
             name = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("category") {
             category = Some(ident_value(&meta)?);
+        } else if meta.path.is_ident("output") {
+            output = Some(ident_value(&meta)?);
         } else {
             return Err(meta.error("unknown node attribute key"));
         }
@@ -82,6 +87,7 @@ fn parse_node_attr(attrs: &[Attribute]) -> Result<NodeAttr> {
         kind: required_value(kind, attr, "kind")?,
         name: required_value(name, attr, "name")?,
         category: required_value(category, attr, "category")?,
+        output,
         docs: doc_lines(attrs),
     })
 }
@@ -91,12 +97,15 @@ fn parse_input_attr(attrs: &[Attribute], field: &Ident) -> Result<Option<InputAt
         return Ok(None);
     };
     let mut name = None;
+    let mut scene = None;
     let mut optional = None;
     let mut variadic = None;
 
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("name") {
             name = Some(meta.value()?.parse()?);
+        } else if meta.path.is_ident("scene") {
+            scene = Some(optional_bool(&meta)?);
         } else if meta.path.is_ident("optional") {
             optional = Some(optional_bool(&meta)?);
         } else if meta.path.is_ident("variadic") {
@@ -110,6 +119,7 @@ fn parse_input_attr(attrs: &[Attribute], field: &Ident) -> Result<Option<InputAt
     Ok(Some(InputAttr {
         field: field.clone(),
         name: name.unwrap_or_else(|| LitStr::new(&field.to_string(), field.span())),
+        scene: scene.unwrap_or(false),
         optional: optional.unwrap_or(false),
         variadic: variadic.unwrap_or(false),
     }))
@@ -201,6 +211,26 @@ fn required_value<T>(value: Option<T>, attr: &Attribute, name: &str) -> Result<T
             ),
         )
     })
+}
+
+fn port_kind_tokens(scene: bool) -> proc_macro2::TokenStream {
+    if scene {
+        quote!(::lumen_engine::node::PortKind::Scene)
+    } else {
+        quote!(::lumen_engine::node::PortKind::Raster)
+    }
+}
+
+/// The kind `#[node(output = ...)]` names, raster when it names none.
+fn output_kind_tokens(output: Option<&Ident>) -> proc_macro2::TokenStream {
+    match output.map(ToString::to_string).as_deref() {
+        None | Some("raster") => port_kind_tokens(false),
+        Some("scene") => port_kind_tokens(true),
+        Some(_) => {
+            let span = output.map_or_else(Span::call_site, Ident::span);
+            quote::quote_spanned!(span=> compile_error!("unknown node output kind, expected `raster` or `scene`"))
+        }
+    }
 }
 
 fn category_tokens(category: &Ident) -> proc_macro2::TokenStream {
