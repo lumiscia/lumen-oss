@@ -526,6 +526,7 @@ mod tests {
                 force_fallback_adapter: true,
                 ..GpuSettings::default()
             },
+            ..RenderConfig::default()
         };
 
         let store = LocalMediaStore::new(root.path().canonicalize().unwrap(), &config);

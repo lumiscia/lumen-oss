@@ -191,7 +191,7 @@ impl VideoEncoder {
         let mut context_guard = CodecContextGuard(unsafe { sys::avcodec_alloc_context3(codec) });
         let context = context_guard.0;
         if context.is_null() {
-            return Err(FfmpegError::new(
+            return Err(FfmpegError::out_of_memory(
                 "avcodec_alloc_context3",
                 "failed to allocate encoder context",
             ));

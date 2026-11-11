@@ -72,6 +72,14 @@ impl FfmpegError {
         }
     }
 
+    /// An allocation FFmpeg reports only as a null pointer. It carries `ENOMEM`, so it reads as
+    /// [`is_resource_exhaustion`](Self::is_resource_exhaustion).
+    pub(crate) fn out_of_memory(operation: &'static str, message: impl Into<String>) -> Self {
+        let mut error = Self::new(operation, message);
+        error.code = Some(ffi::sys::AVERROR(libc::ENOMEM));
+        error
+    }
+
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
         self.path = Some(path.into());
         self
@@ -180,6 +188,7 @@ mod tests {
         assert!(!failed("avcodec_open2", libc::EINVAL).is_resource_exhaustion());
         assert!(!failed("avio_open", libc::ENOENT).is_resource_exhaustion());
         assert!(!FfmpegError::new("avcodec_open2", "no code").is_resource_exhaustion());
+        assert!(FfmpegError::out_of_memory("av_frame_alloc", "null").is_resource_exhaustion());
     }
 
     #[test]

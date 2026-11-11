@@ -42,7 +42,11 @@ pub fn render_project_mp4(
     let output_io = |context: &str, error: std::io::Error| {
         ServerRenderError::new(ErrorCode::OutputIo, context, true).caused_by(error)
     };
-    let tmp = tempfile::tempdir().map_err(|err| output_io("failed to create temp dir", err))?;
+    let tmp = match &options.config.temp_dir {
+        Some(dir) => tempfile::tempdir_in(dir),
+        None => tempfile::tempdir(),
+    }
+    .map_err(|err| output_io("failed to create temp dir", err))?;
     let output_path = tmp.path().join("output.mp4");
 
     let choice = match &options.encoder {

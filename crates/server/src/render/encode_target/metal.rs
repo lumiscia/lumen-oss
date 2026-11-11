@@ -11,9 +11,7 @@ use lumen_ffmpeg::{
     VideoEncoderConfig,
 };
 
-use super::{
-    RenderTiming, ServerRenderError, encode_failed, has_audio, poll_failed, render_failed, timed,
-};
+use super::{RenderTiming, ServerRenderError, encode_failed, has_audio, poll_failed, timed};
 use crate::render::media::LocalMediaStore;
 
 const FRAMES_IN_FLIGHT: usize = 3;
@@ -81,7 +79,9 @@ impl MetalTarget {
         let target = self
             .pool
             .acquire(renderer.gpu_renderer(), frame)
-            .map_err(|err| render_failed(format!("failed to acquire frame {frame}: {err}")))?;
+            .map_err(|err| {
+                ServerRenderError::engine(format!("failed to acquire frame {frame}"), err)
+            })?;
         let submitted = timed(&mut timing.render, || {
             renderer.render_frame_into_external(
                 composition,

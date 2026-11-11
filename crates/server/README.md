@@ -24,7 +24,7 @@ Supported targets today are:
 
 ### Library
 
-The library reads no environment variables. A `RenderConfig` holds what renders take from the host, and the binaries build it from their flags and environment: `font_dir` from `--font-dir` or `LUMEN_FONT_DIR`, `hardware_decode` from `LUMEN_HARDWARE_DECODE`, and `gpu` (a `GpuSettings`) from `GpuSettings::from_env()`, which reads `WGPU_BACKEND`, `WGPU_POWER_PREF`, `LUMEN_GPU_FORCE_FALLBACK_ADAPTER` and the other wgpu variables. Its default has no font directory, decodes video on the CPU and picks the high-performance adapter on any backend. `RenderOptions::media_root` defaults to the current directory.
+The library reads no environment variables. A `RenderConfig` holds what renders take from the host, and the binaries build it from their flags and environment: `font_dir` from `--font-dir` or `LUMEN_FONT_DIR`, `hardware_decode` from `LUMEN_HARDWARE_DECODE`, `gpu` (a `GpuSettings`) from `GpuSettings::from_env()`, which reads `WGPU_BACKEND`, `WGPU_POWER_PREF`, `LUMEN_GPU_FORCE_FALLBACK_ADAPTER` and the other wgpu variables, and `temp_dir`, where a render keeps its output while encoding, from `std::env::temp_dir()`. Its default has no font directory, decodes video on the CPU, picks the high-performance adapter on any backend and leaves the temporary directory to the system, which reads `TMPDIR`. `RenderOptions::media_root` defaults to the current directory.
 
 Without `RenderOptions::encoder`, a render resolves the composition's settings against the built-in quality presets. The binaries also let `LUMEN_VIDEO_ENCODER` pin an encoder, through `QualityRequest::with_env_encoder()` in `lumen-ffmpeg`; embedders pin one by passing `RenderOptions::encoder` themselves.
 

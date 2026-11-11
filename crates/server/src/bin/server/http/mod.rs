@@ -139,6 +139,7 @@ impl Args {
             hardware_decode: std::env::var(HARDWARE_DECODE_ENV)
                 .is_ok_and(|value| is_enabled_flag(&value)),
             gpu: GpuSettings::from_env(),
+            temp_dir: Some(std::env::temp_dir()),
         }
     }
 }
