@@ -19,7 +19,8 @@ pub struct VulkanVideoTarget {
     pass: Nv12Pass,
 }
 
-/// Converts an sRGB-encoded float RGBA texture to BT.709 limited-range NV12 in a buffer laid out as
+/// Converts the working space, linear and premultiplied, to BT.709 limited-range NV12 of its
+/// sRGB-encoded colour over black, in a buffer laid out as
 /// [`VulkanVideoFrame`] describes, with the ordered dither when it is on.
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 struct Nv12Pass {
@@ -130,6 +131,7 @@ impl Nv12Pass {
             label: Some("lumen RGBA to NV12"),
             source: wgpu::ShaderSource::Wgsl(
                 concat!(
+                    include_str!("shaders/color.wgsl"),
                     include_str!("shaders/dither.wgsl"),
                     include_str!("shaders/rgba_to_nv12.wgsl")
                 )
@@ -670,5 +672,77 @@ mod tests {
         assert_eq!(stream.codec, VideoCodec::Av1);
         assert_eq!((stream.width, stream.height), (width, height));
         let _ = std::fs::remove_file(path);
+    }
+
+    /// The half float nearest below `value`, which must be a positive normal one.
+    fn f16_bits(value: f32) -> u16 {
+        let bits = value.to_bits();
+        ((((bits >> 23) & 0xff) - 112) << 10 | ((bits >> 13) & 0x3ff)) as u16
+    }
+
+    fn f16_value(bits: u16) -> f32 {
+        let exponent = i32::from(bits >> 10) - 15;
+        (1.0 + f32::from(bits & 0x3ff) / 1024.0) * 2f32.powi(exponent)
+    }
+
+    fn srgb_encode(linear: f32) -> f32 {
+        if linear <= 0.003_130_8 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    #[test]
+    fn the_nv12_dither_keeps_the_mean_of_fractional_luma() {
+        let gpu = match pollster::block_on(lumen_gpu::Renderer::new()) {
+            Ok(gpu) => gpu,
+            Err(error) => {
+                eprintln!("no GPU ({error}); skipping NV12 dither test");
+                return;
+            }
+        };
+        let size = lumen_gpu::Size::new(16, 16);
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: size.as_extent(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let target = VulkanVideoTarget::nv12(&gpu, size, true);
+        let pitch = VulkanVideoFrame::nv12_pitch(size.width) as usize;
+        for fraction in [0.2, 0.25, 0.4, 0.5, 0.6, 0.75, 0.8] {
+            let grey = f16_bits(crate::gpu::color::srgb_to_linear((60.0 + fraction - 16.0) / 219.0));
+            let luma = 16.0 + 219.0 * srgb_encode(f16_value(grey));
+            let texel: Vec<u8> = [grey, grey, grey, f16_bits(1.0)]
+                .iter()
+                .flat_map(|half| half.to_le_bytes())
+                .collect();
+            gpu.queue.write_texture(
+                texture.as_image_copy(),
+                &texel.repeat((size.width * size.height) as usize),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size.width * 8),
+                    rows_per_image: None,
+                },
+                size.as_extent(),
+            );
+            target.pass.submit(&gpu, &texture);
+            let nv12 = read_nv12(&gpu, &target);
+            let sum: f64 = (0..size.height as usize)
+                .flat_map(|row| &nv12[row * pitch..row * pitch + size.width as usize])
+                .map(|&code| f64::from(code))
+                .sum();
+            let mean = sum / (size.width * size.height) as usize as f64;
+            assert!(
+                (mean - f64::from(luma)).abs() <= 1.0 / 64.0 + 0.01,
+                "luma {luma} averaged {mean}"
+            );
+        }
     }
 }

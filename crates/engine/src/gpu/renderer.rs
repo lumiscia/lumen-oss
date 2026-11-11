@@ -115,12 +115,25 @@ fn texture_bytes(key: &MediaTextureKey) -> u64 {
     u64::from(key.width) * u64::from(key.height) * 4
 }
 
+/// How an 8-bit output holds alpha. Float outputs take the working space as it is: linear light,
+/// premultiplied, which a reader that drops alpha shows over black.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OutputAlpha {
+    /// sRGB-encoded colour multiplied by alpha, as canvases and compositors take it. No channel is
+    /// above alpha, and a pixel of alpha 0 is transparent black.
+    #[default]
+    Premultiplied,
+    /// sRGB-encoded colour apart from its alpha, as PNG holds it. A pixel of alpha 0 is
+    /// transparent black.
+    Straight,
+    /// Shown over black at full alpha, for encoders and formats without alpha.
+    Opaque,
+}
+
 /// How `media_output` writes a frame's output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OutputEncoding {
-    /// Shows the output over black at full alpha, for encoders that drop alpha. Otherwise alpha is
-    /// kept and the encoded colour premultiplied by it.
-    pub(crate) opaque: bool,
+    pub(crate) alpha: OutputAlpha,
     /// Dithers the quantisation to 8 bits.
     pub(crate) dither: bool,
 }
@@ -194,7 +207,7 @@ impl GpuCompositionRenderer {
             text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
             output_encoding: OutputEncoding {
-                opaque: false,
+                alpha: OutputAlpha::Premultiplied,
                 dither: true,
             },
             reuse_static_output: true,
@@ -267,20 +280,19 @@ impl GpuCompositionRenderer {
         }
     }
 
-    /// Sets whether the output is shown over black at full alpha, as encoders that drop alpha need.
-    /// Off by default: the output keeps its alpha, with its sRGB-encoded colour premultiplied by it.
-    /// Drops what frames recorded so far when it changes.
-    pub fn set_opaque_output(&mut self, opaque: bool) {
-        if self.output_encoding.opaque != opaque {
-            self.output_encoding.opaque = opaque;
+    /// Sets how an 8-bit output holds alpha, [`OutputAlpha::Premultiplied`] by default. Drops
+    /// what frames recorded so far when it changes.
+    pub fn set_output_alpha(&mut self, alpha: OutputAlpha) {
+        if self.output_encoding.alpha != alpha {
+            self.output_encoding.alpha = alpha;
             self.reset_recorded(self.output_format);
         }
     }
 
     /// Sets whether quantising the output to 8 bits adds an ordered dither, which breaks up banding
-    /// in smooth gradients. It is on by default, and smaller than half a code step, so colours that
-    /// land on a code keep it. Float outputs are never quantised. Drops what frames recorded so far
-    /// when it changes.
+    /// in smooth gradients and keeps the mean of flat areas. It is on by default. A value within a
+    /// tenth of a code of one keeps it, so 8-bit content passes through exactly. Float outputs are
+    /// never quantised. Drops what frames recorded so far when it changes.
     pub fn set_output_dither(&mut self, enabled: bool) {
         if self.output_encoding.dither != enabled {
             self.output_encoding.dither = enabled;

@@ -22,6 +22,7 @@ mod types;
 pub use color::WORKING_COLOR_FORMAT;
 pub use renderer::{
     DEFAULT_MAX_TEXT_GLYPHS, FrameGraphStats, GpuCompositionRenderer, MAX_TEXT_GLYPHS_CEILING,
+    OutputAlpha,
 };
 #[cfg(all(target_os = "linux", feature = "ffmpeg", feature = "vulkan"))]
 pub use target::VulkanVideoTarget;

@@ -479,3 +479,68 @@ fn blend_modes_work_on_encoded_mid_grey() {
         Case::new("screen", blended("screen"), uniform(screened)),
     ]);
 }
+
+/// A `size` × `size` canvas of the opaque grey whose sRGB code is `code`, which may be fractional,
+/// written by a shader so the working space holds it exactly up to half-float rounding.
+fn fractional_grey(size: u32, code: f64) -> Composition {
+    let shader = format!(
+        "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {{
+    let light = lumen_srgb_to_linear(vec3<f32>({code:.6} / 255.0));
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(light, 1.0));
+}}"
+    );
+    scene(
+        (size, size),
+        json!([
+            { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } },
+            { "id": 2, "type": "wgsl_shader", "in": { "source": [1] }, "params": { "shader": shader } },
+        ]),
+    )
+    .into()
+}
+
+#[test]
+fn the_output_dither_keeps_the_mean_of_every_fractional_code() {
+    // Codes near 5 are in the curve's linear toe, where half floats hold them to 0.007 of a code.
+    // An 8 × 8 dither tile rounds the right share of its pixels up, to 1/64 of a code.
+    let gpu = gpu();
+    for fraction in [0.125, 0.25, 0.4, 0.5, 0.6, 0.75, 0.875] {
+        let code = 5.0 + fraction;
+        let frame = render(
+            &mut gpu.dithered_renderer(),
+            &fractional_grey(16, code),
+            0.0,
+            &TestMedia::default(),
+        );
+        let reds: Vec<f64> = frame.rgba.chunks(4).map(|pixel| f64::from(pixel[0])).collect();
+        let mean = reds.iter().sum::<f64>() / reds.len() as f64;
+        assert!(
+            (mean - code).abs() <= 1.0 / 64.0 + 0.01,
+            "code {code} averages {mean}"
+        );
+    }
+}
+
+#[test]
+fn quantised_colour_never_exceeds_its_quantised_alpha() {
+    let gpu = gpu();
+    for opacity in [0.0019, 0.002, 0.003, 0.0045, 0.01, 0.3] {
+        let composition = scene(
+            (16, 16),
+            json!([
+                { "id": 1, "type": "background", "params": { "paint": [255, 255, 255, 255] } },
+                { "id": 2, "type": "opacity", "in": { "source": 1 }, "params": { "opacity": opacity } },
+            ]),
+        )
+        .into();
+        let frame = render(&mut gpu.dithered_renderer(), &composition, 0.0, &TestMedia::default());
+        let bad: Vec<_> = frame
+            .rgba
+            .chunks(4)
+            .filter(|pixel| pixel[..3].iter().any(|&c| c > pixel[3]))
+            .collect();
+        assert!(bad.is_empty(), "opacity {opacity}: {} pixels like {:?}", bad.len(), bad[0]);
+    }
+}

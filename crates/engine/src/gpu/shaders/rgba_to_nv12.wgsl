@@ -1,6 +1,7 @@
-// Full-range sRGB-encoded RGBA to BT.709 limited-range NV12, matching the CPU encoder's colour
-// conversion. Each code is rounded once, from float colour, with the ordered dither when `dither`
-// is set. Requires the dither chunk prepended.
+// The working space, linear and premultiplied, to BT.709 limited-range NV12 of its sRGB-encoded
+// colour over black, matching the CPU encoder's colour conversion. Each code is rounded once,
+// from float colour, with the ordered dither when `dither` is set. Requires the colour and dither
+// chunks prepended.
 struct Params {
     width: u32,
     height: u32,
@@ -19,19 +20,20 @@ struct Params {
 const KR: f32 = 0.2126;
 const KB: f32 = 0.0722;
 
+// The encoded colour at a pixel. Premultiplied colour over black is the colour itself.
 fn rgb(x: u32, y: u32) -> vec3<f32> {
     let clamped = vec2<u32>(min(x, params.width - 1u), min(y, params.height - 1u));
-    return textureLoad(source, clamped, 0).rgb;
+    let light = max(textureLoad(source, clamped, 0).rgb, vec3<f32>(0.0));
+    return clamp(lumen_linear_to_srgb(light), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 fn luma(color: vec3<f32>) -> f32 {
     return dot(color, vec3<f32>(KR, 1.0 - KR - KB, KB));
 }
 
-// `value` rounded to a byte, dithered by the offset of `pixel`, in the plane it belongs to.
+// `value` rounded to a byte, dithered at `pixel` of the plane it belongs to.
 fn to_byte(value: f32, pixel: vec2<u32>) -> u32 {
-    let offset = select(0.0, lumen_dither(pixel), params.dither != 0u);
-    return u32(clamp(floor(value + offset + 0.5), 0.0, 255.0));
+    return u32(clamp(lumen_quantise(value, pixel, params.dither != 0u), 0.0, 255.0));
 }
 
 fn luma_byte(color: vec3<f32>, pixel: vec2<u32>) -> u32 {

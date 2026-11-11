@@ -35,7 +35,8 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct OutputParams {
     pub(crate) origin: [i32; 2],
-    pub(crate) opaque: u32,
+    /// 0 premultiplied, 1 straight, 2 opaque.
+    pub(crate) alpha: u32,
     pub(crate) dither: u32,
     pub(crate) levels: f32,
     pub(crate) srgb_target: u32,
@@ -82,6 +83,18 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
         let size = lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1));
         let format = cx.output_format();
         let encoding = cx.output_encoding();
+        // A float output takes the working space as it is, so a source that fills the frame is
+        // the output.
+        let written = cx.rec.usage(source.tex).intersects(
+            lumen_gpu::wgpu::TextureUsages::STORAGE_BINDING
+                | lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        if format == crate::gpu::WORKING_COLOR_FORMAT
+            && source.domain == lumen_gpu::TextureDomain::full_frame(size)
+            && written
+        {
+            return Ok(source);
+        }
         let tex = cx.output_target(size, format);
         let program = cx.render_program(
             "media-output",
@@ -94,7 +107,11 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
         )?;
         let output = cx.rec.uniform(&OutputParams {
             origin: source.origin(),
-            opaque: u32::from(encoding.opaque),
+            alpha: match encoding.alpha {
+                crate::gpu::OutputAlpha::Premultiplied => 0,
+                crate::gpu::OutputAlpha::Straight => 1,
+                crate::gpu::OutputAlpha::Opaque => 2,
+            },
             dither: u32::from(encoding.dither),
             levels: levels(format),
             srgb_target: u32::from(format.is_srgb()),
