@@ -3,8 +3,12 @@
 use std::{fs, io::Read, path::Path};
 
 use lumen_3d::model::{AnimationInfo, MaterialInfo, ModelInfo};
-use lumen_engine::media::{
-    FfmpegAudioResolver, FfmpegVideoResolver, ImageFileResolver, ImageResolver, VideoFrameResolver,
+use lumen_engine::{
+    error::{MediaError, MediaFailure, MediaReason},
+    media::{
+        FfmpegAudioResolver, FfmpegVideoResolver, ImageFileResolver, ImageResolver,
+        VideoFrameResolver,
+    },
 };
 use lumen_ffmpeg::{InputContext, VideoCodec};
 use serde::{Deserialize, Serialize};
@@ -62,18 +66,51 @@ pub struct FontFace {
     pub style: String,
 }
 
-const UNREADABLE: &str =
-    "not an image, video, audio file, font, model or environment map that lumen can read";
+/// What the probe calls the uploaded file in a failure.
+const FILE: &str = "the file";
+
+/// Why a file was rejected, in the engine's vocabulary: the reason, then the `media.*` code a
+/// render would fail with.
+type Rejection = Box<MediaFailure>;
+
+fn reason(rejection: &Rejection) -> String {
+    format!("{} ({})", rejection.reason.details(), rejection.code())
+}
+
+fn unreadable() -> Rejection {
+    Box::new(MediaFailure::decode(
+        FILE,
+        "not an image, video, audio file, font, model or environment map that lumen can read",
+    ))
+}
+
+fn engine_rejection(error: MediaError) -> Rejection {
+    match error {
+        MediaError::Failed(failure) => failure,
+        error => Box::new(MediaFailure::decode(FILE, error.to_string())),
+    }
+}
 
 /// The kind and metadata of the file at `path`, or why it was rejected. The extension and declared
 /// content type play no part.
 pub fn probe(path: &Path) -> Result<(MediaKind, MediaMetadata), String> {
+    probe_file(path).map_err(|rejection| reason(&rejection))
+}
+
+fn probe_file(path: &Path) -> Result<(MediaKind, MediaMetadata), Rejection> {
     let mut head = [0_u8; 16];
     let read = fs::File::open(path)
         .and_then(|mut file| file.read(&mut head))
-        .map_err(|error| format!("the file could not be read: {error}"))?;
+        .map_err(|error| MediaFailure::from_io(FILE, FILE, &error))?;
     let head = &head[..read];
-    let hide_path = |message: String| message.replace(&*path.to_string_lossy(), "the file");
+    let hide_path = |mut rejection: Rejection| {
+        let details = rejection
+            .reason
+            .details()
+            .replace(&*path.to_string_lossy(), FILE);
+        rejection.reason = with_details(rejection.reason, details);
+        rejection
+    };
 
     if head.starts_with(b"glTF") {
         return probe_model(path).map(|metadata| (MediaKind::Model, metadata));
@@ -86,7 +123,7 @@ pub fn probe(path: &Path) -> Result<(MediaKind, MediaMetadata), String> {
     }
     if is_image_magic(head) {
         let image = ImageFileResolver::open(path.to_string_lossy())
-            .map_err(|error| hide_path(error.to_string()))?;
+            .map_err(|error| hide_path(engine_rejection(error)))?;
         let size = image.metadata();
         return Ok((
             MediaKind::Image,
@@ -125,14 +162,32 @@ fn is_image_magic(head: &[u8]) -> bool {
         || head.starts_with(&[0, 0, 1, 0])
 }
 
-fn probe_font(path: &Path, magic: FontMagic) -> Result<MediaMetadata, String> {
+/// `reason` with other details.
+fn with_details(reason: MediaReason, details: String) -> MediaReason {
+    match reason {
+        MediaReason::NotFound { .. } => MediaReason::NotFound { details },
+        MediaReason::WrongKind { .. } => MediaReason::WrongKind { details },
+        MediaReason::Unsupported { .. } => MediaReason::Unsupported { details },
+        MediaReason::TooLarge { limit, actual, .. } => MediaReason::TooLarge {
+            details,
+            limit,
+            actual,
+        },
+        MediaReason::Decode { .. } => MediaReason::Decode { details },
+    }
+}
+
+fn probe_font(path: &Path, magic: FontMagic) -> Result<MediaMetadata, Rejection> {
     if matches!(magic, FontMagic::Woff) {
-        return Err("WOFF fonts are not supported: upload a TrueType or OpenType file".to_string());
+        return Err(Box::new(MediaFailure::unsupported(
+            FILE,
+            "WOFF fonts are not supported: upload a TrueType or OpenType file",
+        )));
     }
     let mut database = fontdb::Database::new();
-    database
-        .load_font_file(path)
-        .map_err(|error| format!("the font could not be read: {error}"))?;
+    database.load_font_file(path).map_err(|error| {
+        MediaFailure::decode(FILE, format!("the font could not be read: {error}"))
+    })?;
     let faces: Vec<FontFace> = database
         .faces()
         .filter_map(|face| {
@@ -150,7 +205,10 @@ fn probe_font(path: &Path, magic: FontMagic) -> Result<MediaMetadata, String> {
         })
         .collect();
     if faces.is_empty() {
-        return Err("the font has no faces lumen can load".to_string());
+        return Err(Box::new(MediaFailure::decode(
+            FILE,
+            "the font has no faces lumen can load",
+        )));
     }
     let mut families: Vec<String> = faces.iter().map(|face| face.family.clone()).collect();
     families.dedup();
@@ -162,20 +220,34 @@ fn probe_font(path: &Path, magic: FontMagic) -> Result<MediaMetadata, String> {
 }
 
 /// A binary glTF, read as renders read it.
-fn probe_model(path: &Path) -> Result<MediaMetadata, String> {
+fn probe_model(path: &Path) -> Result<MediaMetadata, Rejection> {
     let limit = lumen_3d::model::MAX_MODEL_BYTES;
     let size = fs::metadata(path)
-        .map_err(|error| format!("the file could not be read: {error}"))?
+        .map_err(|error| MediaFailure::from_io(FILE, FILE, &error))?
         .len();
     if size > limit as u64 {
-        return Err(format!(
-            "the model is larger than the {} MiB a model may be",
-            limit >> 20
-        ));
+        return Err(Box::new(MediaFailure::too_large(
+            FILE,
+            format!(
+                "the model is larger than the {} MiB a model may be",
+                limit >> 20
+            ),
+            limit as u64,
+            Some(size),
+        )));
     }
-    let bytes = fs::read(path).map_err(|error| format!("the file could not be read: {error}"))?;
-    let info = ModelInfo::from_glb(&bytes)
-        .map_err(|error| format!("the model could not be read: {error}"))?;
+    let bytes = fs::read(path).map_err(|error| MediaFailure::from_io(FILE, FILE, &error))?;
+    let info = ModelInfo::from_glb(&bytes).map_err(|error| {
+        use lumen_3d::model::ModelError;
+        let details = format!("the model could not be read: {error}");
+        match error {
+            ModelError::Invalid(_) => MediaFailure::decode(FILE, details),
+            ModelError::Unsupported(_) => MediaFailure::unsupported(FILE, details),
+            ModelError::TooLarge { limit, actual, .. } => {
+                MediaFailure::too_large(FILE, details, limit, actual)
+            }
+        }
+    })?;
     model_metadata(info)
 }
 
@@ -187,11 +259,15 @@ const MAX_MODEL_ENTRIES: usize = 4096;
 
 /// A model's clips and materials, unless there are more of them, or their names are longer, than
 /// a media record keeps.
-fn model_metadata(info: ModelInfo) -> Result<MediaMetadata, String> {
-    if info.animations.len() + info.materials.len() > MAX_MODEL_ENTRIES {
-        return Err(format!(
-            "the model has more than {MAX_MODEL_ENTRIES} animations and materials"
-        ));
+fn model_metadata(info: ModelInfo) -> Result<MediaMetadata, Rejection> {
+    let entries = info.animations.len() + info.materials.len();
+    if entries > MAX_MODEL_ENTRIES {
+        return Err(Box::new(MediaFailure::too_large(
+            FILE,
+            format!("the model has more than {MAX_MODEL_ENTRIES} animations and materials"),
+            MAX_MODEL_ENTRIES as u64,
+            Some(entries as u64),
+        )));
     }
     let clips = info.animations.iter().map(|clip| clip.name.as_deref());
     let materials = info
@@ -200,10 +276,15 @@ fn model_metadata(info: ModelInfo) -> Result<MediaMetadata, String> {
         .map(|material| material.name.as_deref());
     let names: usize = clips.chain(materials).flatten().map(str::len).sum();
     if names > MAX_MODEL_NAME_BYTES {
-        return Err(format!(
-            "the model's animation and material names take more than {} KiB",
-            MAX_MODEL_NAME_BYTES >> 10
-        ));
+        return Err(Box::new(MediaFailure::too_large(
+            FILE,
+            format!(
+                "the model's animation and material names take more than {} KiB",
+                MAX_MODEL_NAME_BYTES >> 10
+            ),
+            MAX_MODEL_NAME_BYTES as u64,
+            Some(names as u64),
+        )));
     }
     Ok(MediaMetadata {
         animations: Some(info.animations),
@@ -213,20 +294,35 @@ fn model_metadata(info: ModelInfo) -> Result<MediaMetadata, String> {
 }
 
 /// A Radiance or OpenEXR environment map, decoded as renders decode it.
-fn probe_environment(path: &Path) -> Result<MediaMetadata, String> {
+fn probe_environment(path: &Path) -> Result<MediaMetadata, Rejection> {
+    use lumen_3d::environment::EnvironmentError;
+
     let limit = lumen_3d::environment::MAX_ENVIRONMENT_BYTES;
     let size = fs::metadata(path)
-        .map_err(|error| format!("the file could not be read: {error}"))?
+        .map_err(|error| MediaFailure::from_io(FILE, FILE, &error))?
         .len();
     if size > limit as u64 {
-        return Err(format!(
-            "the environment map is larger than the {} MiB an environment map may be",
-            limit >> 20
-        ));
+        return Err(Box::new(MediaFailure::too_large(
+            FILE,
+            format!(
+                "the environment map is larger than the {} MiB an environment map may be",
+                limit >> 20
+            ),
+            limit as u64,
+            Some(size),
+        )));
     }
-    let bytes = fs::read(path).map_err(|error| format!("the file could not be read: {error}"))?;
-    let map = lumen_3d::environment::decode(&bytes)
-        .map_err(|error| format!("the environment map could not be read: {error}"))?;
+    let bytes = fs::read(path).map_err(|error| MediaFailure::from_io(FILE, FILE, &error))?;
+    let map = lumen_3d::environment::decode(&bytes).map_err(|error| {
+        let details = format!("the environment map could not be read: {error}");
+        match error {
+            EnvironmentError::Invalid(_) => MediaFailure::decode(FILE, details),
+            EnvironmentError::Unsupported(_) => MediaFailure::unsupported(FILE, details),
+            EnvironmentError::TooLarge { limit, actual, .. } => {
+                MediaFailure::too_large(FILE, details, limit, actual)
+            }
+        }
+    })?;
     Ok(MediaMetadata {
         width: Some(map.width()),
         height: Some(map.height()),
@@ -236,9 +332,18 @@ fn probe_environment(path: &Path) -> Result<MediaMetadata, String> {
 
 /// Video when a stream of more than one frame decodes; audio when only sound does, which counts
 /// a still such as cover art beside it.
-fn probe_av(path: &Path) -> Result<(MediaKind, MediaMetadata), String> {
+fn probe_av(path: &Path) -> Result<(MediaKind, MediaMetadata), Rejection> {
     let source = path.to_string_lossy().to_string();
-    let input = InputContext::open(source.as_str()).map_err(|_| UNREADABLE.to_string())?;
+    let input = InputContext::open(source.as_str()).map_err(|error| {
+        if error.is_unsupported() {
+            Box::new(MediaFailure::unsupported(
+                FILE,
+                "its container format is not one lumen reads",
+            ))
+        } else {
+            unreadable()
+        }
+    })?;
     let info = input.media_info();
     drop(input);
     let duration_ms = info
@@ -265,14 +370,14 @@ fn probe_av(path: &Path) -> Result<(MediaKind, MediaMetadata), String> {
                     },
                 ));
             }
-            Err(error) if audio.is_none() => return Err(error.to_string()),
+            Err(error) if audio.is_none() => return Err(engine_rejection(error)),
             _ => {}
         }
     }
     let Some(stream) = audio else {
-        return Err(UNREADABLE.to_string());
+        return Err(unreadable());
     };
-    FfmpegAudioResolver::open(source.as_str()).map_err(|error| error.to_string())?;
+    FfmpegAudioResolver::open(source.as_str()).map_err(engine_rejection)?;
     Ok((
         MediaKind::Audio,
         MediaMetadata {
@@ -311,6 +416,7 @@ mod tests {
         };
         assert!(model_metadata(named("a".repeat(MAX_MODEL_NAME_BYTES))).is_ok());
         let error = model_metadata(named("a".repeat(MAX_MODEL_NAME_BYTES + 1))).unwrap_err();
-        assert!(error.contains("64 KiB"), "{error}");
+        assert_eq!(error.code(), "media.too_large");
+        assert!(error.reason.details().contains("64 KiB"), "{error}");
     }
 }

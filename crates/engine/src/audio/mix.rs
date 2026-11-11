@@ -10,7 +10,10 @@ use std::{
 };
 
 use super::{AUDIO_CHANNELS, AudioBuffer, AudioResolver, AudioSegment, AudioVoice, plan};
-use crate::{composition::Composition, media::MediaStore};
+use crate::{
+    composition::Composition,
+    media::{AssetKind, MediaStore},
+};
 
 /// Samples each clip ramps over at its start and end, and where a window cuts it, so it never
 /// starts or stops on a click.
@@ -92,7 +95,14 @@ impl<'a, P: MediaStore> AudioMixer<'a, P> {
             |i: u64| voice.source_start + segment.position + segment.step * i as f64;
         let read_start = source_position(range.start).floor().max(0.0) as u64;
         let read_end = (source_position(range.end - 1).floor().max(0.0) as u64).saturating_add(2);
-        let source = self.read(&voice.source_id, read_start, read_end - read_start)?;
+        let source = self
+            .read(&voice.source_id, read_start, read_end - read_start)
+            .map_err(|error| {
+                match crate::media::audio_clip_using(self.composition, &voice.source_id) {
+                    Some(at) => error.media_used_as(&[AssetKind::Audio], || at),
+                    None => error,
+                }
+            })?;
         for (index, i) in range.enumerate() {
             let Some((position, gain)) = voice_sample(voice, segment, i) else {
                 continue;

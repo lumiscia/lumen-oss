@@ -122,7 +122,11 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
             return Ok(());
         };
         if let NodeKind::MediaIn(media_in_node) = node {
-            return self.collect_media_in(media_in_node, &mut walk.requirements);
+            return self
+                .collect_media_in(media_in_node, &mut walk.requirements)
+                .map_err(|error| {
+                    crate::gpu::frame_graph::locate_media_failure(node, &self.scope, error)
+                });
         }
         for Routed {
             node: input,

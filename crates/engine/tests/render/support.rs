@@ -450,9 +450,10 @@ impl MediaStore for TestMedia {
         let Some((id, data)) = self.fonts.get(family) else {
             // As an asset store does, an id it doesn't hold is an error rather than a fallback.
             return match lumen_engine::media::asset_id(family) {
-                Some(id) => {
-                    Err(lumen_engine::error::MediaError::AssetNotFound { id: id.to_string() })
-                }
+                Some(_) => Err(lumen_engine::error::MediaError::source_not_found(
+                    family,
+                    "this host has no asset with that id",
+                )),
                 None => Ok(None),
             };
         };

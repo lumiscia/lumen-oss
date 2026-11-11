@@ -12,13 +12,16 @@ use lumen_ffmpeg::{
 use crate::{
     error::MediaError,
     media::{
-        ChromaSubsampling, CpuMediaFrame, GpuVideoMediaFrame, MediaFrame, Rotation,
+        AssetKind, ChromaSubsampling, CpuMediaFrame, GpuVideoMediaFrame, MediaFrame, Rotation,
         VideoFrameResolver, VideoMetadata, YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix,
         resolver::{CpuRetry, PixelOrigin, SettledOrigin},
     },
 };
 
-use super::image::{FrameLruCache, media_frame_bytes};
+use super::{
+    image::{FrameLruCache, media_frame_bytes},
+    open_failure,
+};
 
 const SEEK_REOPEN_THRESHOLD: u32 = 120;
 /// Seeks to an earlier keyframe after one that landed past its target, before reopening the input
@@ -188,18 +191,14 @@ impl LibavStreamDecoder {
         let mut input = open_input(&source)?;
         let stream = input
             .best_video_stream()
-            .map_err(|err| MediaError::Decode {
-                media_source: source.clone(),
-                details: format!("failed selecting video stream: {err}"),
-            })?;
+            .map_err(|err| open_failure(&source, AssetKind::Video, &err))?;
         let stream_index = stream.stream_index;
         let time_base_seconds = stream
             .time_base
             .as_f64()
             .filter(|seconds| *seconds > 0.0)
-            .ok_or_else(|| MediaError::Decode {
-                media_source: source.clone(),
-                details: "stream has no valid time base".to_string(),
+            .ok_or_else(|| {
+                MediaError::decode(&source, "stream has no valid time base".to_string())
             })?;
         let fps = resolve_stream_fps(&stream, &source)?;
         let frame_count = match resolve_frame_count(&stream, input.presented_duration_us(), fps) {
@@ -214,9 +213,11 @@ impl LibavStreamDecoder {
             }
             None => None,
         }
-        .ok_or_else(|| MediaError::Decode {
-            media_source: source.clone(),
-            details: "unable to determine stream frame count".to_string(),
+        .ok_or_else(|| {
+            MediaError::decode(
+                &source,
+                "unable to determine stream frame count".to_string(),
+            )
         })?;
         let (decoder, gpu_decode_status) = open_video_decoder(&source, &input, &stream, &options)?;
         if let Some(reason) = gpu_decode_status.unavailable_reason() {
@@ -260,15 +261,15 @@ impl LibavStreamDecoder {
     }
 
     fn mid_render_failure(&self, frame: u32, cause: &str) -> MediaError {
-        MediaError::Decode {
-            media_source: self.source.clone(),
-            details: format!(
+        MediaError::decode(
+            &self.source,
+            format!(
                 "hardware decode failed at source frame {frame}, after earlier frames were drawn \
                  from the GPU. Finishing on the CPU would change this source's pixels partway \
                  through the render, so the render stops. Retry it, or set \
                  LUMEN_HARDWARE_DECODE=0 to decode on the CPU from the start: {cause}"
             ),
-        }
+        )
     }
 
     fn metadata(&self) -> VideoMetadata {
@@ -359,26 +360,26 @@ impl LibavStreamDecoder {
                         seek.landed = [packet.pts(), packet.dts()].into_iter().flatten().min();
                     }
                     self.open_decoder()?.send_packet(&packet).map_err(|err| {
-                        MediaError::Decode {
-                            media_source: self.source.clone(),
-                            details: format!("failed sending packet to decoder: {err}"),
-                        }
+                        MediaError::decode(
+                            &self.source,
+                            format!("failed sending packet to decoder: {err}"),
+                        )
                     })?;
                 }
                 Ok(None) => {
-                    self.open_decoder()?
-                        .send_eof()
-                        .map_err(|err| MediaError::Decode {
-                            media_source: self.source.clone(),
-                            details: format!("failed sending decoder EOF: {err}"),
-                        })?;
+                    self.open_decoder()?.send_eof().map_err(|err| {
+                        MediaError::decode(
+                            &self.source,
+                            format!("failed sending decoder EOF: {err}"),
+                        )
+                    })?;
                     self.sent_eof = true;
                 }
                 Err(err) => {
-                    return Err(MediaError::Decode {
-                        media_source: self.source.clone(),
-                        details: format!("packet read failed: {err}"),
-                    });
+                    return Err(MediaError::decode(
+                        &self.source,
+                        format!("packet read failed: {err}"),
+                    ));
                 }
             }
         }
@@ -414,10 +415,10 @@ impl LibavStreamDecoder {
                     }
                     Ok(None) => return Ok(None),
                     Err(err) => {
-                        return Err(MediaError::Decode {
-                            media_source: self.source.clone(),
-                            details: format!("failed receiving decoded GPU frame: {err}"),
-                        });
+                        return Err(MediaError::decode(
+                            &self.source,
+                            format!("failed receiving decoded GPU frame: {err}"),
+                        ));
                     }
                 }
             } else {
@@ -441,10 +442,10 @@ impl LibavStreamDecoder {
                     }
                     Ok(None) => return Ok(None),
                     Err(err) => {
-                        return Err(MediaError::Decode {
-                            media_source: self.source.clone(),
-                            details: format!("failed receiving decoded frame: {err}"),
-                        });
+                        return Err(MediaError::decode(
+                            &self.source,
+                            format!("failed receiving decoded frame: {err}"),
+                        ));
                     }
                 }
             }
@@ -455,10 +456,8 @@ impl LibavStreamDecoder {
         let source = self.source.clone();
         let worker = self.worker.clone();
         Box::new(move |reason| {
-            let unavailable = || MediaError::Decode {
-                media_source: source.clone(),
-                details: "video decode worker is unavailable".to_string(),
-            };
+            let unavailable =
+                || MediaError::decode(&source, "video decode worker is unavailable".to_string());
             let worker = worker.as_ref().ok_or_else(unavailable)?;
             let (response_tx, response_rx) = mpsc::channel();
             worker
@@ -496,14 +495,14 @@ impl LibavStreamDecoder {
         let row_bytes = (decoded.width as usize).saturating_mul(4);
         let expected = row_bytes.saturating_mul(decoded.height as usize);
         if decoded.stride != row_bytes || decoded.data.len() < expected {
-            return Err(MediaError::Decode {
-                media_source: self.source.clone(),
-                details: format!(
+            return Err(MediaError::decode(
+                &self.source,
+                format!(
                     "decoded frame has stride {} and {} bytes, expected RGBA rows of {row_bytes} bytes and {expected} in total",
                     decoded.stride,
                     decoded.data.len()
                 ),
-            });
+            ));
         }
 
         Ok(Arc::new(CpuMediaFrame {
@@ -534,9 +533,11 @@ impl LibavStreamDecoder {
             layout,
             data: Arc::new(decoded.data),
         };
-        frame.validate().map_err(|details| MediaError::Decode {
-            media_source: self.source.clone(),
-            details: format!("decoded frame can't be read as YUV: {details}"),
+        frame.validate().map_err(|details| {
+            MediaError::decode(
+                &self.source,
+                format!("decoded frame can't be read as YUV: {details}"),
+            )
         })?;
         Ok(Arc::new(frame))
     }
@@ -556,10 +557,7 @@ impl LibavStreamDecoder {
             self.reopen()?;
             self.input
                 .seek_stream(self.stream_index, timestamp)
-                .map_err(|err| MediaError::Decode {
-                    media_source: self.source.clone(),
-                    details: format!("seek failed: {err}"),
-                })?;
+                .map_err(|err| MediaError::decode(&self.source, format!("seek failed: {err}")))?;
         }
         self.after_seek(target_frame, 0)
     }
@@ -589,9 +587,8 @@ impl LibavStreamDecoder {
 
     fn after_seek(&mut self, target_frame: u32, retries: u8) -> Result<(), MediaError> {
         if let Some(decoder) = &mut self.decoder {
-            decoder.flush().map_err(|err| MediaError::Decode {
-                media_source: self.source.clone(),
-                details: format!("failed flushing decoder: {err}"),
+            decoder.flush().map_err(|err| {
+                MediaError::decode(&self.source, format!("failed flushing decoder: {err}"))
             })?;
         }
         self.sent_eof = false;
@@ -622,9 +619,11 @@ impl LibavStreamDecoder {
     }
 
     fn open_decoder(&mut self) -> Result<&mut VideoDecoder, MediaError> {
-        self.decoder.as_mut().ok_or_else(|| MediaError::Decode {
-            media_source: self.source.clone(),
-            details: "the CPU decoder that replaces the hardware one is not open".to_string(),
+        self.decoder.as_mut().ok_or_else(|| {
+            MediaError::decode(
+                &self.source,
+                "the CPU decoder that replaces the hardware one is not open".to_string(),
+            )
         })
     }
 
@@ -788,10 +787,10 @@ impl FfmpegVideoResolver {
             run_decode_worker(worker_source, options, worker_tx, request_rx, startup_tx)
         });
         let startup = startup_rx.recv().unwrap_or_else(|_| {
-            Err(MediaError::Decode {
-                media_source: source.clone(),
-                details: "video decode worker stopped while opening".to_string(),
-            })
+            Err(MediaError::decode(
+                &source,
+                "video decode worker stopped while opening".to_string(),
+            ))
         });
         let (metadata, decode_status) = match startup {
             Ok(opened) => opened,
@@ -857,9 +856,8 @@ impl VideoFrameResolver for FfmpegVideoResolver {
 
         self.request_tx
             .send(WorkerRequest::Enqueue { frame })
-            .map_err(|_| MediaError::Decode {
-                media_source: self.id.clone(),
-                details: "video decode worker is unavailable".to_string(),
+            .map_err(|_| {
+                MediaError::decode(&self.id, "video decode worker is unavailable".to_string())
             })
     }
 
@@ -875,14 +873,15 @@ impl VideoFrameResolver for FfmpegVideoResolver {
         let (response_tx, response_rx) = mpsc::channel();
         self.request_tx
             .send(WorkerRequest::Resolve { frame, response_tx })
-            .map_err(|_| MediaError::Decode {
-                media_source: self.id.clone(),
-                details: "video decode worker is unavailable".to_string(),
+            .map_err(|_| {
+                MediaError::decode(&self.id, "video decode worker is unavailable".to_string())
             })?;
 
-        response_rx.recv().map_err(|_| MediaError::Decode {
-            media_source: self.id.clone(),
-            details: format!("video decode worker did not return frame {frame}"),
+        response_rx.recv().map_err(|_| {
+            MediaError::decode(
+                &self.id,
+                format!("video decode worker did not return frame {frame}"),
+            )
         })?
     }
 
@@ -921,9 +920,8 @@ fn resolve_stream_fps(stream: &VideoStreamInfo, source: &str) -> Result<f64, Med
         .frame_rate
         .and_then(|rate| rate.as_f64())
         .filter(|fps| *fps > 0.0)
-        .ok_or_else(|| MediaError::Decode {
-            media_source: source.to_string(),
-            details: "unable to determine stream frame rate".to_string(),
+        .ok_or_else(|| {
+            MediaError::decode(source, "unable to determine stream frame rate".to_string())
         })
 }
 
@@ -952,10 +950,8 @@ fn resolve_frame_count(
 }
 
 fn open_input(source: &str) -> Result<InputContext, MediaError> {
-    InputContext::open(source.to_string()).map_err(|err| MediaError::Decode {
-        media_source: source.to_string(),
-        details: format!("failed opening media source: {err}"),
-    })
+    InputContext::open(source.to_string())
+        .map_err(|err| open_failure(source, AssetKind::Video, &err).into())
 }
 
 /// Reads `input` to its end, releasing each packet before reading the next.
@@ -1045,10 +1041,7 @@ fn open_cpu_video_decoder(
             mode: DecodeMode::Cpu,
         },
     )
-    .map_err(|err| MediaError::Decode {
-        media_source: source.to_string(),
-        details: format!("failed opening CPU video decoder: {err}"),
-    })
+    .map_err(|err| open_failure(source, AssetKind::Video, &err).into())
 }
 
 fn preferred_gpu_backend(options: &FfmpegResolverOptions) -> GpuBackend {
@@ -1344,7 +1337,7 @@ mod tests {
         let error = open_cpu(&std::env::temp_dir().join("lumen_engine_no_such_clip.mp4"))
             .err()
             .expect("no such file");
-        assert!(error.to_string().contains("failed opening"), "{error}");
+        assert_eq!(error.code(), "media.not_found", "{error}");
     }
 
     #[test]

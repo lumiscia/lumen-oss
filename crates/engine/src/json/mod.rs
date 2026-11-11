@@ -832,21 +832,8 @@ fn asset_errors(
             return;
         };
         if let Err(error) = resolve_asset_of(assets, id, &kinds) {
-            let located = match at {
-                MediaLocation::Node(at) => {
-                    crate::diagnostic::at_param(root, at.template.as_deref(), at.node, &at.param)
-                }
-                MediaLocation::AudioClip {
-                    template, index, ..
-                } => (
-                    format!(
-                        "{}/audio/clips/{index}/source_id",
-                        crate::diagnostic::scene_pointer(template.as_deref())
-                    ),
-                    None,
-                ),
-            };
-            errors.push(Diagnostic::from_located_error(&error.into(), located));
+            let error = LumenError::from(error).media_used_as(&kinds, || at);
+            errors.push(Diagnostic::from_error(&error, root));
         }
     });
     errors
@@ -2504,18 +2491,18 @@ mod tests {
         );
         let assets: Vec<_> = codes_and_paths(&diagnostics)
             .into_iter()
-            .filter(|(code, ..)| code.starts_with("asset."))
+            .filter(|(code, ..)| code.starts_with("media."))
             .collect();
         assert_eq!(
             assets,
             [
-                ("asset.wrong_kind", "/nodes/4/params/source", Some(5)),
-                ("asset.not_found", "/nodes/5/params/source", Some(6)),
+                ("media.wrong_kind", "/nodes/4/params/source", Some(5)),
+                ("media.not_found", "/nodes/5/params/source", Some(6)),
             ]
         );
         let wrong_kind = diagnostics
             .iter()
-            .find(|diagnostic| diagnostic.code == "asset.wrong_kind")
+            .find(|diagnostic| diagnostic.code == "media.wrong_kind")
             .unwrap();
         assert!(
             wrong_kind.message.contains("is an image, not a model"),
@@ -2536,7 +2523,13 @@ mod tests {
                         media(1, "image", "asset:clip"),
                         { "id": 2, "type": "media_output" }
                     ],
-                    "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+                    "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }],
+                    "audio": {
+                        "tracks": [{ "id": "t", "name": "T", "muted": false, "solo": false, "volume": 1 }],
+                        "clips": [
+                            { "id": "c", "source_id": "asset:gone", "track_id": "t", "start_ms": 0, "duration_ms": 10 }
+                        ]
+                    }
                 }
             },
             "nodes": [
@@ -2567,30 +2560,35 @@ mod tests {
         assert_eq!(
             codes_and_paths(&check_value(&document, Some(&unknown), Some(&Assets))),
             [
-                ("asset.not_found", "/nodes/2/params/source", Some(3)),
+                ("media.not_found", "/nodes/2/params/source", Some(3)),
                 (
-                    "asset.wrong_kind",
+                    "media.wrong_kind",
                     "/nodes/4/params/content/0/font_family",
                     Some(5)
                 ),
-                ("asset.wrong_kind", "/nodes/8/params/source", Some(9)),
-                ("asset.wrong_kind", "/nodes/9/params/source", Some(10)),
+                ("media.wrong_kind", "/nodes/8/params/source", Some(9)),
+                ("media.wrong_kind", "/nodes/9/params/source", Some(10)),
                 (
-                    "asset.wrong_kind",
+                    "media.wrong_kind",
                     "/compositions/card/nodes/0/params/source",
                     Some(1)
                 ),
-                ("asset.wrong_kind", "/audio/clips/1/source_id", None),
+                ("media.wrong_kind", "/audio/clips/1/source_id", None),
+                (
+                    "media.not_found",
+                    "/compositions/card/audio/clips/0/source_id",
+                    None
+                ),
             ]
         );
         // Without the asset store, references aren't checked, nor taken for families.
         assert!(check_value(&document, Some(&unknown), None).is_empty());
         let no_assets = check_value(&document, None, Some(&crate::media::NoAssets));
-        assert_eq!(no_assets.len(), 12);
+        assert_eq!(no_assets.len(), 13);
         assert!(
             no_assets
                 .iter()
-                .all(|diagnostic| diagnostic.code == "asset.not_found")
+                .all(|diagnostic| diagnostic.code == "media.not_found")
         );
     }
 }

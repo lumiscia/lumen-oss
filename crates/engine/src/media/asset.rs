@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use crate::error::MediaError;
+use crate::error::{MediaError, MediaFailure};
 
 /// What starts a source that names an asset rather than a path or `media` alias.
 pub const ASSET_SCHEME: &str = "asset:";
@@ -107,23 +107,20 @@ pub fn resolve_asset(
 }
 
 /// The asset `id` names in `assets`, which must be of one of `kinds`, of which there must be at
-/// least one. An asset of another kind is reported against the first.
+/// least one. An asset of another kind fails as `media.wrong_kind`.
 pub fn resolve_asset_of(
     assets: &dyn AssetResolver,
     id: &str,
     kinds: &[AssetKind],
 ) -> Result<Asset, MediaError> {
-    let asset = assets
-        .resolve(id)
-        .ok_or_else(|| MediaError::AssetNotFound { id: id.to_string() })?;
+    let source = format!("{ASSET_SCHEME}{id}");
+    let asset = assets.resolve(id).ok_or_else(|| {
+        MediaFailure::not_found(&source, "this host has no asset with that id").wanting(kinds)
+    })?;
     if kinds.contains(&asset.kind()) {
         Ok(asset)
     } else {
-        Err(MediaError::AssetWrongKind {
-            id: id.to_string(),
-            expected: kinds[0],
-            actual: asset.kind(),
-        })
+        Err(MediaFailure::wrong_kind(&source, kinds, Some(asset.kind()), "").into())
     }
 }
 
@@ -150,9 +147,13 @@ mod tests {
         );
 
         let wrong = resolve_asset(&OneImage, "logo", AssetKind::Font).unwrap_err();
-        assert_eq!(wrong.code(), "asset.wrong_kind");
-        assert_eq!(wrong.to_string(), "asset `logo` is an image, not a font");
+        assert_eq!(wrong.code(), "media.wrong_kind");
+        assert_eq!(wrong.to_string(), "`asset:logo` is an image, not a font");
         let missing = resolve_asset(&NoAssets, "logo", AssetKind::Image).unwrap_err();
-        assert_eq!(missing.code(), "asset.not_found");
+        assert_eq!(missing.code(), "media.not_found");
+        assert_eq!(
+            missing.to_string(),
+            "image `asset:logo` not found: this host has no asset with that id"
+        );
     }
 }

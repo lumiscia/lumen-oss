@@ -1,7 +1,7 @@
 //! What a composition needs from its host before it renders: the media its nodes and audio
 //! clips name, and the font families its text uses.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 use serde::Serialize;
 
@@ -23,6 +23,15 @@ pub struct NodeParamAt {
     pub param: String,
 }
 
+impl fmt::Display for NodeParamAt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(template) = &self.template {
+            write!(f, "composition `{template}`, ")?;
+        }
+        write!(f, "node {} `{}`", self.node, self.param)
+    }
+}
+
 /// Where a composition names a source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -38,6 +47,25 @@ pub enum MediaLocation {
         /// The clip's position in the timeline's `clips`.
         index: usize,
     },
+}
+
+impl fmt::Display for MediaLocation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Node(at) => at.fmt(f),
+            Self::AudioClip {
+                template,
+                track,
+                clip,
+                ..
+            } => {
+                if let Some(template) = template {
+                    write!(f, "composition `{template}`, ")?;
+                }
+                write!(f, "audio clip `{clip}` on track `{track}`")
+            }
+        }
+    }
 }
 
 /// One place a source is used, and the kinds of media it reads there.
@@ -143,6 +171,23 @@ impl Composition {
         });
         inventory
     }
+}
+
+/// The first audio clip of `composition` whose `source_id` is `source`.
+pub(crate) fn audio_clip_using(composition: &Composition, source: &str) -> Option<MediaLocation> {
+    let mut found = None;
+    walk(composition, &mut |use_| {
+        if let Found::Media {
+            source: used, at, ..
+        } = use_
+            && used == source
+            && matches!(at, MediaLocation::AudioClip { .. })
+            && found.is_none()
+        {
+            found = Some(at);
+        }
+    });
+    found
 }
 
 /// Calls `f` with each place `composition` names media or a font: the nodes of the root and then

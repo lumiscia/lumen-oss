@@ -5,7 +5,10 @@ use std::{
 };
 
 use fontdb::Source;
-use lumen_engine::{error::MediaError, media::FontResolver};
+use lumen_engine::{
+    error::{MediaError, MediaFailure},
+    media::{AssetKind, FontResolver},
+};
 
 /// The variable the binaries read [`RenderConfig::font_dir`](super::RenderConfig::font_dir) from.
 pub const FONT_DIR_ENV: &str = "LUMEN_FONT_DIR";
@@ -182,9 +185,10 @@ impl FontResolver for ResolvedFont {
         self.files
             .iter()
             .map(|file| {
-                std::fs::read(file).map_err(|err| MediaError::Decode {
-                    media_source: self.family.clone(),
-                    details: format!("failed reading font data `{}`: {err}", file.display()),
+                std::fs::read(file).map_err(|err| {
+                    MediaFailure::from_io(&self.family, "font data", &err)
+                        .wanting(&[AssetKind::Font])
+                        .into()
                 })
             })
             .collect()

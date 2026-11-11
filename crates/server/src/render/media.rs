@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, anyhow};
 use lumen_engine::{
     audio::AudioResolver,
-    error::MediaError,
+    error::{MediaError, MediaFailure},
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
     media::{
@@ -102,7 +102,9 @@ impl LocalMediaStore {
                 } else {
                     "no such file in the media root".to_string()
                 };
-                MediaError::source_not_found(source, reason)
+                MediaFailure::not_found(source, reason)
+                    .wanting(&[kind])
+                    .into()
             })
     }
 
@@ -155,6 +157,11 @@ impl LocalMediaStore {
     }
 }
 
+/// Names the source of a failure as the composition wrote it, not as the store resolved it.
+fn written_as(source: &str) -> impl FnOnce(MediaError) -> MediaError + '_ {
+    move |error| error.with_source(source)
+}
+
 /// The resolver cached for `source`, opened with `open` if there is none. Concurrent first
 /// requests may each open one, but all of them get the one that was cached first.
 fn cached_resolver<T>(
@@ -197,7 +204,8 @@ pub fn is_enabled_flag(value: &str) -> bool {
 impl MediaStore for LocalMediaStore {
     fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
         let resolved = self.stored_source(source, AssetKind::Image)?;
-        Ok(Box::new(self.image_resolver(&resolved)?))
+        let resolver = self.image_resolver(&resolved).map_err(written_as(source))?;
+        Ok(Box::new(resolver))
     }
 
     fn get_video_resolver(
@@ -205,21 +213,24 @@ impl MediaStore for LocalMediaStore {
         stream_id: &str,
     ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
         let resolved = self.stored_source(stream_id, AssetKind::Video)?;
-        Ok(Box::new(self.video_resolver(&resolved)?))
+        let resolver = self
+            .video_resolver(&resolved)
+            .map_err(written_as(stream_id))?;
+        Ok(Box::new(resolver))
     }
 
     fn get_audio_resolver(&self, source_id: &str) -> Result<Box<dyn AudioResolver>, MediaError> {
         let resolved = self.stored_source(source_id, AssetKind::Audio)?;
-        Ok(Box::new(self.audio_resolver(&resolved)?))
+        let resolver = self
+            .audio_resolver(&resolved)
+            .map_err(written_as(source_id))?;
+        Ok(Box::new(resolver))
     }
 
     fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
         let resolved = self.stored_source(source, AssetKind::Model)?;
-        Ok(Box::new(SceneFile::open(
-            resolved,
-            "model",
-            lumen_3d::model::MAX_MODEL_BYTES,
-        )?))
+        let file = SceneFile::open(source, resolved, "model", lumen_3d::model::MAX_MODEL_BYTES)?;
+        Ok(Box::new(file))
     }
 
     fn get_environment_resolver(
@@ -227,11 +238,13 @@ impl MediaStore for LocalMediaStore {
         source: &str,
     ) -> Result<Box<dyn EnvironmentResolver>, MediaError> {
         let resolved = self.stored_source(source, AssetKind::Environment)?;
-        Ok(Box::new(SceneFile::open(
+        let file = SceneFile::open(
+            source,
             resolved,
             "environment map",
             lumen_3d::environment::MAX_ENVIRONMENT_BYTES,
-        )?))
+        )?;
+        Ok(Box::new(file))
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {
@@ -261,6 +274,8 @@ impl MediaStore for LocalMediaStore {
 
 /// A model or environment map file, read only when a render hasn't loaded what its ID names.
 struct SceneFile {
+    /// The source the composition wrote, which failures name.
+    source: String,
     path: String,
     /// The path, length and modification time, so that a changed file reloads.
     id: String,
@@ -270,11 +285,20 @@ struct SceneFile {
 }
 
 impl SceneFile {
-    fn open(path: String, kind: &'static str, limit: usize) -> Result<Self, MediaError> {
+    fn open(
+        source: &str,
+        path: String,
+        kind: &'static str,
+        limit: usize,
+    ) -> Result<Self, MediaError> {
         let metadata = std::fs::metadata(&path)
-            .map_err(|error| MediaError::source_not_found(&path, error.to_string()))?;
+            .map_err(|error| MediaFailure::from_io(source, kind, &error))?;
+        if metadata.len() > limit as u64 {
+            return Err(too_large(source, kind, limit, Some(metadata.len())).into());
+        }
         let id = format!("{path}:{}:{:?}", metadata.len(), metadata.modified().ok());
         Ok(Self {
+            source: source.to_string(),
             path,
             id,
             kind,
@@ -283,13 +307,32 @@ impl SceneFile {
     }
 
     fn read(&self) -> Result<Vec<u8>, MediaError> {
-        read_limited(Path::new(&self.path), self.kind, self.limit).map_err(|details| {
-            MediaError::Decode {
-                media_source: self.path.clone(),
-                details,
-            }
-        })
+        use std::io::Read;
+
+        let file = std::fs::File::open(&self.path)
+            .map_err(|error| MediaFailure::from_io(&self.source, self.kind, &error))?;
+        let mut bytes = Vec::new();
+        file.take(self.limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| MediaFailure::from_io(&self.source, self.kind, &error))?;
+        if bytes.len() > self.limit {
+            return Err(too_large(&self.source, self.kind, self.limit, None).into());
+        }
+        Ok(bytes)
     }
+}
+
+/// `kind` is larger than the `limit` bytes a file of it may be.
+fn too_large(source: &str, kind: &str, limit: usize, actual: Option<u64>) -> MediaFailure {
+    MediaFailure::too_large(
+        source,
+        format!(
+            "the {kind} is larger than the {} MiB it may be",
+            limit >> 20
+        ),
+        limit as u64,
+        actual,
+    )
 }
 
 impl ModelResolver for SceneFile {
@@ -310,24 +353,6 @@ impl EnvironmentResolver for SceneFile {
     fn data(&self) -> Result<Vec<u8>, MediaError> {
         self.read()
     }
-}
-
-/// The bytes of the `kind` file at `path`, refusing one larger than `limit` before reading it.
-fn read_limited(path: &Path, kind: &str, limit: usize) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-
-    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    file.take(limit as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if bytes.len() > limit {
-        return Err(format!(
-            "the {kind} is larger than the {} MiB it may be",
-            limit >> 20
-        ));
-    }
-    Ok(bytes)
 }
 
 /// `root`, or the current directory, made absolute.
@@ -396,7 +421,10 @@ fn resolve_local_path_with_root(source: &str, root: &Path) -> anyhow::Result<Pat
 
 #[cfg(test)]
 mod tests {
-    use lumen_engine::expr::{Expression, ExpressionContext};
+    use lumen_engine::{
+        error::MediaReason,
+        expr::{Expression, ExpressionContext},
+    };
 
     use super::*;
 
@@ -418,11 +446,11 @@ mod tests {
 
         assert_eq!(
             failure("missing.png"),
-            "media source `missing.png` not found: no such file in the media root"
+            "image `missing.png` not found: no such file in the media root"
         );
         assert_eq!(
             failure(&outside),
-            format!("media source `{outside}` not found: no such file in the media root")
+            format!("image `{outside}` not found: no such file in the media root")
         );
     }
 
@@ -441,16 +469,13 @@ mod tests {
         assert_eq!(
             failure("missing.png"),
             format!(
-                "media source `missing.png` not found: failed to canonicalize asset path `{}`: No such file or directory (os error 2)",
+                "image `missing.png` not found: failed to canonicalize asset path `{}`: No such file or directory (os error 2)",
                 root.join("missing.png").display()
             )
         );
         assert_eq!(
             failure("corrupt.png"),
-            format!(
-                "media decoding failed for {}: failed decoding image source: The image format could not be determined",
-                root.join("corrupt.png").display()
-            )
+            "image `corrupt.png` failed to decode: the file is not in a recognised image format"
         );
         assert!(failure("../secret.png").contains("parent traversal"));
         assert!(failure("https://example.com/image.png").contains("remote media source"));
@@ -637,9 +662,9 @@ mod tests {
 
         let decode = image_error("asset:logo");
         assert_eq!(decode.code(), "media.decode");
-        assert!(decode.to_string().contains(&image.display().to_string()));
-        assert_eq!(image_error("asset:other").code(), "asset.not_found");
-        assert_eq!(image_error("asset:brand").code(), "asset.wrong_kind");
+        assert!(decode.to_string().contains("asset:logo"), "{decode}");
+        assert_eq!(image_error("asset:other").code(), "media.not_found");
+        assert_eq!(image_error("asset:brand").code(), "media.wrong_kind");
         let model = |source: &str| {
             store
                 .get_model_resolver(source)
@@ -652,11 +677,11 @@ mod tests {
             id,
             "a changed file has a new ID"
         );
-        assert_eq!(model("asset:logo").unwrap_err().code(), "asset.wrong_kind");
+        assert_eq!(model("asset:logo").unwrap_err().code(), "media.wrong_kind");
         let sky = store.get_environment_resolver("asset:sky").unwrap();
         assert_eq!(sky.data().unwrap(), b"#?RADIANCE");
         let wrong_sky = store.get_environment_resolver("asset:fox").err().unwrap();
-        assert_eq!(wrong_sky.code(), "asset.wrong_kind");
+        assert_eq!(wrong_sky.code(), "media.wrong_kind");
         let font = store.get_font_resolver("asset:brand").unwrap().unwrap();
         assert_eq!(font.data().unwrap(), vec![ROBOTO.to_vec()]);
         assert_eq!(
@@ -664,13 +689,30 @@ mod tests {
             Some(font.id())
         );
         let wrong_font = store.get_font_resolver("asset:logo").err().unwrap();
-        assert_eq!(wrong_font.code(), "asset.wrong_kind");
+        assert_eq!(wrong_font.code(), "media.wrong_kind");
+
+        let big = assets.path().join("big");
+        let file = std::fs::File::create(&big).unwrap();
+        file.set_len(lumen_3d::model::MAX_MODEL_BYTES as u64 + 1)
+            .unwrap();
+        let store = LocalMediaStore::new(root.clone(), &RenderConfig::default()).with_assets(
+            Arc::new(Assets(HashMap::from([("big", Asset::Model(big))]))),
+        );
+        let too_large = store.get_model_resolver("asset:big").err().unwrap();
+        assert_eq!(too_large.code(), "media.too_large");
+        let failure = too_large.failure().unwrap();
+        assert_eq!(failure.source, "asset:big");
+        assert!(matches!(
+            failure.reason,
+            MediaReason::TooLarge { limit, actual: Some(actual), .. }
+                if limit == lumen_3d::model::MAX_MODEL_BYTES as u64 && actual == limit + 1
+        ));
 
         let without_assets = LocalMediaStore::new(root, &RenderConfig::default());
         let missing = without_assets
             .get_font_resolver("asset:brand")
             .err()
             .unwrap();
-        assert_eq!(missing.code(), "asset.not_found");
+        assert_eq!(missing.code(), "media.not_found");
     }
 }

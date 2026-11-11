@@ -635,6 +635,7 @@ describe("LumenPreviewSession", () => {
       worker.emit({
         diagnostics: [],
         loadId: worker.ofType("load").at(-1)?.loadId as number,
+        media: null,
         message: "bad",
         type: "load-failed",
       });
@@ -665,7 +666,13 @@ describe("LumenPreviewSession", () => {
     const staleLoadId = worker.ofType("load").at(-1)?.loadId as number;
     session.update({ composition: composition("second") });
 
-    worker.emit({ diagnostics: [], loadId: staleLoadId, message: "too late", type: "load-failed" });
+    worker.emit({
+      diagnostics: [],
+      loadId: staleLoadId,
+      media: null,
+      message: "too late",
+      type: "load-failed",
+    });
     expect(preview.getSnapshot().error).toBeNull();
   });
 
@@ -762,6 +769,7 @@ describe("LumenPreviewSession", () => {
     worker.emit({
       diagnostics,
       loadId: worker.ofType("load").at(-1)?.loadId as number,
+      media: null,
       message: "bad composition",
       type: "load-failed",
     });
@@ -769,6 +777,7 @@ describe("LumenPreviewSession", () => {
     expect(onError).toHaveBeenCalledExactlyOnceWith({
       code: "load_failed",
       diagnostics,
+      media: null,
       message: "bad composition",
     });
 
@@ -777,6 +786,34 @@ describe("LumenPreviewSession", () => {
 
     session.update({ composition: composition("second") });
     expect(worker.ofType("load")).toHaveLength(2);
+  });
+
+  it("reports the media source a load or a frame couldn't use", async () => {
+    const onError = vi.fn();
+    const { worker } = await playable({ onError });
+    const loadId = worker.ofType("load").at(-1)?.loadId as number;
+    const media = {
+      code: "media.wrong_kind" as const,
+      source: "asset:logo",
+      wanted: ["model" as const],
+      found: "image" as const,
+      at: { type: "node" as const, node: 3, param: "source" },
+      details: "",
+    };
+
+    worker.emit({
+      loadId,
+      media,
+      message: "`asset:logo` is an image, not a model",
+      type: "render-failed",
+    });
+
+    expect(onError).toHaveBeenLastCalledWith({
+      code: "render_failed",
+      diagnostics: [],
+      media,
+      message: "`asset:logo` is an image, not a model",
+    });
   });
 
   it("reports inputs that don't resolve once, until they change", async () => {
@@ -902,7 +939,7 @@ describe("LumenPreviewSession", () => {
     const { preview, worker } = await playable();
     const loadId = worker.ofType("load").at(-1)?.loadId as number;
     preview.play();
-    worker.emit({ loadId, message: "device lost", type: "render-failed" });
+    worker.emit({ loadId, media: null, message: "device lost", type: "render-failed" });
     expect(preview.getSnapshot()).toMatchObject({
       error: "device lost",
       errorCode: "render_failed",

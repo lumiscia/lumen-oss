@@ -2,9 +2,11 @@ use std::sync::{Arc, Mutex};
 
 use lumen_ffmpeg::AudioRangeReader;
 
+use super::open_failure;
 use crate::{
     audio::{AUDIO_CHANNELS, AudioBuffer, AudioResolver},
-    error::MediaError,
+    error::{MediaError, MediaFailure},
+    media::AssetKind,
 };
 
 /// Readers kept open per source. A seek can't land on exactly the samples a continuous read gives,
@@ -20,8 +22,8 @@ pub struct FfmpegAudioResolver {
 impl FfmpegAudioResolver {
     pub fn open(source: impl Into<String>) -> Result<Self, MediaError> {
         let source = source.into();
-        let reader =
-            AudioRangeReader::open(source.as_str()).map_err(|err| decode_error(&source, err))?;
+        let reader = AudioRangeReader::open(source.as_str())
+            .map_err(|err| open_failure(&source, AssetKind::Audio, &err))?;
         Ok(Self {
             source,
             readers: Mutex::new(vec![reader]),
@@ -35,10 +37,10 @@ impl AudioResolver for FfmpegAudioResolver {
         start_sample: u64,
         frames: usize,
     ) -> Result<Arc<AudioBuffer>, MediaError> {
-        let mut readers = self.readers.lock().map_err(|_| MediaError::Decode {
-            media_source: self.source.clone(),
-            details: "audio reader panicked".to_string(),
-        })?;
+        let mut readers = self
+            .readers
+            .lock()
+            .map_err(|_| MediaError::decode(&self.source, "audio reader panicked"))?;
         // The reader that is already there, else one that hasn't read yet, else a new one while
         // there's room, else the least recently used one, which seeks.
         let index = match [start_sample, 0].into_iter().find_map(|position| {
@@ -77,9 +79,12 @@ impl AudioResolver for FfmpegAudioResolver {
 }
 
 fn decode_error(source: &str, err: lumen_ffmpeg::FfmpegError) -> MediaError {
-    MediaError::Decode {
-        media_source: source.to_string(),
-        details: format!("audio decode failed: {err}"),
+    let failure = MediaFailure::decode(source, format!("audio decode failed: {err}"))
+        .wanting(&[AssetKind::Audio]);
+    if err.is_resource_exhaustion() {
+        failure.transient().into()
+    } else {
+        failure.into()
     }
 }
 

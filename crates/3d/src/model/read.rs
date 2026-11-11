@@ -821,9 +821,13 @@ fn decode_textures(
         };
         encoded = encoded.saturating_add(length);
         if encoded > file_bytes {
-            return Err(ModelError::TooLarge(format!(
-                "the model's images take more than the {file_bytes} bytes of its file"
-            )));
+            return Err(ModelError::TooLarge {
+                details: format!(
+                    "the model's images take more than the {file_bytes} bytes of its file"
+                ),
+                limit: file_bytes as u64,
+                actual: Some(encoded as u64),
+            });
         }
     }
     let data = |bytes: ImageBytes| -> Result<Cow<'_, [u8]>, ModelError> {

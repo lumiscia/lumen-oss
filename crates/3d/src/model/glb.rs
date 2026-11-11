@@ -21,7 +21,7 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
 /// ignored.
 pub(super) fn split(bytes: &[u8]) -> Result<Glb<'_>, ModelError> {
     if bytes.len() > MAX_MODEL_BYTES {
-        return Err(too_large("bytes", MAX_MODEL_BYTES));
+        return Err(too_large("bytes", MAX_MODEL_BYTES).of_size(bytes.len()));
     }
     if !bytes.starts_with(b"glTF") {
         return Err(invalid(

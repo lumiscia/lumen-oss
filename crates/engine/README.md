@@ -166,8 +166,44 @@ rendering:
 - fonts that fall back at shaping time, including families set by expressions.
 
 Passing the host's asset store also checks each `asset:` reference a source field holds as a
-literal: one the store doesn't have is `asset.not_found`, and one of another kind is
-`asset.wrong_kind`. Rendering raises the same errors.
+literal: one the store doesn't have is `media.not_found`, and one of another kind is
+`media.wrong_kind`. Rendering raises the same errors.
+
+### Media failures
+
+Every way a media source can be unusable is a `MediaFailure`, whatever the kind (image, video,
+audio, font, model or environment map) and whichever host renders:
+
+```rust
+match error.media_failure() {
+    Some(failure) => match &failure.reason {
+        MediaReason::NotFound { .. } => upload(&failure.source),
+        MediaReason::WrongKind { .. } => println!("{} is {:?}", failure.source, failure.found),
+        MediaReason::TooLarge { limit, actual, .. } => shrink(&failure.source, *limit, *actual),
+        MediaReason::Unsupported { .. } | MediaReason::Decode { .. } => reject(failure),
+    },
+    None => {}
+}
+```
+
+A failure has the `source` as the composition wrote it, the kinds the place using it `wanted`, the
+kind it `found` when known, where it is used (`at`: a node param, or an audio clip, in the root or
+a template), and a `reason` with its public code. Diagnostics from `check` carry the JSON pointer
+of that place.
+
+| Code                | The source...                                                    |
+| ------------------- | ---------------------------------------------------------------- |
+| `media.not_found`   | isn't there                                                      |
+| `media.wrong_kind`  | is there but is another kind than the use reads                  |
+| `media.unsupported` | is the right kind, in a format or with a feature that isn't read |
+| `media.too_large`   | is over a limit (`limit`, and `actual` when it is known)         |
+| `media.decode`      | can't be read as what it should be                               |
+
+`media.decode` and `media.unsupported` differ by what the engine knows: it says `unsupported` when
+it identified the data (a container, a codec, a glTF extension, a font format) and doesn't read
+it, and `decode` when the data is corrupt, truncated, contradicts itself, or is in no format it can
+identify. A failure that is a shortage which can pass, such as running out of memory while reading
+a file, is a `media.decode` with `transient` set, which hosts may retry.
 
 ### Codes
 
@@ -205,10 +241,11 @@ literal: one the store doesn't have is `asset.not_found`, and one of another kin
 | `property.invalid_type`              | error    | render        | An expression gave a param a value of the wrong type.                                                                                                                                                     |
 | `expression.parse`                   | error    | render        | An expression built at render time doesn't parse.                                                                                                                                                         |
 | `expression.evaluate`                | error    | render        | An expression failed to evaluate.                                                                                                                                                                         |
-| `media.not_found`                    | error    | render        | A media source isn't available.                                                                                                                                                                           |
-| `asset.not_found`                    | error    | check, render | An `asset:` reference names an id the host's asset store doesn't have.                                                                                                                                    |
-| `asset.wrong_kind`                   | error    | check, render | An `asset:` reference names an asset of another kind than its field reads, such as a font as an image.                                                                                                    |
-| `media.decode`                       | error    | render        | Media or font data couldn't be decoded.                                                                                                                                                                   |
+| `media.not_found`                    | error    | check, render | A media source isn't there: a path or alias the host doesn't have, or an `asset:` id its asset store doesn't have.                                                                                        |
+| `media.wrong_kind`                   | error    | check, render | A media source is another kind than the place using it reads, such as an `asset:` image used as a model, or a video file given where an image is read.                                                    |
+| `media.unsupported`                  | error    | render        | A media source is the right kind but in a format or with a feature the engine doesn't read: an unknown container or codec, a glTF using a required extension, a `.gltf` JSON file, a WOFF font.           |
+| `media.too_large`                    | error    | render        | A media source is over a limit, in bytes, pixels or counts, or is bigger than the device can hold. The limit and, when known, the actual value are in the failure.                                        |
+| `media.decode`                       | error    | render        | A media source is meant to be what the place reads but can't be read: it is corrupt, truncated or in no format the engine can identify.                                                                   |
 | `media.frame_out_of_range`           | error    | render        | A video frame past the end of its source was asked for.                                                                                                                                                   |
 | `audio.unknown_track`                | error    | render        | An audio clip names a track that doesn't exist.                                                                                                                                                           |
 | `audio.limit`                        | error    | render        | Audio is more than the plan can hold: too many clips playing sound at once, a loop restarting too often, too many segments in one plan, or a preview timeline too long.                                   |

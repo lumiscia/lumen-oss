@@ -698,10 +698,7 @@ impl MediaStore for Fixture {
         let video = self.video.as_ref().filter(|_| stream_id == "video");
         video
             .map(|video| Box::new(video.clone()) as Box<dyn VideoFrameResolver>)
-            .ok_or_else(|| MediaError::SourceNotFound {
-                media_source: stream_id.to_string(),
-                details: "the bench has no such video".to_string(),
-            })
+            .ok_or_else(|| MediaError::source_not_found(stream_id, "the bench has no such video"))
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {

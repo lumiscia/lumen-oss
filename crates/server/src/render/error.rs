@@ -94,13 +94,15 @@ impl ServerRenderError {
     }
 
     /// Records `cause` as the source. A cause that is, or wraps, an engine error takes the
-    /// engine's code, and is retryable only when the GPU failed.
+    /// engine's code, and is retryable only when the GPU failed or a media source failed on a
+    /// shortage that can pass.
     pub(crate) fn caused_by(mut self, cause: impl Into<Source>) -> Self {
         self.source = Some(cause.into());
         if let Some(engine) = self.engine_error() {
             let code = engine.code();
+            let transient = engine.is_transient();
             self.code = ErrorCode::Engine(code);
-            self.retryable = code == "render.gpu";
+            self.retryable = code == "render.gpu" || transient;
         }
         self
     }
@@ -185,6 +187,44 @@ mod tests {
             "media source `hero.png` not found: no such file in the media root"
         );
         assert!(matches!(error.engine_error(), Some(LumenError::Media(_))));
+    }
+
+    #[test]
+    fn a_media_failure_is_retryable_only_when_it_is_a_shortage_that_can_pass() {
+        use lumen_engine::error::MediaFailure;
+
+        let failures = [
+            (
+                MediaFailure::not_found("a.png", "gone"),
+                "media.not_found",
+                false,
+            ),
+            (
+                MediaFailure::unsupported("a.mp4", "codec"),
+                "media.unsupported",
+                false,
+            ),
+            (
+                MediaFailure::too_large("a.glb", "big", 1, Some(2)),
+                "media.too_large",
+                false,
+            ),
+            (
+                MediaFailure::decode("a.png", "corrupt"),
+                "media.decode",
+                false,
+            ),
+            (
+                MediaFailure::decode("a.png", "no memory").transient(),
+                "media.decode",
+                true,
+            ),
+        ];
+        for (failure, code, retryable) in failures {
+            let error = ServerRenderError::engine("render failed", MediaError::from(failure));
+            assert_eq!(error.code(), ErrorCode::Engine(code));
+            assert_eq!(error.retryable(), retryable, "{code}");
+        }
     }
 
     #[test]

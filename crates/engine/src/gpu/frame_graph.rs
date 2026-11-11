@@ -22,14 +22,14 @@ use lumen_gpu::{
 
 use crate::{
     composition::Composition,
-    error::RenderError,
+    error::{LumenError, RenderError},
     expr::ExpressionContext,
     media::{
         CpuMediaFrame, MediaFrame, MediaStore, PlaneShape, YuvChroma, YuvFormat, YuvFrame,
         YuvPlanes, YuvUniform, premultiply_rgba_in_place_if_needed,
     },
     node::{
-        Deferred, Node, NodeId, NodeKind,
+        Deferred, MediaValue, Node, NodeId, NodeKind,
         compositing::clip::Clip,
         required_input,
         source::{
@@ -1599,6 +1599,36 @@ impl<'a> FrameCx<'a> {
         dynamic_program(self.rec, label, shader)
     }
 
+    /// The param `param` of node `node` in the graph being recorded.
+    #[cfg(feature = "3d")]
+    pub(crate) fn node_param(&self, node: NodeId, param: &str) -> crate::media::MediaLocation {
+        crate::media::MediaLocation::Node(crate::media::NodeParamAt {
+            template: self.scope.template_name().map(str::to_string),
+            node,
+            param: param.to_string(),
+        })
+    }
+
+    /// Fails as `media.too_large` when `size`, a media source's native size, is more than this
+    /// device makes a texture.
+    pub(crate) fn ensure_media_fits(&self, source: &str, size: Size) -> crate::Result<()> {
+        let max = self.rec.device().limits().max_texture_dimension_2d;
+        let side = size.width.max(size.height);
+        if side <= max {
+            return Ok(());
+        }
+        Err(crate::error::MediaFailure::too_large(
+            source,
+            format!(
+                "it is {}x{} pixels, over the {max}-pixel texture limit of this device",
+                size.width, size.height
+            ),
+            u64::from(max),
+            Some(u64::from(side)),
+        )
+        .into())
+    }
+
     /// An image's texture, uploaded once and kept in the renderer's media cache.
     pub(crate) fn image_texture(
         &mut self,
@@ -2284,12 +2314,52 @@ pub(crate) fn ensure_texture_fits(
 /// allows. The textures its inputs acquire are theirs to check.
 fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
     let outer = cx.rec.replace_largest_acquired_texture(Size::new(0, 0));
-    let raster = record_kind(node, cx);
+    let raster =
+        record_kind(node, cx).map_err(|error| locate_media_failure(node, &cx.scope, error));
     let largest = cx.rec.replace_largest_acquired_texture(outer);
     let raster = raster?;
     let max = cx.rec.device().limits().max_texture_dimension_2d;
     ensure_texture_fits(node, largest, cx.canvas_size(), max)?;
     Ok(raster)
+}
+
+/// Says where `node` names the source `error` failed on, when `error` is a media failure that
+/// doesn't say yet and the node names the source in one param.
+pub(crate) fn locate_media_failure(
+    node: &NodeKind,
+    scope: &Scope<'_>,
+    error: LumenError,
+) -> LumenError {
+    let Some(failure) = error.media_failure().filter(|failure| failure.at.is_none()) else {
+        return error;
+    };
+    let (mut named, mut params) = (None, Vec::new());
+    node.for_each_media_source(&mut |media| {
+        if media.value == MediaValue::Literal(&failure.source) && named.is_none() {
+            named = Some((media.param.to_string(), media.kinds.clone()));
+        }
+        params.push((media.param, media.kinds));
+    });
+    if named.is_none()
+        && let NodeKind::Text(text) = node
+    {
+        named = crate::node::source::text::literal_font_families(text)
+            .into_iter()
+            .find(|(_, family)| *family == failure.source)
+            .map(|(param, _)| (param, vec![crate::media::AssetKind::Font]));
+    }
+    let Some((param, kinds)) = named.or_else(|| match params.as_slice() {
+        [(only, kinds)] => Some(((*only).to_string(), kinds.clone())),
+        _ => None,
+    }) else {
+        return error;
+    };
+    let at = crate::media::NodeParamAt {
+        template: scope.template_name().map(str::to_string),
+        node: node.id(),
+        param,
+    };
+    error.media_used_as(&kinds, || crate::media::MediaLocation::Node(at))
 }
 
 fn record_kind(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {

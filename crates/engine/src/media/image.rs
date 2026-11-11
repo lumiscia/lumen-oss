@@ -1,10 +1,14 @@
 use std::{fs, io::Cursor, path::Path, sync::Arc};
 
-use crate::error::MediaError;
+use crate::error::{MediaError, MediaFailure};
 
 use super::{
-    CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, premultiply_rgba_in_place_if_needed,
+    AssetKind, CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame,
+    premultiply_rgba_in_place_if_needed, sniff_kind,
 };
+
+/// The memory the image decoder may use for one image.
+const MAX_DECODE_BYTES: u64 = 512 << 20;
 
 #[derive(Debug, Clone)]
 struct CachedImage {
@@ -41,14 +45,10 @@ impl ImageResolver for ImageFileResolver {
 }
 
 fn load_cached_image(source: &str) -> Result<CachedImage, MediaError> {
-    let encoded = fs::read(Path::new(source)).map_err(|err| MediaError::Decode {
-        media_source: source.to_string(),
-        details: format!("failed opening image source: {err}"),
-    })?;
-    let image = image::load_from_memory(&encoded).map_err(|err| MediaError::Decode {
-        media_source: source.to_string(),
-        details: format!("failed decoding image source: {err}"),
-    })?;
+    let encoded = fs::read(Path::new(source))
+        .map_err(|err| MediaFailure::from_io(source, "image", &err).wanting(&[AssetKind::Image]))?;
+    let image = image::load_from_memory(&encoded)
+        .map_err(|err| image_failure(source, &encoded, &err).wanting(&[AssetKind::Image]))?;
     let straight_alpha = image.color().has_alpha() && !declares_associated_alpha(&encoded);
     let rgba = image.to_rgba8();
     let metadata = ImageMetadata {
@@ -68,6 +68,40 @@ fn load_cached_image(source: &str) -> Result<CachedImage, MediaError> {
             rgba: Arc::new(pixels),
         }),
     })
+}
+
+/// Why `encoded`, the file `source`, isn't an image that can be decoded.
+fn image_failure(source: &str, encoded: &[u8], error: &image::ImageError) -> MediaFailure {
+    use image::error::{ImageError, LimitErrorKind};
+
+    match error {
+        ImageError::Limits(limit) if matches!(limit.kind(), LimitErrorKind::InsufficientMemory) => {
+            MediaFailure::too_large(
+                source,
+                "decoding the image needs more memory than the 512 MiB one image may",
+                MAX_DECODE_BYTES,
+                None,
+            )
+        }
+        ImageError::Unsupported(_) if image::guess_format(encoded).is_err() => {
+            match sniff_kind(encoded) {
+                Some(AssetKind::Image) => {
+                    MediaFailure::unsupported(source, "this image format is not one Lumen reads")
+                }
+                Some(found) => MediaFailure::wrong_kind(
+                    source,
+                    &[AssetKind::Image],
+                    Some(found),
+                    "the file is not an image",
+                ),
+                None => {
+                    MediaFailure::decode(source, "the file is not in a recognised image format")
+                }
+            }
+        }
+        ImageError::Unsupported(_) => MediaFailure::unsupported(source, error.to_string()),
+        _ => MediaFailure::decode(source, format!("failed decoding image: {error}")),
+    }
 }
 
 /// Whether `encoded` is a TIFF whose `ExtraSamples` tag says its pixels are already premultiplied.

@@ -79,10 +79,10 @@ impl GpuVideoMediaFrame {
             frame @ (MediaFrame::CpuRgba(_) | MediaFrame::RawRgba(_) | MediaFrame::Yuv(_)) => {
                 Ok(frame)
             }
-            MediaFrame::GpuVideo(_) => Err(MediaError::Decode {
-                media_source: String::new(),
-                details: "a source moved to the CPU returned a GPU frame".to_string(),
-            }),
+            MediaFrame::GpuVideo(_) => Err(MediaError::decode(
+                "",
+                "a source moved to the CPU returned a GPU frame",
+            )),
         }
     }
 }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use foldhash::HashMap;
 use lumen_3d::glam::{Mat4, Vec3};
-use lumen_3d::model::{Material, Model, ModelScene, Playback, SkinBounds, Texture};
+use lumen_3d::model::{Material, Model, ModelError, ModelScene, Playback, SkinBounds, Texture};
 use lumen_3d::{
     Blending, Bounds, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive,
     Projection, Scene, Shadow, Surface, Transform,
@@ -14,9 +14,9 @@ use lumen_3d::{
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
 use super::{Light3dKind, Material3d, Model3d, Placement3d, Pose3d, Projection3d, Shape3dKind};
-use crate::error::{LumenError, MediaError, RenderError};
+use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 use crate::gpu::frame_graph::FrameCx;
-use crate::media::ModelResolver;
+use crate::media::{AssetKind, ModelResolver};
 use crate::node::vector::paint::Paint;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, required_input};
 
@@ -168,17 +168,18 @@ impl SceneCache {
         &mut self,
         rec: &mut Recorder,
         tick: u64,
+        source: &str,
         resolver: &dyn ModelResolver,
-    ) -> Result<LoadedModel, ModelLoadError> {
+    ) -> Result<LoadedModel, MediaError> {
         if let Some(cached) = self.models.get_mut(resolver.id()) {
             cached.last_used = tick;
             return Ok(cached.model.clone());
         }
         let bytes = resolver.data()?;
         let model =
-            Model::from_glb(&bytes).map_err(|error| ModelLoadError::Model(error.to_string()))?;
+            Model::from_glb(&bytes).map_err(|error| model_failure(source, &bytes, error))?;
         drop(bytes);
-        let (loaded, size) = upload_model(rec, model)?;
+        let (loaded, size) = upload_model(rec, source, model)?;
         self.model_bytes += size;
         self.models.insert(
             resolver.id().to_string(),
@@ -234,16 +235,34 @@ impl SceneCache {
     }
 }
 
-enum ModelLoadError {
-    Media(MediaError),
-    /// Why the file isn't a model that can be drawn.
-    Model(String),
-}
-
-impl From<MediaError> for ModelLoadError {
-    fn from(error: MediaError) -> Self {
-        Self::Media(error)
-    }
+/// Why `bytes`, the file `source`, is not a model that can be read.
+fn model_failure(source: &str, bytes: &[u8], error: ModelError) -> MediaError {
+    let wanted = [AssetKind::Model];
+    let failure = match error {
+        ModelError::Invalid(_) if !bytes.starts_with(b"glTF") => {
+            match crate::media::sniff_kind(bytes) {
+                Some(found) => MediaFailure::wrong_kind(
+                    source,
+                    &wanted,
+                    Some(found),
+                    "the file is not a binary glTF (.glb)",
+                ),
+                None if bytes.trim_ascii_start().starts_with(b"{") => MediaFailure::unsupported(
+                    source,
+                    "glTF JSON (.gltf) files are not read; use a binary glTF (.glb)",
+                ),
+                None => MediaFailure::decode(source, error.to_string()),
+            }
+        }
+        ModelError::Invalid(details) => MediaFailure::decode(source, details),
+        ModelError::Unsupported(details) => MediaFailure::unsupported(source, details),
+        ModelError::TooLarge {
+            details,
+            limit,
+            actual,
+        } => MediaFailure::too_large(source, details, limit, actual),
+    };
+    failure.wanting(&wanted).into()
 }
 
 /// Which of `models`, each with its bytes, the tick it was last drawn in and whether it must stay,
@@ -279,7 +298,11 @@ fn forget_model(rec: &mut Recorder, model: &LoadedModel) {
 }
 
 /// Uploads `model`'s geometry and textures, returning them with the bytes they take.
-fn upload_model(rec: &mut Recorder, model: Model) -> Result<(LoadedModel, u64), ModelLoadError> {
+fn upload_model(
+    rec: &mut Recorder,
+    source: &str,
+    model: Model,
+) -> Result<(LoadedModel, u64), MediaError> {
     let limits = rec.device().limits();
     let geometry = &model.geometry;
     let parts: [&[u8]; 3] = [
@@ -292,24 +315,37 @@ fn upload_model(rec: &mut Recorder, model: Model) -> Result<(LoadedModel, u64), 
         .map(|part| part.len() as u64)
         .max()
         .unwrap_or(0);
-    if largest
-        > limits
-            .max_storage_buffer_binding_size
-            .min(limits.max_buffer_size)
-    {
-        return Err(ModelLoadError::Model(
-            "the model's geometry is larger than this device can bind at once".to_string(),
-        ));
+    let bindable = limits
+        .max_storage_buffer_binding_size
+        .min(limits.max_buffer_size);
+    if largest > bindable {
+        return Err(MediaFailure::too_large(
+            source,
+            "the model's geometry is larger than this device can bind at once",
+            bindable,
+            Some(largest),
+        )
+        .wanting(&[AssetKind::Model])
+        .into());
     }
     let max_side = limits.max_texture_dimension_2d;
-    if model
+    if let Some(side) = model
         .textures
         .iter()
-        .any(|texture| texture.width > max_side || texture.height > max_side)
+        .map(|texture| texture.width.max(texture.height))
+        .filter(|&side| side > max_side)
+        .max()
     {
-        return Err(ModelLoadError::Model(format!(
-            "an image in the model is larger than this device's {max_side}-pixel texture limit"
-        )));
+        return Err(MediaFailure::too_large(
+            source,
+            format!(
+                "an image in the model is larger than this device's {max_side}-pixel texture limit"
+            ),
+            u64::from(max_side),
+            Some(u64::from(side)),
+        )
+        .wanting(&[AssetKind::Model])
+        .into());
     }
     let bounds = primitive_bounds(&model);
     let joint_bounds = model.scene.joint_bounds(&model.geometry);
@@ -805,18 +841,22 @@ impl Collected {
     ) -> crate::Result<()> {
         let source = params.source.as_str();
         let error = |details: String| model_error(node.id, source, details);
+        let at = cx.node_param(node.id, "source");
+        let in_node = |error: MediaError| {
+            LumenError::from(error).media_used_as(&[AssetKind::Model], || at.clone())
+        };
         let media = cx.media().ok_or_else(|| {
-            MediaError::source_not_found(source, "this render has no media store")
+            in_node(MediaError::source_not_found(
+                source,
+                "this render has no media store",
+            ))
         })?;
-        let resolver = media.get_model_resolver(source)?;
+        let resolver = media.get_model_resolver(source).map_err(in_node)?;
         let tick = cx.tick();
         let (rec, cache) = cx.scene_cache();
         let model = cache
-            .model(rec, tick, &*resolver)
-            .map_err(|failure| match failure {
-                ModelLoadError::Media(error) => LumenError::from(error),
-                ModelLoadError::Model(details) => error(details),
-            })?;
+            .model(rec, tick, source, &*resolver)
+            .map_err(in_node)?;
         cx.drew_model(resolver.id());
         let scene = &model.scene;
         let clip = scene.animation(&params.animation).map_err(error)?;
@@ -932,7 +972,11 @@ impl Collected {
 
 #[cfg(test)]
 mod tests {
-    use super::evictions;
+    use lumen_3d::model::{Model, ModelError};
+
+    use super::{evictions, model_failure};
+    use crate::error::MediaReason;
+    use crate::media::AssetKind;
 
     #[test]
     fn evictions_free_the_least_recently_drawn_down_to_the_budget_and_spare_protected_models() {
@@ -955,5 +999,57 @@ mod tests {
             evictions(models.into_iter(), 50, 0),
             ["older", "old", "recent"]
         );
+    }
+
+    /// What reading `bytes` as a binary glTF fails with: its code and the kind found.
+    fn read_as_model(bytes: &[u8]) -> (&'static str, Option<AssetKind>) {
+        let error = Model::from_glb(bytes).expect_err("not a readable model");
+        let failure = model_failure("scene.glb", bytes, error);
+        let failure = failure.failure().expect("a media failure");
+        assert_eq!(failure.wanted, [AssetKind::Model]);
+        assert_eq!(failure.source, "scene.glb");
+        (failure.code(), failure.found)
+    }
+
+    #[test]
+    fn a_model_that_cant_be_read_fails_by_what_the_file_is() {
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&[0; 32]);
+        assert_eq!(
+            read_as_model(&png),
+            ("media.wrong_kind", Some(AssetKind::Image))
+        );
+        assert_eq!(
+            read_as_model(br#"  {"asset": {"version": "2.0"}}"#),
+            ("media.unsupported", None)
+        );
+        assert_eq!(
+            read_as_model(b"nothing like a model at all"),
+            ("media.decode", None)
+        );
+        assert_eq!(
+            read_as_model(b"glTF\x02\0\0\0\xff\xff\xff\x7f"),
+            ("media.decode", None)
+        );
+    }
+
+    #[test]
+    fn a_model_over_a_limit_reports_the_limit_and_the_size() {
+        let error = model_failure(
+            "scene.glb",
+            b"glTF",
+            ModelError::TooLarge {
+                details: "the file is larger than the 512 MiB limit".to_string(),
+                limit: 512 << 20,
+                actual: Some(600 << 20),
+            },
+        );
+        let failure = error.failure().unwrap();
+        assert_eq!(failure.code(), "media.too_large");
+        assert!(matches!(
+            failure.reason,
+            MediaReason::TooLarge { limit, actual: Some(actual), .. }
+                if limit == 512 << 20 && actual == 600 << 20
+        ));
     }
 }

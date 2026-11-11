@@ -400,9 +400,21 @@ fn main() {
         Ok(true) => {}
         Ok(false) => std::process::exit(1),
         Err(error) => {
-            eprintln!("lumen-local failed: {error:#}");
+            eprintln!("{}", failure_line(&error));
             std::process::exit(1);
         }
+    }
+}
+
+/// The line a failed run prints: the engine's diagnostic code, when the engine failed, and the
+/// whole chain of causes.
+fn failure_line(error: &anyhow::Error) -> String {
+    let engine = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<lumen_engine::error::LumenError>());
+    match engine {
+        Some(engine) => format!("lumen-local failed ({}): {error:#}", engine.code()),
+        None => format!("lumen-local failed: {error:#}"),
     }
 }
 
@@ -697,7 +709,30 @@ mod tests {
 
     use lumen_server::render::{FrameRange, OutputFormat, RenderOutput};
 
-    use super::{Cli, EncoderQuality, SequencePattern, parse_frames, render_to_partial};
+    use super::{
+        Cli, EncoderQuality, SequencePattern, failure_line, parse_frames, render_to_partial,
+    };
+
+    #[test]
+    fn a_failed_run_prints_the_engine_code_of_the_failure() {
+        use lumen_engine::{
+            error::{LumenError, MediaFailure},
+            media::AssetKind,
+        };
+
+        let media: LumenError = MediaFailure::not_found("logo.png", "no such file")
+            .wanting(&[AssetKind::Image])
+            .into();
+        let error = anyhow::Error::new(media).context("failed to render");
+        assert_eq!(
+            failure_line(&error),
+            "lumen-local failed (media.not_found): failed to render: image `logo.png` not found: no such file"
+        );
+        assert_eq!(
+            failure_line(&anyhow::anyhow!("disk full")),
+            "lumen-local failed: disk full"
+        );
+    }
 
     #[test]
     fn failed_renders_leave_no_partial_file_and_keep_earlier_output() {

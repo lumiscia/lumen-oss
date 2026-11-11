@@ -4,10 +4,10 @@ use std::{
     sync::{Arc, LazyLock, Mutex, Weak},
 };
 
-use crate::error::{LumenError, MediaError, RenderError};
+use crate::error::{LumenError, MediaFailure, RenderError};
 use crate::expr::{ExpressionContext, GlyphScope};
 use crate::gpu::BoundFrame;
-use crate::media::{FontResolver, MediaStore, TextSession};
+use crate::media::{AssetKind, FontResolver, MediaStore, TextSession, sniff_kind};
 use crate::node::vector::{
     drawable::{DrawableMotion, DrawablePlacement, DrawablePlacementDelegate, DrawableTransform},
     paint::Paint,
@@ -1503,15 +1503,37 @@ pub(crate) fn load_font_family(
         Some(resolver) => font_files(font_family, &*resolver)?,
         None => Vec::new(),
     };
+    let heads: Vec<Vec<u8>> = files
+        .iter()
+        .map(|file| file.iter().take(16).copied().collect())
+        .collect();
     text_system
         .load_family(font_family, &resolver_id, files)
-        .map_err(|_| {
-            LumenError::Media(MediaError::Decode {
-                media_source: font_family.to_string(),
-                details: "its font data holds no readable face".to_string(),
-            })
-        })?;
+        .map_err(|_| LumenError::Media(unreadable_font(font_family, &heads).into()))?;
     Ok(())
+}
+
+/// Why the files of `family`, whose first bytes are `heads`, hold no readable face.
+fn unreadable_font(family: &str, heads: &[Vec<u8>]) -> MediaFailure {
+    let wanted = [AssetKind::Font];
+    for head in heads {
+        if head.starts_with(b"wOFF") || head.starts_with(b"wOF2") {
+            return MediaFailure::unsupported(
+                family,
+                "WOFF fonts are not loaded; use a TrueType or OpenType file",
+            )
+            .wanting(&wanted);
+        }
+        if let Some(found) = sniff_kind(head).filter(|found| *found != AssetKind::Font) {
+            return MediaFailure::wrong_kind(
+                family,
+                &wanted,
+                Some(found),
+                "the file is not a font",
+            );
+        }
+    }
+    MediaFailure::decode(family, "its font data holds no readable face").wanting(&wanted)
 }
 
 /// The data of `resolver`'s font files, shared with every text system still holding that family
@@ -1586,6 +1608,25 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
+    use crate::error::MediaError;
+
+    #[test]
+    fn a_font_file_that_cant_be_read_fails_by_what_the_file_is() {
+        let png = vec![b"\x89PNG\r\n\x1a\n".to_vec()];
+        let cases = [
+            (vec![b"wOFF\0\x01\0\0".to_vec()], "media.unsupported", None),
+            (vec![b"wOF2".to_vec()], "media.unsupported", None),
+            (png, "media.wrong_kind", Some(AssetKind::Image)),
+            (vec![b"plain text".to_vec()], "media.decode", None),
+        ];
+        for (heads, code, found) in cases {
+            let failure = unreadable_font("Brand", &heads);
+            assert_eq!(failure.code(), code, "{failure}");
+            assert_eq!(failure.found, found, "{failure}");
+            assert_eq!(failure.wanted, [AssetKind::Font]);
+            assert_eq!(failure.source, "Brand");
+        }
+    }
 
     #[derive(Debug, Default)]
     struct CountingStore {

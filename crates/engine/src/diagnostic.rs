@@ -9,9 +9,10 @@ use serde_json::Value;
 
 use crate::{
     error::{
-        DocumentError, ExpressionError, GraphValidationError, LumenError, MediaError,
+        DocumentError, ExpressionError, GraphValidationError, LumenError, MediaError, MediaReason,
         PropertyError, RenderError, Warning,
     },
+    media::MediaLocation,
     node::NodeId,
 };
 
@@ -54,20 +55,6 @@ impl Diagnostic {
         }
     }
 
-    /// `error` as a diagnostic at `path`, about `node`.
-    pub(crate) fn from_located_error(
-        error: &LumenError,
-        (path, node): (String, Option<NodeId>),
-    ) -> Self {
-        Self {
-            severity: Severity::Error,
-            code: error.code(),
-            path,
-            node,
-            message: error.to_string(),
-        }
-    }
-
     /// `warning` as a diagnostic about the value at `path`.
     pub fn from_warning(warning: &Warning, path: String) -> Self {
         let node = match warning {
@@ -97,6 +84,7 @@ pub fn codes() -> impl Iterator<Item = &'static str> {
         PropertyError::CODES,
         ExpressionError::CODES,
         MediaError::CODES,
+        MediaReason::CODES,
         RenderError::CODES,
         Warning::CODES,
     ]
@@ -236,7 +224,7 @@ fn locate(error: &LumenError, scene: &Value) -> (String, Option<NodeId>) {
             ..
         }) => at_scene_param(scene, *node_id, property_path),
         LumenError::Expression(error) => locate_expression(error, scene),
-        LumenError::Media(_) => (String::new(), None),
+        LumenError::Media(error) => locate_media(error, scene),
         LumenError::Render(error) => match error {
             RenderError::NodeEvaluation { node_id, .. }
             | RenderError::MissingNode { node_id }
@@ -343,6 +331,23 @@ fn locate_graph(error: &GraphValidationError, scene: &Value) -> (String, Option<
             let (path, node) = locate(error, template_scene(scene, Some(template)));
             (format!("{}{path}", scene_pointer(Some(template))), node)
         }
+    }
+}
+
+/// Where the composition names the source of `error`, when the error says.
+fn locate_media(error: &MediaError, root: &Value) -> (String, Option<NodeId>) {
+    match error.failure().and_then(|failure| failure.at.as_ref()) {
+        Some(MediaLocation::Node(at)) => at_param(root, at.template.as_deref(), at.node, &at.param),
+        Some(MediaLocation::AudioClip {
+            template, index, ..
+        }) => (
+            format!(
+                "{}/audio/clips/{index}/source_id",
+                scene_pointer(template.as_deref())
+            ),
+            None,
+        ),
+        None => (String::new(), None),
     }
 }
 

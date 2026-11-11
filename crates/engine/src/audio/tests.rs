@@ -378,6 +378,41 @@ fn burst_span(clip: Value, template_fps: f64, root_fps: f64) -> Option<(usize, u
 }
 
 #[test]
+fn a_source_a_template_cant_play_names_the_template_and_clip() {
+    let document = document(
+        30.0,
+        180,
+        None,
+        json!({ "burst": burst_template(30.0, "gone", json!({})) }),
+        vec![clip_node(json!({ "composition": "burst" }))],
+    );
+    let composition = composition(&document);
+    let provider = TestProvider::default();
+    let error = AudioMixer::new(&composition, &provider)
+        .mix_range(0, 6 * RATE)
+        .unwrap_err();
+    let failure = error.media_failure().expect("a media failure");
+    assert_eq!(failure.code(), "media.not_found");
+    assert_eq!(failure.source, "gone");
+    assert_eq!(failure.wanted, [crate::media::AssetKind::Audio]);
+    assert_eq!(
+        failure.at,
+        Some(crate::media::MediaLocation::AudioClip {
+            template: Some("burst".to_string()),
+            track: "main".to_string(),
+            clip: "burst".to_string(),
+            index: 0,
+        })
+    );
+    let diagnostic = crate::diagnostic::Diagnostic::from_error(&error, &document);
+    assert_eq!(diagnostic.code, "media.not_found");
+    assert_eq!(
+        diagnostic.path,
+        "/compositions/burst/audio/clips/0/source_id"
+    );
+}
+
+#[test]
 fn a_template_sounds_at_its_clip_placement_offset_and_speed() {
     // Placed at 1 s: the burst plays from 1.5 s for 0.25 s.
     assert_eq!(
