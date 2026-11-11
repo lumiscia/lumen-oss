@@ -4,6 +4,7 @@ use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("../../gpu/shaders/color.wgsl"),
     include_str!("../../gpu/shaders/sampling.wgsl"),
     include_str!("boolean.wgsl")
 );

@@ -32,5 +32,7 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         alpha = abs(aa - ba);
     }
     let rgb = unpremultiply(select(b, a, aa >= ba)).rgb;
-    textureStore(output_tex, vec2<i32>(id.xy), vec4<f32>(rgb * alpha, alpha));
+    // Raising a faint pixel's coverage to 1 raises its light with it, past a half float's range
+    // for light already at the top of it.
+    textureStore(output_tex, vec2<i32>(id.xy), lumen_finite(vec4<f32>(rgb * alpha, alpha)));
 }
