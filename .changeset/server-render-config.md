@@ -24,20 +24,20 @@ match render_project_mp4(&composition, &options, &mut |_| {}) {
 After:
 
 ```rust
-use lumen_server::render::{ErrorCode, RenderConfig, RenderOptions, ServerRenderError};
+use lumen_server::render::{ErrorCode, RenderConfig, RenderOptions, render_project};
 
 let config = RenderConfig { font_dir: Some("/srv/fonts".into()), hardware_decode: true, ..RenderConfig::default() };
 let options = RenderOptions { config: config.clone(), media_root: Some(dir), ..RenderOptions::default() };
 let store = LocalMediaStore::new(root, &config);
 let diagnostics = check_composition(&payload, &staged, &assets, &config);
-match render_project_mp4(&composition, &options, &mut |_| {}) {
+match render_project(&composition, &options, &mut |_| {}) {
     Err(error) if error.code() == ErrorCode::Engine("media.not_found") => { /* error.engine_error() */ }
     Err(error) if error.code() == ErrorCode::EncodeFailed && error.retryable() => { /* retry */ }
     Err(error) => eprintln!("{}: {error}", error.code().as_str()),
-    Ok(mp4) => { /* ... */ }
+    Ok(rendered) => { /* rendered.bytes */ }
 }
 ```
 
-`RenderError` is renamed `ServerRenderError`, so it no longer shares a name with `lumen_engine::RenderError`. Its fields are private: `code()` returns an `ErrorCode`, `retryable()` says whether to try again, `Display` is the message, and `source()` is the cause. An engine failure keeps the engine error as its source and has its diagnostic code, such as `media.not_found`, `media.decode` or `render.gpu`; of those only `render.gpu` is retryable. The library's own codes are `invalid_project_payload`, `invalid_quality`, `invalid_render_profile`, `invalid_config`, `render_failed`, `encode_failed` and `output_io`. `audio_render_failed` is now the engine's code when mixing the audio failed and `encode_failed` when encoding it did, `invalid_fps` is `invalid_render_profile`, and `media_root_error` and `font_dir_error` are `invalid_config`. An encoder that fails to start keeps the FFmpeg error as its source: failing on the output is `output_io`, running out of memory, file descriptors or hardware encoder sessions is retryable, and an invalid option or unsupported encoder is not.
+`RenderError` is renamed `ServerRenderError`, so it no longer shares a name with `lumen_engine::RenderError`. Its fields are private: `code()` returns an `ErrorCode`, `retryable()` says whether to try again, `Display` is the message, and `source()` is the cause. An engine failure keeps the engine error as its source and has its diagnostic code, such as `media.not_found`, `media.decode` or `render.gpu`; of those `render.gpu` is retryable, and a media failure only when it is a shortage that can pass, such as running out of file descriptors. The library's own codes are `invalid_project_payload`, `invalid_quality`, `invalid_render_profile`, `invalid_config`, `render_failed`, `encode_failed`, `output_io`, `invalid_output`, `output_too_large` and `render_cancelled`. `audio_render_failed` is now the engine's code when mixing the audio failed and `encode_failed` when encoding it did, `invalid_fps` is `invalid_render_profile`, and `media_root_error` and `font_dir_error` are `invalid_config`. An encoder that fails to start keeps the FFmpeg error as its source: failing on the output is `output_io`, running out of memory, file descriptors or hardware encoder sessions is retryable, and an invalid option or unsupported encoder is not.
 
 The HTTP server's failed renders carry these codes in `render.error.code`, `progress.errorCode` and the `render.failed` event, so a render failing on a missing or corrupt source reports `media.not_found` or `media.decode`, not `render_failed`, and is no longer marked retryable.

@@ -24,4 +24,3 @@ A font family the store doesn't have is now `Err(media.not_found)` rather than `
 | calling `store.get_image_resolver(source)`                                                                        | `media::resolve_as::<dyn ImageResolver>(store, source)`, likewise for each kind        |
 | a server or file id string such as `format!("{path}:{len}:{mtime:?}")`                                            | `MediaIdentity::of_file(path)`, a metadata heuristic, or `of_key` when bytes are known |
 | a version counter per registration                                                                                | `MediaIdentity::unique()` on each set                                                  |
-| `MediaTextureKey::source`                                                                                         | `MediaTextureKey::identity`                                                            |
