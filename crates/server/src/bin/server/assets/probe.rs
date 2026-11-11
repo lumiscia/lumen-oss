@@ -134,7 +134,7 @@ fn probe_file(path: &Path) -> Result<(MediaKind, MediaMetadata), Rejection> {
             },
         ));
     }
-    if head.trim_ascii_start().starts_with(b"{") && is_gltf_json_file(path) {
+    if is_gltf_json_file(path) {
         return Err(Box::new(MediaFailure::unsupported(
             FILE,
             "glTF JSON (.gltf) files are not read; upload a binary glTF (.glb)",
@@ -435,6 +435,13 @@ mod tests {
         let rejection = probe_file(&gltf).unwrap_err();
         assert_eq!(rejection.code(), "media.unsupported");
         assert!(rejection.reason.details().contains(".glb"), "{rejection}");
+        let mut indented = vec![b' '; 32];
+        indented.extend_from_slice(br#"{"asset":{"version":"2.0"}}"#);
+        let indented = write("indented.gltf", &indented);
+        assert_eq!(
+            probe_file(&indented).unwrap_err().code(),
+            "media.unsupported"
+        );
         for bytes in [&b"{garbage"[..], br#"{"name": "a", "version": "1.0"}"#] {
             let other = write("other.json", bytes);
             assert_eq!(probe_file(&other).unwrap_err().code(), "media.decode");

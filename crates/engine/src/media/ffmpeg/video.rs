@@ -310,7 +310,9 @@ impl LibavStreamDecoder {
                     matches!(self.gpu_decode_status, GpuDecodeStatus::Active { .. })
                         && !matches!(primary_error, MediaError::FrameOutOfRange { .. });
                 if hardware_failed && !self.settle_on_cpu() {
-                    let failure = self.mid_render_failure(frame, &primary_error.to_string());
+                    let failure = self
+                        .mid_render_failure(frame, &primary_error.to_string())
+                        .caused_by(&primary_error);
                     self.mid_render_failure = Some(failure.clone());
                     return Err(failure);
                 }

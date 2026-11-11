@@ -131,10 +131,11 @@ impl<'a> Scanner<'a> {
                 }
             }
             _ => {
+                let start = self.at;
                 while !matches!(self.peek()?, b',' | b'}' | b']') {
                     self.at += 1;
                 }
-                Some(())
+                (self.at > start).then_some(())
             }
         }
     }
@@ -163,6 +164,8 @@ mod tests {
             br#"{"name": "a package", "version": "1.0"}"#,
             br#"{"asset": {"generator": "x"}}"#,
             br#"{"asset": "2.0"}"#,
+            br#"{"asset":{"version":"2.0","x":}}"#,
+            br#"{"x":,"asset":{"version":"2.0"}}"#,
             br#"{"nested": {"asset": {"version": "2.0"}}}"#,
             b"{",
             b"",

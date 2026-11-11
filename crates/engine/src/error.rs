@@ -685,6 +685,14 @@ impl MediaError {
     pub fn is_transient(&self) -> bool {
         self.failure().is_some_and(|failure| failure.transient)
     }
+
+    /// The error as a shortage that can pass if its `cause` was one.
+    pub(crate) fn caused_by(self, cause: &MediaError) -> Self {
+        match self {
+            Self::Failed(failure) if cause.is_transient() => Self::from(failure.transient()),
+            error => error,
+        }
+    }
 }
 
 #[derive(Debug, Error, Clone, lumen_macros::DiagnosticCode)]
@@ -791,6 +799,14 @@ mod tests {
                 "actual": 9000,
             })
         );
+    }
+
+    #[test]
+    fn a_failure_wrapping_a_shortage_stays_transient() {
+        let wrapped = || MediaError::decode("a.mp4", "hardware decode failed");
+        let shortage = MediaError::from(MediaFailure::decode("a.mp4", "no memory").transient());
+        assert!(wrapped().caused_by(&shortage).is_transient());
+        assert!(!wrapped().caused_by(&wrapped()).is_transient());
     }
 
     #[cfg(unix)]
