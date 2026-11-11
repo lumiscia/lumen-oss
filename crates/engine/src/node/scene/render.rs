@@ -5,7 +5,7 @@ use bytemuck::{Pod, Zeroable};
 use lumen_3d::{Camera, Draws, LightKind, Lighting, Object, Projection, Row};
 use lumen_gpu::{
     DEPTH_FORMAT, DepthTest, LayoutEntry, LayoutKind, RenderTargetSpec, Res, Size, TargetLoad,
-    TextureDomain, wgpu,
+    TexRef, TextureDomain, wgpu,
 };
 
 use super::Render3d;
@@ -27,11 +27,17 @@ const LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(3, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
     LayoutEntry::staged(4, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
     LayoutEntry::staged(5, wgpu::ShaderStages::VERTEX, LayoutKind::Uniform),
+    LayoutEntry::staged(6, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(7, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
 ];
+
+const CLAMP_SAMPLER: u64 = 0x3d00_0001;
 
 pub(crate) const FLAG_UNLIT: u32 = 1;
 pub(crate) const FLAG_BLEND: u32 = 2;
 pub(crate) const FLAG_MIRRORED: u32 = 4;
+/// The bound texture is the object's raster.
+pub(crate) const FLAG_RASTER: u32 = 8;
 pub(crate) const LIGHT_DIRECTIONAL: u32 = 0;
 pub(crate) const LIGHT_POINT: u32 = 1;
 pub(crate) const LIGHT_SPOT: u32 = 2;
@@ -51,7 +57,8 @@ pub(crate) struct GpuGlobals {
     pub(crate) fog_density: f32,
     pub(crate) tone_mapping: u32,
     pub(crate) exposure: f32,
-    _pad: [u32; 2],
+    pub(crate) supersample: u32,
+    _pad: u32,
 }
 
 /// Keep in sync with `Light` in `scene.wgsl`.
@@ -121,7 +128,7 @@ const VARIANTS: [(DepthTest, Option<wgpu::Face>); 6] = [
     (DepthTest::Read, None),
 ];
 
-fn gpu_object(object: &Object<GpuMesh>, row: &Row) -> GpuObject {
+fn gpu_object(object: &Object<GpuMesh, TexRef>, row: &Row) -> GpuObject {
     let surface = &object.surface;
     let mut flags = 0;
     if surface.unlit {
@@ -132,6 +139,9 @@ fn gpu_object(object: &Object<GpuMesh>, row: &Row) -> GpuObject {
     }
     if lumen_3d::mirrors(&object.world) {
         flags |= FLAG_MIRRORED;
+    }
+    if surface.texture.is_some() {
+        flags |= FLAG_RASTER;
     }
     let normal = row.normal;
     GpuObject {
@@ -251,6 +261,7 @@ impl RecordNode for Render3d {
             &lighting,
             &params,
             fog,
+            supersample,
         ));
         let lights = cx.rec.storage_parts(&[bytemuck::cast_slice(&lights)]);
         let objects: Vec<GpuObject> = draws
@@ -270,6 +281,16 @@ impl RecordNode for Render3d {
             DEPTH_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
+        let clamp = cx.rec.sampler(CLAMP_SAMPLER, || wgpu::SamplerDescriptor {
+            label: Some("lumen 3d raster sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..wgpu::SamplerDescriptor::default()
+        });
+        // Objects without a raster still bind a texture, which their shader doesn't read.
+        let unread = cx.transparent(size).tex;
         for (drawn, run) in draws.runs.iter().enumerate() {
             let depth_test = if run.key.blend {
                 DepthTest::Read
@@ -310,6 +331,8 @@ impl RecordNode for Render3d {
                     (3, Res::Buffer(run.key.mesh.indices)),
                     (4, lights),
                     (5, rows),
+                    (6, Res::Tex(run.key.texture.unwrap_or(unread))),
+                    (7, Res::Sampler(clamp)),
                 ],
                 color,
                 load,
@@ -347,6 +370,7 @@ fn globals(
     lighting: &Lighting,
     params: &super::Render3dParams,
     fog: [f32; 4],
+    supersample: u32,
 ) -> GpuGlobals {
     GpuGlobals {
         view_proj: (camera.projection_matrix(aspect) * camera.view()).to_cols_array_2d(),
@@ -360,6 +384,7 @@ fn globals(
         fog_density: params.fog_density.max(0.0) as f32,
         tone_mapping: params.tone_mapping as u32,
         exposure: (params.exposure as f32).exp2(),
-        _pad: [0; 2],
+        supersample,
+        _pad: 0,
     }
 }

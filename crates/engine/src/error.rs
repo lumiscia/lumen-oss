@@ -238,9 +238,7 @@ pub(crate) const NO_3D_SUPPORT: &str =
 fn wrong_kind_hint(expected: PortKind) -> &'static str {
     match expected {
         PortKind::Raster => "draw the scene into a raster through a render_3d, and wire that in",
-        PortKind::Scene => {
-            "show the raster in the scene through a scene node that takes a raster input"
-        }
+        PortKind::Scene => "show the raster in the scene through an image_plane_3d",
     }
 }
 

@@ -43,6 +43,17 @@ composition.connect(box, output, { toPort: "source" });
 composition.addNode({ type: "opacity", inputs: { source: group } });
 // @ts-expect-error background outputs a raster, not a scene
 composition.addNode({ type: "render_3d", inputs: { scene: background } });
+
+const plane = composition.addNode({
+  type: "image_plane_3d",
+  params: { width: 2 },
+  inputs: { source: background },
+});
+composition.addNode({ type: "merge_3d", inputs: { objects: [box, plane] } });
+// @ts-expect-error an image plane shows a raster, not a scene
+composition.addNode({ type: "image_plane_3d", inputs: { source: group } });
+// @ts-expect-error an image plane outputs a scene, which a raster input doesn't take
+composition.addNode({ type: "opacity", inputs: { source: plane } });
 // @ts-expect-error a render_3d outputs a raster, not a scene
 composition.addNode({ type: "merge_3d", inputs: { objects: [box, render] } });
 

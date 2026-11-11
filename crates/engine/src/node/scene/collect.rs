@@ -6,13 +6,13 @@ use lumen_3d::{
     Blending, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive, Projection,
     Scene, Surface, Transform,
 };
-use lumen_gpu::{BufRef, Recorder, wgpu};
+use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
 use super::{Light3dKind, Material3d, Placement3d, Pose3d, Projection3d, Shape3dKind};
 use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::FrameCx;
 use crate::node::vector::paint::Paint;
-use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind};
+use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, required_input};
 
 /// A mesh's vertices and indices on the GPU, which the scene shader pulls vertices from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -41,19 +41,28 @@ impl GpuMesh {
     }
 }
 
-/// The primitives' meshes, uploaded once with how many indices each draws.
+/// The primitives' and the image plane's meshes, uploaded once with how many indices each draws.
 #[derive(Default)]
 pub(crate) struct SceneCache {
     shapes: HashMap<Shape3dKind, (GpuMesh, u32)>,
+    quad: Option<(GpuMesh, u32)>,
 }
 
 impl SceneCache {
     pub(crate) fn release(&mut self, rec: &mut Recorder) {
-        for (mesh, _) in self.shapes.values() {
+        for (mesh, _) in self.shapes.values().chain(&self.quad) {
             rec.forget_buffer(mesh.vertices);
             rec.forget_buffer(mesh.indices);
         }
         self.shapes.clear();
+        self.quad = None;
+    }
+
+    fn quad(&mut self, rec: &mut Recorder) -> (GpuMesh, u32) {
+        *self.quad.get_or_insert_with(|| {
+            let mesh = Mesh::textured_quad();
+            (GpuMesh::upload(rec, &mesh), mesh.indices.len() as u32)
+        })
     }
 
     fn shape(&mut self, rec: &mut Recorder, kind: Shape3dKind) -> (GpuMesh, u32) {
@@ -108,12 +117,17 @@ pub(super) fn solid_linear(
     Ok([r, g, b, f32::from(a) / 255.0])
 }
 
-fn surface(node_id: NodeId, material: &Material3d) -> crate::Result<Surface> {
-    let mut base_color = solid_linear(node_id, "Shape3d", &material.color)?;
+fn surface(
+    node_id: NodeId,
+    kind: &'static str,
+    material: &Material3d,
+) -> crate::Result<Surface<TexRef>> {
+    let mut base_color = solid_linear(node_id, kind, &material.color)?;
     base_color[3] *= material.opacity.clamp(0.0, 1.0) as f32;
     let emissive = material.emissive.max(0.0) as f32;
     Ok(Surface {
         base_color,
+        texture: None,
         metallic: material.metallic.clamp(0.0, 1.0) as f32,
         roughness: material.roughness.clamp(0.0, 1.0) as f32,
         emissive: [0, 1, 2].map(|i| base_color[i] * emissive),
@@ -129,7 +143,7 @@ fn surface(node_id: NodeId, material: &Material3d) -> crate::Result<Surface> {
 
 /// The scene a `render_3d` draws, as far as its nodes have been walked.
 pub(super) struct Collected {
-    pub(super) scene: Scene<GpuMesh>,
+    pub(super) scene: Scene<GpuMesh, TexRef>,
     render_id: NodeId,
     /// Scene nodes walked, counting a node each time it is reached.
     reached: usize,
@@ -199,9 +213,33 @@ impl Collected {
                 let params = shape.params.eval(&ctx)?;
                 let size = vec3(params.size).max(Vec3::ZERO);
                 let world = parent * placement(&params.placement).matrix() * Mat4::from_scale(size);
-                let surface = surface(node_id, &params.material)?;
+                let surface = surface(node_id, "Shape3d", &params.material)?;
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.shape(rec, params.shape);
+                self.scene.objects.push(Object {
+                    world,
+                    mesh,
+                    index_count,
+                    surface,
+                    center: world.transform_point3(Vec3::ZERO),
+                });
+            }
+            NodeKind::ImagePlane3d(plane) => {
+                let params = plane.params.eval(&ctx)?;
+                let source = cx.input_native(required_input(node_id, "source", plane.source)?)?;
+                let display = source.domain.display_size();
+                let scale = lumen_3d::plane_scale(
+                    params.width.max(0.0) as f32,
+                    (display.width, display.height),
+                );
+                let world =
+                    parent * placement(&params.placement).matrix() * Mat4::from_scale(scale);
+                let mut surface = surface(node_id, "ImagePlane3d", &params.material)?;
+                // A raster has transparent texels whatever its opacity, so a plane always blends.
+                surface.blending = Blending::Blend;
+                surface.texture = Some(source.tex);
+                let (rec, cache) = cx.scene_cache();
+                let (mesh, index_count) = cache.quad(rec);
                 self.scene.objects.push(Object {
                     world,
                     mesh,

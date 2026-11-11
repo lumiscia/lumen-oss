@@ -1168,6 +1168,37 @@ impl<'a> FrameCx<'a> {
         Ok(full)
     }
 
+    /// `node_id` stored at its full display size, where a clip keeps the canvas its content is
+    /// drawn on rather than being cropped to this one, for readers that place it anywhere, such
+    /// as 3D. Content that draws less than its canvas is padded with transparency to it, and
+    /// content that draws more is cropped.
+    #[cfg(feature = "3d")]
+    pub(crate) fn input_native(&mut self, node_id: NodeId) -> crate::Result<Raster> {
+        if let Some(NodeKind::Clip(clip)) = self.scope.node(node_id) {
+            let canvas = clip.content_canvas(&self.scope)?;
+            let max = self.rec.device().limits().max_texture_dimension_2d;
+            if canvas.width > max || canvas.height > max {
+                return Err(RenderError::NodeEvaluation {
+                    node_id,
+                    node_kind: "Clip",
+                    details: format!(
+                        "a {}x{} canvas is larger than this device's {max}-pixel texture limit",
+                        canvas.width, canvas.height
+                    ),
+                }
+                .into());
+            }
+            return match clip.route(&self.scope, self.frame, self.media)? {
+                Some(routed) => {
+                    let raster = self.place_routed(routed, canvas)?;
+                    Ok(self.full_frame(raster))
+                }
+                None => Ok(self.transparent(canvas)),
+            };
+        }
+        self.input_full(node_id)
+    }
+
     /// `raster` stored at its full display size, copied there when it is bounded.
     pub(crate) fn full_frame(&mut self, raster: Raster) -> Raster {
         if raster.domain.is_full_frame() {
@@ -1984,10 +2015,14 @@ impl<'a> FrameCx<'a> {
         let Some(routed) = routed else {
             return Ok(self.transparent(self.canvas_size()));
         };
+        self.place_routed(routed, self.canvas_size())
+    }
+
+    /// What a clip's content shows, cropped to its canvas and the `canvas` it is placed on.
+    fn place_routed(&mut self, routed: Routed<'a>, canvas: Size) -> crate::Result<Raster> {
         let settings = &routed.scope.scene.render_settings;
         let content = Size::new(settings.width.max(1), settings.height.max(1));
         let raster = self.record_routed(routed)?;
-        let canvas = self.canvas_size();
         let canvas_rect = lumen_gpu::RectI::from_size(canvas);
         let data = raster.domain.data_rect;
         let visible = canvas_rect
@@ -2086,6 +2121,7 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
         #[cfg(not(feature = "3d"))]
         NodeKind::Render3d(_) => Ok(()),
         NodeKind::Shape3d(_)
+        | NodeKind::ImagePlane3d(_)
         | NodeKind::Camera3d(_)
         | NodeKind::Light3d(_)
         | NodeKind::Merge3d(_) => Ok(()),
@@ -2170,6 +2206,7 @@ fn record_kind(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
         // Validation keeps a scene out of every raster input, and `render_3d` reads its scene
         // without recording it.
         NodeKind::Shape3d(_)
+        | NodeKind::ImagePlane3d(_)
         | NodeKind::Camera3d(_)
         | NodeKind::Light3d(_)
         | NodeKind::Merge3d(_) => Err(RenderError::NodeEvaluation {

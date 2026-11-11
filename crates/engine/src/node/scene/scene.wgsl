@@ -9,6 +9,8 @@ const FLAG_UNLIT: u32 = 1u;
 const FLAG_BLEND: u32 = 2u;
 // Mirrored by its world matrix, so its outward faces wind clockwise.
 const FLAG_MIRRORED: u32 = 4u;
+// The bound raster texture colours the object.
+const FLAG_RASTER: u32 = 8u;
 
 const LIGHT_DIRECTIONAL: u32 = 0u;
 const LIGHT_SPOT: u32 = 2u;
@@ -30,6 +32,8 @@ struct Globals {
     tone_mapping: u32,
     // A multiplier.
     exposure: f32,
+    // Samples per output pixel along each axis.
+    supersample: u32,
 }
 
 struct Object {
@@ -48,6 +52,7 @@ struct Object {
 struct Vertex {
     position: array<f32, 3>,
     normal: array<f32, 3>,
+    uv: array<f32, 2>,
 }
 
 // The rows of the object table a draw covers, and where their vertices start.
@@ -77,12 +82,16 @@ struct Light {
 @group(0) @binding(3) var<storage, read> indices: array<u32>;
 @group(0) @binding(4) var<storage, read> lights: array<Light>;
 @group(0) @binding(5) var<uniform> run: Run;
+// A Lumen raster: premultiplied and sRGB-encoded.
+@group(0) @binding(6) var raster_tex: texture_2d<f32>;
+@group(0) @binding(7) var raster_sampler: sampler;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) world: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) @interpolate(flat) object: u32,
+    @location(3) uv: vec2<f32>,
 }
 
 // The row of the object table that draws vertex `slot` of the whole table.
@@ -114,6 +123,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
     out.world = world.xyz;
     out.normal = o.normal * normal;
     out.object = oi;
+    out.uv = vec2<f32>(vertex.uv[0], vertex.uv[1]);
     return out;
 }
 
@@ -196,15 +206,55 @@ fn view_direction(world: vec3<f32>) -> vec3<f32> {
     return unit(globals.camera_position - world);
 }
 
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let low = c / 12.92;
+    let high = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
+}
+
+// Where a sample of the raster belongs: at `uv`, moved to the centre of the output pixel the
+// sample is part of, so that the samples averaged into a pixel all read the same place and a
+// raster shown at its own size or larger isn't filtered twice. A raster shown smaller keeps each
+// sample's own place, since averaging distinct samples is what filters it, and moving them
+// together would shrink that filter. `dx` and `dy` are the change in `uv` over a sample, and
+// `position` the sample's place in the supersampled target.
+fn pixel_centre_uv(position: vec2<f32>, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec2<f32> {
+    let scale = f32(max(globals.supersample, 1u));
+    let to_centre = (floor(position / scale) + vec2<f32>(0.5)) * scale - position;
+    let size = vec2<f32>(textureDimensions(raster_tex));
+    let texels_per_pixel = max(length(dx * size), length(dy * size)) * scale;
+    // One texel per pixel, with margin for the rounding of derivatives, down to the ramp's end.
+    let weight = clamp((1.25 - texels_per_pixel) / 0.2, 0.0, 1.0);
+    return uv + weight * (dx * to_centre.x + dy * to_centre.y);
+}
+
+// The raster at `uv` as linear colour with straight alpha.
+fn raster_texel(uv: vec2<f32>) -> vec4<f32> {
+    let texel = textureSampleLevel(raster_tex, raster_sampler, uv, 0.0);
+    let straight = clamp(texel.rgb / max(texel.a, 1e-6), vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(srgb_to_linear(straight), texel.a);
+}
+
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    // Derivatives need uniform control flow, so they come before anything branches.
+    let uv_dx = dpdx(in.uv);
+    let uv_dy = dpdy(in.uv);
     let o = objects[in.object];
-    var base = o.base_color;
+    let raster = (o.flags & FLAG_RASTER) != 0u;
+    var texel = vec4<f32>(1.0);
+    if (raster) {
+        texel = raster_texel(pixel_centre_uv(in.clip.xy, in.uv, uv_dx, uv_dy));
+    }
+    var base = o.base_color * texel;
+    let emissive = o.emissive * texel.rgb;
     if ((o.flags & FLAG_BLEND) == 0u) {
         base.a = 1.0;
     }
     if ((o.flags & FLAG_UNLIT) != 0u) {
-        return vec4<f32>(fogged(display(base.rgb + o.emissive), in.world) * base.a, base.a);
+        // A raster shown unlit keeps its colours as in 2D, whatever the exposure and tone mapping.
+        let shown = base.rgb + emissive;
+        return vec4<f32>(fogged(select(display(shown), shown, raster), in.world) * base.a, base.a);
     }
 
     let v = view_direction(in.world);
@@ -264,7 +314,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     let blurred = normalize(mix(reflected, n, alpha * alpha));
     color += diffuse_color * diffuse_environment(n);
     color += specular_environment(blurred, roughness) * env_brdf(f0, roughness, n_dot_v);
-    color += o.emissive;
+    color += emissive;
     return vec4<f32>(fogged(display(color), in.world) * base.a, base.a);
 }
 

@@ -3056,6 +3056,232 @@
           },
           {
             "additionalProperties": false,
+            "description": "Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by\ndefault, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,\nordered by its centre among blended objects, so its transparent parts show what is behind it.\nPlanes that intersect, or overlap while crossing in depth, can show in the wrong order; layers\nseparated in depth, and opaque shapes in front of or behind planes, are ordered correctly.\nA source keeps its detail when it is shown at its own size or larger; shown smaller, it is\nfiltered by `render_3d`'s `supersample`.",
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/paint"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [255, 255, 255, 255],
+                    "description": "Base colour, which an image plane's raster is multiplied by. Must be a solid color.",
+                    "title": "Color",
+                    "x-lumen-constraints": {
+                      "role": "color"
+                    },
+                    "x-lumen-kind": "paint"
+                  },
+                  "double_sided": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Draws the back of each face too.",
+                    "title": "Double Sided",
+                    "x-lumen-kind": "bool"
+                  },
+                  "emissive": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Light the surface gives off on its own, as a multiple of its base colour.",
+                    "title": "Emissive",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "metallic": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "0 is a dielectric such as plastic, 1 a bare metal.",
+                    "title": "Metallic",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "opacity": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.0,
+                    "description": "Opacity multiplier. Anything below 1 is drawn blended, after opaque objects.",
+                    "title": "Opacity",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "position": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Position in world units along X, Y and Z, in the parent's space.",
+                    "title": "Position",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "rotation": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [0.0, 0.0, 0.0],
+                    "description": "Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned\nX, then roll about the turned Z.",
+                    "title": "Rotation",
+                    "x-lumen-constraints": {
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "roughness": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.5,
+                    "description": "0 is a mirror finish, 1 fully diffuse.",
+                    "title": "Roughness",
+                    "x-lumen-constraints": {
+                      "max": 1.0,
+                      "min": 0.0,
+                      "step": 0.05
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "scale": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/vec3"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": [1.0, 1.0, 1.0],
+                    "description": "Scale multiplier along X, Y and Z, applied before the rotation.",
+                    "title": "Scale",
+                    "x-lumen-constraints": {
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "vec3"
+                  },
+                  "unlit": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Shows the base colour as is, ignoring lights.",
+                    "title": "Unlit",
+                    "x-lumen-kind": "bool"
+                  },
+                  "width": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 1.6,
+                    "description": "Width in world units; the height follows the aspect ratio of the source's full display\nsize.",
+                    "title": "Width",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  }
+                },
+                "type": "object"
+              },
+              "type": {
+                "const": "image_plane_3d"
+              }
+            },
+            "required": ["id", "type"],
+            "title": "Image Plane 3D",
+            "type": "object",
+            "x-lumen-category": "scene",
+            "x-lumen-inputs": [
+              {
+                "kind": "raster",
+                "name": "source",
+                "optional": false,
+                "variadic": false
+              }
+            ],
+            "x-lumen-outputs": [
+              {
+                "kind": "scene",
+                "name": "output"
+              }
+            ]
+          },
+          {
+            "additionalProperties": false,
             "description": "Remaps raster black, white, gamma, and output range.",
             "properties": {
               "id": {
@@ -5447,7 +5673,7 @@
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Base colour. Must be a solid color.",
+                    "description": "Base colour, which an image plane's raster is multiplied by. Must be a solid color.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"

@@ -507,6 +507,53 @@ fn media_prediction_follows_a_videos_range_and_loop_mode() {
     );
 }
 
+#[cfg(feature = "3d")]
+#[test]
+fn media_prediction_sees_a_video_shown_on_an_image_plane() {
+    #[derive(Debug)]
+    struct Store;
+    impl MediaStore for Store {
+        fn get_video_resolver(
+            &self,
+            _: &str,
+        ) -> Result<Box<dyn VideoFrameResolver>, lumen_engine::error::MediaError> {
+            Ok(Box::new(Video))
+        }
+    }
+    struct Video;
+    impl VideoFrameResolver for Video {
+        fn id(&self) -> &str {
+            "clip"
+        }
+        fn metadata(&self) -> VideoMetadata {
+            VideoMetadata {
+                width: 8,
+                height: 4,
+                frame_count: 10,
+                fps: 24.0,
+            }
+        }
+        fn frame(&self, _: u32) -> Result<MediaFrame, lumen_engine::error::MediaError> {
+            unreachable!("prediction reads no frames")
+        }
+    }
+
+    let composition = scene(
+        (8, 4),
+        json!([
+            { "id": 1, "type": "media_in", "params": { "kind": "video", "source": "clip" } },
+            { "id": 2, "type": "image_plane_3d", "in": { "source": 1 } },
+            { "id": 3, "type": "merge_3d", "in": { "objects": [2] } },
+            { "id": 4, "type": "render_3d", "in": { "scene": 3 } },
+        ]),
+    );
+
+    let requirements = collect_frame_requirements(&composition, &Store, 5).unwrap();
+
+    assert_eq!(requirements.videos.len(), 1);
+    assert_eq!(requirements.videos[0].frames, [5]);
+}
+
 #[test]
 fn color_grade_interpolation_is_a_sampling_name() {
     let load = |value: Value| {

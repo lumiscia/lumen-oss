@@ -55,7 +55,7 @@ impl Default for Placement3d {
 /// How a surface responds to light.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Material3d {
-    /// Base colour. Must be a solid color.
+    /// Base colour, which an image plane's raster is multiplied by. Must be a solid color.
     #[meta(role = "color")]
     pub color: Paint,
     /// 0 is a dielectric such as plastic, 1 a bare metal.
@@ -88,6 +88,17 @@ impl Default for Material3d {
             opacity: 1.0,
             unlit: false,
             double_sided: false,
+        }
+    }
+}
+
+impl Material3d {
+    /// A material that shows its base colour as is, from either side.
+    fn flat() -> Self {
+        Self {
+            unlit: true,
+            double_sided: true,
+            ..Self::default()
         }
     }
 }
@@ -146,6 +157,51 @@ pub struct Shape3d {
     pub id: NodeId,
     #[params]
     pub params: Shape3dParamsDelegate,
+}
+
+#[derive(Debug, Clone, lumen_macros::Delegate)]
+pub struct ImagePlane3dParams {
+    /// Width in world units; the height follows the aspect ratio of the source's full display
+    /// size.
+    #[meta(min = 0, step = 0.1)]
+    pub width: f64,
+    #[meta(flatten)]
+    pub placement: Placement3d,
+    #[meta(flatten)]
+    pub material: Material3d,
+}
+
+impl Default for ImagePlane3dParams {
+    fn default() -> Self {
+        Self {
+            width: 1.6,
+            placement: Placement3d::default(),
+            material: Material3d::flat(),
+        }
+    }
+}
+
+/// Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by
+/// default, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,
+/// ordered by its centre among blended objects, so its transparent parts show what is behind it.
+/// Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers
+/// separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
+/// A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
+/// filtered by `render_3d`'s `supersample`.
+#[derive(Debug, Clone, Default, lumen_macros::Node)]
+#[node(
+    kind = "image_plane_3d",
+    name = "Image Plane 3D",
+    category = "scene",
+    output = "scene"
+)]
+pub struct ImagePlane3d {
+    pub id: NodeId,
+    #[params]
+    pub params: ImagePlane3dParamsDelegate,
+
+    #[input()]
+    pub source: Option<NodeId>,
 }
 
 #[derive(
