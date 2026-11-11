@@ -1,4 +1,4 @@
-import type { VideoCodec } from "@lumiscia/lumen-types";
+import type { LumenModelAnimation, LumenModelMaterial, VideoCodec } from "@lumiscia/lumen-types";
 
 export interface LumenOptions {
   readonly apiKey: string;
@@ -71,6 +71,34 @@ export interface WaitForRenderOptions {
   readonly signal?: AbortSignal;
 }
 
+/** What the server decided an upload is by opening it, whatever its name and content type say. */
+export type MediaKind = "image" | "video" | "audio" | "font" | "model" | "environment";
+
+/** What opening an upload found. Each kind fills its own fields. */
+export interface MediaMetadata {
+  /** Images, video and environment maps. */
+  readonly width?: number;
+  readonly height?: number;
+  /** Video and audio. */
+  readonly durationMs?: number;
+  readonly fps?: number;
+  readonly frameCount?: number;
+  readonly codec?: string;
+  readonly hasAudio?: boolean;
+  readonly sampleRate?: number;
+  readonly channels?: number;
+  /** Fonts. */
+  readonly families?: readonly string[];
+  readonly faces?: readonly {
+    readonly family: string;
+    readonly weight: number;
+    readonly style: string;
+  }[];
+  /** Models: the clips `animation` and the materials `texture_material` of a `model_3d` select. */
+  readonly animations?: readonly LumenModelAnimation[];
+  readonly materials?: readonly LumenModelMaterial[];
+}
+
 export interface TemporaryMedia {
   readonly contentType: string;
   readonly createdAt: string;
@@ -84,6 +112,10 @@ export interface TemporaryMedia {
   readonly sourceUrl: string | null;
   readonly status: "pending" | "uploaded" | "validated" | "rejected";
   readonly uploadedBytes: number | null;
+  /** Set once the upload is complete and was readable. */
+  readonly kind?: MediaKind | null;
+  /** Set with `kind`. */
+  readonly metadata?: MediaMetadata | null;
 }
 
 export type UploadMediaBody = Blob | BufferSource | ReadableStream<Uint8Array>;

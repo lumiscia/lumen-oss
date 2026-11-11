@@ -31,6 +31,28 @@ pub fn check(composition_json: &str, fonts: Option<Vec<String>>) -> wasm_bindgen
     ))
 }
 
+/// The animation clips and materials of a binary glTF (`.glb`), which a `model_3d` selects with
+/// `animation` and `texture_material`: `{ animations: [{ index, name?, duration }], materials:
+/// [{ index, name?, hasBaseColorTexture }] }`, with `duration` in seconds. Throws as a render
+/// would on a file that isn't a model it can read.
+#[cfg(feature = "3d")]
+#[wasm_bindgen::prelude::wasm_bindgen(js_name = "modelInfo")]
+pub fn model_info(bytes: &[u8]) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
+    let info = lumen_3d::model::ModelInfo::from_glb(bytes)
+        .map_err(|error| js_sys::Error::new(&format!("the model could not be read: {error}")))?;
+    serde_json::to_string(&info)
+        .ok()
+        .and_then(|json| js_sys::JSON::parse(&json).ok())
+        .ok_or_else(|| js_sys::Error::new("the model's info could not be returned").into())
+}
+
+/// Throws: this build has no 3D support.
+#[cfg(not(feature = "3d"))]
+#[wasm_bindgen::prelude::wasm_bindgen(js_name = "modelInfo")]
+pub fn model_info(_bytes: &[u8]) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
+    Err(js_sys::Error::new("this build of Lumen has no 3D support").into())
+}
+
 static INSTALL_RUNTIME_HOOKS: Once = Once::new();
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

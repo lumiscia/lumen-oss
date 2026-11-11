@@ -54,4 +54,13 @@ const ok = diagnostics.every((diagnostic) => diagnostic.severity !== "error");
 
 Warnings never stop a composition from loading. Codes are public API, and new ones can appear in a patch release, so handle codes you don't know by their `severity`. The [engine README](https://github.com/lumiscia/lumen-oss/tree/main/crates/engine#diagnostics) lists them, along with the problems only rendering finds. A composition `loadComposition` rejects throws an `Error` with the same `diagnostics`.
 
+`modelInfo` lists the animation clips and materials of a binary glTF (`.glb`), which a `model_3d` selects with `animation` and `texture_material`. It reads the file as a render would and throws on one it can't read. An unnamed clip or material has no `name`; a clip is then selected by its `index`, as text:
+
+```ts
+const { modelInfo } = await createLumenBindings().preview();
+const { animations, materials } = modelInfo(new Uint8Array(await file.arrayBuffer()));
+// animations: [{ index: 0, name: "Walk", duration: 0.7 }]
+// materials: [{ index: 0, name: "screen", hasBaseColorTexture: false }]
+```
+
 See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.

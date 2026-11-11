@@ -1752,6 +1752,7 @@ version = "0.5.1"
 dependencies = [
  "js-sys",
  "lumen-engine",
+ "lumen-engine-3d",
  "lumen-engine-gpu",
  "serde",
  "serde_json",
