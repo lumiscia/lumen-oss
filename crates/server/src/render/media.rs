@@ -11,9 +11,9 @@ use lumen_engine::{
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
     media::{
-        Asset, AssetKind, AssetResolver, EnvironmentResolver, ImageResolver, MediaIdentity,
-        MediaResolver, MediaStore, ModelResolver, NoAssets, ResolvedMedia, TextSession,
-        VideoFrameResolver, asset_id, resolve_asset,
+        Asset, AssetKind, AssetResolver, EnvironmentResolver, ImageResolver, LutResolver,
+        MediaIdentity, MediaResolver, MediaStore, ModelResolver, NoAssets, ResolvedMedia,
+        TextSession, VideoFrameResolver, asset_id, resolve_asset,
     },
 };
 
@@ -95,7 +95,8 @@ impl LocalMediaStore {
                 | Asset::Video(path)
                 | Asset::Audio(path)
                 | Asset::Model(path)
-                | Asset::Environment(path) => {
+                | Asset::Environment(path)
+                | Asset::Lut(path) => {
                     let identity = asset_identity(id, [&path]);
                     Ok((path.to_string_lossy().to_string(), Some(identity)))
                 }
@@ -339,6 +340,12 @@ impl MediaStore for LocalMediaStore {
                 let identity = file.identity.clone();
                 (identity, MediaResolver::Environment(Box::new(file)))
             }
+            AssetKind::Lut => {
+                let limit = lumen_engine::media::MAX_LUT_BYTES;
+                let file = SceneFile::open(source, resolved, identity, "LUT", limit)?;
+                let identity = file.identity.clone();
+                (identity, MediaResolver::Lut(Box::new(file)))
+            }
             AssetKind::Font => unreachable!("fonts resolve above"),
         };
         Ok(ResolvedMedia::new(identity, resolver))
@@ -418,6 +425,12 @@ impl ModelResolver for SceneFile {
 }
 
 impl EnvironmentResolver for SceneFile {
+    fn data(&self) -> Result<Vec<u8>, MediaError> {
+        self.read()
+    }
+}
+
+impl LutResolver for SceneFile {
     fn data(&self) -> Result<Vec<u8>, MediaError> {
         self.read()
     }

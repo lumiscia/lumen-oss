@@ -74,12 +74,13 @@ pub(crate) struct MediaAttr {
     pub(crate) by: Option<Ident>,
 }
 
-const MEDIA_KINDS: [(&str, &str); 5] = [
+const MEDIA_KINDS: [(&str, &str); 6] = [
     ("image", "Image"),
     ("video", "Video"),
     ("audio", "Audio"),
     ("model", "Model"),
     ("environment", "Environment"),
+    ("lut", "Lut"),
 ];
 
 impl MediaAttr {

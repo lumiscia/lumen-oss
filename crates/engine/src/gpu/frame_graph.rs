@@ -452,6 +452,7 @@ struct RecordState {
     skipped_passes: u64,
     #[cfg(feature = "3d")]
     scene: crate::node::scene::collect::SceneCache,
+    luts: crate::node::processing::color_grade::LutCache,
     /// Models drawn while the static output being recorded records, which its slot keeps.
     static_models: Vec<String>,
     /// What each output that is static while its models hold a pose found out when it was recorded
@@ -636,6 +637,7 @@ impl FrameGraph {
                     self.drop_pending();
                 }
                 self.resolve(raster)?;
+                self.state.luts.trim(&mut self.recorder, self.state.tick);
                 #[cfg(feature = "3d")]
                 self.state.scene.trim(
                     &mut self.recorder,
@@ -952,6 +954,7 @@ impl FrameGraph {
         self.state.dummy_float = None;
         #[cfg(feature = "3d")]
         self.state.scene.release(&mut self.recorder);
+        self.state.luts.release(&mut self.recorder);
         self.recorder.release_all();
     }
 
@@ -1320,7 +1323,6 @@ impl<'a> FrameCx<'a> {
     }
 
     /// Counts frames recorded, for caches that keep what recent frames used.
-    #[cfg(feature = "3d")]
     pub(crate) fn tick(&self) -> u64 {
         self.st.tick
     }
@@ -1370,6 +1372,15 @@ impl<'a> FrameCx<'a> {
             .find(|(tex, ..)| *tex == raster.tex)
             .and_then(|(.., key)| key.clone())
             .map(Stable::Image)
+    }
+
+    pub(crate) fn lut_cache(
+        &mut self,
+    ) -> (
+        &mut Recorder,
+        &mut crate::node::processing::color_grade::LutCache,
+    ) {
+        (&mut *self.rec, &mut self.st.luts)
     }
 
     #[cfg(feature = "3d")]
@@ -1940,7 +1951,6 @@ impl<'a> FrameCx<'a> {
     }
 
     /// The param `param` of node `node` in the graph being recorded.
-    #[cfg(feature = "3d")]
     pub(crate) fn node_param(&self, node: NodeId, param: &str) -> crate::media::MediaLocation {
         crate::media::MediaLocation::Node(crate::media::NodeParamAt {
             template: self.scope.template_name().map(str::to_string),

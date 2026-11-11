@@ -10,6 +10,10 @@ use crate::{
 pub(crate) struct ColorGradeParams {
     pub(crate) strength: f32,
     pub(crate) interpolation: u32,
+    pub(crate) _pad: [u32; 2],
+    /// The `.cube` table's `DOMAIN_MIN` and `DOMAIN_MAX`, padded to four floats.
+    pub(crate) domain_min: [f32; 4],
+    pub(crate) domain_max: [f32; 4],
 }
 
 #[repr(C)]
@@ -245,37 +249,36 @@ fn parse_lut_stops(node_id: NodeId, source: &str) -> crate::Result<Vec<[f32; 3]>
             // `str::parse` also accepts `nan` and `inf`, which no clamp below would remove.
             .map(|part| part.parse::<f32>().ok().filter(|value| value.is_finite()))
             .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| lut_error(node_id, "LUT components must be finite numbers"))?;
+            .ok_or_else(|| lut_error(node_id, "`lut` components must be finite numbers"))?;
         if components.len() != 3 {
             return Err(lut_error(
                 node_id,
-                format!("LUT triplet `{triplet}` must contain exactly three RGB components"),
+                format!("`lut` triplet `{triplet}` must contain exactly three RGB components"),
             ));
         }
-        stops.push([
-            normalize_lut_component(components[0]),
-            normalize_lut_component(components[1]),
-            normalize_lut_component(components[2]),
-        ]);
+        if let Some(value) = components
+            .iter()
+            .find(|value| !(0.0..=1.0).contains(*value))
+        {
+            return Err(lut_error(
+                node_id,
+                format!(
+                    "`lut` value {value} in `{triplet}` is outside 0..1; the scale is 0..1, so divide 0..255 values by 255"
+                ),
+            ));
+        }
+        stops.push([components[0], components[1], components[2]]);
     }
     if stops.len() < 2 {
         return Err(lut_error(
             node_id,
-            "LUT must contain at least two RGB triplets",
+            "`lut` must contain at least two RGB triplets",
         ));
     }
     Ok(stops)
 }
 
-fn normalize_lut_component(value: f32) -> f32 {
-    if value > 1.0 {
-        (value / 255.0).clamp(0.0, 1.0)
-    } else {
-        value.clamp(0.0, 1.0)
-    }
-}
-
-fn lut_error(node_id: NodeId, details: impl Into<String>) -> crate::error::LumenError {
+pub(crate) fn lut_error(node_id: NodeId, details: impl Into<String>) -> crate::error::LumenError {
     RenderError::NodeEvaluation {
         node_id,
         node_kind: <crate::node::processing::color_grade::ColorGrade as JsonNode>::KIND,
