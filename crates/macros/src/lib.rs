@@ -10,6 +10,7 @@ use syn::parse_macro_input;
 mod common;
 mod delegate;
 mod diagnostic_code;
+mod media_sources;
 mod schema;
 mod structural_hash;
 
@@ -38,7 +39,7 @@ pub fn derive_node_enum(input: TokenStream) -> TokenStream {
     }
 }
 
-#[proc_macro_derive(Delegate, attributes(delegate, meta, default))]
+#[proc_macro_derive(Delegate, attributes(delegate, meta, default, media))]
 pub fn derive_delegate(input: TokenStream) -> TokenStream {
     match delegate::expand_delegate(parse_macro_input!(input as syn::DeriveInput)) {
         Ok(tokens) => tokens.into(),
@@ -52,6 +53,17 @@ pub fn derive_delegate(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(DiagnosticCode, attributes(code))]
 pub fn derive_diagnostic_code(input: TokenStream) -> TokenStream {
     match diagnostic_code::expand(&parse_macro_input!(input as syn::DeriveInput)) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+/// Declares which `String` fields of a struct name media with `#[media(kind, ...)]`, kinds being
+/// `image`, `video`, `audio`, `model` and `environment`. Adds `MEDIA_PARAMS` and
+/// `for_each_media_source`.
+#[proc_macro_derive(MediaSources, attributes(media))]
+pub fn derive_media_sources(input: TokenStream) -> TokenStream {
+    match media_sources::expand(&parse_macro_input!(input as syn::DeriveInput)) {
         Ok(tokens) => tokens.into(),
         Err(error) => error.to_compile_error().into(),
     }

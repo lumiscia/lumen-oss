@@ -210,3 +210,32 @@ impl<'a, M: MediaStore> RequirementContext<'a, M> {
         self.scope.expr_context(self.frame, Some(self.media_store))
     }
 }
+
+#[cfg(all(test, feature = "metadata"))]
+mod tests {
+    use crate::{media::AssetKind, node::NodeKind};
+
+    /// Prediction maps frames for `media_in` alone, from the one source its `resolve` reads. A
+    /// node that declares another param reading images or videos, or a second such param on
+    /// `media_in`, needs its own case in `collect_node`.
+    #[test]
+    fn media_in_source_is_the_only_param_that_reads_images_or_videos() {
+        let readers: Vec<_> = NodeKind::schemas()
+            .into_iter()
+            .flat_map(|schema| {
+                schema
+                    .properties
+                    .iter()
+                    .filter(|property| {
+                        property.media.is_some_and(|media| {
+                            media.kinds.contains(&AssetKind::Image)
+                                || media.kinds.contains(&AssetKind::Video)
+                        })
+                    })
+                    .map(|property| (schema.kind, property.id))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(readers, [("media_in", "source")]);
+    }
+}

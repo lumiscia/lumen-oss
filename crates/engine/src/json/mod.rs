@@ -25,11 +25,11 @@ use crate::{
         PropKind, RenderSettings, Scene, TimelineSettings,
     },
     diagnostic::{Diagnostic, MAX_DIAGNOSTICS},
-    error::{DocumentError, GraphValidationError, LumenError, MediaError, Warning},
+    error::{DocumentError, GraphValidationError, LumenError, Warning},
     expr::FunctionScope,
     graph::{Connection, Graph},
-    media::{AssetKind, AssetResolver, asset_id, resolve_asset},
-    node::{Deferred, Node, NodeId, NodeKind, source::media_in::MediaInSourceKindDelegate},
+    media::{AssetKind, AssetResolver, Found, MediaLocation, asset_id, resolve_asset_of},
+    node::{NodeId, NodeKind},
 };
 
 pub(crate) use property::{
@@ -450,6 +450,19 @@ fn load(root: &Value) -> Result<Composition, Vec<LumenError>> {
     let mut graph = build_nodes(&document.nodes, &mut errors);
     let mut templates = BTreeMap::new();
     for (name, template) in &document.compositions {
+        if name.len() > MAX_TEMPLATE_NAME_BYTES {
+            errors.push(
+                DocumentError::Invalid {
+                    pointer: "/compositions".to_string(),
+                    details: format!(
+                        "a name in `compositions` is {} bytes long; the most is \
+                         {MAX_TEMPLATE_NAME_BYTES}",
+                        name.len()
+                    ),
+                }
+                .into(),
+            );
+        }
         let mut template_errors = Vec::new();
         let built = build_template(template, &timeline, &render_settings, &mut template_errors);
         errors.extend(
@@ -505,6 +518,10 @@ fn end_phase(errors: &mut Vec<LumenError>) -> Result<(), Vec<LumenError>> {
 }
 
 /// `error` found in template `name`, with its message and path in the template.
+/// The longest name a template in `compositions` may have. Whatever lists a composition's parts
+/// repeats the name for each, so it is kept short.
+const MAX_TEMPLATE_NAME_BYTES: usize = 256;
+
 fn in_template(name: &str, error: LumenError) -> LumenError {
     GraphValidationError::InTemplate {
         template: name.to_string(),
@@ -674,24 +691,6 @@ fn build_template(
     }
 }
 
-/// The root's scene and each template's, with the template's name, and each one's nodes in id
-/// order.
-fn scenes_and_nodes(composition: &Composition) -> Vec<(Option<&str>, Vec<&NodeKind>)> {
-    std::iter::once((None, composition.scene()))
-        .chain(
-            composition
-                .compositions()
-                .iter()
-                .map(|(name, template)| (Some(name.as_str()), &template.scene)),
-        )
-        .map(|(template, scene)| {
-            let mut nodes: Vec<_> = scene.graph.nodes.values().collect();
-            nodes.sort_by_key(|node| node.id());
-            (template, nodes)
-        })
-        .collect()
-}
-
 /// An error for each asset a source names as a literal that `assets` doesn't have, or has as
 /// another kind than the source reads.
 fn asset_errors(
@@ -700,90 +699,27 @@ fn asset_errors(
     assets: &dyn AssetResolver,
 ) -> Vec<Diagnostic> {
     let mut errors = Vec::new();
-    let mut check = |source: &str, expected: Option<AssetKind>, at: (String, Option<NodeId>)| {
+    crate::media::walk_media(composition, &mut |found| {
+        let (source, kinds, at) = match found {
+            Found::Media { source, kinds, at } => (source, kinds, at),
+            Found::Font { family, at } => (family, vec![AssetKind::Font], MediaLocation::Node(at)),
+            Found::Dynamic { .. } => return,
+        };
         let Some(id) = asset_id(source) else {
             return;
         };
-        let error = match expected {
-            Some(kind) => resolve_asset(assets, id, kind).err(),
-            // A kind set by an expression is an image or a video, and either reads an asset of its kind.
-            None => match resolve_asset(assets, id, AssetKind::Image) {
-                Err(MediaError::AssetWrongKind {
-                    actual: AssetKind::Video,
-                    ..
-                }) => None,
-                result => result.err(),
-            },
-        };
-        if let Some(error) = error {
-            errors.push(Diagnostic::from_located_error(&error.into(), at));
+        if let Err(error) = resolve_asset_of(assets, id, &kinds) {
+            let located = match at {
+                MediaLocation::Node(at) => {
+                    crate::diagnostic::at_param(root, at.template.as_deref(), at.node, &at.param)
+                }
+                MediaLocation::AudioClip { index, .. } => {
+                    (format!("/audio/clips/{index}/source_id"), None)
+                }
+            };
+            errors.push(Diagnostic::from_located_error(&error.into(), located));
         }
-    };
-    for (template, nodes) in scenes_and_nodes(composition) {
-        for node in nodes {
-            match node {
-                NodeKind::MediaIn(media) => {
-                    if let Deferred::Value(source) = &media.params.source {
-                        let kind = match &media.params.kind {
-                            MediaInSourceKindDelegate::Image => Some(AssetKind::Image),
-                            MediaInSourceKindDelegate::Video => Some(AssetKind::Video),
-                            MediaInSourceKindDelegate::Expr(_) => None,
-                        };
-                        check(
-                            source,
-                            kind,
-                            crate::diagnostic::at_param(root, template, media.id, "source"),
-                        );
-                    }
-                }
-                NodeKind::Model3d(model) => {
-                    if let Deferred::Value(source) = &model.params.source {
-                        check(
-                            source,
-                            Some(AssetKind::Model),
-                            crate::diagnostic::at_param(root, template, model.id, "source"),
-                        );
-                    }
-                }
-                NodeKind::Render3d(render) => {
-                    if let Deferred::Value(source) = &render.params.environment_map {
-                        check(
-                            source,
-                            Some(AssetKind::Environment),
-                            crate::diagnostic::at_param(
-                                root,
-                                template,
-                                render.id,
-                                "environment_map",
-                            ),
-                        );
-                    }
-                }
-                NodeKind::Text(text) => {
-                    for (param, family) in crate::node::source::text::literal_font_families(text) {
-                        check(
-                            family,
-                            Some(AssetKind::Font),
-                            crate::diagnostic::at_param(root, template, text.id, &param),
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    for (index, clip) in composition
-        .audio()
-        .map_or(&[][..], |audio| audio.clips.as_slice())
-        .iter()
-        .enumerate()
-    {
-        check(
-            &clip.source_id,
-            Some(AssetKind::Audio),
-            (format!("/audio/clips/{index}/source_id"), None),
-        );
-    }
+    });
     errors
 }
 
@@ -796,30 +732,25 @@ fn font_fallbacks(
     known_font: &dyn Fn(&str) -> bool,
 ) -> Vec<Diagnostic> {
     let mut warnings = Vec::new();
-    for (template, nodes) in scenes_and_nodes(composition) {
-        let texts = nodes.into_iter().filter_map(|node| match node {
-            NodeKind::Text(text) => Some(text),
-            _ => None,
-        });
-        for text in texts {
-            for (param, family) in crate::node::source::text::literal_font_families(text) {
-                if family.is_empty()
-                    || family == lumen_text::DEFAULT_FONT_FAMILY
-                    || asset_id(family).is_some()
-                    || known_font(family)
-                {
-                    continue;
-                }
-                let warning = Warning::FontFallback {
-                    template: template.map(str::to_string),
-                    node_id: text.id,
-                    family: family.to_string(),
-                };
-                let (path, _) = crate::diagnostic::at_param(root, template, text.id, &param);
-                warnings.push(Diagnostic::from_warning(&warning, path));
-            }
+    crate::media::walk_media(composition, &mut |found| {
+        let Found::Font { family, at } = found else {
+            return;
+        };
+        if family == lumen_text::DEFAULT_FONT_FAMILY
+            || asset_id(family).is_some()
+            || known_font(family)
+        {
+            return;
         }
-    }
+        let warning = Warning::FontFallback {
+            template: at.template.clone(),
+            node_id: at.node,
+            family: family.to_string(),
+        };
+        let (path, _) =
+            crate::diagnostic::at_param(root, at.template.as_deref(), at.node, &at.param);
+        warnings.push(Diagnostic::from_warning(&warning, path));
+    });
     warnings
 }
 

@@ -7,6 +7,7 @@ pub mod ffmpeg;
 pub mod image;
 
 mod asset;
+mod inventory;
 mod pixels;
 mod prediction;
 mod resolver;
@@ -16,9 +17,17 @@ mod yuv;
 #[cfg(feature = "ffmpeg")]
 pub use ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver};
 
-pub use asset::{ASSET_SCHEME, Asset, AssetKind, AssetResolver, NoAssets, asset_id, resolve_asset};
+pub use asset::{
+    ASSET_SCHEME, Asset, AssetKind, AssetResolver, NoAssets, asset_id, resolve_asset,
+    resolve_asset_of,
+};
 #[cfg(feature = "image")]
 pub use image::ImageFileResolver;
+pub use inventory::{
+    DynamicMediaUse, FontDependency, MediaDependency, MediaInventory, MediaLocation, MediaUse,
+    NodeParamAt,
+};
+pub(crate) use inventory::{Found, walk as walk_media};
 pub use pixels::premultiply_rgba_in_place_if_needed;
 pub use prediction::{FrameRequirements, VideoFrameRequirement, collect_frame_requirements};
 #[cfg(feature = "ffmpeg")]

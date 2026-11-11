@@ -24,6 +24,20 @@ pub enum AssetKind {
     Environment,
 }
 
+impl AssetKind {
+    /// The kind's name in JSON and in `#[media(...)]`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Video => "video",
+            Self::Audio => "audio",
+            Self::Font => "font",
+            Self::Model => "model",
+            Self::Environment => "environment",
+        }
+    }
+}
+
 impl fmt::Display for AssetKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -89,15 +103,25 @@ pub fn resolve_asset(
     id: &str,
     expected: AssetKind,
 ) -> Result<Asset, MediaError> {
+    resolve_asset_of(assets, id, &[expected])
+}
+
+/// The asset `id` names in `assets`, which must be of one of `kinds`, of which there must be at
+/// least one. An asset of another kind is reported against the first.
+pub fn resolve_asset_of(
+    assets: &dyn AssetResolver,
+    id: &str,
+    kinds: &[AssetKind],
+) -> Result<Asset, MediaError> {
     let asset = assets
         .resolve(id)
         .ok_or_else(|| MediaError::AssetNotFound { id: id.to_string() })?;
-    if asset.kind() == expected {
+    if kinds.contains(&asset.kind()) {
         Ok(asset)
     } else {
         Err(MediaError::AssetWrongKind {
             id: id.to_string(),
-            expected,
+            expected: kinds[0],
             actual: asset.kind(),
         })
     }
