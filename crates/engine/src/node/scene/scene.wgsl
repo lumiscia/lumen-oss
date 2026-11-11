@@ -304,6 +304,7 @@ fn posed(index: u32) -> Posed {
     var position = vec4<f32>(vertex.position[0], vertex.position[1], vertex.position[2], 1.0);
     var normal = vec3<f32>(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
     if (o.morph_targets > 0u) {
+        let unmorphed = normal;
         let first = o.first_delta + (vertex_index - o.morph_vertex) * o.morph_targets * MORPH_DELTA_WORDS;
         for (var i = 0u; i < o.morph_targets; i += 1u) {
             let weight = weights[o.first_weight + i];
@@ -313,6 +314,9 @@ fn posed(index: u32) -> Posed {
                 normal += data_vec3(at + 3u) * weight;
             }
         }
+        // A direction again, or the unmorphed one where the targets cancel it out.
+        let largest = max(max(abs(normal.x), abs(normal.y)), abs(normal.z));
+        normal = select(unmorphed, unit(normal), largest > 1e-6);
     }
     if ((o.flags & FLAG_SKINNED) != 0u) {
         let skin = skinning(vertex_index, o.first_joint);
@@ -322,7 +326,8 @@ fn posed(index: u32) -> Posed {
     var out: Posed;
     out.object = oi;
     out.world = o.model * position;
-    out.normal = o.normal * normal;
+    // Unit length at each vertex, so that its length doesn't weigh how it is interpolated.
+    out.normal = unit(o.normal * normal);
     out.uv = vec2<f32>(vertex.uv[0], vertex.uv[1]);
     out.uv1 = out.uv;
     out.color = vec4<f32>(1.0);

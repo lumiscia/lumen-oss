@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use foldhash::HashMap;
 use lumen_3d::glam::{Mat4, Vec3};
-use lumen_3d::model::{Material, Model, ModelError, ModelScene, Playback, SkinBounds, Texture};
+use lumen_3d::model::{
+    Material, Model, ModelError, ModelScene, Playback, Reach, SkinBounds, Texture,
+};
 use lumen_3d::{
     Blending, Bounds, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive,
     Projection, Scene, Shadow, Surface, Transform,
@@ -85,8 +87,8 @@ struct LoadedModel {
     mesh: GpuMesh,
     /// One per texture of the model, in its order.
     textures: Arc<[TexRef]>,
-    /// The bounds of each primitive's vertices, by its first index and index count.
-    bounds: Arc<HashMap<(u32, u32), Bounds>>,
+    /// The reach of each primitive's vertices, by its first index and index count.
+    bounds: Arc<HashMap<(u32, u32), Reach>>,
     /// Each skin's bounds before posing.
     joint_bounds: Arc<Vec<SkinBounds>>,
 }
@@ -366,13 +368,13 @@ fn upload_model(
         .wanting(&[AssetKind::Model])
         .into());
     }
-    let bounds = primitive_bounds(&model);
+    let bounds = model.scene.primitive_bounds(&model.geometry);
     let joint_bounds = model.scene.joint_bounds(&model.geometry);
     let mut bytes = parts.iter().map(|part| part.len() as u64).sum::<u64>()
-        + (bounds.len() * size_of::<((u32, u32), Bounds)>()) as u64
+        + (bounds.len() * size_of::<((u32, u32), Reach)>()) as u64
         + joint_bounds
             .iter()
-            .map(|skin| ((skin.joints.len() + 1) * size_of::<Bounds>()) as u64)
+            .map(|skin| ((skin.joints.len() + 1) * size_of::<Reach>()) as u64)
             .sum::<u64>();
     let mesh = GpuMesh {
         vertices: storage_buffer(rec, "lumen 3d model vertices", parts[0]),
@@ -397,34 +399,10 @@ fn upload_model(
         scene: Arc::new(model.scene),
         mesh,
         textures,
-        bounds: Arc::new(bounds),
+        bounds: Arc::new(bounds.into_iter().collect()),
         joint_bounds: Arc::new(joint_bounds),
     };
     Ok((loaded, bytes))
-}
-
-/// The bounds of the vertices of each primitive `model` draws, by its first index and index count,
-/// morphed by weights within -1 to 1.
-fn primitive_bounds(model: &Model) -> HashMap<(u32, u32), Bounds> {
-    let geometry = &model.geometry;
-    let mut bounds = HashMap::default();
-    for posed in model.scene.pose(None).primitives {
-        let primitive = posed.primitive;
-        bounds
-            .entry((primitive.first_index, primitive.index_count))
-            .or_insert_with(|| {
-                let start = primitive.first_index as usize;
-                let indices = geometry
-                    .indices
-                    .get(start..start + primitive.index_count as usize)
-                    .unwrap_or_default();
-                indices
-                    .iter()
-                    .filter_map(|&index| geometry.reach(&primitive, index))
-                    .fold(Bounds::EMPTY, Bounds::union)
-            });
-    }
-    bounds
 }
 
 /// What a unit primitive covers, centred on the origin.
@@ -573,12 +551,14 @@ enum Extent {
 }
 
 /// A skin posed in the scene: where its joint matrices start in the scene's joints, the model
-/// matrix they are placed by, and its joints' bounds before posing.
+/// matrix they are placed by, its joints' bounds before posing, and the largest size of the
+/// weights morphing the primitives it moves.
 struct PosedSkin {
     first_joint: usize,
     root: Mat4,
     joint_bounds: Arc<Vec<SkinBounds>>,
     skin: usize,
+    weight: f32,
 }
 
 /// The scene a `render_3d` draws, as far as its nodes have been walked.
@@ -638,10 +618,12 @@ impl Collected {
                     .joints
                     .iter()
                     .zip(posed)
-                    .filter(|(bounds, _)| !bounds.is_empty())
+                    .filter(|(reach, _)| !reach.still.is_empty())
                     .fold(
-                        bounds.unmoved.transformed(&skin.root),
-                        |all, (bounds, joint)| all.union(bounds.transformed(&(skin.root * *joint))),
+                        bounds.unmoved.at(skin.weight).transformed(&skin.root),
+                        |all, (reach, joint)| {
+                            all.union(reach.at(skin.weight).transformed(&(skin.root * *joint)))
+                        },
                     )
             })
             .collect();
@@ -972,6 +954,7 @@ impl Collected {
                 root,
                 joint_bounds: model.joint_bounds.clone(),
                 skin,
+                weight: 0.0,
             }));
         let skin_of = |start: u32| {
             pose.skins
@@ -981,8 +964,9 @@ impl Collected {
         };
         self.scene.joints.extend(pose.joints.iter().copied());
         let default = Material::default();
-        for posed in pose.primitives {
+        for posed in &pose.primitives {
             let primitive = posed.primitive;
+            let weight = pose.weight_scale(posed);
             let material = primitive
                 .material
                 .and_then(|index| scene.materials().get(index))
@@ -1004,15 +988,18 @@ impl Collected {
             let local = model
                 .bounds
                 .get(&(primitive.first_index, primitive.index_count))
-                .copied()
-                .unwrap_or(Bounds::EMPTY);
+                .map_or(Bounds::EMPTY, |reach| reach.at(weight));
             // A skinned primitive's joints place it within the model, so only the model is placed.
             let world = match posed.first_joint {
                 Some(_) => root,
                 None => root * posed.world,
             };
             let extent = match posed.first_joint.and_then(skin_of) {
-                Some(skin) => Extent::Skin(skin),
+                Some(skin) => {
+                    let posed_skin = &mut self.skins[skin];
+                    posed_skin.weight = posed_skin.weight.max(weight);
+                    Extent::Skin(skin)
+                }
                 None => Extent::Local(local),
             };
             self.push(

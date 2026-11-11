@@ -1232,6 +1232,14 @@ fn corrupted_files_return_without_panicking() {
     assert!(split[2] > 300 && split[3] > 300, "{split:?}");
 }
 
+/// The reach of unmorphed vertices at `points`.
+fn still<const N: usize>(points: [Vec3; N]) -> Reach {
+    Reach {
+        still: Bounds::of(points),
+        spread: Vec3::ZERO,
+    }
+}
+
 #[test]
 fn each_joints_bounds_hold_the_vertices_it_moves_before_posing() {
     let model = skinned().read().unwrap();
@@ -1241,10 +1249,10 @@ fn each_joints_bounds_hold_the_vertices_it_moves_before_posing() {
         model.scene.joint_bounds(&model.geometry),
         [SkinBounds {
             joints: vec![
-                crate::Bounds::of([Vec3::ZERO, Vec3::Y]),
-                crate::Bounds::of([Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0)]),
+                still([Vec3::ZERO, Vec3::Y]),
+                still([Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0)]),
             ],
-            unmoved: crate::Bounds::EMPTY,
+            unmoved: Reach::EMPTY,
         }]
     );
     assert_eq!(model.scene.pose(None).skins, [(0, 0)]);
@@ -1260,10 +1268,10 @@ fn each_joints_bounds_hold_the_vertices_it_moves_before_posing() {
     glb.json["meshes"][0]["primitives"][0]["attributes"]["WEIGHTS_0"] = json!(weights);
     let model = glb.read().unwrap();
     let bounds = model.scene.joint_bounds(&model.geometry);
-    assert_eq!(bounds[0].unmoved, crate::Bounds::of([Vec3::X]));
+    assert_eq!(bounds[0].unmoved, still([Vec3::X]));
     assert_eq!(
         bounds[0].joints[1],
-        crate::Bounds::of([Vec3::Y]),
+        still([Vec3::Y]),
         "the joint the unweighted vertex names doesn't take it"
     );
 }
@@ -2008,10 +2016,15 @@ fn morph_targets_read_vertex_by_vertex_with_their_meshes_or_nodes_weights() {
     let pose = model.scene.pose(None);
     assert_eq!(pose.weights, [0.5, 0.0]);
     assert_eq!(pose.primitives[0].first_weight, Some(0));
-    // The first vertex reaches 1 along Z and 2 along X either way of its rest place.
-    let reach = model.geometry.reach(&model.scene.meshes[0][0], 0).unwrap();
-    assert_eq!(reach.min, Vec3::new(-2.0, 0.0, -1.0));
-    assert_eq!(reach.max, Vec3::new(2.0, 0.0, 1.0));
+    // The first vertex reaches 1 along Z and 2 along X either way of its rest place for each
+    // unit of weight, and its largest weight is 0.5.
+    let reach = model.geometry.reach(0).unwrap();
+    assert_eq!(reach.spread, Vec3::new(2.0, 0.0, 1.0));
+    assert_eq!(pose.weight_scale(&pose.primitives[0]), 0.5);
+    let at = reach.at(0.5);
+    assert_eq!(at.min, Vec3::new(-1.0, 0.0, -0.5));
+    assert_eq!(at.max, Vec3::new(1.0, 0.0, 0.5));
+    assert_eq!(model.geometry.morph_spread.len(), 3);
 
     let mut own = morphed();
     own.json["nodes"][0]["weights"] = json!([0.25, 1.0]);
@@ -2138,6 +2151,157 @@ fn malformed_or_oversized_morph_targets_are_errors() {
     assert_eq!(
         many,
         too_large("morph targets in one mesh", MAX_MORPH_TARGETS)
+    );
+}
+
+#[test]
+fn a_mesh_with_morphed_and_unmorphed_primitives_is_an_error_in_either_order() {
+    for morphed_first in [true, false] {
+        let mut glb = morphed();
+        let mut plain = glb.json["meshes"][0]["primitives"][0].clone();
+        plain.as_object_mut().unwrap().remove("targets");
+        let primitives = glb.json["meshes"][0]["primitives"].as_array_mut().unwrap();
+        if morphed_first {
+            primitives.push(plain);
+        } else {
+            primitives.insert(0, plain);
+        }
+        assert_eq!(
+            glb.read().unwrap_err(),
+            invalid("a mesh's primitives have different numbers of morph targets"),
+            "morphed first: {morphed_first}"
+        );
+    }
+}
+
+#[test]
+fn weights_past_the_limit_and_displacements_a_float_cant_reach_with_them_are_errors() {
+    let edit = |edit: &dyn Fn(&mut Glb)| {
+        let mut glb = morphed();
+        edit(&mut glb);
+        glb.read()
+    };
+    let at_limit = edit(&|glb| glb.json["meshes"][0]["weights"] = json!([MAX_MORPH_WEIGHT, 0]));
+    assert!(at_limit.is_ok(), "{at_limit:?}");
+    let past = invalid(format!("a morph target weight is past ±{MAX_MORPH_WEIGHT}"));
+    for weights in [
+        json!([MAX_MORPH_WEIGHT * 2.0, 0]),
+        json!([0, -MAX_MORPH_WEIGHT * 2.0]),
+    ] {
+        let mesh = edit(&|glb| glb.json["meshes"][0]["weights"] = weights.clone());
+        assert_eq!(mesh.unwrap_err(), past);
+        let node = edit(&|glb| glb.json["nodes"][0]["weights"] = weights.clone());
+        assert_eq!(node.unwrap_err(), past);
+    }
+    let keyed = edit(&|glb| {
+        let times = glb.accessor(FLOAT, "SCALAR", 1, &floats(&[0.0]));
+        let values = glb.accessor(FLOAT, "SCALAR", 2, &floats(&[0.0, 1e5]));
+        glb.json["animations"] = json!([{
+            "samplers": [{ "input": times, "output": values }],
+            "channels": [{ "sampler": 0, "target": { "node": 0, "path": "weights" } }],
+        }]);
+    });
+    assert_eq!(keyed.unwrap_err(), past);
+    // Each finite, but at the largest weight they move a vertex past what a float holds.
+    let far = edit(&|glb| {
+        let accessor = glb.accessor(FLOAT, "VEC3", 3, &floats(&[0.0, 0.0, 3e35].repeat(3)));
+        glb.json["meshes"][0]["primitives"][0]["targets"][1]["POSITION"] = json!(accessor);
+    });
+    assert_eq!(
+        far.unwrap_err(),
+        invalid("a morph target moves a vertex past what a float holds")
+    );
+    let turned = edit(&|glb| {
+        let accessor = glb.accessor(FLOAT, "VEC3", 3, &floats(&[3e35, 0.0, 0.0].repeat(3)));
+        glb.json["meshes"][0]["primitives"][0]["targets"][1]["NORMAL"] = json!(accessor);
+    });
+    assert_eq!(
+        turned.unwrap_err(),
+        invalid("a morph target moves a vertex past what a float holds")
+    );
+}
+
+#[test]
+fn a_vertexs_morph_reach_is_summed_once_however_often_it_is_drawn() {
+    const TARGETS: usize = 256;
+    const TRIANGLES: usize = 20_000;
+    let mut glb = Glb::triangle();
+    let up = glb.accessor(FLOAT, "VEC3", 3, &floats(&[0.0, 0.0, 1.0].repeat(3)));
+    let indices = [0u16, 1, 2].repeat(TRIANGLES);
+    let indices = glb.accessor(
+        UNSIGNED_SHORT,
+        "SCALAR",
+        indices.len(),
+        &indices
+            .iter()
+            .flat_map(|index| index.to_le_bytes())
+            .collect::<Vec<u8>>(),
+    );
+    let joints = glb.accessor(UNSIGNED_BYTE, "VEC4", 3, &[0u8; 12]);
+    let weights = glb.accessor(FLOAT, "VEC4", 3, &floats(&[1.0, 0.0, 0.0, 0.0].repeat(3)));
+    let primitive = &mut glb.json["meshes"][0]["primitives"][0];
+    primitive["indices"] = json!(indices);
+    primitive["targets"] = json!(vec![json!({ "POSITION": up }); TARGETS]);
+    primitive["attributes"]["JOINTS_0"] = json!(joints);
+    primitive["attributes"]["WEIGHTS_0"] = json!(weights);
+    glb.json["skins"] = json!([{ "joints": [1] }]);
+    glb.json["nodes"] = json!([{ "mesh": 0, "skin": 0 }, {}]);
+    glb.json["scenes"] = json!([{ "nodes": [0, 1] }]);
+
+    super::DELTAS_SUMMED.set(0);
+    let model = glb.read().unwrap();
+    let skins = model.scene.joint_bounds(&model.geometry);
+    let primitives = model.scene.primitive_bounds(&model.geometry);
+    let deltas = model.geometry.morphs.len();
+    assert_eq!(deltas, 3 * TARGETS);
+    assert!(
+        super::DELTAS_SUMMED.get() <= deltas,
+        "{} displacements summed for {deltas}",
+        super::DELTAS_SUMMED.get()
+    );
+    let reach = Reach {
+        still: Bounds::of([Vec3::ZERO, Vec3::new(1.0, 1.0, 0.0)]),
+        spread: Vec3::new(0.0, 0.0, TARGETS as f32),
+    };
+    assert_eq!(skins[0].joints, [reach]);
+    assert_eq!(primitives.values().copied().collect::<Vec<_>>(), [reach]);
+}
+
+#[test]
+fn lights_and_cameras_whose_derived_values_overflow_are_errors() {
+    let mut glb = Glb::triangle();
+    glb.json["extensionsUsed"] = json!(["KHR_lights_punctual"]);
+    glb.json["extensions"] = json!({ "KHR_lights_punctual": { "lights": [
+        { "type": "point", "color": [2, 0, 0], "intensity": 2e38 },
+    ] } });
+    assert_eq!(
+        glb.read().unwrap_err(),
+        invalid("a light's colour times its intensity isn't a finite number")
+    );
+    glb.json["extensions"]["KHR_lights_punctual"]["lights"][0]["intensity"] = json!(2e37);
+    assert!(glb.read().is_ok());
+
+    let camera = |camera: Value| {
+        let mut glb = Glb::triangle();
+        glb.json["cameras"] = json!([camera]);
+        glb.read()
+    };
+    assert_eq!(
+        camera(json!({ "type": "orthographic",
+            "orthographic": { "xmag": 1, "ymag": 2e38, "znear": 0.1, "zfar": 10 } }))
+        .unwrap_err(),
+        invalid("a camera's projection isn't finite numbers")
+    );
+    assert_eq!(
+        camera(json!({ "type": "perspective",
+            "perspective": { "yfov": 0.5, "znear": 3e38, "zfar": 1 } }))
+        .unwrap_err(),
+        invalid("a camera's far plane isn't beyond its near plane")
+    );
+    assert!(
+        camera(json!({ "type": "orthographic",
+            "orthographic": { "xmag": 1, "ymag": 1e38, "znear": 0.1, "zfar": 10 } }))
+        .is_ok()
     );
 }
 

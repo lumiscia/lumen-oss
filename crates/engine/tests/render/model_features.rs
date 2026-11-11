@@ -494,6 +494,112 @@ fn morphed_normals_light_a_surface_as_vertex_normals_tilted_the_same_way_do() {
 }
 
 #[test]
+fn morphed_normals_of_different_lengths_and_directions_light_as_their_unit_normals_do() {
+    // At weight 0.5 the left edge's normal is (1, 0, 1) and the right's (0, 0, 1).
+    let mut morphed = square(json!([matte()]));
+    let left = [2.0, 0.0, 0.0];
+    let right = [0.0, 0.0, 0.0];
+    let tilt = morphed.floats("VEC3", &[left, right, left, right].concat());
+    morphed.primitive()["targets"] = json!([{ "NORMAL": tilt }]);
+    morphed.json["meshes"][0]["weights"] = json!([0.5]);
+    let lean = std::f32::consts::FRAC_1_SQRT_2;
+    let mut unit = square(json!([matte()]));
+    let (left, right) = ([lean, 0.0, lean], [0.0, 0.0, 1.0]);
+    let normals = unit.floats("VEC3", &[left, right, left, right].concat());
+    unit.primitive()["attributes"]["NORMAL"] = json!(normals);
+    let media = TestMedia::default()
+        .model("morphed.glb", morphed.glb())
+        .model("unit.glb", unit.glb());
+    let lit = |name: &str| {
+        view(
+            json!({ "environment": 0 }),
+            &[source(name)],
+            vec![light(10, json!({ "rotation": [0, 60, 0] }))],
+        )
+    };
+    check(vec![
+        Case::new(
+            "the morphed normals",
+            lit("morphed.glb"),
+            Expect::Matches(lit("unit.glb").into()),
+        )
+        .media(media),
+    ]);
+}
+
+/// The nodes of a ground 6 units across, seen from straight above by a camera that leaves out
+/// everything over it, lit from straight above by a light casting sharp shadows, with `model`.
+fn shadowed_ground(model: Value) -> Scene {
+    crate::support::scene(
+        crate::scene::SIZE,
+        json!([
+            { "id": 50, "type": "shape_3d", "params": {
+                "shape": "plane", "size": [6, 1, 6], "roughness": 1 } },
+            { "id": 51, "type": "camera_3d", "params": {
+                "projection": "orthographic", "ortho_height": 6, "position": [0, 4, 0],
+                "rotation": [-90, 0, 0], "near": 3.95, "far": 10 } },
+            { "id": 60, "type": "light_3d", "params": {
+                "light": "directional", "rotation": [-90, 0, 0], "cast_shadows": true,
+                "shadow_softness": 0 } },
+            model,
+            { "id": 90, "type": "merge_3d", "in": { "objects": [50, 51, 60, 1] } },
+            { "id": 100, "type": "render_3d", "params": { "environment": 0 },
+              "in": { "scene": 90 } },
+        ]),
+    )
+}
+
+#[test]
+fn a_model_weighted_past_1_casts_its_whole_shadow() {
+    // A level square half a unit up, which its one morph target raises 1 towards the light, and a
+    // clip taking the target's weight from 0 to 4 over a second.
+    let level = |gltf: &mut Gltf, y: f32| {
+        gltf.json["nodes"][0]["translation"] = json!([0, y, 0]);
+        gltf.json["nodes"][0]["rotation"] = json!([-0.70710677, 0, 0, 0.70710677]);
+    };
+    let mut morphed = square(json!([matte()]));
+    level(&mut morphed, 0.5);
+    let along = morphed.floats("VEC3", &[0.0, 0.0, 1.0].repeat(4));
+    morphed.primitive()["targets"] = json!([{ "POSITION": along }]);
+    morphed.json["meshes"][0]["weights"] = json!([2.0]);
+    let times = morphed.floats("SCALAR", &[0.0, 1.0]);
+    let values = morphed.floats("SCALAR", &[0.0, 4.0]);
+    morphed.json["animations"] = json!([{
+        "name": "move",
+        "samplers": [{ "input": times, "output": values }],
+        "channels": [{ "sampler": 0, "target": { "node": 0, "path": "weights" } }],
+    }]);
+    let mut moved = square(json!([matte()]));
+    level(&mut moved, 2.5);
+    let media = TestMedia::default()
+        .model("morphed.glb", morphed.glb())
+        .model("moved.glb", moved.glb());
+    let ground = |params: Value| {
+        shadowed_ground(json!({ "id": 1, "type": "model_3d", "params": params }))
+            .frames(4)
+            .fps(4.0)
+    };
+    let moved = || ground(source("moved.glb"));
+    check(vec![
+        Case::new(
+            "at its mesh's weight 2",
+            ground(source("morphed.glb")),
+            Expect::Matches(moved().into()),
+        )
+        .media(media.clone()),
+        Case::new(
+            "half way through a clip to weight 4",
+            ground(
+                json!({ "source": "morphed.glb", "animation": "move", "animation_loop": false }),
+            ),
+            Expect::Matches(moved().into()),
+        )
+        .media(media)
+        .frames([2.0]),
+    ]);
+}
+
+#[test]
 fn a_model_with_still_weights_is_kept_and_one_playing_a_weight_clip_is_drawn_each_frame() {
     let gpu = gpu();
     let media = TestMedia::default().model(

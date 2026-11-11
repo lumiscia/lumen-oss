@@ -21,7 +21,9 @@
 //! and whose tangent displacements are ignored, since tangents come from the shaded surface. Each
 //! map reads either set of coordinates through its own `KHR_texture_transform`; a map reading a
 //! third set is left out. Points, lines, and triangle strips and fans are counted in
-//! [`ModelScene::skipped_primitives`] and left out. Morph targets on a Draco-compressed primitive
+//! [`ModelScene::skipped_primitives`] and left out. Morph target weights are bounded by
+//! [`MAX_MORPH_WEIGHT`], and each vertex's [`Geometry::morph_spread`] widens its bounds by the
+//! largest weight a pose gives it. Morph targets on a Draco-compressed primitive
 //! are unsupported. The scene's `KHR_lights_punctual` lights and its cameras are read where its
 //! nodes place them.
 //!
@@ -51,12 +53,12 @@ use std::fmt;
 use glam::{Mat4, Quat, Vec3};
 
 use crate::{
-    Blending, Light, MAX_SCENE_NODES, MapUv, Maps, Morph, MorphDelta, Projection, SkinVertex,
-    Vertex, VertexExtra,
+    Blending, Bounds, Light, MAX_SCENE_NODES, MapUv, Maps, Morph, MorphDelta, Projection,
+    SkinVertex, Vertex, VertexExtra,
 };
 use animation::Animation;
 pub use animation::Playback;
-pub use bounds::SkinBounds;
+pub use bounds::{Reach, SkinBounds};
 pub use gltf_json::{GLTF_JSON_SNIFF_BYTES, is_gltf_json};
 pub use info::{AnimationInfo, CameraInfo, MaterialInfo, ModelInfo};
 
@@ -88,6 +90,14 @@ pub const MAX_MORPH_DELTAS: usize = 4_000_000;
 /// The most morph target weights a model's nodes may hold together, one for each target of each
 /// node's mesh.
 pub const MAX_MORPH_WEIGHTS: usize = 1 << 20;
+/// The largest morph target weight, either way, a model may give or key. A weight a clip samples
+/// past it, overshooting its keys, is held to it.
+pub const MAX_MORPH_WEIGHT: f32 = 1e4;
+#[cfg(test)]
+thread_local! {
+    /// How many morph target displacements have been summed into vertices' morph spreads.
+    pub(crate) static DELTAS_SUMMED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 /// The most `KHR_lights_punctual` lights a model may define, and the most its scene may place.
 pub const MAX_MODEL_LIGHTS: usize = 1024;
 /// The most bytes one accessor may hold.
@@ -226,24 +236,27 @@ pub struct Geometry {
     pub extras: Vec<VertexExtra>,
     /// Morph targets' displacements, as each morphed primitive's [`Morph`] lays them out.
     pub morphs: Vec<MorphDelta>,
+    /// How far each vertex's morph targets move it along each axis at weight 1 either way: the
+    /// sum of their displacements' sizes. One per vertex when any primitive has morph targets,
+    /// and empty otherwise.
+    pub morph_spread: Vec<Vec3>,
 }
 
 impl Geometry {
-    /// Where `vertex` of `primitive` can reach, its morph targets' weights each within -1 to 1:
-    /// its position, give or take the size of every displacement it has.
-    pub fn reach(&self, primitive: &Primitive, vertex: u32) -> Option<crate::Bounds> {
+    /// Where `vertex` reaches: its position, widened by its morph spread for each unit of the
+    /// largest weight its morph targets are given.
+    pub fn reach(&self, vertex: u32) -> Option<Reach> {
         let position = Vec3::from(self.vertices.get(vertex as usize)?.position);
-        let mut spread = Vec3::ZERO;
-        if let Some(morph) = primitive.morph {
-            let local = vertex.checked_sub(morph.first_vertex)? as usize;
-            let first = morph.first_delta as usize + local * morph.targets as usize;
-            for delta in self.morphs.get(first..first + morph.targets as usize)? {
-                spread += Vec3::from(delta.position).abs();
-            }
-        }
-        Some(crate::Bounds {
-            min: position - spread,
-            max: position + spread,
+        Some(Reach {
+            still: Bounds {
+                min: position,
+                max: position,
+            },
+            spread: self
+                .morph_spread
+                .get(vertex as usize)
+                .copied()
+                .unwrap_or(Vec3::ZERO),
         })
     }
 }
@@ -397,13 +410,29 @@ pub struct Pose {
     pub joints: Vec<Mat4>,
     /// Each skin whose joint matrices are in `joints`, by its index, with where they start.
     pub skins: Vec<(usize, u32)>,
-    /// Every node's morph target weights, each finite.
+    /// Every node's morph target weights, each finite and within [`MAX_MORPH_WEIGHT`] either way.
     pub weights: Vec<f32>,
     /// The model's lights where its nodes place them.
     pub lights: Vec<Light>,
     /// Each camera a node places, by its index in [`ModelScene::cameras`], with the node's world
     /// matrix, in the order the nodes are reached.
     pub cameras: Vec<(usize, Mat4)>,
+}
+
+impl Pose {
+    /// The largest size of the weights `posed` is morphed by, which a [`Reach`] of its vertices is
+    /// taken at; 0 when it isn't morphed.
+    pub fn weight_scale(&self, posed: &Posed) -> f32 {
+        let (Some(morph), Some(first)) = (posed.primitive.morph, posed.first_weight) else {
+            return 0.0;
+        };
+        let first = first as usize;
+        self.weights
+            .get(first..first + morph.targets as usize)
+            .unwrap_or_default()
+            .iter()
+            .fold(0.0, |largest, weight| largest.max(weight.abs()))
+    }
 }
 
 /// The most names an error lists.
@@ -539,11 +568,14 @@ impl ModelScene {
         {
             animation.apply(playback.time(animation.duration), &mut locals, &mut weights);
         }
-        // A sampled weight can overflow; one that does moves nothing.
+        // A sampled weight can overflow, and moves nothing if it does; one overshooting its keys
+        // past the largest weight is held to it.
         for weight in &mut weights {
-            if !weight.is_finite() {
-                *weight = 0.0;
-            }
+            *weight = if weight.is_finite() {
+                weight.clamp(-MAX_MORPH_WEIGHT, MAX_MORPH_WEIGHT)
+            } else {
+                0.0
+            };
         }
 
         // Reading checked that every node has one parent at most and that roots have none, so

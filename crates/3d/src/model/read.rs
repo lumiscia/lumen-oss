@@ -18,9 +18,9 @@ use super::buffers::{Buffers, ByteRange, data_uri, data_uri_length, size};
 use super::image;
 use super::{
     Geometry, MAX_DRAWS, MAX_INDICES, MAX_JOINTS, MAX_MODEL_LIGHTS, MAX_MORPH_DELTAS,
-    MAX_MORPH_TARGETS, MAX_MORPH_WEIGHTS, MAX_SKIN_JOINTS, MAX_TEXTURE_PIXELS, MAX_VERTICES,
-    Material, Model, ModelCamera, ModelError, ModelScene, Node, Primitive, Skin, Texture, glb,
-    invalid, scan, too_large, unsupported,
+    MAX_MORPH_TARGETS, MAX_MORPH_WEIGHT, MAX_MORPH_WEIGHTS, MAX_SKIN_JOINTS, MAX_TEXTURE_PIXELS,
+    MAX_VERTICES, Material, Model, ModelCamera, ModelError, ModelScene, Node, Primitive, Skin,
+    Texture, glb, invalid, scan, too_large, unsupported,
 };
 use crate::{
     Blending, Filter, Light, LightKind, Map, MapUv, Maps, Morph, MorphDelta, Projection, Sampler,
@@ -241,6 +241,11 @@ fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError>
                 ));
             }
             let targets = primitive.targets.as_deref().unwrap_or_default();
+            if *mesh_targets.get_or_insert(targets.len()) != targets.len() {
+                return Err(invalid(
+                    "a mesh's primitives have different numbers of morph targets",
+                ));
+            }
             if !targets.is_empty() {
                 #[cfg(feature = "draco")]
                 if super::draco::extension(primitive).is_some() {
@@ -250,11 +255,6 @@ fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError>
                 }
                 if targets.len() > MAX_MORPH_TARGETS {
                     return Err(too_large("morph targets in one mesh", MAX_MORPH_TARGETS));
-                }
-                if *mesh_targets.get_or_insert(targets.len()) != targets.len() {
-                    return Err(invalid(
-                        "a mesh's primitives have different numbers of morph targets",
-                    ));
                 }
                 if count
                     .checked_mul(targets.len())
@@ -403,9 +403,9 @@ fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError>
                 Some(read_targets(
                     buffers,
                     targets,
-                    count,
+                    (&positions, &normals),
                     start,
-                    &mut geometry.morphs,
+                    &mut geometry,
                 )?)
             };
             let first_index = geometry.indices.len() as u32;
@@ -432,9 +432,7 @@ fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError>
                         "a mesh has a different number of weights than morph targets",
                     ));
                 }
-                if weights.iter().any(|weight| !weight.is_finite()) {
-                    return Err(invalid("a morph target weight isn't a finite number"));
-                }
+                check_weights(weights)?;
                 weights.clone()
             }
             _ => vec![0.0; targets],
@@ -455,6 +453,11 @@ fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError>
         let end = geometry.vertices.len();
         fill_extras(&mut geometry, end);
     }
+    if !geometry.morph_spread.is_empty() {
+        geometry
+            .morph_spread
+            .resize(geometry.vertices.len(), Vec3::ZERO);
+    }
     Ok(Meshes {
         geometry,
         meshes,
@@ -464,16 +467,21 @@ fn read_meshes(root: &Root, buffers: &Buffers<'_>) -> Result<Meshes, ModelError>
     })
 }
 
-/// Reads a primitive's morph `targets`, whose `count` vertices start at `first_vertex` in the
-/// model, into `morphs`, which [`read_meshes`] checked has room for them. Tangent displacements
-/// aren't read: the renderer finds tangents from texture coordinates rather than reading them.
+/// Reads a primitive's morph `targets`, for its vertices' `positions` and `normals` (empty when
+/// it has none), which start at `first_vertex` in the model, into `geometry`'s displacements,
+/// which [`read_meshes`] checked have room for them, and sums each vertex's into its morph
+/// spread. Tangent displacements aren't read: the renderer finds tangents from texture
+/// coordinates rather than reading them. A vertex whose displacements, at the largest weight
+/// either way, would move it or its normal past what a float holds is an error.
 fn read_targets(
     buffers: &Buffers<'_>,
     targets: &[gltf_json::mesh::MorphTarget],
-    count: usize,
+    (positions, normals): (&[[f32; 3]], &[[f32; 3]]),
     first_vertex: usize,
-    morphs: &mut Vec<MorphDelta>,
+    geometry: &mut Geometry,
 ) -> Result<Morph, ModelError> {
+    let count = positions.len();
+    let morphs = &mut geometry.morphs;
     let first_delta = morphs.len();
     let stride = targets.len();
     morphs.resize(first_delta + count * stride, MorphDelta::default());
@@ -499,11 +507,43 @@ fn read_targets(
             }
         }
     }
+    let spread = &mut geometry.morph_spread;
+    spread.resize(first_vertex, Vec3::ZERO);
+    for (vertex, deltas) in morphs[first_delta..].chunks_exact(stride).enumerate() {
+        let (mut position, mut normal) = (Vec3::ZERO, Vec3::ZERO);
+        for delta in deltas {
+            #[cfg(test)]
+            super::DELTAS_SUMMED.set(super::DELTAS_SUMMED.get() + 1);
+            position += Vec3::from(delta.position).abs();
+            normal += Vec3::from(delta.normal).abs();
+        }
+        let base = Vec3::from(normals.get(vertex).copied().unwrap_or([1.0; 3]));
+        let reach = |base: Vec3, spread: Vec3| (base.abs() + spread * MAX_MORPH_WEIGHT).is_finite();
+        if !reach(Vec3::from(positions[vertex]), position) || !reach(base, normal) {
+            return Err(invalid(
+                "a morph target moves a vertex past what a float holds",
+            ));
+        }
+        spread.push(position);
+    }
     Ok(Morph {
         first_delta: first_delta as u32,
         first_vertex: first_vertex as u32,
         targets: stride as u32,
     })
+}
+
+/// `weights`, unless one isn't finite or is past [`MAX_MORPH_WEIGHT`] either way.
+fn check_weights(weights: &[f32]) -> Result<(), ModelError> {
+    if weights.iter().any(|weight| !weight.is_finite()) {
+        return Err(invalid("a morph target weight isn't a finite number"));
+    }
+    if weights.iter().any(|weight| weight.abs() > MAX_MORPH_WEIGHT) {
+        return Err(invalid(format!(
+            "a morph target weight is past ±{MAX_MORPH_WEIGHT}"
+        )));
+    }
+    Ok(())
 }
 
 /// The accessors of what a triangle primitive's vertices hold that the reader reads.
@@ -950,10 +990,10 @@ fn read_nodes(
                          morph targets"
                     )));
                 }
-                Some(own) if own.iter().any(|weight| !weight.is_finite()) => {
-                    return Err(invalid("a morph target weight isn't a finite number"));
+                Some(own) => {
+                    check_weights(own)?;
+                    own
                 }
-                Some(own) => own,
                 None => defaults,
             };
             if own.len() > MAX_MORPH_WEIGHTS - weights.len() {
@@ -1078,9 +1118,15 @@ fn read_lights(root: &Root) -> Result<Vec<Light>, ModelError> {
             .clamp(0.0, std::f32::consts::FRAC_PI_2);
             let inner = finite(spot.and_then(|spot| spot.get("innerConeAngle")), 0.0, what)?
                 .clamp(0.0, outer);
+            let radiance = (color * intensity).max(Vec3::ZERO);
+            if !radiance.is_finite() {
+                return Err(invalid(
+                    "a light's colour times its intensity isn't a finite number",
+                ));
+            }
             Ok(Light {
                 kind,
-                radiance: (color * intensity).max(Vec3::ZERO),
+                radiance,
                 position: Vec3::ZERO,
                 direction: Vec3::NEG_Z,
                 range: range.max(0.0),
@@ -1116,7 +1162,7 @@ fn read_cameras(root: &Root) -> Result<Vec<ModelCamera>, ModelError> {
                 ),
                 (None, Some(orthographic)) => (
                     Projection::Orthographic {
-                        height: (check(orthographic.ymag)?.abs() * 2.0).max(1e-4),
+                        height: check((check(orthographic.ymag)?.abs() * 2.0).max(1e-4))?,
                     },
                     check(orthographic.znear)?,
                     check(orthographic.zfar)?,
@@ -1124,11 +1170,15 @@ fn read_cameras(root: &Root) -> Result<Vec<ModelCamera>, ModelError> {
                 (None, None) => return Err(invalid("a camera has no projection")),
             };
             let near = near.max(1e-4);
+            let far = far.max(near + 1e-3);
+            if far <= near {
+                return Err(invalid("a camera's far plane isn't beyond its near plane"));
+            }
             Ok(ModelCamera {
                 name: camera.name.clone().unwrap_or_default(),
                 projection,
                 near,
-                far: far.max(near + 1e-3),
+                far,
             })
         })
         .collect()
@@ -1226,12 +1276,21 @@ fn map_uv(
     if set > 1 {
         return Ok(None);
     }
-    Ok(Some(MapUv::new(
+    let uv = MapUv::new(
         set as u8,
         pair("offset", [0.0, 0.0])?,
         finite(transform.get("rotation"), 0.0, what)?,
         pair("scale", [1.0, 1.0])?,
-    )))
+    );
+    if uv
+        .transform
+        .iter()
+        .flatten()
+        .any(|value| !value.is_finite())
+    {
+        return Err(invalid(format!("{what} isn't a finite number")));
+    }
+    Ok(Some(uv))
 }
 
 /// The map a material slot reads `info` through and the texture coordinates it reads, or `None`
@@ -1638,6 +1697,9 @@ fn read_animations(
             }
             if !finite {
                 return Err(invalid("an animation's values aren't finite numbers"));
+            }
+            if let Values::Weights { values, .. } = &values {
+                check_weights(values)?;
             }
             duration = duration.max(last);
             channels.push(Channel {

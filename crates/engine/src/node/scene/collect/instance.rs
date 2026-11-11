@@ -154,6 +154,7 @@ impl Collected {
                 root: world * skin.root,
                 joint_bounds: skin.joint_bounds.clone(),
                 skin: skin.skin,
+                weight: skin.weight,
             }));
             for (object, extent) in inner.scene.objects.iter().zip(&inner.extents) {
                 let mut object = object.clone();
