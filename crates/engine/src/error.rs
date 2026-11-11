@@ -687,6 +687,7 @@ impl MediaError {
     }
 
     /// The error as a shortage that can pass if its `cause` was one.
+    #[cfg(feature = "ffmpeg")]
     pub(crate) fn caused_by(self, cause: &MediaError) -> Self {
         match self {
             Self::Failed(failure) if cause.is_transient() => Self::from(failure.transient()),
@@ -812,6 +813,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "ffmpeg")]
     #[test]
     fn a_failure_wrapping_a_shortage_stays_transient() {
         let wrapped = || MediaError::decode("a.mp4", "hardware decode failed");
