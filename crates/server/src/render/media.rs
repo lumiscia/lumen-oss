@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     env,
     path::{Component, Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{Arc, PoisonError, RwLock},
 };
 
 use anyhow::{Context, anyhow};
@@ -113,71 +113,61 @@ impl LocalMediaStore {
     }
 
     fn image_resolver(&self, source: &str) -> Result<Arc<ImageFileResolver>, MediaError> {
-        if let Ok(cache) = self.images.read()
-            && let Some(resolver) = cache.get(source)
-        {
-            return Ok(Arc::clone(resolver));
-        }
-
-        let resolver = Arc::new(ImageFileResolver::open(source.to_string())?);
-        if let Ok(mut cache) = self.images.write() {
-            cache
-                .entry(source.to_string())
-                .or_insert_with(|| Arc::clone(&resolver));
-        }
-        Ok(resolver)
+        cached_resolver(&self.images, source, || {
+            ImageFileResolver::open(source.to_string())
+        })
     }
 
     fn video_resolver(&self, source: &str) -> Result<Arc<FfmpegVideoResolver>, MediaError> {
-        if let Ok(cache) = self.videos.read()
-            && let Some(resolver) = cache.get(source)
-        {
-            return Ok(Arc::clone(resolver));
-        }
-
-        let resolver = match FfmpegVideoResolver::open_with_options(
-            source.to_string(),
-            self.video_options.clone(),
-        ) {
-            Ok(resolver) => Arc::new(resolver),
-            Err(error) => {
+        cached_resolver(&self.videos, source, || {
+            let resolver = FfmpegVideoResolver::open_with_options(
+                source.to_string(),
+                self.video_options.clone(),
+            )
+            .inspect_err(|error| {
                 tracing::warn!(source, %error, "failed opening video media resolver");
-                return Err(error);
-            }
-        };
-        tracing::info!(
-            source,
-            width = resolver.metadata().width,
-            height = resolver.metadata().height,
-            frames = resolver.metadata().frame_count,
-            fps = resolver.metadata().fps,
-            decode_mode = resolver.decode_mode_label(),
-            decode_unavailable_reason = resolver.decode_unavailable_reason(),
-            "opened video media resolver"
-        );
-        if let Ok(mut cache) = self.videos.write() {
-            cache
-                .entry(source.to_string())
-                .or_insert_with(|| Arc::clone(&resolver));
-        }
-        Ok(resolver)
+            })?;
+            tracing::info!(
+                source,
+                width = resolver.metadata().width,
+                height = resolver.metadata().height,
+                frames = resolver.metadata().frame_count,
+                fps = resolver.metadata().fps,
+                decode_mode = resolver.decode_mode_label(),
+                decode_unavailable_reason = resolver.decode_unavailable_reason(),
+                "opened video media resolver"
+            );
+            Ok(resolver)
+        })
     }
 
     fn audio_resolver(&self, source: &str) -> Result<Arc<FfmpegAudioResolver>, MediaError> {
-        if let Ok(cache) = self.audios.read()
-            && let Some(resolver) = cache.get(source)
-        {
-            return Ok(Arc::clone(resolver));
-        }
-
-        let resolver = Arc::new(FfmpegAudioResolver::open(source.to_string())?);
-        if let Ok(mut cache) = self.audios.write() {
-            cache
-                .entry(source.to_string())
-                .or_insert_with(|| Arc::clone(&resolver));
-        }
-        Ok(resolver)
+        cached_resolver(&self.audios, source, || {
+            FfmpegAudioResolver::open(source.to_string())
+        })
     }
+}
+
+/// The resolver cached for `source`, opened with `open` if there is none. Concurrent first
+/// requests may each open one, but all of them get the one that was cached first.
+fn cached_resolver<T>(
+    cache: &RwLock<HashMap<String, Arc<T>>>,
+    source: &str,
+    open: impl FnOnce() -> Result<T, MediaError>,
+) -> Result<Arc<T>, MediaError> {
+    if let Some(resolver) = cache
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(source)
+    {
+        return Ok(Arc::clone(resolver));
+    }
+
+    let resolver = Arc::new(open()?);
+    let mut cache = cache.write().unwrap_or_else(PoisonError::into_inner);
+    Ok(Arc::clone(
+        cache.entry(source.to_string()).or_insert(resolver),
+    ))
 }
 
 impl std::fmt::Debug for LocalMediaStore {
@@ -442,6 +432,28 @@ mod tests {
         let resolver = store.get_font_resolver("brand").unwrap().unwrap();
         assert_eq!(resolver.data().unwrap(), vec![ROBOTO.to_vec()]);
         assert!(store.get_font_resolver("other").unwrap().is_none());
+    }
+
+    #[test]
+    fn concurrent_first_requests_share_one_resolver() {
+        let cache = RwLock::new(HashMap::new());
+        let opened = std::sync::Barrier::new(2);
+        let open = || {
+            opened.wait();
+            Ok(())
+        };
+
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| cached_resolver(&cache, "a.png", open).unwrap());
+            let second = scope.spawn(|| cached_resolver(&cache, "a.png", open).unwrap());
+            (first.join().unwrap(), second.join().unwrap())
+        });
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(
+            &first,
+            &cached_resolver(&cache, "a.png", || panic!("opened a cached source")).unwrap()
+        ));
     }
 
     #[derive(Debug)]

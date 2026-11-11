@@ -1006,6 +1006,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn math_helpers_evaluate() {
+        for (source, expected) in [
+            ("sign(-3)", -1.0),
+            ("sign(0)", 0.0),
+            ("sign(2.5)", 1.0),
+            ("atan2(0, 1)", 0.0),
+            ("atan2(1, 0)", std::f64::consts::FRAC_PI_2),
+            ("atan2(0, -1)", std::f64::consts::PI),
+            ("hypot(3, 4)", 5.0),
+            ("hypot(0, 0)", 0.0),
+            ("remap(5, 0, 10, 100, 200)", 150.0),
+            ("remap(0, 0, 10, 100, 200)", 100.0),
+            ("remap(10, 0, 10, 100, 200)", 200.0),
+            ("remap(15, 0, 10, 100, 200)", 250.0),
+            ("remap(5, 10, 0, 0, 1)", 0.5),
+        ] {
+            assert_eq!(
+                evaluate(source, 0).unwrap(),
+                ExpressionValue::Number(expected),
+                "{source}"
+            );
+        }
+        let error = evaluate("remap(1, 2, 2, 0, 1)", 0).unwrap_err().to_string();
+        assert!(error.contains("from_min != from_max"), "{error}");
+    }
+
     fn evaluate(source: &str, frame: u32) -> crate::Result<ExpressionValue> {
         let ctx = ExpressionContext {
             frame: f64::from(frame),

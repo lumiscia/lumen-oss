@@ -620,3 +620,71 @@ fn boolean_combines_antialiased_coverage() {
             .collect(),
     );
 }
+
+/// A small offset shape is stored around its own bounds, so these read it at an offset.
+#[test]
+fn color_grade_and_crop_read_a_small_offset_layer() {
+    let on_canvas = |effect: Value| {
+        scene(
+            (384, 288),
+            json!([
+                { "id": 1, "type": "shape", "params": {
+                    "position": [100, 50], "width": 14, "height": 11,
+                    "fill_paint": [200, 100, 0, 255], "edge_antialias": false
+                } },
+                { "id": 2, "in": { "source": 1 }, "type": effect["type"], "params": effect["params"] },
+            ]),
+        )
+    };
+    let lut = json!({ "type": "color_grade", "params": {
+        "lut_source": "rgb1d: 0,0,0; 255,128,0", "interpolation": "linear"
+    } });
+    let crop = |x, y, width, height| json!({ "type": "crop", "params": { "x": x, "y": y, "width": width, "height": height } });
+    let graded = [200, 50, 0, 255];
+    let orange = [200, 100, 0, 255];
+    check(vec![
+        Case::new(
+            "color grade grades the shape and leaves the rest clear",
+            on_canvas(lut),
+            Expect::Probes(vec![
+                (100, 50, graded),
+                (113, 60, graded),
+                (99, 50, CLEAR),
+                (114, 60, CLEAR),
+                (0, 0, CLEAR),
+                (383, 287, CLEAR),
+            ]),
+        )
+        .tolerance(1),
+        Case::new(
+            "crop keeps the part of the shape inside its region",
+            on_canvas(crop(105, 52, 4, 3)),
+            Expect::Probes(vec![
+                (105, 52, orange),
+                (108, 54, orange),
+                (104, 52, CLEAR),
+                (109, 52, CLEAR),
+                (105, 51, CLEAR),
+                (105, 55, CLEAR),
+                (100, 50, CLEAR),
+            ]),
+        ),
+        Case::new(
+            "crop of a region that overhangs the shape",
+            on_canvas(crop(110, 55, 30, 30)),
+            Expect::Probes(vec![
+                (110, 55, orange),
+                (113, 60, orange),
+                (114, 60, CLEAR),
+                (113, 61, CLEAR),
+                (109, 55, CLEAR),
+                (130, 70, CLEAR),
+            ]),
+        ),
+        Case::new(
+            "crop of a region the shape doesn't reach",
+            on_canvas(crop(200, 100, 20, 20)),
+            Expect::Probes(vec![(205, 105, CLEAR), (100, 50, CLEAR)]),
+        ),
+    ]);
+}
