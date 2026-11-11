@@ -1,7 +1,7 @@
 import type { LumenComposition } from "@lumiscia/lumen-types";
 
 import type { LumenAudioEngineOptions } from "../audio-engine.js";
-import type { LumenLogLevel } from "../index.js";
+import type { LumenLogLevel } from "../runtime.js";
 import type { MediaSourceInput, VideoSourceRegistration } from "../media/index.js";
 import type { LumenPreviewRange } from "../playback-range.js";
 import type { LumenPreviewContext, LumenPreviewError } from "../preview.js";

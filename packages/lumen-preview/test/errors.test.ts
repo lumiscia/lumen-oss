@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createLumenPreviewRuntime, type LumenPreviewBindings } from "../src/index.js";
+import { createLumenPreviewRuntime, type LumenPreviewBindings } from "../src/runtime.js";
 import {
   LumenMediaError,
   type LumenMediaErrorCode,

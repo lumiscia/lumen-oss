@@ -5,9 +5,8 @@ import {
   type LumenLogLevel,
   type LumenPreviewBindings,
   type LumenPreviewController,
-  type MediaRegistration,
-  type MediaSourceInput,
-} from "./index.js";
+} from "./runtime.js";
+import type { MediaRegistration, MediaSourceInput } from "./media/index.js";
 import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
 import type { LumenPreviewErrorCode } from "./preview.js";
 import { resolvePlaybackRange, type LumenPreviewRange } from "./playback-range.js";
