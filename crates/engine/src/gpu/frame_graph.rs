@@ -701,7 +701,7 @@ impl FrameGraph {
             bound.write_atlas_regions(self.recorder.queue(), atlas);
         }
         bound.mark_uploaded()?;
-        self.recorder.upload();
+        self.recorder.upload().map_err(gpu_error)?;
         self.forget_unbound_media();
         Ok(())
     }
