@@ -234,6 +234,12 @@ impl GpuCompositionRenderer {
         self.graph.recorder.set_pool_budget(bytes);
     }
 
+    /// Holds the bytes of storage a frame's data may bind and take in all below the device's.
+    #[doc(hidden)]
+    pub fn limit_frame_storage(&mut self, max_binding: u64, max_buffer: u64) {
+        self.graph.recorder.limit_storage(max_binding, max_buffer);
+    }
+
     /// Bounds what recorded frames keep of static outputs once frames stop using them.
     #[doc(hidden)]
     pub fn set_frame_graph_retained_budget(&mut self, bytes: u64) {
@@ -488,9 +494,7 @@ impl GpuCompositionRenderer {
             .graph
             .recorder
             .submit()
-            .map_err(|error| RenderError::Gpu {
-                details: error.to_string(),
-            })?;
+            .map_err(super::frame_graph::gpu_error)?;
         self.graph.finish_frame();
         Ok(lumen_gpu::SubmittedExternalTexture::new(
             submission, texture,
@@ -560,7 +564,7 @@ impl GpuCompositionRenderer {
     /// Writes what `bound` recorded to the GPU, which only the frame recorded last can do.
     pub fn upload_bound_frame(&mut self, bound: &BoundFrame) -> crate::Result<()> {
         if bound.sequence != self.bind_sequence {
-            return Err(RenderError::Gpu {
+            return Err(RenderError::Internal {
                 details: "stale recorded frame; record it again before uploading".to_string(),
             }
             .into());
@@ -573,7 +577,7 @@ impl GpuCompositionRenderer {
     pub fn submit_render(
         &mut self,
     ) -> crate::Result<(RasterHandle, lumen_gpu::wgpu::SubmissionIndex)> {
-        let output = self.graph.output().ok_or_else(|| RenderError::Gpu {
+        let output = self.graph.output().ok_or_else(|| RenderError::Internal {
             details: "no recorded frame".to_string(),
         })?;
         let texture = Arc::clone(self.graph.recorder.texture(output.tex));
@@ -581,9 +585,7 @@ impl GpuCompositionRenderer {
             .graph
             .recorder
             .submit()
-            .map_err(|error| RenderError::Gpu {
-                details: error.to_string(),
-            })?;
+            .map_err(super::frame_graph::gpu_error)?;
         self.graph.finish_frame();
         Ok((
             RasterHandle {

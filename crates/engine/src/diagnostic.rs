@@ -237,7 +237,10 @@ fn locate(error: &LumenError, scene: &Value) -> (String, Option<NodeId>) {
                 let (path, node) = at_node(template_scene(scene, template), *node_id, "");
                 (format!("{}{path}", scene_pointer(template)), node)
             }
-            RenderError::FrameOutOfRange { .. } | RenderError::Gpu { .. } => (String::new(), None),
+            RenderError::FrameOutOfRange { .. }
+            | RenderError::Gpu { .. }
+            | RenderError::Limit { .. }
+            | RenderError::Internal { .. } => (String::new(), None),
         },
     }
 }

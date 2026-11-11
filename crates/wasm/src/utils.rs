@@ -8,8 +8,9 @@ use lumen_engine::{
 use std::sync::Arc;
 use wasm_bindgen::JsValue;
 
-/// The JS `Error` for a failed render. A video frame that isn't loaded yet has the code
-/// `media_frame_out_of_range`, on which callers load the frame and render again.
+/// The JS `Error` for a failed render, whose `code` is the error's diagnostic code. A video frame
+/// that isn't loaded yet has the code `media_frame_out_of_range` instead, on which callers load the
+/// frame and render again.
 pub fn render_failure(error: &LumenError) -> JsValue {
     let js_error = js_sys::Error::new(&error.to_string());
     let set = |key: &str, value: &JsValue| {
@@ -22,6 +23,8 @@ pub fn render_failure(error: &LumenError) -> JsValue {
         if let Ok(media) = js_sys::JSON::parse(&media_failure_json(failure)) {
             set("media", &media);
         }
+    } else {
+        set("code", &JsValue::from_str(error.code()));
     }
     js_error.into()
 }

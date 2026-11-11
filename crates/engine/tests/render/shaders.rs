@@ -214,8 +214,9 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         let composition = Composition::from(shader_scene(shader, uniforms, &[BLACK]));
         let error = renderer
             .render_frame_at(&composition, 0.0, &media)
-            .expect_err(expected)
-            .to_string();
+            .expect_err(expected);
+        assert_ne!(error.code(), "render.gpu", "{expected}");
+        let error = error.to_string();
         assert!(error.contains(expected), "{expected}: {error}");
     }
 
