@@ -718,6 +718,21 @@ describe("LumenAudioEngine", () => {
       engine.play();
       await vi.waitFor(() => expect(plays()).toHaveLength(2));
     });
+
+    it("keeps the position when the range changes after giving up", async () => {
+      const { engine, report } = await playStalled(vi.fn());
+      report(true);
+      vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS);
+
+      engine.setRange({ endMs: 10_000, loop: true, startMs: 0 });
+      vi.advanceTimersByTime(25_000);
+      expect(engine.currentTimeMs()).toBeCloseTo(5_000);
+
+      engine.setRange({ endMs: 6_000, loop: true, startMs: 0 });
+      expect(engine.currentTimeMs()).toBeCloseTo(5_000);
+      vi.advanceTimersByTime(2_000);
+      expect(engine.currentTimeMs()).toBeCloseTo(1_000);
+    });
   });
 
   it("keeps a spent budget when a source change restarts the mix", async () => {

@@ -290,6 +290,48 @@ describe("LumenPreviewSession", () => {
     expect(types.indexOf("set-options")).toBeLessThan(types.indexOf("load"));
   });
 
+  it("rejects an invalid update made while the worker was starting, as a whole", async () => {
+    const onError = vi.fn();
+    const replacementError = vi.fn();
+    const { attached, session, worker } = createSession({ lookaheadCount: 8, onError });
+
+    session.update({
+      composition: composition("replacement"),
+      lookaheadCount: 2,
+      onError: replacementError,
+      rate: 9,
+    });
+    worker.emit({ type: "ready" });
+    await attached;
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(replacementError).not.toHaveBeenCalled();
+    expect(worker.ofType("set-options")).toEqual([]);
+    expect(worker.ofType("load")).toHaveLength(1);
+    expect(worker.ofType("load")[0]?.compositionJson).toContain("first");
+    expect(session.rate).toBe(1);
+  });
+
+  it("reports invalid options a session starts with, and plays with the defaults", async () => {
+    const onError = vi.fn();
+    const { preview, session, worker } = await started({
+      lookaheadCount: 2,
+      onError,
+      rate: 9,
+      volume: 0.5,
+    });
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: "invalid_option" }));
+    expect(preview.getSnapshot().errorCode).toBe("invalid_option");
+    expect([session.rate, session.volume]).toEqual([1, 1]);
+    expect(worker.ofType("start")[0]).toMatchObject({ lookaheadCount: 2 });
+    expect(worker.ofType("load")).toHaveLength(1);
+
+    session.update({ composition: composition("first"), rate: 2 });
+    expect(preview.getSnapshot().errorCode).toBeNull();
+    expect(session.rate).toBe(2);
+  });
+
   it("sends options only when they really change", async () => {
     const { session, worker } = await started({ lookaheadCount: 8 });
     session.update({ composition: composition("first") });
@@ -885,7 +927,16 @@ describe("LumenPreviewSession", () => {
         type: "frame",
       });
 
-    const ended = (worker: FakeWorker, seekId = 0, playbackRevision = 0) =>
+    // The newest playback revision the session has told the worker about.
+    const revisionOf = (worker: FakeWorker) =>
+      worker.posted.reduce(
+        (newest, message) =>
+          message.type === "clock" || message.type === "set-playback"
+            ? Math.max(newest, message.revision)
+            : newest,
+        0,
+      );
+    const ended = (worker: FakeWorker, seekId = 0, playbackRevision = revisionOf(worker)) =>
       worker.emit({
         loadId: worker.ofType("load").at(-1)?.loadId as number,
         playbackRevision,
@@ -1286,16 +1337,49 @@ describe("LumenPreviewSession", () => {
           range: { in: 0, out: 50 },
         });
         preview.play();
+        const queued = revisionOf(worker);
 
         update(session, { onEnded, range: { in: 0, out: 100 } });
         expect(worker.ofType("seek")).toEqual([]);
-        ended(worker, 0, 1);
+        ended(worker, 0, queued);
         expect(onEnded).not.toHaveBeenCalled();
         expect(preview.getSnapshot()).toMatchObject({ frame: 0, isPlaying: true });
 
-        ended(worker, 0, 2);
+        ended(worker);
         expect(onEnded).toHaveBeenCalledTimes(1);
         expect(preview.getSnapshot()).toMatchObject({ frame: 99, isPlaying: false });
+      });
+
+      it("ignores an ending queued before a rate change, which carries on playing", async () => {
+        const onEnded = vi.fn();
+        const { preview, session, worker } = await playable({ onEnded, rate: 4 });
+        preview.play();
+        const queued = revisionOf(worker);
+
+        update(session, { onEnded, rate: 0.25 });
+        ended(worker, 0, queued);
+        expect(onEnded).not.toHaveBeenCalled();
+        expect(preview.getSnapshot().isPlaying).toBe(true);
+        expect(revisionOf(worker)).toBeGreaterThan(queued);
+
+        ended(worker);
+        expect(onEnded).toHaveBeenCalledTimes(1);
+      });
+
+      it("ignores an ending queued before a pause and resume", async () => {
+        const onEnded = vi.fn();
+        const { preview, worker } = await playable({ onEnded });
+        preview.play();
+        const queued = revisionOf(worker);
+
+        preview.pause();
+        preview.play();
+        ended(worker, 0, queued);
+        expect(onEnded).not.toHaveBeenCalled();
+        expect(preview.getSnapshot().isPlaying).toBe(true);
+
+        ended(worker);
+        expect(onEnded).toHaveBeenCalledTimes(1);
       });
 
       it("plays again from the start of the range after it ended", async () => {
@@ -1304,7 +1388,7 @@ describe("LumenPreviewSession", () => {
           range: { in: 20, out: 50 },
         });
         preview.play();
-        ended(worker, 0, 1);
+        ended(worker);
         expect(preview.getSnapshot()).toMatchObject({ frame: 49, isPlaying: false });
 
         preview.play();

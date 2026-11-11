@@ -54,6 +54,8 @@ export type LumenPreviewWorkerCommand =
     }
   | {
       clock: PreviewClock;
+      /** The playback revision this clock belongs to. */
+      revision: number;
       type: "clock";
     }
   | {
@@ -72,7 +74,7 @@ export type LumenPreviewWorkerCommand =
       loop: boolean;
       /** Null plays the whole timeline. */
       range: LumenPreviewRange | null;
-      /** Counts changes of loop and range; `ended` events say which they ended under. */
+      /** Counts changes that make a queued `ended` stale; `ended` events say which they ended under. */
       revision: number;
       type: "set-playback";
     };
@@ -117,7 +119,7 @@ export type LumenPreviewWorkerEvent =
     }
   | {
       loadId: number;
-      /** The loop and range revision the playback ended under. */
+      /** The playback revision the playback ended under. */
       playbackRevision: number;
       /** The newest seek the worker had heard, so a late answer can't end a playback begun since. */
       seekId: number;
@@ -214,6 +216,7 @@ export function createLumenPreviewWorkerHost({
         break;
       case "clock":
         followClock(message.clock);
+        playbackRevision = message.revision;
         runner.setClock(message.clock);
         break;
       case "seek":

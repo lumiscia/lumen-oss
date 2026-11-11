@@ -78,7 +78,8 @@ export class LumenPreviewSession {
   // A seek made without a loaded timeline, applied once one loads.
   #pendingSeek: number | null = null;
   #pendingSeeks = new Map<number, (presented: boolean) => void>();
-  // Counts changes of loop and range sent to the worker, whose `ended` events name the one they ended under.
+  // Counts the changes that make a queued `ended` stale: loop, range, rate, pause and play. The
+  // worker follows it through the clocks it is sent, and its `ended` events name the one they ended under.
   #playbackRevision = 0;
   // The last options that were valid, which are the ones in effect.
   #playback: PlaybackSettings = DEFAULT_PLAYBACK;
@@ -206,19 +207,19 @@ export class LumenPreviewSession {
 
   /**
    * Replaces every input; one left out returns to its default. Playback options that can't be used
-   * reject the whole update: it is reported, and everything in effect stays as it was.
+   * reject the whole update, also while the worker is starting: it is reported through the
+   * callbacks in effect, and everything in effect stays as it was.
    */
   update(inputs: LumenPreviewSessionInputs): void {
-    // A session still starting applies these once its worker is ready.
-    if (!this.#worker) {
-      this.#inputs = inputs;
-      return;
-    }
     const playback = this.#readPlayback(inputs);
     if (!playback) {
       return;
     }
     this.#inputs = inputs;
+    // A session still starting applies these once its worker is ready.
+    if (!this.#worker) {
+      return;
+    }
     this.#syncOptions();
     this.#applyPlayback(playback);
     this.#syncInputs();
@@ -325,10 +326,11 @@ export class LumenPreviewSession {
     if (!this.#playing) {
       return;
     }
+    this.#playbackRevision += 1;
     this.#clock = this.#audio?.isPlaying()
       ? audioClock(this.#audio, rate)
       : { atEpochMs: epochNow(), originMs: positionMs, rate };
-    this.#post({ clock: this.#clock, type: "clock" });
+    this.#postClock(this.#clock);
   }
 
   /**
@@ -632,6 +634,7 @@ export class LumenPreviewSession {
       void this.#seek(range.inFrame);
     }
     this.#playing = true;
+    this.#playbackRevision += 1;
     this.#audio?.play(this.#positionMs());
     this.#correctClock();
     this.#correctionTimer = setInterval(() => this.#correctClock(), CLOCK_CORRECTION_INTERVAL_MS);
@@ -644,13 +647,14 @@ export class LumenPreviewSession {
     }
     const originMs = this.#positionMs();
     this.#playing = false;
+    this.#playbackRevision += 1;
     this.#audio?.pause();
     this.#stopCorrections();
     this.#clock = { atEpochMs: epochNow(), originMs, rate: 0 };
     if (this.#range && this.#timeline) {
       this.#clock = fitClock(this.#clock, this.#range, this.#timeline.fps);
     }
-    this.#post({ clock: this.#clock, type: "clock" });
+    this.#postClock(this.#clock);
     this.preview.update({ isPlaying: false });
   }
 
@@ -668,7 +672,7 @@ export class LumenPreviewSession {
     this.#audio?.seekMs(lastFrameMs);
     this.#stopCorrections();
     this.#clock = { atEpochMs: epochNow(), originMs: lastFrameMs, rate: 0 };
-    this.#post({ clock: this.#clock, type: "clock" });
+    this.#postClock(this.#clock);
     this.preview.update({ frame: lastFrame, isPlaying: false });
     this.#inputs.onEnded?.();
   }
@@ -721,8 +725,12 @@ export class LumenPreviewSession {
     }
     if (next) {
       this.#clock = next;
-      this.#post({ clock: next, type: "clock" });
+      this.#postClock(next);
     }
+  }
+
+  #postClock(clock: PreviewClock): void {
+    this.#post({ clock, revision: this.#playbackRevision, type: "clock" });
   }
 
   /** Wrapped into the range, or held at its end, as the worker shows it. */

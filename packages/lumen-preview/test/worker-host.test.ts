@@ -156,6 +156,8 @@ describe("createLumenPreviewWorkerHost", () => {
       type: "set-playback",
     });
 
+    receive({ clock: { atEpochMs: 0, originMs: 0, rate: 0 }, revision: 4, type: "clock" });
+
     // 30 fps: frame 10 starts at 333 ms.
     const startMs = (10 * 1_000) / 30;
     receive({
@@ -172,7 +174,7 @@ describe("createLumenPreviewWorkerHost", () => {
 
     expect(shown).toEqual([10, 11, 12, 13]);
     expect(sent.filter((event) => event.type === "ended")).toEqual([
-      { loadId: 1, playbackRevision: 3, seekId: 0, type: "ended" },
+      { loadId: 1, playbackRevision: 4, seekId: 0, type: "ended" },
     ]);
   });
 });

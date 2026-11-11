@@ -341,6 +341,10 @@ export class LumenAudioEngine {
     this.#range = range;
     this.#worker?.postMessage({ type: "set-range", range });
     this.#pausedMs = this.#fitMs(this.#pausedMs);
+    if (this.#audioAbandoned && this.#playback) {
+      // The elapsed time counted under the old range must not be read again under the new one.
+      this.#playback = { ...this.#playback, holdUntil: performance.now(), ms: positionMs };
+    }
     this.#restartMix(positionMs);
   }
 
