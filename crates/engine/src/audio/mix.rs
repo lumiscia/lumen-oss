@@ -91,7 +91,7 @@ impl<'a, P: MediaStore> AudioMixer<'a, P> {
         let source_position =
             |i: u64| voice.source_start + segment.position + segment.step * i as f64;
         let read_start = source_position(range.start).floor().max(0.0) as u64;
-        let read_end = source_position(range.end - 1).floor().max(0.0) as u64 + 2;
+        let read_end = (source_position(range.end - 1).floor().max(0.0) as u64).saturating_add(2);
         let source = self.read(&voice.source_id, read_start, read_end - read_start)?;
         for (index, i) in range.enumerate() {
             let Some((position, gain)) = voice_sample(voice, segment, i) else {

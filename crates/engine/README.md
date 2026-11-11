@@ -77,11 +77,15 @@ between, into segments that `audio::AudioMixer` plays. The browser preview plays
 both mix alike. A prop a clip sets by expression is evaluated at each of those points, in the time
 of the composition the clip is in, so a gain that reads it moves smoothly too.
 
-Planning is bounded. Clips play templates with sound at most 4096 times in all, counting the clips
-inside the templates they play; more fails `check` with `audio.invalid`. While planning, a 512-sample
+Planning is bounded. The root and each template may hold at most 512 audio tracks and 8192 audio
+clips, and clips play templates with sound at most 4096 times in all, counting the clips inside the
+templates they play; more fails `check` with `audio.invalid`. An interval looks up only the clips
+that overlap it, so clips elsewhere on the timeline cost nothing. While planning, a 512-sample
 interval may be inside at most 1024 clips and time remaps at once (each restart of a loop in the
 interval counts, and a loop may restart at most 32 times in it) and may sound at most 1024 clips;
-past either, planning fails with `audio.limit`. The preview's plan of the whole timeline covers at
+past either, planning fails with `audio.limit`. One call of `audio::plan` returns at most 500,000
+segments (the server plans 30 s at a time, so about 178 clips with animated volumes sounding
+throughout); past that it fails with `audio.limit`. The preview's plan of the whole timeline covers at
 most about 3 hours (1,048,576 intervals) and holds at most 200,000 segments, which an animated
 volume adds one of every 512 samples to; past either, loading the preview fails with
 `audio.limit`.
@@ -193,7 +197,7 @@ literal: one the store doesn't have is `asset.not_found`, and one of another kin
 | `clip.invalid`                       | error    | check         | A clip names a composition that doesn't exist, sets props it doesn't declare or of the wrong kind, plays a composition and a `source` together, or has a negative `duration` other than -1.               |
 | `expression.invalid_prop_read`       | error    | check         | `prop()` is used outside a template, names an undeclared prop, or doesn't name it with a string literal.                                                                                                  |
 | `settings.invalid`                   | error    | check         | A timeline, canvas or prop default can't render, such as an `fps` of 0.                                                                                                                                   |
-| `audio.invalid`                      | error    | check         | Audio tracks or clips are duplicated, unknown, or have invalid timing or volume, or a volume expression reads a node, a glyph, text or an undeclared prop.                                                |
+| `audio.invalid`                      | error    | check         | Audio tracks or clips are duplicated, unknown, too many in one composition, or have invalid timing or volume, or a volume expression reads a node, a glyph, text or an undeclared prop.                                                |
 | `composition.cycle`                  | error    | check         | Templates instantiate themselves.                                                                                                                                                                         |
 | `font.fallback`                      | warning  | check, render | A text node's font family resolved to no font, so it renders in a fallback.                                                                                                                               |
 | `scene.shadow_limit`                 | warning  | render        | A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none.                                                                                                          |
@@ -206,7 +210,7 @@ literal: one the store doesn't have is `asset.not_found`, and one of another kin
 | `media.decode`                       | error    | render        | Media or font data couldn't be decoded.                                                                                                                                                                   |
 | `media.frame_out_of_range`           | error    | render        | A video frame past the end of its source was asked for.                                                                                                                                                   |
 | `audio.unknown_track`                | error    | render        | An audio clip names a track that doesn't exist.                                                                                                                                                           |
-| `audio.limit`                        | error    | render        | Audio is more than the plan can hold: too many clips playing sound at once, a loop restarting too often, or a preview timeline too long.                                                                  |
+| `audio.limit`                        | error    | render        | Audio is more than the plan can hold: too many clips playing sound at once, a loop restarting too often, too many segments in one plan, or a preview timeline too long.                                                                  |
 | `render.frame_out_of_range`          | error    | render        | A frame past the composition's end was asked for.                                                                                                                                                         |
 | `render.node_evaluation`             | error    | render        | A node failed to render, such as text with too many glyphs or a `wgsl_shader` that doesn't compile.                                                                                                       |
 | `render.missing_node`                | error    | render        | A node read while rendering doesn't exist.                                                                                                                                                                |

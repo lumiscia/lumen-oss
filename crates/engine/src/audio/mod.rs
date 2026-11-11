@@ -17,7 +17,8 @@ use std::{
 pub use mix::AudioMixer;
 pub use plan::{
     AudioPlan, AudioSegment, AudioVoice, CONTROL_FRAMES, MAX_ACTIVE_CLIPS, MAX_ACTIVE_VOICES,
-    MAX_LOOP_RESTARTS, MAX_PREVIEW_INTERVALS, MAX_PREVIEW_SEGMENTS, plan, preview_plan,
+    MAX_LOOP_RESTARTS, MAX_PLAN_SEGMENTS, MAX_PREVIEW_INTERVALS, MAX_PREVIEW_SEGMENTS, plan,
+    preview_plan,
 };
 
 use crate::{
@@ -34,6 +35,12 @@ pub const AUDIO_CHANNELS: usize = 2;
 /// inside the templates they play. A count is of places that can sound, not of those sounding at
 /// once, which [`MAX_ACTIVE_CLIPS`] and [`MAX_ACTIVE_VOICES`] bound.
 pub const MAX_PLAYED_TEMPLATES: u64 = 4096;
+
+/// Most audio tracks the root or one template may declare.
+pub const MAX_AUDIO_TRACKS: usize = 512;
+
+/// Most audio clips the root or one template may hold, however many tracks they are on.
+pub const MAX_AUDIO_CLIPS: usize = 8192;
 
 /// How many times the root's clips play a template with sound, counting every clip node on the
 /// way down: a template with sound counts once for each clip that plays it, plus what the clips
@@ -104,6 +111,18 @@ impl AudioTimeline {
     /// template the timeline is in, or `None` at the root.
     pub(crate) fn problems(&self, props: Option<&BTreeMap<String, PropDef>>) -> Vec<String> {
         let mut problems = Vec::new();
+        if self.tracks.len() > MAX_AUDIO_TRACKS {
+            problems.push(format!(
+                "{} tracks, and at most {MAX_AUDIO_TRACKS} are supported in one composition",
+                self.tracks.len()
+            ));
+        }
+        if self.clips.len() > MAX_AUDIO_CLIPS {
+            problems.push(format!(
+                "{} clips, and at most {MAX_AUDIO_CLIPS} are supported in one composition",
+                self.clips.len()
+            ));
+        }
         let mut tracks = HashSet::new();
         for track in &self.tracks {
             if !tracks.insert(track.id.as_str()) {
