@@ -250,6 +250,21 @@ const cases: Readonly<Record<string, Case>> = {
     expression: when(hex("#ff0000").neq([255, 0, 0]), 1, 0),
     expected: 0,
   },
+  tag_raw_operand: {
+    expression: expr<number>`${expr<number>("frame + 5")} * 2`,
+    expected: 100,
+  },
+  tag_builder_operand: { expression: expr<number>`${frame.sub(5)} * 2`, expected: 80 },
+  tag_negative_numbers: { expression: expr<number>`${-1} - ${-2} + 2 - ${-1}`, expected: 4 },
+  tag_tween_in_vec2: {
+    expression: expr<Vec2>`vec2(0, ${tween(0, 30, 30, 30)})`,
+    expected: [0, 15],
+  },
+  tag_conditional: {
+    expression: expr<number>`if(frame >= ${sec(1)}, ${expr<number>("frame - 5")} / 2, 0)`,
+    expected: 20,
+  },
+  tag_string: { expression: expr<string>`uppercase(${"it's"})`, expected: "IT'S" },
   colour_tuple: { expression: lerp([255, 0, 0], hex("#0000ff80"), 0), expected: "#ff0000ff" },
 };
 
@@ -415,6 +430,43 @@ describe("expression helpers", () => {
     expect(literal("x=")).toBe("x=");
     expect(String(expr("if(frame > 30, 1, 0)"))).toBe("=if(frame > 30, 1, 0)");
     expect(() => expr("=frame")).toThrow("without its leading `=`");
+  });
+
+  test("expr as a template tag lowers each interpolated value", () => {
+    expect(String(expr<number>`${1.5} + ${frame}`)).toBe("=1.5 + frame");
+    expect(String(expr<Vec2>`vec2(0, ${tween(0, 30, 104, 18, ease.outExpo)})`)).toBe(
+      "=vec2(0, tween(0, 30, 104, 18, 'out_expo'))",
+    );
+    expect(String(expr<string>`uppercase(${"it's\n"})`)).toBe("=uppercase('it\\'s\\n')");
+    expect(String(expr<Vec2>`${[1, frame]} * 2`)).toBe("=vec2(1, frame) * 2");
+    expect(String(expr<Color>`mix(${[1, 2, 3]}, ${[1, 2, 3, 4]})`)).toBe(
+      "=mix(rgb(1, 2, 3), rgba(1, 2, 3, 4))",
+    );
+    expect(String(expr<boolean>`${true} && ${frame.gt(3)}`)).toBe("=true && (frame > 3)");
+    expect(String(expr<number>`${1}${2}`)).toBe("=12");
+    expect(String(expr<number>`frame`)).toBe("=frame");
+  });
+
+  test("expr as a template tag brackets raw expressions only", () => {
+    const raw = expr<number>("frame + 5");
+    expect(String(expr<number>`${raw} * 2`)).toBe("=(frame + 5) * 2");
+    expect(String(expr<number>`${frame.sub(5)} * 2`)).toBe("=(frame - 5) * 2");
+    expect(String(expr<number>`${frame} * 2`)).toBe("=frame * 2");
+    expect(String(expr<number>`${expr<number>`frame + 5`} * 2`)).toBe("=(frame + 5) * 2");
+    expect(String(raw.mul(expr<number>`${raw} * 2`))).toBe("=((frame + 5) * ((frame + 5) * 2))");
+  });
+
+  test("expr as a template tag rejects what it cannot lower", () => {
+    expect(() => expr`=frame`).toThrow("without its leading `=`");
+    expect(() => expr`=${frame}`).toThrow("without its leading `=`");
+    expect(String(expr`frame = ${frame}`)).toBe("=frame = frame");
+    expect(() => expr`${Number.NaN}`).toThrow("cannot contain");
+    expect(() => expr`${Infinity}`).toThrow("cannot contain");
+    const untyped = expr as (strings: TemplateStringsArray, value: unknown) => unknown;
+    const forced = (value: unknown) => () => untyped`${value}`;
+    expect(forced(undefined)).toThrow("cannot interpolate undefined");
+    expect(forced(null)).toThrow("cannot interpolate null");
+    expect(forced({})).toThrow("cannot interpolate object");
   });
 
   test("cover every builtin and global", () => {

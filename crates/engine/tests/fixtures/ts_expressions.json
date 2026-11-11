@@ -201,6 +201,12 @@
     "raw_operand_mul": { "expression": "=((frame + 5) * 2)", "expected": 100 },
     "when_boolean_eq": { "expression": "=if(((frame > 1) == (frame > 2)), 1, 0)", "expected": 1 },
     "when_colour_neq": { "expression": "=if((#ff0000 != rgb(255, 0, 0)), 1, 0)", "expected": 0 },
+    "tag_raw_operand": { "expression": "=(frame + 5) * 2", "expected": 100 },
+    "tag_builder_operand": { "expression": "=(frame - 5) * 2", "expected": 80 },
+    "tag_negative_numbers": { "expression": "=-1 - -2 + 2 - -1", "expected": 4 },
+    "tag_tween_in_vec2": { "expression": "=vec2(0, tween(0, 30, 30, 30))", "expected": [0, 15] },
+    "tag_conditional": { "expression": "=if(frame >= 1s, (frame - 5) / 2, 0)", "expected": 20 },
+    "tag_string": { "expression": "=uppercase('it\\'s')", "expected": "IT'S" },
     "colour_tuple": {
       "expression": "=lerp(rgb(255, 0, 0), #0000ff80, 0)",
       "expected": "#ff0000ff"
