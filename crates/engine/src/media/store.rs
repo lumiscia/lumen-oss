@@ -5,8 +5,8 @@ use crate::audio::AudioResolver;
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
 
 use super::{
-    AssetKind, EnvironmentResolver, FontResolver, ImageResolver, MediaIdentity, ModelResolver,
-    VideoFrameResolver,
+    AssetKind, EnvironmentResolver, FontResolver, ImageResolver, LutResolver, MediaIdentity,
+    ModelResolver, VideoFrameResolver,
 };
 
 /// The fonts one store has loaded and what was shaped and measured with them. Nothing rendered
@@ -53,6 +53,7 @@ pub enum MediaResolver {
     Font(Box<dyn FontResolver>),
     Model(Box<dyn ModelResolver>),
     Environment(Box<dyn EnvironmentResolver>),
+    Lut(Box<dyn LutResolver>),
 }
 
 impl MediaResolver {
@@ -64,6 +65,7 @@ impl MediaResolver {
             Self::Font(_) => AssetKind::Font,
             Self::Model(_) => AssetKind::Model,
             Self::Environment(_) => AssetKind::Environment,
+            Self::Lut(_) => AssetKind::Lut,
         }
     }
 }
@@ -132,6 +134,7 @@ resolver_kinds!(
     FontResolver => Font,
     ModelResolver => Model,
     EnvironmentResolver => Environment,
+    LutResolver => Lut,
 );
 
 /// `source` resolved by `store` as a `K`, with its identity. A store that serves another kind

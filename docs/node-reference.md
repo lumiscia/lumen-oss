@@ -180,7 +180,8 @@ Inputs:
 Params:
 
 - **`interpolation`** (`"nearest"` | `"linear"`; default `"linear"`) Sampling filter used when reading LUT data.
-- **`lut_source`** (string; default `"identity"`) LUT data source or named LUT preset.
+- **`lut`** (string; default `"identity"`) An inline 1D LUT: `rgb1d:` and RGB stops separated by `;`, each three numbers from 0 to 1, such as `rgb1d:0,0,0;0.2,0.1,0.3;1,1,1`; or `identity`. A value outside 0..1 is an error: divide 0..255 values by 255. Set either this or `lut_source`.
+- **`lut_source`** (string; media: lut; default `""`) A 3D `.cube` LUT file (Adobe/Resolve) to grade with: a path or `media` alias, or `asset:<id>` for an asset of the host's. Tables up to 129 points per axis and 64 MiB are read, sampled with trilinear interpolation (`interpolation` `nearest` takes the nearest point), and `DOMAIN_MIN`/`DOMAIN_MAX` set the input range they cover. 1D `.cube` tables are not supported. Empty uses `lut`; setting both is an error. The browser preview does not load `.cube` files.
 - **`strength`** (number, 0 to 1; default `1`) Blend amount for the LUT transform.
 
 ## `crop`

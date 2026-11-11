@@ -577,8 +577,8 @@ mod tests {
             }
         }
         assert_eq!(
-            declared, 3,
-            "media_in.source, model_3d.source, render_3d.environment_map"
+            declared, 4,
+            "media_in.source, model_3d.source, render_3d.environment_map, color_grade.lut_source"
         );
     }
 
@@ -590,8 +590,8 @@ mod tests {
         const NOT_MEDIA: [(&str, &str, &str); 2] = [
             (
                 "color_grade",
-                "lut_source",
-                "inline LUT data or a named preset, not a file",
+                "lut",
+                "inline LUT stops or `identity`, not a file",
             ),
             (
                 "render_3d",

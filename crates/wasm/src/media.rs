@@ -654,6 +654,13 @@ impl MediaStore for WasmMediaStore {
             AssetKind::Model => self.model(source),
             AssetKind::Font => self.font(source),
             AssetKind::Environment => self.environment(source),
+            AssetKind::Lut => Err(MediaFailure::unsupported(
+                source,
+                "the browser preview does not load .cube LUT files; use the inline `lut` or \
+                 render this composition on a Lumen server",
+            )
+            .wanting(&[AssetKind::Lut])
+            .into()),
             AssetKind::Audio => Err(MediaError::source_not_found(
                 source,
                 "the browser preview plays audio itself",

@@ -22,6 +22,8 @@ pub enum AssetKind {
     Model,
     /// An equirectangular Radiance `.hdr` or OpenEXR `.exr` environment map.
     Environment,
+    /// An Adobe/Resolve `.cube` colour lookup table.
+    Lut,
 }
 
 impl AssetKind {
@@ -34,6 +36,7 @@ impl AssetKind {
             Self::Font => "font",
             Self::Model => "model",
             Self::Environment => "environment",
+            Self::Lut => "lut",
         }
     }
 }
@@ -47,6 +50,7 @@ impl fmt::Display for AssetKind {
             Self::Font => "a font",
             Self::Model => "a model",
             Self::Environment => "an environment map",
+            Self::Lut => "a LUT",
         })
     }
 }
@@ -61,6 +65,7 @@ pub enum Asset {
     Font(Vec<PathBuf>),
     Model(PathBuf),
     Environment(PathBuf),
+    Lut(PathBuf),
 }
 
 impl Asset {
@@ -72,6 +77,7 @@ impl Asset {
             Self::Font(_) => AssetKind::Font,
             Self::Model(_) => AssetKind::Model,
             Self::Environment(_) => AssetKind::Environment,
+            Self::Lut(_) => AssetKind::Lut,
         }
     }
 }

@@ -123,7 +123,7 @@ fn operators_produce_hand_computed_colors() {
         "color": [0, 255, 0, 255], "opacity": 1 });
     let level = json!({ "black_point": 0.1, "white_point": 0.9, "gamma": 1.2,
         "output_black": 0.05, "output_white": 0.95 });
-    let lut = json!({ "lut_source": "rgb1d: 0,0,0; 255,128,0", "strength": 0.5, "interpolation": "linear" });
+    let lut = json!({ "lut": "rgb1d: 0,0,0; 1,0.5,0", "strength": 0.5, "interpolation": "linear" });
     let red = premultiplied([255, 0, 0, 255]);
     // Exposure scales linear light by `gain`, then applies offset and contrast about mid grey to
     // the encoded colour of TEAL, whose alpha is .502.
@@ -691,7 +691,7 @@ fn color_grade_and_crop_read_a_small_offset_layer() {
         )
     };
     let lut = json!({ "type": "color_grade", "params": {
-        "lut_source": "rgb1d: 0,0,0; 255,128,0", "interpolation": "linear"
+        "lut": "rgb1d: 0,0,0; 1,0.5,0", "interpolation": "linear"
     } });
     let crop = |x, y, width, height| json!({ "type": "crop", "params": { "x": x, "y": y, "width": width, "height": height } });
     let graded = [200, 50, 0, 255];

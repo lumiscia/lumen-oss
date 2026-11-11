@@ -84,11 +84,29 @@ fn bind_errors() {
             json!([
                 solid(1, [255, 0, 0, 255]),
                 { "id": 2, "type": "color_grade", "in": { "source": 1 },
-                  "params": { "lut_source": source } },
+                  "params": { "lut": format!("=\"{source}\"") } },
             ]),
-            "color_grade node 2 evaluation failed: LUT components must be finite",
+            "color_grade node 2 evaluation failed: `lut` components must be finite",
         ));
     }
+    rows.push(row(
+        "color_grade LUT on the 0..255 scale",
+        json!([
+            solid(1, [255, 0, 0, 255]),
+            { "id": 2, "type": "color_grade", "in": { "source": 1 },
+              "params": { "lut": "=\"rgb1d: 0,0,0; 255,128,0\"" } },
+        ]),
+        "`lut` value 255 in `255,128,0` is outside 0..1",
+    ));
+    rows.push(row(
+        "color_grade lut and lut_source together",
+        json!([
+            solid(1, [255, 0, 0, 255]),
+            { "id": 2, "type": "color_grade", "in": { "source": 1 },
+              "params": { "lut": "=\"rgb1d: 0,0,0; 1,1,1\"", "lut_source": "grade.cube" } },
+        ]),
+        "`lut` and `lut_source` are both set",
+    ));
     rows.push(row(
         "crop origin below i32::MIN",
         crop_resize([i64::from(i32::MIN) - 1, 0, 4, 4], valid),

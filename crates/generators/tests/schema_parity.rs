@@ -932,6 +932,7 @@ fn media_params_carry_the_kinds_they_accept() {
     assert_eq!(
         declared,
         [
+            ("color_grade", "lut_source", json!({ "kinds": ["lut"] })),
             (
                 "media_in",
                 "source",
@@ -950,7 +951,7 @@ fn media_params_carry_the_kinds_they_accept() {
         json!({ "kinds": ["audio"] })
     );
 
-    for kind in ["media_in", "model_3d", "render_3d"] {
+    for kind in ["color_grade", "media_in", "model_3d", "render_3d"] {
         let media: Vec<_> = node_schema(kind)
             .properties
             .iter()

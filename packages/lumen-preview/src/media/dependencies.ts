@@ -145,6 +145,12 @@ function dependency(
     ...base,
     load: { failure: { source, wanted, ...(at && { at }), ...failure } },
   });
+  if (kind === "lut") {
+    return fail({
+      code: "media.unsupported",
+      details: "the browser preview does not load .cube LUT files; use the inline `lut`",
+    });
+  }
   const refused = refusedSource(source);
   if (refused !== null) {
     return fail({ code: "media.not_found", details: refused });

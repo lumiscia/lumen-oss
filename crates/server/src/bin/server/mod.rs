@@ -24,7 +24,7 @@ pub(super) use util::{current_timestamp, input_hash, new_render_id};
 
 use self::{
     assets::JobAssets,
-    media_staging::stage_remote_media,
+    media_staging::{lut_only_sources, stage_remote_media},
     util::{hide_server_paths, sanitize_error_message},
 };
 
@@ -70,8 +70,9 @@ where
         assets,
     } = job;
     tracing::info!(job_id, media_count = media.len(), "starting render request");
+    let lut_only = lut_only_sources(&composition);
     let staged_media = tokio::select! {
-        staged = stage_remote_media(media_client, media) => staged?,
+        staged = stage_remote_media(media_client, media, &lut_only) => staged?,
         () = cancellation.cancelled() => return Err(RenderJobError::cancelled()),
     };
     let media_stage_ms = stage_started.elapsed().as_millis();

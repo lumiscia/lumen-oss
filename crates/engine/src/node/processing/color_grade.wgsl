@@ -1,6 +1,8 @@
 struct ColorGradeParams {
     strength: f32,
     interpolation: u32,
+    domain_min: vec4<f32>,
+    domain_max: vec4<f32>,
 }
 
 struct ColorGradeLut {
@@ -11,6 +13,8 @@ struct ColorGradeLut {
 @group(0) @binding(1) var<uniform> params: ColorGradeParams;
 @group(0) @binding(2) var<storage, read> lut: ColorGradeLut;
 @group(0) @binding(3) var output_tex: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(4) var lut_3d: texture_3d<f32>;
+@group(0) @binding(5) var lut_sampler: sampler;
 
 fn sample_lut(value: f32, channel: u32) -> f32 {
     let scaled = clamp(value, 0.0, 1.0) * 255.0;
@@ -40,5 +44,27 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         sample_lut(encoded.b, 2u)
     );
     let rgb = clamp(mix(encoded, graded, clamp(params.strength, 0.0, 1.0)), vec3<f32>(0.0), vec3<f32>(1.0));
+    textureStore(output_tex, vec2<i32>(id.xy), lumen_finite(premultiply(vec4<f32>(lumen_srgb_to_linear(rgb), color.a))));
+}
+
+// Looks up a 3D table. The half-texel scale and offset put the end points on the first and last
+// lattice points, and values above the table's range are kept as light.
+@compute @workgroup_size(8, 8, 1)
+fn cs_cube(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = textureDimensions(output_tex);
+    if (id.x >= size.x || id.y >= size.y) {
+        return;
+    }
+
+    let color = unpremultiply(textureLoad(input_tex, vec2<i32>(id.xy), 0));
+    let encoded = clamp(lumen_linear_to_srgb(color.rgb), vec3<f32>(0.0), vec3<f32>(1.0));
+    let t = clamp(
+        (encoded - params.domain_min.xyz) / (params.domain_max.xyz - params.domain_min.xyz),
+        vec3<f32>(0.0),
+        vec3<f32>(1.0)
+    );
+    let n = f32(textureDimensions(lut_3d).x);
+    let graded = textureSampleLevel(lut_3d, lut_sampler, t * ((n - 1.0) / n) + 0.5 / n, 0.0).rgb;
+    let rgb = max(mix(encoded, graded, clamp(params.strength, 0.0, 1.0)), vec3<f32>(0.0));
     textureStore(output_tex, vec2<i32>(id.xy), lumen_finite(premultiply(vec4<f32>(lumen_srgb_to_linear(rgb), color.a))));
 }

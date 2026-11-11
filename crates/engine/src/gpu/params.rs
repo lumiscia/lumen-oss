@@ -10,6 +10,10 @@ use crate::{
 pub(crate) struct ColorGradeParams {
     pub(crate) strength: f32,
     pub(crate) interpolation: u32,
+    pub(crate) _pad: [u32; 2],
+    /// The `.cube` table's `DOMAIN_MIN` and `DOMAIN_MAX`, padded to four floats.
+    pub(crate) domain_min: [f32; 4],
+    pub(crate) domain_max: [f32; 4],
 }
 
 #[repr(C)]
@@ -222,10 +226,31 @@ pub(crate) fn dispatch_for(size: lumen_gpu::Size) -> lumen_gpu::Dispatch {
 }
 
 fn parse_lut_stops(node_id: NodeId, source: &str) -> crate::Result<Vec<[f32; 3]>> {
+    lut_stops(source).map_err(|details| lut_error(node_id, details))
+}
+
+/// Whether `lut` leaves the colour as it is: empty, or `identity`.
+pub(crate) fn is_identity_lut(lut: &str) -> bool {
+    let lut = lut.trim();
+    lut.is_empty() || lut.eq_ignore_ascii_case(crate::node::processing::color_grade::IDENTITY_LUT)
+}
+
+/// Whether `source`, meant to name a `.cube` file, is written as an inline LUT, as `lut_source`
+/// was before `lut` took that role.
+pub(crate) fn looks_like_inline_lut(source: &str) -> bool {
     let source = source.trim();
-    if source.is_empty()
+    source.starts_with("rgb1d:")
         || source.eq_ignore_ascii_case(crate::node::processing::color_grade::IDENTITY_LUT)
-    {
+        || (source.contains(';')
+            && source.starts_with(|c: char| c.is_ascii_digit() || "+-.".contains(c)))
+}
+
+pub(crate) const INLINE_LUT_IN_LUT_SOURCE: &str = "`lut_source` names a .cube file; an inline LUT is the `lut` param, on a 0..1 scale (divide 0..255 values by 255)";
+
+/// The stops of the inline LUT `source`, or what is wrong with it.
+pub(crate) fn lut_stops(source: &str) -> Result<Vec<[f32; 3]>, String> {
+    let source = source.trim();
+    if is_identity_lut(source) {
         return Ok(vec![[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]);
     }
 
@@ -245,37 +270,29 @@ fn parse_lut_stops(node_id: NodeId, source: &str) -> crate::Result<Vec<[f32; 3]>
             // `str::parse` also accepts `nan` and `inf`, which no clamp below would remove.
             .map(|part| part.parse::<f32>().ok().filter(|value| value.is_finite()))
             .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| lut_error(node_id, "LUT components must be finite numbers"))?;
+            .ok_or_else(|| "`lut` components must be finite numbers".to_string())?;
         if components.len() != 3 {
-            return Err(lut_error(
-                node_id,
-                format!("LUT triplet `{triplet}` must contain exactly three RGB components"),
+            return Err(format!(
+                "`lut` triplet `{triplet}` must contain exactly three RGB components"
             ));
         }
-        stops.push([
-            normalize_lut_component(components[0]),
-            normalize_lut_component(components[1]),
-            normalize_lut_component(components[2]),
-        ]);
+        if let Some(value) = components
+            .iter()
+            .find(|value| !(0.0..=1.0).contains(*value))
+        {
+            return Err(format!(
+                "`lut` value {value} in `{triplet}` is outside 0..1; the scale is 0..1, so divide 0..255 values by 255"
+            ));
+        }
+        stops.push([components[0], components[1], components[2]]);
     }
     if stops.len() < 2 {
-        return Err(lut_error(
-            node_id,
-            "LUT must contain at least two RGB triplets",
-        ));
+        return Err("`lut` must contain at least two RGB triplets".to_string());
     }
     Ok(stops)
 }
 
-fn normalize_lut_component(value: f32) -> f32 {
-    if value > 1.0 {
-        (value / 255.0).clamp(0.0, 1.0)
-    } else {
-        value.clamp(0.0, 1.0)
-    }
-}
-
-fn lut_error(node_id: NodeId, details: impl Into<String>) -> crate::error::LumenError {
+pub(crate) fn lut_error(node_id: NodeId, details: impl Into<String>) -> crate::error::LumenError {
     RenderError::NodeEvaluation {
         node_id,
         node_kind: <crate::node::processing::color_grade::ColorGrade as JsonNode>::KIND,
