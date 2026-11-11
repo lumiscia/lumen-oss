@@ -1781,7 +1781,11 @@ impl<'a> FrameCx<'a> {
         source: &str,
         identity: Option<&MediaIdentity>,
     ) {
-        let kept = self.static_depth > 0 || !self.holds.is_empty() || kind == AssetKind::Font;
+        #[cfg(feature = "3d")]
+        let held = !self.holds.is_empty();
+        #[cfg(not(feature = "3d"))]
+        let held = false;
+        let kept = self.static_depth > 0 || held || kind == AssetKind::Font;
         if kept
             && !self
                 .st

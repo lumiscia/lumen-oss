@@ -63,16 +63,24 @@ is what the composition wrote (a path, an alias, `asset:<id>`, or a font family)
 `VideoFrameResolver`, `AudioResolver`, `FontResolver`, `ModelResolver` or `EnvironmentResolver`).
 Video decode settings, such as hardware decode, are the store's own, set when it is made.
 
-The `MediaIdentity` names the bytes. Equal identities, from any store in the process, hold the
-same bytes, so the engine decodes, uploads and shapes each identity once and keeps the result
+The `MediaIdentity` names the bytes. The engine treats equal identities, from any store in the
+process, as the same bytes: it decodes, uploads and shapes each identity once and keeps the result
 across frames and renders, within its cache budgets. A host must give a source a new identity
 when its bytes change, or renders keep showing the old ones. Build it from what the host has:
 
-| Media                                                         | Identity                                                                 |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| A file, or several (a font's faces)                           | `MediaIdentity::of_file`, `of_files`: path, length and modification time |
-| Content a key always names (a hash, an immutable upload's id) | `MediaIdentity::of_key`                                                  |
-| Bytes handed over in memory                                   | `MediaIdentity::unique()`, taken again each time they are set            |
+| Media                                                         | Identity                                                          |
+| ------------------------------------------------------------- | ----------------------------------------------------------------- |
+| A file, or several (a font's faces)                           | `MediaIdentity::of_file`, `of_files`: a metadata heuristic, below |
+| Content a key always names (a hash, an immutable upload's id) | `MediaIdentity::of_key`                                           |
+| Bytes handed over in memory                                   | `MediaIdentity::unique()`, taken again each time they are set     |
+
+`of_file` doesn't read the file. It names it by its canonical path, length, modification time
+and, on Unix, its device and inode, so replacing the file (as saving through a rename does) or a
+write that changes its length or modification time gives a new identity. A write in place that
+keeps both, such as one within the file system's timestamp resolution or with the time set back,
+keeps the old identity, and renders keep the old bytes. A host that knows when its bytes change,
+from immutable uploads, content hashes or version counters, should use `of_key` instead;
+lumen-server names `asset:` sources by their asset id this way.
 
 The engine asks again on each frame that uses a source, to see whether its identity changed, so a
 store should resolve an opened source cheaply and let font, model and environment resolvers read

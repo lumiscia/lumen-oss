@@ -4,7 +4,7 @@
 //! fixtures below keep the two in step.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     f64::consts::FRAC_PI_2,
     sync::Arc,
 };
@@ -12,7 +12,7 @@ use std::{
 use super::{AUDIO_CHANNELS, AudioBuffer, AudioResolver, AudioSegment, AudioVoice, plan};
 use crate::{
     composition::Composition,
-    media::{AssetKind, MediaStore},
+    media::{AssetKind, MediaIdentity, MediaStore, resolve_as},
 };
 
 /// Samples each clip ramps over at its start and end, and where a window cuts it, so it never
@@ -29,7 +29,8 @@ const MAX_SOURCE_SPAN: u64 = 1 << 16;
 pub struct AudioMixer<'a, P: MediaStore> {
     composition: &'a Composition,
     provider: &'a P,
-    resolvers: HashMap<String, Box<dyn AudioResolver>>,
+    /// Each source's resolver and the identity it was resolved with.
+    resolvers: HashMap<String, (MediaIdentity, Box<dyn AudioResolver>)>,
     blocks: HashMap<(String, u64), Arc<AudioBuffer>>,
     /// The cached blocks, oldest first.
     order: VecDeque<(String, u64)>,
@@ -50,6 +51,15 @@ impl<'a, P: MediaStore> AudioMixer<'a, P> {
     pub fn mix_range(&mut self, start_sample: u64, frames: usize) -> crate::Result<AudioBuffer> {
         let media: &dyn MediaStore = self.provider;
         let plan = plan(self.composition, Some(media), start_sample, frames as u64)?;
+        let mut resolved = HashSet::new();
+        for segment in &plan.segments {
+            let voice = &plan.voices[segment.voice];
+            if resolved.insert(voice.source_id.as_str()) {
+                self.resolve(&voice.source_id).map_err(|error| {
+                    error.media_used_as(&[AssetKind::Audio], || voice.at.clone())
+                })?;
+            }
+        }
         let mut output = vec![vec![0.0_f32; frames]; AUDIO_CHANNELS];
         let end = start_sample.saturating_add(frames as u64);
         for segment in &plan.segments {
@@ -144,19 +154,32 @@ impl<'a, P: MediaStore> AudioMixer<'a, P> {
         Ok(channels)
     }
 
+    /// Resolves `source` again, and forgets what was read of it if its identity changed.
+    fn resolve(&mut self, source: &str) -> crate::Result<()> {
+        let (identity, resolver) = resolve_as::<dyn AudioResolver>(self.provider, source)?;
+        if self
+            .resolvers
+            .get(source)
+            .is_some_and(|(kept, _)| *kept == identity)
+        {
+            return Ok(());
+        }
+        self.blocks.retain(|(read, _), _| read != source);
+        self.order.retain(|(read, _)| read != source);
+        self.resolvers
+            .insert(source.to_string(), (identity, resolver));
+        Ok(())
+    }
+
     fn block(&mut self, source: &str, block: u64) -> crate::Result<Arc<AudioBuffer>> {
         let key = (source.to_string(), block);
         if let Some(buffer) = self.blocks.get(&key) {
             return Ok(Arc::clone(buffer));
         }
-        let resolver = match self.resolvers.get(source) {
-            Some(resolver) => resolver,
-            None => {
-                let (_, resolver) =
-                    crate::media::resolve_as::<dyn AudioResolver>(self.provider, source)?;
-                self.resolvers.entry(source.to_string()).or_insert(resolver)
-            }
-        };
+        let (_, resolver) = self
+            .resolvers
+            .get(source)
+            .expect("mix_range resolves each source it reads");
         let buffer = resolver.resolve_range(block * BLOCK_FRAMES, BLOCK_FRAMES as usize)?;
         if self.order.len() >= MAX_BLOCKS
             && let Some(oldest) = self.order.pop_front()

@@ -129,7 +129,8 @@ impl FontCatalog {
                 .find(|files| !files.is_empty())
                 .unwrap_or_default(),
         };
-        let font = (!files.is_empty()).then(|| ResolvedFont::new(family, files));
+        let font = (!files.is_empty())
+            .then(|| ResolvedFont::new(family, MediaIdentity::of_files(&files), files));
         if let Ok(mut resolved) = self.resolved.write()
             && let Entry::Vacant(entry) = resolved.entry(family.to_string())
         {
@@ -160,10 +161,10 @@ pub struct ResolvedFont {
 }
 
 impl ResolvedFont {
-    pub(super) fn new(family: &str, files: Vec<PathBuf>) -> Self {
+    pub(super) fn new(family: &str, identity: MediaIdentity, files: Vec<PathBuf>) -> Self {
         Self {
             family: family.to_string(),
-            identity: MediaIdentity::of_files(&files),
+            identity,
             files,
         }
     }

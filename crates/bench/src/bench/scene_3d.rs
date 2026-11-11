@@ -13,8 +13,8 @@ use lumen_engine::{
     error::MediaError,
     gpu::GpuCompositionRenderer,
     media::{
-        CpuMediaFrame, EnvironmentResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
-        ModelResolver,
+        AssetKind, CpuMediaFrame, EnvironmentResolver, ImageMetadata, ImageResolver, MediaFrame,
+        MediaIdentity, MediaResolver, MediaStore, ModelResolver, ResolvedMedia,
     },
 };
 use serde_json::{Value, json};
@@ -415,62 +415,40 @@ impl Scene3dMedia {
     }
 }
 
-struct Bytes {
-    id: String,
-    data: Arc<Vec<u8>>,
-}
+struct Bytes(Arc<Vec<u8>>);
 
 impl ModelResolver for Bytes {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn data(&self) -> Result<Vec<u8>, MediaError> {
-        Ok(self.data.to_vec())
+        Ok(self.0.to_vec())
     }
 }
 
 impl EnvironmentResolver for Bytes {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn data(&self) -> Result<Vec<u8>, MediaError> {
-        Ok(self.data.to_vec())
+        Ok(self.0.to_vec())
     }
 }
 
 impl MediaStore for Scene3dMedia {
-    fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
-        let data = self
-            .models
-            .get(source)
-            .ok_or_else(|| MediaError::source_not_found(source, "not a benchmark model"))?;
-        Ok(Box::new(Bytes {
-            id: source.to_string(),
-            data: Arc::clone(data),
-        }))
-    }
-
-    fn get_environment_resolver(
-        &self,
-        source: &str,
-    ) -> Result<Box<dyn EnvironmentResolver>, MediaError> {
-        let data = self.environments.get(source).ok_or_else(|| {
-            MediaError::source_not_found(source, "not a benchmark environment map")
-        })?;
-        Ok(Box::new(Bytes {
-            id: source.to_string(),
-            data: Arc::clone(data),
-        }))
-    }
-
-    fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
-        let image = self
-            .images
-            .get(source)
-            .ok_or_else(|| MediaError::source_not_found(source, "not a benchmark image"))?;
-        Ok(Box::new(image.clone()))
+    // Each source is set once, before the run, so it is named by its source alone.
+    fn resolve(&self, source: &str, kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
+        let missing = || MediaError::source_not_found(source, "not benchmark media");
+        let resolver = match kind {
+            AssetKind::Model => {
+                let data = self.models.get(source).ok_or_else(missing)?;
+                MediaResolver::Model(Box::new(Bytes(Arc::clone(data))))
+            }
+            AssetKind::Environment => {
+                let data = self.environments.get(source).ok_or_else(missing)?;
+                MediaResolver::Environment(Box::new(Bytes(Arc::clone(data))))
+            }
+            AssetKind::Image => {
+                let image = self.images.get(source).ok_or_else(missing)?;
+                MediaResolver::Image(Box::new(image.clone()))
+            }
+            _ => return Err(missing()),
+        };
+        Ok(ResolvedMedia::new(MediaIdentity::of_key(source), resolver))
     }
 }
 
@@ -503,10 +481,6 @@ impl InMemoryImage {
 }
 
 impl ImageResolver for InMemoryImage {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn metadata(&self) -> ImageMetadata {
         ImageMetadata {
             width: self.frame.width,
