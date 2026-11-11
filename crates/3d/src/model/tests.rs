@@ -2431,3 +2431,24 @@ fn primitives_other_than_triangle_lists_are_counted_and_left_out() {
         0
     );
 }
+
+#[test]
+fn a_clip_spans_from_its_first_key_to_its_last_over_all_its_channels() {
+    let scene = animated();
+    let clip = scene.animation("slide").unwrap().unwrap();
+    assert_eq!(scene.clip_span(clip), Some((0.0, 2.0)));
+    assert_eq!(scene.clip_span(clip + 1), None);
+}
+
+#[test]
+fn a_weights_channel_counts_toward_a_clips_span() {
+    let mut glb = morphed();
+    let times = glb.accessor(FLOAT, "SCALAR", 2, &floats(&[0.5, 2.0]));
+    let values = glb.accessor(FLOAT, "SCALAR", 4, &floats(&[0.0, 1.0, 1.0, 0.0]));
+    glb.json["animations"] = json!([{
+        "samplers": [{ "input": times, "output": values }],
+        "channels": [{ "sampler": 0, "target": { "node": 0, "path": "weights" } }],
+    }]);
+    let scene = glb.read().unwrap().scene;
+    assert_eq!(scene.clip_span(0), Some((0.5, 2.0)));
+}

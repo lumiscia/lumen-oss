@@ -1592,6 +1592,7 @@ fn read_animations(
     let node_count = nodes.len();
     let mut animations = Vec::with_capacity(root.animations.len());
     for animation in &root.animations {
+        let mut start = f32::INFINITY;
         let mut duration = 0.0f32;
         let mut channels = Vec::new();
         for channel in &animation.channels {
@@ -1709,6 +1710,7 @@ fn read_animations(
                     check_weights(values)?;
                 }
             }
+            start = start.min(times[0]);
             duration = duration.max(last);
             channels.push(Channel {
                 node,
@@ -1719,6 +1721,7 @@ fn read_animations(
         }
         animations.push(Animation {
             name: animation.name.clone().unwrap_or_default(),
+            start: if channels.is_empty() { 0.0 } else { start },
             duration,
             channels,
         });

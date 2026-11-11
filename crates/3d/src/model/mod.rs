@@ -553,6 +553,14 @@ impl ModelScene {
         })
     }
 
+    /// The times `clip` plays between: its first key's and its last's. The pose is the same at
+    /// any time at or before the first and at or after the last, whatever the clip animates. A
+    /// clip without keys is `None`, since it never changes the pose.
+    pub fn clip_span(&self, clip: usize) -> Option<(f32, f32)> {
+        let animation = self.animations.get(clip)?;
+        (!animation.channels.is_empty()).then_some((animation.start, animation.duration))
+    }
+
     /// The scene's primitives placed with `playback`'s clip sampled, or at rest without one. A
     /// primitive whose world matrix, or any of whose joint matrices, isn't finite is left out, so
     /// every matrix in the pose is finite.

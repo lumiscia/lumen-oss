@@ -230,6 +230,68 @@ type MemoKey = (InstanceKey, u32);
 /// read, the source frame, its size and whether its colour is premultiplied.
 type VideoFrameKey = (InstanceKey, String, u32, (u32, u32), bool);
 
+/// Whether a node's output is the same on every frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Staticness {
+    Never,
+    /// Whatever the frame.
+    Always,
+    /// On the frames where every model it draws holds one pose, which recording finds out.
+    WhileHeld,
+}
+
+impl Staticness {
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Never, _) | (_, Self::Never) => Self::Never,
+            (Self::WhileHeld, _) | (_, Self::WhileHeld) => Self::WhileHeld,
+            _ => Self::Always,
+        }
+    }
+}
+
+/// The frames a kept output stays correct for, and what it drew.
+#[cfg(feature = "3d")]
+#[derive(Debug, Clone)]
+struct HoldTrack {
+    /// Both ends included.
+    frames: (f64, f64),
+    models: Vec<String>,
+}
+
+#[cfg(feature = "3d")]
+impl HoldTrack {
+    fn new() -> Self {
+        Self {
+            frames: (f64::NEG_INFINITY, f64::INFINITY),
+            models: Vec::new(),
+        }
+    }
+
+    fn narrow(&mut self, frames: (f64, f64)) {
+        self.frames = (self.frames.0.max(frames.0), self.frames.1.min(frames.1));
+    }
+
+    fn contains(&self, frame: f64) -> bool {
+        self.frames.0 <= frame && frame <= self.frames.1
+    }
+
+    /// Whether some frame other than `frame`, among those a composition has, is also in it.
+    fn contains_another(&self, frame: f64) -> bool {
+        let next = frame.floor() + 1.0;
+        let previous = frame.ceil() - 1.0;
+        self.contains(next) || (previous >= 0.0 && self.contains(previous))
+    }
+}
+
+/// A file `render_3d` loads.
+#[cfg(feature = "3d")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SceneFile {
+    Model,
+    Environment,
+}
+
 struct Slot {
     raster: Raster,
     /// Passes recording it took, which each read of it skips.
@@ -238,8 +300,16 @@ struct Slot {
     full: Option<TexRef>,
     last_used: u64,
     bytes: u64,
+    /// Tells this slot from any other kept in its place.
+    #[cfg_attr(not(feature = "3d"), allow(dead_code, reason = "read by scene mips"))]
+    generation: u64,
+    /// The frames it may be read on, both ends included.
+    frames: (f64, f64),
     /// The models and environment maps it drew, which the scene cache keeps while it is kept.
-    #[cfg(feature = "3d")]
+    #[cfg_attr(
+        not(feature = "3d"),
+        allow(dead_code, reason = "read by the scene cache")
+    )]
     models: Vec<String>,
 }
 
@@ -283,8 +353,10 @@ struct RecordState {
     paths: HashMap<(PathId, NodeId), PathId>,
     memo: HashMap<MemoKey, Raster>,
     full_frames: HashMap<(TexRef, u32, u32), Raster>,
-    statics: HashMap<GraphNodeKey, bool>,
+    statics: HashMap<GraphNodeKey, Staticness>,
     slots: HashMap<GraphNodeKey, Slot>,
+    /// Slots made so far.
+    slot_generation: u64,
     /// Slots retained this frame, which hold nothing until it is submitted.
     pending: Vec<GraphNodeKey>,
     retained_bytes: u64,
@@ -318,6 +390,10 @@ struct RecordState {
     fonts: HashMap<String, Option<String>>,
     /// The texture of each image source that retained output was drawn from.
     images: HashMap<String, Option<super::MediaTextureKey>>,
+    /// The ID of the resolver of each model and environment map file that retained output was
+    /// drawn from.
+    #[cfg(feature = "3d")]
+    scene_files: HashMap<(SceneFile, String), String>,
     /// The template, node and family of each font fallback reported for this composition.
     font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
     /// The template and `render_3d` node of each shadow limit reported for this composition.
@@ -338,8 +414,11 @@ struct RecordState {
     #[cfg(feature = "3d")]
     scene: crate::node::scene::collect::SceneCache,
     /// Models drawn while the static output being recorded records, which its slot keeps.
-    #[cfg(feature = "3d")]
     static_models: Vec<String>,
+    /// What each output that is static while its models hold a pose found out when it was recorded
+    /// this frame, for the outputs reading it again.
+    #[cfg(feature = "3d")]
+    held_memo: HashMap<MemoKey, HoldTrack>,
 }
 
 pub(crate) struct FrameGraph {
@@ -460,6 +539,8 @@ impl FrameGraph {
             self.drop_pending();
             let generation = font_generation(media);
             let images_changed = self.images_changed(media);
+            #[cfg(feature = "3d")]
+            let images_changed = self.scene_files_changed(media) || images_changed;
             if self.state.font_generation != generation
                 || self.fonts_changed(media)
                 || images_changed
@@ -475,8 +556,9 @@ impl FrameGraph {
             self.state.video_frames.clear();
             #[cfg(feature = "ffmpeg")]
             self.state.frame_imports.clear();
-            #[cfg(feature = "3d")]
             self.state.static_models.clear();
+            #[cfg(feature = "3d")]
+            self.state.held_memo.clear();
             self.recorder.begin_frame();
             let mut cx = FrameCx {
                 rec: &mut self.recorder,
@@ -494,6 +576,8 @@ impl FrameGraph {
                 single_tile_repeats,
                 retain_static,
                 static_depth: 0,
+                #[cfg(feature = "3d")]
+                holds: Vec::new(),
                 depth: 0,
                 bound: BoundFrame::new(),
                 max_text_glyphs,
@@ -528,6 +612,10 @@ impl FrameGraph {
                     self.state.tick,
                     self.state.slots.values().flat_map(|slot| &slot.models),
                 );
+                #[cfg(feature = "3d")]
+                self.state
+                    .scene
+                    .trim_mips(&mut self.recorder, self.state.tick);
                 return Ok(bound);
             }
             if rebinds == max_rebinds {
@@ -730,6 +818,8 @@ impl FrameGraph {
     /// Commits what the frame retained after submitting its passes, and sweeps what idled.
     pub(crate) fn finish_frame(&mut self) {
         self.state.pending.clear();
+        #[cfg(feature = "3d")]
+        self.state.scene.commit_mips();
         self.evict_slots();
         self.recorder.end_frame();
         let recorder = &mut self.recorder;
@@ -872,6 +962,26 @@ impl FrameGraph {
         changed
     }
 
+    /// Whether a model or environment map file that retained output was drawn from now has another
+    /// resolver ID, as when it changed on disk or was replaced. Retained output doesn't load files
+    /// again, so this is what notices.
+    #[cfg(feature = "3d")]
+    fn scene_files_changed(&self, media: Option<&dyn MediaStore>) -> bool {
+        self.state.scene_files.iter().any(|((kind, source), id)| {
+            let current = media.and_then(|media| match kind {
+                SceneFile::Model => media
+                    .get_model_resolver(source)
+                    .ok()
+                    .map(|resolver| resolver.id().to_string()),
+                SceneFile::Environment => media
+                    .get_environment_resolver(source)
+                    .ok()
+                    .map(|resolver| resolver.id().to_string()),
+            });
+            current.as_deref() != Some(id.as_str())
+        })
+    }
+
     /// The warnings recording has raised since the last call.
     pub(crate) fn take_diagnostics(&mut self) -> Vec<crate::diagnostic::Diagnostic> {
         std::mem::take(&mut self.state.diagnostics)
@@ -896,6 +1006,8 @@ impl FrameGraph {
     }
 
     fn drop_pending(&mut self) {
+        #[cfg(feature = "3d")]
+        self.state.scene.discard_pending_mips();
         for key in std::mem::take(&mut self.state.pending) {
             Self::release_slot(&mut self.recorder, &mut self.state, key);
         }
@@ -904,6 +1016,8 @@ impl FrameGraph {
     fn drop_slots(&mut self) {
         self.state.pending.clear();
         self.state.images.clear();
+        #[cfg(feature = "3d")]
+        self.state.scene_files.clear();
         let keys: Vec<_> = self.state.slots.keys().copied().collect();
         for key in keys {
             Self::release_slot(&mut self.recorder, &mut self.state, key);
@@ -992,6 +1106,10 @@ pub(crate) struct FrameCx<'a> {
     retain_static: bool,
     /// How many static nodes the walk is inside, whose readers retain them rather than this.
     static_depth: u32,
+    /// What the nodes that are static while their models hold a pose, which the walk is inside,
+    /// have found out so far, innermost last.
+    #[cfg(feature = "3d")]
+    holds: Vec<HoldTrack>,
     /// How many nodes the walk is recording inside.
     depth: u32,
     pub(crate) bound: BoundFrame,
@@ -1006,7 +1124,7 @@ pub(crate) struct FrameCx<'a> {
     imports: &'a mut GpuMediaImports,
 }
 
-fn gpu_error(error: impl std::fmt::Display) -> crate::error::LumenError {
+pub(crate) fn gpu_error(error: impl std::fmt::Display) -> crate::error::LumenError {
     RenderError::Gpu {
         details: error.to_string(),
     }
@@ -1160,13 +1278,59 @@ impl<'a> FrameCx<'a> {
         self.st.tick
     }
 
-    /// Notes that the model or environment map `id` was drawn, so that a static output recording
-    /// now keeps it.
+    /// Notes that the model, environment map or text mesh `id` was drawn, so that a kept output
+    /// recording now keeps it.
     #[cfg(feature = "3d")]
     pub(crate) fn drew_model(&mut self, id: &str) {
         if self.static_depth > 0 {
             self.st.static_models.push(id.to_string());
         }
+        if let Some(track) = self.holds.last_mut() {
+            track.models.push(id.to_string());
+        }
+    }
+
+    /// Notes that the model or environment map file `source`, whose resolver has `id`, was drawn,
+    /// and that a kept output recording that drew it is dropped if the file changes.
+    #[cfg(feature = "3d")]
+    pub(crate) fn drew_file(&mut self, kind: SceneFile, source: &str, id: &str) {
+        self.drew_model(id);
+        if self.static_depth > 0 || !self.holds.is_empty() {
+            self.st
+                .scene_files
+                .insert((kind, source.to_string()), id.to_string());
+        }
+    }
+
+    /// Notes that the model being drawn holds one pose on `frames`, both ends included, which a
+    /// kept output recording now can only be read on.
+    #[cfg(feature = "3d")]
+    pub(crate) fn held_on(&mut self, frames: (f64, f64)) {
+        if let Some(track) = self.holds.last_mut() {
+            track.narrow(frames);
+        }
+    }
+
+    /// What keeps `raster`, the output of `node`, the same from frame to frame, if anything.
+    #[cfg(feature = "3d")]
+    pub(crate) fn stable_raster(
+        &self,
+        node: NodeId,
+        raster: Raster,
+    ) -> Option<crate::node::scene::mips::Stable> {
+        use crate::node::scene::mips::Stable;
+        let graph = self.graph_key();
+        if let Some(slot) = self.st.slots.get(&(graph, node))
+            && (slot.raster.tex == raster.tex || slot.full == Some(raster.tex))
+        {
+            return Some(Stable::Slot {
+                graph,
+                node,
+                generation: slot.generation,
+            });
+        }
+        let image = self.st.media.values().any(|(tex, _)| *tex == raster.tex);
+        image.then(|| Stable::Texture(Arc::downgrade(self.rec.texture(raster.tex))))
     }
 
     #[cfg(feature = "3d")]
@@ -1212,30 +1376,67 @@ impl<'a> FrameCx<'a> {
             .node(node_id)
             .ok_or(RenderError::MissingNode { node_id })?;
         let graph = self.graph_key();
-        let is_static = self.retain_static && self.is_static(node);
-        if is_static && let Some(slot) = self.st.slots.get_mut(&(graph, node_id)) {
+        let staticness = if self.retain_static {
+            self.staticness(node)
+        } else {
+            Staticness::Never
+        };
+        let is_static = staticness == Staticness::Always;
+        let frame = self.frame.value();
+        if staticness != Staticness::Never
+            && let Some(slot) = self.st.slots.get_mut(&(graph, node_id))
+            && slot.frames.0 <= frame
+            && frame <= slot.frames.1
+        {
             slot.last_used = self.st.tick;
             self.st.skipped_passes += slot.passes;
-            return Ok(slot.raster);
+            let raster = slot.raster;
+            #[cfg(feature = "3d")]
+            self.hold_slot(graph, node_id);
+            return Ok(raster);
         }
         let key = ((graph, self.path, node_id), self.sample);
         let raster = match self.st.memo.get(&key) {
-            Some(raster) => *raster,
+            Some(raster) => {
+                let raster = *raster;
+                #[cfg(feature = "3d")]
+                if let Some(read) = self.st.held_memo.get(&key)
+                    && let Some(track) = self.holds.last_mut()
+                {
+                    track.narrow(read.frames);
+                    track.models.extend(read.models.iter().cloned());
+                }
+                raster
+            }
             None => {
                 if self.depth == MAX_GRAPH_DEPTH {
                     return Err(self.scope.too_deep(node_id));
                 }
                 let passes = self.rec.pass_count();
                 self.static_depth += u32::from(is_static);
+                #[cfg(feature = "3d")]
+                if staticness == Staticness::WhileHeld {
+                    self.holds.push(HoldTrack::new());
+                }
                 self.depth += 1;
                 let raster = record_node(node, self);
                 self.depth -= 1;
                 self.static_depth -= u32::from(is_static);
+                #[cfg(feature = "3d")]
+                let track = (staticness == Staticness::WhileHeld)
+                    .then(|| self.holds.pop())
+                    .flatten();
                 let raster = raster?;
                 self.st.memo.insert(key, raster);
+                let passes = (self.rec.pass_count() - passes) as u64;
                 if is_static && self.static_depth == 0 {
-                    let passes = (self.rec.pass_count() - passes) as u64;
-                    self.retain(graph, node_id, raster, passes);
+                    let frames = (f64::NEG_INFINITY, f64::INFINITY);
+                    let models = std::mem::take(&mut self.st.static_models);
+                    self.retain(graph, node_id, raster, passes, frames, models);
+                }
+                #[cfg(feature = "3d")]
+                if let Some(track) = track {
+                    self.finish_hold(key, raster, passes, track);
                 }
                 raster
             }
@@ -1243,14 +1444,33 @@ impl<'a> FrameCx<'a> {
         Ok(raster)
     }
 
-    fn retain(&mut self, graph: usize, node: NodeId, raster: Raster, passes: u64) {
+    /// Keeps `raster`, the output of `node`, for the `frames` it stays correct on, along with the
+    /// `models` it drew.
+    fn retain(
+        &mut self,
+        graph: usize,
+        node: NodeId,
+        raster: Raster,
+        passes: u64,
+        frames: (f64, f64),
+        models: Vec<String>,
+    ) {
         // An image's own texture is let go of by frames that don't bind it, so it isn't kept.
         if self.st.media.values().any(|(tex, _)| *tex == raster.tex) {
             return;
         }
+        // A slot kept for other frames makes way.
+        if let Some(old) = self.st.slots.remove(&(graph, node)) {
+            self.rec.release(old.raster.tex);
+            if let Some(full) = old.full {
+                self.rec.release(full);
+            }
+            self.st.retained_bytes -= old.bytes;
+        }
         self.rec.retain(raster.tex);
         let bytes = self.rec.texture_bytes(raster.tex);
         self.st.retained_bytes += bytes;
+        self.st.slot_generation += 1;
         self.st.slots.insert(
             (graph, node),
             Slot {
@@ -1259,11 +1479,42 @@ impl<'a> FrameCx<'a> {
                 full: None,
                 last_used: self.st.tick,
                 bytes,
-                #[cfg(feature = "3d")]
-                models: std::mem::take(&mut self.st.static_models),
+                generation: self.st.slot_generation,
+                frames,
+                models,
             },
         );
         self.st.pending.push((graph, node));
+    }
+
+    /// Notes in the output being recorded that it reads the kept output of `node`, which holds
+    /// only on the frames the slot is correct on.
+    #[cfg(feature = "3d")]
+    fn hold_slot(&mut self, graph: usize, node: NodeId) {
+        let Some(track) = self.holds.last_mut() else {
+            return;
+        };
+        if let Some(slot) = self.st.slots.get(&(graph, node)) {
+            track.narrow(slot.frames);
+            track.models.extend(slot.models.iter().cloned());
+        }
+    }
+
+    /// Keeps `raster`, the output of `node` just recorded, if the models it drew hold their poses
+    /// on this frame and on another too, and tells the output being recorded around it what it
+    /// found.
+    #[cfg(feature = "3d")]
+    fn finish_hold(&mut self, key: MemoKey, raster: Raster, passes: u64, track: HoldTrack) {
+        let ((graph, _, node), _) = key;
+        if let Some(outer) = self.holds.last_mut() {
+            outer.narrow(track.frames);
+            outer.models.extend(track.models.iter().cloned());
+        }
+        self.st.held_memo.insert(key, track.clone());
+        let frame = self.frame.value();
+        if self.static_depth == 0 && track.contains(frame) && track.contains_another(frame) {
+            self.retain(graph, node, raster, passes, track.frames, track.models);
+        }
     }
 
     /// Records `node_id` stored at its full display size, for readers that read texel for texel.
@@ -2107,9 +2358,9 @@ impl<'a> FrameCx<'a> {
         tex
     }
 
-    /// Whether `node` and everything it reads are static candidates. Walks its inputs depth first
+    /// How far `node` and everything it reads are static candidates. Walks its inputs depth first
     /// with a stack of its own, so a long chain of nodes can't run out of call stack.
-    fn is_static(&mut self, node: &NodeKind) -> bool {
+    fn staticness(&mut self, node: &NodeKind) -> Staticness {
         let graph = self.graph_key();
         let mut pending = vec![node.id()];
         // Nodes whose inputs have been put on `pending`, which are decided when next reached.
@@ -2119,12 +2370,14 @@ impl<'a> FrameCx<'a> {
                 pending.pop();
                 continue;
             }
-            let candidate = self.scope.node(id).filter(|node| {
-                is_static_candidate(node)
-                    && !matches!(node, NodeKind::Clip(_) | NodeKind::TimeRemap(_))
-            });
-            let Some(node) = candidate else {
-                self.st.statics.insert((graph, id), false);
+            let candidate = self
+                .scope
+                .node(id)
+                .filter(|node| !matches!(node, NodeKind::Clip(_) | NodeKind::TimeRemap(_)))
+                .map(|node| (node, static_candidate(node)))
+                .filter(|(_, own)| *own != Staticness::Never);
+            let Some((node, own)) = candidate else {
+                self.st.statics.insert((graph, id), Staticness::Never);
                 pending.pop();
                 continue;
             };
@@ -2140,13 +2393,23 @@ impl<'a> FrameCx<'a> {
                 }
             }
             // An input still undecided here is part of a cycle, which validation rejects.
-            let result = inputs
-                .into_iter()
-                .all(|input| self.st.statics.get(&(graph, input)) == Some(&true));
+            let result = inputs.into_iter().fold(own, |all, input| {
+                all.and(
+                    self.st
+                        .statics
+                        .get(&(graph, input))
+                        .copied()
+                        .unwrap_or(Staticness::Never),
+                )
+            });
             self.st.statics.insert((graph, id), result);
             pending.pop();
         }
-        self.st.statics.get(&(graph, node.id())) == Some(&true)
+        self.st
+            .statics
+            .get(&(graph, node.id()))
+            .copied()
+            .unwrap_or(Staticness::Never)
     }
 
     fn record_routed(&mut self, routed: Routed<'a>) -> crate::Result<Raster> {
@@ -2235,19 +2498,35 @@ impl<'a> FrameCx<'a> {
 }
 
 /// Whether the node renders the same output on every frame as long as its inputs do.
-fn is_static_candidate(node: &NodeKind) -> bool {
+fn static_candidate(node: &NodeKind) -> Staticness {
+    let always = |candidate: bool| {
+        if candidate {
+            Staticness::Always
+        } else {
+            Staticness::Never
+        }
+    };
     match node {
         // An image changes only with the media store, which `images_changed` watches.
-        NodeKind::MediaIn(media) => {
-            matches!(media.params.kind, MediaInSourceKindDelegate::Image) && !node.has_expressions()
-        }
+        NodeKind::MediaIn(media) => always(
+            matches!(media.params.kind, MediaInSourceKindDelegate::Image)
+                && !node.has_expressions(),
+        ),
         // Video changes with the frame, shaders see the built-in time, and the output is written
         // into external textures that replace its own.
-        NodeKind::WgslShader(_) | NodeKind::MediaOutput(_) => false,
-        // A model playing a clip poses differently with the frame.
-        NodeKind::Model3d(model) => !model.animates() && !node.has_expressions(),
-        NodeKind::Instance3d(instance) => instance.is_frame_independent(),
-        _ => !node.has_expressions(),
+        NodeKind::WgslShader(_) | NodeKind::MediaOutput(_) => Staticness::Never,
+        // A model playing a clip poses differently with the frame, until its clip is over or
+        // before it starts, which `add_model` finds out from the clip.
+        NodeKind::Model3d(model) if model.animates() => {
+            if cfg!(feature = "3d") && !node.has_expressions() {
+                Staticness::WhileHeld
+            } else {
+                Staticness::Never
+            }
+        }
+        NodeKind::Model3d(_) => always(!node.has_expressions()),
+        NodeKind::Instance3d(instance) => always(instance.is_frame_independent()),
+        _ => always(!node.has_expressions()),
     }
 }
 

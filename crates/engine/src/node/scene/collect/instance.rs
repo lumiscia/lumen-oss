@@ -173,6 +173,8 @@ impl Collected {
             }
         }
         self.indices += inner.indices * copies;
+        self.rasters.extend(inner.rasters);
+        self.quad = self.quad.or(inner.quad);
 
         for (light, node) in inner.scene.lights.into_iter().zip(inner.light_nodes) {
             self.scene.lights.push(light.placed(&parent));

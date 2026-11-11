@@ -1,4 +1,4 @@
-import type { LumenBindings } from "@lumiscia/lumen-preview/advanced";
+import type { LumenBindings } from "@lumiscia/lumen-preview";
 
 import initPreview, * as previewBindings from "../wasm/lumen_wasm.js";
 

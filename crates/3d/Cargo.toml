@@ -23,6 +23,7 @@ webp = ["image/webp"]
 base64 = "0.22.1"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 exr = { version = "1.74.3", default-features = false, optional = true }
+foldhash = "0.2.0"
 glam = "0.32.1"
 gltf-json = { version = "1.4.1", default-features = false, features = [
   "extensions",
