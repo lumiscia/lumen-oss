@@ -16,10 +16,10 @@
 **Migrating a `wgsl_shader`:** inputs are linear and premultiplied, and values above 1 are kept. The output, and any storage texture you declare, must be `texture_storage_2d<rgba16float, write>`; a shader declaring `rgba8unorm` fails with a message saying so. Colour uniforms arrive decoded to linear and premultiplied; numbers and vectors arrive as written. The prelude has `lumen_srgb_to_linear` and `lumen_linear_to_srgb` for formulas that need encoded values:
 
 ```wgsl
-let color = textureLoad(input, pixel, 0);
+let color = textureLoad(input0, vec2<i32>(id.xy), 0);
 let encoded = lumen_linear_to_srgb(color.rgb / max(color.a, 1e-6));
-let graded = my_curve(encoded); // a formula written for sRGB codes
-textureStore(output, pixel, vec4(lumen_srgb_to_linear(graded) * color.a, color.a));
+let curved = encoded * encoded * (3.0 - 2.0 * encoded); // a formula written for sRGB codes
+textureStore(output, vec2<i32>(id.xy), vec4<f32>(lumen_srgb_to_linear(curved) * color.a, color.a));
 ```
 
 **Rust API:** `MediaFrame::RawRgba` holds straight colour, which images now use; `premultiply_rgba_in_place_if_needed` is gone. `VulkanVideoTarget::nv12` and `CudaNvencTargetPool::new` take a `dither` flag, and both targets render from `Rgba16Float`. `GpuCompositionRenderer::set_opaque_output(true)` composites over black for targets without alpha; the server, bench and browser preview set it for opaque outputs.
