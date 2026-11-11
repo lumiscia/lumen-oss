@@ -2,14 +2,18 @@ use crate::error::RenderError;
 use crate::node::motion::{self, Lerp, MAX_BOUNDED_MAGNITUDE, ROUNDING_ERROR_FACTOR, Shutter};
 use crate::node::{
     Deferred, DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams,
-    processing::RasterSampling,
+    processing::{
+        RasterSampling,
+        minify::{self, Minification},
+    },
 };
 
 use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
-    include_str!("transform.wgsl")
+    include_str!("transform.wgsl"),
+    include_str!("../../gpu/shaders/minify.wgsl")
 );
 
 /// Transforms a raster into the composition canvas bounds.
@@ -274,6 +278,17 @@ impl TransformKey {
         ]
     }
 
+    /// Texels of the source that one output pixel covers along the source's axes: the length of
+    /// each row of the matrix that maps output pixels to source ones, which rotating does not
+    /// change.
+    fn footprint(self) -> [f32; 2] {
+        let key = self.sampled();
+        [
+            (1.0 / key.scale.0.abs()) as f32,
+            (1.0 / key.scale.1.abs()) as f32,
+        ]
+    }
+
     /// This key with each scale that the shader would replace, by its clamp, replaced.
     fn sampled(self) -> Self {
         let clamp = |scale: f64| {
@@ -295,7 +310,9 @@ impl TransformKey {
             translate: [self.translate.0 as f32, self.translate.1 as f32],
             pivot: [self.pivot.0 as f32, self.pivot.1 as f32],
             rotate_radians: (self.rotate as f32).to_radians(),
-            _pad: 0,
+            lod: 0.0,
+            footprint: [0.0; 2],
+            _pad: [0; 2],
         }
     }
 }
@@ -314,6 +331,7 @@ fn resolve_pivot(custom_pivot: bool, pivot: [f32; 2], source_size: lumen_gpu::Si
 
 impl crate::gpu::frame_graph::RecordNode for Transform {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        crate::gpu::mips::programs(programs)?;
         programs.spatial("transform", SHADER)
     }
 
@@ -340,10 +358,9 @@ impl crate::gpu::frame_graph::RecordNode for Transform {
             let taps = motion.taps(&evaluated, &expr)?;
             (evaluated, taps)
         };
-        let bounds = motion.bounds_of_keys(
-            source.domain.data_rect,
-            taps.as_deref().unwrap_or(&[motion.key(&evaluated)]),
-        );
+        let frame_key = [motion.key(&evaluated)];
+        let keys = taps.as_deref().unwrap_or(&frame_key);
+        let bounds = motion.bounds_of_keys(source.domain.data_rect, keys);
         let bounds = cx.bounds_of(bounds);
         let domain = cx.source_domain(bounds);
         let pivot = resolve_pivot(
@@ -361,15 +378,34 @@ impl crate::gpu::frame_graph::RecordNode for Transform {
             source_origin: source.origin(),
             ..bytemuck::Zeroable::zeroed()
         };
-        if let Some(taps) = &taps {
-            params.tap_count = taps.len() as u32;
-            for (gpu, tap) in params.taps.iter_mut().zip(taps) {
-                *gpu = tap.to_gpu();
-            }
-        }
         let size = domain.storage_size;
         let tex = cx.storage_target(size);
-        cx.spatial_pass("transform", SHADER, source.tex, &params, tex, size)?;
+        // Each tap, or the transform alone, is filtered for how far it shrinks the source.
+        let mips = Minification::mips_fit(cx, source.domain.storage_size);
+        let filters: Vec<Option<Minification>> = keys
+            .iter()
+            .map(|key| {
+                (evaluated.sampling == RasterSampling::Linear)
+                    .then(|| Minification::new(key.footprint(), source.domain.storage_size, mips))
+                    .flatten()
+            })
+            .collect();
+        let filtered = |filter: Option<&Minification>| {
+            filter.map_or((0.0, [0.0; 2]), |filter| (filter.lod, filter.footprint))
+        };
+        match &taps {
+            Some(taps) => {
+                params.tap_count = taps.len() as u32;
+                for ((gpu, tap), filter) in params.taps.iter_mut().zip(taps).zip(&filters) {
+                    *gpu = tap.to_gpu();
+                    (gpu.lod, gpu.footprint) = filtered(filter.as_ref());
+                }
+            }
+            None => (params.lod, params.footprint) = filtered(filters[0].as_ref()),
+        }
+        let levels = filters.iter().flatten().map(|filter| filter.levels()).max();
+        let input = minify::source(cx, self.source, source, None, levels.unwrap_or(1))?;
+        cx.spatial_pass("transform", SHADER, input, &params, tex, size)?;
         Ok(crate::gpu::frame_graph::Raster {
             tex,
             domain,

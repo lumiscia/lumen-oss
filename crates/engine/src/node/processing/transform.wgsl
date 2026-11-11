@@ -3,7 +3,11 @@ struct TransformTap {
     translate: vec2<f32>,
     pivot: vec2<f32>,
     rotate_radians: f32,
-    _pad: u32,
+    // The mip level that `minify` reads, and the texels of the source an output pixel covers along
+    // its axes when the source is minified, else zero.
+    lod: f32,
+    footprint: vec2<f32>,
+    _pad: vec2<u32>,
 }
 
 // With taps, the transform moves during the shutter and the output averages the source
@@ -15,12 +19,14 @@ struct TransformParams {
     rotate_radians: f32,
     sampling: u32,
     tap_count: u32,
-    _pad2: u32,
+    // The mip level that `minify` reads.
+    lod: f32,
     // Canvas pixel of the output's first texel, and source pixel of the source's.
     output_origin: vec2<i32>,
     source_origin: vec2<i32>,
-    _pad0: u32,
-    _pad1: u32,
+    // Texels of the source an output pixel covers along its axes when the source is minified,
+    // else zero.
+    footprint: vec2<f32>,
     taps: array<TransformTap, 32>,
 }
 
@@ -54,6 +60,14 @@ fn sample_linear(coord: vec2<f32>) -> vec4<f32> {
     return mix(mix(c00, c10, frac.x), mix(c01, c11, frac.x), frac.y);
 }
 
+// A texel of a mip level of the source, which holds the source's pixels only; outside it is clear.
+fn read_level_pixel(coord: vec2<i32>, level: u32, size: vec2<i32>) -> vec4<f32> {
+    if (any(coord < vec2<i32>(0)) || any(coord >= size)) {
+        return vec4<f32>(0.0);
+    }
+    return textureLoad(input_tex, coord, level);
+}
+
 // The source pixel shown at output `pixel`.
 fn source_coord(
     pixel: vec2<f32>,
@@ -73,10 +87,14 @@ fn source_coord(
     return (unrotated / scale) + pivot;
 }
 
-// Samples the source.
-fn sample_source(coord: vec2<f32>) -> vec4<f32> {
+// Samples the source, filtering it over `footprint` texels at mip level `lod` where that is not
+// zero.
+fn sample_source(coord: vec2<f32>, footprint: vec2<f32>, lod: f32) -> vec4<f32> {
     if (params.sampling == 0u) {
         return sample_nearest(coord);
+    }
+    if (footprint.x > 0.0) {
+        return minify(coord - vec2<f32>(params.source_origin), footprint, lod);
     }
     return sample_linear(coord);
 }
@@ -93,12 +111,16 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (params.tap_count == 0u) {
         color = sample_source(
             source_coord(pixel, params.scale, params.translate, params.pivot, params.rotate_radians),
+            params.footprint,
+            params.lod,
         );
     } else {
         for (var index = 0u; index < params.tap_count; index = index + 1u) {
             let tap = params.taps[index];
             color += sample_source(
                 source_coord(pixel, tap.scale, tap.translate, tap.pivot, tap.rotate_radians),
+                tap.footprint,
+                tap.lod,
             );
         }
         color /= f32(params.tap_count);

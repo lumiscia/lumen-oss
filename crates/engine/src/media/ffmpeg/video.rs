@@ -1635,6 +1635,8 @@ mod tests {
     #[cfg(all(target_os = "linux", feature = "vulkan"))]
     #[test]
     fn a_hardware_decoder_stays_on_the_gpu_through_a_reopen_and_seeks() {
+        // Held to the end, so that the instance this test makes and drops overlaps no other test's.
+        let _shared = crate::gpu::test_device::shared();
         let Ok((_renderer, device)) =
             pollster::block_on(crate::gpu::GpuCompositionRenderer::new_vulkan_decode())
         else {

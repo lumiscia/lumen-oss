@@ -171,6 +171,7 @@ table in use frees an idle 40 MiB one under the 128 MiB `luts` budget.
 | Pooled textures, retained outputs among them; spares are freed by size bucket, not strictly LRU | `pooled_textures`  | total; only spares are freed            | 384 MiB |
 | Outputs of nodes that don't change with the frame (also dropped after 600 frames unread)        | `retained_outputs` | total; those the latest frame read stay | 1 GiB   |
 | `.cube` lookup tables                                                                           | `luts`             | total; those the latest frame used stay | 128 MiB |
+| Mip chains of sources shown smaller than their size (also dropped after 600 frames unused)      | `mip_chains`       | total; those the latest frame used stay | 256 MiB |
 | 3D models: GPU buffers and textures, plus the CPU bounds kept beside them                       | `models`           | total; drawn or kept-output models stay | 256 MiB |
 | 3D environment maps' textures                                                                   | `environments`     | total; as models                        | 256 MiB |
 | Extruded `text_3d` meshes' GPU buffers (at most 256)                                            | `text_meshes`      | total; as models                        | 64 MiB  |
@@ -193,10 +194,8 @@ retained outputs too, as those are pooled textures. `release_resources` frees ev
 atlas, and `release_text_atlas` that too.
 
 Not every cache has a byte budget. The atlas, the bundled font faces, built-in 3D shapes and the
-8 KiB environment lighting table (not in `environments`) have fixed sizes. 3D raster mip chains
-keep 256 MiB in total, the latest frame's exempt, and drop chains unused for 600 frames, which
-`CacheBudgets` does not set yet. Runtime programs and shader sources are bounded by count, and
-samplers by the finite set of sampler settings. GPU video frame imports and bind groups are freed
+8 KiB environment lighting table (not in `environments`) have fixed sizes. Runtime programs and
+shader sources are bounded by count, and samplers by the finite set of sampler settings. GPU video frame imports and bind groups are freed
 only when unused for 600 frames or when what they bind goes, and uniform and storage arenas keep
 the capacity of the largest frame. Audio keeps 64 mixed blocks and a resolver per source for the
 mixer's lifetime. Text shaping keeps fonts until reset, and glyph extents, cleared once 16,384

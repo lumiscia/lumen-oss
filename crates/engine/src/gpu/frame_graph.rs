@@ -344,7 +344,6 @@ struct Slot {
     last_used: u64,
     bytes: u64,
     /// Tells this slot from any other kept in its place.
-    #[cfg_attr(not(feature = "3d"), allow(dead_code, reason = "read by scene mips"))]
     generation: u64,
     /// The frames it may be read on, both ends included.
     frames: (f64, f64),
@@ -457,6 +456,8 @@ struct RecordState {
     #[cfg(feature = "3d")]
     scene: crate::node::scene::collect::SceneCache,
     luts: crate::node::processing::color_grade::LutCache,
+    /// Mip chains of the rasters nodes show smaller than their size.
+    mips: crate::gpu::mips::MipCache,
     /// Models drawn while the static output being recorded records, which its slot keeps.
     static_models: Vec<String>,
     /// What each output that is static while its models hold a pose found out when it was recorded
@@ -662,10 +663,9 @@ impl FrameGraph {
                     self.state.slots.values().flat_map(|slot| &slot.models),
                     self.budgets.environments,
                 );
-                #[cfg(feature = "3d")]
                 self.state
-                    .scene
-                    .trim_mips(&mut self.recorder, self.state.tick);
+                    .mips
+                    .trim(&mut self.recorder, self.state.tick, self.budgets.mip_chains);
                 return Ok(bound);
             }
             if rebinds == max_rebinds {
@@ -856,8 +856,7 @@ impl FrameGraph {
     /// Commits what the frame retained after submitting its passes, and sweeps what idled.
     pub(crate) fn finish_frame(&mut self) {
         self.state.pending.clear();
-        #[cfg(feature = "3d")]
-        self.state.scene.commit_mips();
+        self.state.mips.commit();
         self.evict_slots();
         self.recorder.end_frame();
         let recorder = &mut self.recorder;
@@ -970,6 +969,7 @@ impl FrameGraph {
         #[cfg(feature = "3d")]
         self.state.scene.release(&mut self.recorder);
         self.state.luts.release(&mut self.recorder);
+        self.state.mips.release(&mut self.recorder);
         self.recorder.release_all();
     }
 
@@ -1003,6 +1003,7 @@ impl FrameGraph {
             pooled_textures: self.recorder.pool_bytes(),
             retained_outputs: self.state.retained_bytes,
             luts: self.state.luts.bytes(),
+            mip_chains: self.state.mips.bytes(),
             models,
             environments,
             text_meshes,
@@ -1025,8 +1026,7 @@ impl FrameGraph {
     }
 
     fn drop_pending(&mut self) {
-        #[cfg(feature = "3d")]
-        self.state.scene.discard_pending_mips();
+        self.state.mips.discard_pending();
         for key in std::mem::take(&mut self.state.pending) {
             Self::release_slot(&mut self.recorder, &mut self.state, key);
         }
@@ -1410,13 +1410,12 @@ impl<'a> FrameCx<'a> {
     }
 
     /// What keeps `raster`, the output of `node`, the same from frame to frame, if anything.
-    #[cfg(feature = "3d")]
     pub(crate) fn stable_raster(
         &self,
         node: NodeId,
         raster: Raster,
-    ) -> Option<crate::node::scene::mips::Stable> {
-        use crate::node::scene::mips::Stable;
+    ) -> Option<crate::gpu::mips::Stable> {
+        use crate::gpu::mips::Stable;
         let graph = self.graph_key();
         if let Some(slot) = self.st.slots.get(&(graph, node))
             && (slot.raster.tex == raster.tex || slot.full == Some(raster.tex))
@@ -1442,6 +1441,10 @@ impl<'a> FrameCx<'a> {
         &mut crate::node::processing::color_grade::LutCache,
     ) {
         (&mut *self.rec, &mut self.st.luts)
+    }
+
+    pub(crate) fn mip_cache(&mut self) -> (&mut Recorder, &mut crate::gpu::mips::MipCache) {
+        (&mut *self.rec, &mut self.st.mips)
     }
 
     #[cfg(feature = "3d")]

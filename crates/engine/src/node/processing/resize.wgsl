@@ -3,7 +3,11 @@ struct ResizeParams {
     size: vec2<u32>,
     mode: u32,
     sampling: u32,
-    _pad: vec2<u32>,
+    // Texels of the source an output pixel covers along its axes when the source is minified,
+    // else zero.
+    footprint: vec2<f32>,
+    // The mip level that `minify` reads.
+    lod: f32,
 }
 
 // The part of the source texture that holds the image.
@@ -22,6 +26,15 @@ fn read_pixel(coord: vec2<i32>) -> vec4<f32> {
     let low = source_bounds.origin;
     let high = low + vec2<i32>(source_bounds.size) - vec2<i32>(1);
     return textureLoad(input_tex, clamp(coord, low, high), 0);
+}
+
+// A texel of a mip level of the source. The first level clamps to the source bounds, and a later
+// one, which is made only of sources that fill their texture, to the texture.
+fn read_level_pixel(coord: vec2<i32>, level: u32, size: vec2<i32>) -> vec4<f32> {
+    if (level == 0u) {
+        return read_pixel(coord);
+    }
+    return textureLoad(input_tex, clamp(coord, vec2<i32>(0), size - vec2<i32>(1)), level);
 }
 
 // Sample coordinates are continuous, with pixel centres at integer + 0.5.
@@ -88,6 +101,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     var color: vec4<f32>;
     if (params.sampling == 0u) {
         color = sample_nearest(source_coord);
+    } else if (params.footprint.x > 0.0) {
+        color = minify(source_coord, params.footprint, params.lod);
     } else {
         color = sample_linear(source_coord);
     }

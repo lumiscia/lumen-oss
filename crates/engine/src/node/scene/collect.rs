@@ -103,7 +103,6 @@ pub(crate) struct SceneCache {
     quad: Option<(GpuMesh, u32)>,
     models: HashMap<String, CachedModel>,
     model_bytes: u64,
-    pub(super) mips: super::mips::MipCache,
     /// A depth texture bound in place of a shadow atlas by scenes without shadows.
     no_shadows: Option<TexRef>,
     pub(super) environments: super::environment::EnvironmentCache,
@@ -126,7 +125,6 @@ impl SceneCache {
         self.model_bytes = 0;
         self.environments.release(rec);
         self.texts.release(rec);
-        self.mips.release(rec);
     }
 
     /// The bytes of models, environment maps and text meshes held.
@@ -136,18 +134,6 @@ impl SceneCache {
             self.environments.bytes(),
             self.texts.bytes(),
         )
-    }
-
-    pub(crate) fn trim_mips(&mut self, rec: &mut Recorder, tick: u64) {
-        self.mips.trim(rec, tick);
-    }
-
-    pub(crate) fn commit_mips(&mut self) {
-        self.mips.commit();
-    }
-
-    pub(crate) fn discard_pending_mips(&mut self) {
-        self.mips.discard_pending();
     }
 
     /// Frees environment maps as [`Self::trim`] frees models.

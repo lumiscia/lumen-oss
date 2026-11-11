@@ -9,6 +9,7 @@ pub(crate) mod gaussian;
 pub mod glow;
 pub mod hue_saturation;
 pub mod levels;
+pub(crate) mod minify;
 pub mod motion_blur;
 pub mod opacity;
 pub mod resize;
@@ -26,7 +27,8 @@ pub mod wgsl_shader;
 pub enum RasterSampling {
     /// Takes the nearest texel.
     Nearest = 0,
-    /// Blends the four nearest texels.
+    /// Blends the four nearest texels, or averages the texels a pixel covers when it shows a
+    /// source smaller than its size.
     #[default]
     Linear = 1,
 }

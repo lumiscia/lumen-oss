@@ -386,8 +386,8 @@ mod tests {
             .collect()
     }
 
-    fn gpu() -> Option<lumen_gpu::Renderer> {
-        match pollster::block_on(lumen_gpu::Renderer::new()) {
+    fn gpu() -> Option<std::sync::MutexGuard<'static, lumen_gpu::Renderer>> {
+        match crate::gpu::test_device::shared() {
             Ok(gpu) => Some(gpu),
             Err(error) => {
                 eprintln!("no GPU ({error}); skipping YUV conversion test");

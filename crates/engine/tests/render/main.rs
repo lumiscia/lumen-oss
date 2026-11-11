@@ -18,6 +18,7 @@ mod image_size;
 #[cfg(feature = "3d")]
 mod instance;
 mod media;
+mod minify;
 #[cfg(feature = "3d")]
 mod model_features;
 mod motion;
