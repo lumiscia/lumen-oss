@@ -3,6 +3,7 @@
 use lumen_engine::composition::Composition;
 use serde_json::{Value, json};
 
+use crate::color::{linear, opaque, srgb8};
 use crate::support::{Case, Expect, Scene, TestMedia, check, gpu, render, scene};
 
 const BLACK: [u8; 4] = [0, 0, 0, 255];
@@ -32,11 +33,15 @@ pub fn shader_scene(shader: &str, uniforms: Value, inputs: &[[u8; 4]]) -> Scene 
     scene((8, 4), json!(nodes))
 }
 
+/// The time and resolution as sRGB codes on the left half, and the frame on the right.
 const GLOBALS_SHADER: &str = "
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let color = vec4<f32>(lumen.time, lumen.resolution / 255.0, f32(lumen.frame) / 255.0);
-    textureStore(output, vec2<i32>(id.xy), color);
+    var codes = vec3<f32>(lumen.time, lumen.resolution / 255.0);
+    if (id.x >= 4u) {
+        codes = vec3<f32>(f32(lumen.frame) / 255.0, 0.0, 0.0);
+    }
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(lumen_srgb_to_linear(codes), 1.0));
 }
 ";
 
@@ -51,7 +56,8 @@ struct Params {
 
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let color = vec4<f32>(params.tint.xy, params.amount * f32(params.count), params.alpha);
+    let blue = lumen_srgb_to_linear(vec3<f32>(params.amount * f32(params.count))).x;
+    let color = vec4<f32>(params.tint.xy, blue, 1.0) * params.alpha;
     textureStore(output, vec2<i32>(id.xy), color);
 }
 ";
@@ -78,7 +84,7 @@ struct ShaderParams {
 }
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> params: ShaderParams;
-@group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;
 
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -113,11 +119,12 @@ fn shader_abi() {
                 .frames(12)
                 .fps(24.0),
             Expect::PerFrame(vec![
-                Expect::Uniform([0, 8, 4, 0]),
-                Expect::Uniform([64, 8, 4, 6]),
+                Expect::Probes(vec![(0, 0, [0, 8, 4, 255]), (7, 3, [0, 0, 0, 255])]),
+                Expect::Probes(vec![(0, 0, [64, 8, 4, 255]), (7, 3, [6, 0, 0, 255])]),
             ]),
         )
         .frames([0.0, 6.0]),
+        // The tint arrives as linear light, which the output encodes back to its codes.
         Case::new(
             "vec3 uniforms keep the alignment and expressions their time",
             shader_scene(
@@ -127,7 +134,7 @@ fn shader_abi() {
             )
             .frames(12)
             .fps(24.0),
-            Expect::Uniform([255, 128, 64, 128]),
+            Expect::Uniform([128, 64, 32, 128]),
         )
         .frames([6.0]),
         Case::new(
@@ -137,7 +144,7 @@ fn shader_abi() {
                 json!({ "gain": [1, 2, 4] }),
                 &[[200, 0, 0, 255], [0, 50, 0, 255], [0, 0, 25, 255]],
             ),
-            Expect::Uniform([200, 100, 100, 255]),
+            Expect::Uniform(opaque([linear(200), 2.0 * linear(50), 4.0 * linear(25)])),
         ),
         Case::new(
             "a shader that declares its own bindings",
@@ -146,7 +153,7 @@ fn shader_abi() {
                 json!({ "values": [0.5, 0, 0, 0] }),
                 &[BLACK],
             ),
-            Expect::Uniform([128, 0, 0, 255]),
+            Expect::Uniform([srgb8(0.5), 0, 0, 255]),
         ),
         Case::new(
             "uniforms from composition JSON",
@@ -159,7 +166,7 @@ fn shader_abi() {
             )
             .frames(12)
             .fps(24.0),
-            Expect::Uniform([128, 64, 12, 255]),
+            Expect::Uniform(opaque([0.5, 64.0 / 255.0, 12.0 / 255.0])),
         )
         .frames([6.0]),
     ]);
@@ -171,7 +178,7 @@ fn shader_errors_name_the_problem_and_leave_the_renderer_usable() {
     let mut renderer = gpu.renderer();
     let media = TestMedia::default();
     let write_only_input = "
-@group(0) @binding(0) var input_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(0) var input_tex: texture_storage_2d<rgba16float, write>;
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(input_tex, vec2<i32>(id.xy), vec4<f32>(1.0));
@@ -196,6 +203,12 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
             "GPU validation failed",
         ),
         (write_only_input, json!({}), "GPU validation failed"),
+        (
+            &DECLARED_SHADER.replace("rgba16float", "rgba8unorm"),
+            json!({}),
+            "`texture_storage_2d<rgba8unorm, ...>` is not supported; declare \
+             `texture_storage_2d<rgba16float, write>`",
+        ),
     ];
     for (shader, uniforms, expected) in rows {
         let composition = Composition::from(shader_scene(shader, uniforms, &[BLACK]));

@@ -72,7 +72,8 @@ fn coded_samples(reference: [u8; 3]) -> Vec<[u8; 4]> {
 }
 
 /// The premultiplied RGBA each coded pixel shows. A source that is premultiplied already shows
-/// its converted colour as it is.
+/// its converted colour as it is, up to its alpha: colour past it has no straight colour to
+/// decode, and is clamped.
 fn coded_expected(row: &Row) -> Vec<[u8; 4]> {
     coded_samples(row.reference.0)
         .into_iter()
@@ -90,7 +91,7 @@ fn coded_expected(row: &Row) -> Vec<[u8; 4]> {
             let a = if row.alpha { a } else { 255 };
             let premultiply = |c: u8| {
                 if row.premultiplied {
-                    c
+                    c.min(a)
                 } else {
                     (f32::from(c) * f32::from(a) / 255.0).round() as u8
                 }

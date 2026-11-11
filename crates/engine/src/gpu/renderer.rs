@@ -269,15 +269,23 @@ impl GpuCompositionRenderer {
 
     /// Sets whether the output is shown over black at full alpha, as encoders that drop alpha need.
     /// Off by default: the output keeps its alpha, with its sRGB-encoded colour premultiplied by it.
+    /// Drops what frames recorded so far when it changes.
     pub fn set_opaque_output(&mut self, opaque: bool) {
-        self.output_encoding.opaque = opaque;
+        if self.output_encoding.opaque != opaque {
+            self.output_encoding.opaque = opaque;
+            self.reset_recorded(self.output_format);
+        }
     }
 
     /// Sets whether quantising the output to 8 bits adds an ordered dither, which breaks up banding
     /// in smooth gradients. It is on by default, and smaller than half a code step, so colours that
-    /// land on a code keep it. Float outputs are never quantised.
+    /// land on a code keep it. Float outputs are never quantised. Drops what frames recorded so far
+    /// when it changes.
     pub fn set_output_dither(&mut self, enabled: bool) {
-        self.output_encoding.dither = enabled;
+        if self.output_encoding.dither != enabled {
+            self.output_encoding.dither = enabled;
+            self.reset_recorded(self.output_format);
+        }
     }
 
     /// Builds every program `composition` may record with, so that a literal shader that doesn't

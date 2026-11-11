@@ -287,13 +287,16 @@ fn gaussian_continuity() {
         (1, [123.5, 152.5]),
     ] {
         for x in [0, 512 - width] {
-            cases.push(swept(
-                format!("{width} px stripe at x={x}, radius {radii:?}"),
-                (512, 512),
-                vec![white(f64::from(x), 0.0, width, 512), blur(by_frame(&radii))],
-                2,
-                continuous(vec![(x, 256)], 60.0, 6.0, vec![[0, 1]]),
-            ));
+            cases.push(
+                swept(
+                    format!("{width} px stripe at x={x}, radius {radii:?}"),
+                    (512, 512),
+                    vec![white(f64::from(x), 0.0, width, 512), blur(by_frame(&radii))],
+                    2,
+                    continuous(vec![(x, 256)], 60.0, 6.0, vec![[0, 1]]),
+                )
+                .uniform_columns(),
+            );
         }
     }
     for radii in [[34.0, 34.3], [137.5, 138.5]] {

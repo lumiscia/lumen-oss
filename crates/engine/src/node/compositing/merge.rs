@@ -24,7 +24,8 @@ pub enum MaskMode {
     /// Uses the mask's alpha channel.
     #[default]
     Alpha = 0,
-    /// Uses the mask's Rec. 709 luma over black, so transparent areas are fully masked out.
+    /// Uses the mask's Rec. 709 luminance in linear light over black, so transparent areas are
+    /// fully masked out, and white lets everything through.
     Luma = 1,
 }
 

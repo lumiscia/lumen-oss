@@ -27,7 +27,7 @@ struct SweepParams {
 @group(0) @binding(1) var<uniform> params: SweepParams;
 @group(0) @binding(2) var linear_sampler: sampler;
 @group(0) @binding(3) var boxes_out: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(4) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(4) var output_tex: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(5) var boxes_tex: texture_2d<f32>;
 
 fn sweep_inside(index: f32, extent: f32) -> f32 {

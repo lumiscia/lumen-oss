@@ -19,7 +19,7 @@ struct NoiseParams {
 }
 
 @group(0) @binding(0) var<uniform> params: NoiseParams;
-@group(0) @binding(1) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(1) var output_tex: texture_storage_2d<rgba16float, write>;
 
 // Chris Wellons' lowbias32, an integer mixer that is exact on every GPU.
 fn noise_hash(value: u32) -> u32 {
@@ -70,5 +70,5 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let level = select(sum + 0.5, sum, params.turbulent == 1u);
     let shade = clamp((level - 0.5) * params.contrast + 0.5 + params.brightness, 0.0, 1.0);
-    textureStore(output_tex, vec2<i32>(id.xy), vec4<f32>(vec3<f32>(shade), 1.0));
+    textureStore(output_tex, vec2<i32>(id.xy), vec4<f32>(lumen_srgb_to_linear(vec3<f32>(shade)), 1.0));
 }

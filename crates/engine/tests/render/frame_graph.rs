@@ -9,6 +9,7 @@ use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer};
 use lumen_gpu::{ExternalTexture, wgpu};
 use serde_json::{Value, json};
 
+use crate::color::srgb8;
 use crate::support::{Scene, TestMedia, gpu, read_rgba8, render, scene};
 
 const CANVAS: (u32, u32) = (64, 32);
@@ -402,9 +403,10 @@ fn a_kept_output_is_copied_to_the_target_and_stays_kept() {
     }
     let stats = renderer.frame_graph_stats();
     assert_eq!(stats.recorder.external_copies, 3);
+    // The first frame's background, shape, merge and output, and the copies.
     assert_eq!(
         stats.recorder.passes,
-        3 + 3,
+        4 + 3,
         "the first frame's passes alone"
     );
 }
@@ -485,7 +487,7 @@ fn a_frame_with_more_shaders_than_the_caches_hold_renders_and_settles() {
             "const NODE: u32 = {index}u;\n\
              @compute @workgroup_size(8, 8, 1)\n\
              fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {{\n\
-               let step = vec4<f32>(1.0 / 255.0, 0.0, 0.0, f32(NODE) * 0.0);\n\
+               let step = vec4<f32>(1.0 / 256.0, 0.0, 0.0, f32(NODE) * 0.0);\n\
                textureStore(output, vec2<i32>(id.xy), textureLoad(input0, vec2<i32>(id.xy), 0) + step);\n\
              }}"
         );
@@ -509,11 +511,13 @@ fn a_frame_with_more_shaders_than_the_caches_hold_renders_and_settles() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
     renderer.set_static_output_reuse(false);
+    // Each shader adds 1/256 to the light in red, which half floats sum exactly.
+    let red = [srgb8(f64::from(SHADERS) / 256.0), 0, 0, 255];
     let frame = render(&mut renderer, &composition, 0.0, &TestMedia::default());
-    assert_eq!(frame.pixel(4, 4), [SHADERS as u8, 0, 0, 255]);
+    assert_eq!(frame.pixel(4, 4), red);
     let built = renderer.frame_graph_stats().recorder.programs_created;
     let frame = render(&mut renderer, &composition, 0.0, &TestMedia::default());
-    assert_eq!(frame.pixel(4, 4), [SHADERS as u8, 0, 0, 255]);
+    assert_eq!(frame.pixel(4, 4), red);
     assert_eq!(
         renderer.frame_graph_stats().recorder.programs_created,
         built,

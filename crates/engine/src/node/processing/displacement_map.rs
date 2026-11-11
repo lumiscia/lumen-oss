@@ -6,6 +6,8 @@ use crate::node::{
 };
 
 pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("../../gpu/shaders/color.wgsl"),
     include_str!("../../gpu/shaders/sampling.wgsl"),
     include_str!("displacement_map.wgsl")
 );
@@ -76,9 +78,9 @@ impl Default for DisplacementMapParams {
     }
 }
 
-/// Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. Map bytes are
-/// premultiplied by alpha, so transparent areas of the map, and everything outside it, leave
-/// the source in place.
+/// Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. A channel byte is
+/// the sRGB code of the map's colour, and its move is scaled by the map's alpha, so transparent
+/// areas of the map, and everything outside it, leave the source in place.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "displacement_map",

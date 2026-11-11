@@ -129,7 +129,7 @@ impl From<Scene> for Composition {
 #[derive(Debug, Default, Clone)]
 pub struct TestMedia {
     /// The identity key and pixels by source.
-    images: HashMap<String, (String, Arc<CpuMediaFrame>)>,
+    images: HashMap<String, (String, MediaFrame)>,
     /// The size and pixels of every frame by source.
     still_videos: HashMap<String, ((u32, u32), MediaFrame)>,
     numbered_video: Option<String>,
@@ -166,9 +166,17 @@ impl TestMedia {
         height: u32,
         rgba: Vec<u8>,
     ) -> Self {
-        let frame = still_frame(width, height, rgba);
+        let frame = MediaFrame::CpuRgba(still_frame(width, height, rgba));
         self.images
             .insert(source.to_string(), (id.to_string(), frame));
+        self
+    }
+
+    /// Like `image`, with straight-alpha pixels, as a decoded image file has.
+    pub fn straight_image(mut self, source: &str, width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        let frame = MediaFrame::RawRgba(still_frame(width, height, rgba));
+        self.images
+            .insert(source.to_string(), (source.to_string(), frame));
         self
     }
 
@@ -394,7 +402,7 @@ impl MediaStore for TestMedia {
                 self.image_requests.fetch_add(1, Ordering::Relaxed);
                 let (id, frame) = self.images.get(source).ok_or_else(missing)?;
                 let image = TestImage {
-                    frame: Arc::clone(frame),
+                    frame: frame.clone(),
                 };
                 (
                     MediaIdentity::of_key(id),
@@ -459,19 +467,22 @@ impl MediaStore for TestMedia {
 }
 
 struct TestImage {
-    frame: Arc<CpuMediaFrame>,
+    frame: MediaFrame,
 }
 
 impl ImageResolver for TestImage {
     fn metadata(&self) -> ImageMetadata {
+        let (MediaFrame::CpuRgba(frame) | MediaFrame::RawRgba(frame)) = &self.frame else {
+            unreachable!("test images are RGBA");
+        };
         ImageMetadata {
-            width: self.frame.width,
-            height: self.frame.height,
+            width: frame.width,
+            height: frame.height,
         }
     }
 
     fn frame(&self) -> Result<MediaFrame, MediaError> {
-        Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
+        Ok(self.frame.clone())
     }
 }
 
@@ -656,6 +667,7 @@ pub struct Case {
     expect: Expect,
     tolerance: u8,
     bounded: Option<bool>,
+    uniform_columns: bool,
 }
 
 impl Case {
@@ -669,7 +681,17 @@ impl Case {
             expect,
             tolerance: 1,
             bounded: None,
+            uniform_columns: false,
         }
+    }
+
+    /// For a scene that is the same down every column: compares it with the reference to within 1
+    /// in every byte, without bounding how many bytes differ. The reference's float rasters round
+    /// in the output like the render's, and one column that rounds the other way differs in all
+    /// of its pixels.
+    pub fn uniform_columns(mut self) -> Self {
+        self.uniform_columns = true;
+        self
     }
 
     pub fn media(mut self, media: TestMedia) -> Self {
@@ -700,7 +722,14 @@ impl Case {
         self.expect.assert(self, gpu, &frames);
         let reference = self.render_frames(&mut gpu.reference(), self.bounded.map(|_| false));
         for (frame, reference) in frames.iter().zip(&reference) {
-            if let Err(error) = within_rounding(&frame.rgba, &reference.rgba) {
+            if self.uniform_columns {
+                assert!(
+                    frame.rgba.len() == reference.rgba.len()
+                        && channels_within(&frame.rgba, &reference.rgba, 1),
+                    "frame {} differs from the reference by more than 1",
+                    frame.at
+                );
+            } else if let Err(error) = within_rounding(&frame.rgba, &reference.rgba) {
                 panic!("frame {} differs from the reference: {error}", frame.at);
             }
         }
@@ -713,22 +742,28 @@ impl Case {
     ) -> Vec<Frame> {
         self.frames
             .iter()
-            .map(|&at| {
+            .enumerate()
+            .map(|(index, &at)| {
                 let frame = render(renderer, &self.scene, at, &self.media);
                 if let Some(bounded) = bounded {
+                    // A later frame that shows the output kept from an earlier one records
+                    // nothing.
                     let domain = self.output_domain(renderer);
-                    assert_eq!(
-                        !domain.is_full_frame(),
-                        bounded,
-                        "frame {at}: output source has the domain {domain:?}"
-                    );
+                    assert!(index > 0 || domain.is_some(), "the output source recorded");
+                    if let Some(domain) = domain {
+                        assert_eq!(
+                            !domain.is_full_frame(),
+                            bounded,
+                            "frame {at}: output source has the domain {domain:?}"
+                        );
+                    }
                 }
                 frame
             })
             .collect()
     }
 
-    fn output_domain(&self, renderer: &GpuCompositionRenderer) -> lumen_gpu::TextureDomain {
+    fn output_domain(&self, renderer: &GpuCompositionRenderer) -> Option<lumen_gpu::TextureDomain> {
         let source = self
             .scene
             .graph()
@@ -739,9 +774,7 @@ impl Case {
                 _ => None,
             })
             .expect("scene has a media_output");
-        renderer
-            .recorded_domain(&self.scene, source)
-            .expect("the output source recorded")
+        renderer.recorded_domain(&self.scene, source)
     }
 }
 

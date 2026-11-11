@@ -1,8 +1,10 @@
 //! Compositing and colour operators on known pixels. Every expected colour is worked out by hand
-//! from the operator's definition, with translucent inputs so premultiplication matters.
+//! from the operator's definition, with translucent inputs so premultiplication matters. Normal
+//! compositing works on linear light; blend modes and colour controls on sRGB-encoded colour.
 
 use serde_json::{Value, json};
 
+use crate::color::{encode, linear, over, premultiplied, rgba8, scaled, srgb8};
 use crate::support::{Case, Expect, Frame, Scene, check, scene};
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
@@ -73,16 +75,25 @@ fn solid_mask(color: [u8; 4], width: u32, height: u32) -> Value {
         "paint": color, "width": width, "height": height } }])
 }
 
-/// The matte in columns 6 to 17 of the middle row, which hold the edges of `rim`.
-fn matte_at(columns: [u8; 12]) -> Expect {
-    let probes = (6..).zip(columns).map(|(x, v)| (x, MIDDLE, [v, v, v, 255]));
+/// The matte in columns 6 to 17 of the middle row, which hold the edges of `rim`. White over
+/// black at matte `m` is `m` of the light.
+fn matte_at(columns: [f64; 12]) -> Expect {
+    let probes = (6..).zip(columns).map(|(x, m)| {
+        let v = srgb8(m);
+        (x, MIDDLE, [v, v, v, 255])
+    });
     Expect::Probes(probes.collect())
 }
 
-/// The red channel of the middle row.
+/// The matte at `(x, y)` as a byte, from the light of white over black there.
+fn matte_value(frame: &Frame, x: u32, y: u32) -> u8 {
+    (linear(frame.pixel(x, y)[0]) * 255.0).round() as u8
+}
+
+/// The matte along the middle row.
 fn matte_row(frame: &Frame) -> Vec<u8> {
     (0..frame.width)
-        .map(|x| frame.pixel(x, MIDDLE)[0])
+        .map(|x| matte_value(frame, x, MIDDLE))
         .collect()
 }
 
@@ -113,16 +124,29 @@ fn operators_produce_hand_computed_colors() {
     let level = json!({ "black_point": 0.1, "white_point": 0.9, "gamma": 1.2,
         "output_black": 0.05, "output_white": 0.95 });
     let lut = json!({ "lut_source": "rgb1d: 0,0,0; 255,128,0", "strength": 0.5, "interpolation": "linear" });
+    let red = premultiplied([255, 0, 0, 255]);
+    // Exposure scales linear light by `gain`, then applies offset and contrast about mid grey to
+    // the encoded colour of TEAL, whose alpha is .502.
+    let exposed = |gain: f64, contrast: f64, offset: f64| {
+        let alpha = f64::from(TEAL[3]) / 255.0;
+        let channel = |code: u8| {
+            let encoded = (encode(linear(code) * gain) + offset - 0.5) * contrast + 0.5;
+            (encoded.clamp(0.0, 1.0) * alpha * 255.0).round() as u8
+        };
+        [channel(TEAL[0]), channel(TEAL[1]), channel(TEAL[2]), TEAL[3]]
+    };
+    // Screen works on encoded colour: each layer screens the running result to full green, then
+    // full blue, which is composited in at alpha .251.
+    let screened = srgb8(128.0 / 255.0 * 0.5);
     // Each scene is a 4 × 4 solid, and every pixel of the output is the colour.
     let rows = [
         // 50% blue at 50% opacity over red: (0, 0, .251) over (1, 0, 0) leaves .749 of the red.
         (
             "merge opacity",
             layered("merge", json!({ "opacity": 0.5 }), &[[0, 0, 255, 128]]),
-            [191, 0, 64, 255],
+            rgba8(over(scaled(premultiplied([0, 0, 255, 128]), 0.5), red)),
         ),
-        // Screen of each layer onto the running result gives (1, 1/4, 1/4); normal blending
-        // would give (143, 48, 64).
+        // Screen of each layer onto the running result gives (1, 1/4, 1/4) of the light.
         (
             "multimerge of three layers with screen",
             layered(
@@ -130,7 +154,7 @@ fn operators_produce_hand_computed_colors() {
                 json!({ "opacity": 0.5, "blend_mode": "screen" }),
                 &[[0, 255, 0, 128], [0, 0, 255, 128]],
             ),
-            [255, 64, 64, 255],
+            [255, screened, screened, 255],
         ),
         // Half-red (.5, 0, 0, .5) over its own green shadow (0, .5, 0, .5), then over black.
         (
@@ -141,10 +165,16 @@ fn operators_produce_hand_computed_colors() {
                 { "id": 3, "type": "shadow", "in": { "source": 2 }, "params": green_shadow },
                 { "id": 4, "type": "merge", "in": { "base": 1, "overlay": 3 } }]),
             ),
-            [128, 64, 0, 255],
+            rgba8(over(
+                over(
+                    premultiplied([255, 0, 0, 128]),
+                    premultiplied([0, 255, 0, 128]),
+                ),
+                premultiplied(BLACK),
+            )),
         ),
         // The straight colour (.5, .5, .5) of a transparent pixel must not show through, and
-        // the same lift of a translucent pixel does: 2 * .235 + .5 = .97 at alpha .502.
+        // the same lift of a translucent pixel does.
         (
             "exposure of a transparent pixel",
             through(CLEAR, "exposure", lift.clone()),
@@ -153,9 +183,8 @@ fn operators_produce_hand_computed_colors() {
         (
             "exposure lifts a translucent pixel",
             through(TEAL, "exposure", lift.clone()),
-            [124, 128, 128, 128],
+            exposed(2.0, 1.0, 0.5),
         ),
-        // Gain 2^.5 and contrast 1.2 about the midpoint: red .239, green .639, blue clamps at 1.
         (
             "exposure gain, contrast and offset",
             through(
@@ -163,7 +192,7 @@ fn operators_produce_hand_computed_colors() {
                 "exposure",
                 json!({ "exposure": 0.5, "contrast": 1.2, "offset": -0.05 }),
             ),
-            [30, 81, 128, 128],
+            exposed(2f64.sqrt(), 1.2, -0.05),
         ),
         (
             "levels",
@@ -212,7 +241,14 @@ fn operators_produce_hand_computed_colors() {
         Expect::Probes(vec![
             (5, 5, [200, 78, 0, 200]),
             (9, 8, [0, 0, 100, 100]),
-            (7, 6, [200, 78, 22, 222]),
+            (
+                7,
+                6,
+                rgba8(over(
+                    premultiplied([255, 100, 0, 200]),
+                    scaled(premultiplied([0, 0, 255, 255]), 0.5 * 200.0 / 255.0),
+                )),
+            ),
             (10, 5, CLEAR),
             (3, 8, CLEAR),
             (6, 10, CLEAR),
@@ -308,8 +344,9 @@ fn nonseparable_blend_modes_match_the_w3c_formulas() {
         })
         .collect();
     // A grey base under black lands on a uniform result whose ClipColor denominator rounds to
-    // zero. A clear overlay keeps the base, and a half-transparent one darkens it by half.
-    for (alpha, expected) in [(0, 193), (128, 96)] {
+    // zero. A clear overlay keeps the base, and a half-transparent one halves its light.
+    let halved = srgb8((1.0 - 128.0 / 255.0) * linear(193));
+    for (alpha, expected) in [(0, 193), (128, halved)] {
         cases.push(Case::new(
             "luminosity of a translucent black over grey",
             scene(
@@ -327,24 +364,29 @@ fn nonseparable_blend_modes_match_the_w3c_formulas() {
 #[test]
 fn mattes_select_by_alpha_or_luma() {
     // Columns 6 to 17 of a mask that covers half of 8, all of 9 to 15 and half of 16.
-    let edge = |full: u8| {
-        let half = full / 2;
+    let edge = |full: f64| {
+        let half = full / 2.0;
         [
-            0, 0, half, full, full, full, full, full, full, full, half, 0,
+            0.0, 0.0, half, full, full, full, full, full, full, full, half, 0.0,
         ]
     };
-    let inverted = [255, 255, 127, 0, 0, 0, 0, 0, 0, 0, 127, 255];
+    let inverted = edge(1.0).map(|matte| 1.0 - matte);
+    let luma = |color: [u8; 4]| {
+        let [r, g, b, _] = premultiplied(color);
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    };
     let mut cases = vec![
         Case::new(
             "alpha keeps antialiased edges",
             matte(WIDTH, rim(WHITE), json!({})),
-            matte_at(edge(255)),
+            matte_at(edge(1.0)),
         ),
-        // Luma is Rec. 709 over black: .2126 of full red is 54, and 27 on a half-covered edge.
+        // Luma is the Rec. 709 luminance of linear light over black: .2126 for full red, and half
+        // that on a half-covered edge.
         Case::new(
             "luma of opaque red",
             matte(WIDTH, rim([255, 0, 0, 255]), json!({ "mask_mode": "luma" })),
-            matte_at(edge(54)),
+            matte_at(edge(0.2126)),
         ),
         Case::new(
             "alpha inverted",
@@ -367,14 +409,13 @@ fn mattes_select_by_alpha_or_luma() {
                 solid_mask([0, 255, 0, 255], WIDTH, HEIGHT),
                 json!({ "mask_mode": "luma" }),
             ),
-            matte_at([182; 12]),
+            matte_at([0.7152; 12]),
         ),
     ];
-    // A translucent orange (200, 90, 40) at alpha .588: its alpha is 150, and its luma over
-    // black is .2126 * 117.6 + .7152 * 52.9 + .0722 * 23.5 = 65. A zero feather expression must
-    // read the mask as no feather does.
+    // A translucent orange (200, 90, 40) at alpha .588, whose luma over black is that of its
+    // premultiplied light. A zero feather expression must read the mask as no feather does.
     let orange = [200, 90, 40, 150];
-    for (mode, full) in [("alpha", 150), ("luma", 65)] {
+    for (mode, full) in [("alpha", 150.0 / 255.0), ("luma", luma(orange))] {
         let translucent = |feather: Value| {
             let params = json!({ "mask_mode": mode, "feather": feather });
             matte(WIDTH, rim(orange), params)
@@ -461,7 +502,7 @@ fn feather_blurs_the_mask_before_inverting() {
             feathered(solid_mask(WHITE, WIDTH + 40, HEIGHT + 30), json!(2)),
             Expect::Custom(Box::new(|frames| {
                 // The mask continues past the right and bottom edges but starts at the left.
-                let pixel = |x, y| frames[0].pixel(x, y)[0];
+                let pixel = |x, y| matte_value(&frames[0], x, y);
                 assert!(
                     pixel(WIDTH - 1, MIDDLE) >= 254
                         && pixel(12, HEIGHT - 1) >= 254
@@ -478,7 +519,7 @@ fn feather_blurs_the_mask_before_inverting() {
             feathered(solid_mask(WHITE, WIDTH, HEIGHT), json!(2)),
             Expect::Custom(Box::new(|frames| {
                 assert!(
-                    frames[0].pixel(WIDTH - 1, MIDDLE)[0] < 230,
+                    matte_value(&frames[0], WIDTH - 1, MIDDLE) < 230,
                     "{:?}",
                     matte_row(&frames[0])
                 );
@@ -489,7 +530,7 @@ fn feather_blurs_the_mask_before_inverting() {
             "a wide feather of a square mask falls off evenly on both axes",
             feathered(solid_mask(WHITE, 64, 64), json!(64)),
             Expect::Custom(Box::new(|frames| {
-                let (right, bottom) = (frames[0].pixel(23, 12)[0], frames[0].pixel(12, 23)[0]);
+                let (right, bottom) = (matte_value(&frames[0], 23, 12), matte_value(&frames[0], 12, 23));
                 assert!(
                     right > 0 && right.abs_diff(bottom) <= 2,
                     "{right}, {bottom}"
@@ -499,12 +540,17 @@ fn feather_blurs_the_mask_before_inverting() {
         Case::new(
             "negative feather is none",
             feathered(rim(WHITE), json!(-3)),
-            matte_at([0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 128, 0]),
+            matte_at([0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.0]),
         ),
         Case::new(
             "huge feather washes the mask out to nothing",
             feathered(rim(WHITE), json!(1.0e9)),
-            Expect::Uniform(BLACK),
+            Expect::Custom(Box::new(|frames| {
+                let frame = &frames[0];
+                let washed_out = (0..frame.height)
+                    .all(|y| (0..frame.width).all(|x| matte_value(frame, x, y) == 0));
+                assert!(washed_out, "{:?}", matte_row(frame));
+            })),
         ),
         Case::new(
             "an expression sweep changes smoothly from the sharp edge",

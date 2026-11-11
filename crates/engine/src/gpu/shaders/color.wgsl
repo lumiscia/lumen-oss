@@ -8,8 +8,10 @@ fn lumen_srgb_to_linear(encoded: vec3<f32>) -> vec3<f32> {
     return sign(encoded) * linear;
 }
 
+// `1.055 * p - 0.055`, written so that white encodes to exactly 1.
 fn lumen_linear_to_srgb(linear: vec3<f32>) -> vec3<f32> {
     let c = abs(linear);
-    let encoded = select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
+    let p = pow(c, vec3<f32>(1.0 / 2.4));
+    let encoded = select(p + 0.055 * (p - 1.0), c * 12.92, c <= vec3<f32>(0.0031308));
     return sign(linear) * encoded;
 }

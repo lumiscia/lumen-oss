@@ -80,7 +80,7 @@ struct TextPaint {
 
 @group(0) @binding(6) var<storage, read> paints: array<TextPaint>;
 
-// Requires the engine's alpha, paint and drawable transform chunks prepended.
+// Requires the engine's alpha, colour, paint and drawable transform chunks prepended.
 fn text_paint_at(fill: u32, pixel: vec2<f32>) -> vec4<f32> {
     let bounds = paints[fill].bounds;
     let local01 = clamp(
@@ -300,23 +300,32 @@ fn rect_coverage(rect: GlyphInstance, local: vec2<f32>) -> f32 {
     return clamp(0.5 - max(distance, max(ends.x, ends.y)), 0.0, 1.0);
 }
 
-// Raster texel, transparent outside the glyph's atlas slot.
-fn raster_texel(coord: vec2<i32>, uv_rect: vec4<f32>) -> vec4<f32> {
+// A colour glyph's atlas texel, premultiplied and sRGB-encoded, as premultiplied linear light.
+fn atlas_color(texel: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(lumen_srgb_to_linear(unpremultiply(texel).rgb) * texel.a, texel.a);
+}
+
+// Raster texel, transparent outside the glyph's atlas slot. With `color` it is a colour glyph's
+// texel in linear light; otherwise only its alpha, the coverage, is meaningful.
+fn raster_texel(coord: vec2<i32>, uv_rect: vec4<f32>, color: bool) -> vec4<f32> {
     let slot_min = vec2<i32>(uv_rect.xy);
     let slot_max = vec2<i32>(uv_rect.zw) - vec2<i32>(1);
     let inside = all(coord >= slot_min) && all(coord <= slot_max);
-    let texel = textureLoad(atlas_texture, clamp(coord, slot_min, slot_max), 0);
+    var texel = textureLoad(atlas_texture, clamp(coord, slot_min, slot_max), 0);
+    if (color) {
+        texel = atlas_color(texel);
+    }
     return select(vec4<f32>(0.0), texel, inside);
 }
 
-fn raster_bilinear(texel: vec2<f32>, uv_rect: vec4<f32>) -> vec4<f32> {
+fn raster_bilinear(texel: vec2<f32>, uv_rect: vec4<f32>, color: bool) -> vec4<f32> {
     let base = floor(texel - vec2<f32>(0.5));
     let frac = texel - vec2<f32>(0.5) - base;
     let p0 = vec2<i32>(base);
-    let c00 = raster_texel(p0, uv_rect);
-    let c10 = raster_texel(p0 + vec2<i32>(1, 0), uv_rect);
-    let c01 = raster_texel(p0 + vec2<i32>(0, 1), uv_rect);
-    let c11 = raster_texel(p0 + vec2<i32>(1, 1), uv_rect);
+    let c00 = raster_texel(p0, uv_rect, color);
+    let c10 = raster_texel(p0 + vec2<i32>(1, 0), uv_rect, color);
+    let c01 = raster_texel(p0 + vec2<i32>(0, 1), uv_rect, color);
+    let c11 = raster_texel(p0 + vec2<i32>(1, 1), uv_rect, color);
     return mix(mix(c00, c10, frac.x), mix(c01, c11, frac.x), frac.y);
 }
 
@@ -369,8 +378,8 @@ fn member_coverage(glyph: GlyphInstance, local: vec2<f32>, texel_width: vec2<f32
     let texel = instance_texel(glyph, local);
     if ((glyph.mode & GLYPH_MODE_MASK) != 2u) {
         return select(
-            raster_texel(vec2<i32>(floor(texel)), glyph.uv_rect),
-            raster_bilinear(texel, glyph.uv_rect),
+            raster_texel(vec2<i32>(floor(texel)), glyph.uv_rect, false),
+            raster_bilinear(texel, glyph.uv_rect, false),
             filtered,
         ).a;
     }
@@ -400,7 +409,7 @@ fn member_coverage(glyph: GlyphInstance, local: vec2<f32>, texel_width: vec2<f32
 // A solid paint is the same everywhere, so it is read alone and never supersampled.
 fn glyph_paint(in: VertexOut, paint: u32, local: vec2<f32>) -> vec4<f32> {
     if (paints[paint].paint.kind == 0u) {
-        return premultiply(paints[paint].paint.colors[0]);
+        return paint_solid(paints[paint].paint);
     }
     if (paints[paint].paint.paint_supersample != 0u) {
         return text_paint_aa(in, paint);
@@ -424,8 +433,8 @@ fn cluster_color(in: VertexOut, local: vec2<f32>, texel_width: vec2<f32>) -> vec
         if ((glyph.mode & GLYPH_MODE_MASK) == 1u) {
             let texel = instance_texel(glyph, local);
             source = select(
-                raster_texel(vec2<i32>(floor(texel)), glyph.uv_rect),
-                raster_bilinear(texel, glyph.uv_rect),
+                raster_texel(vec2<i32>(floor(texel)), glyph.uv_rect, true),
+                raster_bilinear(texel, glyph.uv_rect, true),
                 filtered,
             ) * paint.a;
         } else {
@@ -462,12 +471,17 @@ fn partnered_alpha(in: VertexOut, local: vec2<f32>, texel_width: vec2<f32>, lead
 }
 
 
-// The raster texel `in` draws: filtered when scaled or rotated, and otherwise mapped 1:1.
-fn raster_at(in: VertexOut, filtered: bool) -> vec4<f32> {
+// The raster texel `in` draws: filtered when scaled or rotated, and otherwise mapped 1:1. With
+// `color` it is in linear light.
+fn raster_at(in: VertexOut, filtered: bool, color: bool) -> vec4<f32> {
     if (filtered) {
-        return raster_bilinear(in.texel, in.uv_rect);
+        return raster_bilinear(in.texel, in.uv_rect, color);
     }
-    return textureLoad(atlas_texture, vec2<i32>(floor(in.texel)), 0);
+    let texel = textureLoad(atlas_texture, vec2<i32>(floor(in.texel)), 0);
+    if (color) {
+        return atlas_color(texel);
+    }
+    return texel;
 }
 
 @fragment
@@ -488,7 +502,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // The atlas, the paint and the output are premultiplied. Opacity is applied once
     // the glyphs are composited, by the opacity pass below.
     if (in.mode == 1u) {
-        return raster_at(in, filtered) * (in.opacity * text_paint.a);
+        return raster_at(in, filtered, true) * (in.opacity * text_paint.a);
     }
     var coverage = 0.0;
     if (in.mode == 2u) {
@@ -507,7 +521,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             coverage = clamp(screen_px_range * (median3(field.rgb) - 0.5) + 0.5, 0.0, 1.0);
         }
     } else {
-        coverage = raster_at(in, filtered).a;
+        coverage = raster_at(in, filtered, false).a;
     }
     let lead_scale = (in.uv_rect.zw - in.uv_rect.xy) / glyphs[in.instance].rect.zw;
     let alpha = partnered_alpha(in, local, texel_width, lead_scale, filtered);

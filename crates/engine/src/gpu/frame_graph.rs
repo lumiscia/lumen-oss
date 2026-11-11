@@ -1660,8 +1660,11 @@ impl<'a> FrameCx<'a> {
             .acquire(size, WORKING, TextureDesc::render_target(size, WORKING).usage)
     }
 
+    /// The frame's output. An output kept from an earlier frame is copied into an external target,
+    /// so targets made from its usage take copies.
     pub(crate) fn output_target(&mut self, size: Size, format: wgpu::TextureFormat) -> TexRef {
         let usage = wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::RENDER_ATTACHMENT;
         self.rec.acquire(size, format, usage)
@@ -2502,9 +2505,8 @@ fn static_candidate(node: &NodeKind) -> Staticness {
             matches!(media.params.kind, MediaInSourceKindDelegate::Image)
                 && !node.has_expressions(),
         ),
-        // Video changes with the frame, shaders see the built-in time, and the output is written
-        // into external textures that replace its own.
-        NodeKind::WgslShader(_) | NodeKind::MediaOutput(_) => Staticness::Never,
+        // Video changes with the frame, and shaders see the built-in time.
+        NodeKind::WgslShader(_) => Staticness::Never,
         // A model playing a clip poses differently with the frame, until its clip is over or
         // before it starts, which `add_model` finds out from the clip.
         NodeKind::Model3d(model) if model.animates() => {

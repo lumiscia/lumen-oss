@@ -622,12 +622,6 @@ fn view_direction(world: vec3<f32>) -> vec3<f32> {
     return unit(globals.camera_position - world);
 }
 
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    let low = c / 12.92;
-    let high = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
-    return select(high, low, c <= vec3<f32>(0.04045));
-}
-
 // Where a sample of the raster belongs: at `uv`, moved to the centre of the output pixel the
 // sample is part of, so that the samples averaged into a pixel all read the same place and a
 // raster shown at its own size or larger isn't filtered twice. A raster shown smaller keeps each
@@ -648,8 +642,7 @@ fn pixel_centre_uv(position: vec2<f32>, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f
 // raster with mip levels is filtered to the footprint.
 fn raster_texel(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
     let texel = textureSampleGrad(raster_tex, raster_sampler, uv, dx, dy);
-    let straight = clamp(texel.rgb / max(texel.a, 1e-6), vec3<f32>(0.0), vec3<f32>(1.0));
-    return vec4<f32>(srgb_to_linear(straight), texel.a);
+    return vec4<f32>(max(texel.rgb, vec3<f32>(0.0)) / max(texel.a, 1e-6), texel.a);
 }
 
 // The normal map's normal at `uv`, tilting `n` in the tangent frame the derivatives of the
