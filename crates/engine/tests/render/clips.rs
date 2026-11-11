@@ -447,3 +447,157 @@ fn clips_at_other_frame_rates_land_on_the_source_frame() {
     }
     check(cases);
 }
+
+/// A 64 × 64 root that plays a template of `width` × 64 holding a small shape and `reader`.
+fn wide_template_scene(width: u32, reader: &str) -> Composition {
+    let mut scene = scene(
+        (64, 64),
+        json!([{ "id": 1, "type": "clip", "params": { "composition": "wide" } }]),
+    );
+    scene.0["compositions"] = json!({
+        "wide": {
+            "render_settings": { "width": width, "height": 64 },
+            "nodes": [
+                { "id": 1, "type": "shape", "params": {
+                    "width": 8, "height": 8, "position": [32, 32], "fill_paint": "#ff0000"
+                } },
+                { "id": 2, "type": reader },
+                { "id": 3, "type": "media_output" }
+            ],
+            "connections": [
+                { "from_node": 1, "to_node": 2, "to_port": "source" },
+                { "from_node": 2, "to_node": 3, "to_port": "source" }
+            ]
+        }
+    });
+    scene.into()
+}
+
+#[test]
+fn a_template_canvas_over_the_texture_limit_fails_a_full_frame_read() {
+    let gpu = gpu();
+    let max = gpu
+        .renderer()
+        .gpu_renderer()
+        .device
+        .limits()
+        .max_texture_dimension_2d;
+    let width = max + 1;
+    let media = TestMedia::default();
+    let mut renderer = gpu.renderer();
+
+    let error = renderer
+        .render_frame_at(&wide_template_scene(width, "resize"), 0.0, &media)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("resize"), "{error}");
+    assert!(
+        error.contains(&format!(
+            "a {width}x64 canvas is larger than this device's {max}-pixel texture limit"
+        )),
+        "{error}"
+    );
+
+    render(
+        &mut renderer,
+        &wide_template_scene(width, "opacity"),
+        0.0,
+        &media,
+    );
+}
+
+#[test]
+fn a_root_canvas_over_the_texture_limit_fails_a_render() {
+    let gpu = gpu();
+    let max = gpu
+        .renderer()
+        .gpu_renderer()
+        .device
+        .limits()
+        .max_texture_dimension_2d;
+    let width = max + 1;
+    let composition: Composition = scene(
+        (width, 64),
+        json!([{ "id": 1, "type": "shape", "params": {
+            "width": 8, "height": 8, "position": [32, 32], "fill_paint": "#ff0000"
+        } }]),
+    )
+    .into();
+    let error = gpu
+        .renderer()
+        .render_frame_at(&composition, 0.0, &TestMedia::default())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("media_output"), "{error}");
+    assert!(
+        error.contains(&format!(
+            "a {width}x64 canvas is larger than this device's {max}-pixel texture limit"
+        )),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_root_canvas_over_the_texture_limit_fails_the_output_size_check() {
+    let gpu = gpu();
+    let renderer = gpu.renderer();
+    let max = renderer
+        .gpu_renderer()
+        .device
+        .limits()
+        .max_texture_dimension_2d;
+    let width = max + 1;
+    let composition: Composition = scene(
+        (width, 64),
+        json!([{ "id": 1, "type": "shape", "params": { "width": 8, "height": 8 } }]),
+    )
+    .into();
+    let error = renderer
+        .check_output_size(&composition)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("media_output"), "{error}");
+    assert!(
+        error.contains(&format!(
+            "a {width}x64 canvas is larger than this device's {max}-pixel texture limit"
+        )),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_oversized_texture_is_blamed_on_the_node_that_acquires_it() {
+    let gpu = gpu();
+    let max = gpu
+        .renderer()
+        .gpu_renderer()
+        .device
+        .limits()
+        .max_texture_dimension_2d;
+    let width = max + 1;
+    let shape = |position: u32| {
+        json!({ "type": "shape", "params": {
+            "width": 8, "height": 8, "position": [position, 32], "fill_paint": "#ff0000"
+        } })
+    };
+    let mut nodes = vec![shape(16), shape(40)];
+    for (node, id) in nodes.iter_mut().zip(1..) {
+        node["id"] = json!(id);
+    }
+    nodes.push(json!({
+        "id": 3, "type": "boolean", "params": {}, "in": { "a": 1, "b": 2 }
+    }));
+    let composition: Composition = scene((width, 64), Value::Array(nodes)).into();
+    let error = gpu
+        .renderer()
+        .render_frame_at(&composition, 0.0, &TestMedia::default())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("boolean node 3"), "{error}");
+    assert!(
+        error.contains(&format!(
+            "a {width}x64 canvas is larger than this device's {max}-pixel texture limit"
+        )),
+        "{error}"
+    );
+}

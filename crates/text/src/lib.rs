@@ -64,34 +64,61 @@ fn next_font_generation() -> u64 {
 struct Registration {
     family: Option<String>,
     resolver_id: String,
-    files: Vec<Arc<Vec<u8>>>,
+    /// Parsed once at load, so rebuilding the database reads no font data.
+    faces: Vec<fontdb::FaceInfo>,
+}
+
+/// The faces of `files`, failing if any file holds none. When no face answers to `family`, as
+/// with a file asked for by an alias or asset id, every one of them answers to that name instead
+/// of their own.
+fn parse_faces(
+    family: Option<&str>,
+    files: &[Arc<Vec<u8>>],
+) -> Result<Vec<fontdb::FaceInfo>, NoFontFaces> {
+    let mut db = fontdb::Database::new();
+    for file in files {
+        if db
+            .load_font_source(fontdb::Source::Binary(file.clone()))
+            .is_empty()
+        {
+            return Err(NoFontFaces);
+        }
+    }
+    let rename = family.filter(|family| {
+        !db.faces()
+            .any(|face| face.families.iter().any(|(name, _)| name == family))
+    });
+    Ok(db
+        .faces()
+        .map(|face| {
+            let mut face = face.clone();
+            if let Some(family) = rename {
+                face.families = vec![(family.to_string(), fontdb::Language::English_UnitedStates)];
+            }
+            face
+        })
+        .collect())
+}
+
+fn bundled_faces() -> &'static [fontdb::FaceInfo] {
+    static FACES: std::sync::LazyLock<Vec<fontdb::FaceInfo>> = std::sync::LazyLock::new(|| {
+        parse_faces(None, &[Arc::new(ROBOTO_REGULAR_BYTES.to_vec())])
+            .expect("the bundled font has a face")
+    });
+    &FACES
 }
 
 /// A database of every registered face, latest first and the bundled ones last. Faces tying for a
-/// request go to the earliest in a database, so the latest load wins. When no face of a
-/// registration answers to its name, as with a file asked for by an alias or asset id, every one
-/// of them answers to that name instead of their own.
+/// request go to the earliest in a database, so the latest load wins.
 fn font_database(registrations: &[Registration]) -> fontdb::Database {
     let mut db = fontdb::Database::new();
-    for loaded in registrations {
-        let mut faces = fontdb::Database::new();
-        for file in &loaded.files {
-            faces.load_font_source(fontdb::Source::Binary(file.clone()));
-        }
-        let rename = loaded.family.as_ref().filter(|family| {
-            !faces
-                .faces()
-                .any(|face| face.families.iter().any(|(name, _)| name == *family))
-        });
-        for face in faces.faces() {
-            let mut face = face.clone();
-            if let Some(family) = rename {
-                face.families = vec![(family.clone(), fontdb::Language::English_UnitedStates)];
-            }
-            db.push_face_info(face);
-        }
+    let faces = registrations
+        .iter()
+        .flat_map(|loaded| &loaded.faces)
+        .chain(bundled_faces());
+    for face in faces {
+        db.push_face_info(face.clone());
     }
-    db.load_font_source(fontdb::Source::Binary(Arc::new(ROBOTO_REGULAR_BYTES)));
     db
 }
 
@@ -134,7 +161,7 @@ impl TextSystem {
             Registration {
                 family: None,
                 resolver_id: String::new(),
-                files: vec![Arc::new(data)],
+                faces: parse_faces(None, &[Arc::new(data)]).unwrap_or_default(),
             },
         );
         self.rebuild_fonts();
@@ -177,20 +204,12 @@ impl TextSystem {
                 None => self.registrations.push(Registration {
                     family: Some(family.to_string()),
                     resolver_id: resolver_id.to_string(),
-                    files,
+                    faces: Vec::new(),
                 }),
             }
             return Ok(());
         }
-        let mut probe = fontdb::Database::new();
-        for file in &files {
-            if probe
-                .load_font_source(fontdb::Source::Binary(file.clone()))
-                .is_empty()
-            {
-                return Err(NoFontFaces);
-            }
-        }
+        let faces = parse_faces(Some(family), &files)?;
         if let Some(index) = current {
             self.registrations.remove(index);
         }
@@ -199,7 +218,7 @@ impl TextSystem {
             Registration {
                 family: Some(family.to_string()),
                 resolver_id: resolver_id.to_string(),
-                files,
+                faces,
             },
         );
         self.rebuild_fonts();
