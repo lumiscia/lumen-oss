@@ -13,10 +13,6 @@ use crate::error::{LumenError, MediaError, MediaFailure};
 use crate::gpu::frame_graph::FrameCx;
 use crate::media::{AssetKind, EnvironmentResolver, MediaIdentity, resolve_as, sniff};
 
-/// The bytes of environment maps the cache keeps on the GPU beyond those the latest frame drew or
-/// a kept output drew.
-const ENVIRONMENT_BUDGET_BYTES: u64 = 256 << 20;
-
 /// A map ready to light a scene.
 #[derive(Clone, Copy)]
 pub(crate) struct LoadedEnvironment {
@@ -119,10 +115,16 @@ impl EnvironmentCache {
         })
     }
 
-    /// Frees maps, least recently drawn first, while the cache holds more than
-    /// [`ENVIRONMENT_BUDGET_BYTES`], keeping those frame `tick` drew and those `kept` names.
-    pub(super) fn trim(&mut self, rec: &mut Recorder, tick: u64, kept: &HashSet<&String>) {
-        if self.bytes <= ENVIRONMENT_BUDGET_BYTES {
+    /// Frees maps, least recently drawn first, while the cache holds more than `budget` bytes,
+    /// keeping those frame `tick` drew and those `kept` names.
+    pub(super) fn trim(
+        &mut self,
+        rec: &mut Recorder,
+        tick: u64,
+        kept: &HashSet<&String>,
+        budget: u64,
+    ) {
+        if self.bytes <= budget {
             return;
         }
         let freed: Vec<String> = evictions(
@@ -131,7 +133,7 @@ impl EnvironmentCache {
                 (id, cached.bytes, cached.last_used, protected)
             }),
             self.bytes,
-            ENVIRONMENT_BUDGET_BYTES,
+            budget,
         )
         .into_iter()
         .cloned()
@@ -142,6 +144,10 @@ impl EnvironmentCache {
                 self.bytes -= cached.bytes;
             }
         }
+    }
+
+    pub(super) fn bytes(&self) -> u64 {
+        self.bytes
     }
 
     pub(super) fn release(&mut self, rec: &mut Recorder) {

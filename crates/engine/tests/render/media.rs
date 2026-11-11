@@ -188,7 +188,10 @@ fn unbound_images_within_the_budget_stay_cached() {
     let mut renderer = gpu.renderer();
     let colors = [RED, GREEN, BLUE];
     // The two images the frame doesn't show fit exactly; the shown one doesn't count.
-    renderer.set_media_texture_cache_budget(2 * u64::from(CANVAS.0 * CANVAS.1 * 4));
+    renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
+        image_textures: 2 * u64::from(CANVAS.0 * CANVAS.1 * 4),
+        ..renderer.cache_budgets()
+    });
     let composition = media_in(json!({ "source": "plate" })).into();
     for frame in 0..9 {
         let color = colors[frame % 3];
@@ -204,7 +207,10 @@ fn unbound_images_within_the_budget_stay_cached() {
 fn images_past_the_budget_are_freed_once_no_frame_shows_them() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    renderer.set_media_texture_cache_budget(0);
+    renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
+        image_textures: 0,
+        ..renderer.cache_budgets()
+    });
     let composition = media_in(json!({ "source": "plate" })).into();
     for (frame, color) in [RED, BLUE].into_iter().enumerate() {
         let media = plate(&format!("{color:?}"), CANVAS, color);
@@ -220,7 +226,10 @@ fn images_past_the_budget_are_freed_once_no_frame_shows_them() {
 fn images_a_failed_recording_bound_are_freed() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    renderer.set_media_texture_cache_budget(0);
+    renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
+        image_textures: 0,
+        ..renderer.cache_budgets()
+    });
     let composition = scene(
         CANVAS,
         json!([

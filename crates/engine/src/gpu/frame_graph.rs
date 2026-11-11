@@ -118,8 +118,6 @@ const YUV_TO_RGBA_LAYOUT: &[LayoutEntry] = &[
 ];
 /// Frames a retained output stays without being read.
 const RETAINED_IDLE_FRAMES: u64 = 600;
-/// Bytes retained outputs may hold before the least recently used are dropped.
-const RETAINED_BUDGET_BYTES: u64 = 1 << 30;
 /// Distinct runtime shader sources kept, parsed and assembled.
 const MAX_SHADERS: usize = 64;
 /// Frames the import texture of a video source stays without being used.
@@ -470,8 +468,8 @@ struct RecordState {
 pub(crate) struct FrameGraph {
     pub(crate) recorder: Recorder,
     state: RecordState,
-    /// Bytes of retained outputs kept once frames stop using them.
-    retained_budget: u64,
+    /// What the caches recording fills keep of what frames stop using.
+    budgets: super::CacheBudgets,
     /// The target of the next frame recorded, which holds its output until it is submitted.
     external: Option<lumen_gpu::ExternalTexture>,
     #[cfg(feature = "ffmpeg")]
@@ -551,7 +549,7 @@ impl FrameGraph {
         Self {
             recorder: Recorder::new(device, queue),
             state: RecordState::default(),
-            retained_budget: RETAINED_BUDGET_BYTES,
+            budgets: super::CacheBudgets::default(),
             external: None,
             #[cfg(feature = "ffmpeg")]
             imports: GpuMediaImports::default(),
@@ -647,18 +645,22 @@ impl FrameGraph {
                     self.drop_pending();
                 }
                 self.resolve(raster)?;
-                self.state.luts.trim(&mut self.recorder, self.state.tick);
+                self.state
+                    .luts
+                    .trim(&mut self.recorder, self.state.tick, self.budgets.luts);
                 #[cfg(feature = "3d")]
                 self.state.scene.trim(
                     &mut self.recorder,
                     self.state.tick,
                     self.state.slots.values().flat_map(|slot| &slot.models),
+                    &self.budgets,
                 );
                 #[cfg(feature = "3d")]
                 self.state.scene.trim_environments(
                     &mut self.recorder,
                     self.state.tick,
                     self.state.slots.values().flat_map(|slot| &slot.models),
+                    self.budgets.environments,
                 );
                 #[cfg(feature = "3d")]
                 self.state
@@ -985,8 +987,27 @@ impl FrameGraph {
         std::mem::take(&mut self.state.diagnostics)
     }
 
-    pub(crate) fn set_retained_budget(&mut self, bytes: u64) {
-        self.retained_budget = bytes;
+    /// Sets what each cache recording fills keeps, which takes effect as frames trim them.
+    pub(crate) fn set_budgets(&mut self, budgets: super::CacheBudgets) {
+        self.budgets = budgets;
+        self.recorder.set_pool_budget(budgets.pooled_textures);
+    }
+
+    /// The bytes the caches recording fills hold.
+    pub(crate) fn cache_stats(&self) -> super::CacheStats {
+        #[cfg(feature = "3d")]
+        let (models, environments, text_meshes) = self.state.scene.held_bytes();
+        #[cfg(not(feature = "3d"))]
+        let (models, environments, text_meshes) = (0, 0, 0);
+        super::CacheStats {
+            pooled_textures: self.recorder.pool_bytes(),
+            retained_outputs: self.state.retained_bytes,
+            luts: self.state.luts.bytes(),
+            models,
+            environments,
+            text_meshes,
+            ..super::CacheStats::default()
+        }
     }
 
     pub(crate) fn skipped_passes(&self) -> u64 {
@@ -1023,7 +1044,8 @@ impl FrameGraph {
     fn evict_slots(&mut self) {
         let tick = self.state.tick;
         let idle_before = tick.saturating_sub(RETAINED_IDLE_FRAMES);
-        let over_budget = self.state.retained_bytes > self.retained_budget;
+        let budget = self.budgets.retained_outputs;
+        let over_budget = self.state.retained_bytes > budget;
         if !over_budget && !tick.is_multiple_of(60) {
             return;
         }
@@ -1036,7 +1058,7 @@ impl FrameGraph {
             .collect();
         idle.sort_unstable_by_key(|(last_used, _)| *last_used);
         for (last_used, key) in idle {
-            if last_used > idle_before && self.state.retained_bytes <= self.retained_budget {
+            if last_used > idle_before && self.state.retained_bytes <= budget {
                 break;
             }
             Self::release_slot(&mut self.recorder, &mut self.state, key);

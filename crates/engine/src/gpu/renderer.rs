@@ -15,10 +15,6 @@ use crate::{
 #[cfg(feature = "ffmpeg")]
 use super::media::GpuMediaFrameImporter;
 
-/// Estimated GPU memory image textures nothing binds may hold before the least recently used are
-/// freed.
-pub const DEFAULT_MEDIA_TEXTURE_CACHE_BUDGET_BYTES: u64 = 256 << 20;
-
 struct CachedMediaTexture {
     texture: Arc<lumen_gpu::wgpu::Texture>,
     last_used: u64,
@@ -38,7 +34,7 @@ impl MediaTextureCache {
     fn new() -> Self {
         Self {
             textures: HashMap::new(),
-            budget: DEFAULT_MEDIA_TEXTURE_CACHE_BUDGET_BYTES,
+            budget: super::CacheBudgets::default().image_textures,
             clock: 0,
             upload_count: 0,
         }
@@ -83,6 +79,10 @@ impl MediaTextureCache {
             }
             held -= texture_bytes(&key);
         }
+    }
+
+    fn held_bytes(&self) -> u64 {
+        self.textures.keys().map(texture_bytes).sum()
     }
 
     fn destroy_all(&mut self) {
@@ -171,6 +171,7 @@ pub struct GpuCompositionRenderer {
     single_tile_repeats: bool,
     max_text_glyphs: usize,
     max_image_side: u32,
+    cache_budgets: super::CacheBudgets,
     media_texture_cache: MediaTextureCache,
     #[cfg(feature = "ffmpeg")]
     gpu_media_importer: GpuMediaFrameImporter,
@@ -216,6 +217,7 @@ impl GpuCompositionRenderer {
             single_tile_repeats: false,
             max_text_glyphs: DEFAULT_MAX_TEXT_GLYPHS,
             max_image_side: u32::MAX,
+            cache_budgets: super::CacheBudgets::default(),
             media_texture_cache: MediaTextureCache::new(),
             #[cfg(feature = "ffmpeg")]
             gpu_media_importer: GpuMediaFrameImporter::default(),
@@ -243,22 +245,37 @@ impl GpuCompositionRenderer {
         }
     }
 
-    /// Bounds what recorded frames keep in pooled textures.
-    #[doc(hidden)]
-    pub fn set_frame_graph_pool_budget(&mut self, bytes: u64) {
-        self.graph.recorder.set_pool_budget(bytes);
+    /// Sets the byte budget of each cache this renderer keeps media and derived GPU data in, which
+    /// [`super::CacheBudgets`] lists with their defaults. Image textures past theirs are freed
+    /// now; the rest are trimmed as frames finish.
+    pub fn set_cache_budgets(&mut self, budgets: super::CacheBudgets) {
+        self.cache_budgets = budgets;
+        self.graph.set_budgets(budgets);
+        self.media_texture_cache.budget = budgets.image_textures;
+        self.media_texture_cache.evict();
+    }
+
+    pub fn cache_budgets(&self) -> super::CacheBudgets {
+        self.cache_budgets
+    }
+
+    /// The bytes each cache holds now, what frames in use hold included.
+    pub fn cache_stats(&self) -> super::CacheStats {
+        let atlas = self.text_atlas_texture.as_ref().map_or(0, |texture| {
+            let size = texture.size();
+            u64::from(size.width) * u64::from(size.height) * 4
+        });
+        super::CacheStats {
+            image_textures: self.media_texture_cache.held_bytes(),
+            text_atlas: atlas,
+            ..self.graph.cache_stats()
+        }
     }
 
     /// Holds the bytes of storage a frame's data may bind and take in all below the device's.
     #[doc(hidden)]
     pub fn limit_frame_storage(&mut self, max_binding: u64, max_buffer: u64) {
         self.graph.recorder.limit_storage(max_binding, max_buffer);
-    }
-
-    /// Bounds what recorded frames keep of static outputs once frames stop using them.
-    #[doc(hidden)]
-    pub fn set_frame_graph_retained_budget(&mut self, bytes: u64) {
-        self.graph.set_retained_budget(bytes);
     }
 
     /// The size, format and usage of the output of the frame last rendered.
@@ -412,14 +429,6 @@ impl GpuCompositionRenderer {
     #[doc(hidden)]
     pub fn media_texture_upload_count(&self) -> u64 {
         self.media_texture_cache.upload_count
-    }
-
-    /// Sets the estimated GPU memory image textures nothing binds may hold, which textures
-    /// something binds don't count against. The least recently used unbound ones past it are
-    /// freed as frames release them.
-    pub fn set_media_texture_cache_budget(&mut self, bytes: u64) {
-        self.media_texture_cache.budget = bytes;
-        self.media_texture_cache.evict();
     }
 
     /// Drops what frames recorded so far and the cached media textures, destroying the GPU

@@ -131,7 +131,10 @@ async fn new_renderer(
         .ok()
         .and_then(|mib| mib.parse::<u64>().ok())
     {
-        renderer.set_frame_graph_pool_budget(mib << 20);
+        renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
+            pooled_textures: mib << 20,
+            ..renderer.cache_budgets()
+        });
     }
     renderer.compile(composition)?;
     Ok(renderer)

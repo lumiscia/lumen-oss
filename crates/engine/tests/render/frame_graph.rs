@@ -240,7 +240,10 @@ fn animated() -> Composition {
 fn a_held_external_target_keeps_its_frame_while_the_pool_turns_over() {
     let gpu = gpu();
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
-    renderer.set_frame_graph_pool_budget(0);
+    renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
+        pooled_textures: 0,
+        ..renderer.cache_budgets()
+    });
     let composition = animated();
     let media = TestMedia::default();
     render(&mut reference, &composition, 0.0, &media);
@@ -338,7 +341,10 @@ fn a_target_of_another_size_or_format_is_refused() {
 fn a_target_used_again_shows_the_frame_rendered_into_it_last() {
     let gpu = gpu();
     let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
-    renderer.set_frame_graph_pool_budget(0);
+    renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
+        pooled_textures: 0,
+        ..renderer.cache_budgets()
+    });
     let composition = animated();
     let media = TestMedia::default();
     render(&mut reference, &composition, 0.0, &media);
