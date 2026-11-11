@@ -16,6 +16,7 @@ import type {
   ConnectOptions,
   NodeInput,
   NodeReference,
+  NodeSource,
   RenderSettingsInput,
   TimelineInput,
 } from "./types.js";
@@ -43,7 +44,18 @@ export interface ClipTemplate {
 /** The template a clip node input plays, which `addNode` registers. Spreading the input keeps it. */
 export const clipTemplate = Symbol("clipTemplate");
 
+/** The composition each node handle belongs to. */
+const owners = new WeakMap<object, Composition>();
+
 let dependenciesOf: (composition: Composition) => Pick<ClipTemplate, "compositions" | "functions">;
+
+/** Every node or node value `node` reads, in port order. */
+function sourcesOf(node: NodeInput): NodeSource[] {
+  const inputs = (node.inputs ?? {}) as Readonly<
+    Record<string, NodeSource | readonly NodeSource[]>
+  >;
+  return Object.values(inputs).flat();
+}
 
 /** Captures what `composition`, a template's built nodes, has registered so far. */
 export function captureClipTemplate(
@@ -58,9 +70,10 @@ export class Composition {
   readonly #compositions = new Map<string, ClipTemplate>();
   readonly #connections: Connection[] = [];
   readonly #functions = new Map<string, FunctionDefinition>();
-  readonly #handles = new WeakSet<object>();
   readonly #nodeIds = new Set<number>();
   readonly #nodes: CompositionNode[] = [];
+  /** The node each node value became. */
+  readonly #values = new WeakMap<object, CompositionNode>();
   #nextNodeId = 0;
   #audio: LumenComposition["audio"];
   #lumenSchemaVersion: LumenComposition["lumenSchemaVersion"] | undefined;
@@ -88,52 +101,144 @@ export class Composition {
   }
 
   /**
-   * Adds a node. `inputs` connects other nodes of this composition to its ports in order, as
-   * `connect` would after it; a variadic port such as `layers` takes an array.
+   * Adds a node. `inputs` connects nodes to its ports in order, as `connect` would after it; a
+   * variadic port such as `layers` takes an array. An input may be a node value, added before
+   * this node and after the values it reads in turn. A value read by several inputs is one node.
+   * `node` itself is always added, so adding the same object twice makes two nodes.
    */
   addNode<TKind extends NodeKind>(
     node: NodeInput<TKind> & { readonly type: TKind },
   ): CompositionNode<TKind> {
+    const nodes = this.#nodes.length;
+    const connections = this.#connections.length;
+    const nextNodeId = this.#nextNodeId;
+    const compositions = this.#compositions.size;
+    const functions = this.#functions.size;
+    try {
+      return this.#add(node as NodeInput) as CompositionNode<TKind>;
+    } catch (error) {
+      // A failed addition leaves the composition as it was, nested values included.
+      for (const added of this.#nodes.splice(nodes)) {
+        this.#nodeIds.delete(added.id);
+        owners.delete(added);
+      }
+      this.#connections.length = connections;
+      this.#nextNodeId = nextNodeId;
+      for (const name of [...this.#compositions.keys()].slice(compositions)) {
+        this.#compositions.delete(name);
+      }
+      for (const name of [...this.#functions.keys()].slice(functions)) {
+        this.#functions.delete(name);
+      }
+      throw error;
+    }
+  }
+
+  /** Adds a `media_output` that shows `source`, a node or a node value. */
+  addOutput(source: NodeSource<"raster">): this {
+    this.addNode({ type: "media_output", inputs: { source } });
+    return this;
+  }
+
+  /**
+   * Adds `root` after the node values it reads, each of those once however many inputs read it.
+   * `root` itself is always a new node.
+   */
+  #add(root: NodeInput): CompositionNode {
+    // Values whose inputs are being added. Meeting one again means it reads itself.
+    const reading = new Set<NodeInput>();
+    const stack: { readonly node: NodeInput; expanded: boolean }[] = [
+      { node: root, expanded: false },
+    ];
+    let added: CompositionNode | undefined;
+    for (let top = stack.at(-1); top !== undefined; top = stack.at(-1)) {
+      const { node } = top;
+      if (top.expanded) {
+        stack.pop();
+        reading.delete(node);
+        added = this.#addResolved(node);
+        continue;
+      }
+      if (node !== root && this.#valueNode(node) !== undefined) {
+        stack.pop();
+        continue;
+      }
+      if (reading.has(node)) {
+        throw new Error(`A \`${node.type}\` node value reads itself through its inputs.`);
+      }
+      reading.add(node);
+      top.expanded = true;
+      const values = sourcesOf(node).filter((source) => this.#isValue(source));
+      for (const value of values.reverse()) {
+        stack.push({ node: value as NodeInput, expanded: false });
+      }
+    }
+    return added as CompositionNode;
+  }
+
+  /** Adds `node`, whose node values have all been added. */
+  #addResolved(node: NodeInput): CompositionNode {
     const {
       [clipTemplate]: template,
       inputs,
-      ...rest
-    } = node as NodeInput<TKind> & {
+      ...input
+    } = node as NodeInput & {
       readonly [clipTemplate]?: ClipTemplate;
     };
-    const input = rest as unknown as NodeInput<TKind>;
+    const sources = Object.entries(
+      (inputs ?? {}) as Readonly<Record<string, NodeSource | readonly NodeSource[]>>,
+    ).map(([toPort, from]) => ({
+      toPort,
+      fromNodes: [from].flat().map((source) => this.#sourceId(source)),
+    }));
+
     const id = input.id ?? this.#nextFreeNodeId();
     if (this.#nodeIds.has(id)) {
       throw new Error(`Node \`${id}\` already exists.`);
     }
-    const connections = Object.entries(
-      (inputs ?? {}) as Readonly<Record<string, NodeReference | readonly NodeReference[]>>,
-    ).flatMap(([toPort, from]) =>
-      [from].flat().map((reference): Connection => ({
-        from_node: this.#ownedNodeId(reference),
-        to_node: id,
-        to_port: toPort,
-      })),
-    );
     const addTemplate = template === undefined ? undefined : this.#planTemplate(template);
     const nextNode = {
       ...input,
       id,
       ...(input.params === undefined ? {} : { params: lower(input.params) }),
-    } as CompositionNode<TKind>;
+    } as CompositionNode;
 
-    // Everything that can throw is above, so a failed addition leaves the composition as it was.
+    // Everything that can throw is above, so a failed addition adds nothing for this node.
     addTemplate?.();
     this.#nodeIds.add(id);
     if (input.id === undefined) {
       this.#nextNodeId = id + 1;
     }
     this.#nodes.push(nextNode);
-    this.#handles.add(nextNode);
-    for (const connection of connections) {
-      this.#connections.push(connection);
+    owners.set(nextNode, this);
+    if (this.#valueNode(node) === undefined) {
+      this.#values.set(node, nextNode);
+    }
+    for (const { toPort, fromNodes } of sources) {
+      for (const fromNode of fromNodes) {
+        this.#connections.push({ from_node: fromNode, to_node: id, to_port: toPort });
+      }
     }
     return nextNode;
+  }
+
+  /** The node of this composition that the node value `value` became. */
+  #valueNode(value: NodeInput): CompositionNode | undefined {
+    const node = this.#values.get(value);
+    return node !== undefined && owners.get(node) === this ? node : undefined;
+  }
+
+  /** Whether `source` is a node value rather than an id or a node of a composition. */
+  #isValue(source: NodeSource): boolean {
+    return typeof source !== "number" && !owners.has(source) && "type" in source;
+  }
+
+  /** The id of a node of this composition, or of the node a node value became. */
+  #sourceId(source: NodeSource): number {
+    if (!this.#isValue(source)) {
+      return this.#ownedNodeId(source as NodeReference);
+    }
+    return (this.#valueNode(source as NodeInput) as CompositionNode).id;
   }
 
   /** Checks that `template` fits and returns the function that registers it. */
@@ -171,7 +276,7 @@ export class Composition {
 
   /** A node handle must come from this composition. Ids are the engine's to check. */
   #ownedNodeId(node: NodeReference): number {
-    if (typeof node !== "number" && !this.#handles.has(node)) {
+    if (typeof node !== "number" && owners.get(node) !== this) {
       throw new Error(`Node \`${node.id}\` is not a node of this composition.`);
     }
     return nodeId(node);

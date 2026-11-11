@@ -23,6 +23,19 @@ const render = await lumen.render(composition);
 console.log((await lumen.waitForRender(render)).url);
 ```
 
+The graph can also be written as nested node values, with the same node names and ports and the same JSON. `nodes` has one function per node kind; `addOutput` adds the tree and its `media_output`:
+
+```ts
+import { Composition, nodes as n } from "@lumiscia/lumen-sdk";
+
+const composition = new Composition({ timeline: { durationSeconds: 3 } }).addOutput(
+  n.merge({
+    base: n.background({ paint: [24, 28, 36, 255] }),
+    overlay: n.text({ content: "Hello, Lumen", font_size: 120, position: [96, 480] }),
+  }),
+);
+```
+
 `render` takes `quality`, a preset name (`draft`, `standard`, `high` or `lossless` on every host), and `codec`, `h264`, `hevc` or `av1`. They win over the composition's `renderSettings.quality` and `renderSettings.codec`, and a host that can't serve them rejects the render:
 
 ```ts
