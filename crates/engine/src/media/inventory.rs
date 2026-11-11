@@ -173,23 +173,6 @@ impl Composition {
     }
 }
 
-/// The first audio clip of `composition` whose `source_id` is `source`.
-pub(crate) fn audio_clip_using(composition: &Composition, source: &str) -> Option<MediaLocation> {
-    let mut found = None;
-    walk(composition, &mut |use_| {
-        if let Found::Media {
-            source: used, at, ..
-        } = use_
-            && used == source
-            && matches!(at, MediaLocation::AudioClip { .. })
-            && found.is_none()
-        {
-            found = Some(at);
-        }
-    });
-    found
-}
-
 /// Calls `f` with each place `composition` names media or a font: the nodes of the root and then
 /// of each template, in id order, and then the audio timelines.
 pub(crate) fn walk<'a>(composition: &'a Composition, f: &mut dyn FnMut(Found<'a>)) {

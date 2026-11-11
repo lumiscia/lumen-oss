@@ -30,7 +30,7 @@ pub use inventory::{
     DynamicMediaUse, FontDependency, MediaDependency, MediaInventory, MediaLocation, MediaUse,
     NodeParamAt,
 };
-pub(crate) use inventory::{Found, audio_clip_using, walk as walk_media};
+pub(crate) use inventory::{Found, walk as walk_media};
 pub use pixels::premultiply_rgba_in_place_if_needed;
 pub use prediction::{FrameRequirements, VideoFrameRequirement, collect_frame_requirements};
 #[cfg(feature = "ffmpeg")]

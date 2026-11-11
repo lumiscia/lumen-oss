@@ -412,6 +412,68 @@ fn a_source_a_template_cant_play_names_the_template_and_clip() {
     );
 }
 
+/// The place the mix of `document` fails at, when every source is missing.
+fn failing_clip(document: &Value) -> crate::media::MediaLocation {
+    let composition = composition(document);
+    let provider = TestProvider::default();
+    let error = AudioMixer::new(&composition, &provider)
+        .mix_range(0, RATE)
+        .unwrap_err();
+    error
+        .media_failure()
+        .and_then(|failure| failure.at.clone())
+        .unwrap_or_else(|| panic!("a located media failure: {error}"))
+}
+
+#[test]
+fn a_failing_source_names_the_clip_that_plays_it_not_another_with_the_same_source() {
+    use crate::media::MediaLocation::AudioClip;
+
+    let muted = json!({ "id": "off", "muted": true });
+    let tracks = json!([{ "id": "main" }, muted]);
+    let clip = |id: &str, track: &str| json!({ "id": id, "source_id": "gone", "track_id": track, "start_ms": 0, "duration_ms": 500 });
+    // A muted clip of the root comes first; the one that plays is the second.
+    let root = json!({ "tracks": tracks, "clips": [clip("silent", "off"), clip("heard", "main")] });
+    assert_eq!(
+        failing_clip(&document(30.0, 60, Some(root), json!({}), vec![])),
+        AudioClip {
+            template: None,
+            track: "main".to_string(),
+            clip: "heard".to_string(),
+            index: 1,
+        }
+    );
+    // Another template, which nothing plays, has the same source in an earlier-sorting name.
+    let unused = template(
+        30.0,
+        60,
+        Some(audio(vec![audio_clip("other", "gone", 0, 500, json!({}))])),
+        vec![],
+    );
+    let played = template(
+        30.0,
+        60,
+        Some(audio(vec![audio_clip("burst", "gone", 0, 500, json!({}))])),
+        vec![],
+    );
+    let document = document(
+        30.0,
+        60,
+        None,
+        json!({ "a_unused": unused, "b_played": played }),
+        vec![clip_node(json!({ "composition": "b_played" }))],
+    );
+    assert_eq!(
+        failing_clip(&document),
+        AudioClip {
+            template: Some("b_played".to_string()),
+            track: "main".to_string(),
+            clip: "burst".to_string(),
+            index: 0,
+        }
+    );
+}
+
 #[test]
 fn a_template_sounds_at_its_clip_placement_offset_and_speed() {
     // Placed at 1 s: the burst plays from 1.5 s for 0.25 s.

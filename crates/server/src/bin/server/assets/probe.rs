@@ -134,7 +134,25 @@ fn probe_file(path: &Path) -> Result<(MediaKind, MediaMetadata), Rejection> {
             },
         ));
     }
+    if head.trim_ascii_start().starts_with(b"{") && is_gltf_json_file(path) {
+        return Err(Box::new(MediaFailure::unsupported(
+            FILE,
+            "glTF JSON (.gltf) files are not read; upload a binary glTF (.glb)",
+        )));
+    }
     probe_av(path).map_err(hide_path)
+}
+
+/// Whether the start of the file at `path` is a glTF JSON document.
+fn is_gltf_json_file(path: &Path) -> bool {
+    let mut prefix = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| {
+            file.take(lumen_3d::model::GLTF_JSON_SNIFF_BYTES as u64)
+                .read_to_end(&mut prefix)
+        })
+        .is_ok()
+        && lumen_3d::model::is_gltf_json(&prefix)
 }
 
 enum FontMagic {
@@ -418,5 +436,23 @@ mod tests {
         let error = model_metadata(named("a".repeat(MAX_MODEL_NAME_BYTES + 1))).unwrap_err();
         assert_eq!(error.code(), "media.too_large");
         assert!(error.reason.details().contains("64 KiB"), "{error}");
+    }
+
+    #[test]
+    fn a_gltf_json_file_is_unsupported_and_other_json_is_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            path
+        };
+        let gltf = write("scene.gltf", br#"{"asset":{"version":"2.0"},"scenes":[]}"#);
+        let rejection = probe_file(&gltf).unwrap_err();
+        assert_eq!(rejection.code(), "media.unsupported");
+        assert!(rejection.reason.details().contains(".glb"), "{rejection}");
+        for bytes in [&b"{garbage"[..], br#"{"name": "a", "version": "1.0"}"#] {
+            let other = write("other.json", bytes);
+            assert_eq!(probe_file(&other).unwrap_err().code(), "media.decode");
+        }
     }
 }
