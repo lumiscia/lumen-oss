@@ -7,12 +7,13 @@ import type {
   VideoFramePixels,
 } from "./types.js";
 
+/** A 2D canvas in sRGB, which renders treat images and video as. */
 export function createCanvas(width: number, height: number) {
   if (typeof document !== "undefined") {
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
+    const context = canvas.getContext("2d", { colorSpace: "srgb", willReadFrequently: true });
     if (!context) {
       throw new Error("2D canvas context is unavailable");
     }
@@ -22,7 +23,7 @@ export function createCanvas(width: number, height: number) {
 
   if (typeof OffscreenCanvas !== "undefined") {
     const canvas = new OffscreenCanvas(width, height);
-    const context = canvas.getContext("2d");
+    const context = canvas.getContext("2d", { colorSpace: "srgb" });
     if (!context) {
       throw new Error("2D offscreen canvas context is unavailable");
     }
@@ -33,11 +34,22 @@ export function createCanvas(width: number, height: number) {
   throw new Error("A canvas implementation is required to bridge media into lumen-preview");
 }
 
+/**
+ * Decodes an image as a render does: its embedded colour profile is honoured and its colour
+ * converted to 8-bit sRGB, whatever the display. Colour outside sRGB is clipped, and 16-bit images
+ * arrive at 8 bits.
+ */
+export function decodeImageBlob(blob: Blob): Promise<ImageBitmap> {
+  return createImageBitmap(blob, { colorSpaceConversion: "default" });
+}
+
 export async function decodeImageBitmapToRgba(bitmap: ImageBitmap): Promise<DecodedImageFrame> {
   try {
     const { context } = createCanvas(bitmap.width, bitmap.height);
     context.drawImage(bitmap, 0, 0);
-    const rgba = new Uint8Array(context.getImageData(0, 0, bitmap.width, bitmap.height).data);
+    const rgba = new Uint8Array(
+      context.getImageData(0, 0, bitmap.width, bitmap.height, { colorSpace: "srgb" }).data,
+    );
     return { width: bitmap.width, height: bitmap.height, rgba };
   } finally {
     bitmap.close?.();
@@ -66,7 +78,7 @@ export async function decodeVideoFramePixels(
       }
     }
   } else {
-    await videoFrame.copyTo(rgba, { format: "RGBA", layout });
+    await videoFrame.copyTo(rgba, { format: "RGBA", layout, colorSpace: "srgb" });
   }
 
   return { width, height, rgba, videoFrame };
@@ -160,10 +172,10 @@ const YUV_FORMATS = new Set<string>([
 ]);
 
 /**
- * Hands the engine the frame's native planes, so it converts with the same matrix as a render
- * rather than the browser's. The matrix comes from the source's tags, because browsers report their
- * own guess on the frame. The range comes from the frame when it reports one, because Safari
- * expands samples to full range.
+ * Hands the engine the frame's native planes, so it converts with the same matrix, primaries and
+ * transfer as a render rather than the browser's. Those come from the source's tags, because
+ * browsers report their own guess on the frame. The range comes from the frame when it reports
+ * one, because Safari expands samples to full range.
  */
 async function copyYuvToTarget(
   target: NativeVideoFrameTarget,
@@ -201,6 +213,8 @@ async function copyYuvToTarget(
     rotation ?? 0,
     displayWidth,
     displayHeight,
+    sourceColorSpace?.primaries ?? undefined,
+    sourceColorSpace?.transfer ?? undefined,
   );
 }
 

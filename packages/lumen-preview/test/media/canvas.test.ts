@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createVideoFramePayload, syncVideoFrameToTarget } from "../../src/media/canvas.js";
+import {
+  createVideoFramePayload,
+  decodeImageBlob,
+  syncVideoFrameToTarget,
+} from "../../src/media/canvas.js";
 import type { NativeVideoFrameTarget } from "../../src/media/types.js";
 
 function fakeFrame(format: string, colorSpace: VideoColorSpaceInit) {
@@ -33,7 +37,13 @@ describe("syncVideoFrameToTarget", () => {
     // Safari reports its own BT.709 full-range output on the frame, whatever the source says.
     const frame = fakeFrame("NV12", { matrix: "bt709", fullRange: true });
     const payload = createVideoFramePayload(frame, 2, 4, {
-      sourceColorSpace: { matrix: "smpte170m", fullRange: false },
+      sourceColorSpace: {
+        matrix: "smpte170m",
+        fullRange: false,
+        // TypeScript's DOM types don't list the wide-gamut and HDR tags yet.
+        primaries: "smpte432" as VideoColorPrimaries,
+        transfer: "hlg" as VideoTransferCharacteristics,
+      },
       rotation: 90,
     });
 
@@ -54,6 +64,8 @@ describe("syncVideoFrameToTarget", () => {
       90,
       2,
       4,
+      "smpte432",
+      "hlg",
     );
     expect(target.setVideoFrame).not.toHaveBeenCalled();
     expect(frame.close).toHaveBeenCalled();
@@ -68,7 +80,15 @@ describe("syncVideoFrameToTarget", () => {
     await syncVideoFrameToTarget(target, "clip", 0, payload);
 
     expect(target.setVideoFrameYuv.mock.calls[0]?.slice(4, 5)).toEqual(["I420P10"]);
-    expect(target.setVideoFrameYuv.mock.calls[0]?.slice(8)).toEqual([undefined, true, 0, 4, 2]);
+    expect(target.setVideoFrameYuv.mock.calls[0]?.slice(8)).toEqual([
+      undefined,
+      true,
+      0,
+      4,
+      2,
+      undefined,
+      undefined,
+    ]);
   });
 
   it("copies RGB frames natively and swizzles them to RGBA", async () => {
@@ -92,5 +112,19 @@ describe("syncVideoFrameToTarget", () => {
       1,
       Uint8Array.from([3, 2, 1, 255]),
     );
+  });
+});
+
+describe("decodeImageBlob", () => {
+  it("asks the browser to honour the image's colour profile", async () => {
+    const createImageBitmap = vi.fn(async () => ({}));
+    vi.stubGlobal("createImageBitmap", createImageBitmap);
+    try {
+      const blob = new Blob([]);
+      await decodeImageBlob(blob);
+      expect(createImageBitmap).toHaveBeenCalledWith(blob, { colorSpaceConversion: "default" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -140,7 +140,10 @@ onError: ({ code, diagnostics }) => {
 },
 ```
 
-Video in the preview isn't colour-managed past its YUV matrix yet. Frames in a YUV layout the engine converts are read as SDR with BT.709 primaries, so PQ and HLG video looks dark and flat and BT.2020 or P3 video looks less saturated than in a render. Frames the browser hands over as RGB are converted by the browser, as it decides for HDR. Renders tone-map HDR video and convert wide-gamut primaries.
+Colour in the preview follows a render's within 8-bit rounding:
+
+- Images are decoded by the browser with their embedded colour profile honoured and converted to sRGB, whatever the display, so a Display P3 or Adobe RGB photo looks as it does in a render. The browser hands them over at 8 bits: a 16-bit PNG or TIFF loses the depth a render keeps, and colour outside sRGB is clipped where a render keeps it for effects such as `exposure` to bring back.
+- Video frames in a YUV layout the engine converts carry the source's tagged primaries and transfer, so BT.2020 and Display P3 video converts to BT.709 and PQ and HLG video is tone-mapped to SDR as in a render. Frames the browser hands over as RGB are converted to sRGB by the browser, which decides how to show HDR.
 
 Diagnostic codes are public API, and new ones can appear in a patch release, so handle codes you don't know by their `severity`. The [engine README](https://github.com/lumiscia/lumen-oss/tree/main/crates/engine#diagnostics) lists them.
 

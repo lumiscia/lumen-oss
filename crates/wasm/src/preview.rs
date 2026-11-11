@@ -3,8 +3,8 @@ use std::cell::{Ref, RefCell, RefMut};
 use lumen_engine::{
     composition::Composition,
     media::{
-        ChromaSubsampling, Rotation, VideoMetadata, YuvChroma, YuvColor, YuvFormat, YuvFrame,
-        YuvLayout, YuvMatrix, YuvPlane, collect_frame_requirements,
+        ChromaSubsampling, ColorPrimaries, Rotation, TransferFunction, VideoMetadata, YuvChroma,
+        YuvColor, YuvFormat, YuvFrame, YuvLayout, YuvMatrix, YuvPlane, collect_frame_requirements,
     },
 };
 use wasm_bindgen::prelude::*;
@@ -414,7 +414,10 @@ impl LumenPreviewController {
     /// `matrix` is the source's tagged WebCodecs matrix; without a known one, the engine's rule for
     /// untagged video picks it from the height. `full_range` describes the copied samples.
     /// `display_width` and `display_height` are the size the frame shows at, after rotation and
-    /// the source's pixel aspect ratio.
+    /// the source's pixel aspect ratio. `primaries` and `transfer` are the source's tagged
+    /// WebCodecs primaries and transfer: BT.2020 and Display P3 (`smpte432`) primaries convert to
+    /// BT.709 and PQ and HLG tone-map to SDR, as a render does; any other or missing tag reads as
+    /// BT.709 SDR.
     #[wasm_bindgen(js_name = "setVideoFrameYuv")]
     #[allow(clippy::too_many_arguments)]
     pub fn set_video_frame_yuv(
@@ -432,6 +435,8 @@ impl LumenPreviewController {
         rotation: u32,
         display_width: u32,
         display_height: u32,
+        primaries: Option<String>,
+        transfer: Option<String>,
     ) -> Result<(), JsValue> {
         if display_width == 0 || display_height == 0 {
             return Err(JsValue::from_str("video dimensions must be > 0"));
@@ -444,6 +449,8 @@ impl LumenPreviewController {
                 offsets: &offsets,
                 strides: &strides,
                 matrix: matrix.as_deref(),
+                primaries: primaries.as_deref(),
+                transfer: transfer.as_deref(),
                 full_range,
                 rotation,
             },
@@ -612,6 +619,8 @@ struct YuvInput<'a> {
     offsets: &'a [u32],
     strides: &'a [u32],
     matrix: Option<&'a str>,
+    primaries: Option<&'a str>,
+    transfer: Option<&'a str>,
     full_range: bool,
     rotation: u32,
 }
@@ -670,16 +679,36 @@ fn yuv_matrix(tag: Option<&str>, height: u32) -> YuvMatrix {
     }
 }
 
+/// The colour a source's WebCodecs tags describe, read as a render reads FFmpeg's: primaries and
+/// transfers the engine doesn't convert read as BT.709 and SDR.
+fn yuv_color(input: &YuvInput<'_>) -> YuvColor {
+    let primaries = match input.primaries {
+        Some("bt2020") => ColorPrimaries::Bt2020,
+        Some("smpte432") => ColorPrimaries::DisplayP3,
+        _ => ColorPrimaries::Bt709,
+    };
+    let transfer = match input.transfer {
+        Some("pq") => TransferFunction::Pq,
+        Some("hlg") => TransferFunction::Hlg,
+        _ => TransferFunction::Sdr,
+    };
+    YuvColor {
+        primaries,
+        transfer,
+        ..YuvColor::sdr(yuv_matrix(input.matrix, input.height), input.full_range)
+    }
+}
+
 fn yuv_frame(input: YuvInput<'_>, data: Vec<u8>) -> Result<YuvFrame, String> {
+    let color = yuv_color(&input);
     let YuvInput {
         width,
         height,
         format,
         offsets,
         strides,
-        matrix,
-        full_range,
         rotation,
+        ..
     } = input;
     let kind =
         yuv_kind(format).ok_or_else(|| format!("unsupported video frame format {format}"))?;
@@ -718,7 +747,7 @@ fn yuv_frame(input: YuvInput<'_>, data: Vec<u8>) -> Result<YuvFrame, String> {
             subsampling: kind.subsampling,
             depth: kind.depth,
             msb_aligned: false,
-            color: YuvColor::sdr(yuv_matrix(matrix, height), full_range),
+            color,
             rotation,
         },
         layout: YuvLayout {
@@ -891,6 +920,8 @@ mod tests {
             offsets,
             strides,
             matrix: None,
+            primaries: None,
+            transfer: None,
             full_range: false,
             rotation: 0,
         }
@@ -929,6 +960,41 @@ mod tests {
         assert_eq!(yuv_matrix(Some("smpte170m"), 1080), YuvMatrix::Bt601);
         assert_eq!(yuv_matrix(Some("rgb"), 720), YuvMatrix::Bt709);
         assert_eq!(yuv_matrix(None, 576), YuvMatrix::Bt601);
+    }
+
+    #[test]
+    fn source_primaries_and_transfer_reach_the_frame_as_a_render_reads_them() {
+        let color = |primaries, transfer| {
+            yuv_frame(
+                YuvInput {
+                    primaries,
+                    transfer,
+                    matrix: Some("bt2020-ncl"),
+                    ..yuv_input("NV12", &[0, 8], &[4, 4])
+                },
+                vec![0; 12],
+            )
+            .unwrap()
+            .format
+            .color
+        };
+        let hdr = color(Some("bt2020"), Some("pq"));
+        assert_eq!(hdr.matrix, YuvMatrix::Bt2020);
+        assert_eq!(hdr.primaries, ColorPrimaries::Bt2020);
+        assert_eq!(hdr.transfer, TransferFunction::Pq);
+        let p3 = color(Some("smpte432"), Some("hlg"));
+        assert_eq!(p3.primaries, ColorPrimaries::DisplayP3);
+        assert_eq!(p3.transfer, TransferFunction::Hlg);
+        for (primaries, transfer) in [
+            (None, None),
+            (Some("bt709"), Some("bt709")),
+            (Some("bt470bg"), Some("iec61966-2-1")),
+            (Some("film"), Some("linear")),
+        ] {
+            let sdr = color(primaries, transfer);
+            assert_eq!(sdr.primaries, ColorPrimaries::Bt709, "{primaries:?}");
+            assert_eq!(sdr.transfer, TransferFunction::Sdr, "{transfer:?}");
+        }
     }
 
     #[test]
