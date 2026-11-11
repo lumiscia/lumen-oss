@@ -187,7 +187,7 @@ struct ShadowView {
 @group(0) @binding(3) var<storage, read> indices: array<u32>;
 @group(0) @binding(4) var<storage, read> lights: array<Light>;
 @group(0) @binding(5) var<uniform> run: Run;
-// A Lumen raster: premultiplied and sRGB-encoded.
+// A Lumen raster: premultiplied linear light.
 @group(0) @binding(6) var raster_tex: texture_2d<f32>;
 @group(0) @binding(7) var raster_sampler: sampler;
 @group(0) @binding(8) var<storage, read> joints: array<mat4x4<f32>>;
