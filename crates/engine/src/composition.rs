@@ -389,6 +389,24 @@ impl CompositionBuilder {
         }
         if let Some(templates) = self.template_cycle() {
             errors.push(GraphValidationError::TemplateCycle { templates }.into());
+        } else {
+            let played = crate::audio::played_templates(&self.scene, &self.compositions);
+            if played > crate::audio::MAX_PLAYED_TEMPLATES {
+                let limit = crate::audio::MAX_PLAYED_TEMPLATES;
+                let played = if played == u64::MAX {
+                    "more times than can be counted".to_string()
+                } else {
+                    format!("{played} times")
+                };
+                errors.push(
+                    GraphValidationError::InvalidAudio {
+                        details: format!(
+                            "clips play templates with sound {played}, counting the clips inside the templates they play, and at most {limit} are supported. Play a template with sound fewer times, or put its sound on the root's timeline"
+                        ),
+                    }
+                    .into(),
+                );
+            }
         }
 
         if errors.is_empty() {

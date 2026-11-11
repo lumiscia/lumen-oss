@@ -74,7 +74,17 @@ first and last 384 samples, and where a window cuts it, so it never clicks.
 
 `audio::plan` evaluates gains and clip timing every 512 samples, with gains moving linearly in
 between, into segments that `audio::AudioMixer` plays. The browser preview plays the same plan, so
-both mix alike.
+both mix alike. A prop a clip sets by expression is evaluated at each of those points, in the time
+of the composition the clip is in, so a gain that reads it moves smoothly too.
+
+Planning is bounded. Clips play templates with sound at most 4096 times in all, counting the clips
+inside the templates they play; more fails `check` with `audio.invalid`. While planning, a 512-sample
+interval may be inside at most 1024 clips and time remaps at once (each restart of a loop in the
+interval counts, and a loop may restart at most 32 times in it) and may sound at most 1024 clips;
+past either, planning fails with `audio.limit`. The preview's plan of the whole timeline covers at
+most about 3 hours (1,048,576 intervals) and holds at most 200,000 segments, which an animated
+volume adds one of every 512 samples to; past either, loading the preview fails with
+`audio.limit`.
 
 ## Diagnostics
 
@@ -196,6 +206,7 @@ literal: one the store doesn't have is `asset.not_found`, and one of another kin
 | `media.decode`                       | error    | render        | Media or font data couldn't be decoded.                                                                                                                                                                   |
 | `media.frame_out_of_range`           | error    | render        | A video frame past the end of its source was asked for.                                                                                                                                                   |
 | `audio.unknown_track`                | error    | render        | An audio clip names a track that doesn't exist.                                                                                                                                                           |
+| `audio.limit`                        | error    | render        | Audio is more than the plan can hold: too many clips playing sound at once, a loop restarting too often, or a preview timeline too long.                                                                  |
 | `render.frame_out_of_range`          | error    | render        | A frame past the composition's end was asked for.                                                                                                                                                         |
 | `render.node_evaluation`             | error    | render        | A node failed to render, such as text with too many glyphs or a `wgsl_shader` that doesn't compile.                                                                                                       |
 | `render.missing_node`                | error    | render        | A node read while rendering doesn't exist.                                                                                                                                                                |

@@ -8,17 +8,20 @@
 //! remapped time; where the remapped time holds or runs backwards it is silent, as a `hold` past
 //! a clip's window is.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 use serde::Serialize;
 
 use super::{AUDIO_SAMPLE_RATE, AudioClip, AudioTimeline, AudioTrack, ms_to_sample};
 use crate::{
-    composition::Composition,
+    composition::{Composition, CompositionTemplate},
     error::{LumenError, MediaError},
     media::MediaStore,
     node::{
-        DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
+        ClipPropValue, DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
         compositing::clip::{Clip, ClipEnd, ClipWindow},
         processing::time_remap::{TimeRemap, remap_frame},
         required_input,
@@ -30,6 +33,22 @@ use crate::{
 /// linearly between them, so they change without zipper noise, and they are evaluated at least
 /// once per frame up to 93 fps.
 pub const CONTROL_FRAMES: u64 = 512;
+
+/// Most clips and time remaps one control interval may be inside at once while finding what
+/// sounds, counting each restart of a loop in it separately.
+pub const MAX_ACTIVE_CLIPS: usize = 1024;
+
+/// Most clips of an audio timeline one control interval may sound.
+pub const MAX_ACTIVE_VOICES: usize = 1024;
+
+/// Most times a looping clip or time remap may restart within one control interval.
+pub const MAX_LOOP_RESTARTS: u64 = 32;
+
+/// Most segments the browser preview's plan of the whole timeline may hold.
+pub const MAX_PREVIEW_SEGMENTS: usize = 200_000;
+
+/// Most control intervals the browser preview's plan may cover, about 3 hours.
+pub const MAX_PREVIEW_INTERVALS: u64 = 1 << 20;
 
 const SAMPLE_RATE: f64 = AUDIO_SAMPLE_RATE as f64;
 
@@ -92,14 +111,48 @@ pub fn plan(
     Ok(planner.plan)
 }
 
-/// What sounds over the root's whole timeline, which the browser preview plays and loops.
+/// What sounds over the root's whole timeline, which the browser preview plays and loops. A
+/// timeline of more than [`MAX_PREVIEW_INTERVALS`] control intervals, or sounds that make more
+/// than [`MAX_PREVIEW_SEGMENTS`] segments, fail instead of building a plan that large.
 pub fn preview_plan(
     composition: &Composition,
     media: Option<&dyn MediaStore>,
 ) -> crate::Result<AudioPlan> {
+    preview_plan_within(composition, media, MAX_PREVIEW_SEGMENTS)
+}
+
+pub(super) fn preview_plan_within(
+    composition: &Composition,
+    media: Option<&dyn MediaStore>,
+    max_segments: usize,
+) -> crate::Result<AudioPlan> {
+    if !composition.has_audio() {
+        return Ok(AudioPlan::default());
+    }
     let timeline = composition.timeline();
     let seconds = f64::from(timeline.duration_frames) / f64::from(timeline.fps);
-    plan(composition, media, 0, (seconds * SAMPLE_RATE).ceil() as u64)
+    let intervals = ((seconds * SAMPLE_RATE).ceil() as u64).div_ceil(CONTROL_FRAMES);
+    if intervals > MAX_PREVIEW_INTERVALS {
+        return Err(limit(format!(
+            "the preview plans at most {MAX_PREVIEW_INTERVALS} control intervals of {CONTROL_FRAMES} samples ({:.0} s), and this timeline is {seconds:.0} s",
+            (MAX_PREVIEW_INTERVALS * CONTROL_FRAMES) as f64 / SAMPLE_RATE,
+        )));
+    }
+    let mut planner = Planner::new(composition, media);
+    for interval in 0..intervals {
+        planner.interval(interval * CONTROL_FRAMES)?;
+        if planner.plan.segments.len() > max_segments {
+            return Err(limit(format!(
+                "the preview plan of the whole timeline has more than {max_segments} segments by {:.0} s. Animated volumes split the sound into a segment every {CONTROL_FRAMES} samples, so animate fewer clips or shorten the composition",
+                ((interval + 1) * CONTROL_FRAMES) as f64 / SAMPLE_RATE,
+            )));
+        }
+    }
+    Ok(planner.plan)
+}
+
+fn limit(details: String) -> LumenError {
+    MediaError::AudioLimit { details }.into()
 }
 
 struct Planner<'a> {
@@ -111,6 +164,8 @@ struct Planner<'a> {
     voices: HashMap<(Vec<NodeId>, usize), usize>,
     /// The last segment of each voice, which the next may extend.
     last_segments: HashMap<usize, usize>,
+    /// Clips sounding in the interval being planned.
+    sounding: usize,
     plan: AudioPlan,
 }
 
@@ -118,9 +173,34 @@ struct Planner<'a> {
 struct Instance<'a> {
     /// The `clip` and `time_remap` nodes on the way from the root, which tell instances apart.
     key: Vec<NodeId>,
-    chain: Vec<Link>,
+    chain: Vec<Link<'a>>,
     scope: Scope<'a>,
     timeline: &'a AudioTimeline,
+    /// Whether a clip on the way sets a prop by expression, so the scope's props change with time.
+    animated: bool,
+}
+
+/// What finding the instances of one control interval has found and entered so far.
+struct Found<'a> {
+    /// The first root sample of the interval.
+    start: u64,
+    stack: Vec<Walk<'a>>,
+    instances: Vec<Instance<'a>>,
+    entered: usize,
+}
+
+impl Found<'_> {
+    /// Counts a clip or time remap entered, in the one place that bounds how many there are.
+    fn enter(&mut self) -> crate::Result<()> {
+        self.entered += 1;
+        if self.entered > MAX_ACTIVE_CLIPS {
+            return Err(limit(format!(
+                "more than {MAX_ACTIVE_CLIPS} clips and time remaps are playing sound at once around sample {}, counting each restart of a loop. Play fewer nested clips at a time",
+                self.start
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// A node reached from the root's output while finding instances.
@@ -132,20 +212,52 @@ struct Walk<'a> {
     frame: f64,
     /// Frames of `scope` per root sample.
     rate: f64,
-    chain: Vec<Link>,
-    key: Vec<NodeId>,
+    chain: Vec<Link<'a>>,
+    /// The `clip` and `time_remap` nodes on the way and which restart of its loop each is in.
+    path: Vec<(NodeId, i64)>,
     depth: u32,
 }
 
-/// How one step of the way maps the frames of the composition above to the frames below.
-#[derive(Debug, Clone, Copy)]
-enum Link {
-    Window(ClipWindow),
-    /// A `time_remap`'s target, linear around where it was evaluated: `frame + rate * (t - at)`.
+/// The template a `clip` plays, and the clip that sets its props.
+#[derive(Clone, Copy)]
+struct Plays<'a> {
+    clip: &'a Clip,
+    template: &'a CompositionTemplate,
+    output: NodeId,
+}
+
+/// A looping `time_remap`: frames `[start + repeat * length, start + (repeat + 1) * length)` of
+/// its target are this restart.
+#[derive(Clone, Copy)]
+struct RemapLoop {
+    start: f64,
+    length: f64,
+    repeat: i64,
+}
+
+impl RemapLoop {
+    fn repeat_of(&self, target: f64) -> i64 {
+        ((target.floor() - self.start) / self.length).floor() as i64
+    }
+}
+
+/// How one step of the way maps the frames of the composition above to the frames below. A
+/// looping step is for one restart of its loop, and holds where another restart is.
+#[derive(Clone, Copy)]
+enum Link<'a> {
+    Window {
+        window: ClipWindow,
+        repeat: i64,
+        /// The template the clip plays, or `None` when it plays a `source` of its own scope.
+        plays: Option<Plays<'a>>,
+    },
+    /// A `time_remap`'s target, linear around where it was evaluated: `target + rate * (t - at)`
+    /// before the loop folds it into the loop's frames.
     Remap {
         at: f64,
-        frame: f64,
+        target: f64,
         rate: f64,
+        looping: Option<RemapLoop>,
     },
 }
 
@@ -165,37 +277,57 @@ impl Piece {
     }
 }
 
-impl Link {
+impl Link<'_> {
     /// The piece that plays at `frame`, or `None` where nothing sounds.
     fn piece(&self, frame: f64) -> Option<Piece> {
         match *self {
-            Self::Window(window) => {
+            Self::Window { window, repeat, .. } => {
                 let elapsed = frame - window.start;
                 if !(elapsed >= 0.0 && window.duration > 0.0) {
                     return None;
                 }
-                let repeat = if elapsed < window.duration {
+                let current = if elapsed < window.duration {
                     0.0
                 } else if window.end == ClipEnd::Loop {
                     (elapsed / window.duration).floor()
                 } else {
                     return None;
                 };
+                if current != repeat as f64 {
+                    return None;
+                }
                 Some(Piece {
-                    base_in: window.start + repeat * window.duration,
+                    base_in: window.start + current * window.duration,
                     base_out: window.offset,
                     rate: window.rate(),
                     from: window.offset,
                     to: window.offset + window.duration * window.rate(),
                 })
             }
-            Self::Remap { at, frame, rate } => Some(Piece {
-                base_in: at,
-                base_out: frame,
+            Self::Remap {
+                at,
+                target,
                 rate,
-                from: f64::NEG_INFINITY,
-                to: f64::INFINITY,
-            }),
+                looping,
+            } => {
+                let value = target + (frame - at) * rate;
+                // The remap holds frame 0 below it.
+                if value < 0.0 {
+                    return None;
+                }
+                let folded = match looping {
+                    Some(looping) if looping.repeat_of(value) != looping.repeat => return None,
+                    Some(looping) => looping.repeat as f64 * looping.length,
+                    None => 0.0,
+                };
+                Some(Piece {
+                    base_in: at,
+                    base_out: target - folded,
+                    rate,
+                    from: f64::NEG_INFINITY,
+                    to: f64::INFINITY,
+                })
+            }
         }
     }
 }
@@ -237,12 +369,14 @@ impl<'a> Planner<'a> {
             audible: audible_templates(composition),
             voices: HashMap::new(),
             last_segments: HashMap::new(),
+            sounding: 0,
             plan: AudioPlan::default(),
         }
     }
 
     /// Plans root samples `[start, start + CONTROL_FRAMES)`.
     fn interval(&mut self, start: u64) -> crate::Result<()> {
+        self.sounding = 0;
         for instance in self.instances(start)? {
             let runs = self.runs(&instance, start, start + CONTROL_FRAMES);
             if !runs.is_empty() {
@@ -253,53 +387,57 @@ impl<'a> Planner<'a> {
     }
 
     /// The root's timeline, and every template instance with audio that the root's output reaches
-    /// in the interval from `start`.
+    /// in the interval from `start`. A looping clip or time remap that restarts in the interval
+    /// is one instance for each restart, which only sounds in its own part of the interval.
     fn instances(&self, start: u64) -> crate::Result<Vec<Instance<'a>>> {
         let root = Scope::root(self.composition);
-        let mut instances = Vec::new();
+        let mut found = Found {
+            start,
+            stack: Vec::new(),
+            instances: Vec::new(),
+            entered: 0,
+        };
         if let Some(timeline) = self.composition.audio() {
-            instances.push(Instance {
-                key: Vec::new(),
-                chain: Vec::new(),
-                scope: root.clone(),
+            found.instances.push(Instance::new(
+                Vec::new(),
+                Vec::new(),
+                root.clone(),
                 timeline,
-            });
+            ));
         }
         if self.audible.is_empty() {
-            return Ok(instances);
+            return Ok(found.instances);
         }
         let Some(source) = output_source(&root) else {
-            return Ok(instances);
+            return Ok(found.instances);
         };
         let rate = self.root_fps / SAMPLE_RATE;
-        let mut stack = vec![Walk {
+        found.stack.push(Walk {
             scope: root,
             node: source,
             frame: start as f64 * rate,
             rate,
             chain: Vec::new(),
-            key: Vec::new(),
+            path: Vec::new(),
             depth: 1,
-        }];
+        });
         let mut seen = HashSet::new();
-        while let Some(walk) = stack.pop() {
+        while let Some(walk) = found.stack.pop() {
             if walk.depth > MAX_GRAPH_DEPTH {
                 return Err(walk.scope.too_deep(walk.node));
             }
-            if !seen.insert((walk.key.clone(), walk.node)) {
+            if !seen.insert((walk.path.clone(), walk.node)) {
                 continue;
             }
             match walk.scope.node(walk.node) {
                 None => {}
-                Some(NodeKind::Clip(clip)) => {
-                    self.enter_clip(clip, &walk, &mut stack, &mut instances)?;
-                }
+                Some(NodeKind::Clip(clip)) => self.enter_clip(clip, &walk, &mut found)?,
                 Some(NodeKind::TimeRemap(remap)) => {
-                    self.enter_time_remap(remap, &walk, &mut stack)?
+                    self.enter_time_remap(remap, &walk, &mut found)?
                 }
                 Some(node) => {
                     let inputs = route(&walk.scope, node, walk.frame.into(), self.media, true)?;
-                    stack.extend(inputs.into_iter().map(|input| Walk {
+                    found.stack.extend(inputs.into_iter().map(|input| Walk {
                         node: input.node,
                         depth: walk.depth + 1,
                         ..walk.clone()
@@ -307,110 +445,172 @@ impl<'a> Planner<'a> {
                 }
             }
         }
-        Ok(instances)
+        Ok(found.instances)
     }
 
-    /// Follows a clip into what it plays, when its window overlaps the interval.
+    /// Follows a clip into what it plays, for each restart of its loop that the interval is in.
     fn enter_clip(
         &self,
-        clip: &Clip,
+        clip: &'a Clip,
         walk: &Walk<'a>,
-        stack: &mut Vec<Walk<'a>>,
-        instances: &mut Vec<Instance<'a>>,
+        found: &mut Found<'a>,
     ) -> crate::Result<()> {
         let ctx = walk.scope.expr_context(walk.frame.into(), self.media);
         let window = clip.window(&walk.scope, &ctx)?;
-        let interval_end = walk.frame + walk.rate * CONTROL_FRAMES as f64;
+        let span = walk.rate * CONTROL_FRAMES as f64;
+        let elapsed = walk.frame - window.start;
         let reaches = window.duration > 0.0
-            && interval_end >= window.start
-            && (window.end == ClipEnd::Loop || walk.frame < window.start + window.duration);
+            && elapsed + span >= 0.0
+            && (window.end == ClipEnd::Loop || elapsed < window.duration);
         if !reaches {
             return Ok(());
         }
-        let mut elapsed = (walk.frame - window.start).max(0.0);
-        if elapsed >= window.duration && window.end == ClipEnd::Loop {
-            elapsed = elapsed.rem_euclid(window.duration);
+        let template = clip.template(&walk.scope)?;
+        match template {
+            Some(_)
+                if !clip
+                    .template_name()
+                    .is_some_and(|name| self.audible.contains(name)) =>
+            {
+                return Ok(());
+            }
+            None if clip.source.is_none() => return Ok(()),
+            _ => {}
         }
-        let mut next = Walk {
-            scope: walk.scope.clone(),
-            node: walk.node,
-            frame: window.offset + elapsed * window.rate(),
-            rate: walk.rate * window.rate(),
-            chain: [walk.chain.as_slice(), &[Link::Window(window)]].concat(),
-            key: [walk.key.as_slice(), &[clip.id]].concat(),
-            depth: walk.depth + 1,
+        let (first, last) = if window.end == ClipEnd::Loop {
+            let first = (elapsed / window.duration).floor().max(0.0);
+            let at_last = elapsed + span * (CONTROL_FRAMES - 1) as f64 / CONTROL_FRAMES as f64;
+            (first, (at_last / window.duration).floor().max(first))
+        } else {
+            (0.0, 0.0)
         };
-        let Some((template, output)) = clip.template(&walk.scope)? else {
-            if let Some(source) = clip.source {
-                stack.push(Walk {
+        if last - first >= MAX_LOOP_RESTARTS as f64 {
+            return Err(limit(format!(
+                "clip {} restarts its loop more than {MAX_LOOP_RESTARTS} times within {CONTROL_FRAMES} samples of audio around sample {}. Loop a longer window",
+                clip.id, found.start
+            )));
+        }
+        let props = template
+            .map(|(template, _)| clip.instance_props(template, &ctx))
+            .transpose()?;
+        for repeat in first as i64..=last as i64 {
+            found.enter()?;
+            let into = (walk.frame - (window.start + repeat as f64 * window.duration)).max(0.0);
+            let mut next = Walk {
+                scope: walk.scope.clone(),
+                node: walk.node,
+                frame: window.offset + into * window.rate(),
+                rate: walk.rate * window.rate(),
+                chain: [
+                    walk.chain.as_slice(),
+                    &[Link::Window {
+                        window,
+                        repeat,
+                        plays: template.map(|(template, output)| Plays {
+                            clip,
+                            template,
+                            output,
+                        }),
+                    }],
+                ]
+                .concat(),
+                path: [walk.path.as_slice(), &[(clip.id, repeat)]].concat(),
+                depth: walk.depth + 1,
+            };
+            let (Some((template, output)), Some(props)) = (template, &props) else {
+                if let Some(source) = clip.source {
+                    found.stack.push(Walk {
+                        node: source,
+                        ..next
+                    });
+                }
+                continue;
+            };
+            next.scope = Scope::template(self.composition, template, output, props.clone());
+            if let Some(timeline) = &template.audio {
+                found.instances.push(Instance::new(
+                    next.path.iter().map(|(id, _)| *id).collect(),
+                    next.chain.clone(),
+                    next.scope.clone(),
+                    timeline,
+                ));
+            }
+            if let Some(source) = output_source(&next.scope) {
+                found.stack.push(Walk {
                     node: source,
                     ..next
                 });
             }
-            return Ok(());
-        };
-        if !clip
-            .template_name()
-            .is_some_and(|name| self.audible.contains(name))
-        {
-            return Ok(());
-        }
-        let props = clip.instance_props(template, &ctx)?;
-        next.scope = Scope::template(self.composition, template, output, props);
-        if let Some(timeline) = &template.audio {
-            instances.push(Instance {
-                key: next.key.clone(),
-                chain: next.chain.clone(),
-                scope: next.scope.clone(),
-                timeline,
-            });
-        }
-        if let Some(source) = output_source(&next.scope) {
-            stack.push(Walk {
-                node: source,
-                ..next
-            });
         }
         Ok(())
     }
 
-    /// Follows a time remap into its source, where the remapped time moves forward.
+    /// Follows a time remap into its source, for each restart of its loop that the interval is
+    /// in, where the remapped time moves forward.
     fn enter_time_remap(
         &self,
-        remap: &TimeRemap,
+        remap: &'a TimeRemap,
         walk: &Walk<'a>,
-        stack: &mut Vec<Walk<'a>>,
+        found: &mut Found<'a>,
     ) -> crate::Result<()> {
-        let target = |frame: f64| {
+        let params_at = |frame: f64| {
             let params = remap.params.eval(&DelegateEvalContext {
                 node_id: remap.id,
                 expr: &walk.scope.expr_context(frame.into(), self.media),
             })?;
-            remap_frame(remap.id, &params)
+            remap_frame(remap.id, &params)?;
+            crate::Result::Ok(params)
         };
         let span = walk.rate * CONTROL_FRAMES as f64;
-        let frame = target(walk.frame)?;
-        let rate = (target(walk.frame + span)? - frame) / span;
-        if rate <= 0.0 {
+        let first = params_at(walk.frame)?;
+        let rate = (params_at(walk.frame + span)?.frame - first.frame) / span;
+        let at_last =
+            first.frame + rate * span * (CONTROL_FRAMES - 1) as f64 / CONTROL_FRAMES as f64;
+        if !(rate > 0.0 && at_last >= 0.0) {
             return Ok(());
         }
-        stack.push(Walk {
-            scope: walk.scope.clone(),
-            node: required_input(remap.id, "source", remap.source)?,
-            frame,
-            rate: walk.rate * rate,
-            chain: [
-                walk.chain.as_slice(),
-                &[Link::Remap {
-                    at: walk.frame,
-                    frame,
-                    rate,
-                }],
-            ]
-            .concat(),
-            key: [walk.key.as_slice(), &[remap.id]].concat(),
-            depth: walk.depth + 1,
+        let looping =
+            (first.loop_enabled && first.loop_end > first.loop_start).then(|| RemapLoop {
+                start: first.loop_start as f64,
+                length: (first.loop_end - first.loop_start) as f64,
+                repeat: 0,
+            });
+        let (from, to) = looping.map_or((0, 0), |looping| {
+            (
+                looping.repeat_of(first.frame.max(0.0)),
+                looping.repeat_of(at_last),
+            )
         });
+        if to - from >= MAX_LOOP_RESTARTS as i64 {
+            return Err(limit(format!(
+                "time_remap node {} restarts its loop more than {MAX_LOOP_RESTARTS} times within {CONTROL_FRAMES} samples of audio around sample {}. Loop a longer range or play it slower",
+                remap.id, found.start
+            )));
+        }
+        let source = required_input(remap.id, "source", remap.source)?;
+        for repeat in from..=to {
+            found.enter()?;
+            let looping = looping.map(|looping| RemapLoop { repeat, ..looping });
+            let folded = looping.map_or(0.0, |looping| repeat as f64 * looping.length);
+            found.stack.push(Walk {
+                scope: walk.scope.clone(),
+                node: source,
+                frame: first.frame - folded,
+                rate: walk.rate * rate,
+                chain: [
+                    walk.chain.as_slice(),
+                    &[Link::Remap {
+                        at: walk.frame,
+                        target: first.frame,
+                        rate,
+                        looping,
+                    }],
+                ]
+                .concat(),
+                path: [walk.path.as_slice(), &[(remap.id, repeat)]].concat(),
+                depth: walk.depth + 1,
+            });
+        }
         Ok(())
     }
 
@@ -521,10 +721,13 @@ impl<'a> Planner<'a> {
                 }
                 let frames = (end - first) as u64;
                 let position = position + step * first;
+                let start = run.start + first as u64;
+                let scope_at_start = self.scope_at(instance, start, 0)?;
+                let scope_at_end = self.scope_at(instance, start, frames)?;
                 let gain = [
-                    self.gain(instance, track, clip, clip_start + position)?,
+                    self.gain(&scope_at_start, track, clip, clip_start + position)?,
                     self.gain(
-                        instance,
+                        &scope_at_end,
                         track,
                         clip,
                         clip_start + position + step * frames as f64,
@@ -533,35 +736,68 @@ impl<'a> Planner<'a> {
                 let voice = self.voice(instance, index, clip);
                 self.push(AudioSegment {
                     voice,
-                    start: run.start + first as u64,
+                    start,
                     frames,
                     position,
                     step,
                     from,
                     to,
                     gain,
-                });
+                })?;
             }
         }
         Ok(())
     }
 
-    /// The track's and the clip's gain multiplied, at sample `sample` of the instance.
+    /// The scope of `instance` as it stands `ahead` root samples after root sample `sample`: its
+    /// props are what each clip on the way sets at the time that clip is at then.
+    fn scope_at<'i>(
+        &self,
+        instance: &'i Instance<'a>,
+        sample: u64,
+        ahead: u64,
+    ) -> crate::Result<Cow<'i, Scope<'a>>> {
+        if !instance.animated {
+            return Ok(Cow::Borrowed(&instance.scope));
+        }
+        let mut rate = self.root_fps / SAMPLE_RATE;
+        let mut frame = sample as f64 * rate;
+        let mut scope = Scope::root(self.composition);
+        for link in &instance.chain {
+            let Some(piece) = link.piece(frame) else {
+                return Ok(Cow::Borrowed(&instance.scope));
+            };
+            if let Link::Window {
+                plays: Some(plays), ..
+            } = link
+            {
+                let at = FrameTime::from(frame + rate * ahead as f64);
+                let props = plays
+                    .clip
+                    .instance_props(plays.template, &scope.expr_context(at, self.media))?;
+                scope = Scope::template(self.composition, plays.template, plays.output, props);
+            }
+            frame = piece.map(frame);
+            rate *= piece.rate;
+        }
+        Ok(Cow::Owned(scope))
+    }
+
+    /// The track's and the clip's gain multiplied, at sample `sample` of the composition `scope`
+    /// is the instance of.
     fn gain(
         &self,
-        instance: &Instance<'_>,
+        scope: &Scope<'_>,
         track: &AudioTrack,
         clip: &AudioClip,
         sample: f64,
     ) -> crate::Result<f64> {
-        let frame = sample * f64::from(instance.scope.scene.timeline.fps) / SAMPLE_RATE;
-        let ctx = instance
-            .scope
-            .expr_context(FrameTime::from(frame), self.media);
+        let frame = sample * f64::from(scope.scene.timeline.fps) / SAMPLE_RATE;
+        let ctx = scope.expr_context(FrameTime::from(frame), self.media);
         let located = |what: String| {
             move |error: LumenError| {
                 let error = LumenError::evaluate(format!("audio {what} volume: {error}"));
-                match instance.scope.template_name() {
+                match scope.template_name() {
                     Some(template) => {
                         LumenError::evaluate(format!("composition `{template}`: {error}"))
                     }
@@ -600,7 +836,14 @@ impl<'a> Planner<'a> {
 
     /// Adds `segment`, extending the voice's last segment instead when it continues it at the
     /// same fixed gain.
-    fn push(&mut self, segment: AudioSegment) {
+    fn push(&mut self, segment: AudioSegment) -> crate::Result<()> {
+        self.sounding += 1;
+        if self.sounding > MAX_ACTIVE_VOICES {
+            return Err(limit(format!(
+                "more than {MAX_ACTIVE_VOICES} clips are sounding at once around sample {}",
+                segment.start
+            )));
+        }
         if let Some(&last) = self.last_segments.get(&segment.voice) {
             let previous = &mut self.plan.segments[last];
             let continues = previous.start + previous.frames == segment.start
@@ -615,12 +858,41 @@ impl<'a> Planner<'a> {
                     <= 1e-6;
             if continues {
                 previous.frames += segment.frames;
-                return;
+                return Ok(());
             }
         }
         self.last_segments
             .insert(segment.voice, self.plan.segments.len());
         self.plan.segments.push(segment);
+        Ok(())
+    }
+}
+
+impl<'a> Instance<'a> {
+    fn new(
+        key: Vec<NodeId>,
+        chain: Vec<Link<'a>>,
+        scope: Scope<'a>,
+        timeline: &'a AudioTimeline,
+    ) -> Self {
+        let animated = chain.iter().any(|link| match link {
+            Link::Window {
+                plays: Some(plays), ..
+            } => plays
+                .clip
+                .props()
+                .0
+                .values()
+                .any(|value| matches!(value, ClipPropValue::Expr(_))),
+            _ => false,
+        });
+        Self {
+            key,
+            chain,
+            scope,
+            timeline,
+            animated,
+        }
     }
 }
 

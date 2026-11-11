@@ -622,6 +622,210 @@ fn clips_nested_past_the_depth_limit_fail_instead_of_recursing() {
     assert!(error.to_string().contains("nested"), "{error}");
 }
 
+#[test]
+fn nested_audio_sounds_right_after_a_parent_loop_restarts() {
+    let provider = TestProvider::with(&[("tone", constant(1.0, 1.0))]);
+    let document = document(
+        30.0,
+        120,
+        None,
+        json!({
+            "blip": template(
+                30.0,
+                30,
+                Some(audio(vec![audio_clip("c", "tone", 0, 200, json!({}))])),
+                vec![],
+            ),
+            "outer": template(
+                30.0,
+                30,
+                None,
+                vec![clip_node(json!({ "composition": "blip", "duration": 1 }))],
+            ),
+        }),
+        vec![clip_node(
+            json!({ "composition": "outer", "duration": 30, "end": "loop" }),
+        )],
+    );
+    let composition = composition(&document);
+    // The restart is at sample 48000, 384 samples into the interval; the blip lasts 1 frame.
+    let mixed = mix(&composition, &provider, 47_616, 512, 512);
+    assert!(mixed[..384].iter().all(|sample| *sample == 0.0));
+    assert!((f64::from(mixed[384 + 100]) - 100.0 / 384.0).abs() < 1e-6);
+    assert!((f64::from(mixed[511]) - 127.0 / 384.0).abs() < 1e-6);
+}
+
+#[test]
+fn props_set_by_expression_move_the_gain_between_control_points() {
+    let provider = TestProvider::with(&[("tone", constant(1.0, 3.0))]);
+    let mut inner = template(
+        30.0,
+        120,
+        Some(audio(vec![audio_clip(
+            "c",
+            "tone",
+            0,
+            1_500,
+            json!({ "volume": "=prop('level')" }),
+        )])),
+        vec![],
+    );
+    inner["props"] = json!({ "level": { "type": "number", "default": 0 } });
+    let mut outer = template(
+        30.0,
+        120,
+        None,
+        vec![clip_node(
+            json!({ "composition": "inner", "props": { "level": "=prop('level') * 2" } }),
+        )],
+    );
+    outer["props"] = json!({ "level": { "type": "number", "default": 0 } });
+    let document = document(
+        30.0,
+        120,
+        None,
+        json!({ "inner": inner, "outer": outer }),
+        vec![clip_node(
+            json!({ "composition": "outer", "speed": 2, "props": { "level": "=time" } }),
+        )],
+    );
+    let composition = composition(&document);
+    let mixed = mix(&composition, &provider, 0, RATE / 2, RATE / 2);
+    // Twice the root's time, a value that rises smoothly instead of stepping every interval.
+    for sample in [1_000, 12_345, 20_000] {
+        let expected = 2.0 * seconds(sample);
+        assert!(
+            (f64::from(mixed[sample]) - expected).abs() < 1e-6,
+            "at {sample}: {} vs {expected}",
+            mixed[sample]
+        );
+    }
+}
+
+#[test]
+fn a_looping_time_remap_keeps_sounding_across_its_wrap() {
+    let provider = TestProvider::with(&[("tone", constant(1.0, 3.0))]);
+    let (nodes, connections) = graph(vec![]);
+    let mut nodes = nodes.as_array().unwrap().clone();
+    let mut connections = connections.as_array().unwrap().clone();
+    nodes.push(json!({ "id": 5, "type": "clip", "params": { "composition": "burst" } }));
+    nodes.push(json!({
+        "id": 6, "type": "time_remap",
+        "params": { "frame": "=frame", "loop_enabled": true, "loop_start": 0, "loop_end": 30 }
+    }));
+    nodes.push(json!({ "id": 7, "type": "merge" }));
+    connections.retain(|connection| connection["to_node"] != 2);
+    connections.extend([
+        json!({ "from_node": 5, "to_node": 6, "to_port": "source" }),
+        json!({ "from_node": 1, "to_node": 7, "to_port": "base" }),
+        json!({ "from_node": 6, "to_node": 7, "to_port": "overlay" }),
+        json!({ "from_node": 7, "to_node": 2, "to_port": "source" }),
+    ]);
+    let burst = template(
+        30.0,
+        90,
+        Some(audio(vec![audio_clip("c", "tone", 0, 2_000, json!({}))])),
+        vec![],
+    );
+    let document = json!({
+        "timeline": { "fps": 30, "duration_frames": 120 },
+        "render_settings": { "width": 4, "height": 4 },
+        "compositions": { "burst": burst },
+        "nodes": nodes,
+        "connections": connections
+    });
+    let composition = composition(&document);
+    // The loop restarts at sample 48000, 384 samples into the interval.
+    let mixed = mix(&composition, &provider, 47_616, 512, 512);
+    assert!(mixed[..384].iter().all(|sample| *sample == 1.0));
+    assert!(mixed[384].abs() < 1e-6);
+    assert!((f64::from(mixed[384 + 100]) - 100.0 / 384.0).abs() < 1e-6);
+    assert!((f64::from(mixed[511]) - 127.0 / 384.0).abs() < 1e-6);
+}
+
+/// `levels` templates, each playing the one before it twice, the first of which has sound, and a
+/// root that plays the last once.
+fn fan_out(levels: usize) -> Value {
+    let mut compositions = serde_json::Map::new();
+    compositions.insert(
+        "t0".to_string(),
+        template(
+            30.0,
+            30,
+            Some(audio(vec![audio_clip("c", "tone", 0, 100, json!({}))])),
+            vec![],
+        ),
+    );
+    for level in 1..levels {
+        let plays = clip_node(json!({ "composition": format!("t{}", level - 1) }));
+        compositions.insert(
+            format!("t{level}"),
+            template(30.0, 30, None, vec![plays.clone(), plays]),
+        );
+    }
+    document(
+        30.0,
+        30,
+        None,
+        Value::Object(compositions),
+        vec![clip_node(
+            json!({ "composition": format!("t{}", levels - 1) }),
+        )],
+    )
+}
+
+#[test]
+fn templates_that_play_sound_too_many_times_fail_validation_quickly() {
+    for levels in [14, 40] {
+        let started = std::time::Instant::now();
+        let error = crate::json::parse_value(&fan_out(levels)).unwrap_err();
+        let diagnostic = &error.diagnostics()[0];
+        assert_eq!(diagnostic.code, "audio.invalid", "{levels} levels");
+        assert!(
+            diagnostic.message.contains("at most 4096"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(started.elapsed().as_secs_f64() < 2.0, "{levels} levels");
+    }
+    composition(&fan_out(10));
+}
+
+#[test]
+fn planning_stops_when_too_many_clips_play_at_once() {
+    let wide = composition(&fan_out(11));
+    let error = plan(&wide, None, 0, 512).unwrap_err();
+    assert_eq!(error.code(), "audio.limit");
+    assert!(
+        error.to_string().contains("clips and time remaps"),
+        "{error}"
+    );
+    let within = composition(&fan_out(10));
+    assert_eq!(plan(&within, None, 0, 512).unwrap().voices.len(), 512);
+}
+
+#[test]
+fn the_preview_plan_has_a_size_limit() {
+    let animated = |frames: u32, fps: f64| {
+        composition(&document(
+            fps,
+            frames,
+            Some(json!({
+                "tracks": [{ "id": "main", "volume": "=0.5 + sin(time) / 2" }],
+                "clips": [audio_clip("c", "tone", 0, 1_000, json!({}))]
+            })),
+            json!({}),
+            vec![],
+        ))
+    };
+    let error = plan::preview_plan_within(&animated(300, 30.0), None, 50).unwrap_err();
+    assert_eq!(error.code(), "audio.limit");
+    assert!(error.to_string().contains("segments"), "{error}");
+    let error = preview_plan(&animated(12_000, 1.0), None).unwrap_err();
+    assert!(error.to_string().contains("control intervals"), "{error}");
+    plan::preview_plan_within(&animated(300, 30.0), None, 5_000).unwrap();
+}
+
 /// One repeating stereo pattern per source, so a wrong source offset changes the samples.
 #[derive(Serialize)]
 struct FixtureSource {

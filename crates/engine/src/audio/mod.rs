@@ -10,21 +10,86 @@ mod mix;
 mod plan;
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
 pub use mix::AudioMixer;
-pub use plan::{AudioPlan, AudioSegment, AudioVoice, CONTROL_FRAMES, plan, preview_plan};
+pub use plan::{
+    AudioPlan, AudioSegment, AudioVoice, CONTROL_FRAMES, MAX_ACTIVE_CLIPS, MAX_ACTIVE_VOICES,
+    MAX_LOOP_RESTARTS, MAX_PREVIEW_INTERVALS, MAX_PREVIEW_SEGMENTS, plan, preview_plan,
+};
 
 use crate::{
-    composition::PropDef,
+    composition::{CompositionTemplate, PropDef, Scene},
     error::MediaError,
     expr::{BuiltinFn, ExprNode, Expression, ExpressionContext, GlobalVar},
+    node::NodeKind,
 };
 
 pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
 pub const AUDIO_CHANNELS: usize = 2;
+
+/// Most times the clips of a composition may play templates that have sound, counting the clips
+/// inside the templates they play. A count is of places that can sound, not of those sounding at
+/// once, which [`MAX_ACTIVE_CLIPS`] and [`MAX_ACTIVE_VOICES`] bound.
+pub const MAX_PLAYED_TEMPLATES: u64 = 4096;
+
+/// How many times the root's clips play a template with sound, counting every clip node on the
+/// way down: a template with sound counts once for each clip that plays it, plus what the clips
+/// in it play. Templates must not play themselves. Counts saturate.
+pub(crate) fn played_templates(
+    root: &Scene,
+    templates: &BTreeMap<String, CompositionTemplate>,
+) -> u64 {
+    fn plays(scene: &Scene) -> impl Iterator<Item = &str> {
+        scene.graph.nodes.values().filter_map(|node| match node {
+            NodeKind::Clip(clip) => clip.template_name(),
+            _ => None,
+        })
+    }
+    // The count for each template, found children first so a template shared by many clips is
+    // counted once.
+    let mut counts: HashMap<&str, u64> = HashMap::new();
+    let mut stack: Vec<&str> = plays(root).collect();
+    while let Some(&name) = stack.last() {
+        if counts.contains_key(name) {
+            stack.pop();
+            continue;
+        }
+        let Some(template) = templates.get(name) else {
+            counts.insert(name, 0);
+            stack.pop();
+            continue;
+        };
+        let pending: Vec<&str> = plays(&template.scene)
+            .filter(|name| !counts.contains_key(name))
+            .collect();
+        if !pending.is_empty() {
+            stack.extend(pending);
+            continue;
+        }
+        let inside = plays(&template.scene)
+            .map(|name| counts[name])
+            .fold(0, u64::saturating_add);
+        let sounds = template
+            .audio
+            .as_ref()
+            .is_some_and(|audio| !audio.clips.is_empty());
+        counts.insert(
+            name,
+            if sounds || inside > 0 {
+                inside.saturating_add(1)
+            } else {
+                0
+            },
+        );
+        stack.pop();
+    }
+    plays(root)
+        .map(|name| counts[name])
+        .fold(0, u64::saturating_add)
+}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AudioTimeline {
