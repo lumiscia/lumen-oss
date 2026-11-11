@@ -1,7 +1,7 @@
 //! Mip chains for the rasters a scene samples, which `render_3d` filters trilinearly and
 //! anisotropically when they are shown smaller than their size.
 
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use lumen_3d::Bounds;
 use lumen_3d::glam::{Mat4, Vec2, Vec3, Vec4};
@@ -55,8 +55,8 @@ pub(crate) enum Stable {
         node: NodeId,
         generation: u64,
     },
-    /// An image's texture, for as long as that texture lives.
-    Texture(Weak<wgpu::Texture>),
+    /// An image, by the identity and size of its pixels.
+    Image(crate::gpu::MediaTextureKey),
 }
 
 impl Stable {
@@ -74,9 +74,7 @@ impl Stable {
                     generation: other_generation,
                 },
             ) => (graph, node, generation) == (other_graph, other_node, other_generation),
-            (Self::Texture(texture), Self::Texture(other)) => {
-                texture.ptr_eq(other) && texture.strong_count() > 0
-            }
+            (Self::Image(image), Self::Image(other)) => image == other,
             _ => false,
         }
     }

@@ -54,6 +54,58 @@ as `asset:<id>` or a `media` alias. Faces that don't carry that name answer to i
 own, so a font asset or a renamed file shapes as asked, and can't be picked by its internal family
 name instead of another font of that name.
 
+## Supplying media
+
+A host gives a render its media through one method, `MediaStore::resolve(source, kind)`. `source`
+is what the composition wrote (a path, an alias, `asset:<id>`, or a font family) and `kind` is the
+`AssetKind` the use reads it as. The store answers with a `ResolvedMedia`: an `identity` and a
+`MediaResolver`, which holds the kind's resolver trait object (`ImageResolver`,
+`VideoFrameResolver`, `AudioResolver`, `FontResolver`, `ModelResolver` or `EnvironmentResolver`).
+Video decode settings, such as hardware decode, are the store's own, set when it is made.
+
+The `MediaIdentity` names the bytes. The engine treats equal identities, from any store in the
+process, as the same bytes: it decodes, uploads and shapes each identity once and keeps the result
+across frames and renders, within its cache budgets. A host must give a source a new identity
+when its bytes change, or renders keep showing the old ones. Build it from what the host has:
+
+| Media                                                         | Identity                                                          |
+| ------------------------------------------------------------- | ----------------------------------------------------------------- |
+| A file, or several (a font's faces)                           | `MediaIdentity::of_file`, `of_files`: a metadata heuristic, below |
+| Content a key always names (a hash, an immutable upload's id) | `MediaIdentity::of_key`                                           |
+| Bytes handed over in memory                                   | `MediaIdentity::unique()`, taken again each time they are set     |
+
+`of_file` doesn't read the file. It names it by its canonical path, length, modification time
+and, on Unix, its device and inode, so replacing the file (as saving through a rename does) or a
+write that changes its length or modification time gives a new identity. A write in place that
+keeps both, such as one within the file system's timestamp resolution or with the time set back,
+keeps the old identity, and renders keep the old bytes. A host that knows when its bytes change,
+from immutable uploads, content hashes or version counters, should use `of_key` instead;
+lumen-server names `asset:` sources by their asset id this way.
+
+The engine asks again on each frame that uses a source, to see whether its identity changed, so a
+store should resolve an opened source cheaply and let font, model and environment resolvers read
+their bytes only when asked. A source the store doesn't have fails as `media.not_found`, which for
+a font family that isn't an asset reference makes its text fall back to other fonts. Typed access
+goes through `media::resolve_as::<dyn ImageResolver>(store, source)`; a store that serves another
+kind than asked fails there as `media.wrong_kind`, so a store that keeps one kind per name can
+return whatever it has. A minimal store, from
+[`examples/media_store.rs`](examples/media_store.rs):
+
+```rust
+impl MediaStore for MemoryStore {
+    fn resolve(&self, source: &str, _kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
+        let images = self.images.read().unwrap();
+        let (identity, frame) = images
+            .get(source)
+            .ok_or_else(|| MediaError::source_not_found(source, "no image was set"))?;
+        Ok(ResolvedMedia::new(
+            identity.clone(),
+            MediaResolver::Image(Box::new(MemoryImage(Arc::clone(frame)))),
+        ))
+    }
+}
+```
+
 ## Audio
 
 The root composition and each template can hold an `audio` timeline of tracks and clips. A

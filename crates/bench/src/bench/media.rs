@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use lumen_engine::{
     error::MediaError,
-    media::{CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaStore},
+    media::{
+        AssetKind, CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, MediaIdentity,
+        MediaResolver, MediaStore, ResolvedMedia,
+    },
 };
 
 #[derive(Debug, Default)]
@@ -13,9 +16,14 @@ pub enum BenchmarkMediaStore {
 }
 
 impl MediaStore for BenchmarkMediaStore {
-    fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
+    fn resolve(&self, source: &str, kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
         match self {
-            Self::Image(image) if image.id() == source => Ok(Box::new(image.clone())),
+            Self::Image(image) if kind == AssetKind::Image && image.source == source => {
+                Ok(ResolvedMedia::new(
+                    image.identity.clone(),
+                    MediaResolver::Image(Box::new(image.clone())),
+                ))
+            }
             Self::Empty | Self::Image(_) => Err(MediaError::source_not_found(
                 source,
                 "not the benchmark's image",
@@ -26,12 +34,13 @@ impl MediaStore for BenchmarkMediaStore {
 
 #[derive(Debug, Clone)]
 pub struct InMemoryImage {
-    id: String,
+    source: String,
+    identity: MediaIdentity,
     frame: Arc<CpuMediaFrame>,
 }
 
 impl InMemoryImage {
-    pub fn checkerboard(id: impl Into<String>, width: u32, height: u32) -> Self {
+    pub fn checkerboard(source: impl Into<String>, width: u32, height: u32) -> Self {
         let width = width.max(1);
         let height = height.max(1);
         let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
@@ -43,7 +52,8 @@ impl InMemoryImage {
             }
         }
         Self {
-            id: id.into(),
+            source: source.into(),
+            identity: MediaIdentity::unique(),
             frame: Arc::new(CpuMediaFrame {
                 rgba: Arc::new(rgba),
                 width,
@@ -55,10 +65,6 @@ impl InMemoryImage {
 }
 
 impl ImageResolver for InMemoryImage {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn metadata(&self) -> ImageMetadata {
         ImageMetadata {
             width: self.frame.width,
@@ -96,8 +102,8 @@ mod tests {
     #[test]
     fn store_only_resolves_its_registered_image() {
         let store = BenchmarkMediaStore::Image(InMemoryImage::checkerboard("small", 2, 2));
-        assert!(store.get_image_resolver("small").is_ok());
-        assert!(store.get_image_resolver("missing").is_err());
-        assert!(store.get_video_resolver("small").is_err());
+        assert!(store.resolve("small", AssetKind::Image).is_ok());
+        assert!(store.resolve("missing", AssetKind::Image).is_err());
+        assert!(store.resolve("small", AssetKind::Video).is_err());
     }
 }

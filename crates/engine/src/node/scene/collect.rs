@@ -17,8 +17,8 @@ use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
 use super::{Light3dKind, Material3d, Model3d, Placement3d, Pose3d, Projection3d, Shape3dKind};
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
-use crate::gpu::frame_graph::{FrameCx, Raster, SceneFile};
-use crate::media::{AssetKind, ModelResolver};
+use crate::gpu::frame_graph::{FrameCx, Raster};
+use crate::media::{AssetKind, MediaIdentity, ModelResolver, resolve_as};
 use crate::node::vector::paint::Paint;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, required_input};
 
@@ -100,7 +100,7 @@ struct CachedModel {
 }
 
 /// What scenes draw, uploaded once: the primitives' and the image plane's meshes with how many
-/// indices each draws, and models by their resolver's ID.
+/// indices each draws, and models by their identity.
 #[derive(Default)]
 pub(crate) struct SceneCache {
     shapes: HashMap<Shape3dKind, (GpuMesh, u32)>,
@@ -187,15 +187,16 @@ impl SceneCache {
         }
     }
 
-    /// The model `resolver` serves, loaded once per resolver ID and marked drawn in `tick`.
+    /// The model `resolver` serves as `identity`, loaded once per identity and marked drawn in
+    /// `tick`.
     fn model(
         &mut self,
         rec: &mut Recorder,
         tick: u64,
         source: &str,
-        resolver: &dyn ModelResolver,
+        (identity, resolver): (&MediaIdentity, &dyn ModelResolver),
     ) -> Result<LoadedModel, MediaError> {
-        if let Some(cached) = self.models.get_mut(resolver.id()) {
+        if let Some(cached) = self.models.get_mut(identity.as_str()) {
             cached.last_used = tick;
             return Ok(cached.model.clone());
         }
@@ -206,7 +207,7 @@ impl SceneCache {
         let (loaded, size) = upload_model(rec, source, model)?;
         self.model_bytes += size;
         self.models.insert(
-            resolver.id().to_string(),
+            identity.as_str().to_string(),
             CachedModel {
                 model: loaded.clone(),
                 bytes: size,
@@ -921,13 +922,15 @@ impl Collected {
                 "this render has no media store",
             ))
         })?;
-        let resolver = media.get_model_resolver(source).map_err(in_node)?;
+        let (identity, resolver) =
+            resolve_as::<dyn ModelResolver>(media, source).map_err(in_node)?;
         let tick = cx.tick();
         let (rec, cache) = cx.scene_cache();
         let model = cache
-            .model(rec, tick, source, &*resolver)
+            .model(rec, tick, source, (&identity, &*resolver))
             .map_err(in_node)?;
-        cx.drew_file(SceneFile::Model, source, resolver.id());
+        cx.drew_model(identity.as_str());
+        cx.read_source(AssetKind::Model, source, Some(&identity));
         let scene = &model.scene;
         if scene.skipped_primitives() > 0 {
             cx.note_skipped_primitives(node.id, source, scene.skipped_primitives());

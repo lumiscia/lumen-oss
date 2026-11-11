@@ -10,7 +10,7 @@ use lumen_engine::{
     composition::Composition,
     diagnostic::{Diagnostic, Severity},
     gpu::{DEFAULT_MAX_TEXT_GLYPHS, MAX_TEXT_GLYPHS_CEILING},
-    media::MediaStore,
+    media::{AssetKind, MediaStore},
 };
 use lumen_ffmpeg::{
     EncodeCodec, EncoderQuality, QUALITY_CONFIG_ENV, QualityConfig, QualityRequest,
@@ -428,7 +428,7 @@ fn check(cli: &Cli) -> Result<bool> {
     })?;
     let media_store =
         LocalMediaStore::new(media_root(cli.media_root.as_deref())?, &cli.render_config());
-    let known_font = |family: &str| media_store.font_resolver_id(family).is_some();
+    let known_font = |family: &str| media_store.resolve(family, AssetKind::Font).is_ok();
     let diagnostics =
         lumen_engine::json::check(&raw, Some(&known_font), Some(media_store.assets()));
     let ok = !diagnostics.iter().any(Diagnostic::is_error);

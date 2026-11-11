@@ -7,7 +7,9 @@ use std::{
 };
 
 use anyhow::Context;
-use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, media::MediaStore};
+use lumen_engine::{
+    composition::Composition, gpu::GpuCompositionRenderer, media::VideoFrameResolver,
+};
 use lumen_ffmpeg::{QualityConfig, QualityRequest, VideoEncoderChoice};
 
 use super::{
@@ -371,7 +373,10 @@ pub(super) fn prefetch_media_frames(
         return;
     };
     for video in requirements.videos {
-        let Ok(resolver) = media_store.get_video_resolver(&video.stream_id) else {
+        let Ok((_, resolver)) = lumen_engine::media::resolve_as::<dyn VideoFrameResolver>(
+            media_store,
+            &video.stream_id,
+        ) else {
             continue;
         };
         let mut frames = video.frames;

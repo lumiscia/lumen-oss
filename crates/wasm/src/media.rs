@@ -1,17 +1,14 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::{
-        Arc, RwLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, RwLock},
 };
 
 use lumen_engine::{
     error::{MediaError, MediaFailure},
     media::{
-        AssetKind, CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver,
-        MediaFrame, MediaStore, ModelResolver, TextSession, VideoFrameRequirement,
-        VideoFrameResolver, VideoMetadata, YuvFrame,
+        AssetKind, CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame,
+        MediaIdentity, MediaResolver, MediaStore, ModelResolver, ResolvedMedia, TextSession,
+        VideoFrameRequirement, VideoFrameResolver, VideoMetadata, YuvFrame,
     },
 };
 /// Total bytes of decoded video frames kept across all streams of one media store.
@@ -188,25 +185,37 @@ impl VideoStore {
 struct StoredImage {
     metadata: ImageMetadata,
     frame: Arc<CpuMediaFrame>,
-    version: u64,
+    identity: MediaIdentity,
 }
 
-#[derive(Debug, Clone, Default)]
+/// A stream, which keeps its identity until it is removed.
+#[derive(Debug, Clone)]
 struct StoredVideo {
     metadata: VideoMetadata,
     frames: VideoFrameCache,
+    identity: MediaIdentity,
+}
+
+impl Default for StoredVideo {
+    fn default() -> Self {
+        Self {
+            metadata: VideoMetadata::default(),
+            frames: VideoFrameCache::default(),
+            identity: MediaIdentity::unique(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct StoredModel {
     data: Arc<Vec<u8>>,
-    version: u64,
+    identity: MediaIdentity,
 }
 
 #[derive(Debug, Clone)]
 struct StoredFont {
     data: Arc<Vec<u8>>,
-    version: u64,
+    identity: MediaIdentity,
 }
 
 // ── WasmMediaStore ────────────────────────────────────────────────────────────
@@ -220,11 +229,7 @@ pub(crate) struct WasmMediaStore {
 struct WasmMediaStoreInner {
     fonts: RwLock<HashMap<String, StoredFont>>,
     images: RwLock<HashMap<String, StoredImage>>,
-    /// Images set so far, which versions each without repeating after one is removed.
-    images_set: AtomicU64,
     models: RwLock<HashMap<String, StoredModel>>,
-    /// Models set so far, which versions each as `images_set` does.
-    models_set: AtomicU64,
     videos: RwLock<VideoStore>,
     text: TextSession,
 }
@@ -403,7 +408,7 @@ impl WasmMediaStore {
                 StoredImage {
                     metadata,
                     frame: Arc::new(frame),
-                    version: self.inner.images_set.fetch_add(1, Ordering::Relaxed),
+                    identity: MediaIdentity::unique(),
                 },
             );
         Ok(())
@@ -419,7 +424,7 @@ impl WasmMediaStore {
                 source,
                 StoredModel {
                     data: Arc::new(data),
-                    version: self.inner.models_set.fetch_add(1, Ordering::Relaxed),
+                    identity: MediaIdentity::unique(),
                 },
             );
         Ok(())
@@ -439,14 +444,11 @@ impl WasmMediaStore {
             .fonts
             .write()
             .map_err(|_| "media store lock poisoned")?;
-        // Unique across stores, as resolver IDs from any store with one value share data.
-        static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
-        let version = NEXT_VERSION.fetch_add(1, Ordering::Relaxed);
         fonts.insert(
             font_family.to_string(),
             StoredFont {
                 data: Arc::new(data),
-                version,
+                identity: MediaIdentity::unique(),
             },
         );
         Ok(())
@@ -505,36 +507,45 @@ impl WasmMediaStore {
     }
 }
 
-impl MediaStore for WasmMediaStore {
-    fn get_image_resolver(&self, image_id: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
-        let version = self
+impl WasmMediaStore {
+    /// An image, which resolves before it is set so that a frame can be laid out while it loads.
+    fn image(&self, source: &str) -> Result<ResolvedMedia, MediaError> {
+        let identity = self
             .inner
             .images
             .read()
-            .map_err(|_| MediaError::source_not_found(image_id, "media store lock poisoned"))?
-            .get(image_id)
-            .map(|image| image.version);
-        Ok(Box::new(WasmImageResolver {
-            id: match version {
-                Some(version) => format!("wasm-image:{image_id}:{version}"),
-                None => format!("wasm-image:{image_id}"),
-            },
-            source: image_id.to_string(),
-            store: Arc::clone(&self.inner),
-        }))
+            .map_err(|_| MediaError::source_not_found(source, "media store lock poisoned"))?
+            .get(source)
+            .map(|image| image.identity.clone());
+        Ok(ResolvedMedia::new(
+            identity.unwrap_or_else(|| unset("image", source)),
+            MediaResolver::Image(Box::new(WasmImageResolver {
+                source: source.to_string(),
+                store: Arc::clone(&self.inner),
+            })),
+        ))
     }
 
-    fn get_video_resolver(
-        &self,
-        stream_id: &str,
-    ) -> Result<Box<dyn VideoFrameResolver>, MediaError> {
-        Ok(Box::new(WasmVideoResolver {
-            id: stream_id.to_string(),
-            store: Arc::clone(&self.inner),
-        }))
+    /// A stream, which resolves before any of it is set, as its frames arrive one by one.
+    fn video(&self, stream_id: &str) -> Result<ResolvedMedia, MediaError> {
+        let identity = self
+            .inner
+            .videos
+            .read()
+            .map_err(|_| MediaError::source_not_found(stream_id, "media store lock poisoned"))?
+            .streams
+            .get(stream_id)
+            .map(|video| video.identity.clone());
+        Ok(ResolvedMedia::new(
+            identity.unwrap_or_else(|| unset("video", stream_id)),
+            MediaResolver::Video(Box::new(WasmVideoResolver {
+                id: stream_id.to_string(),
+                store: Arc::clone(&self.inner),
+            })),
+        ))
     }
 
-    fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
+    fn model(&self, source: &str) -> Result<ResolvedMedia, MediaError> {
         let models = self
             .inner
             .models
@@ -543,44 +554,55 @@ impl MediaStore for WasmMediaStore {
         let model = models.get(source).ok_or_else(|| {
             MediaError::source_not_found(source, "the preview has no model by this name in `media`")
         })?;
-        Ok(Box::new(WasmModelResolver {
-            id: format!("wasm-model:{source}:{}", model.version),
-            data: Arc::clone(&model.data),
-        }))
+        Ok(ResolvedMedia::new(
+            model.identity.clone(),
+            MediaResolver::Model(Box::new(WasmModelResolver {
+                data: Arc::clone(&model.data),
+            })),
+        ))
     }
 
-    fn get_environment_resolver(
-        &self,
-        source: &str,
-    ) -> Result<Box<dyn EnvironmentResolver>, MediaError> {
-        Err(MediaFailure::unsupported(
-            source,
-            "the browser preview has no environment maps; render this composition on a Lumen \
-             server",
-        )
-        .wanting(&[AssetKind::Environment])
-        .into())
-    }
-
-    fn font_resolver_id(&self, font_family: &str) -> Option<String> {
-        let fonts = self.inner.fonts.read().ok()?;
-        let font = fonts.get(font_family)?;
-        Some(format!("wasm-font:{font_family}:{}", font.version))
-    }
-
-    fn get_font_resolver(
-        &self,
-        font_family: &str,
-    ) -> Result<Option<Box<dyn FontResolver>>, MediaError> {
-        let Ok(fonts) = self.inner.fonts.read() else {
-            return Ok(None);
-        };
-        Ok(fonts.get(font_family).map(|font| {
-            Box::new(WasmFontResolver {
-                id: format!("wasm-font:{font_family}:{}", font.version),
+    fn font(&self, font_family: &str) -> Result<ResolvedMedia, MediaError> {
+        let fonts =
+            self.inner.fonts.read().map_err(|_| {
+                MediaError::source_not_found(font_family, "media store lock poisoned")
+            })?;
+        let font = fonts.get(font_family).ok_or_else(|| {
+            MediaError::source_not_found(font_family, "the preview has no font by this name")
+        })?;
+        Ok(ResolvedMedia::new(
+            font.identity.clone(),
+            MediaResolver::Font(Box::new(WasmFontResolver {
                 data: Arc::clone(&font.data),
-            }) as _
-        }))
+            })),
+        ))
+    }
+}
+
+/// The identity of a source of `kind` that has nothing set yet.
+fn unset(kind: &str, source: &str) -> MediaIdentity {
+    MediaIdentity::of_key(&format!("wasm-unset-{kind}:{source}"))
+}
+
+impl MediaStore for WasmMediaStore {
+    fn resolve(&self, source: &str, kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
+        match kind {
+            AssetKind::Image => self.image(source),
+            AssetKind::Video => self.video(source),
+            AssetKind::Model => self.model(source),
+            AssetKind::Font => self.font(source),
+            AssetKind::Environment => Err(MediaFailure::unsupported(
+                source,
+                "the browser preview has no environment maps; render this composition on a \
+                 Lumen server",
+            )
+            .wanting(&[AssetKind::Environment])
+            .into()),
+            AssetKind::Audio => Err(MediaError::source_not_found(
+                source,
+                "the browser preview plays audio itself",
+            )),
+        }
     }
 
     fn text_session(&self) -> Option<&TextSession> {
@@ -592,17 +614,11 @@ impl MediaStore for WasmMediaStore {
 
 #[derive(Clone)]
 struct WasmImageResolver {
-    /// Changes when the image at `source` is replaced.
-    id: String,
     source: String,
     store: Arc<WasmMediaStoreInner>,
 }
 
 impl ImageResolver for WasmImageResolver {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn metadata(&self) -> ImageMetadata {
         self.store
             .images
@@ -631,10 +647,6 @@ struct WasmVideoResolver {
 }
 
 impl VideoFrameResolver for WasmVideoResolver {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn metadata(&self) -> VideoMetadata {
         self.store
             .videos
@@ -681,16 +693,10 @@ impl VideoFrameResolver for WasmVideoResolver {
 }
 
 struct WasmModelResolver {
-    /// Changes when the model at its source is replaced.
-    id: String,
     data: Arc<Vec<u8>>,
 }
 
 impl ModelResolver for WasmModelResolver {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn data(&self) -> Result<Vec<u8>, MediaError> {
         Ok(self.data.as_ref().clone())
     }
@@ -698,15 +704,10 @@ impl ModelResolver for WasmModelResolver {
 
 #[derive(Clone)]
 struct WasmFontResolver {
-    id: String,
     data: Arc<Vec<u8>>,
 }
 
 impl FontResolver for WasmFontResolver {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn data(&self) -> Result<Vec<Vec<u8>>, MediaError> {
         Ok(vec![self.data.as_ref().clone()])
     }
@@ -714,7 +715,23 @@ impl FontResolver for WasmFontResolver {
 
 #[cfg(test)]
 mod tests {
+    use lumen_engine::media::{ResolverKind, resolve_as};
+
     use super::*;
+
+    fn resolver<K: ResolverKind + ?Sized>(store: &WasmMediaStore, source: &str) -> Box<K> {
+        match resolve_as::<K>(store, source) {
+            Ok((_, resolver)) => resolver,
+            Err(error) => panic!("{source}: {error}"),
+        }
+    }
+
+    fn identity(store: &WasmMediaStore, source: &str, kind: AssetKind) -> MediaIdentity {
+        match store.resolve(source, kind) {
+            Ok(resolved) => resolved.identity,
+            Err(error) => panic!("{source}: {error}"),
+        }
+    }
 
     #[test]
     fn video_cache_evicts_oldest_frames_across_streams_by_bytes() {
@@ -825,7 +842,7 @@ mod tests {
         assert!(!store.has_video_frame("a", 0), "two frames fit the budget");
         assert!(store.has_video_frame("a", 1));
         assert!(store.has_video_frame("a", 2));
-        let resolver = store.get_video_resolver("a").unwrap();
+        let resolver = resolver::<dyn VideoFrameResolver>(&store, "a");
         assert!(matches!(resolver.frame(2), Ok(MediaFrame::Yuv(_))));
         assert_eq!(
             (resolver.metadata().width, resolver.metadata().height),
@@ -854,9 +871,7 @@ mod tests {
 
         store.clear_video_frames().expect("clear video frames");
 
-        let resolver = store
-            .get_video_resolver("intro")
-            .expect("video resolver should still exist");
+        let resolver = resolver::<dyn VideoFrameResolver>(&store, "intro");
         assert_eq!(resolver.metadata().frame_count, 240);
         assert!(matches!(
             resolver.frame(0),
@@ -940,41 +955,29 @@ mod tests {
     }
 
     #[test]
-    fn font_resolver_returns_registered_bytes_and_versions_updates() {
+    fn a_font_serves_its_registered_bytes_with_an_identity_each_set_changes() {
         let store = WasmMediaStore::default();
         store
             .set_font("Inter".to_string(), vec![1, 2, 3])
             .expect("set font");
 
-        let first = store
-            .get_font_resolver("Inter")
-            .unwrap()
-            .expect("font resolver should exist");
-        assert_eq!(first.data().expect("font data"), vec![vec![1, 2, 3]]);
-        assert_eq!(store.font_resolver_id("Inter").as_deref(), Some(first.id()));
+        let first = identity(&store, "Inter", AssetKind::Font);
+        let font = resolver::<dyn FontResolver>(&store, "Inter");
+        assert_eq!(font.data().expect("font data"), vec![vec![1, 2, 3]]);
+        assert_eq!(identity(&store, "Inter", AssetKind::Font), first);
 
         store
             .set_font("Inter".to_string(), vec![4, 5, 6])
             .expect("replace font");
-        let second = store
-            .get_font_resolver("Inter")
-            .unwrap()
-            .expect("font resolver should still exist");
-        assert_ne!(first.id(), second.id());
-        assert_eq!(
-            store.font_resolver_id("Inter").as_deref(),
-            Some(second.id())
-        );
-        assert_eq!(second.data().expect("font data"), vec![vec![4, 5, 6]]);
+        assert_ne!(identity(&store, "Inter", AssetKind::Font), first);
+        let font = resolver::<dyn FontResolver>(&store, "Inter");
+        assert_eq!(font.data().expect("font data"), vec![vec![4, 5, 6]]);
     }
 
     #[test]
-    fn image_resolver_id_changes_when_the_image_is_replaced_or_set_again() {
+    fn an_image_has_a_new_identity_when_it_is_replaced_or_set_again() {
         let image = || crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).unwrap();
-        let id = |store: &WasmMediaStore| {
-            let resolver = store.get_image_resolver("plate").unwrap();
-            resolver.id().to_string()
-        };
+        let id = |store: &WasmMediaStore| identity(store, "plate", AssetKind::Image);
         let store = WasmMediaStore::default();
         store.set_image("plate".to_string(), image()).unwrap();
         let first = id(&store);
@@ -990,13 +993,16 @@ mod tests {
     }
 
     #[test]
-    fn model_resolver_serves_the_set_bytes_under_an_id_each_set_changes() {
+    fn a_model_serves_the_set_bytes_with_an_identity_each_set_changes() {
         let store = WasmMediaStore::default();
         let resolve = |store: &WasmMediaStore| {
-            let resolver = store.get_model_resolver("fox").unwrap();
-            (resolver.id().to_string(), resolver.data().unwrap())
+            let model = resolver::<dyn ModelResolver>(store, "fox");
+            (
+                identity(store, "fox", AssetKind::Model),
+                model.data().unwrap(),
+            )
         };
-        assert!(store.get_model_resolver("fox").is_err());
+        assert!(store.resolve("fox", AssetKind::Model).is_err());
 
         store.set_model("fox".to_string(), vec![1, 2]).unwrap();
         let (first, data) = resolve(&store);
@@ -1010,7 +1016,7 @@ mod tests {
 
         store.remove_model("fox").unwrap();
         assert!(!store.has_model("fox"));
-        assert!(store.get_model_resolver("fox").is_err());
+        assert!(store.resolve("fox", AssetKind::Model).is_err());
     }
 
     const FRAME_BYTES: usize = 4;

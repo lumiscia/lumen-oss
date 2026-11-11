@@ -102,16 +102,12 @@ pub struct VideoMetadata {
 }
 
 pub trait ImageResolver: Send + Sync {
-    fn id(&self) -> &str;
-
     fn metadata(&self) -> ImageMetadata;
 
     fn frame(&self) -> Result<MediaFrame, MediaError>;
 }
 
 pub trait VideoFrameResolver: Send + Sync {
-    fn id(&self) -> &str;
-
     fn metadata(&self) -> VideoMetadata;
 
     fn enqueue_frame(&self, _frame: u32) -> Result<(), MediaError> {
@@ -124,10 +120,6 @@ pub trait VideoFrameResolver: Send + Sync {
 }
 
 impl<T: ImageResolver + ?Sized> ImageResolver for Arc<T> {
-    fn id(&self) -> &str {
-        (**self).id()
-    }
-
     fn metadata(&self) -> ImageMetadata {
         (**self).metadata()
     }
@@ -138,10 +130,6 @@ impl<T: ImageResolver + ?Sized> ImageResolver for Arc<T> {
 }
 
 impl<T: VideoFrameResolver + ?Sized> VideoFrameResolver for Arc<T> {
-    fn id(&self) -> &str {
-        (**self).id()
-    }
-
     fn metadata(&self) -> VideoMetadata {
         (**self).metadata()
     }
@@ -159,23 +147,17 @@ impl<T: VideoFrameResolver + ?Sized> VideoFrameResolver for Arc<T> {
     }
 }
 
+/// The files of a font family's faces.
 pub trait FontResolver: Send + Sync {
-    fn id(&self) -> &str;
-
     fn data(&self) -> Result<Vec<Vec<u8>>, MediaError>;
 }
 
-/// A 3D model file. Models load once per ID, which must change whenever the file's bytes do.
+/// A 3D model file.
 pub trait ModelResolver: Send + Sync {
-    fn id(&self) -> &str;
-
     fn data(&self) -> Result<Vec<u8>, MediaError>;
 }
 
-/// An environment map file. Maps load once per ID, which must change whenever the file's bytes
-/// do.
+/// An environment map file.
 pub trait EnvironmentResolver: Send + Sync {
-    fn id(&self) -> &str;
-
     fn data(&self) -> Result<Vec<u8>, MediaError>;
 }

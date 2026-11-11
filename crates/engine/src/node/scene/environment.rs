@@ -11,7 +11,7 @@ use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 use super::collect::{evictions, storage_buffer};
 use crate::error::{LumenError, MediaError, MediaFailure};
 use crate::gpu::frame_graph::FrameCx;
-use crate::media::{AssetKind, EnvironmentResolver, sniff};
+use crate::media::{AssetKind, EnvironmentResolver, MediaIdentity, resolve_as, sniff};
 
 /// The bytes of environment maps the cache keeps on the GPU beyond those the latest frame drew or
 /// a kept output drew.
@@ -35,7 +35,7 @@ struct Cached {
     last_used: u64,
 }
 
-/// Environment maps by their resolver's ID, and the split-sum table they are all lit with.
+/// Environment maps by their identity, and the split-sum table they are all lit with.
 #[derive(Default)]
 pub(crate) struct EnvironmentCache {
     maps: HashMap<String, Cached>,
@@ -44,17 +44,17 @@ pub(crate) struct EnvironmentCache {
 }
 
 impl EnvironmentCache {
-    /// The map `resolver` serves, with its background if `background`, marked drawn in `tick`.
-    /// Its file is read again only to add a background it was first loaded without.
+    /// The map `resolver` serves as `identity`, with its background if `background`, marked drawn
+    /// in `tick`. Its file is read again only to add a background it was first loaded without.
     fn load(
         &mut self,
         rec: &mut Recorder,
         tick: u64,
         source: &str,
-        resolver: &dyn EnvironmentResolver,
+        (identity, resolver): (&MediaIdentity, &dyn EnvironmentResolver),
         background: bool,
     ) -> Result<LoadedEnvironment, MediaError> {
-        if let Some(cached) = self.maps.get_mut(resolver.id())
+        if let Some(cached) = self.maps.get_mut(identity.as_str())
             && (!background || cached.environment.background.is_some())
         {
             cached.last_used = tick;
@@ -75,7 +75,7 @@ impl EnvironmentCache {
             .wanting(&[AssetKind::Environment])
             .into());
         }
-        let mut cached = match self.maps.remove(resolver.id()) {
+        let mut cached = match self.maps.remove(identity.as_str()) {
             Some(cached) => {
                 self.bytes -= cached.bytes;
                 cached
@@ -103,7 +103,7 @@ impl EnvironmentCache {
         cached.last_used = tick;
         self.bytes += cached.bytes;
         let environment = cached.environment;
-        self.maps.insert(resolver.id().to_string(), cached);
+        self.maps.insert(identity.as_str().to_string(), cached);
         Ok(environment)
     }
 
@@ -254,18 +254,16 @@ pub(super) fn environment(
             "this render has no media store",
         ))
     })?;
-    let resolver = media.get_environment_resolver(source).map_err(in_node)?;
+    let (identity, resolver) =
+        resolve_as::<dyn EnvironmentResolver>(media, source).map_err(in_node)?;
     let tick = cx.tick();
     let (rec, cache) = cx.scene_cache();
     let loaded = cache
         .environments
-        .load(rec, tick, source, &*resolver, background)
+        .load(rec, tick, source, (&identity, &*resolver), background)
         .map_err(in_node)?;
-    cx.drew_file(
-        crate::gpu::frame_graph::SceneFile::Environment,
-        source,
-        resolver.id(),
-    );
+    cx.drew_model(identity.as_str());
+    cx.read_source(AssetKind::Environment, source, Some(&identity));
     Ok(Some(loaded))
 }
 

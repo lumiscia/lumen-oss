@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use crate::error::{MediaError, RenderError};
+use crate::media::{AssetKind, ImageResolver, VideoFrameResolver, resolve_as};
 use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams};
 use crate::scope::FrameTime;
 
@@ -208,11 +209,15 @@ impl MediaIn {
         };
         let (width, height) = match self.resolve(ctx)? {
             MediaInKind::Image { image_id } => {
-                let metadata = media.get_image_resolver(&image_id)?.metadata();
+                let metadata = resolve_as::<dyn ImageResolver>(media, &image_id)?
+                    .1
+                    .metadata();
                 (metadata.width, metadata.height)
             }
             MediaInKind::Video { stream_id, .. } => {
-                let metadata = media.get_video_resolver(&stream_id)?.metadata();
+                let metadata = resolve_as::<dyn VideoFrameResolver>(media, &stream_id)?
+                    .1
+                    .metadata();
                 (metadata.width, metadata.height)
             }
         };
@@ -241,10 +246,10 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
         };
         let tex = match kind {
             MediaInKind::Image { image_id } => {
-                let resolver = media.get_image_resolver(&image_id)?;
+                let (identity, resolver) = resolve_as::<dyn ImageResolver>(media, &image_id)?;
                 cx.ensure_media_fits(&image_id, size)?;
-                let key = MediaTextureKey::of_image(&*resolver);
-                cx.note_image(&image_id, &key);
+                cx.read_source(AssetKind::Image, &image_id, Some(&identity));
+                let key = MediaTextureKey::of_image(identity, &*resolver);
                 cx.image_texture(key, &resolver.frame()?, size)?
             }
             MediaInKind::Video {
@@ -254,7 +259,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
                 loop_mode,
                 alpha,
             } => {
-                let resolver = media.get_video_resolver(&stream_id)?;
+                let (identity, resolver) = resolve_as::<dyn VideoFrameResolver>(media, &stream_id)?;
                 cx.ensure_media_fits(&stream_id, size)?;
                 let metadata = resolver.metadata();
                 let source_frame = map_to_source_frame(
@@ -273,7 +278,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
                 })?;
                 cx.video_texture(
                     self.id,
-                    resolver.id(),
+                    &identity,
                     source_frame,
                     || Ok(resolver.frame(source_frame)?),
                     size,

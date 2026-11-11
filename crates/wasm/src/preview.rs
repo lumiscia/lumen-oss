@@ -689,7 +689,7 @@ fn yuv_frame(input: YuvInput<'_>, data: Vec<u8>) -> Result<YuvFrame, String> {
 
 #[cfg(test)]
 mod tests {
-    use lumen_engine::media::{MediaFrame, MediaStore};
+    use lumen_engine::media::{MediaFrame, VideoFrameResolver, resolve_as};
 
     use super::*;
 
@@ -924,12 +924,9 @@ mod tests {
             .set_video_frame("a", 0, 1, 1, source.clone())
             .expect("set frame");
 
-        let Ok(MediaFrame::RawRgba(frame)) = controller
-            .media
-            .get_video_resolver("a")
-            .expect("resolver")
-            .frame(0)
-        else {
+        let (_, resolver) =
+            resolve_as::<dyn VideoFrameResolver>(&controller.media, "a").expect("resolver");
+        let Ok(MediaFrame::RawRgba(frame)) = resolver.frame(0) else {
             panic!("an RGBA video frame should stay unpremultiplied");
         };
         assert_eq!(*frame.rgba, source);

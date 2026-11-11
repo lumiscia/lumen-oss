@@ -76,7 +76,9 @@ impl Asset {
     }
 }
 
-/// A host's asset store, as rendering and checking see it.
+/// A host's asset store, as rendering and checking see it. An asset's content never changes
+/// under its id, so stores name assets by their id instead of looking at their files; a host
+/// that replaces an asset's content gives it a new id.
 pub trait AssetResolver: Send + Sync + fmt::Debug {
     /// The asset `id` names, or `None` if this host doesn't have it.
     fn resolve(&self, id: &str) -> Option<Asset>;
