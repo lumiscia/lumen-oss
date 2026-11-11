@@ -331,7 +331,8 @@ pub(super) fn plane_texels_per_pixel(
         || outside(|c| c.x <= c.w)
         || outside(|c| c.y >= -c.w)
         || outside(|c| c.y <= c.w)
-        || outside(|c| c.z >= 0.0 && c.z <= c.w)
+        || outside(|c| c.z >= 0.0)
+        || outside(|c| c.z <= c.w)
     {
         return None;
     }
@@ -388,12 +389,39 @@ pub(super) fn bounds_in_view(bounds: &Bounds, view_proj: &Mat4) -> bool {
         || outside(|c| c.x <= c.w)
         || outside(|c| c.y >= -c.w)
         || outside(|c| c.y <= c.w)
-        || outside(|c| c.z >= 0.0 && c.z <= c.w))
+        || outside(|c| c.z >= 0.0)
+        || outside(|c| c.z <= c.w))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounds_and_planes_reaching_past_both_the_near_and_far_planes_are_in_view() {
+        let projection = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 100.0);
+        let through = Bounds {
+            min: Vec3::new(-10.0, -10.0, -200.0),
+            max: Vec3::new(10.0, 10.0, 1.0),
+        };
+        assert!(bounds_in_view(&through, &projection));
+        let behind = Bounds {
+            min: Vec3::new(-10.0, -10.0, 1.0),
+            max: Vec3::new(10.0, 10.0, 5.0),
+        };
+        assert!(!bounds_in_view(&behind, &projection));
+        // A plane lying along the view axis, from behind the camera to past the far plane.
+        let along = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2)
+            * Mat4::from_scale(Vec3::new(400.0, 1.0, 1.0));
+        let view = Mat4::from_translation(Vec3::new(0.5, 0.0, 0.0));
+        let texels = plane_texels_per_pixel(
+            &along,
+            &(projection * view),
+            Size::new(64, 64),
+            Size::new(100, 100),
+        );
+        assert!(texels.is_some());
+    }
 
     /// A camera `distance` along +Z from a plane at the origin, whose unit square is `width`
     /// across, over a 100 x 100 render with a 90 degree field of view.
