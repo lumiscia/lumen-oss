@@ -759,17 +759,21 @@ fn extreme_parameters_store_finite_light() {
         .into_iter()
         .map(|(name, nodes)| {
             Case::new(name, scene((8, 8), nodes), Expect::Custom(Box::new(|_| {})))
+                .check_working_space()
         })
         .collect();
     for tone_mapping in ["none", "aces", "agx"] {
-        cases.push(Case::new(
-            format!("3D emissive light, {tone_mapping}"),
-            crate::scene::render_3d_with(
-                json!({ "tone_mapping": tone_mapping }),
-                vec![json!({ "id": 1, "type": "shape_3d", "params": { "emissive": 1e30 } })],
-            ),
-            Expect::Custom(Box::new(|_| {})),
-        ));
+        cases.push(
+            Case::new(
+                format!("3D emissive light, {tone_mapping}"),
+                crate::scene::render_3d_with(
+                    json!({ "tone_mapping": tone_mapping }),
+                    vec![json!({ "id": 1, "type": "shape_3d", "params": { "emissive": 1e30 } })],
+                ),
+                Expect::Custom(Box::new(|_| {})),
+            )
+            .check_working_space(),
+        );
     }
     check(cases);
 }

@@ -2,7 +2,8 @@
 //! through a full-frame reference. Set `LUMEN_CASE=substring` to run only the rows it names.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::mem::Discriminant;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
@@ -756,6 +757,7 @@ pub struct Case {
     tolerance: u8,
     bounded: Option<bool>,
     uniform_columns: bool,
+    check_working_space: bool,
 }
 
 impl Case {
@@ -770,6 +772,7 @@ impl Case {
             tolerance: 1,
             bounded: None,
             uniform_columns: false,
+            check_working_space: false,
         }
     }
 
@@ -780,6 +783,25 @@ impl Case {
     pub fn uniform_columns(mut self) -> Self {
         self.uniform_columns = true;
         self
+    }
+
+    /// Checks the working space of this row even when every node kind in it has been checked.
+    pub fn check_working_space(mut self) -> Self {
+        self.check_working_space = true;
+        self
+    }
+
+    /// Whether the scene has a node kind no row has had its working space checked with yet, and
+    /// marks its kinds checked.
+    fn has_unchecked_kind(&self) -> bool {
+        static CHECKED: LazyLock<Mutex<HashSet<Discriminant<NodeKind>>>> =
+            LazyLock::new(Default::default);
+        let mut checked = CHECKED.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut unchecked = false;
+        for node in self.scene.graph().nodes.values() {
+            unchecked |= checked.insert(std::mem::discriminant(node));
+        }
+        unchecked
     }
 
     pub fn media(mut self, media: TestMedia) -> Self {
@@ -806,9 +828,12 @@ impl Case {
 
     fn run(&self, gpu: &Gpu) {
         assert!(!self.frames.is_empty(), "a case needs at least one frame");
-        let frames = self.render_frames(&mut gpu.renderer(), self.bounded);
+        let mut renderer = gpu.renderer();
+        let frames = self.render_frames(&mut renderer, self.bounded);
         self.expect.assert(self, gpu, &frames);
-        self.assert_working_space(gpu);
+        if self.check_working_space || self.has_unchecked_kind() {
+            self.assert_working_space(&mut renderer);
+        }
         let reference = self.render_frames(&mut gpu.reference(), self.bounded.map(|_| false));
         for (frame, reference) in frames.iter().zip(&reference) {
             if self.uniform_columns {
@@ -824,29 +849,20 @@ impl Case {
         }
     }
 
-    /// Renders each frame to a float output, which takes the working space unchanged, and checks
-    /// it holds what `WORKING_COLOR_FORMAT` promises.
-    fn assert_working_space(&self, gpu: &Gpu) {
-        let mut renderer = gpu.renderer();
-        renderer
-            .compile_with_output_format(&self.scene, WORKING_COLOR_FORMAT)
-            .unwrap_or_else(|error| panic!("the scene does not compile: {error}"));
+    /// Renders each frame again to a float output, which takes the working space unchanged, on
+    /// the renderer that drew them, and checks it holds what `WORKING_COLOR_FORMAT` promises. A row
+    /// is checked when it has a node kind no earlier row had, or asks with `check_working_space`,
+    /// so every kind is covered once per run. Only the final raster is checked, and tests that
+    /// call `render` themselves are not.
+    fn assert_working_space(&self, renderer: &mut GpuCompositionRenderer) {
         for &at in &self.frames {
-            let raster = renderer
-                .render_frame_at(&self.scene, at, &self.media)
-                .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
-            let size = raster.domain.storage_size;
-            let texels = read_rgba16f(renderer.gpu_renderer(), &raster.texture, size);
+            let texels = render_working_space(renderer, &self.scene, at, &self.media);
             if let Some((index, texel)) = texels
                 .iter()
                 .enumerate()
                 .find(|(_, texel)| !in_working_space(**texel))
             {
-                panic!(
-                    "frame {at}: pixel ({}, {}) is {texel:?}, outside the working space",
-                    index as u32 % size.width,
-                    index as u32 / size.width
-                );
+                panic!("frame {at}: texel {index} is {texel:?}, outside the working space");
             }
         }
     }

@@ -336,6 +336,7 @@ fn shader_output_is_kept_in_the_working_space() {
             shader_scene(&fill_shader(value), json!({}), &[[0, 0, 0, 255]]),
             Expect::Uniform(expected),
         )
+        .check_working_space()
     })
     .into();
     check(cases);
