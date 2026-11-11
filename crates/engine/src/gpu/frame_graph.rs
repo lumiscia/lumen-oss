@@ -435,6 +435,8 @@ struct RecordState {
     kept_sources: HashMap<(AssetKind, String), Option<MediaIdentity>>,
     /// The template, node and family of each font fallback reported for this composition.
     font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
+    /// The template, node and video of each unsupported colour reported for this composition.
+    video_colors: HashSet<(Option<String>, NodeId, String)>,
     /// The template and `render_3d` node of each shadow limit reported for this composition.
     #[cfg(feature = "3d")]
     shadow_limits: HashSet<(Option<String>, NodeId)>,
@@ -930,6 +932,7 @@ impl FrameGraph {
         state.paths.clear();
         state.kept_sources.clear();
         state.font_fallbacks.clear();
+        state.video_colors.clear();
         #[cfg(feature = "3d")]
         state.shadow_limits.clear();
         #[cfg(feature = "3d")]
@@ -1291,6 +1294,31 @@ impl<'a> FrameCx<'a> {
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
         self.st.font_fallbacks.insert(key);
+    }
+
+    /// Warns once per composition, `media_in` node `node_id` and `video` that `details` of its
+    /// colour tags aren't converted.
+    pub(crate) fn note_video_color(&mut self, node_id: NodeId, video: &str, details: &str) {
+        let key = (
+            self.scope.template_name().map(str::to_string),
+            node_id,
+            video.to_string(),
+        );
+        if self.st.video_colors.contains(&key) {
+            return;
+        }
+        let warning = crate::error::Warning::UnsupportedVideoColor {
+            template: key.0.clone(),
+            node_id,
+            video: key.2.clone(),
+            details: details.to_string(),
+        };
+        tracing::warn!(target: "lumen_media", "{warning}");
+        let path = crate::diagnostic::scene_pointer(key.0.as_deref());
+        self.st
+            .diagnostics
+            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
+        self.st.video_colors.insert(key);
     }
 
     pub(crate) fn media(&self) -> Option<&'a dyn MediaStore> {

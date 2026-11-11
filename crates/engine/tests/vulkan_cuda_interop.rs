@@ -15,8 +15,8 @@ use std::{
 
 use lumen_engine::gpu::CudaNvencTargetPool;
 use lumen_ffmpeg::{
-    ColorMatrix, ColorTags, DecodeMode, DecodedVideoFrame, EncodeMode, GpuBackend, InputContext,
-    MuxedEncoder, RateControl, VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
+    ColorMatrix, DecodeMode, DecodedVideoFrame, EncodeMode, GpuBackend, InputContext, MuxedEncoder,
+    RateControl, VideoDecoder, VideoDecoderConfig, VideoEncoderConfig,
 };
 
 #[test]
@@ -71,11 +71,8 @@ fn rendered_texture_encodes_with_nvenc_as_bt709() {
 
     let frame = first_frame(&path);
     assert_eq!(
-        frame.color,
-        ColorTags {
-            matrix: ColorMatrix::Bt709,
-            full_range: false,
-        }
+        (frame.color.matrix, frame.color.full_range),
+        (ColorMatrix::Bt709, false)
     );
     // Pure red in BT.709 limited range.
     let sample = frame.sample(size.width / 2, size.height / 2);

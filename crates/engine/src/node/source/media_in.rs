@@ -262,6 +262,9 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
             } => {
                 let (identity, resolver) = resolve_as::<dyn VideoFrameResolver>(media, &stream_id)?;
                 cx.ensure_media_fits(&stream_id, size)?;
+                if let Some(details) = resolver.color_warning() {
+                    cx.note_video_color(self.id, &stream_id, details);
+                }
                 let metadata = resolver.metadata();
                 let source_frame = map_to_source_frame(
                     cx.frame_time(),

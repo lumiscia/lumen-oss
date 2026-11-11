@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    PixelFormat, Result, VideoCodec,
+    ColorTags, PixelFormat, Result, VideoCodec,
     ffi::{self, AvPacket, sys},
 };
 use sys::AVMediaType::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_VIDEO};
@@ -118,6 +118,8 @@ pub struct VideoStreamInfo {
     pub duration_ts: Option<i64>,
     /// First presentation timestamp in `time_base` units, or 0 when the stream doesn't report one.
     pub start_time: i64,
+    /// The colour tags the stream's parameters carry. Each frame carries its own as well.
+    pub color: ColorTags,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -391,6 +393,14 @@ impl InputContext {
                 } else {
                     (*stream).start_time
                 },
+                color: ColorTags::from_av(
+                    (*params).color_space,
+                    (*params).color_range == sys::AVColorRange::AVCOL_RANGE_JPEG
+                        || crate::video::is_full_range_format(format),
+                    (*params).color_primaries,
+                    (*params).color_trc,
+                    (*params).chroma_location,
+                ),
             }
         }
     }
