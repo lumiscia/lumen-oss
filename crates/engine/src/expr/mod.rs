@@ -4,6 +4,7 @@ mod ast;
 mod builtins;
 mod easing;
 mod eval;
+mod format;
 pub(crate) mod functions;
 mod noise;
 mod parser;

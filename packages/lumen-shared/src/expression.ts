@@ -243,11 +243,13 @@ type KindArg<K> = K extends "number"
         ? Arg<Color>
         : K extends "string"
           ? Arg<string>
-          : K extends "easing"
-            ? EasingArg
-            : K extends "key"
-              ? Expr<Key>
-              : AnyArg;
+          : K extends "text"
+            ? Arg<string> | Num
+            : K extends "easing"
+              ? EasingArg
+              : K extends "key"
+                ? Expr<Key>
+                : AnyArg;
 
 type KindValue<K> = K extends "number"
   ? number
@@ -379,9 +381,11 @@ export const {
   atan2,
   ceil,
   clamp,
+  concat,
   cos,
   cubicBezier,
   floor,
+  format,
   fract,
   hypot,
   inBack,

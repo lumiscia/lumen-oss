@@ -8,6 +8,8 @@ pub enum ValueKind {
     Vec3,
     Color,
     String,
+    /// A string, or a number shown as text.
+    Text,
     Easing,
     Key,
     /// Any value but an easing or a key.
@@ -22,6 +24,7 @@ impl ValueKind {
             Self::Vec3 => "vec3",
             Self::Color => "color",
             Self::String => "string",
+            Self::Text => "text",
             Self::Easing => "easing",
             Self::Key => "key",
             Self::Any => "any",
@@ -173,6 +176,10 @@ builtins! {
         "Laid-out width of a string, or of `node(id)` for a text node.";
     Uppercase "uppercase" (1, Some(1)) [text: String] -> String, "Uppercases a string.";
     Lowercase "lowercase" (1, Some(1)) [text: String] -> String, "Lowercases a string.";
+    Format "format" (1, Some(4)) [value: Number, decimals: Number, width: Number, fill: String] -> String,
+        "A number as text with exactly `decimals` digits after the point (default 0), so `format(4.3, 2)` is `'4.30'`. Halves round away from zero on the number as written: `format(2.5)` is `'3'`, `format(-2.5)` is `'-3'` and `format(1.005, 2)` is `'1.01'`. A result shorter than `width` characters (default 0) is padded on the left with `fill`, one Unicode code point (default a space); with a `'0'` fill the sign stays first, so `format(-5, 0, 4, '0')` is `'-005'`. `value` must be finite, `decimals` a whole number in `0..=20` and `width` a whole number in `0..=64`.";
+    Concat "concat" (1, None) [parts: Text] -> String,
+        "Joins strings and numbers into one string. A number shows as it does in a text param, so `concat('frame ', frame / 7)` reads like `=frame / 7`; use `format` for a fixed number of decimals or padding, e.g. `concat('frame ', format(frame, 0, 4, '0'), ' / 1200')`. `+` stays numeric. The result can be at most 1 MiB.";
     Vec2 "vec2" (2, Some(2)) [x: Number, y: Number] -> Vec2, "Builds a 2D vector.";
     Vec3 "vec3" (3, Some(3)) [x: Number, y: Number, z: Number] -> Vec3, "Builds a 3D vector.";
     Rgb "rgb" (3, Some(3)) [r: Number, g: Number, b: Number] -> Color,

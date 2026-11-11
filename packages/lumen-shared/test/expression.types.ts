@@ -2,9 +2,11 @@ import type { Color, Vec2 } from "@lumiscia/lumen-types";
 
 import {
   Composition,
+  concat,
   cubicBezier,
   ease,
   fn,
+  format,
   frame,
   hex,
   key,
@@ -16,6 +18,7 @@ import {
   spring,
   textWidth,
   lowercase,
+  round,
   tween,
   vec2,
   vec3,
@@ -138,6 +141,66 @@ new Composition().addNode({
   type: "text",
   params: { content: lowercase("HELLO") },
 });
+
+const label: Expr<string> = concat("frame ", format(frame, 0, 4, "0"), " / ", 1200, frame.div(7));
+const decimals: Expr<string> = format(frame.div(7), 2);
+const padded: Expr<string> = format(frame, 0, 4, "0");
+const bare: Expr<string> = format(frame);
+
+new Composition().addNode({
+  type: "text",
+  params: {
+    content: label,
+    font_family: concat("Inter", ""),
+  },
+});
+
+new Composition().addNode({
+  type: "text",
+  params: { content: [{ text: decimals }, { text: padded }, { text: bare }] },
+});
+
+new Composition().addNode({
+  type: "text",
+  params: {
+    // A number shows as text, so a numeric expression is content and span text.
+    content: frame.div(7),
+  },
+});
+
+new Composition().addNode({
+  type: "text",
+  params: { content: [{ text: round(frame.mul(3.7)) }, { text: "x" }] },
+});
+
+new Composition().addNode({
+  type: "text",
+  params: {
+    // @ts-expect-error content takes text or a number, not a vec2
+    content: point,
+  },
+});
+
+new Composition().addNode({
+  type: "text",
+  // @ts-expect-error only `content` and span text take a numeric expression
+  params: { font_family: frame },
+});
+
+// @ts-expect-error `concat` joins strings and numbers, not vec2 values
+concat("a", point);
+
+// @ts-expect-error `concat` needs at least one part
+concat();
+
+// @ts-expect-error `format` formats a number, not a string
+format("1");
+
+// @ts-expect-error `format` pads with a string
+format(1, 0, 4, 0);
+
+// @ts-expect-error `format` takes four arguments at most
+format(1, 0, 4, "0", 1);
 
 // @ts-expect-error an optional argument can't be skipped before a later one
 spring(0, undefined, 20);

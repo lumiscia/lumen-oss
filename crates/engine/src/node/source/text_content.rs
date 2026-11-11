@@ -499,6 +499,33 @@ mod tests {
     }
 
     #[test]
+    fn content_and_span_text_build_a_readout_from_the_frame() {
+        let expr = ExpressionContext {
+            frame: 30.0,
+            ..ExpressionContext::default()
+        };
+        let ctx = DelegateEvalContext {
+            node_id: NodeId::new(3),
+            expr: &expr,
+        };
+        let readout = r#"=concat("frame ", format(frame, 0, 4, "0"), " / 1200")"#;
+        let content = parse(serde_json::json!(readout)).unwrap();
+        assert_eq!(
+            ctx.eval_field("content", &content).unwrap(),
+            TextContent::plain("frame 0030 / 1200".into())
+        );
+        let content = parse(serde_json::json!([
+            { "text": "t = " },
+            { "text": "=format(frame / 7, 2)" },
+            { "text": "=round(frame / 7)" }
+        ]))
+        .unwrap();
+        let spans = ctx.eval_field("content", &content).unwrap();
+        let texts: Vec<_> = spans.0.iter().map(|span| span.text.as_str()).collect();
+        assert_eq!(texts, ["t = ", "4.29", "4"]);
+    }
+
+    #[test]
     fn the_default_is_the_empty_string() {
         let content = TextContent::default().into_delegate();
         assert_eq!(content.to_json_value(), Some(serde_json::json!("")));
