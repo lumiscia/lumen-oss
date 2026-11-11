@@ -20,11 +20,13 @@ use lumen_ffmpeg::{EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoic
 pub use error::{ErrorCode, ServerRenderError};
 pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir};
 pub use gpu::{Mp4Render, RenderReport, RenderTiming, create_gpu_renderer, render_project_mp4};
+pub use lumen_gpu::GpuSettings;
 pub use media::{HARDWARE_DECODE_ENV, LocalMediaStore, is_enabled_flag};
 
 /// What renders take from their host. The library reads no environment variables: a binary reads
-/// [`FONT_DIR_ENV`] and [`HARDWARE_DECODE_ENV`], or its flags, and builds this. The default has no
-/// font directory and decodes video on the CPU.
+/// [`FONT_DIR_ENV`], [`HARDWARE_DECODE_ENV`] and [`GpuSettings::from_env`], or its flags, and builds
+/// this. The default has no font directory, decodes video on the CPU and picks the GPU with
+/// [`GpuSettings::default`].
 #[derive(Debug, Clone, Default)]
 pub struct RenderConfig {
     /// Fonts looked up before the media root's `assets/fonts` and the system fonts. A render fails
@@ -32,6 +34,8 @@ pub struct RenderConfig {
     pub font_dir: Option<PathBuf>,
     /// Decode video on the GPU where the hardware supports it.
     pub hardware_decode: bool,
+    /// How the GPU instance and adapter are chosen. The default reads no environment variables.
+    pub gpu: GpuSettings,
 }
 
 impl RenderConfig {
@@ -54,7 +58,7 @@ pub struct RenderOptions {
     /// The directory media sources must stay inside. Without one, the current directory.
     pub media_root: Option<PathBuf>,
     /// The encoders to try. `None` resolves the composition's settings against the built-in
-    /// presets, with `LUMEN_VIDEO_ENCODER` pinning one.
+    /// presets.
     pub encoder: Option<VideoEncoderChoice>,
     /// Where `asset:` sources resolve. Without one, they don't.
     pub assets: Option<Arc<dyn AssetResolver>>,

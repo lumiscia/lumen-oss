@@ -24,7 +24,9 @@ Supported targets today are:
 
 ### Library
 
-The library reads no environment variables. A `RenderConfig` holds what renders take from the host, and the binaries build it from their flags and environment: `font_dir` from `--font-dir` or `LUMEN_FONT_DIR`, and `hardware_decode` from `LUMEN_HARDWARE_DECODE`. Its default has no font directory and decodes video on the CPU. `RenderOptions::media_root` defaults to the current directory.
+The library reads no environment variables. A `RenderConfig` holds what renders take from the host, and the binaries build it from their flags and environment: `font_dir` from `--font-dir` or `LUMEN_FONT_DIR`, `hardware_decode` from `LUMEN_HARDWARE_DECODE`, and `gpu` (a `GpuSettings`) from `GpuSettings::from_env()`, which reads `WGPU_BACKEND`, `WGPU_POWER_PREF`, `LUMEN_GPU_FORCE_FALLBACK_ADAPTER` and the other wgpu variables. Its default has no font directory, decodes video on the CPU and picks the high-performance adapter on any backend. `RenderOptions::media_root` defaults to the current directory.
+
+Without `RenderOptions::encoder`, a render resolves the composition's settings against the built-in quality presets. The binaries also let `LUMEN_VIDEO_ENCODER` pin an encoder, through `QualityRequest::with_env_encoder()` in `lumen-ffmpeg`; embedders pin one by passing `RenderOptions::encoder` themselves.
 
 ```rust
 use lumen_server::render::{ErrorCode, RenderConfig, RenderOptions, render_project_mp4};
@@ -33,6 +35,7 @@ let options = RenderOptions {
     config: RenderConfig {
         font_dir: Some("/srv/fonts".into()),
         hardware_decode: true,
+        ..RenderConfig::default()
     },
     media_root: Some(job_dir),
     ..RenderOptions::default()
@@ -51,15 +54,26 @@ match render_project_mp4(&composition, &options, &mut |_| {}) {
 
 A failed render is a `ServerRenderError`. `code()` is an `ErrorCode` to match on, `as_str()` gives the string the HTTP binary returns, `Display` is a message, and `source()` is the error that caused it. A failure in the engine has the engine's diagnostic code, such as `media.not_found`, `media.decode` or `render.gpu`, from the [engine's table](../engine/README.md), and `engine_error()` returns the engine error itself. Only `render.gpu` is retryable among them. The other codes are failures of this library:
 
-| Code                      | Meaning                                                                                         |
-| ------------------------- | ----------------------------------------------------------------------------------------------- |
-| `invalid_project_payload` | The payload is not a composition. The source is the engine's `ParseError` with its diagnostics. |
-| `invalid_quality`         | The quality preset or codec resolves to no encoder.                                             |
-| `invalid_render_profile`  | An encoder that doesn't exist, or a frame rate the encoder can't take.                          |
-| `invalid_config`          | The config or options name something that isn't there: a media root or font directory.          |
-| `render_failed`           | The GPU work around the engine failed, such as reading a frame back. Retryable.                 |
-| `encode_failed`           | The encoder failed to open, which isn't retryable, or failed to encode or finish, which is.     |
-| `output_io`               | The output file couldn't be created or read back. Retryable.                                    |
+| Code                      | Meaning                                                                                                                                                                          |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_project_payload` | The payload is not a composition. The source is the engine's `ParseError` with its diagnostics.                                                                                  |
+| `invalid_quality`         | The quality preset or codec resolves to no encoder.                                                                                                                              |
+| `invalid_render_profile`  | An encoder that doesn't exist, or a frame rate the encoder can't take.                                                                                                           |
+| `invalid_config`          | The config or options name something that isn't there: a media root or font directory.                                                                                           |
+| `render_failed`           | The GPU work around the engine failed, such as reading a frame back. Retryable.                                                                                                  |
+| `encode_failed`           | The encoder failed to open, encode or finish. Retryable when it ran out of memory, file descriptors or hardware encoder sessions, not when its options or the encoder are wrong. |
+| `output_io`               | The output file couldn't be created, written or read back. Retryable when the host ran out of memory or file descriptors.                                                        |
+
+These codes replace the ones earlier versions returned:
+
+| Removed code          | Now                                                                                   |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| `audio_render_failed` | The engine's code when mixing the audio failed, `encode_failed` when encoding it did. |
+| `invalid_fps`         | `invalid_render_profile`.                                                             |
+| `media_root_error`    | `invalid_config`.                                                                     |
+| `font_dir_error`      | `invalid_config`.                                                                     |
+
+A render that failed in the engine used to be `render_failed`, retryable, whatever the cause. It now has the engine's code, so a missing or corrupt source is `media.not_found` or `media.decode` and isn't retryable.
 
 ### HTTP binary
 

@@ -16,7 +16,8 @@ use axum::{
 };
 use clap::Parser;
 use lumen_server::render::{
-    FONT_DIR_ENV, HARDWARE_DECODE_ENV, RenderConfig, existing_font_dir, is_enabled_flag,
+    FONT_DIR_ENV, GpuSettings, HARDWARE_DECODE_ENV, RenderConfig, existing_font_dir,
+    is_enabled_flag,
 };
 
 use self::{
@@ -127,8 +128,8 @@ pub struct Args {
 }
 
 impl Args {
-    /// What renders take from this host: the font directory, and `LUMEN_HARDWARE_DECODE` from
-    /// the environment.
+    /// What renders take from this host: the font directory, and `LUMEN_HARDWARE_DECODE` and the
+    /// GPU settings from the environment.
     fn render_config(&self) -> RenderConfig {
         RenderConfig {
             font_dir: self
@@ -137,6 +138,7 @@ impl Args {
                 .filter(|dir| !dir.as_os_str().is_empty()),
             hardware_decode: std::env::var(HARDWARE_DECODE_ENV)
                 .is_ok_and(|value| is_enabled_flag(&value)),
+            gpu: GpuSettings::from_env(),
         }
     }
 }

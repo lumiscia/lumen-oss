@@ -1727,6 +1727,7 @@ dependencies = [
  "clap",
  "fontdb",
  "futures-util",
+ "libc",
  "lumen-engine",
  "lumen-engine-3d",
  "lumen-engine-ffmpeg",

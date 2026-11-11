@@ -83,7 +83,8 @@ pub(super) async fn create_render(
         preset: input.quality,
         codec,
         ..QualityRequest::default()
-    };
+    }
+    .with_env_encoder();
     let encoder =
         resolve_encoder(&state.quality, &composition, request).map_err(invalid_quality)?;
 
@@ -95,6 +96,7 @@ pub(super) async fn create_render(
     ));
     let render = ApiRenderJob::new(&record, &RenderStatus::Queued);
 
+    let max_text_glyphs = state.max_text_glyphs;
     spawn_render_task(
         state,
         record,
@@ -103,7 +105,7 @@ pub(super) async fn create_render(
             composition,
             media: input.media,
             encoder,
-            max_text_glyphs: state.max_text_glyphs,
+            max_text_glyphs,
             assets,
         },
     );

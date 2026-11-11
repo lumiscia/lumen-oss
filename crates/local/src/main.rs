@@ -18,8 +18,8 @@ use lumen_ffmpeg::{
     VideoEncoderChoice, parse_bitrate,
 };
 use lumen_server::render::{
-    FONT_DIR_ENV, HARDWARE_DECODE_ENV, LocalMediaStore, Mp4Render, RenderConfig, RenderReport,
-    create_gpu_renderer, existing_font_dir, is_enabled_flag, resolve_encoder,
+    FONT_DIR_ENV, GpuSettings, HARDWARE_DECODE_ENV, LocalMediaStore, Mp4Render, RenderConfig,
+    RenderReport, create_gpu_renderer, existing_font_dir, is_enabled_flag, resolve_encoder,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -159,12 +159,13 @@ impl Cli {
             .filter(|dir| !dir.as_os_str().is_empty())
     }
 
-    /// The font directory, and `LUMEN_HARDWARE_DECODE` from the environment.
+    /// The font directory, and `LUMEN_HARDWARE_DECODE` and the GPU settings from the environment.
     fn render_config(&self) -> RenderConfig {
         RenderConfig {
             font_dir: self.font_dir(),
             hardware_decode: env::var(HARDWARE_DECODE_ENV)
                 .is_ok_and(|value| is_enabled_flag(&value)),
+            gpu: GpuSettings::from_env(),
         }
     }
 
@@ -186,7 +187,8 @@ impl Cli {
             codec: self.codec,
             settings: self.quality(),
             encoder: self.encoder.clone(),
-        };
+        }
+        .with_env_encoder();
         resolve_encoder(&config, composition, request).map_err(|error| anyhow!(error))
     }
 

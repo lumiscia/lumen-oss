@@ -247,7 +247,9 @@ pub fn create_gpu_renderer(
 ) -> anyhow::Result<GpuCompositionRenderer> {
     #[cfg(all(target_os = "linux", feature = "vulkan"))]
     if media_store.video_options.prefer_hardware_decode {
-        match pollster::block_on(GpuCompositionRenderer::new_vulkan_decode()) {
+        match pollster::block_on(GpuCompositionRenderer::new_vulkan_decode_with_settings(
+            &media_store.gpu,
+        )) {
             Ok((renderer, device)) => {
                 media_store.video_options.vulkan_device = Some(device);
                 return Ok(renderer);
@@ -257,7 +259,8 @@ pub fn create_gpu_renderer(
     }
     #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
     let _ = media_store;
-    pollster::block_on(GpuCompositionRenderer::new()).context("failed to initialize wgpu renderer")
+    pollster::block_on(GpuCompositionRenderer::new_with_settings(&media_store.gpu))
+        .context("failed to initialize wgpu renderer")
 }
 
 #[cfg(test)]

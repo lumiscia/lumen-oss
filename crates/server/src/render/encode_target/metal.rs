@@ -33,11 +33,12 @@ pub(in crate::render) struct MetalTarget {
 impl MetalTarget {
     pub(super) fn open(
         composition: &Composition,
+        gpu: &lumen_gpu::GpuSettings,
         output: &Path,
         encoder: &str,
         quality: &EncoderQuality,
     ) -> anyhow::Result<(GpuCompositionRenderer, Self)> {
-        let renderer = pollster::block_on(GpuCompositionRenderer::new())
+        let renderer = pollster::block_on(GpuCompositionRenderer::new_with_settings(gpu))
             .context("failed to initialize wgpu renderer")?;
         renderer.check_output_size(composition)?;
         let settings = composition.render_settings();
@@ -89,7 +90,7 @@ impl MetalTarget {
                 target.external_texture(),
             )
         })
-        .map_err(|err| render_failed(format!("render failed at frame {frame}: {err}")))?;
+        .map_err(|err| ServerRenderError::engine(format!("render failed at frame {frame}"), err))?;
         self.pending.push_back(PendingFrame {
             frame,
             target,

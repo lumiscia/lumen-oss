@@ -12,7 +12,7 @@ use lumen_ffmpeg::{
 
 use super::{
     ErrorCode, RenderTiming, ServerRenderError, create_gpu_renderer, encode_failed,
-    gpu_renderer_failed, has_audio, poll, timed,
+    encoder_start_failed, gpu_renderer_failed, has_audio, poll, timed,
 };
 use crate::render::media::LocalMediaStore;
 
@@ -72,9 +72,7 @@ impl CudaTarget {
             .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
         let encoder =
             MuxedEncoder::create_with_audio(output.to_string_lossy().to_string(), config, audio)
-                .map_err(|err| {
-                    ServerRenderError::new(ErrorCode::EncodeFailed, err.to_string(), false)
-                })?;
+                .map_err(|err| encoder_start_failed(err.into()))?;
         Ok((
             renderer,
             Self {

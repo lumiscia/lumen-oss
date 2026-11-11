@@ -11,8 +11,8 @@ use lumen_engine::{
     error::LumenError,
 };
 use lumen_ffmpeg::{
-    AudioEncoderConfig, AudioFrame, CpuVideoFrame, EncoderQuality, MuxedEncoder, PixelFormat,
-    Rational, VideoEncoderConfig,
+    AudioEncoderConfig, AudioFrame, CpuVideoFrame, EncoderQuality, FfmpegError, MuxedEncoder,
+    PixelFormat, Rational, VideoEncoderConfig,
 };
 
 use super::media::LocalMediaStore;
@@ -54,7 +54,7 @@ impl EncoderSink {
 
         let (message_tx, message_rx) =
             mpsc::sync_channel::<EncoderMessage>(ENCODER_FRAME_QUEUE_CAPACITY);
-        let (startup_tx, startup_rx) = mpsc::sync_channel::<anyhow::Result<()>>(1);
+        let (startup_tx, startup_rx) = mpsc::sync_channel::<Result<(), FfmpegError>>(1);
         let output = output.to_string_lossy().to_string();
         let writer_handle = thread::spawn(move || {
             let mut encoder = match MuxedEncoder::create_with_audio(output, config, audio) {
@@ -64,9 +64,7 @@ impl EncoderSink {
                     encoder
                 }
                 Err(error) => {
-                    let _ = startup_tx.send(Err(anyhow!(
-                        "lumen-ffmpeg encoder failed to start: {error}"
-                    )));
+                    let _ = startup_tx.send(Err(error));
                     return Ok(());
                 }
             };
@@ -103,7 +101,8 @@ impl EncoderSink {
         });
         startup_rx
             .recv()
-            .map_err(|_| anyhow!("lumen-ffmpeg encoder startup thread stopped"))??;
+            .map_err(|_| anyhow!("lumen-ffmpeg encoder startup thread stopped"))?
+            .map_err(anyhow::Error::new)?;
         Ok(Self {
             message_tx: Some(message_tx),
             writer_handle: Some(writer_handle),

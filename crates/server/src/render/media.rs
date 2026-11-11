@@ -18,7 +18,7 @@ use lumen_engine::{
 };
 
 use super::{
-    ErrorCode, RenderConfig, ServerRenderError,
+    ErrorCode, GpuSettings, RenderConfig, ServerRenderError,
     fonts::{FontCatalog, ResolvedFont},
 };
 
@@ -33,6 +33,7 @@ pub struct LocalMediaStore {
     assets: Arc<dyn AssetResolver>,
     explain_missing_sources: bool,
     pub(super) video_options: FfmpegResolverOptions,
+    pub(super) gpu: GpuSettings,
     audios: RwLock<HashMap<String, Arc<FfmpegAudioResolver>>>,
     images: RwLock<HashMap<String, Arc<ImageFileResolver>>>,
     videos: RwLock<HashMap<String, Arc<FfmpegVideoResolver>>>,
@@ -54,6 +55,7 @@ impl LocalMediaStore {
             assets: Arc::new(NoAssets),
             explain_missing_sources: false,
             video_options,
+            gpu: config.gpu.clone(),
             audios: RwLock::new(HashMap::new()),
             images: RwLock::new(HashMap::new()),
             videos: RwLock::new(HashMap::new()),
@@ -520,6 +522,10 @@ mod tests {
         let config = RenderConfig {
             font_dir: Some(fonts.path().to_path_buf()),
             hardware_decode: true,
+            gpu: GpuSettings {
+                force_fallback_adapter: true,
+                ..GpuSettings::default()
+            },
         };
 
         let store = LocalMediaStore::new(root.path().canonicalize().unwrap(), &config);
@@ -527,8 +533,10 @@ mod tests {
         let id = store.font_resolver_id("Inter").expect("Inter");
         assert!(id.contains(&fonts.path().display().to_string()), "{id}");
         assert!(store.video_options.prefer_hardware_decode);
+        assert!(store.gpu.force_fallback_adapter);
         let default = LocalMediaStore::new(root.path().to_path_buf(), &RenderConfig::default());
         assert!(!default.video_options.prefer_hardware_decode);
+        assert!(!default.gpu.force_fallback_adapter);
     }
 
     #[test]

@@ -152,8 +152,14 @@ pub struct GpuCompositionRenderer {
 }
 
 impl GpuCompositionRenderer {
+    /// Creates a renderer with [`lumen_gpu::GpuSettings::from_env`].
     pub async fn new() -> crate::Result<Self> {
-        let renderer = lumen_gpu::Renderer::new()
+        Self::new_with_settings(&lumen_gpu::GpuSettings::from_env()).await
+    }
+
+    /// Creates a renderer that reads no environment variables.
+    pub async fn new_with_settings(settings: &lumen_gpu::GpuSettings) -> crate::Result<Self> {
+        let renderer = lumen_gpu::Renderer::new_with_settings(settings)
             .await
             .map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
