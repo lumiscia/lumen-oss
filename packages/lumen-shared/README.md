@@ -81,4 +81,25 @@ const merged = composition.addNode({ type: "merge", inputs: { base: first, overl
 composition.addNode({ type: "media_output", inputs: { source: merged } });
 ```
 
+## 3D scenes
+
+The scene nodes (`shape_3d`, `model_3d`, `camera_3d`, `light_3d`, `merge_3d`, `render_3d` and the rest) are built the same way. A scene input takes scene nodes, and `render_3d` turns a scene into a raster:
+
+```ts
+import { Composition, nodes as n } from "@lumiscia/lumen-shared";
+
+const composition = new Composition({ timeline: { durationSeconds: 3 } }).addOutput(
+  n.render_3d({
+    scene: n.merge_3d({
+      objects: [
+        n.shape_3d({ color: "#e6b45a", rotation: [20, 35, 0] }),
+        n.camera_3d({ position: [0, 1.5, 4], look_at: true }),
+      ],
+    }),
+  }),
+);
+```
+
+The [3D guide](https://github.com/lumiscia/lumen-oss/blob/main/docs/3d.md) covers cameras, lights, materials, glTF models and the rest.
+
 See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.

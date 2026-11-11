@@ -1,0 +1,19 @@
+{
+  "name": "@lumiscia/example-3d",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist compositions *.tsbuildinfo",
+    "prestart": "pnpm --filter '@lumiscia/example-3d^...' build && pnpm build",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@lumiscia/lumen-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:"
+  }
+}
