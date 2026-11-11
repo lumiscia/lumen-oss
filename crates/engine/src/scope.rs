@@ -155,6 +155,7 @@ impl<'a> Scope<'a> {
             graph: Some(&self.scene.graph),
             media,
             glyph: None,
+            instance: None,
             props: self.props.as_deref(),
         }
     }

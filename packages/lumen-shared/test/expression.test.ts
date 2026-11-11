@@ -30,6 +30,8 @@ import {
   height,
   hex,
   hypot,
+  instance,
+  instanceCount,
   inBack,
   inBounce,
   inCirc,
@@ -346,6 +348,9 @@ describe("expression helpers", () => {
     expect(rise.body).toBe("tween(vec2(0, 60), vec2(0, 0), start, 16, 'out_expo')");
     expect(String(tween(0, 1, glyph.mul(2).add(10), 12))).toBe(
       "=tween(0, 1, ((glyph * 2) + 10), 12)",
+    );
+    expect(String(instance.div(instanceCount).mul(360))).toBe(
+      "=((instance / instance_count) * 360)",
     );
   });
 

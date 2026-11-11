@@ -8,8 +8,11 @@
 pub(crate) mod collect;
 #[cfg(feature = "3d")]
 mod environment;
+mod instance;
 #[cfg(feature = "3d")]
 pub(crate) mod render;
+
+pub use instance::{Instance3d, Instance3dParams, InstanceCount, MAX_INSTANCES};
 
 use crate::node::vector::paint::Paint;
 use crate::node::{Deferred, NodeId, NodeParams};

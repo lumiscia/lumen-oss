@@ -1,7 +1,19 @@
 import type { NodeParamPortNameClash } from "@lumiscia/lumen-types";
 
 import { Composition } from "../src/composition.js";
-import { frame, hex, progress, when } from "../src/expression.js";
+import {
+  cos,
+  floor,
+  frame,
+  hex,
+  instance,
+  instanceCount,
+  mod,
+  progress,
+  sin,
+  vec3,
+  when,
+} from "../src/expression.js";
 import { nodes as n } from "../src/nodes.js";
 import { defineComposition } from "../src/template.js";
 import type { NodeInput, NodeSource, NodeValue } from "../src/types.js";
@@ -40,6 +52,23 @@ const sceneValue: NodeValue<"scene"> = scene;
 const raster: NodeSource<"raster"> = n.render_3d({ scene, width: 480 });
 n.image_plane_3d({ source: n.render_3d({ scene }) });
 n.model_3d({ source: "asset:tv", texture: glow });
+const ring = instance.div(instanceCount).mul(2 * Math.PI);
+n.render_3d({
+  scene: n.instance_3d({
+    scene: n.model_3d({ source: "asset:tree" }),
+    count: 12,
+    position: vec3(cos(ring).mul(4), 0, sin(ring).mul(4)),
+    rotation: vec3(0, instance.mul(30), 0),
+  }),
+});
+n.instance_3d({
+  scene: n.merge_3d({ objects: [box, n.light_3d()] }),
+  count: 100,
+  position: vec3(mod(instance, 10).mul(1.5), 0, floor(instance.div(10)).mul(1.5)),
+  scale: [0.5, 0.5, 0.5],
+});
+// @ts-expect-error an instance_3d takes a scene, not a raster
+n.instance_3d({ scene: glow });
 
 // @ts-expect-error a scene goes through a render_3d before a raster input
 n.opacity({ source: scene });
