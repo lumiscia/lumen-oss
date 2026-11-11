@@ -12,6 +12,7 @@ export {
   type LumenPreviewState,
   type LumenPreviewTransport,
 } from "./preview.js";
+export type { LumenPreviewRange } from "./playback-range.js";
 export { LumenPreviewSession, mountPreview } from "./session/index.js";
 export type {
   LumenPreviewComposition,
@@ -23,6 +24,8 @@ export type {
   LumenPreviewSessionOptions,
   LumenPreviewStats,
   LumenPreviewStatsCallback,
+  LumenPreviewTimeUpdate,
+  LumenPreviewTimeUpdateCallback,
 } from "./session/index.js";
 export type { LumenAudioEngineOptions, AudioSourceRegistration } from "./audio-engine.js";
 import type {
@@ -33,6 +36,7 @@ import type {
   VideoSourceRegistration,
 } from "./media/index.js";
 import { toUint8Array } from "./media/index.js";
+import type { PlaybackRange } from "./playback-range.js";
 import { FrameRequirementLoader } from "./requirements-loader.js";
 
 export type {
@@ -139,6 +143,8 @@ export interface LumenPreviewController extends LumenPreviewControllerBinding {
   syncMediaSources(registrations: Iterable<MediaRegistration>): Promise<void>;
   loadVideoFrame(streamId: string, frame: number): Promise<void>;
   loadFrameRequirements(requirementsJson: string): Promise<void>;
+  /** Limits lookahead to the range being played. It wraps round the range only if it loops. */
+  setPlaybackRange(range: PlaybackRange | null): void;
   /** Loads what the playhead's frame needs, then starts decoding the frames after it. */
   prepareFrame(): Promise<void>;
   /** Renders a frame `prepareFrame` loaded. */
@@ -263,6 +269,10 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
 
     setLookaheadCount(lookaheadCount: number): void {
       this.requirements.setLookaheadCount(lookaheadCount);
+    }
+
+    setPlaybackRange(range: PlaybackRange | null): void {
+      this.requirements.setRange(range);
     }
 
     async prepareFrame(): Promise<void> {

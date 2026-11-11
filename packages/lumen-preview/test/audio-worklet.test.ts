@@ -270,4 +270,82 @@ describe("LumenAudioWorkletProcessor", () => {
     expect(left?.every((sample) => sample === 0)).toBe(true);
     expect(worklet.currentSample).toBe(0);
   });
+
+  describe("at another rate", () => {
+    // Sample n holds n / 1000, so the output says which position it read.
+    const ramp = (worklet: { handleMessage(message: unknown): void }) =>
+      worklet.handleMessage({
+        channelCount: 2,
+        frames: 12_000,
+        generation: 1,
+        sampleRate: 48_000,
+        samples: Float32Array.from({ length: 24_000 }, (_, index) => Math.floor(index / 2) / 1_000),
+        startSample: 0,
+        type: "chunk",
+      });
+
+    it("reads twice as fast at rate 2, and reports the rate", async () => {
+      const { render, reports, worklet } = await createWorklet();
+      worklet.handleMessage({
+        generation: 1,
+        holdFrames: 0,
+        rate: 2,
+        startSample: 10,
+        type: "play",
+      });
+      ramp(worklet);
+
+      const [left] = render();
+      expect(left?.[0]).toBeCloseTo(0.01);
+      expect(left?.[1]).toBeCloseTo(0.012);
+      expect(left?.[QUANTUM - 1]).toBeCloseTo((10 + 2 * (QUANTUM - 1)) / 1_000);
+      expect(worklet.currentSample).toBe(10 + 2 * QUANTUM);
+      expect(reports.at(-1)).toMatchObject({ rate: 2 });
+    });
+
+    it("interpolates between samples at a slower rate", async () => {
+      const { render, worklet } = await createWorklet();
+      worklet.handleMessage({
+        generation: 1,
+        holdFrames: 0,
+        rate: 0.5,
+        startSample: 10,
+        type: "play",
+      });
+      ramp(worklet);
+
+      const [left] = render();
+      expect(left?.[0]).toBeCloseTo(0.01);
+      expect(left?.[1]).toBeCloseTo(0.0105);
+      expect(left?.[2]).toBeCloseTo(0.011);
+      expect(worklet.currentSample).toBe(10 + QUANTUM / 2);
+    });
+
+    it("changes rate mid-playback from the position it has reached", async () => {
+      const { render, worklet } = await createWorklet();
+      worklet.handleMessage({ generation: 1, holdFrames: 0, startSample: 0, type: "play" });
+      ramp(worklet);
+      render();
+      expect(worklet.currentSample).toBe(QUANTUM);
+
+      worklet.handleMessage({ rate: 4, type: "rate" });
+      const [left] = render();
+      expect(left?.[0]).toBeCloseTo(QUANTUM / 1_000);
+      expect(left?.[1]).toBeCloseTo((QUANTUM + 4) / 1_000);
+      expect(worklet.currentSample).toBe(QUANTUM + 4 * QUANTUM);
+    });
+
+    it("moves through silence at the rate when a chunk is missing", async () => {
+      const { render, worklet } = await createWorklet();
+      worklet.handleMessage({
+        generation: 1,
+        holdFrames: 0,
+        rate: 2,
+        startSample: 0,
+        type: "play",
+      });
+      render();
+      expect(worklet.currentSample).toBe(2 * QUANTUM);
+    });
+  });
 });

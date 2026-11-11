@@ -12,8 +12,15 @@ type Posted = {
   generation?: number;
   holdFrames?: number;
   id?: string;
+  rate?: number;
+  range?: unknown;
   startSample?: number;
   type: string;
+};
+
+type FakeGain = {
+  connected: boolean;
+  gain: { setTargetAtTime: ReturnType<typeof vi.fn>; value: number };
 };
 
 type Fakes = ReturnType<typeof installFakes>;
@@ -28,6 +35,7 @@ function installFakes() {
       state: string;
     }[],
     decoded: [] as number[],
+    gains: [] as FakeGain[],
     decodeError: null as Error | null,
     decodeGates: new Map<number, Promise<void>>(),
     nodes: [] as { connected: boolean; onmessage: (message: unknown) => void; posted: Posted[] }[],
@@ -56,6 +64,20 @@ function installFakes() {
       }
       close = async () => {
         this.closed = true;
+      };
+      createGain = () => {
+        const gain: FakeGain & { connect(): void; disconnect(): void } = {
+          connect: () => {
+            gain.connected = true;
+          },
+          connected: false,
+          disconnect: () => {
+            gain.connected = false;
+          },
+          gain: { setTargetAtTime: vi.fn(), value: 1 },
+        };
+        fakes.gains.push(gain);
+        return gain;
       };
       resume = async () => {};
     },
@@ -521,6 +543,7 @@ describe("LumenAudioEngine", () => {
         contextTime,
         currentSample: seconds * LUMEN_AUDIO_SAMPLE_RATE,
         generation,
+        rate: 1,
         stalled,
         type: "position",
       });
@@ -559,6 +582,7 @@ describe("LumenAudioEngine", () => {
         contextTime: context.currentTime,
         currentSample: 0,
         generation,
+        rate: 1,
         stalled,
         type: "position",
       });
@@ -596,6 +620,7 @@ describe("LumenAudioEngine", () => {
           contextTime: 0,
           currentSample: 0,
           generation,
+          rate: 1,
           stalled,
           type: "position",
         });
@@ -738,6 +763,7 @@ describe("LumenAudioEngine", () => {
       contextTime: 1,
       currentSample: 48_000,
       generation,
+      rate: 1,
       stalled: false,
       type: "position",
     });
@@ -762,10 +788,136 @@ describe("LumenAudioEngine", () => {
       contextTime: 1,
       currentSample: 24_000,
       generation,
+      rate: 1,
       stalled: false,
       type: "position",
     });
 
     expect(requested().slice(before.length)).toEqual([108_000, 120_000]);
+  });
+
+  describe("rate, range and volume", () => {
+    async function playing(fromMs = 0) {
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+      return { engine, ...(await start(engine, fromMs)) };
+    }
+
+    async function start(engine: LumenAudioEngine, fromMs: number) {
+      engine.play(fromMs);
+      await settled(fakes);
+      const node = fakes.nodes[0];
+      const context = fakes.contexts[0];
+      if (!node || !context) throw new Error("not playing");
+      const generation = postedOfType(node.posted, "play")[0]?.generation;
+      const report = (contextTime: number, seconds: number, rate: number) =>
+        node.onmessage({
+          contextTime,
+          currentSample: seconds * LUMEN_AUDIO_SAMPLE_RATE,
+          generation,
+          rate,
+          stalled: false,
+          type: "position",
+        });
+      return { context, node, report };
+    }
+
+    it("starts at the rate it was given, and asks the mixer for the extra audio it needs", async () => {
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+      engine.setRate(4);
+      const { node } = await start(engine, 0);
+
+      expect(postedOfType(node.posted, "play")[0]).toMatchObject({ rate: 4 });
+      const requested = postedOfType(fakes.workers[0]?.posted, "request-chunk").map(
+        (message) => message.startSample,
+      );
+      expect(requested.at(-1)).toBe(384_000);
+    });
+
+    it("carries on from the same position at a new rate, ignoring reports from the old one", async () => {
+      const { context, engine, node, report } = await playing();
+      report(0, 0, 1);
+      context.currentTime = 1;
+      expect(engine.currentTimeMs()).toBeCloseTo(1_000);
+
+      engine.setRate(2);
+      expect(postedOfType(node.posted, "rate")).toEqual([{ rate: 2, type: "rate" }]);
+      expect(engine.currentTimeMs()).toBeCloseTo(1_000);
+      context.currentTime = 2;
+      expect(engine.currentTimeMs()).toBeCloseTo(3_000);
+
+      report(1.5, 1.5, 1);
+      expect(engine.currentTimeMs()).toBeCloseTo(3_000);
+      report(2, 3, 2);
+      context.currentTime = 2.5;
+      expect(engine.currentTimeMs()).toBeCloseTo(4_000);
+      expect(postedOfType(node.posted, "pause")).toHaveLength(0);
+    });
+
+    it("wraps a looping range at its end and stays inside one that doesn't loop", async () => {
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+      engine.setRange({ endMs: 4_000, loop: true, startMs: 2_000 });
+      const { context, node, report } = await start(engine, 1_000);
+      expect(engine.currentTimeMs()).toBe(3_000);
+      expect(postedOfType(fakes.workers[0]?.posted, "set-range").at(-1)).toEqual({
+        range: { endMs: 4_000, loop: true, startMs: 2_000 },
+        type: "set-range",
+      });
+
+      report(5, 3.5, 1);
+      context.currentTime = 6.5;
+      expect(engine.currentTimeMs()).toBeCloseTo(3_000);
+
+      engine.setRange({ endMs: 4_000, loop: false, startMs: 2_000 });
+      await vi.waitFor(() => expect(postedOfType(node.posted, "play")).toHaveLength(2));
+      expect(engine.currentTimeMs()).toBeCloseTo(3_000);
+      engine.seekMs(9_000);
+      expect(engine.currentTimeMs()).toBe(4_000);
+      engine.seekMs(500);
+      expect(engine.currentTimeMs()).toBe(2_000);
+    });
+
+    it("leaves playback alone when the range is the same", async () => {
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+      engine.setRange({ endMs: 4_000, loop: true, startMs: 2_000 });
+      const { node } = await start(engine, 2_500);
+
+      engine.setRange({ endMs: 4_000, loop: true, startMs: 2_000 });
+      expect(postedOfType(node.posted, "play")).toHaveLength(1);
+    });
+
+    it("sets the level without clicks, and mutes without losing the volume", async () => {
+      const engine = createEngine();
+      engine.setVolume(0.5, false);
+      engine.loadAudioTimeline(timelineJson("a"));
+      const { context } = await start(engine, 0);
+      const gain = fakes.gains[0];
+      if (!gain) throw new Error("no gain node");
+      expect(gain.connected).toBe(true);
+      expect(gain.gain.value).toBe(0.5);
+
+      context.currentTime = 3;
+      engine.setVolume(0.5, true);
+      expect(gain.gain.setTargetAtTime).toHaveBeenLastCalledWith(0, 3, expect.any(Number));
+      engine.setVolume(0.5, false);
+      expect(gain.gain.setTargetAtTime).toHaveBeenLastCalledWith(0.5, 3, expect.any(Number));
+      engine.setVolume(0.25, false);
+      expect(gain.gain.setTargetAtTime).toHaveBeenLastCalledWith(0.25, 3, expect.any(Number));
+      expect(gain.gain.value).toBe(0.5);
+
+      engine.dispose();
+      expect(gain.connected).toBe(false);
+    });
+
+    it("starts muted when asked to, before any audio exists", async () => {
+      const engine = createEngine();
+      engine.setVolume(0.8, true);
+      engine.loadAudioTimeline(timelineJson("a"));
+      await start(engine, 0);
+      expect(fakes.gains[0]?.gain.value).toBe(0);
+    });
   });
 });

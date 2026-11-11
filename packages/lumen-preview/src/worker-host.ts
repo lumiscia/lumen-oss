@@ -10,6 +10,7 @@ import {
 } from "./index.js";
 import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
 import type { LumenPreviewErrorCode } from "./preview.js";
+import { resolvePlaybackRange, type LumenPreviewRange } from "./playback-range.js";
 import { PreviewRunner } from "./runner.js";
 import { assetHint } from "./asset-hint.js";
 import { describeError, errorDiagnostics } from "./session/errors.js";
@@ -64,6 +65,12 @@ export type LumenPreviewWorkerCommand =
       logLevel: LumenLogLevel;
       lookaheadCount: number;
       type: "set-options";
+    }
+  | {
+      loop: boolean;
+      /** Null plays the whole timeline. */
+      range: LumenPreviewRange | null;
+      type: "set-playback";
     };
 
 export type LumenPreviewWorkerEvent =
@@ -103,6 +110,12 @@ export type LumenPreviewWorkerEvent =
       loadId: number;
       message: string;
       type: "render-failed";
+    }
+  | {
+      loadId: number;
+      /** The newest seek the worker had heard, so a late answer can't end a playback begun since. */
+      seekId: number;
+      type: "ended";
     };
 
 type PreviewWorkerScope = typeof globalThis & {
@@ -129,8 +142,11 @@ export function createLumenPreviewWorkerHost({
   let clock: PreviewClock = { atEpochMs: 0, originMs: 0, rate: 0 };
   let canvas: OffscreenCanvas | null = null;
   let controller: LumenPreviewController | null = null;
+  let durationFrames = 0;
   let lastRenderMs = 0;
   let loadId = 0;
+  let loop = false;
+  let range: LumenPreviewRange | null = null;
 
   const runner = new PreviewRunner<ReturnType<typeof setTimeout>>(
     {
@@ -146,6 +162,9 @@ export function createLumenPreviewWorkerHost({
     {
       clearTimer: (timer) => clearTimeout(timer),
       now: epochNow,
+      onEnded: (seekId) => {
+        scope.postMessage({ loadId, seekId, type: "ended" });
+      },
       onFailure: (error) => {
         scope.postMessage({ loadId, message: describeError(error), type: "render-failed" });
       },
@@ -181,6 +200,7 @@ export function createLumenPreviewWorkerHost({
         break;
       case "unload":
         loadId = message.loadId;
+        durationFrames = 0;
         runner.unload();
         loadedFonts.clear();
         requireController().clear();
@@ -196,6 +216,13 @@ export function createLumenPreviewWorkerHost({
       case "set-options":
         requireController().setLogLevel(message.logLevel);
         requireController().setLookaheadCount(message.lookaheadCount);
+        break;
+      case "set-playback":
+        loop = message.loop;
+        range = message.range;
+        if (durationFrames > 0) {
+          runner.setRange(applyPlaybackRange(requireController()));
+        }
         break;
     }
   }
@@ -279,7 +306,13 @@ export function createLumenPreviewWorkerHost({
         type: "loaded",
         width: activeController.width(),
       });
-      runner.load(activeController.durationFrames(), activeController.fps(), clock);
+      durationFrames = activeController.durationFrames();
+      runner.load(
+        durationFrames,
+        activeController.fps(),
+        clock,
+        applyPlaybackRange(activeController),
+      );
     } catch (error) {
       if (isCurrent()) {
         scope.postMessage({
@@ -290,6 +323,12 @@ export function createLumenPreviewWorkerHost({
         });
       }
     }
+  }
+
+  function applyPlaybackRange(activeController: LumenPreviewController) {
+    const resolved = resolvePlaybackRange(range, loop, durationFrames);
+    activeController.setPlaybackRange(resolved);
+    return resolved;
   }
 
   async function syncFonts(

@@ -76,6 +76,79 @@ describe("Player", () => {
     await act(async () => root.unmount());
   });
 
+  it("starts a session with the playback options, and updates them without mounting again", async () => {
+    const preview = createLumenPreview();
+    const root = createRoot(document.createElement("div"));
+    const onEnded = vi.fn();
+    const onTimeUpdate = vi.fn();
+    const options = {
+      loop: true,
+      muted: true,
+      onEnded,
+      onTimeUpdate,
+      range: { in: 10, out: 40 },
+      rate: 2,
+      volume: 0.5,
+    };
+
+    await act(async () => {
+      root.render(<Player preview={preview} {...options} />);
+    });
+    expect(sessions[0]?.options).toMatchObject(options);
+
+    await act(async () => {
+      root.render(
+        <Player
+          preview={preview}
+          {...options}
+          loop={false}
+          muted={false}
+          range={null}
+          rate={0.5}
+          volume={0.2}
+        />,
+      );
+    });
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.dispose).not.toHaveBeenCalled();
+    expect(sessions[0]?.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        loop: false,
+        muted: false,
+        onEnded,
+        onTimeUpdate,
+        range: null,
+        rate: 0.5,
+        volume: 0.2,
+      }),
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("doesn't update the session for a range that is equal but a new object", async () => {
+    const preview = createLumenPreview();
+    const root = createRoot(document.createElement("div"));
+
+    await act(async () => {
+      root.render(<Player preview={preview} range={{ in: 10, out: 40 }} />);
+    });
+    const updates = sessions[0]?.update.mock.calls.length;
+    await act(async () => {
+      root.render(<Player preview={preview} range={{ in: 10, out: 40 }} />);
+    });
+    expect(sessions[0]?.update).toHaveBeenCalledTimes(updates ?? 0);
+
+    await act(async () => {
+      root.render(<Player preview={preview} range={{ in: 10, out: 50 }} />);
+    });
+    expect(sessions[0]?.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ range: { in: 10, out: 50 } }),
+    );
+
+    await act(async () => root.unmount());
+  });
+
   it("starts the worker this package ships unless told where another is", async () => {
     const preview = createLumenPreview();
     const root = createRoot(document.createElement("div"));

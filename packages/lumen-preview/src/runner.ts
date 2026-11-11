@@ -1,4 +1,5 @@
 import { clockPositionMs, fitClock, type PreviewClock } from "./clock.js";
+import { rangeFrame, type PlaybackRange } from "./playback-range.js";
 
 // A correction this close to the running clock is jitter, and following it could step a frame back.
 const CLOCK_TOLERANCE_MS = 30;
@@ -16,6 +17,8 @@ export interface PreviewRunnerRenderer {
 export interface PreviewRunnerHost<TTimer> {
   clearTimer(timer: TTimer): void;
   now(): number;
+  /** The clock ran past the end of a range that doesn't loop. `seekId` is the newest seek heard. */
+  onEnded(seekId: number): void;
   onFailure(error: unknown): void;
   /** `renderMs` is null when the frame was already on screen. */
   onFrame(frame: number, seekId: number, renderMs: number | null): void;
@@ -23,7 +26,9 @@ export interface PreviewRunnerHost<TTimer> {
 }
 
 /**
- * Keeps the canvas on the frame its clock points at, looping over the timeline.
+ * Keeps the canvas on the frame its clock points at, within the range being played: it wraps round
+ * a looping range, and holds the last frame of one that isn't, once for each time the clock gets
+ * there.
  *
  * One loop owns every render, so renders never overlap. Whatever falls behind doesn't stall the
  * clock: the frame in hand is shown, then the next render jumps to wherever the clock is.
@@ -38,6 +43,7 @@ export class PreviewRunner<TTimer> {
   // Bumped by every load, so nothing started for an older timeline can land on the new one.
   #generation = 0;
   readonly #host: PreviewRunnerHost<TTimer>;
+  #range: PlaybackRange = { inFrame: 0, loop: false, outFrame: 0 };
   #rendered: number | null = null;
   readonly #renderer: PreviewRunnerRenderer;
   #running = false;
@@ -53,16 +59,24 @@ export class PreviewRunner<TTimer> {
    * Starts a newly loaded timeline on `clock`. A running clock within jitter of the one already
    * followed leaves that one in place, so a load never steps the frame back.
    */
-  load(durationFrames: number, fps: number, clock: PreviewClock): void {
+  load(durationFrames: number, fps: number, clock: PreviewClock, range: PlaybackRange): void {
     this.#generation += 1;
+    this.#range = range;
     this.#dirty = true;
     this.#durationFrames = durationFrames;
     this.#failed = false;
     this.#fps = fps;
     this.#rendered = null;
     if (clock.rate === 0 || !this.#isJitter(clock)) {
-      this.#clock = fitClock(clock, durationFrames, fps);
+      this.#clock = fitClock(clock, range, fps);
     }
+    this.#wake();
+  }
+
+  /** Plays another range of the loaded timeline. */
+  setRange(range: PlaybackRange): void {
+    this.#range = range;
+    this.#clock = this.#fit(this.#clock);
     this.#wake();
   }
 
@@ -93,7 +107,7 @@ export class PreviewRunner<TTimer> {
   }
 
   #fit(clock: PreviewClock): PreviewClock {
-    return this.#durationFrames === 0 ? clock : fitClock(clock, this.#durationFrames, this.#fps);
+    return this.#durationFrames === 0 ? clock : fitClock(clock, this.#range, this.#fps);
   }
 
   #wake(): void {
@@ -158,8 +172,19 @@ export class PreviewRunner<TTimer> {
       return;
     }
     const positionMs = clockPositionMs(this.#clock, this.#host.now());
-    const nextFrameMs = ((this.#framePosition(positionMs) + 1) * 1_000) / this.#fps;
+    const framePosition = this.#framePosition(positionMs);
+    if (!this.#range.loop && framePosition >= this.#range.outFrame) {
+      this.#end();
+      return;
+    }
+    const nextFrameMs = ((framePosition + 1) * 1_000) / this.#fps;
     this.#schedule(Math.max((nextFrameMs - positionMs) / this.#clock.rate, 1));
+  }
+
+  #end(): void {
+    const lastFrameMs = ((this.#range.outFrame - 1) * 1_000) / this.#fps;
+    this.#clock = { atEpochMs: this.#host.now(), originMs: lastFrameMs, rate: 0 };
+    this.#host.onEnded(this.#seekId);
   }
 
   #schedule(delayMs: number): void {
@@ -178,7 +203,7 @@ export class PreviewRunner<TTimer> {
 
   #targetFrame(): number {
     const positionMs = clockPositionMs(this.#clock, this.#host.now());
-    return this.#framePosition(positionMs) % this.#durationFrames;
+    return rangeFrame(this.#framePosition(positionMs), this.#range);
   }
 
   #framePosition(positionMs: number): number {
@@ -190,9 +215,9 @@ export class PreviewRunner<TTimer> {
     return clock.rate === this.#clock.rate && Math.abs(drift) < CLOCK_TOLERANCE_MS;
   }
 
-  /** The shortest way round the loop, because the audio clock wraps where this clock keeps going. */
+  /** The shortest way round a looping range, because the audio clock wraps where this clock keeps going. */
   #wrappedMs(ms: number): number {
-    const loopMs = (this.#durationFrames * 1_000) / this.#fps;
-    return loopMs > 0 ? ms - loopMs * Math.round(ms / loopMs) : ms;
+    const loopMs = ((this.#range.outFrame - this.#range.inFrame) * 1_000) / this.#fps;
+    return this.#range.loop && loopMs > 0 ? ms - loopMs * Math.round(ms / loopMs) : ms;
   }
 }

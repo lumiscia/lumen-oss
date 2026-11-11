@@ -8,6 +8,14 @@ export interface LumenPreviewStats {
 
 export type LumenPreviewStatsCallback = (stats: LumenPreviewStats) => void;
 
+/** The frame the preview just showed, and its start time in the timeline. */
+export interface LumenPreviewTimeUpdate {
+  frame: number;
+  timeMs: number;
+}
+
+export type LumenPreviewTimeUpdateCallback = (update: LumenPreviewTimeUpdate) => void;
+
 export const EMPTY_PREVIEW_STATS: LumenPreviewStats = {
   frame: 0,
   timelineFps: 0,

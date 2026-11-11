@@ -12,6 +12,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
     this.heardAudio = false;
     this.holdFrames = 0;
     this.playing = false;
+    this.rate = 1;
     this.recoveryFrames = 0;
     this.stalled = true;
     this.sampleRate = DEFAULT_SAMPLE_RATE;
@@ -31,6 +32,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
           this.chunks.clear();
           this.heardAudio = false;
           this.holdFrames = Number(message.holdFrames);
+          this.rate = Number(message.rate) || 1;
           this.recoveryFrames = 0;
           this.playing = true;
           this.stalled = this.holdFrames > 0;
@@ -38,6 +40,9 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
           break;
         case "pause":
           this.playing = false;
+          break;
+        case "rate":
+          this.rate = Number(message.rate) || 1;
           break;
       }
     } catch (error) {
@@ -75,19 +80,28 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
     // The position covers samples that were heard, until `holdFrames` runs out waiting for the first
     // of them. From then on it moves through missing samples in silence, so anything arriving late
     // is either behind it and never plays, or joins at the right place. Audio returning from a gap
-    // ramps up, but the wait for the first chunk within `holdFrames` isn't a gap.
+    // ramps up, but the wait for the first chunk within `holdFrames` isn't a gap. The position
+    // advances `rate` samples per output frame, and the samples between are interpolated, so pitch
+    // follows speed.
     const frames = left.length;
+    const rate = this.rate;
     let written = 0;
     for (; written < frames; written += 1) {
-      const sample = this.currentSample + written;
+      const position = this.currentSample + written * rate;
+      const sample = Math.floor(position);
       const chunk = this.findChunk(sample);
       if (chunk) {
-        const chunkFrame = sample - chunk.startSample;
-        const base = chunkFrame * this.channelCount;
+        const fraction = position - sample;
+        const next = fraction > 0 ? this.findChunk(sample + 1) : null;
         const gain = 1 - this.recoveryFrames / RECOVERY_RAMP_FRAMES;
         for (let channel = 0; channel < output.length; channel += 1) {
           const sourceChannel = Math.min(channel, this.channelCount - 1);
-          output[channel][written] = (chunk.samples[base + sourceChannel] || 0) * gain;
+          const current =
+            chunk.samples[(sample - chunk.startSample) * this.channelCount + sourceChannel] || 0;
+          const following = next
+            ? next.samples[(sample + 1 - next.startSample) * this.channelCount + sourceChannel] || 0
+            : current;
+          output[channel][written] = (current + (following - current) * fraction) * gain;
         }
         this.heardAudio = true;
         this.recoveryFrames = Math.max(0, this.recoveryFrames - 1);
@@ -101,7 +115,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
       }
     }
 
-    this.currentSample += written;
+    this.currentSample += written * rate;
     if (!this.heardAudio) {
       this.holdFrames = Math.max(this.holdFrames - frames, 0);
     }
@@ -139,6 +153,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
       contextTime: globalThis.currentTime + framesRendered / this.sampleRate,
       currentSample: this.currentSample,
       generation: this.generation,
+      rate: this.rate,
       stalled: this.stalled,
       type: "position",
     });
