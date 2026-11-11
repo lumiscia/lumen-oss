@@ -79,12 +79,16 @@ export class LumenPreviewSession {
   #canvas: HTMLCanvasElement | null = null;
   #clock = PARKED_CLOCK;
   #correctionTimer: ReturnType<typeof setInterval> | null = null;
+  // Whether the worker is still loading the media of the frame playback is on.
+  #frameWaiting = false;
   // Whether playing is waiting, with its clock parked, for media to load.
   #held = false;
   #inputs: LumenPreviewSessionInputs;
   #loadId = 0;
-  // The newest load the worker has shown, and what it last said of that load's media.
+  // The newest load the worker has loaded and drawn a frame of, and what it last said of that
+  // load's media.
   #loadedId = 0;
+  #shownId = 0;
   #media: readonly MediaEntryState[] | null = null;
   // Whether a load is in flight. A seek waits for it, to be clamped to the new length.
   #loading = false;
@@ -299,9 +303,11 @@ export class LumenPreviewSession {
     this.#canvas?.remove();
     this.#canvas = null;
     this.#clock = PARKED_CLOCK;
+    this.#frameWaiting = false;
     this.#held = false;
     this.#loaded = null;
     this.#loadedId = 0;
+    this.#shownId = 0;
     this.#loading = false;
     this.#media = null;
     this.#optionFailure = null;
@@ -477,6 +483,7 @@ export class LumenPreviewSession {
     this.#loaded = next;
     this.#settleSeeks(false);
     this.#reportedFrame = null;
+    this.#frameWaiting = false;
     this.#media = null;
     this.#ready = null;
 
@@ -564,7 +571,22 @@ export class LumenPreviewSession {
         if (event.loadId === this.#loadId) {
           this.#settleSeeks(false);
           this.#pause();
-          this.#reportError("render_failed", "render", event.message, [], event.media);
+          const error = this.#reportError(
+            "render_failed",
+            "render",
+            event.message,
+            [],
+            event.media,
+          );
+          if (!this.#ready) {
+            this.#settleReady(error);
+          }
+        }
+        break;
+      case "waiting":
+        if (event.loadId === this.#loadId) {
+          this.#frameWaiting = event.waiting;
+          this.#updateHold();
         }
         break;
       case "ended":
@@ -604,12 +626,13 @@ export class LumenPreviewSession {
     this.#checkReady();
   }
 
-  /** Settles `whenReady` once the composition is shown and nothing it needs is pending. */
+  /** Settles `whenReady` once a frame of the composition is shown and nothing it needs is pending. */
   #checkReady(): void {
     const media = this.#media;
     if (
       this.#ready ||
       this.#loadedId !== this.#loadId ||
+      this.#shownId !== this.#loadId ||
       !media ||
       media.some(({ status }) => status === "pending")
     ) {
@@ -657,10 +680,14 @@ export class LumenPreviewSession {
     );
   }
 
-  /** Playing waits, with its clock parked, while media the composition needs is pending. */
+  /**
+   * Playing waits, with its clock parked, while media the composition needs is pending or the
+   * frame it is on is still loading.
+   */
   #updateHold(): void {
     const hold =
-      this.#playing && (this.#media?.some(({ status }) => status === "pending") ?? false);
+      this.#playing &&
+      (this.#frameWaiting || (this.#media?.some(({ status }) => status === "pending") ?? false));
     if (hold === this.#held) {
       return;
     }
@@ -755,6 +782,10 @@ export class LumenPreviewSession {
   #onFrame(event: WorkerEvent<"frame">): void {
     if (event.loadId !== this.#loadId || !this.#timeline) {
       return;
+    }
+    if (this.#shownId !== event.loadId) {
+      this.#shownId = event.loadId;
+      this.#checkReady();
     }
     for (const [seekId, resolve] of this.#pendingSeeks) {
       if (seekId <= event.seekId) {
@@ -971,10 +1002,18 @@ export function mountPreview(
   return session;
 }
 
-/** `name` in the directory `runtimeUrl` names, which it is whether or not it ends with a slash. */
+/**
+ * `name` in the directory `runtimeUrl` names, which it is whether or not its path ends with a
+ * slash. Its query is kept on every file, and its fragment dropped.
+ */
 function runtimeAsset(runtimeUrl: string | URL, name: string): string {
-  const base = absoluteUrl(runtimeUrl);
-  return new URL(name, base.endsWith("/") ? base : `${base}/`).href;
+  const base = new URL(absoluteUrl(runtimeUrl));
+  if (!base.pathname.endsWith("/")) {
+    base.pathname += "/";
+  }
+  const url = new URL(name, base);
+  url.search = base.search;
+  return url.href;
 }
 
 function stoppedError(): LumenPreviewError {

@@ -18,11 +18,13 @@ function deferred<T = void>() {
 
 const video = vi.hoisted(() => ({
   disposed: 0,
+  /** Holds back every frame decode until it resolves, when set. */
+  frames: null as Promise<void> | null,
   metadata: new Map<string, Promise<void>>(),
   opened: 0,
 }));
 
-// Opening a video waits for the test; frames are never asked for, as no frame requires them.
+// Opening a video and decoding its frames wait for the test.
 vi.mock("../src/media/video-session.js", async (original) => ({
   ...(await original<typeof import("../src/media/video-session.js")>()),
   VideoSession: class {
@@ -34,6 +36,10 @@ vi.mock("../src/media/video-session.js", async (original) => ({
       return { fps: 30, frameCount: 30, height: 1, width: 1 };
     }
     clearFrames() {}
+    async decodeFrames() {
+      await video.frames;
+      return new Map();
+    }
     dispose() {
       video.disposed += 1;
     }
@@ -44,6 +50,11 @@ const calls: string[] = [];
 const drawn: string[] = [];
 const shown: number[] = [];
 let gpuReady = deferred();
+/** Models the fake wasm store refuses, as it refuses a file that isn't a model. */
+const corruptModels = new Set<string>();
+/** Sources each composition's frames need video frames of. */
+const framesOf = new Map<string, string[]>();
+let testCanvas = { height: 0, width: 0 };
 /** What the wasm store holds, by kind. */
 const stored: Record<"environment" | "image" | "model" | "video", Set<string>> = {
   environment: new Set(),
@@ -73,8 +84,12 @@ class FakeController {
   fps() {
     return 30;
   }
-  frameRequirements() {
-    return JSON.stringify({ images: [], videos: [] });
+  frameRequirements(frame: number) {
+    const videos = (framesOf.get(this.#composition ?? "") ?? []).map((streamId) => ({
+      frames: [frame],
+      streamId,
+    }));
+    return JSON.stringify({ images: [], videos });
   }
   hasEnvironment(id: string) {
     return stored.environment.has(id);
@@ -89,7 +104,7 @@ class FakeController {
     return false;
   }
   height() {
-    return 1;
+    return this.#composition === "B" ? 2 : 1;
   }
   removeEnvironmentSource(id: string) {
     stored.environment.delete(id);
@@ -116,6 +131,11 @@ class FakeController {
   }
   setLogLevel() {}
   setModel(id: string) {
+    if (corruptModels.has(id)) {
+      throw Object.assign(new Error(`${id}: not a model`), {
+        media: { code: "media.decode", details: "not a model", source: id, wanted: ["model"] },
+      });
+    }
     calls.push(`model ${id}`);
     stored.model.add(id);
   }
@@ -124,7 +144,7 @@ class FakeController {
     stored.video.add(id);
   }
   width() {
-    return 1;
+    return this.#composition === "B" ? 2 : 1;
   }
   loadComposition(json: string) {
     calls.push(`load ${json}`);
@@ -177,7 +197,7 @@ const lastMedia = () =>
 async function startWorker() {
   receive({ logLevel: "off", lookaheadCount: 0, type: "start", wasmUrl: "lumen.wasm" });
   await settle();
-  receive({ canvas: {} as OffscreenCanvas, type: "attach-canvas" });
+  receive({ canvas: testCanvas as OffscreenCanvas, type: "attach-canvas" });
 }
 
 beforeEach(() => {
@@ -186,6 +206,10 @@ beforeEach(() => {
   shown.length = 0;
   sent.length = 0;
   inventories.clear();
+  corruptModels.clear();
+  framesOf.clear();
+  testCanvas = { height: 0, width: 0 };
+  video.frames = null;
   for (const ids of Object.values(stored)) {
     ids.clear();
   }
@@ -297,6 +321,66 @@ describe("createLumenPreviewWorkerHost", () => {
       media: { code: "media.not_found", source: "sky.hdr", wanted: ["environment"] },
     });
     expect(calls).toEqual(["inventory A"]);
+  });
+
+  it("fails the load with the decode failure of a model that isn't one, and keeps the last frame", async () => {
+    gpuReady.resolve();
+    await startWorker();
+    needs("B", [["fox", "model"]]);
+    corruptModels.add("fox");
+    load(1, "A");
+    await settle();
+
+    load(2, "B", ["fox"]);
+    await settle();
+
+    expect(sent.find((event) => event.type === "load-failed")).toMatchObject({
+      loadId: 2,
+      media: { code: "media.decode", source: "fox", wanted: ["model"] },
+    });
+    expect(lastMedia()?.media[0]).toMatchObject({ source: "fox", status: "failed" });
+    expect(drawn).toEqual(["A"]);
+  });
+
+  it("keeps the last frame and its size while a video frame decodes, and says playback waits", async () => {
+    gpuReady.resolve();
+    await startWorker();
+    load(1, "A");
+    await settle();
+    expect(testCanvas).toEqual({ height: 1, width: 1 });
+
+    const frame = deferred();
+    video.frames = frame.promise;
+    needs("B", [["clip", "video"]]);
+    framesOf.set("B", ["clip"]);
+    receive({
+      clock: { atEpochMs: performance.timeOrigin + performance.now(), originMs: 0, rate: 1 },
+      compositionJson: "B",
+      fonts: [],
+      keepFonts: [],
+      keepMedia: ["clip"],
+      loadId: 2,
+      media: [["clip", { source: "https://a.test/clip" }]],
+      type: "load",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(sent.some((event) => event.type === "loaded" && event.loadId === 2)).toBe(true);
+    expect(drawn).toEqual(["A"]);
+    expect(testCanvas).toEqual({ height: 1, width: 1 });
+    expect(sent.filter((event) => event.type === "waiting")).toEqual([
+      { loadId: 2, type: "waiting", waiting: true },
+    ]);
+
+    frame.resolve();
+    await settle();
+    expect(drawn.at(-1)).toBe("B");
+    expect(testCanvas).toEqual({ height: 2, width: 2 });
+    expect(sent.filter((event) => event.type === "waiting").at(-1)).toMatchObject({
+      waiting: false,
+    });
+    // Stops the playing runner, which would otherwise draw on into the next test.
+    receive({ loadId: 3, type: "unload" });
   });
 
   it("releases what a composition stops naming, so swapping doesn't grow what is registered", async () => {

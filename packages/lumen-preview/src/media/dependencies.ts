@@ -56,55 +56,72 @@ export function refusedSource(source: string): string | null {
 
 /**
  * The dependencies of a composition, from what the engine lists it needing and what the host
- * passes: each source the composition names, read as each kind it is used as, and each font. A
- * source an expression computes can be any entry of `media`, so with one, the entries no literal
- * source names are dependencies too, of the kind they say or their blob's type says.
+ * passes: one for each source and kind it is read as, and one for each font. The visual kinds of
+ * one use are alternatives, of which the entry's kind picks; its audio, and the kinds of other
+ * uses, are each needed. A source an expression computes can be any entry of `media`, so each
+ * entry is also read as the kind such a use reads, unless its `kind` or blob type says it holds
+ * another or a literal use already reads it as one of them.
  */
 export function previewDependencies(
   inventory: MediaInventory,
   media: ReadonlyMap<string, PreviewMediaEntry>,
   fonts: ReadonlyMap<string, MediaSourceInput>,
 ): PreviewMediaDependency[] {
-  const dependencies: PreviewMediaDependency[] = [];
-  for (const { source, kinds, uses } of inventory.media) {
-    const at = uses[0]?.at;
-    const entry = media.get(source);
-    if (kinds.includes("audio")) {
-      dependencies.push(dependency(source, "audio", at, ["audio"], entry));
+  const dependencies = new Map<string, PreviewMediaDependency>();
+  const add = (
+    source: string,
+    kind: MediaSourceKind,
+    at: MediaLocation | undefined,
+    wanted: readonly MediaSourceKind[],
+  ) => {
+    const added = dependency(source, kind, at, wanted, media.get(source));
+    if (!dependencies.has(added.key)) {
+      dependencies.set(added.key, added);
     }
-    const visual = kinds.filter((kind) => kind !== "audio");
-    const kind = entryKind(entry, visual) ?? visual[0];
-    if (kind) {
-      dependencies.push(dependency(source, kind, at, visual, entry));
+  };
+
+  for (const { source, uses } of inventory.media) {
+    for (const { at, kinds } of uses) {
+      if (kinds.includes("audio")) {
+        add(source, "audio", at, ["audio"]);
+      }
+      const visual = kinds.filter((kind) => kind !== "audio");
+      const kind = entryKind(media.get(source), visual) ?? visual[0];
+      if (kind) {
+        add(source, kind, at, visual);
+      }
     }
   }
 
-  const dynamicKinds = [...new Set(inventory.dynamic.flatMap(({ kinds }) => kinds))];
-  if (dynamicKinds.length > 0) {
-    const named = new Set(inventory.media.map(({ source }) => source));
+  for (const { kinds, ...param } of inventory.dynamic) {
+    const at: MediaLocation = { type: "node", ...param };
     for (const [source, entry] of media) {
-      if (named.has(source)) {
+      const declared = entry.kind ?? blobKind(entry.source);
+      if (declared !== undefined && !kinds.includes(declared)) {
         continue;
       }
-      const kind = entryKind(entry, dynamicKinds) ?? (dynamicKinds.length === 1 && dynamicKinds[0]);
+      const kind = declared ?? (kinds.length === 1 ? kinds[0] : undefined);
+      if (!kind && kinds.some((read) => dependencies.has(`${read}:${source}`))) {
+        continue;
+      }
       if (!kind) {
         throw new Error(
-          `media "${source}" needs a kind: only an expression can name it, and its entry and source don't say what it holds`,
+          `media "${source}" needs a kind: an expression can name it, and its entry and source don't say what it holds`,
         );
       }
-      dependencies.push(dependency(source, kind, undefined, dynamicKinds, entry));
+      add(source, kind, at, kinds);
     }
   }
 
   for (const [family, source] of fonts) {
-    dependencies.push({
+    dependencies.set(`font:${family}`, {
       key: `font:${family}`,
       kind: "font",
       load: { input: { source } },
       source: family,
     });
   }
-  return dependencies;
+  return [...dependencies.values()];
 }
 
 export function samePreviewMediaInput(left: PreviewMediaInput, right: PreviewMediaInput): boolean {

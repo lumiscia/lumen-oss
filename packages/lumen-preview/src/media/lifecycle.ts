@@ -101,8 +101,9 @@ export class MediaLifecycle<TInput> {
   }
 
   /**
-   * Resolves once none of the dependencies `includes` picks is pending, with the first that
-   * failed, or null. Later syncs count: it waits for what is current when it resolves.
+   * Resolves with the first failure among the dependencies `includes` picks as soon as there is
+   * one, or with null once none of them is pending. Later syncs count: it waits for what is current
+   * when it resolves.
    */
   settled(
     includes: (dependency: MediaDependency<TInput>) => boolean = () => true,
@@ -111,6 +112,16 @@ export class MediaLifecycle<TInput> {
       this.#waiters.push({ includes, resolve });
       this.#resolveWaiters();
     });
+  }
+
+  /** Stops and releases every dependency still loading, which a failed load no longer needs. */
+  cancelPending(): void {
+    for (const [key, entry] of this.#entries) {
+      if (entry.status === "pending") {
+        this.#release(key, entry);
+      }
+    }
+    this.#changed();
   }
 
   #keeps(current: MediaDependency<TInput>, next: MediaDependency<TInput>): boolean {
@@ -173,10 +184,11 @@ export class MediaLifecycle<TInput> {
       const entries = [...this.#entries.values()].filter(({ dependency }) =>
         waiter.includes(dependency),
       );
-      if (entries.some(({ status }) => status === "pending")) {
+      const failure = entries.find((entry) => entry.failure)?.failure ?? null;
+      if (!failure && entries.some(({ status }) => status === "pending")) {
         waiting.push(waiter);
       } else {
-        waiter.resolve(entries.find(({ failure }) => failure)?.failure ?? null);
+        waiter.resolve(failure);
       }
     }
     this.#waiters = waiting;

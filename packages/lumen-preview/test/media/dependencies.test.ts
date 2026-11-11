@@ -125,4 +125,14 @@ describe("previewDependencies", () => {
       ),
     ).toThrow(/needs a kind/);
   });
+
+  it("reads a source an audio clip names as video too, when an expression reads video", () => {
+    const dependencies = previewDependencies(
+      inventory([{ kinds: ["audio"], source: "clip.mp4" }], [["video"]]),
+      entries({ "clip.mp4": { source: "https://a.test/clip.mp4" } }),
+      new Map(),
+    );
+
+    expect(dependencies.map(({ key }) => key)).toEqual(["audio:clip.mp4", "video:clip.mp4"]);
+  });
 });

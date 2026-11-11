@@ -337,19 +337,25 @@ impl LumenPreviewController {
         self.reset_renderer()
     }
 
-    /// Stores a binary glTF (`.glb`) file under the `source` a `model_3d` names. It is read when a
-    /// render first draws it, so a file that isn't a model fails that render.
+    /// Stores a binary glTF (`.glb`) file under the `source` a `model_3d` names. Throws, with the
+    /// `media` failure a render would give, on a file that isn't a model it can read.
     #[wasm_bindgen(js_name = "setModel")]
     pub fn set_model(&self, source: &str, data: Vec<u8>) -> Result<(), JsValue> {
+        #[cfg(feature = "3d")]
+        lumen_engine::node::scene::check_model(source, &data)
+            .map_err(|error| crate::utils::render_failure(&error.into()))?;
         self.change_media(|media| media.set_model(source.to_string(), data))?;
         self.reset_renderer()
     }
 
     /// Stores a Radiance `.hdr` or OpenEXR `.exr` file under the `source` an `environment` names.
-    /// It is read when a render first lights a scene with it, so a file that isn't one fails that
-    /// render.
+    /// Throws, with the `media` failure a render would give, on a file that isn't a map it can
+    /// read.
     #[wasm_bindgen(js_name = "setEnvironment")]
     pub fn set_environment(&self, source: &str, data: Vec<u8>) -> Result<(), JsValue> {
+        #[cfg(feature = "3d")]
+        lumen_engine::node::scene::check_environment(source, &data)
+            .map_err(|error| crate::utils::render_failure(&error.into()))?;
         self.change_media(|media| media.set_environment(source.to_string(), data))?;
         self.reset_renderer()
     }

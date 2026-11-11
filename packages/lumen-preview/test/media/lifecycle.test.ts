@@ -147,6 +147,40 @@ describe("MediaLifecycle", () => {
     expect(calls).toEqual([]);
   });
 
+  it("settles with a failure while others still load, and cancels what is still loading", async () => {
+    const { calls, loader } = fakeLoader();
+    let signal: AbortSignal | undefined;
+    const lifecycle = new MediaLifecycle(
+      {
+        ...loader,
+        load: (dependency, input, abort) => (
+          (signal = abort),
+          loader.load(dependency, input, abort)
+        ),
+      },
+      () => {},
+    );
+    const failure = {
+      code: "media.not_found",
+      details: "`media` has no entry by this name",
+      source: "missing",
+      wanted: ["image"],
+    } as const;
+    lifecycle.sync([
+      image("slow", "1"),
+      { key: "image:missing", kind: "image", load: { failure }, source: "missing" },
+    ]);
+
+    await expect(lifecycle.settled()).resolves.toEqual(failure);
+
+    lifecycle.cancelPending();
+    expect(signal?.aborted).toBe(true);
+    expect(calls).toEqual(["load image:slow 1", "release image:slow"]);
+    expect(lifecycle.entries().map(({ source, status }) => `${source} ${status}`)).toEqual([
+      "missing failed",
+    ]);
+  });
+
   it("settles once nothing it waits for is pending, with the first failure", async () => {
     const { loader, loads } = fakeLoader();
     const lifecycle = new MediaLifecycle(loader, () => {});

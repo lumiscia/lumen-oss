@@ -12,9 +12,10 @@ export async function readSceneFile(
   kind: SceneFileKind,
   id: string,
   source: MediaSourceInput,
+  signal?: AbortSignal,
 ): Promise<Uint8Array> {
   try {
-    const blob = await sourceInputToBlob(source);
+    const blob = await sourceInputToBlob(source, signal);
     return new Uint8Array(await blob.arrayBuffer());
   } catch (error) {
     throw toMediaError(

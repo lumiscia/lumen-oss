@@ -30,12 +30,15 @@ type NormalizedBridgeOptions = Required<LumenMediaBridgeOptions>;
 
 // Async work holds on to its entry and uploads only while the map still holds that same object,
 // so nothing from a removed source can land on a later source with the same id.
+// Removing an entry aborts its reads.
 type ImageEntry = {
+  abort: AbortController;
   session: ImageSession;
   source: MediaSourceInput;
 };
 
 type FileEntry = {
+  abort: AbortController;
   source: MediaSourceInput;
   /** The read and hand-over in flight, which loads of the same entry join. */
   upload: Promise<void> | null;
@@ -66,6 +69,13 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
   }
 
   clear(): void {
+    for (const entry of [
+      ...this.images.values(),
+      ...this.files.environment.values(),
+      ...this.files.model.values(),
+    ]) {
+      entry.abort.abort();
+    }
     this.images.clear();
     this.files.environment.clear();
     this.files.model.clear();
@@ -90,6 +100,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
   }
 
   removeImageSource(imageId: string, syncTarget = true): void {
+    this.images.get(imageId)?.abort.abort();
     this.images.delete(imageId);
     if (syncTarget) {
       this.target.removeImageSource?.(imageId);
@@ -97,6 +108,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
   }
 
   removeModelSource(modelId: string, syncTarget = true): void {
+    this.files.model.get(modelId)?.abort.abort();
     this.files.model.delete(modelId);
     if (syncTarget) {
       this.target.removeModelSource?.(modelId);
@@ -104,6 +116,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
   }
 
   removeEnvironmentSource(sourceId: string, syncTarget = true): void {
+    this.files.environment.get(sourceId)?.abort.abort();
     this.files.environment.delete(sourceId);
     if (syncTarget) {
       this.target.removeEnvironmentSource?.(sourceId);
@@ -127,8 +140,10 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     }
 
     this.removeImageSource(imageId);
+    const abort = new AbortController();
     this.images.set(imageId, {
-      session: new ImageSession(imageId, source),
+      abort,
+      session: new ImageSession(imageId, source, abort.signal),
       source,
     });
     await this.loadImageSource(imageId);
@@ -208,7 +223,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
       } else {
         this.removeEnvironmentSource(id);
       }
-      entry = { source, upload: null };
+      entry = { abort: new AbortController(), source, upload: null };
       files.set(id, entry);
     }
     const has = kind === "model" ? this.target.hasModel : this.target.hasEnvironment;
@@ -217,7 +232,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     }
 
     const current = entry;
-    current.upload ??= readSceneFile(kind, id, source)
+    current.upload ??= readSceneFile(kind, id, source, current.abort.signal)
       .then((bytes) => {
         if (files.get(id) !== current) {
           return;

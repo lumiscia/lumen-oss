@@ -151,6 +151,12 @@ export type LumenPreviewWorkerEvent =
     }
   | {
       loadId: number;
+      type: "waiting";
+      /** Whether the frame playback is on is still loading its media, so playback should wait. */
+      waiting: boolean;
+    }
+  | {
+      loadId: number;
       /** The playback revision the playback ended under. */
       playbackRevision: number;
       /** The newest seek the worker had heard, so a late answer can't end a playback begun since. */
@@ -182,6 +188,9 @@ export function createLumenPreviewWorkerHost({
   let clock: PreviewClock = { atEpochMs: 0, originMs: 0, rate: 0 };
   let audioRequestId = 0;
   let canvas: OffscreenCanvas | null = null;
+  // The loaded composition's size, which the canvas takes when its first frame is drawn: resizing
+  // clears the canvas, which would drop the frame held while that frame loads.
+  let canvasSize: { height: number; width: number } | null = null;
   let controller: LumenPreviewController | null = null;
   let lifecycle: MediaLifecycle<PreviewMediaInput> | null = null;
   let durationFrames = 0;
@@ -197,6 +206,14 @@ export function createLumenPreviewWorkerHost({
       renderFrame: () => {
         if (!canvas) {
           throw new Error("the preview worker has no canvas");
+        }
+        if (canvasSize) {
+          if (canvas.width !== canvasSize.width) {
+            canvas.width = canvasSize.width;
+          }
+          if (canvas.height !== canvasSize.height) {
+            canvas.height = canvasSize.height;
+          }
         }
         return requireController().renderPrepared(canvas);
       },
@@ -226,6 +243,9 @@ export function createLumenPreviewWorkerHost({
           seekId,
           type: "frame",
         });
+      },
+      onWaiting: (waiting) => {
+        scope.postMessage({ loadId, type: "waiting", waiting });
       },
       setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
     },
@@ -419,13 +439,14 @@ export function createLumenPreviewWorkerHost({
         return;
       }
       if (failure) {
+        activeLifecycle.cancelPending();
         throw failedMedia(failure);
       }
       activeController.loadComposition(message.compositionJson);
-      if (canvas) {
-        canvas.width = activeController.width() || 1;
-        canvas.height = activeController.height() || 1;
-      }
+      canvasSize = {
+        height: activeController.height() || 1,
+        width: activeController.width() || 1,
+      };
       scope.postMessage({
         audioTimelineJson: activeController.audioTimeline() ?? null,
         fps: activeController.fps(),

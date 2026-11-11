@@ -539,5 +539,28 @@ describe("LumenMediaBridge", () => {
         sourceId: "fox",
       });
     });
+
+    it("cancels the reads of an image, model or environment map removed while loading", async () => {
+      const signals: AbortSignal[] = [];
+      vi.stubGlobal("fetch", (_url: string, init?: RequestInit) => {
+        if (init?.signal) {
+          signals.push(init.signal);
+        }
+        return new Promise<Response>(() => {});
+      });
+      const { target } = fakeTarget();
+      const bridge = new LumenMediaBridge(target);
+      void bridge.registerImageSource("logo", "https://a.test/logo.png").catch(() => {});
+      void bridge.registerModelSource("fox", "https://a.test/fox.glb").catch(() => {});
+      void bridge.registerEnvironmentSource("sky", "https://a.test/sky.hdr").catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve));
+      expect(signals).toHaveLength(3);
+
+      bridge.removeImageSource("logo");
+      bridge.removeModelSource("fox");
+      bridge.removeEnvironmentSource("sky");
+
+      expect(signals.map(({ aborted }) => aborted)).toEqual([true, true, true]);
+    });
   });
 });

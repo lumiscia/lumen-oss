@@ -1520,6 +1520,15 @@ describe("LumenPreviewSession", () => {
       });
     const media = (worker: FakeWorker, entries: Entry[]) =>
       worker.emit({ loadId: currentLoad(worker), media: entries, type: "media" });
+    const shown = (worker: FakeWorker) =>
+      worker.emit({
+        actualFps: 0,
+        frame: 0,
+        loadId: currentLoad(worker),
+        renderMs: 1,
+        seekId: 0,
+        type: "frame",
+      });
 
     it("counts what the composition needs in the state, and is ready once all of it is", async () => {
       const { preview, session, worker } = await started();
@@ -1530,6 +1539,7 @@ describe("LumenPreviewSession", () => {
       expect(preview.getSnapshot().media).toEqual({ failed: 0, pending: 2, ready: 0 });
       media(worker, [entry("logo", "image", "ready"), entry("song", "audio", "pending")]);
       loaded(worker);
+      shown(worker);
       await Promise.resolve();
       expect(ready).toBe("waiting");
 
@@ -1572,6 +1582,7 @@ describe("LumenPreviewSession", () => {
         wanted: ["audio" as const],
       };
       loaded(worker);
+      shown(worker);
       media(worker, [{ ...entry("song", "audio", "failed"), failure }]);
 
       await expect(session.whenReady()).resolves.toEqual({
@@ -1580,6 +1591,31 @@ describe("LumenPreviewSession", () => {
         media: failure,
         message: "song: corrupt",
       });
+    });
+
+    it("isn't ready until a frame is drawn, and is ready with the error of a first render that fails", async () => {
+      const { session, worker } = await started();
+      let ready: unknown = "waiting";
+      void session.whenReady().then((error) => (ready = error));
+      loaded(worker);
+      media(worker, [entry("fox", "model", "ready")]);
+      await Promise.resolve();
+      expect(ready).toBe("waiting");
+
+      const failure = {
+        code: "media.decode" as const,
+        details: "not a model",
+        source: "fox",
+        wanted: ["model" as const],
+      };
+      worker.emit({
+        loadId: currentLoad(worker),
+        media: failure,
+        message: "fox: not a model",
+        type: "render-failed",
+      });
+      await Promise.resolve();
+      expect(ready).toMatchObject({ code: "render_failed", media: failure });
     });
 
     it("decodes the audio the worker asks for, answers it, and drops it when released", async () => {
@@ -1639,6 +1675,21 @@ describe("LumenPreviewSession", () => {
       expect(worker.ofType("clock").at(-1)?.clock.rate).toBe(0);
       expect(preview.getSnapshot().isPlaying).toBe(true);
     });
+
+    it("holds playback while the worker waits for the frame it is on", async () => {
+      const { preview, worker } = await playable();
+      const engine = audio.instances.at(-1);
+      media(worker, [entry("clip", "video", "ready")]);
+      preview.play();
+      expect(engine?.play).toHaveBeenCalledOnce();
+
+      worker.emit({ loadId: currentLoad(worker), type: "waiting", waiting: true });
+      expect(engine?.pause).toHaveBeenCalled();
+      expect(worker.ofType("clock").at(-1)?.clock.rate).toBe(0);
+
+      worker.emit({ loadId: currentLoad(worker), type: "waiting", waiting: false });
+      expect(engine?.play).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("finds every runtime file in runtimeUrl, unless one is passed on its own", async () => {
@@ -1655,5 +1706,18 @@ describe("LumenPreviewSession", () => {
       workerModuleUrl: "https://a.test/lumen/audio-worker.js",
       workletModuleUrl: "https://b.test/worklet.js",
     });
+  });
+
+  it("keeps the query of runtimeUrl on each file, in the directory its path names", async () => {
+    const { worker } = await started({
+      runtimeUrl: "https://a.test/runtime?v=1#top",
+      wasmUrl: undefined,
+      workerUrl: undefined,
+    });
+
+    expect(worker.url).toBe("https://a.test/runtime/worker.js?v=1");
+    expect(worker.ofType("start")[0]?.wasmUrl).toBe(
+      "https://a.test/runtime/lumen_wasm_bg.wasm?v=1",
+    );
   });
 });
