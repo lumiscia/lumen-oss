@@ -25,6 +25,7 @@ Nothing in a composition breaks, but models now look as their files describe: ve
 ```
 
 ```ts
+import { createLumenBindings } from "@lumiscia/lumen-bindings";
 import { nodes } from "@lumiscia/lumen-shared";
 
 const robot = nodes.model_3d({
@@ -33,5 +34,6 @@ const robot = nodes.model_3d({
   lights: true,
   camera: "Closeup",
 });
+const { modelInfo } = await createLumenBindings().preview();
 const { cameras } = modelInfo(bytes); // [{ index: 0, name: "Closeup" }]
 ```

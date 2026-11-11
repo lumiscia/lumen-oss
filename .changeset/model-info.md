@@ -17,7 +17,8 @@ An uploaded model's media object has `kind: "model"` and a `metadata` listing th
       { "index": 0, "name": "Walk", "duration": 0.7 },
       { "index": 1, "duration": 2 }
     ],
-    "materials": [{ "index": 0, "name": "screen", "hasBaseColorTexture": false }]
+    "materials": [{ "index": 0, "name": "screen", "hasBaseColorTexture": false }],
+    "cameras": []
   }
 }
 ```

@@ -62,6 +62,6 @@ The browser preview plays the same mix: the engine plans it and the preview's au
 
 Breaking changes:
 
-- `LumenPreviewController.audioTimeline()` returns the engine's audio plan, `{ voices, segments, durationFrames, fps }`, instead of the parsed tracks and clips, and `LumenAudioEngine.loadAudioTimeline` takes that JSON. Code that only passes `audioTimeline()` through to `loadAudioTimeline` needs no change.
+- `audioTimeline()` on the preview's wasm controller (`LumenPreviewControllerBinding` in `@lumiscia/lumen-preview/advanced`) returns the engine's audio plan, `{ voices, segments, durationFrames, fps }`, instead of the parsed tracks and clips. The preview's audio engine is internal and takes the plan itself; only a custom host that reads `audioTimeline()` is affected.
 - The generated `AudioClip` and `AudioTrack` types have `volume: ExpressionValue<number>`, and the root `audio` is the new `AudioTimeline` type.
 - In Rust, `AudioMixer::new` takes the `Composition` instead of its timeline, and `mix_range` takes `&mut self` and fails with a `LumenError`. `AudioTrack::volume` and `AudioClip::volume` are an `AudioGain`, and `CompositionTemplate` has an `audio` field. Use `Composition::has_audio` to ask whether a render has sound.

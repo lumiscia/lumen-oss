@@ -10,4 +10,4 @@ When those resizes show the image at under half its size, it is decoded at twice
 
 `ImageFileResolver` decodes a file at its full size first, so a file whose decode needs more than the 512 MiB the decoder allows one image still fails as `media.too_large` before any reduction.
 
-**Breaking, for Rust hosts:** `MediaTextureKey::of_image` is gone; a key is the image's identity and the size it is decoded at. A host that relied on an image past the texture limit failing gets a reduced render and a warning instead, where the image's uses let it be reduced.
+**Breaking, for Rust hosts:** a host that relied on an image past the texture limit failing gets a reduced render and a warning instead, where the image's uses let it be reduced.

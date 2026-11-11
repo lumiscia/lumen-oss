@@ -59,6 +59,6 @@
 }
 ```
 
-Each map is read and prefiltered once and kept while renders use it; turning it or changing its brightness doesn't read it again. Files over 256 MiB, maps over 8192 pixels a side or 8192 × 4096 in all, and multi-part, deep or mip-mapped EXR files are refused before they are decoded, and larger maps are shrunk to 4096 × 2048 as they are read. Non-finite and negative pixels read as black, and a map that isn't 2:1 is stretched over the whole sphere. The server accepts `.hdr` and `.exr` uploads as `environment` media with their `width` and `height`. The browser preview can't load environment maps yet, and a composition that uses one fails there with `media.not_found`.
+Each map is read and prefiltered once and kept while renders use it; turning it or changing its brightness doesn't read it again. Files over 256 MiB, maps over 8192 pixels a side or 8192 × 4096 in all, and multi-part, deep or mip-mapped EXR files are refused before they are decoded, and larger maps are shrunk to 4096 × 2048 as they are read. Non-finite and negative pixels read as black, and a map that isn't 2:1 is stretched over the whole sphere. The server accepts `.hdr` and `.exr` uploads as `environment` media with their `width` and `height`.
 
 Limitations: a map is decoded and prefiltered on the render thread the first time a render uses it, so that frame takes about 0.35 s longer for a 2K or 4K map and about 0.5 s for an 8K one. The server's upload check decodes the whole map too, taking up to about half a second of CPU and 130 MiB at peak for an 8192 × 4096 file.
