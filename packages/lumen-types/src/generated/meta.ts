@@ -5,7 +5,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "raster" | "scene";
-export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
+export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
 export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "model_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 
 export const schemaVersion = 1 as const;
@@ -1879,6 +1879,7 @@ export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation">
  * ordered by its centre among blended objects, so its transparent parts show what is behind it.
  * Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers
  * separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
+ * `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
  * A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
  * filtered by `render_3d`'s `supersample`.
  */
@@ -1890,8 +1891,11 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
      * such as a bulb around a point light, needs this off.
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
-    /** Base colour, which an image plane's raster is multiplied by. Must be a solid color. */
-    readonly color?: ExpressionValue<Paint>;
+    /**
+     * Base colour, which an image plane's raster is multiplied by. Must be a solid color; a
+     * gradient fails `check`.
+     */
+    readonly color?: ExpressionValue<Color>;
     /** Draws the back of each face too. */
     readonly double_sided?: ExpressionValue<boolean>;
     /** Light the surface gives off on its own, as a multiple of its base colour. */
@@ -1900,6 +1904,16 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
     readonly metallic?: ExpressionValue<number>;
     /** Opacity multiplier. Anything below 1 is drawn blended, after opaque objects. */
     readonly opacity?: ExpressionValue<number>;
+    /**
+     * Draws the plane with the opaque objects, writing depth, rather than blended. For a source
+     * with no transparent pixels, this orders the plane correctly against any geometry it
+     * intersects or crosses in depth. Alpha is then ignored: the colour's alpha, `opacity` and the
+     * source's alpha. A source pixel that is transparent shows its colour at full opacity, which
+     * is black for a fully transparent one, and a half-transparent one shows its colour
+     * undimmed. It casts a shadow over its whole rectangle. A shadow catcher is always drawn as
+     * one, so this has no effect on it.
+     */
+    readonly opaque?: ExpressionValue<boolean>;
     /** Position in world units along X, Y and Z, in the parent's space. */
     readonly position?: ExpressionValue<Vec3>;
     /** Darkens where shadows fall on it. An unlit surface shows none. */
@@ -1925,8 +1939,8 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
     /** Shows the base colour as is, ignoring lights. */
     readonly unlit?: ExpressionValue<boolean>;
     /**
-     * Width in world units; the height follows the aspect ratio of the source's full display
-     * size.
+     * Width in world units, 1 being as wide as a default `shape_3d` box; the height follows the
+     * aspect ratio of the source's full display size.
      */
     readonly width?: ExpressionValue<number>;
   };
@@ -1957,8 +1971,8 @@ export interface Light3dNode extends CompositionNodeBase<"light_3d"> {
      * about the rest. A spot light's shadows reach 170° across at most.
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
-    /** Light colour. Must be a solid color. */
-    readonly color?: ExpressionValue<Paint>;
+    /** Light colour. Must be a solid color; a gradient fails `check`. */
+    readonly color?: ExpressionValue<Color>;
     /** Unitless brightness multiplier; point and spot lights fall off with the square of distance. */
     readonly intensity?: ExpressionValue<number>;
     /** Kind of light. */
@@ -2252,8 +2266,8 @@ export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
     readonly environment_rotation?: ExpressionValue<number>;
     /** Exposure adjustment in stops before tone mapping. */
     readonly exposure?: ExpressionValue<number>;
-    /** Colour surfaces fade to with distance. Must be a solid color. */
-    readonly fog_color?: ExpressionValue<Paint>;
+    /** Colour surfaces fade to with distance. Must be a solid color; a gradient fails `check`. */
+    readonly fog_color?: ExpressionValue<Color>;
     /**
      * How quickly surfaces fade into the fog: the fraction of their colour left after `d` world
      * units is e^(-density * d). 0 turns fog off.
@@ -2365,8 +2379,11 @@ export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
      * such as a bulb around a point light, needs this off.
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
-    /** Base colour, which an image plane's raster is multiplied by. Must be a solid color. */
-    readonly color?: ExpressionValue<Paint>;
+    /**
+     * Base colour, which an image plane's raster is multiplied by. Must be a solid color; a
+     * gradient fails `check`.
+     */
+    readonly color?: ExpressionValue<Color>;
     /** Draws the back of each face too. */
     readonly double_sided?: ExpressionValue<boolean>;
     /** Light the surface gives off on its own, as a multiple of its base colour. */
@@ -3011,6 +3028,7 @@ export const nodeInputPorts = {
    * ordered by its centre among blended objects, so its transparent parts show what is behind it.
    * Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers
    * separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
+   * `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
    * A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
    * filtered by `render_3d`'s `supersample`.
    */

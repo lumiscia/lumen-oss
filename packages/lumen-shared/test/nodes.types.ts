@@ -55,6 +55,16 @@ n.render_3d({ scene: n.background() });
 n.merge_3d({ objects: [box, n.render_3d({ scene })] });
 // @ts-expect-error an image plane shows a raster, not a scene
 n.image_plane_3d({ source: scene });
+n.shape_3d({ color: "#ff0000" });
+const gradient = {
+  type: "linear",
+  stops: [
+    { offset: 0, color: "#000000" },
+    { offset: 1, color: "#ffffff" },
+  ],
+} as const;
+// @ts-expect-error a 3D colour is solid, never a gradient
+n.shape_3d({ color: gradient });
 // @ts-expect-error shape_3d outputs a scene, not a raster
 const rasterScene: NodeValue<"raster"> = n.shape_3d();
 
