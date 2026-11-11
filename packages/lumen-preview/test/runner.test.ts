@@ -236,6 +236,21 @@ describe("PreviewRunner", () => {
     expect(fake.waits).toEqual([true, false]);
   });
 
+  it("stops waiting when a seek lands on the frame already on screen", async () => {
+    const fake = await loaded();
+    fake.holdRenders(true);
+    fake.runner.setClock(fake.clock(0, 1));
+    await fake.advance(200);
+    expect(fake.waits).toEqual([true]);
+
+    fake.runner.seek(1, fake.clock(0, 0));
+    fake.holdRenders(false);
+    fake.held.splice(0).forEach((release) => release());
+    await fake.settle();
+    expect(fake.waits).toEqual([true, false]);
+    expect(fake.frames.at(-1)).toMatchObject({ frame: 0, seekId: 1 });
+  });
+
   it("drops a render a newer seek overtakes, and acknowledges only the newest", async () => {
     const fake = await loaded();
     fake.holdRenders(true);

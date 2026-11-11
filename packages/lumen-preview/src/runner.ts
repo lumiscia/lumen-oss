@@ -131,6 +131,7 @@ export class PreviewRunner<TTimer> {
     const frame = this.#targetFrame();
     if (frame === this.#rendered && !this.#dirty) {
       this.#answerSeek(frame);
+      this.#setWaiting(false);
       this.#scheduleNextFrame();
       return;
     }
@@ -182,7 +183,10 @@ export class PreviewRunner<TTimer> {
       this.#rendered = frame;
       this.#acknowledgedSeekId = seekId;
       this.#host.onFrame(frame, seekId, this.#host.now() - startedAt);
-      this.#setWaiting(false);
+      // A frame a newer seek overtook isn't the one playback waits for.
+      if (seekId === this.#seekId) {
+        this.#setWaiting(false);
+      }
     }
   }
 
