@@ -26,16 +26,22 @@ const MODEL_BUDGET_BYTES: u64 = 256 << 20;
 
 /// The most joint matrices one frame's scene may hold.
 const MAX_SCENE_JOINTS: usize = 1 << 16;
+/// The most morph target weights one frame's scene may hold.
+const MAX_SCENE_WEIGHTS: usize = 1 << 20;
 /// The shortest a directional light's shadows reach from the camera.
 const MIN_SHADOW_DISTANCE: f32 = 0.01;
 
-/// A mesh's vertices and indices on the GPU, which the scene shader pulls vertices from, and the
-/// joints and weights of a skinned one's vertices.
+/// A mesh's vertices and indices on the GPU, which the scene shader pulls vertices from, and what
+/// else a model's vertices hold, in 32-bit words: a skinned one's joints and weights from the
+/// start, then its vertex extras from `extras`, then its morph targets' displacements from
+/// `morphs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct GpuMesh {
     pub(crate) vertices: BufRef,
     pub(crate) indices: BufRef,
-    pub(crate) skin: Option<BufRef>,
+    pub(crate) data: Option<BufRef>,
+    pub(crate) extras: Option<u32>,
+    pub(crate) morphs: u32,
 }
 
 pub(super) fn storage_buffer(rec: &mut Recorder, label: &str, contents: &[u8]) -> BufRef {
@@ -59,12 +65,14 @@ impl GpuMesh {
                 bytemuck::cast_slice(&mesh.vertices),
             ),
             indices: storage_buffer(rec, "lumen 3d indices", bytemuck::cast_slice(&mesh.indices)),
-            skin: None,
+            data: None,
+            extras: None,
+            morphs: 0,
         }
     }
 
     pub(super) fn forget(&self, rec: &mut Recorder) {
-        for buffer in [self.vertices, self.indices].into_iter().chain(self.skin) {
+        for buffer in [self.vertices, self.indices].into_iter().chain(self.data) {
             rec.forget_buffer(buffer);
         }
     }
@@ -305,10 +313,21 @@ fn upload_model(
 ) -> Result<(LoadedModel, u64), MediaError> {
     let limits = rec.device().limits();
     let geometry = &model.geometry;
+    let data = [
+        bytemuck::cast_slice::<_, u8>(&geometry.skin),
+        bytemuck::cast_slice(&geometry.extras),
+        bytemuck::cast_slice(&geometry.morphs),
+    ]
+    .concat();
+    let words = |bytes: usize| (bytes / 4) as u32;
+    let extras =
+        (!geometry.extras.is_empty()).then(|| words(size_of_val(geometry.skin.as_slice())));
+    let morphs =
+        words(size_of_val(geometry.skin.as_slice()) + size_of_val(geometry.extras.as_slice()));
     let parts: [&[u8]; 3] = [
         bytemuck::cast_slice(&geometry.vertices),
         bytemuck::cast_slice(&geometry.indices),
-        bytemuck::cast_slice(&geometry.skin),
+        &data,
     ];
     let largest = parts
         .iter()
@@ -358,8 +377,9 @@ fn upload_model(
     let mesh = GpuMesh {
         vertices: storage_buffer(rec, "lumen 3d model vertices", parts[0]),
         indices: storage_buffer(rec, "lumen 3d model indices", parts[1]),
-        skin: (!geometry.skin.is_empty())
-            .then(|| storage_buffer(rec, "lumen 3d model skin", parts[2])),
+        data: (!data.is_empty()).then(|| storage_buffer(rec, "lumen 3d model vertex data", &data)),
+        extras,
+        morphs,
     };
     let textures = model
         .textures
@@ -383,7 +403,8 @@ fn upload_model(
     Ok((loaded, bytes))
 }
 
-/// The bounds of the vertices of each primitive `model` draws, by its first index and index count.
+/// The bounds of the vertices of each primitive `model` draws, by its first index and index count,
+/// morphed by weights within -1 to 1.
 fn primitive_bounds(model: &Model) -> HashMap<(u32, u32), Bounds> {
     let geometry = &model.geometry;
     let mut bounds = HashMap::default();
@@ -397,10 +418,10 @@ fn primitive_bounds(model: &Model) -> HashMap<(u32, u32), Bounds> {
                     .indices
                     .get(start..start + primitive.index_count as usize)
                     .unwrap_or_default();
-                Bounds::of(indices.iter().filter_map(|&index| {
-                    let vertex = geometry.vertices.get(index as usize)?;
-                    Some(Vec3::from(vertex.position))
-                }))
+                indices
+                    .iter()
+                    .filter_map(|&index| geometry.reach(&primitive, index))
+                    .fold(Bounds::EMPTY, Bounds::union)
             });
     }
     bounds
@@ -505,11 +526,11 @@ fn surface(
     })
 }
 
-/// How a model's `material` shades, reading the model's `textures`.
+/// How a model's `material` shades `primitive`, reading the model's `textures`.
 fn model_surface(
     material: &Material,
     textures: &[TexRef],
-    flat_normals: bool,
+    primitive: &lumen_3d::model::Primitive,
     params: &super::Model3dParams,
 ) -> Surface<TexRef> {
     Surface {
@@ -517,6 +538,8 @@ fn model_surface(
         texture: None,
         // Reading checked that every map names one of the model's textures.
         maps: material.maps.map(|&texture| textures[texture]),
+        map_uvs: material.map_uvs,
+        vertex_colors: primitive.vertex_colors,
         metallic: material.metallic,
         roughness: material.roughness,
         emissive: material.emissive,
@@ -525,7 +548,7 @@ fn model_surface(
         blending: material.blending,
         unlit: material.unlit,
         double_sided: material.double_sided,
-        flat_normals,
+        flat_normals: primitive.flat_normals,
         cast_shadows: params.cast_shadows,
         receive_shadows: params.receive_shadows,
         shadow_catcher: false,
@@ -698,6 +721,7 @@ impl Collected {
                         surface,
                         center: world.transform_point3(Vec3::ZERO),
                         first_joint: None,
+                        morph: None,
                         bounds: Bounds::EMPTY,
                     },
                     Extent::Local(UNIT_BOUNDS),
@@ -718,6 +742,7 @@ impl Collected {
                             surface,
                             center: world.transform_point3((local.min + local.max) * 0.5),
                             first_joint: None,
+                            morph: None,
                             bounds: Bounds::EMPTY,
                         },
                         Extent::Local(local),
@@ -754,6 +779,7 @@ impl Collected {
                         surface,
                         center: world.transform_point3(Vec3::ZERO),
                         first_joint: None,
+                        morph: None,
                         bounds: Bounds::EMPTY,
                     },
                     Extent::Local(Bounds {
@@ -859,7 +885,11 @@ impl Collected {
             .map_err(in_node)?;
         cx.drew_model(resolver.id());
         let scene = &model.scene;
+        if scene.skipped_primitives() > 0 {
+            cx.note_skipped_primitives(node.id, source, scene.skipped_primitives());
+        }
         let clip = scene.animation(&params.animation).map_err(error)?;
+        let camera = scene.camera(&params.camera).map_err(error)?;
         let replaced = match (params.texture_material.as_str(), node.texture) {
             ("", None) => None,
             ("", Some(_)) => {
@@ -898,7 +928,41 @@ impl Collected {
                 ),
             ));
         }
+        let first_weight = self.scene.weights.len();
+        if first_weight + pose.weights.len() > MAX_SCENE_WEIGHTS {
+            return Err(super::render::render_error(
+                self.render_id,
+                format!(
+                    "the scene's morphed models have more than {MAX_SCENE_WEIGHTS} morph target \
+                     weights together"
+                ),
+            ));
+        }
+        self.scene.weights.extend_from_slice(&pose.weights);
         let root = parent * placement(&params.placement).matrix();
+        if params.lights {
+            self.scene
+                .lights
+                .extend(pose.lights.iter().map(|light| light.placed(&root)));
+            self.light_nodes
+                .extend(std::iter::repeat_n(node.id, pose.lights.len()));
+        }
+        if let Some(camera) = camera
+            && let Some(&(_, world)) = pose.cameras.iter().find(|(index, _)| *index == camera)
+            && let Some(model_camera) = scene.cameras().get(camera)
+        {
+            // A camera keeps its node's place and turn, but not its scale.
+            let (_, rotation, translation) = (root * world).to_scale_rotation_translation();
+            let world = Mat4::from_rotation_translation(rotation, translation);
+            if world.is_finite() {
+                self.scene.camera.get_or_insert(Camera {
+                    world,
+                    projection: model_camera.projection,
+                    near: model_camera.near,
+                    far: model_camera.far,
+                });
+            }
+        }
         // Each skin's joint matrices start, in the pose, at the first joint of the primitives it
         // moves, and later skins' start later.
         let first_skin = self.skins.len();
@@ -923,8 +987,7 @@ impl Collected {
                 .material
                 .and_then(|index| scene.materials().get(index))
                 .unwrap_or(&default);
-            let mut surface =
-                model_surface(material, &model.textures, primitive.flat_normals, &params);
+            let mut surface = model_surface(material, &model.textures, &primitive, &params);
             if let Some((replaced, raster)) = replaced
                 && primitive.material == Some(replaced)
             {
@@ -961,6 +1024,10 @@ impl Collected {
                     surface,
                     center: world.transform_point3(primitive.center),
                     first_joint: posed.first_joint.map(|joint| joint + first_joint as u32),
+                    morph: primitive
+                        .morph
+                        .zip(posed.first_weight)
+                        .map(|(morph, weight)| (morph, weight + first_weight as u32)),
                     bounds: Bounds::EMPTY,
                 },
                 extent,

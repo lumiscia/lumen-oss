@@ -1,4 +1,5 @@
-//! Animation clips: keyframed node translations, rotations and scales, sampled at a time.
+//! Animation clips: keyframed node translations, rotations, scales and morph target weights,
+//! sampled at a time.
 
 use glam::{Quat, Vec3};
 
@@ -36,10 +37,17 @@ pub(super) enum Values {
     Translation(Vec<Vec3>),
     Rotation(Vec<Quat>),
     Scale(Vec<Vec3>),
+    /// `count` weights a value, for the node's weights from `start` in the scene's.
+    Weights {
+        values: Vec<f32>,
+        start: usize,
+        count: usize,
+    },
 }
 
 /// One node property's keys. Reading checked that `times` are finite and never decrease, and that
-/// `values` holds one value per time, or three with cubic-spline interpolation.
+/// `values` holds one value per time, or three with cubic-spline interpolation, each of `count`
+/// weights for morph target weights.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Channel {
     pub(super) node: usize,
@@ -58,27 +66,46 @@ pub(super) struct Animation {
 
 impl Animation {
     /// Sets the properties the clip animates in `locals`, each node's translation, rotation and
-    /// scale, to their values at `time`. Where two channels target the same property, the later
-    /// one wins. A sampled value can overflow to infinity, which `pose` then leaves out.
-    pub(super) fn apply(&self, time: f32, locals: &mut [(Vec3, Quat, Vec3)]) {
+    /// scale, and in `weights`, the nodes' morph target weights, to their values at `time`. Where
+    /// two channels target the same property, the later one wins. A sampled value can overflow to
+    /// infinity, which `pose` then leaves out.
+    pub(super) fn apply(&self, time: f32, locals: &mut [(Vec3, Quat, Vec3)], weights: &mut [f32]) {
         for channel in &self.channels {
             if let Some(local) = locals.get_mut(channel.node) {
-                channel.apply(time, local);
+                channel.apply(time, local, weights);
             }
         }
     }
 }
 
 impl Channel {
-    fn apply(&self, time: f32, local: &mut (Vec3, Quat, Vec3)) {
+    fn apply(&self, time: f32, local: &mut (Vec3, Quat, Vec3), weights: &mut [f32]) {
         let Some(keys) = self.keys(time) else {
             return;
         };
         match &self.values {
-            Values::Translation(values) => local.0 = self.sample(values, keys, Vec3::lerp),
-            Values::Scale(values) => local.2 = self.sample(values, keys, Vec3::lerp),
+            Values::Translation(values) => {
+                local.0 = self.sample(|key| values[key], keys, Vec3::lerp);
+            }
+            Values::Scale(values) => local.2 = self.sample(|key| values[key], keys, Vec3::lerp),
             Values::Rotation(values) => {
-                local.1 = unit(self.sample(values, keys, Quat::slerp));
+                local.1 = unit(self.sample(|key| values[key], keys, Quat::slerp));
+            }
+            &Values::Weights {
+                ref values,
+                start,
+                count,
+            } => {
+                let Some(weights) = weights.get_mut(start..start + count) else {
+                    return;
+                };
+                for (target, weight) in weights.iter_mut().enumerate() {
+                    *weight = self.sample(
+                        |key| values[key * count + target],
+                        keys,
+                        |a, b, t| a + (b - a) * t,
+                    );
+                }
             }
         }
     }
@@ -106,22 +133,24 @@ impl Channel {
         Some(Keys { from, to, t, span })
     }
 
-    fn sample<T>(&self, values: &[T], keys: Keys, lerp: impl Fn(T, T, f32) -> T) -> T
+    /// The value at `keys`, from `values`, which gives each of the channel's values by its
+    /// index: one per key, or three with cubic-spline interpolation.
+    fn sample<T>(&self, values: impl Fn(usize) -> T, keys: Keys, lerp: impl Fn(T, T, f32) -> T) -> T
     where
         T: Copy + std::ops::Add<Output = T> + std::ops::Mul<f32, Output = T>,
     {
         let Keys { from, to, t, span } = keys;
         match self.interpolation {
-            Interpolation::Step => values[from],
-            Interpolation::Linear => lerp(values[from], values[to], t),
+            Interpolation::Step => values(from),
+            Interpolation::Linear => lerp(values(from), values(to), t),
             Interpolation::CubicSpline => {
-                let value = |key: usize| values[key * 3 + 1];
+                let value = |key: usize| values(key * 3 + 1);
                 if from == to {
                     return value(from);
                 }
                 let (t2, t3) = (t * t, t * t * t);
-                let out_tangent = values[from * 3 + 2] * span;
-                let in_tangent = values[to * 3] * span;
+                let out_tangent = values(from * 3 + 2) * span;
+                let in_tangent = values(to * 3) * span;
                 value(from) * (2.0 * t3 - 3.0 * t2 + 1.0)
                     + out_tangent * (t3 - 2.0 * t2 + t)
                     + value(to) * (-2.0 * t3 + 3.0 * t2)

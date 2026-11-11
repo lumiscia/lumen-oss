@@ -26,6 +26,25 @@ pub struct SkinVertex {
     pub weights: [u16; 4],
 }
 
+/// What a model's vertices hold beyond [`Vertex`], kept apart so that meshes without it don't carry
+/// it: their second set of texture coordinates and their colour.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Pod, Zeroable)]
+pub struct VertexExtra {
+    /// `TEXCOORD_1`, or the vertex's first set when its primitive has no second.
+    pub uv1: [f32; 2],
+    /// `COLOR_0` in linear light with straight alpha, as 16-bit fractions of 1; white without one.
+    pub color: [u16; 4],
+}
+
+/// How far one morph target moves one vertex at a weight of 1.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Pod, Zeroable)]
+pub struct MorphDelta {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+}
+
 /// Triangles over shared vertices, wound counter-clockwise seen from the side their normals face.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Mesh {

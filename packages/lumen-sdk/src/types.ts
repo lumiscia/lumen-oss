@@ -1,4 +1,9 @@
-import type { LumenModelAnimation, LumenModelMaterial, VideoCodec } from "@lumiscia/lumen-types";
+import type {
+  LumenModelAnimation,
+  LumenModelCamera,
+  LumenModelMaterial,
+  VideoCodec,
+} from "@lumiscia/lumen-types";
 
 import type { RenderOutput } from "./output.js";
 
@@ -102,9 +107,13 @@ export interface MediaMetadata {
     readonly weight: number;
     readonly style: string;
   }[];
-  /** Models: the clips `animation` and the materials `texture_material` of a `model_3d` select. */
+  /**
+   * Models: the clips `animation`, the materials `texture_material` and the cameras `camera` of a
+   * `model_3d` select.
+   */
   readonly animations?: readonly LumenModelAnimation[];
   readonly materials?: readonly LumenModelMaterial[];
+  readonly cameras?: readonly LumenModelCamera[];
 }
 
 export interface TemporaryMedia {

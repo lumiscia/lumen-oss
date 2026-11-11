@@ -327,6 +327,10 @@ struct RecordState {
     /// composition.
     #[cfg(feature = "3d")]
     outline_gaps: HashSet<(Option<String>, NodeId)>,
+    /// The template and `model_3d` node of each model with skipped primitives reported for this
+    /// composition.
+    #[cfg(feature = "3d")]
+    skipped_primitives: HashSet<(Option<String>, NodeId)>,
     /// Warnings not yet taken.
     diagnostics: Vec<crate::diagnostic::Diagnostic>,
     /// Passes reads of retained outputs skipped.
@@ -814,6 +818,8 @@ impl FrameGraph {
         state.shadow_limits.clear();
         #[cfg(feature = "3d")]
         state.outline_gaps.clear();
+        #[cfg(feature = "3d")]
+        state.skipped_primitives.clear();
         state.shaders.clear();
         state.memo.clear();
         state.full_frames.clear();
@@ -1070,6 +1076,28 @@ impl<'a> FrameCx<'a> {
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
         self.st.outline_gaps.insert(key);
+    }
+
+    /// Warns once per composition and `model_3d` node `node_id` that its model `source` has
+    /// `count` primitives that aren't drawn.
+    #[cfg(feature = "3d")]
+    pub(crate) fn note_skipped_primitives(&mut self, node_id: NodeId, source: &str, count: usize) {
+        let key = (self.scope.template_name().map(str::to_string), node_id);
+        if self.st.skipped_primitives.contains(&key) {
+            return;
+        }
+        let warning = crate::error::Warning::ModelPrimitivesSkipped {
+            template: key.0.clone(),
+            node_id,
+            model: source.to_string(),
+            count,
+        };
+        tracing::warn!(target: "lumen_3d", "{warning}");
+        let path = crate::diagnostic::scene_pointer(key.0.as_deref());
+        self.st
+            .diagnostics
+            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
+        self.st.skipped_primitives.insert(key);
     }
 
     /// The most glyphs a text node may draw.

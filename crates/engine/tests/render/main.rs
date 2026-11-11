@@ -15,6 +15,8 @@ mod harness;
 #[cfg(feature = "3d")]
 mod instance;
 mod media;
+#[cfg(feature = "3d")]
+mod model_features;
 mod motion;
 mod noise;
 mod operators;

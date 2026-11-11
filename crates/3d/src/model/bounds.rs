@@ -1,11 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use glam::Vec3;
-
 use super::{Geometry, ModelScene, Primitive};
 use crate::Bounds;
 
-/// What the vertices of every primitive a skin moves cover before posing.
+/// What the vertices of every primitive a skin moves cover before posing, morphed by weights within
+/// -1 to 1.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkinBounds {
     /// By joint, the vertices it moves, empty for a joint that moves none. A posed vertex lies
@@ -73,15 +72,14 @@ fn moved_by_joint(geometry: &Geometry, primitive: &Primitive) -> Moved {
     let mut joints: Vec<Bounds> = Vec::new();
     let mut unmoved = Bounds::EMPTY;
     for &index in indices {
-        let (Some(vertex), Some(skin)) = (
-            geometry.vertices.get(index as usize),
+        let (Some(reach), Some(skin)) = (
+            geometry.reach(primitive, index),
             geometry.skin.get(index as usize),
         ) else {
             continue;
         };
-        let position = Vec3::from(vertex.position);
         if skin.weights == [0; 4] {
-            unmoved = unmoved.union(Bounds::of([position]));
+            unmoved = unmoved.union(reach);
         }
         for (&joint, &weight) in skin.joints.iter().zip(&skin.weights) {
             if weight == 0 {
@@ -91,7 +89,7 @@ fn moved_by_joint(geometry: &Geometry, primitive: &Primitive) -> Moved {
             if joints.len() <= joint {
                 joints.resize(joint + 1, Bounds::EMPTY);
             }
-            joints[joint] = joints[joint].union(Bounds::of([position]));
+            joints[joint] = joints[joint].union(reach);
         }
     }
     let joints = joints

@@ -60,7 +60,8 @@ impl Diagnostic {
         let node = match warning {
             Warning::FontFallback { node_id, .. }
             | Warning::NoOutlines { node_id, .. }
-            | Warning::ShadowLimit { node_id, .. } => Some(*node_id),
+            | Warning::ShadowLimit { node_id, .. }
+            | Warning::ModelPrimitivesSkipped { node_id, .. } => Some(*node_id),
         };
         Self {
             severity: Severity::Warning,

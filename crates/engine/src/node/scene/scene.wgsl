@@ -1,7 +1,8 @@
 // Draws objects of a 3D scene into a linear, premultiplied float target. One draw covers a run of
 // objects from the object table, and each vertex of the draw belongs to the object whose range of
 // the run's vertices it falls in. Vertices are pulled from storage: `indices` holds a mesh's
-// vertex indices, from each object's first, one per vertex the object draws.
+// vertex indices, from each object's first, one per vertex the object draws. A vertex is morphed
+// by its morph targets, then skinned.
 
 const PI: f32 = 3.14159265;
 
@@ -25,6 +26,20 @@ const FLAG_OCCLUSION_MAP: u32 = 2048u;
 const FLAG_RECEIVE_SHADOWS: u32 = 4096u;
 // Shows only the shadows on it, as black whose alpha is the fraction of light they take away.
 const FLAG_SHADOW_CATCHER: u32 = 8192u;
+// The base colour is multiplied by the vertices' colours.
+const FLAG_VERTEX_COLORS: u32 = 16384u;
+// Maps read their texture coordinates through the object's rows of `map_uvs`.
+const FLAG_MAP_UVS: u32 = 32768u;
+// No vertex extras, in `Object::extras`.
+const NO_EXTRAS: u32 = 0xffffffffu;
+// Words of one morph target displacement: a position's, then a normal's.
+const MORPH_DELTA_WORDS: u32 = 6u;
+// The map slots, in the order of an object's rows of `map_uvs`.
+const SLOT_BASE_COLOR: u32 = 0u;
+const SLOT_METALLIC_ROUGHNESS: u32 = 1u;
+const SLOT_NORMAL: u32 = 2u;
+const SLOT_EMISSIVE: u32 = 3u;
+const SLOT_OCCLUSION: u32 = 4u;
 
 const LIGHT_DIRECTIONAL: u32 = 0u;
 const LIGHT_POINT: u32 = 1u;
@@ -92,6 +107,18 @@ struct Object {
     alpha_cutoff: f32,
     normal_scale: f32,
     occlusion_strength: f32,
+    // Where the mesh's vertex extras start in `vertex_data`, four words a vertex, or `NO_EXTRAS`.
+    extras: u32,
+    // Where the object's morph target displacements start in `vertex_data`, vertex by vertex
+    // from `morph_vertex`, each vertex's targets in order.
+    first_delta: u32,
+    morph_vertex: u32,
+    // 0 without morph targets.
+    morph_targets: u32,
+    // Where its morph target weights start in `weights`.
+    first_weight: u32,
+    // Where its maps' five rows start in `map_uvs`.
+    first_map_uv: u32,
 }
 
 struct Vertex {
@@ -100,11 +127,11 @@ struct Vertex {
     uv: array<f32, 2>,
 }
 
-// Four joints, relative to the object's first, and their weights, packed two 16-bit values to
-// a word.
-struct SkinVertex {
-    joints: array<u32, 2>,
-    weights: array<u32, 2>,
+// One map's texture coordinates: the rows of an affine transform of `(u, v, 1)`, with the set it
+// reads, 0 or 1, last in the first.
+struct MapUv {
+    first: vec4<f32>,
+    second: vec4<f32>,
 }
 
 // The rows of the object table a draw covers, and where their vertices start.
@@ -158,8 +185,10 @@ struct ShadowView {
 @group(0) @binding(6) var raster_tex: texture_2d<f32>;
 @group(0) @binding(7) var raster_sampler: sampler;
 @group(0) @binding(8) var<storage, read> joints: array<mat4x4<f32>>;
-// One per vertex of a skinned mesh.
-@group(0) @binding(9) var<storage, read> skins: array<SkinVertex>;
+// What a model's vertices hold beyond `vertices`: a skinned mesh's four joints and their weights
+// from the start, four words a vertex packing two 16-bit values to a word; then its vertex
+// extras and morph target displacements, where each object says.
+@group(0) @binding(9) var<storage, read> vertex_data: array<u32>;
 // A material's maps. Base colour and emissive are sRGB textures, read as linear light.
 @group(0) @binding(10) var base_color_map: texture_2d<f32>;
 @group(0) @binding(11) var metallic_roughness_map: texture_2d<f32>;
@@ -185,6 +214,9 @@ struct ShadowView {
 // The split sum's scale and bias of `f0`: by n·v at cell centres along each row, and by roughness
 // from 0 to 1 down the rows.
 @group(0) @binding(27) var<storage, read> environment_brdf: array<vec2<f32>>;
+// Morphed objects' morph target weights.
+@group(0) @binding(28) var<storage, read> weights: array<f32>;
+@group(0) @binding(29) var<storage, read> map_uvs: array<MapUv>;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -192,6 +224,9 @@ struct VsOut {
     @location(1) normal: vec3<f32>,
     @location(2) @interpolate(flat) object: u32,
     @location(3) uv: vec2<f32>,
+    @location(4) uv1: vec2<f32>,
+    // Linear, with straight alpha.
+    @location(5) color: vec4<f32>,
 }
 
 // The row of the object table that draws vertex `slot` of the whole table.
@@ -209,15 +244,16 @@ fn object_of(slot: u32) -> u32 {
     return run.first + low;
 }
 
-// The weighted blend of `skin`'s joints, or none when its weights are all zero.
-fn skinning(skin: SkinVertex, first_joint: u32) -> mat4x4<f32> {
+// The weighted blend of the joints of skinned `vertex`, or none when its weights are all zero.
+fn skinning(vertex: u32, first_joint: u32) -> mat4x4<f32> {
+    let at = vertex * 4u;
     let ids = vec4<u32>(
-        skin.joints[0] & 0xffffu,
-        skin.joints[0] >> 16u,
-        skin.joints[1] & 0xffffu,
-        skin.joints[1] >> 16u,
+        vertex_data[at] & 0xffffu,
+        vertex_data[at] >> 16u,
+        vertex_data[at + 1u] & 0xffffu,
+        vertex_data[at + 1u] >> 16u,
     );
-    let weights = vec4<f32>(unpack2x16unorm(skin.weights[0]), unpack2x16unorm(skin.weights[1]));
+    let weights = vec4<f32>(unpack2x16unorm(vertex_data[at + 2u]), unpack2x16unorm(vertex_data[at + 3u]));
     let total = weights.x + weights.y + weights.z + weights.w;
     if (total <= 0.0) {
         return mat4x4<f32>(
@@ -251,6 +287,12 @@ struct Posed {
     // In world space up to its length.
     normal: vec3<f32>,
     uv: vec2<f32>,
+    uv1: vec2<f32>,
+    color: vec4<f32>,
+}
+
+fn data_vec3(at: u32) -> vec3<f32> {
+    return vec3<f32>(bitcast<f32>(vertex_data[at]), bitcast<f32>(vertex_data[at + 1u]), bitcast<f32>(vertex_data[at + 2u]));
 }
 
 fn posed(index: u32) -> Posed {
@@ -261,8 +303,19 @@ fn posed(index: u32) -> Posed {
     let vertex = vertices[vertex_index];
     var position = vec4<f32>(vertex.position[0], vertex.position[1], vertex.position[2], 1.0);
     var normal = vec3<f32>(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
+    if (o.morph_targets > 0u) {
+        let first = o.first_delta + (vertex_index - o.morph_vertex) * o.morph_targets * MORPH_DELTA_WORDS;
+        for (var i = 0u; i < o.morph_targets; i += 1u) {
+            let weight = weights[o.first_weight + i];
+            if (weight != 0.0) {
+                let at = first + i * MORPH_DELTA_WORDS;
+                position += vec4<f32>(data_vec3(at) * weight, 0.0);
+                normal += data_vec3(at + 3u) * weight;
+            }
+        }
+    }
     if ((o.flags & FLAG_SKINNED) != 0u) {
-        let skin = skinning(skins[vertex_index], o.first_joint);
+        let skin = skinning(vertex_index, o.first_joint);
         position = skin * position;
         normal = normal_turn(skin) * normal;
     }
@@ -271,7 +324,52 @@ fn posed(index: u32) -> Posed {
     out.world = o.model * position;
     out.normal = o.normal * normal;
     out.uv = vec2<f32>(vertex.uv[0], vertex.uv[1]);
+    out.uv1 = out.uv;
+    out.color = vec4<f32>(1.0);
+    if (o.extras != NO_EXTRAS) {
+        let at = o.extras + vertex_index * 4u;
+        out.uv1 = vec2<f32>(bitcast<f32>(vertex_data[at]), bitcast<f32>(vertex_data[at + 1u]));
+        if ((o.flags & FLAG_VERTEX_COLORS) != 0u) {
+            out.color = vec4<f32>(unpack2x16unorm(vertex_data[at + 2u]), unpack2x16unorm(vertex_data[at + 3u]));
+        }
+    }
     return out;
+}
+
+// Both sets of a fragment's texture coordinates, with their change over a sample.
+struct Uvs {
+    uv0: vec2<f32>,
+    dx0: vec2<f32>,
+    dy0: vec2<f32>,
+    uv1: vec2<f32>,
+    dx1: vec2<f32>,
+    dy1: vec2<f32>,
+}
+
+// Where a map reads, and its change over a sample.
+struct MapCoords {
+    uv: vec2<f32>,
+    dx: vec2<f32>,
+    dy: vec2<f32>,
+}
+
+// Where `o`'s map in `slot` reads: the set its row names, moved by its transform.
+fn map_coords(o: Object, slot: u32, uvs: Uvs) -> MapCoords {
+    var out = MapCoords(uvs.uv0, uvs.dx0, uvs.dy0);
+    if (!has(o.flags, FLAG_MAP_UVS)) {
+        return out;
+    }
+    let row = map_uvs[o.first_map_uv + slot];
+    if (row.first.w > 0.5) {
+        out = MapCoords(uvs.uv1, uvs.dx1, uvs.dy1);
+    }
+    let a = row.first.xyz;
+    let b = row.second.xyz;
+    return MapCoords(
+        vec2<f32>(dot(a, vec3<f32>(out.uv, 1.0)), dot(b, vec3<f32>(out.uv, 1.0))),
+        vec2<f32>(dot(a.xy, out.dx), dot(b.xy, out.dx)),
+        vec2<f32>(dot(a.xy, out.dy), dot(b.xy, out.dy)),
+    );
 }
 
 @vertex
@@ -283,6 +381,8 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VsOut {
     out.normal = vertex.normal;
     out.object = vertex.object;
     out.uv = vertex.uv;
+    out.uv1 = vertex.uv1;
+    out.color = vertex.color;
     return out;
 }
 
@@ -293,6 +393,8 @@ struct ShadowOut {
     @location(1) depth: f32,
     @location(2) uv: vec2<f32>,
     @location(3) @interpolate(flat) object: u32,
+    @location(4) uv1: vec2<f32>,
+    @location(5) alpha: f32,
 }
 
 // The vertex seen from the shadow view of the instance being drawn, squeezed into its tile.
@@ -309,6 +411,8 @@ fn vs_shadow(@builtin(vertex_index) index: u32, @builtin(instance_index) view_in
     out.depth = dot(view.depth.xyz, vertex.world.xyz) + view.depth.w;
     out.uv = vertex.uv;
     out.object = vertex.object;
+    out.uv1 = vertex.uv1;
+    out.alpha = vertex.color.a;
     return out;
 }
 
@@ -321,12 +425,14 @@ fn fs_shadow(in: ShadowOut) -> @builtin(frag_depth) f32 {
     }
     let o = objects[in.object];
     if (has(o.flags, FLAG_MASK) || has(o.flags, FLAG_BLEND)) {
-        var alpha = o.base_color.a;
+        var alpha = o.base_color.a * in.alpha;
         if (has(o.flags, FLAG_RASTER)) {
             alpha *= textureSampleLevel(raster_tex, raster_sampler, in.uv, 0.0).a;
         }
         if (has(o.flags, FLAG_BASE_COLOR_MAP)) {
-            alpha *= textureSampleLevel(base_color_map, base_color_sampler, in.uv, 0.0).a;
+            let still = vec2<f32>(0.0);
+            let at = map_coords(o, SLOT_BASE_COLOR, Uvs(in.uv, still, still, in.uv1, still, still)).uv;
+            alpha *= textureSampleLevel(base_color_map, base_color_sampler, at, 0.0).a;
         }
         if (alpha < select(0.5, o.alpha_cutoff, has(o.flags, FLAG_MASK))) {
             discard;
@@ -658,6 +764,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     // Derivatives need uniform control flow, so they come before anything branches.
     let uv_dx = dpdx(in.uv);
     let uv_dy = dpdy(in.uv);
+    let uvs = Uvs(in.uv, uv_dx, uv_dy, in.uv1, dpdx(in.uv1), dpdy(in.uv1));
     let world_dx = dpdx(in.world);
     let world_dy = dpdy(in.world);
     let o = objects[in.object];
@@ -668,12 +775,14 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     }
     var emissive = o.emissive * texel.rgb;
     if (has(o.flags, FLAG_EMISSIVE_MAP)) {
-        emissive *= textureSampleGrad(emissive_map, emissive_sampler, in.uv, uv_dx, uv_dy).rgb;
+        let at = map_coords(o, SLOT_EMISSIVE, uvs);
+        emissive *= textureSampleGrad(emissive_map, emissive_sampler, at.uv, at.dx, at.dy).rgb;
     }
     if (has(o.flags, FLAG_BASE_COLOR_MAP)) {
-        texel *= textureSampleGrad(base_color_map, base_color_sampler, in.uv, uv_dx, uv_dy);
+        let at = map_coords(o, SLOT_BASE_COLOR, uvs);
+        texel *= textureSampleGrad(base_color_map, base_color_sampler, at.uv, at.dx, at.dy);
     }
-    var base = o.base_color * texel;
+    var base = o.base_color * texel * in.color;
     // A shadow catcher shows none of its colour, and catches shadows as much as its alpha covers
     // it, with its raster's and maps', which hide nothing where they are 0.
     let catcher = has(o.flags, FLAG_SHADOW_CATCHER);
@@ -714,7 +823,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     if (has(o.flags, FLAG_NORMAL_MAP)) {
         // The map tilts the surface's own side; its back is lit by that tilted normal reversed.
         let side = select(1.0, -1.0, back);
-        n = side * mapped_normal(side * n, in.uv, world_dx, world_dy, uv_dx, uv_dy, o.normal_scale);
+        let at = map_coords(o, SLOT_NORMAL, uvs);
+        n = side * mapped_normal(side * n, at.uv, world_dx, world_dy, at.dx, at.dy, o.normal_scale);
     }
     // The face's own normal on the side `n` is lit from, which shadows are tested off.
     var face = unit(cross(world_dx, world_dy));
@@ -724,7 +834,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     var metallic = o.metallic;
     var roughness = o.roughness;
     if (has(o.flags, FLAG_METALLIC_ROUGHNESS_MAP)) {
-        let texel = textureSampleGrad(metallic_roughness_map, metallic_roughness_sampler, in.uv, uv_dx, uv_dy);
+        let at = map_coords(o, SLOT_METALLIC_ROUGHNESS, uvs);
+        let texel = textureSampleGrad(metallic_roughness_map, metallic_roughness_sampler, at.uv, at.dx, at.dy);
         roughness *= texel.g;
         metallic *= texel.b;
     }
@@ -733,7 +844,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     // How much of the light from all around reaches the surface.
     var occlusion = 1.0;
     if (has(o.flags, FLAG_OCCLUSION_MAP)) {
-        let texel = textureSampleGrad(occlusion_map, occlusion_sampler, in.uv, uv_dx, uv_dy);
+        let at = map_coords(o, SLOT_OCCLUSION, uvs);
+        let texel = textureSampleGrad(occlusion_map, occlusion_sampler, at.uv, at.dx, at.dy);
         occlusion = 1.0 + o.occlusion_strength * (texel.r - 1.0);
     }
     let alpha = roughness * roughness;

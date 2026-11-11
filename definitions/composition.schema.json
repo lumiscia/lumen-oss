@@ -4409,7 +4409,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, skins and\nanimation clips. A raster wired into `texture` shows on the surfaces of the material\n`texture_material` names, such as a screen. The model's own lights and cameras are left out.",
+            "description": "A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, vertex\ncolours, two sets of texture coordinates with `KHR_texture_transform`, skins, morph targets\nand animation clips. A raster wired into `texture` shows on the surfaces of the material\n`texture_material` names, such as a screen. The model's own lights and a camera are added with\n`lights` and `camera`. Points, lines, and triangle strips and fans aren't drawn, with a\n`scene.model_primitives_skipped` warning.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -4480,6 +4480,20 @@
                     },
                     "x-lumen-kind": "float"
                   },
+                  "camera": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "The model's camera to view the scene from, by its name or else its index, placed by the\nfirst node that places it, without that node's scale; empty uses none. It counts as a\n`camera_3d` at this node, so the first camera in the scene still wins. Its aspect ratio is\nthe output's. A model's cameras are listed in the `cameras` of its upload's `metadata` on\na host that takes uploads, and by `modelInfo` in the browser bindings.",
+                    "title": "Camera",
+                    "x-lumen-kind": "string"
+                  },
                   "cast_shadows": {
                     "anyOf": [
                       {
@@ -4492,6 +4506,20 @@
                     "default": true,
                     "description": "Blocks light from lights that cast shadows, in the posed shape and where masked or blended\nmaterials' alpha reaches their cutoff, or half for blended ones. Unlit and glowing\nmaterials block it too, so a model of a lamp around a light needs this off.",
                     "title": "Cast Shadows",
+                    "x-lumen-kind": "bool"
+                  },
+                  "lights": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Adds the model's own `KHR_lights_punctual` lights to the scene, where its nodes place\nthem, as `light_3d` nodes there would light it: a directional light's intensity, in lux, and\na point or spot light's, in candela, are `light_3d` intensities as they are, so a point\nlight of intensity `I` lights a surface `d` metres away as a directional one of `I / d²`\ndoes. A spot light's cone fades from its inner angle out to its outer one. They cast no\nshadows, and a scene they light gets no default lights.",
+                    "title": "Lights",
                     "x-lumen-kind": "bool"
                   },
                   "position": {

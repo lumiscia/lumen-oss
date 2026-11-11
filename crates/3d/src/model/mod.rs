@@ -16,6 +16,15 @@
 //! panics fails the model where panics unwind; on targets that abort on panic, such as
 //! `wasm32-unknown-unknown`, it aborts instead.
 //!
+//! Triangle lists are read with their positions, normals, two sets of texture coordinates, vertex
+//! colours (`COLOR_0`), skins and morph targets, whose position and normal displacements are kept
+//! and whose tangent displacements are ignored, since tangents come from the shaded surface. Each
+//! map reads either set of coordinates through its own `KHR_texture_transform`; a map reading a
+//! third set is left out. Points, lines, and triangle strips and fans are counted in
+//! [`ModelScene::skipped_primitives`] and left out. Morph targets on a Draco-compressed primitive
+//! are unsupported. The scene's `KHR_lights_punctual` lights and its cameras are read where its
+//! nodes place them.
+//!
 //! A model holds plain data: its geometry and decoded textures to upload, and the [`ModelScene`]
 //! that poses and shades them.
 
@@ -41,12 +50,15 @@ use std::fmt;
 
 use glam::{Mat4, Quat, Vec3};
 
-use crate::{Blending, MAX_SCENE_NODES, Maps, SkinVertex, Vertex};
+use crate::{
+    Blending, Light, MAX_SCENE_NODES, MapUv, Maps, Morph, MorphDelta, Projection, SkinVertex,
+    Vertex, VertexExtra,
+};
 use animation::Animation;
 pub use animation::Playback;
 pub use bounds::SkinBounds;
 pub use gltf_json::{GLTF_JSON_SNIFF_BYTES, is_gltf_json};
-pub use info::{AnimationInfo, MaterialInfo, ModelInfo};
+pub use info::{AnimationInfo, CameraInfo, MaterialInfo, ModelInfo};
 
 /// The largest file read.
 pub const MAX_MODEL_BYTES: usize = 512 << 20;
@@ -68,6 +80,16 @@ pub const MAX_DRAWS: usize = MAX_SCENE_NODES;
 pub const MAX_SKIN_JOINTS: usize = 1024;
 /// The most joints all of a model's skins may hold together.
 pub const MAX_JOINTS: usize = 16 * MAX_SKIN_JOINTS;
+/// The most morph targets one mesh may have.
+pub const MAX_MORPH_TARGETS: usize = 256;
+/// The most displacements all of a model's morph targets may hold together, one for each vertex
+/// of each target.
+pub const MAX_MORPH_DELTAS: usize = 4_000_000;
+/// The most morph target weights a model's nodes may hold together, one for each target of each
+/// node's mesh.
+pub const MAX_MORPH_WEIGHTS: usize = 1 << 20;
+/// The most `KHR_lights_punctual` lights a model may define, and the most its scene may place.
+pub const MAX_MODEL_LIGHTS: usize = 1024;
 /// The most bytes one accessor may hold.
 pub const MAX_VIEW_BYTES: usize = 256 << 20;
 /// The most components (scalars) one accessor may hold.
@@ -199,6 +221,31 @@ pub struct Geometry {
     pub indices: Vec<u32>,
     /// One per vertex when any primitive is skinned, and empty otherwise.
     pub skin: Vec<SkinVertex>,
+    /// One per vertex when any primitive has vertex colours or a second set of texture
+    /// coordinates, and empty otherwise.
+    pub extras: Vec<VertexExtra>,
+    /// Morph targets' displacements, as each morphed primitive's [`Morph`] lays them out.
+    pub morphs: Vec<MorphDelta>,
+}
+
+impl Geometry {
+    /// Where `vertex` of `primitive` can reach, its morph targets' weights each within -1 to 1:
+    /// its position, give or take the size of every displacement it has.
+    pub fn reach(&self, primitive: &Primitive, vertex: u32) -> Option<crate::Bounds> {
+        let position = Vec3::from(self.vertices.get(vertex as usize)?.position);
+        let mut spread = Vec3::ZERO;
+        if let Some(morph) = primitive.morph {
+            let local = vertex.checked_sub(morph.first_vertex)? as usize;
+            let first = morph.first_delta as usize + local * morph.targets as usize;
+            for delta in self.morphs.get(first..first + morph.targets as usize)? {
+                spread += Vec3::from(delta.position).abs();
+            }
+        }
+        Some(crate::Bounds {
+            min: position - spread,
+            max: position + spread,
+        })
+    }
 }
 
 /// A decoded image with its mip levels.
@@ -231,6 +278,8 @@ pub struct Material {
     pub unlit: bool,
     pub double_sided: bool,
     pub maps: Maps<usize>,
+    /// The texture coordinates each map reads, in the order of [`crate::Surface::map_uvs`].
+    pub map_uvs: [MapUv; 5],
 }
 
 impl Default for Material {
@@ -248,6 +297,7 @@ impl Default for Material {
             unlit: false,
             double_sided: false,
             maps: Maps::default(),
+            map_uvs: [MapUv::default(); 5],
         }
     }
 }
@@ -265,6 +315,10 @@ pub struct Primitive {
     pub flat_normals: bool,
     /// Has joints and weights, so a node with a skin moves it by its joints.
     pub skinned: bool,
+    /// Has `COLOR_0`, which multiplies its base colour.
+    pub vertex_colors: bool,
+    /// Its morph targets, when it has any.
+    pub morph: Option<Morph>,
 }
 
 /// A node of the hierarchy, in its parent's space: `matrix` as the file gives it when no animation
@@ -278,6 +332,11 @@ struct Node {
     children: Vec<usize>,
     mesh: Option<usize>,
     skin: Option<usize>,
+    /// Where its mesh's morph target weights start in [`ModelScene::weights`], and how many there
+    /// are, when its mesh has morph targets.
+    weights: Option<(usize, usize)>,
+    light: Option<usize>,
+    camera: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -299,6 +358,22 @@ pub struct ModelScene {
     animations: Vec<Animation>,
     /// Primitives a pose places.
     draws: usize,
+    /// Every node's morph target weights at rest.
+    weights: Vec<f32>,
+    /// `KHR_lights_punctual` lights, each at the origin shining along -Z.
+    lights: Vec<Light>,
+    cameras: Vec<ModelCamera>,
+    /// Primitives of the meshes that aren't triangle lists, which aren't drawn.
+    skipped: usize,
+}
+
+/// A camera the model defines, looking down -Z of the nodes that place it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelCamera {
+    pub name: String,
+    pub projection: Projection,
+    pub near: f32,
+    pub far: f32,
 }
 
 /// A primitive placed in model space.
@@ -309,6 +384,8 @@ pub struct Posed {
     pub world: Mat4,
     /// Where its joint matrices start in [`Pose::joints`], when it is skinned.
     pub first_joint: Option<u32>,
+    /// Where its morph target weights start in [`Pose::weights`], when it is morphed.
+    pub first_weight: Option<u32>,
 }
 
 /// A model's primitives placed at one moment of a clip, in model space.
@@ -320,6 +397,13 @@ pub struct Pose {
     pub joints: Vec<Mat4>,
     /// Each skin whose joint matrices are in `joints`, by its index, with where they start.
     pub skins: Vec<(usize, u32)>,
+    /// Every node's morph target weights, each finite.
+    pub weights: Vec<f32>,
+    /// The model's lights where its nodes place them.
+    pub lights: Vec<Light>,
+    /// Each camera a node places, by its index in [`ModelScene::cameras`], with the node's world
+    /// matrix, in the order the nodes are reached.
+    pub cameras: Vec<(usize, Mat4)>,
 }
 
 /// The most names an error lists.
@@ -345,6 +429,47 @@ impl ModelScene {
     /// How many primitives [`Self::pose`] places.
     pub fn draw_count(&self) -> usize {
         self.draws
+    }
+
+    /// How many primitives the model's meshes have that are points, lines, or triangle strips or
+    /// fans, none of which are drawn.
+    pub fn skipped_primitives(&self) -> usize {
+        self.skipped
+    }
+
+    pub fn cameras(&self) -> &[ModelCamera] {
+        &self.cameras
+    }
+
+    /// The camera `selector` names, by its name or else its index, as [`Self::animation`] finds a
+    /// clip.
+    pub fn camera(&self, selector: &str) -> Result<Option<usize>, String> {
+        if selector.is_empty() {
+            return Ok(None);
+        }
+        let by_name = self
+            .cameras
+            .iter()
+            .position(|camera| camera.name == selector);
+        let by_index = || {
+            selector
+                .parse::<usize>()
+                .ok()
+                .filter(|&index| index < self.cameras.len())
+        };
+        by_name.or_else(by_index).map(Some).ok_or_else(|| {
+            let cameras = self.cameras.iter().enumerate().map(|(index, camera)| {
+                if camera.name.is_empty() {
+                    format!("{index} (unnamed)")
+                } else {
+                    format!("{index} `{}`", camera.name)
+                }
+            });
+            format!(
+                "the model has no camera `{selector}`; {}",
+                listed(cameras, self.cameras.len(), "cameras")
+            )
+        })
     }
 
     /// The material named `name`, or an error listing those the model has.
@@ -408,10 +533,17 @@ impl ModelScene {
             .iter()
             .map(|node| (node.translation, node.rotation, node.scale))
             .collect();
+        let mut weights = self.weights.clone();
         if let Some(playback) = playback
             && let Some(animation) = self.animations.get(playback.clip)
         {
-            animation.apply(playback.time(animation.duration), &mut locals);
+            animation.apply(playback.time(animation.duration), &mut locals, &mut weights);
+        }
+        // A sampled weight can overflow; one that does moves nothing.
+        for weight in &mut weights {
+            if !weight.is_finite() {
+                *weight = 0.0;
+            }
         }
 
         // Reading checked that every node has one parent at most and that roots have none, so
@@ -443,18 +575,30 @@ impl ModelScene {
             primitives: Vec::with_capacity(self.draws),
             joints: Vec::new(),
             skins: Vec::new(),
+            weights,
+            lights: Vec::new(),
+            cameras: Vec::new(),
         };
         // Where each skin's joint matrices start, once worked out, or `None` when any isn't finite.
         let mut skin_starts: Vec<Option<Option<u32>>> = vec![None; self.skins.len()];
         for index in order {
             let node = &self.nodes[index];
+            let world = worlds[index];
+            if world.is_finite() {
+                if let Some(light) = node.light.and_then(|light| self.lights.get(light)) {
+                    pose.lights.push(light.placed(&world));
+                }
+                if let Some(camera) = node.camera {
+                    pose.cameras.push((camera, world));
+                }
+            }
             let Some(primitives) = node.mesh.and_then(|mesh| self.meshes.get(mesh)) else {
                 continue;
             };
-            let world = worlds[index];
             if !world.is_finite() {
                 continue;
             }
+            let first_weight = node.weights.map(|(start, _)| start as u32);
             let mut skin_start = || {
                 let index = node.skin?;
                 let start = skin_starts.get_mut(index)?;
@@ -495,6 +639,7 @@ impl ModelScene {
                         primitive,
                         world,
                         first_joint: skin.ok().flatten().filter(|_| primitive.skinned),
+                        first_weight: first_weight.filter(|_| primitive.morph.is_some()),
                     }),
             );
         }
