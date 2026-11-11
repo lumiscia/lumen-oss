@@ -142,6 +142,46 @@ most about 3 hours (1,048,576 intervals) and holds at most 200,000 segments, whi
 volume adds one of every 512 samples to; past either, loading the preview fails with
 `audio.limit`.
 
+## 3D depth and normals
+
+`render_3d`'s `output` picks what its raster holds: `color`, the lit scene (the default), `depth`
+or `normal`. A node has one output, so a composition that wants colour and depth draws the same
+scene with two `render_3d` nodes. The second shares what the first loaded and uploaded: models,
+meshes, and the rasters image planes show, which are recorded once a frame. It adds a draw for
+each batch of objects and one pass that stores what it drew, and skips lighting, shadows, the
+environment and mipmaps.
+
+- `depth` is the distance from the camera along its view (not from its eye, so a plane facing the
+  camera is one value), mapped from 0 at `depth_near` to 1 at `depth_far` and clamped, as opaque
+  grey. Either one at 0 uses the camera's `near` or `far`. Where nothing is drawn it is 1.
+- `normal` is the normal each surface is lit by, after morph targets, skinning, flat shading and
+  normal maps, and reversed on the back of a double-sided surface, in the camera's space: +X right,
+  +Y up, +Z towards the camera. Each component `n` is stored as `n * 0.5 + 0.5`, opaque; where
+  nothing is drawn it is transparent.
+
+Both are data rather than colour: values are stored as they are, with no transfer function, so a
+node reading the raster, such as `merge`'s luma mask or a `wgsl_shader`, reads the value itself.
+Opaque surfaces, `text_3d` and instances included, draw into them everywhere, masked ones where
+they reach their cutoff, and blended ones, such as image planes, where their alpha reaches half,
+the same rule that decides where they block shadows. Shadow catchers draw too, since they hide
+what is behind them. Each pixel holds the nearest surface at its centre: `supersample` is ignored,
+so an edge is never averaged into a value no surface has.
+
+Rasters hold 8 bits a channel, so depth has 256 steps between `depth_near` and `depth_far`. Set them
+around the part of the scene an effect needs, not to the camera's default 0.05 to 1000.
+
+Fog, with existing nodes, fades the scene into a colour by its depth:
+
+```json
+{ "id": 10, "type": "render_3d" },
+{ "id": 11, "type": "render_3d", "params": { "output": "depth", "depth_near": 3, "depth_far": 14 } },
+{ "id": 12, "type": "background", "params": { "paint": [205, 215, 228, 255] } },
+{ "id": 13, "type": "merge", "params": { "mask_mode": "luma" } }
+```
+
+with the scene wired to both `render_3d` nodes, and `10` to `base`, `12` to `overlay` and `11` to
+`mask` of the merge. A `levels` node between the depth and the mask shapes how the fog thickens.
+
 ## Diagnostics
 
 `json::check` reads a composition the way a render would, without rendering it, and returns every

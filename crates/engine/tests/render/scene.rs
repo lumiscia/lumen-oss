@@ -1185,12 +1185,12 @@ fn a_clip_canvas_larger_than_the_device_allows_fails_naming_the_clip() {
 
 /// The glTF sample fox: skinned, textured, without vertex normals, with the clips `Survey`,
 /// `Walk` and `Run`.
-fn fox_media() -> TestMedia {
+pub(super) fn fox_media() -> TestMedia {
     TestMedia::default().model("fox.glb", include_bytes!("../fixtures/Fox.glb").to_vec())
 }
 
 /// The fox standing side on to the default camera, nose to the right, filling most of the frame.
-fn fox(id: u32, params: Value) -> Value {
+pub(super) fn fox(id: u32, params: Value) -> Value {
     let mut fox = json!({
         "source": "fox.glb",
         "position": [0, -0.8, 0],
@@ -1220,19 +1220,19 @@ fn quads(materials: Value, quads: &[([f32; 4], usize)]) -> Vec<u8> {
 }
 
 /// A rectangle facing +Z for [`model_glb`].
-struct Quad {
+pub(super) struct Quad {
     /// Its left, bottom, right and top edges.
-    edges: [f32; 4],
-    material: usize,
+    pub(super) edges: [f32; 4],
+    pub(super) material: usize,
     /// The normal at each of its vertices.
-    normal: [f32; 3],
+    pub(super) normal: [f32; 3],
     /// Whether its texture coordinates run right to left.
-    mirrored_u: bool,
+    pub(super) mirrored_u: bool,
 }
 
 /// A `.glb` of one mesh with a primitive for each of `quads`, which show the whole of their
 /// textures, top left at top left. `image`, a PNG, is texture 0.
-fn model_glb(materials: Value, image: Option<&[u8]>, quads: &[Quad]) -> Vec<u8> {
+pub(super) fn model_glb(materials: Value, image: Option<&[u8]>, quads: &[Quad]) -> Vec<u8> {
     let mut bin = Vec::new();
     let (mut views, mut accessors, mut primitives) = (Vec::new(), Vec::new(), Vec::new());
     let mut accessor = |bytes: Vec<u8>, kind: &str, component: u32, count: usize| {
@@ -1325,7 +1325,7 @@ pub(super) fn model(id: u32, params: Value) -> Value {
 }
 
 /// A 1 x 1 PNG of `rgba`, stored without compression.
-fn texel_png(rgba: [u8; 4]) -> Vec<u8> {
+pub(super) fn texel_png(rgba: [u8; 4]) -> Vec<u8> {
     let crc = |bytes: &[u8]| {
         let mut crc = !0u32;
         for &byte in bytes {

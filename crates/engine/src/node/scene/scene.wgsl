@@ -71,6 +71,12 @@ struct Globals {
     exposure: f32,
     // Samples per output pixel along each axis.
     supersample: u32,
+    // The camera's +X and +Y axes in world space, which normals are output in with `camera_back`.
+    camera_right: vec3<f32>,
+    // The distances along the camera's view that depth output maps to 0 and 1.
+    depth_near: f32,
+    camera_up: vec3<f32>,
+    depth_far: f32,
 }
 
 // An equirectangular environment map, whose centre looks along -Z with +X to its right.
@@ -421,27 +427,33 @@ fn vs_shadow(@builtin(vertex_index) index: u32, @builtin(instance_index) view_in
     return out;
 }
 
-// Writes depth from the view's light within its tile, where the surface blocks light: masked
-// surfaces where their alpha reaches the cutoff, blended ones where it reaches half.
+// Whether `o` is solid where it reads `uv` and `uv1` with vertex alpha `alpha`, which is where it
+// blocks light and is drawn into depth and normal output: everywhere for an opaque surface, where
+// a masked one's alpha reaches its cutoff and where a blended one's reaches half.
+fn solid(o: Object, uv: vec2<f32>, uv1: vec2<f32>, vertex_alpha: f32) -> bool {
+    if (!has(o.flags, FLAG_MASK) && !has(o.flags, FLAG_BLEND)) {
+        return true;
+    }
+    var alpha = o.base_color.a * vertex_alpha;
+    if (has(o.flags, FLAG_RASTER)) {
+        alpha *= textureSampleLevel(raster_tex, raster_sampler, uv, 0.0).a;
+    }
+    if (has(o.flags, FLAG_BASE_COLOR_MAP)) {
+        let still = vec2<f32>(0.0);
+        let at = map_coords(o, SLOT_BASE_COLOR, Uvs(uv, still, still, uv1, still, still)).uv;
+        alpha *= textureSampleLevel(base_color_map, base_color_sampler, at, 0.0).a;
+    }
+    return alpha >= select(0.5, o.alpha_cutoff, has(o.flags, FLAG_MASK));
+}
+
+// Writes depth from the view's light within its tile, where the surface is solid.
 @fragment
 fn fs_shadow(in: ShadowOut) -> @builtin(frag_depth) f32 {
     if (any(abs(in.view_clip.xy) > vec2<f32>(in.view_clip.z))) {
         discard;
     }
-    let o = objects[in.object];
-    if (has(o.flags, FLAG_MASK) || has(o.flags, FLAG_BLEND)) {
-        var alpha = o.base_color.a * in.alpha;
-        if (has(o.flags, FLAG_RASTER)) {
-            alpha *= textureSampleLevel(raster_tex, raster_sampler, in.uv, 0.0).a;
-        }
-        if (has(o.flags, FLAG_BASE_COLOR_MAP)) {
-            let still = vec2<f32>(0.0);
-            let at = map_coords(o, SLOT_BASE_COLOR, Uvs(in.uv, still, still, in.uv1, still, still)).uv;
-            alpha *= textureSampleLevel(base_color_map, base_color_sampler, at, 0.0).a;
-        }
-        if (alpha < select(0.5, o.alpha_cutoff, has(o.flags, FLAG_MASK))) {
-            discard;
-        }
+    if (!solid(objects[in.object], in.uv, in.uv1, in.alpha)) {
+        discard;
     }
     return clamp(in.depth, 0.0, 1.0);
 }
@@ -811,27 +823,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     }
 
     let v = view_direction(in.world);
-    // Whether this is the back of the surface by its winding, which is lit by its normal reversed.
-    let back = front == has(o.flags, FLAG_MIRRORED);
-    // A normal the world matrix flattened away, on a face it left without area, faces the viewer.
-    var n = v;
-    if (has(o.flags, FLAG_FLAT_NORMALS)) {
-        let face = unit(cross(world_dx, world_dy));
-        if (any(face != vec3<f32>(0.0))) {
-            n = select(face, -face, dot(face, v) < 0.0);
-        }
-    } else {
-        let normal = unit(in.normal);
-        if (any(normal != vec3<f32>(0.0))) {
-            n = select(normal, -normal, back);
-        }
-    }
-    if (has(o.flags, FLAG_NORMAL_MAP)) {
-        // The map tilts the surface's own side; its back is lit by that tilted normal reversed.
-        let side = select(1.0, -1.0, back);
-        let at = map_coords(o, SLOT_NORMAL, uvs);
-        n = side * mapped_normal(side * n, at.uv, world_dx, world_dy, at.dx, at.dy, o.normal_scale);
-    }
+    let n = shading_normal(o, in.normal, v, front, uvs, world_dx, world_dy);
     // The face's own normal on the side `n` is lit from, which shadows are tested off.
     var face = unit(cross(world_dx, world_dy));
     face = select(n, select(face, -face, dot(face, n) < 0.0), any(face != vec3<f32>(0.0)));
@@ -926,6 +918,70 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     }
     color += emissive;
     return vec4<f32>(fogged(display(color), in.world) * base.a, base.a);
+}
+
+// The normal `o` is lit by where its interpolated vertex normal is `normal` and the viewer is
+// along `v`, on its front or back as `front` says.
+fn shading_normal(
+    o: Object,
+    normal: vec3<f32>,
+    v: vec3<f32>,
+    front: bool,
+    uvs: Uvs,
+    world_dx: vec3<f32>,
+    world_dy: vec3<f32>,
+) -> vec3<f32> {
+    // Whether this is the back of the surface by its winding, which is lit by its normal reversed.
+    let back = front == has(o.flags, FLAG_MIRRORED);
+    // A normal the world matrix flattened away, on a face it left without area, faces the viewer.
+    var n = v;
+    if (has(o.flags, FLAG_FLAT_NORMALS)) {
+        let face = unit(cross(world_dx, world_dy));
+        if (any(face != vec3<f32>(0.0))) {
+            n = select(face, -face, dot(face, v) < 0.0);
+        }
+    } else {
+        let vertex = unit(normal);
+        if (any(vertex != vec3<f32>(0.0))) {
+            n = select(vertex, -vertex, back);
+        }
+    }
+    if (has(o.flags, FLAG_NORMAL_MAP)) {
+        // The map tilts the surface's own side; its back is lit by that tilted normal reversed.
+        let side = select(1.0, -1.0, back);
+        let at = map_coords(o, SLOT_NORMAL, uvs);
+        n = side * mapped_normal(side * n, at.uv, world_dx, world_dy, at.dx, at.dy, o.normal_scale);
+    }
+    return n;
+}
+
+// Depth output where the surface is solid: the distance along the camera's view, from 0 at
+// `depth_near` to 1 at `depth_far`, as opaque grey.
+@fragment
+fn fs_depth(in: VsOut) -> @location(0) vec4<f32> {
+    if (!solid(objects[in.object], in.uv, in.uv1, in.color.a)) {
+        discard;
+    }
+    let distance = dot(globals.camera_position - in.world, globals.camera_back);
+    let depth = clamp((distance - globals.depth_near) / (globals.depth_far - globals.depth_near), 0.0, 1.0);
+    return vec4<f32>(vec3<f32>(depth), 1.0);
+}
+
+// Normal output where the surface is solid: the normal it is lit by, in the camera's space, mapped
+// from -1..1 to 0..1, and opaque.
+@fragment
+fn fs_normal(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    // Derivatives need uniform control flow, so they come before anything branches.
+    let uvs = Uvs(in.uv, dpdx(in.uv), dpdy(in.uv), in.uv1, dpdx(in.uv1), dpdy(in.uv1));
+    let world_dx = dpdx(in.world);
+    let world_dy = dpdy(in.world);
+    let o = objects[in.object];
+    if (!solid(o, in.uv, in.uv1, in.color.a)) {
+        discard;
+    }
+    let n = shading_normal(o, in.normal, view_direction(in.world), front, uvs, world_dx, world_dy);
+    let camera = vec3<f32>(dot(n, globals.camera_right), dot(n, globals.camera_up), dot(n, globals.camera_back));
+    return vec4<f32>(camera * 0.5 + 0.5, 1.0);
 }
 
 fn luminance(c: vec3<f32>) -> f32 {

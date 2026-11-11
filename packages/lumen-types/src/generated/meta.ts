@@ -1495,6 +1495,7 @@ export type Projection3d = "perspective" | "orthographic";
 export type RadialBlurEdge = EdgeMode;
 export type RasterMultimergeBlendMode = BlendMode;
 export type RasterSampling = "nearest" | "linear";
+export type Render3dOutput = "color" | "depth" | "normal";
 export type Render3dToneMapping = ToneMapping;
 /** The canvas, and how the host that renders the video encodes it. Previews ignore `codec` and `quality`. */
 export type RenderSettings = {
@@ -2319,10 +2320,21 @@ export interface RasterMultimergeNode extends CompositionNodeBase<"raster_multim
 
 /**
  * Draws a 3D scene into a raster, with a transparent background unless it shows its environment
- * map.
+ * map; or, by `output`, its depth or normals, for 2D effects such as fog.
  */
 export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
   readonly params?: {
+    /**
+     * Distance from the camera, in world units, that `depth` output maps to 1, and past which it
+     * stays 1. 0 uses the camera's `far`, which spreads the 0 to 1 range thin over a scene much
+     * nearer than it.
+     */
+    readonly depth_far?: ExpressionValue<number>;
+    /**
+     * Distance from the camera, in world units, that `depth` output maps to 0. 0 uses the
+     * camera's `near`.
+     */
+    readonly depth_near?: ExpressionValue<number>;
     /**
      * Brightness of the light from all around that surfaces reflect and are lit by: the
      * `environment_map` when one is set, and otherwise a built-in studio of softboxes. 0 turns it
@@ -2358,6 +2370,11 @@ export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
     readonly fog_density?: ExpressionValue<number>;
     /** Output height in pixels. Use 0 to match the composition height. */
     readonly height?: number;
+    /**
+     * What the raster holds: the lit scene, its depth or its normals. A composition that needs
+     * more than one draws the same scene with a `render_3d` for each.
+     */
+    readonly output?: Render3dOutput;
     /** Renders this many times wider and taller, then averages down, to antialias edges. */
     readonly supersample?: ExpressionValue<number>;
     /** How light brighter than white is brought into range. */
@@ -3319,7 +3336,7 @@ export const nodeInputPorts = {
   "raster_multimerge": { "layers": { kind: "raster", variadic: true } },
   /**
    * Draws a 3D scene into a raster, with a transparent background unless it shows its environment
-   * map.
+   * map; or, by `output`, its depth or normals, for 2D effects such as fog.
    */
   "render_3d": { "scene": { kind: "scene", variadic: false } },
   /** Resamples a raster into a rectangle placed on the composition canvas. */

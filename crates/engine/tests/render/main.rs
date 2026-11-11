@@ -24,6 +24,8 @@ mod paint;
 mod repeat;
 #[cfg(feature = "3d")]
 mod scene;
+#[cfg(feature = "3d")]
+mod scene_output;
 mod shaders;
 mod support;
 mod sweep_blurs;
