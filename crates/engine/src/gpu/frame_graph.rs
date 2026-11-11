@@ -2283,7 +2283,7 @@ impl<'a> FrameCx<'a> {
             if blank && sum.is_none() {
                 return Ok(self.transparent(sample.domain.display_size()));
             }
-            sum = Some(self.add_sample(sum, sample, blank, offsets.len() as u32)?);
+            sum = Some(self.add_sample(sum, sample, blank, last, offsets.len() as u32)?);
         }
         let mut average = sum.expect("motion blur takes at least two samples");
         if let Some(Some((domain, bounds))) = shared
@@ -2295,12 +2295,14 @@ impl<'a> FrameCx<'a> {
     }
 
     /// `sample`, weighted by one over `samples`, added to `sum`, over the union of their domains or
-    /// over the sum's alone when the sample is `blank`: the average once every sample is in.
+    /// over the sum's alone when the sample is `blank`: the average once every sample is in. The
+    /// sum is `motion_blur::SUM_FORMAT` until the `last` sample, which writes the working space.
     fn add_sample(
         &mut self,
         sum: Option<Raster>,
         sample: Raster,
         blank: bool,
+        last: bool,
         samples: u32,
     ) -> crate::Result<Raster> {
         use crate::node::processing::motion_blur as blur;
@@ -2334,8 +2336,14 @@ impl<'a> FrameCx<'a> {
             None => self.unused_float(),
         };
         let size = domain.storage_size;
-        let program = self.program("motion-blur", blur::SHADER, "cs_main", blur::LAYOUT)?;
-        let tex = self.storage_target(size);
+        let (entry, layout, binding, tex) = if last {
+            ("resolve_main", blur::RESOLVE_LAYOUT, 4, self.storage_target(size))
+        } else {
+            let usage = TextureDesc::storage(size, blur::SUM_FORMAT).usage;
+            let tex = self.rec.acquire(size, blur::SUM_FORMAT, usage);
+            ("accumulate_main", blur::ACCUMULATE_LAYOUT, 3, tex)
+        };
+        let program = self.program("motion-blur", blur::SHADER, entry, layout)?;
         let uniform = self.rec.uniform(&params);
         self.rec.compute(
             program,
@@ -2343,7 +2351,7 @@ impl<'a> FrameCx<'a> {
                 (0, Res::Tex(sum_tex)),
                 (1, Res::Tex(sample.tex)),
                 (2, uniform),
-                (3, Res::Tex(tex)),
+                (binding, Res::Tex(tex)),
             ],
             dispatch_for(size),
         );

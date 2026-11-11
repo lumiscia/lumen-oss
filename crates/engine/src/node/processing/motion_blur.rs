@@ -12,14 +12,26 @@ use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, Node
 pub(crate) const MAX_MOTION_BLUR_SAMPLES: i64 = 64;
 
 /// Adds a sample, weighted by one over the number of samples, to the running sum, which is the
-/// average once the last sample is in.
+/// average once the last sample is in. The sum is kept in 32-bit float, read with `textureLoad`,
+/// so dozens of samples round once, when the last one writes the working space.
 pub(crate) const SHADER: &str = include_str!("motion_blur.wgsl");
 
-pub(crate) const LAYOUT: &[LayoutEntry] = &[
-    LayoutEntry::compute(0, LayoutKind::Texture),
+/// The running sum's format.
+pub(crate) const SUM_FORMAT: lumen_gpu::wgpu::TextureFormat =
+    lumen_gpu::wgpu::TextureFormat::Rgba32Float;
+
+pub(crate) const ACCUMULATE_LAYOUT: &[LayoutEntry] = &[
+    LayoutEntry::compute(0, LayoutKind::UnfilterableTexture),
     LayoutEntry::compute(1, LayoutKind::Texture),
     LayoutEntry::compute(2, LayoutKind::Uniform),
-    LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
+    LayoutEntry::compute(3, LayoutKind::StorageTexture(SUM_FORMAT)),
+];
+
+pub(crate) const RESOLVE_LAYOUT: &[LayoutEntry] = &[
+    LayoutEntry::compute(0, LayoutKind::UnfilterableTexture),
+    LayoutEntry::compute(1, LayoutKind::Texture),
+    LayoutEntry::compute(2, LayoutKind::Uniform),
+    LayoutEntry::compute(4, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
 
 #[repr(C)]
@@ -118,7 +130,8 @@ impl MotionBlur {
 
 impl crate::gpu::frame_graph::RecordNode for MotionBlur {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute("motion-blur", SHADER, "cs_main", LAYOUT)
+        programs.compute("motion-blur", SHADER, "accumulate_main", ACCUMULATE_LAYOUT)?;
+        programs.compute("motion-blur", SHADER, "resolve_main", RESOLVE_LAYOUT)
     }
 
     fn record(

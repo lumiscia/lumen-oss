@@ -10,7 +10,8 @@ struct Params {
 @group(0) @binding(0) var sum_tex: texture_2d<f32>;
 @group(0) @binding(1) var sample_tex: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> params: Params;
-@group(0) @binding(3) var output_tex: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(3) var sum_out: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(4) var output_tex: texture_storage_2d<rgba16float, write>;
 
 fn inside(coord: vec2<i32>, size: vec2<u32>) -> bool {
     return all(coord >= vec2<i32>(0)) && all(coord < vec2<i32>(size));
@@ -31,9 +32,19 @@ fn total(id: vec2<u32>) -> vec4<f32> {
 }
 
 @compute @workgroup_size(8, 8, 1)
-fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+fn accumulate_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if (any(id.xy >= textureDimensions(sum_out))) {
+        return;
+    }
+    textureStore(sum_out, id.xy, total(id.xy));
+}
+
+// Adds the last sample and writes the average to the working space.
+@compute @workgroup_size(8, 8, 1)
+fn resolve_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (any(id.xy >= textureDimensions(output_tex))) {
         return;
     }
-    textureStore(output_tex, id.xy, total(id.xy));
+    let average = total(id.xy);
+    textureStore(output_tex, id.xy, vec4<f32>(average.rgb, clamp(average.a, 0.0, 1.0)));
 }
