@@ -90,16 +90,18 @@ VideoToolbox GPU texture encode is only available on macOS. `h264_nvenc` and `he
 
 ## Encoders
 
-Each codec tries its encoders in order, warning once for each that won't open. On Linux that is the Vulkan encoder, uploading frames to it if they can't stay on the GPU, then `libx264`, `libx265` or `libsvtav1` on the CPU. macOS tries VideoToolbox first, then the same CPU encoders. `--encoder` or `LUMEN_VIDEO_ENCODER` pins one encoder, which either opens or fails the render. See the [support matrix](../../docs/support-matrix.md#encoding).
+Each codec tries its encoders in order, warning once for each that won't open. On Linux that is the Vulkan encoder, uploading frames to it if they can't stay on the GPU, then `libx264`, `libx265` or `libsvtav1` on the CPU. On a host with NVIDIA's encode library, `av1` tries `av1_nvenc` in place of `av1_vulkan`. macOS tries VideoToolbox first, then the same CPU encoders. `--encoder` or `LUMEN_VIDEO_ENCODER` pins one encoder, which either opens or fails the render. See the [support matrix](../../docs/support-matrix.md#encoding).
 
 ## Prebuilt binaries
 
 The npm packages hold a binary with FFmpeg 9 and these libraries linked in, pinned by [`release/vcpkg.json`](release/vcpkg.json) and built by [`release/build.sh`](release/build.sh):
 
-- Encoders: `libx264`, `libx265` (8-bit only), `libsvtav1`, `libvpx-vp9`, `prores_ks` and `libopus` everywhere, the Vulkan and NVENC encoders on Linux, and VideoToolbox on macOS.
+- Encoders: `libx264`, `libx265` (8-bit and 10-bit), `libsvtav1`, `libvpx-vp9`, `prores_ks` and `libopus` everywhere, the Vulkan and NVENC encoders on Linux, and VideoToolbox on macOS.
 - Decoders: FFmpeg's own, `libdav1d` for AV1, and Vulkan hardware decode on Linux.
 
-The Linux binaries are built without `cuda`, so NVENC takes frames uploaded from the CPU; the Vulkan encoders keep frames on the GPU. The macOS binary is built with `metal`.
+The Linux binaries are built with `cuda`, so NVENC and the Vulkan encoders both take frames without a copy through the CPU. The macOS binary is built with `metal` and runs on macOS 13 or later.
+
+`release/ports/x265` replaces vcpkg's x265 build with one that keeps its assembly in a static Linux library and links a 10-bit build into the 8-bit one.
 
 Lumen is Apache-2.0, but FFmpeg with x264 and x265 is GPL, so the binaries are distributed under GPL-3.0-or-later, with each library's license in the platform package's `licenses/`. The `@lumiscia/lumen-cli` launcher itself is Apache-2.0.
 

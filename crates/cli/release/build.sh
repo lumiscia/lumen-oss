@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the `lumen` binary that @lumiscia/lumen-cli installs, with FFmpeg and its codec libraries
-# linked in, into this platform's package under packages/. vcpkg.json pins what is linked.
+# linked in, into this platform's package under packages/. vcpkg.json pins what is linked, and
+# ports/ and triplets/ hold the changes to vcpkg's own builds.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -8,9 +9,13 @@ manifest="$root/crates/cli/release"
 target="${CARGO_TARGET_DIR:-$root/target}"
 
 case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64) triplet=x64-linux-release package=lumen-cli-linux-x64 features=static-ffmpeg ;;
-  Linux-aarch64) triplet=arm64-linux-release package=lumen-cli-linux-arm64 features=static-ffmpeg ;;
-  Darwin-arm64) triplet=arm64-osx-release package=lumen-cli-darwin-arm64 features=static-ffmpeg,metal ;;
+  Linux-x86_64) triplet=x64-linux-release package=lumen-cli-linux-x64 features=static-ffmpeg,cuda ;;
+  Linux-aarch64) triplet=arm64-linux-release package=lumen-cli-linux-arm64 features=static-ffmpeg,cuda ;;
+  Darwin-arm64)
+    triplet=arm64-osx-13 package=lumen-cli-darwin-arm64 features=static-ffmpeg,metal
+    # The oldest macOS the binary runs on; triplets/arm64-osx-13.cmake sets it for the libraries.
+    export MACOSX_DEPLOYMENT_TARGET=13.0
+    ;;
   *)
     echo "no lumen release build for $(uname -s) $(uname -m)" >&2
     exit 1
@@ -36,6 +41,9 @@ installed="$target/vcpkg-installed"
   --triplet="$triplet" \
   --host-triplet="$triplet"
 
+# Cargo copies the static libraries into ffmpeg-sys-next when it compiles it, and doesn't notice
+# when vcpkg has rebuilt them.
+cargo clean --manifest-path "$root/Cargo.toml" --release --package ffmpeg-sys-next
 PKG_CONFIG_PATH="$installed/$triplet/lib/pkgconfig" cargo build \
   --manifest-path "$root/Cargo.toml" \
   --release \

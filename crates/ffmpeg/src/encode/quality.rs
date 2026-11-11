@@ -312,17 +312,19 @@ pub(crate) fn portable_options(encoder: &str, quality: &EncoderQuality) -> Resul
     })
 }
 
-/// Sets the private AVOptions, then the raw ones, which may name a codec context option such as
-/// `g` or an option of the encoder.
+/// Sets the AVOptions lumen chose, then the raw ones. Each names an option of the encoder or, when
+/// the encoder has none of that name, of the codec context, such as `maxrate` or `g`.
 pub(crate) fn apply_quality_options(
     context: *mut sys::AVCodecContext,
     quality: &QualityOptions,
     encoder: &str,
 ) -> Result<()> {
-    for (name, value) in &quality.private {
-        set_option(unsafe { (*context).priv_data }, 0, name, value, encoder)?;
-    }
-    for (name, value) in &quality.options {
+    let chosen = quality.private.iter().map(|(name, value)| (*name, value));
+    let raw = quality
+        .options
+        .iter()
+        .map(|(name, value)| (name.as_str(), value));
+    for (name, value) in chosen.chain(raw) {
         set_option(
             context.cast(),
             sys::AV_OPT_SEARCH_CHILDREN,
