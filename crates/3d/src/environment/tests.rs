@@ -292,7 +292,7 @@ fn a_file_larger_than_a_map_may_be_is_shrunk_with_its_light_kept() {
 #[test]
 fn malformed_and_oversized_files_are_errors_before_their_pixels_are_read() {
     let good = hdr_file(16, 2, &[Vec3::ONE; 32], true);
-    let too_large = |error| matches!(error, Err(EnvironmentError::TooLarge(_)));
+    let too_large = |error| matches!(error, Err(EnvironmentError::TooLarge { .. }));
     let invalid = |error| matches!(error, Err(EnvironmentError::Invalid(_)));
     let unsupported = |error| matches!(error, Err(EnvironmentError::Unsupported(_)));
     assert!(invalid(decode(&good[..good.len() - 3])), "truncated");
@@ -396,7 +396,7 @@ mod exr_files {
         let too_wide = rgb(9000, 1, |_, _| (1.0, 1.0, 1.0));
         assert!(matches!(
             decode(&too_wide),
-            Err(EnvironmentError::TooLarge(_))
+            Err(EnvironmentError::TooLarge { .. })
         ));
         let truncated = rgb(64, 64, |x, _| (x as f32, 1.0, 1.0));
         assert!(matches!(

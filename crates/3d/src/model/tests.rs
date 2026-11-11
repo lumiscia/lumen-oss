@@ -303,13 +303,42 @@ fn textures_decode_with_mips_in_the_colour_space_of_their_slots() {
     assert_eq!(texture.levels[2], [255, 128, 0, 255]);
 }
 
+/// The error for `details`, whose limit is the first number after "than the" in it. The size
+/// over the limit is not compared, as most limits are met before it is known.
+fn too_large_error(details: impl Into<String>) -> ModelError {
+    let details = details.into();
+    let limit = details
+        .split("than the ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|number| number.parse().ok())
+        .expect("the details name the limit");
+    ModelError::TooLarge {
+        details,
+        limit,
+        actual: None,
+    }
+}
+
+/// `error` without how large the model was, which only some limits know.
+fn ignoring_size(error: ModelError) -> ModelError {
+    match error {
+        ModelError::TooLarge { details, limit, .. } => ModelError::TooLarge {
+            details,
+            limit,
+            actual: None,
+        },
+        error => error,
+    }
+}
+
 #[test]
 fn an_image_declaring_a_huge_size_is_rejected_before_decoding() {
     let image = resized_header(png(1, 1, [0; 4]), 100_000, 100_000);
     let error = textured(Glb::triangle(), &image).read().unwrap_err();
     assert_eq!(
         error,
-        ModelError::TooLarge(
+        too_large_error(
             "the model has more pixels across one image than the 8192 it may".to_string()
         )
     );
@@ -329,9 +358,7 @@ fn every_mip_level_counts_toward_the_texture_pixel_limit_before_decoding() {
     }]);
     assert_eq!(
         glb.read().unwrap_err(),
-        ModelError::TooLarge(
-            "the model has more texture pixels than the 160000000 it may".to_string()
-        )
+        too_large_error("the model has more texture pixels than the 160000000 it may".to_string())
     );
 }
 
@@ -384,8 +411,8 @@ fn images_count_by_their_bytes_whatever_buffer_views_name_them() {
     assert_eq!(identical.textures.len(), 1);
     let file = views(false).bytes().len();
     assert_eq!(
-        views(false).read().unwrap_err(),
-        ModelError::TooLarge(format!(
+        ignoring_size(views(false).read().unwrap_err()),
+        too_large_error(format!(
             "the model's images take more than the {file} bytes of its file"
         ))
     );
@@ -993,7 +1020,7 @@ fn malformed_containers_and_out_of_range_data_are_errors() {
 fn counts_past_each_limit_are_errors_before_anything_that_size_is_read() {
     let empty_objects = |count: usize| Value::Array(vec![json!({}); count]);
     let too_large = |what: &str, limit: &str| {
-        ModelError::TooLarge(format!("the model has more {what} than the {limit} it may"))
+        too_large_error(format!("the model has more {what} than the {limit} it may"))
     };
     let cases: [(ModelError, Edit); 9] = [
         (
@@ -1075,7 +1102,7 @@ fn counts_past_each_limit_are_errors_before_anything_that_size_is_read() {
     });
     assert_eq!(
         zeros,
-        ModelError::TooLarge(
+        too_large_error(
             "the model's accessors decode to more than the 16777216 bytes a file of its size may"
                 .to_string()
         )
@@ -1488,7 +1515,7 @@ fn assert_cases(cases: Vec<Case>) {
             let mut glb = Glb::parse(fixture);
             edit(&mut glb.json, &mut glb.bin);
             assert_eq!(
-                read_without_panicking(&glb.bytes()).unwrap_err(),
+                ignoring_size(read_without_panicking(&glb.bytes()).unwrap_err()),
                 expected,
                 "{extension}"
             );
@@ -1550,12 +1577,12 @@ fn compressed_data_disagreeing_with_its_declared_counts_is_an_error() {
 #[test]
 fn compressed_data_past_its_budget_is_rejected_before_decoding() {
     let budget = |what: &str| {
-        ModelError::TooLarge(format!(
+        too_large_error(format!(
             "the model's {what} decode to more than the 16777216 bytes a file of its size may"
         ))
     };
     let pixels = |bytes: usize| {
-        ModelError::TooLarge(format!(
+        too_large_error(format!(
             "the model's KTX2 and WebP images decode to more than the 8388608 pixels their \
              {bytes} bytes may"
         ))
@@ -1669,8 +1696,10 @@ fn zstandard_levels_are_bounded_by_their_declared_length() {
     }
     // A 1 GiB window, and 1 KiB blocks running far past the level's 256 bytes.
     assert_eq!(
-        read_without_panicking(&uastc_level(rle_frame(30, 20, 128 << 10)).bytes()).unwrap_err(),
-        ModelError::TooLarge(
+        ignoring_size(
+            read_without_panicking(&uastc_level(rle_frame(30, 20, 128 << 10)).bytes()).unwrap_err()
+        ),
+        too_large_error(
             "a KTX2 image in the model has a level of 256 bytes whose Zstandard window is \
              1073741824 bytes, more than the 1024 it may be"
                 .to_string()
@@ -1723,13 +1752,13 @@ fn compressed_images_share_one_pixel_budget() {
     assert_ne!(
         read_without_panicking(&large_etc1s(false).bytes())
             .err()
-            .map(|error| matches!(error, ModelError::TooLarge(_))),
+            .map(|error| matches!(error, ModelError::TooLarge { .. })),
         Some(true),
         "one 2048 x 2048 image fits the floor"
     );
     assert_eq!(
-        read_without_panicking(&large_etc1s(true).bytes()).unwrap_err(),
-        ModelError::TooLarge(
+        ignoring_size(read_without_panicking(&large_etc1s(true).bytes()).unwrap_err()),
+        too_large_error(
             "the model's KTX2 and WebP images decode to more than the 8388608 pixels their 1342 \
              bytes may"
                 .to_string()
@@ -1785,7 +1814,7 @@ fn files_made_to_reach_past_the_limits_are_errors_without_panicking() {
         (
             include_bytes!("../../tests/fixtures/review-zstd.glb"),
             cfg!(feature = "ktx2"),
-            ModelError::TooLarge(
+            too_large_error(
                 "a KTX2 image in the model has a level of 256 bytes whose Zstandard window is \
                  1073741824 bytes, more than the 1024 it may be"
                     .to_string(),
@@ -1804,7 +1833,7 @@ fn files_made_to_reach_past_the_limits_are_errors_without_panicking() {
         (
             include_bytes!("../../tests/fixtures/review-floor.glb"),
             cfg!(feature = "webp"),
-            ModelError::TooLarge(
+            too_large_error(
                 "the model's KTX2 and WebP images decode to more than the 8388608 pixels their \
                  880 bytes may"
                     .to_string(),
@@ -1813,7 +1842,10 @@ fn files_made_to_reach_past_the_limits_are_errors_without_panicking() {
     ];
     for (bytes, enabled, expected) in files {
         if enabled {
-            assert_eq!(read_without_panicking(bytes).unwrap_err(), expected);
+            assert_eq!(
+                ignoring_size(read_without_panicking(bytes).unwrap_err()),
+                expected
+            );
         }
     }
 }

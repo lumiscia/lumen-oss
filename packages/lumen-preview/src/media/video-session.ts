@@ -162,7 +162,7 @@ export class VideoSession {
         throw new LumenMediaError(
           "track_not_decodable",
           `video source "${this.streamId}" cannot be decoded in this browser`,
-          { sourceId: this.streamId },
+          { sourceId: this.streamId, wanted: ["video"] },
         );
       }
 
@@ -183,10 +183,11 @@ export class VideoSession {
     } catch (error) {
       input?.dispose();
       throw toMediaError(
-        "unsupported_container",
+        "decode_failed",
         this.streamId,
         `video source "${this.streamId}" could not be opened`,
         error,
+        { wanted: ["video"] },
       );
     }
   }
@@ -195,10 +196,11 @@ export class VideoSession {
     if (this.registration.track === undefined || this.registration.track === "primary") {
       const track = await input.getPrimaryVideoTrack();
       if (!track) {
+        const sound = await input.getPrimaryAudioTrack().catch(() => null);
         throw new LumenMediaError(
-          "track_not_decodable",
+          "no_video_track",
           `video source "${this.streamId}" does not contain a video track`,
-          { sourceId: this.streamId },
+          { sourceId: this.streamId, wanted: ["video"], ...(sound ? { found: "audio" } : {}) },
         );
       }
       return track;
@@ -208,9 +210,9 @@ export class VideoSession {
     const track = tracks.find((candidate) => candidate.id === this.registration.track);
     if (!track) {
       throw new LumenMediaError(
-        "track_not_decodable",
+        "track_not_found",
         `video source "${this.streamId}" does not contain video track ${this.registration.track}`,
-        { sourceId: this.streamId },
+        { sourceId: this.streamId, wanted: ["video"] },
       );
     }
 
@@ -291,6 +293,7 @@ export class VideoSession {
           ? `video frames failed to decode for "${this.streamId}"`
           : `video frame ${activeFrame} failed to decode for "${this.streamId}"`,
         error,
+        { wanted: ["video"] },
       );
     }
 
@@ -339,6 +342,7 @@ export class VideoSession {
           ? `video frames failed to decode for "${this.streamId}"`
           : `video frame ${activeFrame} failed to decode for "${this.streamId}"`,
         error,
+        { wanted: ["video"] },
       );
     }
   }

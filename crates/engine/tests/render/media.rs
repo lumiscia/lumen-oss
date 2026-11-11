@@ -1,6 +1,9 @@
 //! Images and video frames from a media store: their size, replacement, caching and release.
 
+use lumen_engine::error::MediaReason;
 use lumen_engine::gpu::GpuCompositionRenderer;
+use lumen_engine::media::{AssetKind, MediaLocation, NodeParamAt};
+use lumen_engine::node::NodeId;
 use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
@@ -61,6 +64,60 @@ fn a_missing_source_only_fails_the_frames_that_reach_it() {
         .render_frame_at(&composition, 0.0, &media)
         .unwrap_err();
     assert!(error.to_string().contains("gone"), "{error}");
+}
+
+#[test]
+fn a_missing_source_reports_where_it_is_used() {
+    let gpu = gpu();
+    let composition: lumen_engine::composition::Composition =
+        media_in(json!({ "kind": "image", "source": "gone.png" })).into();
+    let error = gpu
+        .renderer()
+        .render_frame_at(&composition, 0.0, &TestMedia::default())
+        .unwrap_err();
+    let failure = error.media_failure().expect("a media failure");
+    assert_eq!(failure.code(), "media.not_found");
+    assert_eq!(failure.source, "gone.png");
+    assert_eq!(failure.wanted, [AssetKind::Image]);
+    assert_eq!(
+        failure.at,
+        Some(MediaLocation::Node(NodeParamAt {
+            template: None,
+            node: NodeId::new(1),
+            param: "source".to_string(),
+        }))
+    );
+}
+
+#[test]
+fn an_image_wider_than_the_device_allows_is_too_large() {
+    let gpu = gpu();
+    let composition: lumen_engine::composition::Composition =
+        media_in(json!({ "kind": "image", "source": "wide.png" })).into();
+    let mut renderer = gpu.renderer();
+    let limit = u64::from(
+        renderer
+            .gpu_renderer()
+            .device
+            .limits()
+            .max_texture_dimension_2d,
+    );
+    let width = limit as u32 + 1;
+    let media = TestMedia::default().image("wide.png", width, 1, solid((width, 1), RED));
+    let error = renderer
+        .render_frame_at(&composition, 0.0, &media)
+        .unwrap_err();
+    let failure = error.media_failure().expect("a media failure");
+    assert!(
+        matches!(
+            failure.reason,
+            MediaReason::TooLarge { limit: found, actual: Some(actual), .. }
+                if found == limit && actual == u64::from(width)
+        ),
+        "{error}"
+    );
+    assert_eq!(failure.source, "wide.png");
+    assert!(failure.at.is_some(), "{error}");
 }
 
 #[test]

@@ -29,6 +29,7 @@ export class ImageSession {
         this.imageId,
         `image source "${this.imageId}" failed to decode`,
         error,
+        { wanted: ["image"] },
       );
     }
   }

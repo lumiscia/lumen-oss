@@ -20,7 +20,7 @@ use super::{AUDIO_SAMPLE_RATE, AudioClip, AudioTimeline, AudioTrack, ms_to_sampl
 use crate::{
     composition::{Composition, CompositionTemplate},
     error::{LumenError, MediaError},
-    media::MediaStore,
+    media::{MediaLocation, MediaStore},
     node::{
         ClipPropValue, DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind,
         compositing::clip::{Clip, ClipEnd, ClipWindow},
@@ -77,6 +77,9 @@ pub struct AudioVoice {
     pub duration: f64,
     pub fade_in: f64,
     pub fade_out: f64,
+    /// Where the composition has the clip, for the failure of a source that can't be read.
+    #[serde(skip)]
+    pub at: MediaLocation,
 }
 
 /// Root samples `start + i` for `i` in `0..frames`, where a voice plays its clip at
@@ -1038,6 +1041,12 @@ impl<'a> Planner<'a> {
                     duration,
                     fade_in: (ms_to_sample(clip.fade_in_ms) as f64).min(duration),
                     fade_out: (ms_to_sample(clip.fade_out_ms) as f64).min(duration),
+                    at: MediaLocation::AudioClip {
+                        template: instance.scope.template_name().map(str::to_string),
+                        track: clip.track_id.clone(),
+                        clip: clip.id.clone(),
+                        index,
+                    },
                 });
                 voices.len() - 1
             })

@@ -13,6 +13,7 @@ export async function readModel(modelId: string, source: MediaSourceInput): Prom
       modelId,
       `model source "${modelId}" failed to load`,
       error,
+      { wanted: ["model"] },
     );
   }
 }

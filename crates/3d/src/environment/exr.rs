@@ -99,16 +99,20 @@ fn read_map(bytes: &[u8]) -> Result<Equirect, EnvironmentError> {
         .is_none_or(|bytes| bytes > MAX_BLOCK_BYTES)
         || header.chunk_count > MAX_CHUNKS
     {
-        return Err(EnvironmentError::TooLarge(
-            "the environment map's blocks are larger or more than may be read".to_string(),
-        ));
+        return Err(EnvironmentError::TooLarge {
+            details: "the environment map's blocks are larger or more than may be read".to_string(),
+            limit: MAX_BLOCK_BYTES as u64,
+            actual: None,
+        });
     }
     let size = header.layer_size;
     let (Ok(width), Ok(height)) = (u32::try_from(size.width()), u32::try_from(size.height()))
     else {
-        return Err(EnvironmentError::TooLarge(
-            "the environment map is too large".to_string(),
-        ));
+        return Err(EnvironmentError::TooLarge {
+            details: "the environment map is too large".to_string(),
+            limit: u64::from(u32::MAX),
+            actual: Some(size.width().max(size.height()) as u64),
+        });
     };
     let shrink = Cell::new(Some(Shrink::new(width, height)?));
     let image = read()

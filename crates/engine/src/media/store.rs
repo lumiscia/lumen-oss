@@ -43,10 +43,11 @@ impl Default for TextSession {
 
 /// Where a render's media and fonts come from. A source or family may be an asset reference,
 /// `asset:<id>`, which a store with an asset store resolves with [`super::resolve_asset`] and any
-/// other store fails as [`MediaError::AssetNotFound`].
+/// other store fails as `media.not_found`.
 pub trait MediaStore: Send + Sync + Debug {
     /// The resolver for `source`. A source this store doesn't have fails with
-    /// `MediaError::SourceNotFound`, and one it has but can't open fails with why.
+    /// `media.not_found`, and one it has but can't use fails with why: `media.wrong_kind`,
+    /// `media.unsupported`, `media.too_large` or `media.decode`.
     fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
         Err(MediaError::source_not_found(
             source,

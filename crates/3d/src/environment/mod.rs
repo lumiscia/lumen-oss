@@ -48,15 +48,20 @@ pub enum EnvironmentError {
     /// A well-formed file that needs something this reader doesn't do.
     Unsupported(String),
     /// A file larger than the limits allow.
-    TooLarge(String),
+    TooLarge {
+        details: String,
+        limit: u64,
+        /// The size over the limit, when it is known.
+        actual: Option<u64>,
+    },
 }
 
 impl fmt::Display for EnvironmentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Invalid(details) | Self::Unsupported(details) | Self::TooLarge(details) => {
-                f.write_str(details)
-            }
+            Self::Invalid(details)
+            | Self::Unsupported(details)
+            | Self::TooLarge { details, .. } => f.write_str(details),
         }
     }
 }
@@ -74,10 +79,14 @@ fn unsupported(details: impl Into<String>) -> EnvironmentError {
 /// Reads the Radiance `.hdr` or OpenEXR `.exr` map in `bytes`.
 pub fn decode(bytes: &[u8]) -> Result<Equirect, EnvironmentError> {
     if bytes.len() > MAX_ENVIRONMENT_BYTES {
-        return Err(EnvironmentError::TooLarge(format!(
-            "the environment map is larger than the {} MiB it may be",
-            MAX_ENVIRONMENT_BYTES >> 20
-        )));
+        return Err(EnvironmentError::TooLarge {
+            details: format!(
+                "the environment map is larger than the {} MiB it may be",
+                MAX_ENVIRONMENT_BYTES >> 20
+            ),
+            limit: MAX_ENVIRONMENT_BYTES as u64,
+            actual: Some(bytes.len() as u64),
+        });
     }
     if hdr::is_hdr(bytes) {
         return hdr::decode(bytes);
@@ -337,10 +346,20 @@ impl Shrink {
             || height > MAX_SOURCE_SIDE
             || u64::from(width) * u64::from(height) > MAX_SOURCE_PIXELS
         {
-            return Err(EnvironmentError::TooLarge(format!(
-                "the environment map is {width}x{height} pixels, larger than the \
-                 {MAX_SOURCE_SIDE} pixels a side and {MAX_SOURCE_PIXELS} pixels in all it may be"
-            )));
+            let pixels = u64::from(width) * u64::from(height);
+            let (limit, actual) = if width.max(height) > MAX_SOURCE_SIDE {
+                (u64::from(MAX_SOURCE_SIDE), u64::from(width.max(height)))
+            } else {
+                (MAX_SOURCE_PIXELS, pixels)
+            };
+            return Err(EnvironmentError::TooLarge {
+                details: format!(
+                    "the environment map is {width}x{height} pixels, larger than the \
+                     {MAX_SOURCE_SIDE} pixels a side and {MAX_SOURCE_PIXELS} pixels in all it may be"
+                ),
+                limit,
+                actual: Some(actual),
+            });
         }
         let mut factor = 1;
         let fits = |factor: u32| {
@@ -355,7 +374,11 @@ impl Shrink {
         let mut texels = Vec::new();
         texels
             .try_reserve_exact(count)
-            .map_err(|_| EnvironmentError::TooLarge("no memory for the environment map".into()))?;
+            .map_err(|_| EnvironmentError::TooLarge {
+                details: "no memory for the environment map".into(),
+                limit: MAX_MAP_PIXELS,
+                actual: Some(count as u64),
+            })?;
         texels.resize(count, Vec3::ZERO);
         let map = Equirect {
             width: map_width,

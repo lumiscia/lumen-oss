@@ -25,6 +25,7 @@ mod buffers;
 #[cfg(feature = "draco")]
 mod draco;
 mod glb;
+mod gltf_json;
 mod image;
 mod info;
 #[cfg(feature = "ktx2")]
@@ -44,6 +45,7 @@ use crate::{Blending, MAX_SCENE_NODES, Maps, SkinVertex, Vertex};
 use animation::Animation;
 pub use animation::Playback;
 pub use bounds::SkinBounds;
+pub use gltf_json::{GLTF_JSON_SNIFF_BYTES, is_gltf_json};
 pub use info::{AnimationInfo, MaterialInfo, ModelInfo};
 
 /// The largest file read.
@@ -108,15 +110,20 @@ pub enum ModelError {
     /// A well-formed model that needs something this reader doesn't do.
     Unsupported(String),
     /// A model holding more of something than the limits allow.
-    TooLarge(String),
+    TooLarge {
+        details: String,
+        limit: u64,
+        /// The size over the limit, when reading found it; it stops at the limit otherwise.
+        actual: Option<u64>,
+    },
 }
 
 impl fmt::Display for ModelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Invalid(details) | Self::Unsupported(details) | Self::TooLarge(details) => {
-                f.write_str(details)
-            }
+            Self::Invalid(details)
+            | Self::Unsupported(details)
+            | Self::TooLarge { details, .. } => f.write_str(details),
         }
     }
 }
@@ -131,8 +138,29 @@ pub(crate) fn unsupported(details: impl Into<String>) -> ModelError {
     ModelError::Unsupported(details.into())
 }
 
-pub(crate) fn too_large(what: &str, limit: impl fmt::Display) -> ModelError {
-    ModelError::TooLarge(format!("the model has more {what} than the {limit} it may"))
+pub(crate) fn too_large<L>(what: &str, limit: L) -> ModelError
+where
+    L: fmt::Display + TryInto<u64> + Copy,
+{
+    ModelError::TooLarge {
+        details: format!("the model has more {what} than the {limit} it may"),
+        limit: limit.try_into().unwrap_or(u64::MAX),
+        actual: None,
+    }
+}
+
+impl ModelError {
+    /// A `TooLarge` that says how large the model was.
+    pub(crate) fn of_size(self, size: usize) -> Self {
+        match self {
+            Self::TooLarge { details, limit, .. } => Self::TooLarge {
+                details,
+                limit,
+                actual: Some(size as u64),
+            },
+            error => error,
+        }
+    }
 }
 
 /// Runs a third-party decoder, failing with `what` is corrupt rather than taking the process down
