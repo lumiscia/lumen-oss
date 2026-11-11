@@ -703,19 +703,21 @@ fn build_nodes(nodes: &[Object<NodeJson>], errors: &mut Vec<LumenError>) -> Grap
                 continue;
             }
         };
-        if let NodeKind::Text3d(text) = &node_kind {
-            let invalid = text.literal_param_errors();
-            if !invalid.is_empty() {
-                errors.extend(invalid.into_iter().map(|(param, details)| {
-                    DocumentError::InvalidParam {
-                        node_id: id,
-                        param: param.to_string(),
-                        details,
-                    }
-                    .into()
-                }));
-                continue;
-            }
+        let invalid = match &node_kind {
+            NodeKind::Text3d(text) => text.literal_param_errors(),
+            NodeKind::ColorGrade(grade) => grade.literal_param_errors(),
+            _ => Vec::new(),
+        };
+        if !invalid.is_empty() {
+            errors.extend(invalid.into_iter().map(|(param, details)| {
+                DocumentError::InvalidParam {
+                    node_id: id,
+                    param: param.to_string(),
+                    details,
+                }
+                .into()
+            }));
+            continue;
         }
         graph.nodes.insert(id, node_kind);
     }
@@ -2076,7 +2078,11 @@ mod tests {
             "nodes": [
                 { "id": 1, "type": "background", "params": { "paintt": "#fff", "width": "wide" } },
                 { "id": 2, "type": "sparkle" },
-                { "id": 2, "type": "media_output" }
+                { "id": 2, "type": "media_output" },
+                { "id": 3, "type": "color_grade", "params": { "lut": "rgb1d:0,0,0;255,128,0" } },
+                { "id": 4, "type": "color_grade",
+                  "params": { "lut": "rgb1d:0,0,0;1,1,1", "lut_source": "grade.cube" } },
+                { "id": 5, "type": "color_grade", "params": { "lut_source": "rgb1d:0,0,0;1,1,1" } }
             ],
             // Not reported: connections are checked once every node reads.
             "connections": [{ "from_node": 7, "to_node": 2, "to_port": "source" }]
@@ -2089,6 +2095,9 @@ mod tests {
                 ("node.invalid_param", "/nodes/0/params/width", Some(1)),
                 ("node.unknown_type", "/nodes/1/type", Some(2)),
                 ("graph.duplicate_node_id", "/nodes/2", Some(2)),
+                ("node.invalid_param", "/nodes/3/params/lut", Some(3)),
+                ("node.invalid_param", "/nodes/4/params/lut", Some(4)),
+                ("node.invalid_param", "/nodes/5/params/lut_source", Some(5)),
                 (
                     "node.invalid_param",
                     "/compositions/card~1a/nodes/0/params/opacity",
@@ -2098,11 +2107,22 @@ mod tests {
         );
         assert!(diagnostics.iter().all(Diagnostic::is_error));
         assert!(
-            diagnostics[4]
+            diagnostics[7]
                 .message
                 .starts_with("composition `card/a`: node 1: "),
             "{}",
+            diagnostics[7].message
+        );
+        assert!(
+            diagnostics[4].message.contains("`lut` value 255")
+                && diagnostics[4].message.contains("0..1"),
+            "{}",
             diagnostics[4].message
+        );
+        assert!(
+            diagnostics[6].message.contains("is the `lut` param"),
+            "{}",
+            diagnostics[6].message
         );
         assert_eq!(
             parse_value(&document).unwrap_err().diagnostics(),

@@ -84,7 +84,7 @@ fn bind_errors() {
             json!([
                 solid(1, [255, 0, 0, 255]),
                 { "id": 2, "type": "color_grade", "in": { "source": 1 },
-                  "params": { "lut": source } },
+                  "params": { "lut": format!("=\"{source}\"") } },
             ]),
             "color_grade node 2 evaluation failed: `lut` components must be finite",
         ));
@@ -94,7 +94,7 @@ fn bind_errors() {
         json!([
             solid(1, [255, 0, 0, 255]),
             { "id": 2, "type": "color_grade", "in": { "source": 1 },
-              "params": { "lut": "rgb1d: 0,0,0; 255,128,0" } },
+              "params": { "lut": "=\"rgb1d: 0,0,0; 255,128,0\"" } },
         ]),
         "`lut` value 255 in `255,128,0` is outside 0..1",
     ));
@@ -103,7 +103,7 @@ fn bind_errors() {
         json!([
             solid(1, [255, 0, 0, 255]),
             { "id": 2, "type": "color_grade", "in": { "source": 1 },
-              "params": { "lut": "rgb1d: 0,0,0; 1,1,1", "lut_source": "grade.cube" } },
+              "params": { "lut": "=\"rgb1d: 0,0,0; 1,1,1\"", "lut_source": "grade.cube" } },
         ]),
         "`lut` and `lut_source` are both set",
     ));

@@ -5,7 +5,8 @@ use crate::error::{LumenError, MediaError, MediaFailure};
 use crate::media::{AssetKind, LutResolver, MediaIdentity, resolve_as};
 use crate::node::processing::cube_lut::{CubeError, CubeLut};
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
+    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
+    processing::RasterSampling,
 };
 
 use crate::gpu::params;
@@ -82,6 +83,34 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
 
+const LUT_AND_LUT_SOURCE: &str = "`lut` and `lut_source` are both set; use one of them";
+
+impl ColorGrade {
+    /// The params whose literal values are wrong, with what is wrong, for checks that run before
+    /// a render.
+    pub(crate) fn literal_param_errors(&self) -> Vec<(&'static str, String)> {
+        let params = &self.params;
+        let mut errors = Vec::new();
+        let lut = match &params.lut {
+            Deferred::Value(lut) => Some(lut.as_str()),
+            Deferred::Expr(_) => None,
+        };
+        if let Some(lut) = lut
+            && let Err(details) = params::lut_stops(lut)
+        {
+            errors.push(("lut", details));
+        }
+        if let Deferred::Value(source) = &params.lut_source {
+            if params::looks_like_inline_lut(source) {
+                errors.push(("lut_source", params::INLINE_LUT_IN_LUT_SOURCE.to_string()));
+            } else if !source.is_empty() && lut.is_some_and(|lut| !params::is_identity_lut(lut)) {
+                errors.push(("lut", LUT_AND_LUT_SOURCE.to_string()));
+            }
+        }
+        errors
+    }
+}
+
 impl crate::gpu::frame_graph::RecordNode for ColorGrade {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         programs.compute("color-grade", SHADER, "cs_main", RECORD_LAYOUT)?;
@@ -138,13 +167,11 @@ impl ColorGrade {
             return Ok(crate::gpu::frame_graph::Raster { tex, ..source });
         }
 
-        if !(evaluated.lut.trim().is_empty()
-            || evaluated.lut.trim().eq_ignore_ascii_case(IDENTITY_LUT))
-        {
-            return Err(params::lut_error(
-                self.id,
-                "`lut` and `lut_source` are both set; use one of them",
-            ));
+        if params::looks_like_inline_lut(&evaluated.lut_source) {
+            return Err(params::lut_error(self.id, params::INLINE_LUT_IN_LUT_SOURCE));
+        }
+        if !params::is_identity_lut(&evaluated.lut) {
+            return Err(params::lut_error(self.id, LUT_AND_LUT_SOURCE));
         }
         let loaded = self.load_cube(cx, &evaluated.lut_source)?;
         gpu_params.domain_min = [
