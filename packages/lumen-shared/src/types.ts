@@ -16,6 +16,7 @@ import type {
   TextContent,
   Vec2,
   Vec3,
+  nodeInputPorts,
 } from "@lumiscia/lumen-types";
 
 import type { Composition } from "./composition.js";
@@ -33,7 +34,7 @@ export type NodeInput<TKind extends NodeKind = NodeKind> = NodeInputByKind[TKind
 
 type NodeInputByKind = {
   readonly [TKind in NodeKind]: WithExpressionParams<CompositionNodeInput<TKind>> & {
-    /** Nodes of the composition that feed the ports, connected in order. */
+    /** The nodes that feed the ports, connected in order. */
     readonly inputs?: NodeInputs<TKind>;
   };
 };
@@ -44,13 +45,52 @@ type NodeInputByKind = {
  */
 type NodeInputs<TKind extends NodeKind> = [NodeInputPortName<TKind>] extends [never]
   ? undefined
-  : {
-      readonly [TPort in NodeInputPortName<TKind>]?: TPort extends NodeVariadicInputPortName<TKind>
-        ?
-            | NodeReference<NodeInputPortKind<TKind, TPort>>
-            | readonly NodeReference<NodeInputPortKind<TKind, TPort>>[]
-        : NodeReference<NodeInputPortKind<TKind, TPort>>;
-    };
+  : NodePorts<TKind>;
+
+type NodePorts<TKind extends NodeKind> = {
+  readonly [TPort in NodeInputPortName<TKind>]?: TPort extends NodeVariadicInputPortName<TKind>
+    ?
+        | NodeSource<NodeInputPortKind<TKind, TPort>>
+        | readonly NodeSource<NodeInputPortKind<TKind, TPort>>[]
+    : NodeSource<NodeInputPortKind<TKind, TPort>>;
+};
+
+/** A node value whose `type` outputs `TOutput`, as `nodes` builds it. */
+export type NodeValue<TOutput extends NodePortKind = NodePortKind> = NodeInput<
+  NodeKindOutputting<TOutput>
+>;
+
+/**
+ * What a port reads: a node of the composition, or a node value, which becomes a node of the
+ * composition when the node reading it is added. One value is one node, however many read it.
+ */
+export type NodeSource<TOutput extends NodePortKind = NodePortKind> =
+  | NodeReference<TOutput>
+  | NodeValue<TOutput>;
+
+/** A node's params and input ports by name in one object, as `nodes` takes them. */
+export type NodeProps<TKind extends NodeKind> = NodeParamProps<TKind> &
+  ([NodeInputPortName<TKind>] extends [never] ? unknown : NodePorts<TKind>);
+
+/** A kind without params has an open `Record<string, never>` there, which would take no ports. */
+type NodeParamProps<TKind extends NodeKind> =
+  NonNullable<NodeInput<TKind>["params"]> extends infer TParams
+    ? string extends keyof TParams
+      ? unknown
+      : TParams
+    : never;
+
+/**
+ * One function per node kind, named after its `type`. Each takes the node's params and input
+ * ports in one object and returns the node value, without adding anything.
+ */
+export type NodeFunctions = {
+  readonly [TKind in keyof typeof nodeInputPorts]: (
+    ...props: Record<never, never> extends NodeProps<TKind>
+      ? [props?: NodeProps<TKind>]
+      : [props: NodeProps<TKind>]
+  ) => NodeInput<TKind>;
+};
 
 /** Lets each param that takes `=...` strings take an `Expr` of the matching type too. */
 type WithExpressionParams<TNode extends { readonly params?: object }> = Omit<TNode, "params"> & {
@@ -261,8 +301,10 @@ export interface CompositionDefinitionOptions<TProps extends PropDeclarations> {
   /** In frames. Defaults to the timeline of the composition the template is used in. */
   readonly duration?: number;
   readonly props?: TProps;
-  /** Adds the template's nodes and returns the one it outputs. */
-  readonly build: (composition: Composition, props: PropReads<TProps>) => NodeReference<"raster">;
+  /**
+   * Returns the node the template outputs: a node value, or a node it added to `composition`.
+   */
+  readonly build: (composition: Composition, props: PropReads<TProps>) => NodeSource<"raster">;
 }
 
 /** Where a clip plays its template. `start` and `duration` count the parent's frames. */

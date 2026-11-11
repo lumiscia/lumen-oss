@@ -41,9 +41,9 @@ function declaration<TType extends PropType>(
 }
 
 /**
- * Defines a reusable composition. `build` adds its nodes to a fresh composition, reading props
- * through its second argument, and returns the node it outputs. Each `clip` plays it with its
- * own timing and props.
+ * Defines a reusable composition. `build` returns the node it outputs, reading props through its
+ * second argument: a node value, or a node it added to the fresh composition it is given. Each
+ * `clip` plays it with its own timing and props.
  */
 export function defineComposition<TProps extends PropDeclarations = Record<never, never>>(
   options: CompositionDefinitionOptions<TProps>,
@@ -58,8 +58,7 @@ export function defineComposition<TProps extends PropDeclarations = Record<never
     Object.keys(props).map((prop) => [prop, readProp(prop)]),
   ) as PropReads<TProps>;
   const composition = new Composition();
-  const source = options.build(composition, reads);
-  composition.addNode({ type: "media_output", inputs: { source } });
+  composition.addOutput(options.build(composition, reads));
 
   const { connections, nodes } = composition.toJSON();
   const template: CompositionTemplate = {

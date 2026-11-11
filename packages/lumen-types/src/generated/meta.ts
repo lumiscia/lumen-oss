@@ -2891,3 +2891,137 @@ export type NodeInputPortKind<
     ? NodeInputPortKindByKind[TKind][TPort]
     : never
   : never;
+
+/**
+ * A name a node kind gives both a param and an input port: `never`, since `nodes` tells a node's
+ * params from its inputs by name. `nodeInputPorts` fails to compile otherwise.
+ */
+export type NodeParamPortNameClash = {
+  readonly [TKind in NodeKind]: Extract<
+    keyof NonNullable<CompositionNodeByKind[TKind]["params"]>,
+    NodeInputPortName<TKind>
+  >;
+}[NodeKind];
+
+type NodeInputPortTable = {
+  readonly [TKind in NodeKind]: {
+    readonly [TPort in NodeInputPortName<TKind>]: {
+      readonly kind: NodeInputPortKind<TKind, TPort>;
+      readonly variadic: TPort extends NodeVariadicInputPortName<TKind> ? true : false;
+    };
+  };
+};
+
+/**
+ * The input ports of each node kind by name, in the schema's order: what each takes, and whether
+ * it takes a list of nodes.
+ */
+export const nodeInputPorts = {
+  /** Generates a background raster texture. */
+  "background": {},
+  /** Applies a separable Gaussian blur to a raster. */
+  "blur": { "source": { kind: "raster", variadic: false } },
+  /** Combines two raster alpha masks with boolean operations. */
+  "boolean": { "a": { kind: "raster", variadic: false }, "b": { kind: "raster", variadic: false } },
+  /**
+   * The viewpoint `render_3d` draws from, looking down its -Z. The first camera in a scene wins;
+   * without one, `render_3d` views from 5 units along +Z with a 40° field of view.
+   */
+  "camera_3d": {},
+  /** Plays a composition template, or its source, over a window of time. */
+  "clip": { "source": { kind: "raster", variadic: false } },
+  /** Applies a LUT-driven color transform to a raster. */
+  "color_grade": { "source": { kind: "raster", variadic: false } },
+  /** Keeps a raster region in place and clears everything outside it. */
+  "crop": { "source": { kind: "raster", variadic: false } },
+  /** Blurs a raster along a line, as a straight motion blur. */
+  "directional_blur": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. Map bytes are
+   * premultiplied by alpha, so transparent areas of the map, and everything outside it, leave
+   * the source in place.
+   */
+  "displacement_map": { "source": { kind: "raster", variadic: false }, "map": { kind: "raster", variadic: false } },
+  /** Adjusts raster exposure, contrast, and offset. */
+  "exposure": { "source": { kind: "raster", variadic: false } },
+  /** Generates opaque grey fractal noise, the same for a given seed and evolution. */
+  "fractal_noise": {},
+  /**
+   * Adds a blurred copy of a raster's brightest pixels to it, as light: the glow's alpha is its
+   * brightest channel, so dark pixels add nothing.
+   */
+  "glow": { "source": { kind: "raster", variadic: false } },
+  /** Adjusts raster hue, saturation, and lightness. */
+  "hue_saturation": { "source": { kind: "raster", variadic: false } },
+  /**
+   * Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by
+   * default, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,
+   * ordered by its centre among blended objects, so its transparent parts show what is behind it.
+   * Planes that intersect, or overlap while crossing in depth, can show in the wrong order; layers
+   * separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
+   * A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
+   * filtered by `render_3d`'s `supersample`.
+   */
+  "image_plane_3d": { "source": { kind: "raster", variadic: false } },
+  /** Remaps raster black, white, gamma, and output range. */
+  "levels": { "source": { kind: "raster", variadic: false } },
+  /** A light. A scene without any is lit by a default key light and ambient fill. */
+  "light_3d": {},
+  /** Binds an external image or video frame as a GPU texture. */
+  "media_in": {},
+  /** Copies its source into the final composition output. */
+  "media_output": { "source": { kind: "raster", variadic: false } },
+  /** Composites an overlay raster over a base raster. */
+  "merge": { "base": { kind: "raster", variadic: false }, "overlay": { kind: "raster", variadic: false }, "mask": { kind: "raster", variadic: false } },
+  /** Groups scenes into one, placed together by its transform. */
+  "merge_3d": { "objects": { kind: "scene", variadic: true } },
+  /**
+   * A glTF model: the default scene of a `.glb`, with its metallic-roughness materials, skins and
+   * animation clips. A raster wired into `texture` shows on the surfaces of the material
+   * `texture_material` names, such as a screen. The model's own lights and cameras are left out.
+   */
+  "model_3d": { "texture": { kind: "raster", variadic: false } },
+  /**
+   * Blurs everything that moves in its source, including what analytic motion blur can't see:
+   * animated sizes, path data, motion upstream of a transform and motion inside video. Analytic
+   * motion blur in the source is off while it samples, and so is a `motion_blur` inside it.
+   * Content that already has its own motion blur, like a video recorded with it, is blurred
+   * twice.
+   */
+  "motion_blur": { "source": { kind: "raster", variadic: false } },
+  /** Uniformly adjusts raster opacity. */
+  "opacity": { "source": { kind: "raster", variadic: false } },
+  /** Produces a rasterized vector path source. */
+  "path": {},
+  /** Blurs a raster along circles about a centre, as a spin. */
+  "radial_blur": { "source": { kind: "raster", variadic: false } },
+  /** Composites a variadic stack of raster layers in order. */
+  "raster_multimerge": { "layers": { kind: "raster", variadic: true } },
+  /**
+   * Draws a 3D scene into a raster, with a transparent background unless it shows its environment
+   * map.
+   */
+  "render_3d": { "scene": { kind: "scene", variadic: false } },
+  /** Resamples a raster into a rectangle placed on the composition canvas. */
+  "resize": { "source": { kind: "raster", variadic: false } },
+  /** Composites a blurred alpha shadow behind a raster. */
+  "shadow": { "source": { kind: "raster", variadic: false } },
+  /** Produces a vector shape layer for GPU rasterization. */
+  "shape": {},
+  /** A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. */
+  "shape_3d": {},
+  /** Selects one raster input according to a controlled layer index. */
+  "switch": { "layers": { kind: "raster", variadic: true } },
+  /** Produces a text source. */
+  "text": {},
+  /** Evaluates a raster input at another frame. */
+  "time_remap": { "source": { kind: "raster", variadic: false } },
+  /** Transforms a raster into the composition canvas bounds. */
+  "transform": { "source": { kind: "raster", variadic: false } },
+  /** Runs a custom WGSL compute shader over one or more rasters. */
+  "wgsl_shader": { "source": { kind: "raster", variadic: true } },
+  /** Blurs a raster along rays from a centre, as a zoom. */
+  "zoom_blur": { "source": { kind: "raster", variadic: false } },
+} as const satisfies [NodeParamPortNameClash] extends [never]
+  ? NodeInputPortTable
+  : `a param and an input port share the name ${NodeParamPortNameClash}`;
