@@ -262,8 +262,9 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
     use crate::node::scene::render::{
         FLAG_BASE_COLOR_MAP, FLAG_BLEND, FLAG_EMISSIVE_MAP, FLAG_FLAT_NORMALS, FLAG_MASK,
         FLAG_METALLIC_ROUGHNESS_MAP, FLAG_MIRRORED, FLAG_NORMAL_MAP, FLAG_OCCLUSION_MAP,
-        FLAG_RASTER, FLAG_SKINNED, FLAG_UNLIT, GpuGlobals, GpuLight, GpuObject, GpuRun,
-        LIGHT_DIRECTIONAL, LIGHT_SPOT, SHADER,
+        FLAG_RASTER, FLAG_RECEIVE_SHADOWS, FLAG_SHADOW_CATCHER, FLAG_SKINNED, FLAG_UNLIT,
+        GpuGlobals, GpuLight, GpuObject, GpuRun, GpuShadowView, LIGHT_DIRECTIONAL, LIGHT_POINT,
+        LIGHT_SPOT, SHADER,
     };
 
     let module = naga::front::wgsl::parse_str(SHADER).expect("the scene shader should parse");
@@ -306,8 +307,27 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
             layout!("Vertex", lumen_3d::Vertex, position, normal, uv),
             layout!("SkinVertex", lumen_3d::SkinVertex, joints, weights),
             layout!(
-                "Light", GpuLight, position, kind, direction, range, radiance, cos_outer,
+                "Light",
+                GpuLight,
+                position,
+                kind,
+                direction,
+                range,
+                radiance,
+                cos_outer,
                 cos_inner,
+                shadow,
+                shadow_softness,
+                shadow_distance,
+            ),
+            layout!(
+                "ShadowView",
+                GpuShadowView,
+                view_proj,
+                depth,
+                tile,
+                texel,
+                perspective,
             ),
             layout!("Run", GpuRun, first, count, base),
         ],
@@ -325,9 +345,16 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
         ("FLAG_NORMAL_MAP", FLAG_NORMAL_MAP),
         ("FLAG_EMISSIVE_MAP", FLAG_EMISSIVE_MAP),
         ("FLAG_OCCLUSION_MAP", FLAG_OCCLUSION_MAP),
+        ("FLAG_RECEIVE_SHADOWS", FLAG_RECEIVE_SHADOWS),
+        ("FLAG_SHADOW_CATCHER", FLAG_SHADOW_CATCHER),
         ("LIGHT_DIRECTIONAL", LIGHT_DIRECTIONAL),
+        ("LIGHT_POINT", LIGHT_POINT),
         ("LIGHT_SPOT", LIGHT_SPOT),
     ] {
         assert_eq!(literal(&module, name), Literal::U32(value), "`{name}`");
     }
+    assert_eq!(
+        literal(&module, "MAX_SHADOW_RADIUS"),
+        Literal::F32(lumen_3d::MAX_FILTER_TEXELS),
+    );
 }

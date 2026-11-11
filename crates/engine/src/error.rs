@@ -366,4 +366,14 @@ pub enum Warning {
         node_id: NodeId,
         family: String,
     },
+    /// A `render_3d` scene has more lights casting shadows than it draws shadows for.
+    #[code("scene.shadow_limit")]
+    #[error("{}render_3d node {node_id}: light nodes {} cast no shadows, past the first 8 lights casting them", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default(), .lights.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))]
+    ShadowLimit {
+        /// The template the node is in, or `None` at the root.
+        template: Option<String>,
+        node_id: NodeId,
+        /// The lights left without shadows, in scene order.
+        lights: Vec<NodeId>,
+    },
 }

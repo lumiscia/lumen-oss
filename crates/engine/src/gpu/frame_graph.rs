@@ -320,6 +320,9 @@ struct RecordState {
     images: HashMap<String, Option<super::MediaTextureKey>>,
     /// The template, node and family of each font fallback reported for this composition.
     font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
+    /// The template and `render_3d` node of each shadow limit reported for this composition.
+    #[cfg(feature = "3d")]
+    shadow_limits: HashSet<(Option<String>, NodeId)>,
     /// Warnings not yet taken.
     diagnostics: Vec<crate::diagnostic::Diagnostic>,
     /// Passes reads of retained outputs skipped.
@@ -794,6 +797,8 @@ impl FrameGraph {
         state.paths.clear();
         state.fonts.clear();
         state.font_fallbacks.clear();
+        #[cfg(feature = "3d")]
+        state.shadow_limits.clear();
         state.shaders.clear();
         state.memo.clear();
         state.full_frames.clear();
@@ -1001,6 +1006,26 @@ impl<'a> FrameCx<'a> {
             self.note_font_fallback(text.node_id, family);
         }
         Ok(draw)
+    }
+
+    /// Warns once per composition and `render_3d` node `node_id` that `lights` cast no shadows.
+    #[cfg(feature = "3d")]
+    pub(crate) fn note_shadow_limit(&mut self, node_id: NodeId, lights: Vec<NodeId>) {
+        let key = (self.scope.template_name().map(str::to_string), node_id);
+        if self.st.shadow_limits.contains(&key) {
+            return;
+        }
+        let warning = crate::error::Warning::ShadowLimit {
+            template: key.0.clone(),
+            node_id,
+            lights,
+        };
+        tracing::warn!(target: "lumen_3d", "{warning}");
+        let path = crate::diagnostic::scene_pointer(key.0.as_deref());
+        self.st
+            .diagnostics
+            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
+        self.st.shadow_limits.insert(key);
     }
 
     /// Warns once per composition that `family` fell back for text node `node_id`.
@@ -2152,12 +2177,21 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
         NodeKind::Render3d(node) => node.programs(programs),
         #[cfg(not(feature = "3d"))]
         NodeKind::Render3d(_) => Ok(()),
-        NodeKind::Shape3d(_)
-        | NodeKind::ImagePlane3d(_)
-        | NodeKind::Model3d(_)
-        | NodeKind::Camera3d(_)
-        | NodeKind::Light3d(_)
-        | NodeKind::Merge3d(_) => Ok(()),
+        #[cfg(feature = "3d")]
+        NodeKind::Light3d(light) => crate::node::scene::render::light_programs(light, programs),
+        #[cfg(feature = "3d")]
+        NodeKind::Shape3d(shape) => crate::node::scene::render::catcher_programs(
+            &shape.params.material.shadow_catcher,
+            programs,
+        ),
+        #[cfg(feature = "3d")]
+        NodeKind::ImagePlane3d(plane) => crate::node::scene::render::catcher_programs(
+            &plane.params.material.shadow_catcher,
+            programs,
+        ),
+        #[cfg(not(feature = "3d"))]
+        NodeKind::Shape3d(_) | NodeKind::ImagePlane3d(_) | NodeKind::Light3d(_) => Ok(()),
+        NodeKind::Model3d(_) | NodeKind::Camera3d(_) | NodeKind::Merge3d(_) => Ok(()),
     }
 }
 

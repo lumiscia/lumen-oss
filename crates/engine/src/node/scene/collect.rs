@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use foldhash::HashMap;
 use lumen_3d::glam::{Mat4, Vec3};
-use lumen_3d::model::{Material, Model, ModelScene, Playback, Texture};
+use lumen_3d::model::{Material, Model, ModelScene, Playback, SkinBounds, Texture};
 use lumen_3d::{
-    Blending, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive, Projection,
-    Scene, Surface, Transform,
+    Blending, Bounds, Camera, Light, LightKind, MAX_SCENE_NODES, Mesh, Object, Primitive,
+    Projection, Scene, Shadow, Surface, Transform,
 };
 use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
@@ -24,6 +24,8 @@ const MODEL_BUDGET_BYTES: u64 = 256 << 20;
 
 /// The most joint matrices one frame's scene may hold.
 const MAX_SCENE_JOINTS: usize = 1 << 16;
+/// The shortest a directional light's shadows reach from the camera.
+const MIN_SHADOW_DISTANCE: f32 = 0.01;
 
 /// A mesh's vertices and indices on the GPU, which the scene shader pulls vertices from, and the
 /// joints and weights of a skinned one's vertices.
@@ -73,6 +75,10 @@ struct LoadedModel {
     mesh: GpuMesh,
     /// One per texture of the model, in its order.
     textures: Arc<[TexRef]>,
+    /// The bounds of each primitive's vertices, by its first index and index count.
+    bounds: Arc<HashMap<(u32, u32), Bounds>>,
+    /// Each skin's bounds before posing.
+    joint_bounds: Arc<Vec<SkinBounds>>,
 }
 
 struct CachedModel {
@@ -89,6 +95,8 @@ pub(crate) struct SceneCache {
     quad: Option<(GpuMesh, u32)>,
     models: HashMap<String, CachedModel>,
     model_bytes: u64,
+    /// A depth texture bound in place of a shadow atlas by scenes without shadows.
+    no_shadows: Option<TexRef>,
 }
 
 impl SceneCache {
@@ -98,6 +106,9 @@ impl SceneCache {
         }
         self.shapes.clear();
         self.quad = None;
+        if let Some(texture) = self.no_shadows.take() {
+            rec.forget(texture);
+        }
         for (_, cached) in self.models.drain() {
             forget_model(rec, &cached.model);
         }
@@ -159,6 +170,27 @@ impl SceneCache {
             },
         );
         Ok(loaded)
+    }
+
+    pub(super) fn no_shadows(&mut self, rec: &mut Recorder) -> TexRef {
+        *self.no_shadows.get_or_insert_with(|| {
+            let texture = rec.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("lumen 3d no shadows"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: lumen_gpu::DEPTH_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            rec.adopt(Arc::new(texture))
+        })
     }
 
     fn quad(&mut self, rec: &mut Recorder) -> (GpuMesh, u32) {
@@ -260,7 +292,14 @@ fn upload_model(rec: &mut Recorder, model: Model) -> Result<(LoadedModel, u64), 
             "an image in the model is larger than this device's {max_side}-pixel texture limit"
         )));
     }
-    let mut bytes = parts.iter().map(|part| part.len() as u64).sum::<u64>();
+    let bounds = primitive_bounds(&model);
+    let joint_bounds = model.scene.joint_bounds(&model.geometry);
+    let mut bytes = parts.iter().map(|part| part.len() as u64).sum::<u64>()
+        + (bounds.len() * size_of::<((u32, u32), Bounds)>()) as u64
+        + joint_bounds
+            .iter()
+            .map(|skin| ((skin.joints.len() + 1) * size_of::<Bounds>()) as u64)
+            .sum::<u64>();
     let mesh = GpuMesh {
         vertices: storage_buffer(rec, "lumen 3d model vertices", parts[0]),
         indices: storage_buffer(rec, "lumen 3d model indices", parts[1]),
@@ -283,9 +322,40 @@ fn upload_model(rec: &mut Recorder, model: Model) -> Result<(LoadedModel, u64), 
         scene: Arc::new(model.scene),
         mesh,
         textures,
+        bounds: Arc::new(bounds),
+        joint_bounds: Arc::new(joint_bounds),
     };
     Ok((loaded, bytes))
 }
+
+/// The bounds of the vertices of each primitive `model` draws, by its first index and index count.
+fn primitive_bounds(model: &Model) -> HashMap<(u32, u32), Bounds> {
+    let geometry = &model.geometry;
+    let mut bounds = HashMap::default();
+    for posed in model.scene.pose(None).primitives {
+        let primitive = posed.primitive;
+        bounds
+            .entry((primitive.first_index, primitive.index_count))
+            .or_insert_with(|| {
+                let start = primitive.first_index as usize;
+                let indices = geometry
+                    .indices
+                    .get(start..start + primitive.index_count as usize)
+                    .unwrap_or_default();
+                Bounds::of(indices.iter().filter_map(|&index| {
+                    let vertex = geometry.vertices.get(index as usize)?;
+                    Some(Vec3::from(vertex.position))
+                }))
+            });
+    }
+    bounds
+}
+
+/// What a unit primitive covers, centred on the origin.
+const UNIT_BOUNDS: Bounds = Bounds {
+    min: Vec3::splat(-0.5),
+    max: Vec3::splat(0.5),
+};
 
 fn upload_texture(rec: &mut Recorder, texture: &Texture) -> TexRef {
     let texture = wgpu::util::DeviceExt::create_texture_with_data(
@@ -365,19 +435,28 @@ fn surface(
         metallic: material.metallic.clamp(0.0, 1.0) as f32,
         roughness: material.roughness.clamp(0.0, 1.0) as f32,
         emissive: [0, 1, 2].map(|i| base_color[i] * emissive),
-        blending: if base_color[3] < 1.0 {
+        // A catcher's alpha only scales how dark its shadows are.
+        blending: if base_color[3] < 1.0 && !material.shadow_catcher {
             Blending::Blend
         } else {
             Blending::Opaque
         },
         unlit: material.unlit,
         double_sided: material.double_sided,
+        cast_shadows: material.cast_shadows,
+        receive_shadows: material.receive_shadows,
+        shadow_catcher: material.shadow_catcher,
         ..Surface::default()
     })
 }
 
 /// How a model's `material` shades, reading the model's `textures`.
-fn model_surface(material: &Material, textures: &[TexRef], flat_normals: bool) -> Surface<TexRef> {
+fn model_surface(
+    material: &Material,
+    textures: &[TexRef],
+    flat_normals: bool,
+    params: &super::Model3dParams,
+) -> Surface<TexRef> {
     Surface {
         base_color: material.base_color,
         texture: None,
@@ -392,6 +471,9 @@ fn model_surface(material: &Material, textures: &[TexRef], flat_normals: bool) -
         unlit: material.unlit,
         double_sided: material.double_sided,
         flat_normals,
+        cast_shadows: params.cast_shadows,
+        receive_shadows: params.receive_shadows,
+        shadow_catcher: false,
     }
 }
 
@@ -404,9 +486,31 @@ fn model_error(node_id: NodeId, source: &str, details: impl std::fmt::Display) -
     .into()
 }
 
+/// What an object covers before it is placed in the world.
+enum Extent {
+    /// Bounds its world matrix places.
+    Local(Bounds),
+    /// Within the bounds of one of the scene's posed skins.
+    Skin(usize),
+}
+
+/// A skin posed in the scene: where its joint matrices start in the scene's joints, the model
+/// matrix they are placed by, and its joints' bounds before posing.
+struct PosedSkin {
+    first_joint: usize,
+    root: Mat4,
+    joint_bounds: Arc<Vec<SkinBounds>>,
+    skin: usize,
+}
+
 /// The scene a `render_3d` draws, as far as its nodes have been walked.
 pub(super) struct Collected {
     pub(super) scene: Scene<GpuMesh, TexRef>,
+    /// The node of each of the scene's lights.
+    pub(super) light_nodes: Vec<NodeId>,
+    /// One per object, from which [`Self::place_bounds`] works out its bounds.
+    extents: Vec<Extent>,
+    skins: Vec<PosedSkin>,
     render_id: NodeId,
     /// Scene nodes walked, counting a node each time it is reached.
     reached: usize,
@@ -416,8 +520,47 @@ impl Collected {
     pub(super) fn new(render_id: NodeId) -> Self {
         Self {
             scene: Scene::default(),
+            light_nodes: Vec::new(),
+            extents: Vec::new(),
+            skins: Vec::new(),
             render_id,
             reached: 0,
+        }
+    }
+
+    fn push(&mut self, object: Object<GpuMesh, TexRef>, extent: Extent) {
+        self.scene.objects.push(object);
+        self.extents.push(extent);
+    }
+
+    /// Sets every object's bounds in the world, which only shadows need: each skin's from the
+    /// joints that move its vertices, once for every object it moves.
+    pub(super) fn place_bounds(&mut self) {
+        let joints = &self.scene.joints;
+        let skins: Vec<Bounds> = self
+            .skins
+            .iter()
+            .map(|skin| {
+                let Some(bounds) = skin.joint_bounds.get(skin.skin) else {
+                    return Bounds::EMPTY;
+                };
+                let posed = joints.get(skin.first_joint..).unwrap_or_default();
+                bounds
+                    .joints
+                    .iter()
+                    .zip(posed)
+                    .filter(|(bounds, _)| !bounds.is_empty())
+                    .fold(
+                        bounds.unmoved.transformed(&skin.root),
+                        |all, (bounds, joint)| all.union(bounds.transformed(&(skin.root * *joint))),
+                    )
+            })
+            .collect();
+        for (object, extent) in self.scene.objects.iter_mut().zip(&self.extents) {
+            object.bounds = match *extent {
+                Extent::Local(bounds) => bounds.transformed(&object.world),
+                Extent::Skin(skin) => skins[skin],
+            };
         }
     }
 
@@ -479,15 +622,19 @@ impl Collected {
                 let surface = surface(node_id, "Shape3d", &params.material)?;
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.shape(rec, params.shape);
-                self.scene.objects.push(Object {
-                    world,
-                    mesh,
-                    first_index: 0,
-                    index_count,
-                    surface,
-                    center: world.transform_point3(Vec3::ZERO),
-                    first_joint: None,
-                });
+                self.push(
+                    Object {
+                        world,
+                        mesh,
+                        first_index: 0,
+                        index_count,
+                        surface,
+                        center: world.transform_point3(Vec3::ZERO),
+                        first_joint: None,
+                        bounds: Bounds::EMPTY,
+                    },
+                    Extent::Local(UNIT_BOUNDS),
+                );
             }
             NodeKind::ImagePlane3d(plane) => {
                 let params = plane.params.eval(&ctx)?;
@@ -505,15 +652,22 @@ impl Collected {
                 surface.texture = Some(source.tex);
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.quad(rec);
-                self.scene.objects.push(Object {
-                    world,
-                    mesh,
-                    first_index: 0,
-                    index_count,
-                    surface,
-                    center: world.transform_point3(Vec3::ZERO),
-                    first_joint: None,
-                });
+                self.push(
+                    Object {
+                        world,
+                        mesh,
+                        first_index: 0,
+                        index_count,
+                        surface,
+                        center: world.transform_point3(Vec3::ZERO),
+                        first_joint: None,
+                        bounds: Bounds::EMPTY,
+                    },
+                    Extent::Local(Bounds {
+                        min: Vec3::new(-0.5, -0.5, 0.0),
+                        max: Vec3::new(0.5, 0.5, 0.0),
+                    }),
+                );
             }
             NodeKind::Model3d(model) => {
                 let params = model.params.eval(&ctx)?;
@@ -549,7 +703,7 @@ impl Collected {
             NodeKind::Light3d(light) => {
                 let params = light.params.eval(&ctx)?;
                 let [r, g, b, _] = solid_linear(node_id, "Light3d", &params.color)?;
-                self.scene.lights.push(Light::new(
+                let light = Light::new(
                     match params.light {
                         Light3dKind::Directional => LightKind::Directional,
                         Light3dKind::Point => LightKind::Point,
@@ -561,7 +715,15 @@ impl Collected {
                     params.range as f32,
                     params.spot_angle as f32,
                     params.spot_softness as f32,
-                ));
+                );
+                self.scene.lights.push(Light {
+                    shadow: params.cast_shadows.then(|| Shadow {
+                        softness: (params.shadow_softness as f32).max(0.0),
+                        distance: (params.shadow_distance as f32).max(MIN_SHADOW_DISTANCE),
+                    }),
+                    ..light
+                });
+                self.light_nodes.push(node_id);
             }
             // Validation keeps rasters out of scene inputs.
             _ => {
@@ -639,8 +801,24 @@ impl Collected {
                 ),
             ));
         }
-        self.scene.joints.extend(pose.joints);
         let root = parent * placement(&params.placement).matrix();
+        // Each skin's joint matrices start, in the pose, at the first joint of the primitives it
+        // moves, and later skins' start later.
+        let first_skin = self.skins.len();
+        self.skins
+            .extend(pose.skins.iter().map(|&(skin, start)| PosedSkin {
+                first_joint: first_joint + start as usize,
+                root,
+                joint_bounds: model.joint_bounds.clone(),
+                skin,
+            }));
+        let skin_of = |start: u32| {
+            pose.skins
+                .binary_search_by_key(&start, |&(_, first)| first)
+                .ok()
+                .map(|index| first_skin + index)
+        };
+        self.scene.joints.extend(pose.joints.iter().copied());
         let default = Material::default();
         for posed in pose.primitives {
             let primitive = posed.primitive;
@@ -648,7 +826,8 @@ impl Collected {
                 .material
                 .and_then(|index| scene.materials().get(index))
                 .unwrap_or(&default);
-            let mut surface = model_surface(material, &model.textures, primitive.flat_normals);
+            let mut surface =
+                model_surface(material, &model.textures, primitive.flat_normals, &params);
             if let Some((replaced, raster)) = replaced
                 && primitive.material == Some(replaced)
             {
@@ -657,23 +836,38 @@ impl Collected {
                     unlit: true,
                     blending: material.blending,
                     double_sided: material.double_sided,
+                    cast_shadows: params.cast_shadows,
+                    receive_shadows: params.receive_shadows,
                     ..Surface::default()
                 };
             }
+            let local = model
+                .bounds
+                .get(&(primitive.first_index, primitive.index_count))
+                .copied()
+                .unwrap_or(Bounds::EMPTY);
             // A skinned primitive's joints place it within the model, so only the model is placed.
             let world = match posed.first_joint {
                 Some(_) => root,
                 None => root * posed.world,
             };
-            self.scene.objects.push(Object {
-                world,
-                mesh: model.mesh,
-                first_index: primitive.first_index,
-                index_count: primitive.index_count,
-                surface,
-                center: world.transform_point3(primitive.center),
-                first_joint: posed.first_joint.map(|joint| joint + first_joint as u32),
-            });
+            let extent = match posed.first_joint.and_then(skin_of) {
+                Some(skin) => Extent::Skin(skin),
+                None => Extent::Local(local),
+            };
+            self.push(
+                Object {
+                    world,
+                    mesh: model.mesh,
+                    first_index: primitive.first_index,
+                    index_count: primitive.index_count,
+                    surface,
+                    center: world.transform_point3(primitive.center),
+                    first_joint: posed.first_joint.map(|joint| joint + first_joint as u32),
+                    bounds: Bounds::EMPTY,
+                },
+                extent,
+            );
         }
         Ok(())
     }

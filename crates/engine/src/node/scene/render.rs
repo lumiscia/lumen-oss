@@ -1,21 +1,21 @@
-//! Records `render_3d`: depth-tested draws of the scene's objects into a supersampled float
-//! target, then a resolve into the node's raster.
+//! Records `render_3d`: the scene's shadow maps, depth-tested draws of its objects into a
+//! supersampled float target, then a resolve into the node's raster.
 
 use bytemuck::{Pod, Zeroable};
 use lumen_3d::{
-    Blending, Camera, Draws, Filter, LightKind, Lighting, Map, Object, Projection, Row, Sampler,
-    Wrap,
+    Blending, Bounds, Camera, Draws, Filter, LightKind, Lighting, Map, Object, Projection, Row,
+    Sampler, ShadowAtlas, Wrap,
 };
 use lumen_gpu::{
     DEPTH_FORMAT, DepthTest, LayoutEntry, LayoutKind, RenderTargetSpec, Res, Size, TargetLoad,
     TexRef, TextureDomain, wgpu,
 };
 
-use super::Render3d;
 use super::collect::{Collected, GpuMesh, solid_linear};
+use super::{Light3d, Render3d};
 use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::{FrameCx, Programs, Raster, RecordNode};
-use crate::node::{DelegateEvalContext, DelegateEvaluable, required_input};
+use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, required_input};
 
 pub(crate) const SHADER: &str = include_str!("scene.wgsl");
 const RESOLVE_SHADER: &str = include_str!("resolve.wgsl");
@@ -44,9 +44,32 @@ const LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::staged(17, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
     LayoutEntry::staged(18, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
     LayoutEntry::staged(19, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
+    LayoutEntry::staged(20, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
+    LayoutEntry::staged(21, wgpu::ShaderStages::FRAGMENT, LayoutKind::DepthTexture),
+    LayoutEntry::staged(
+        22,
+        wgpu::ShaderStages::FRAGMENT,
+        LayoutKind::ComparisonSampler,
+    ),
+];
+/// What drawing into the shadow atlas binds: the vertices, what cuts out masked and blended
+/// surfaces, and the views.
+const SHADOW_LAYOUT: &[LayoutEntry] = &[
+    LayoutEntry::staged(1, VERTEX_FRAGMENT, LayoutKind::Storage),
+    LayoutEntry::staged(2, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(3, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(5, wgpu::ShaderStages::VERTEX, LayoutKind::Uniform),
+    LayoutEntry::staged(6, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(7, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
+    LayoutEntry::staged(8, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(9, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
+    LayoutEntry::staged(10, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(15, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
+    LayoutEntry::staged(20, wgpu::ShaderStages::VERTEX, LayoutKind::Storage),
 ];
 
 const CLAMP_SAMPLER: u64 = 0x3d00_0001;
+const SHADOW_SAMPLER: u64 = 0x3d00_0002;
 /// Map samplers' keys are this with their settings in the low byte.
 const MAP_SAMPLERS: u64 = 0x3d01_0000;
 
@@ -63,6 +86,8 @@ pub(crate) const FLAG_METALLIC_ROUGHNESS_MAP: u32 = 256;
 pub(crate) const FLAG_NORMAL_MAP: u32 = 512;
 pub(crate) const FLAG_EMISSIVE_MAP: u32 = 1024;
 pub(crate) const FLAG_OCCLUSION_MAP: u32 = 2048;
+pub(crate) const FLAG_RECEIVE_SHADOWS: u32 = 4096;
+pub(crate) const FLAG_SHADOW_CATCHER: u32 = 8192;
 pub(crate) const LIGHT_DIRECTIONAL: u32 = 0;
 pub(crate) const LIGHT_POINT: u32 = 1;
 pub(crate) const LIGHT_SPOT: u32 = 2;
@@ -97,7 +122,23 @@ pub(crate) struct GpuLight {
     pub(crate) radiance: [f32; 3],
     pub(crate) cos_outer: f32,
     pub(crate) cos_inner: f32,
-    _pad: [f32; 3],
+    /// The light's first view in the shadow views, or -1 for a light without shadows.
+    pub(crate) shadow: i32,
+    pub(crate) shadow_softness: f32,
+    pub(crate) shadow_distance: f32,
+}
+
+/// Keep in sync with `ShadowView` in `scene.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(crate) struct GpuShadowView {
+    pub(crate) view_proj: [[f32; 4]; 4],
+    pub(crate) depth: [f32; 4],
+    /// The view's tile as fractions of the atlas: left, top, right and bottom.
+    pub(crate) tile: [f32; 4],
+    pub(crate) texel: f32,
+    pub(crate) perspective: u32,
+    _pad: [u32; 2],
 }
 
 /// One row of the object table; keep in sync with `Object` in `scene.wgsl`.
@@ -139,12 +180,23 @@ struct ResolveParams {
 
 fn spec(depth: DepthTest, cull: Option<wgpu::Face>) -> RenderTargetSpec {
     RenderTargetSpec {
-        format: COLOR_FORMAT,
+        format: Some(COLOR_FORMAT),
         blend: wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         depth: Some(depth),
         cull,
     }
 }
+
+/// Shadow catchers replace what is under them, so the nearest of overlapping ones shows alone.
+fn catcher_spec(cull: Option<wgpu::Face>) -> RenderTargetSpec {
+    RenderTargetSpec {
+        blend: wgpu::BlendState::REPLACE,
+        ..spec(DepthTest::Write, cull)
+    }
+}
+
+/// Programs differing only by blending need a variant apart.
+const CATCHER_VARIANT: u64 = 1;
 
 /// Opaque runs test and write depth, blended ones only test it. Single-sided runs cull the faces
 /// that point away, which wind clockwise, or counterclockwise once mirrored.
@@ -192,6 +244,12 @@ fn gpu_object(object: &Object<GpuMesh, TexRef>, row: &Row) -> GpuObject {
     }
     if lumen_3d::mirrors(&object.world) {
         flags |= FLAG_MIRRORED;
+    }
+    if surface.receive_shadows {
+        flags |= FLAG_RECEIVE_SHADOWS;
+    }
+    if surface.shadow_catcher {
+        flags |= FLAG_SHADOW_CATCHER | FLAG_RECEIVE_SHADOWS;
     }
     if surface.texture.is_some() {
         flags |= FLAG_RASTER;
@@ -259,7 +317,8 @@ fn sampler_descriptor(sampler: &Sampler) -> wgpu::SamplerDescriptor<'static> {
     }
 }
 
-fn gpu_light(light: &lumen_3d::Light) -> GpuLight {
+/// `light`, whose shadows start at `shadow` among the shadow views, if it has any.
+fn gpu_light(light: &lumen_3d::Light, shadow: Option<u32>) -> GpuLight {
     GpuLight {
         position: light.position.into(),
         kind: match light.kind {
@@ -273,8 +332,51 @@ fn gpu_light(light: &lumen_3d::Light) -> GpuLight {
         radiance: light.radiance.into(),
         cos_outer: light.cos_outer,
         cos_inner: light.cos_inner,
-        _pad: [0.0; 3],
+        shadow: shadow.map_or(-1, |view| view as i32),
+        shadow_softness: light.shadow.map_or(0.0, |shadow| shadow.softness),
+        shadow_distance: light.shadow.map_or(0.0, |shadow| shadow.distance),
     }
+}
+
+fn gpu_shadow_views(atlas: &ShadowAtlas) -> Vec<GpuShadowView> {
+    atlas
+        .views
+        .iter()
+        .enumerate()
+        .map(|(index, view)| GpuShadowView {
+            view_proj: view.view_proj.to_cols_array_2d(),
+            depth: view.depth.into(),
+            tile: atlas.tile_rect(index),
+            texel: view.texel,
+            perspective: u32::from(view.perspective),
+            _pad: [0; 2],
+        })
+        .collect()
+}
+
+/// The shadow views of `lights` over the objects `draws` draws, when any of them casts shadows.
+fn shadow_atlas(
+    objects: &[Object<GpuMesh, TexRef>],
+    draws: &Draws<GpuMesh, TexRef>,
+    lights: &[lumen_3d::Light],
+    camera: &Camera,
+    aspect: f32,
+    max_side: u32,
+) -> Option<ShadowAtlas> {
+    if !draws.runs.iter().any(|run| run.key.cast_shadows) {
+        return None;
+    }
+    let (mut casters, mut receivers) = (Bounds::EMPTY, Bounds::EMPTY);
+    for object in draws.rows.iter().map(|row| &objects[row.object]) {
+        let surface = &object.surface;
+        if surface.cast_shadows && !surface.shadow_catcher {
+            casters = casters.union(object.bounds);
+        }
+        if (surface.receive_shadows && !surface.unlit) || surface.shadow_catcher {
+            receivers = receivers.union(object.bounds);
+        }
+    }
+    ShadowAtlas::plan(lights, camera, aspect, casters, receivers, max_side)
 }
 
 pub(super) fn render_error(node_id: crate::node::NodeId, details: String) -> LumenError {
@@ -286,7 +388,52 @@ pub(super) fn render_error(node_id: crate::node::NodeId, details: String) -> Lum
     .into()
 }
 
+/// Whether `flag` may be on at some frame.
+fn may(flag: &Deferred<bool>) -> bool {
+    !matches!(flag, Deferred::Value(false))
+}
+
+/// Builds the program drawing shadow maps, when `light` may cast shadows.
+pub(crate) fn light_programs(light: &Light3d, programs: &mut Programs<'_>) -> crate::Result<()> {
+    if may(&light.params.cast_shadows) {
+        programs.render(
+            "scene-3d-shadow",
+            SHADER,
+            "vs_shadow",
+            "fs_shadow",
+            SHADOW_LAYOUT,
+            RenderTargetSpec::depth_only(DepthTest::Write, None),
+            0,
+        )?;
+    }
+    Ok(())
+}
+
+/// Builds the programs drawing a surface as a shadow catcher, facing either way or both, when
+/// `shadow_catcher` may be on.
+pub(crate) fn catcher_programs(
+    shadow_catcher: &Deferred<bool>,
+    programs: &mut Programs<'_>,
+) -> crate::Result<()> {
+    if may(shadow_catcher) {
+        for cull in [Some(wgpu::Face::Back), Some(wgpu::Face::Front), None] {
+            programs.render(
+                "scene-3d",
+                SHADER,
+                "vs_main",
+                "fs_main",
+                LAYOUT,
+                catcher_spec(cull),
+                CATCHER_VARIANT,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 impl RecordNode for Render3d {
+    /// Builds the programs scenes draw with but for those drawing shadow maps and catchers, which
+    /// the lights and surfaces asking for them build.
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
         for (depth, cull) in VARIANTS {
             programs.render(
@@ -325,7 +472,15 @@ impl RecordNode for Render3d {
         }
         let mut collected = Collected::new(self.id);
         collected.add(cx, required_input(self.id, "scene", self.scene)?)?;
-        let scene = collected.scene;
+        if collected
+            .scene
+            .lights
+            .iter()
+            .any(|light| light.shadow.is_some())
+        {
+            collected.place_bounds();
+        }
+        let scene = &collected.scene;
         let fog = solid_linear(self.id, "Render3d", &params.fog_color)?;
         let camera = scene.camera.unwrap_or_default();
         let view = camera.view();
@@ -350,7 +505,45 @@ impl RecordNode for Render3d {
         let aspect = size.width as f32 / size.height.max(1) as f32;
 
         let lighting = Lighting::of(&scene.lights);
-        let mut lights: Vec<GpuLight> = lighting.direct.iter().map(gpu_light).collect();
+        let atlas = shadow_atlas(
+            &scene.objects,
+            &draws,
+            &lighting.direct,
+            &camera,
+            aspect,
+            max,
+        );
+        if let Some(atlas) = &atlas
+            && !atlas.dropped.is_empty()
+        {
+            // Lighting keeps direct lights in scene order.
+            let direct_nodes: Vec<_> = scene
+                .lights
+                .iter()
+                .zip(&collected.light_nodes)
+                .filter(|(light, _)| light.kind != LightKind::Ambient)
+                .map(|(_, &node)| node)
+                .collect();
+            let mut named = std::collections::HashSet::new();
+            let dropped = atlas
+                .dropped
+                .iter()
+                .map(|&index| direct_nodes[index])
+                .filter(|&node| named.insert(node))
+                .collect();
+            cx.note_shadow_limit(self.id, dropped);
+        }
+        let mut lights: Vec<GpuLight> = lighting
+            .direct
+            .iter()
+            .enumerate()
+            .map(|(index, light)| {
+                gpu_light(
+                    light,
+                    atlas.as_ref().and_then(|atlas| atlas.first_view[index]),
+                )
+            })
+            .collect();
         let light_count = lights.len() as u32;
         // A storage binding can't be empty.
         if lights.is_empty() {
@@ -403,7 +596,98 @@ impl RecordNode for Render3d {
         // Objects without a raster or a map still bind a texture and sampler in its place, which
         // their shader doesn't read, as meshes without skins bind their vertices.
         let unread = cx.transparent(size).tex;
-        for (drawn, run) in draws.runs.iter().enumerate() {
+        let runs: Vec<Res> = draws
+            .runs
+            .iter()
+            .map(|run| {
+                cx.rec.uniform(&GpuRun {
+                    first: run.first,
+                    count: run.count,
+                    base: run.base,
+                    _pad: 0,
+                })
+            })
+            .collect();
+        let shadow_views = match &atlas {
+            Some(atlas) => cx
+                .rec
+                .storage_parts(&[bytemuck::cast_slice(&gpu_shadow_views(atlas))]),
+            None => cx
+                .rec
+                .storage_parts(&[bytemuck::bytes_of(&GpuShadowView::zeroed())]),
+        };
+        let shadow_map = match &atlas {
+            Some(atlas) => {
+                let (width, height) = atlas.size();
+                let map = cx.rec.acquire(
+                    Size::new(width, height),
+                    DEPTH_FORMAT,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                );
+                let program = cx.render_program(
+                    "scene-3d-shadow",
+                    SHADER,
+                    "vs_shadow",
+                    "fs_shadow",
+                    SHADOW_LAYOUT,
+                    RenderTargetSpec::depth_only(DepthTest::Write, None),
+                    0,
+                )?;
+                let views = atlas.views.len() as u32;
+                let casting = draws.runs.iter().zip(&runs);
+                for (cast, (run, &rows)) in
+                    casting.filter(|(run, _)| run.key.cast_shadows).enumerate()
+                {
+                    let (base_color, base_color_sampler) = match run.key.maps.base_color {
+                        Some(Map { texture, sampler }) => (
+                            texture,
+                            cx.rec
+                                .sampler(sampler_key(&sampler), || sampler_descriptor(&sampler)),
+                        ),
+                        None => (unread, clamp),
+                    };
+                    let bindings = [
+                        (1, objects),
+                        (2, Res::Buffer(run.key.mesh.vertices)),
+                        (3, Res::Buffer(run.key.mesh.indices)),
+                        (5, rows),
+                        (6, Res::Tex(run.key.texture.unwrap_or(unread))),
+                        (7, Res::Sampler(clamp)),
+                        (8, joints),
+                        (
+                            9,
+                            Res::Buffer(run.key.mesh.skin.unwrap_or(run.key.mesh.vertices)),
+                        ),
+                        (10, Res::Tex(base_color)),
+                        (15, Res::Sampler(base_color_sampler)),
+                        (20, shadow_views),
+                    ];
+                    let load = if cast == 0 {
+                        TargetLoad::Clear
+                    } else {
+                        TargetLoad::Load
+                    };
+                    cx.rec
+                        .draw_depth(program, &bindings, map, load, run.vertices, views);
+                }
+                map
+            }
+            None => {
+                let (rec, cache) = cx.scene_cache();
+                cache.no_shadows(rec)
+            }
+        };
+        let shadow_sampler = cx.rec.sampler(SHADOW_SAMPLER, || wgpu::SamplerDescriptor {
+            label: Some("lumen 3d shadow sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..wgpu::SamplerDescriptor::default()
+        });
+
+        for (drawn, (run, &rows)) in draws.runs.iter().zip(&runs).enumerate() {
             let depth_test = if run.key.blend {
                 DepthTest::Read
             } else {
@@ -414,21 +698,14 @@ impl RecordNode for Render3d {
                 (false, false) => Some(wgpu::Face::Back),
                 (false, true) => Some(wgpu::Face::Front),
             };
+            let (target, variant) = if run.key.shadow_catcher {
+                (catcher_spec(cull), CATCHER_VARIANT)
+            } else {
+                (spec(depth_test, cull), 0)
+            };
             let program = cx.render_program(
-                "scene-3d",
-                SHADER,
-                "vs_main",
-                "fs_main",
-                LAYOUT,
-                spec(depth_test, cull),
-                0,
+                "scene-3d", SHADER, "vs_main", "fs_main", LAYOUT, target, variant,
             )?;
-            let rows = cx.rec.uniform(&GpuRun {
-                first: run.first,
-                count: run.count,
-                base: run.base,
-                _pad: 0,
-            });
             let maps = &run.key.maps;
             let maps = [
                 maps.base_color,
@@ -451,6 +728,9 @@ impl RecordNode for Render3d {
                     9,
                     Res::Buffer(run.key.mesh.skin.unwrap_or(run.key.mesh.vertices)),
                 ),
+                (20, shadow_views),
+                (21, Res::Tex(shadow_map)),
+                (22, Res::Sampler(shadow_sampler)),
             ];
             for (slot, map) in (0..).zip(maps) {
                 let (texture, sampler) = match map {

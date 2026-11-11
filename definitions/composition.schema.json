@@ -3065,6 +3065,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "cast_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,\nsuch as a bulb around a point light, needs this off.",
+                    "title": "Cast Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "color": {
                     "anyOf": [
                       {
@@ -3169,6 +3183,20 @@
                     },
                     "x-lumen-kind": "vec3"
                   },
+                  "receive_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Darkens where shadows fall on it. An unlit surface shows none.",
+                    "title": "Receive Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "rotation": {
                     "anyOf": [
                       {
@@ -3221,6 +3249,20 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
+                  },
+                  "shadow_catcher": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows\nnone of its colours, hides what is behind it wherever that alpha isn't 0, and casts no\nshadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
+                    "title": "Shadow Catcher",
+                    "x-lumen-kind": "bool"
                   },
                   "unlit": {
                     "anyOf": [
@@ -3422,6 +3464,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "cast_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Casts shadows from objects that block it onto those behind them. A scene draws shadows for\nits first 8 lights that cast them, in the order its scene inputs are wired, and warns\nabout the rest. A spot light's shadows reach 170° across at most.",
+                    "title": "Cast Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "color": {
                     "anyOf": [
                       {
@@ -3539,6 +3595,42 @@
                       "step": 1.0
                     },
                     "x-lumen-kind": "vec3"
+                  },
+                  "shadow_distance": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 50.0,
+                    "description": "How far from the camera, along its view, a directional light's shadows reach, fading out\nover the last tenth. Its shadow map spreads over what the camera sees of the scene up to\nhere, so a larger distance trades sharpness for reach; a scene the camera sees nearer\nkeeps its full sharpness.",
+                    "title": "Shadow Distance",
+                    "x-lumen-constraints": {
+                      "min": 0.01,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "shadow_softness": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.02,
+                    "description": "Width in world units over which shadow edges blur, up to 16 texels of the light's shadow\nmap, which is up to 4096 texels across and shared among the shadow-casting lights.",
+                    "title": "Shadow Softness",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.01
+                    },
+                    "x-lumen-kind": "float"
                   },
                   "spot_angle": {
                     "anyOf": [
@@ -4224,6 +4316,20 @@
                     },
                     "x-lumen-kind": "float"
                   },
+                  "cast_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Blocks light from lights that cast shadows, in the posed shape and where masked or blended\nmaterials' alpha reaches their cutoff, or half for blended ones. Unlit and glowing\nmaterials block it too, so a model of a lamp around a light needs this off.",
+                    "title": "Cast Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "position": {
                     "anyOf": [
                       {
@@ -4240,6 +4346,20 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
+                  },
+                  "receive_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Darkens where shadows fall on its lit surfaces.",
+                    "title": "Receive Shadows",
+                    "x-lumen-kind": "bool"
                   },
                   "rotation": {
                     "anyOf": [
@@ -5844,6 +5964,20 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "cast_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Blocks light from lights that cast shadows. A blended surface blocks it where its alpha is\nat least half. Unlit and glowing surfaces block it too, so a shape standing in for a light,\nsuch as a bulb around a point light, needs this off.",
+                    "title": "Cast Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "color": {
                     "anyOf": [
                       {
@@ -5948,6 +6082,20 @@
                     },
                     "x-lumen-kind": "vec3"
                   },
+                  "receive_shadows": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": true,
+                    "description": "Darkens where shadows fall on it. An unlit surface shows none.",
+                    "title": "Receive Shadows",
+                    "x-lumen-kind": "bool"
+                  },
                   "rotation": {
                     "anyOf": [
                       {
@@ -6000,6 +6148,20 @@
                       "step": 0.1
                     },
                     "x-lumen-kind": "vec3"
+                  },
+                  "shadow_catcher": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows\nnone of its colours, hides what is behind it wherever that alpha isn't 0, and casts no\nshadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
+                    "title": "Shadow Catcher",
+                    "x-lumen-kind": "bool"
                   },
                   "shape": {
                     "default": "box",

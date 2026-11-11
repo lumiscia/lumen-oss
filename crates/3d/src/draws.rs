@@ -14,6 +14,8 @@ use crate::{Blending, MAX_SCENE_NODES, Maps, Object, mirrors, normal_matrix};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DrawKey<M, T> {
     pub blend: bool,
+    pub shadow_catcher: bool,
+    pub cast_shadows: bool,
     pub double_sided: bool,
     /// Whether the object's world matrix mirrors it, which turns the faces that point away.
     pub mirrored: bool,
@@ -26,6 +28,8 @@ impl<M: Copy, T: Copy> DrawKey<M, T> {
     fn of(object: &Object<M, T>) -> Self {
         Self {
             blend: object.surface.blending == Blending::Blend,
+            shadow_catcher: object.surface.shadow_catcher,
+            cast_shadows: object.surface.cast_shadows && !object.surface.shadow_catcher,
             double_sided: object.surface.double_sided,
             mirrored: mirrors(&object.world),
             mesh: object.mesh,
@@ -79,9 +83,20 @@ impl fmt::Display for DrawError {
 
 impl std::error::Error for DrawError {}
 
+impl<M: Copy, T: Copy> DrawKey<M, T> {
+    /// Shadow catchers draw first, then opaque objects, then blended ones.
+    fn tier(&self) -> u8 {
+        match (self.shadow_catcher, self.blend) {
+            (true, _) => 0,
+            (false, false) => 1,
+            (false, true) => 2,
+        }
+    }
+}
+
 impl<M: Copy + Eq + Hash, T: Copy + Eq + Hash> Draws<M, T> {
-    /// Opaque objects first, grouped by what they bind and otherwise in scene order, then blended
-    /// ones from back to front as `view` sees them. Objects that draw nothing are left out: those
+    /// Shadow catchers first, then opaque objects, each grouped by what they bind and otherwise in
+    /// scene order, then blended ones from back to front as `view` sees them. Objects that draw nothing are left out: those
     /// without indices, and those whose world matrix has no [`normal_matrix`].
     pub fn new(objects: &[Object<M, T>], view: &Mat4) -> Result<Self, DrawError> {
         if objects.len() > MAX_SCENE_NODES {
@@ -104,8 +119,8 @@ impl<M: Copy + Eq + Hash, T: Copy + Eq + Hash> Draws<M, T> {
             .filter_map(|(index, object)| Some((index, normal_matrix(&object.world)?)))
             .collect();
         order.sort_by(|&(a, _), &(b, _)| {
-            keys[a].blend.cmp(&keys[b].blend).then_with(|| {
-                if keys[a].blend {
+            keys[a].tier().cmp(&keys[b].tier()).then_with(|| {
+                if keys[a].tier() == 2 {
                     depth(a).total_cmp(&depth(b))
                 } else {
                     groups[a].cmp(&groups[b])
@@ -166,6 +181,7 @@ mod tests {
             },
             center: Vec3::new(0.0, 0.0, z),
             first_joint: None,
+            bounds: crate::Bounds::EMPTY,
         }
     }
 
@@ -208,6 +224,20 @@ mod tests {
                 (1, true, 5, 1, 30, 6),
             ]
         );
+    }
+
+    #[test]
+    fn shadow_catchers_draw_before_other_objects_and_cast_no_shadows() {
+        let mut catcher = object(2, Blending::Opaque, 0.0);
+        catcher.surface.shadow_catcher = true;
+        let objects = [object(1, Blending::Opaque, 0.0), catcher];
+        let draws = Draws::new(&objects, &Mat4::IDENTITY).unwrap();
+        let runs: Vec<(u8, bool, bool)> = draws
+            .runs
+            .iter()
+            .map(|run| (run.key.mesh, run.key.shadow_catcher, run.key.cast_shadows))
+            .collect();
+        assert_eq!(runs, [(2, true, false), (1, false, true)]);
     }
 
     #[test]

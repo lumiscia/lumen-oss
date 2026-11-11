@@ -16,6 +16,7 @@
 //! that poses and shades them.
 
 mod animation;
+mod bounds;
 mod buffers;
 mod glb;
 mod image;
@@ -31,6 +32,7 @@ use glam::{Mat4, Quat, Vec3};
 use crate::{Blending, MAX_SCENE_NODES, Maps, SkinVertex, Vertex};
 use animation::Animation;
 pub use animation::Playback;
+pub use bounds::SkinBounds;
 
 /// The largest file read.
 pub const MAX_MODEL_BYTES: usize = 512 << 20;
@@ -249,6 +251,8 @@ pub struct Pose {
     /// The joint matrices of each skin a skinned primitive uses, which take its vertices to
     /// model space.
     pub joints: Vec<Mat4>,
+    /// Each skin whose joint matrices are in `joints`, by its index, with where they start.
+    pub skins: Vec<(usize, u32)>,
 }
 
 impl ModelScene {
@@ -366,6 +370,7 @@ impl ModelScene {
         let mut pose = Pose {
             primitives: Vec::with_capacity(self.draws),
             joints: Vec::new(),
+            skins: Vec::new(),
         };
         // Where each skin's joint matrices start, once worked out, or `None` when any isn't finite.
         let mut skin_starts: Vec<Option<Option<u32>>> = vec![None; self.skins.len()];
@@ -379,10 +384,10 @@ impl ModelScene {
                 continue;
             }
             let mut skin_start = || {
-                let skin = node.skin?;
-                let start = skin_starts.get_mut(skin)?;
+                let index = node.skin?;
+                let start = skin_starts.get_mut(index)?;
                 if start.is_none() {
-                    let skin = self.skins.get(skin)?;
+                    let skin = self.skins.get(index)?;
                     let joints: Vec<Mat4> = skin
                         .joints
                         .iter()
@@ -394,6 +399,7 @@ impl ModelScene {
                     *start = Some(joints.iter().all(Mat4::is_finite).then(|| {
                         let first = pose.joints.len() as u32;
                         pose.joints.extend(joints);
+                        pose.skins.push((index, first));
                         first
                     }));
                 }
