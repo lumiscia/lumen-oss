@@ -74,6 +74,20 @@ impl ColorPrimaries {
     }
 }
 
+/// The matrix taking linear RGB of an ICC profile whose colorants, the XYZ of its red, green
+/// and blue in the profile connection space, are the columns of `colorants`, to linear BT.709
+/// RGB, by rows. The connection space's D50 white becomes D65 with the Bradford transform, as
+/// ICC profiles adapt D65 colorants to D50.
+#[cfg(feature = "image")]
+pub(crate) fn icc_colorants_to_bt709(colorants: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    const ICC_D50: [f64; 3] = [0.9642, 1.0, 0.8249];
+    let bt709_d50 = multiply(
+        bradford(xyz(D65), ICC_D50),
+        rgb_to_xyz(ColorPrimaries::Bt709),
+    );
+    multiply(invert(bt709_d50), colorants)
+}
+
 /// How a source's samples encode light.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferFunction {

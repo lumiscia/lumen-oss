@@ -1,8 +1,14 @@
 use std::{fs, io::Cursor, path::Path, sync::Arc};
 
+use image::{ColorType, DynamicImage, ImageDecoder};
+
 use crate::error::{MediaError, MediaFailure};
 
-use super::{AssetKind, CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, Sniff, sniff};
+use super::icc::ImageColor;
+use super::{
+    AssetKind, CpuMediaFrame, GamutMatrix, ImageMetadata, ImageResolver, LinearMediaFrame,
+    MediaFrame, Sniff, sniff,
+};
 
 /// The memory the image decoder may use for one image.
 const MAX_DECODE_BYTES: u64 = 512 << 20;
@@ -10,10 +16,13 @@ const MAX_DECODE_BYTES: u64 = 512 << 20;
 #[derive(Debug, Clone)]
 struct CachedImage {
     metadata: ImageMetadata,
-    frame: Arc<CpuMediaFrame>,
-    straight_alpha: bool,
+    frame: MediaFrame,
+    color_warning: Option<String>,
 }
 
+/// An image file, decoded once. Its embedded ICC profile is honoured: 8-bit sRGB stays as it is
+/// decoded, 8-bit colour with the sRGB curve in other primaries is converted on the GPU, and
+/// deeper samples or other curves are converted to linear half floats here.
 #[derive(Debug, Clone)]
 pub struct ImageFileResolver {
     cached: CachedImage,
@@ -32,36 +41,94 @@ impl ImageResolver for ImageFileResolver {
     }
 
     fn frame(&self) -> Result<MediaFrame, MediaError> {
-        let frame = Arc::clone(&self.cached.frame);
-        Ok(if self.cached.straight_alpha {
-            MediaFrame::RawRgba(frame)
-        } else {
-            MediaFrame::CpuRgba(frame)
-        })
+        Ok(self.cached.frame.clone())
+    }
+
+    fn color_warning(&self) -> Option<&str> {
+        self.cached.color_warning.as_deref()
     }
 }
 
 fn load_cached_image(source: &str) -> Result<CachedImage, MediaError> {
     let encoded = fs::read(Path::new(source))
         .map_err(|err| MediaFailure::from_io(source, "image", &err).wanting(&[AssetKind::Image]))?;
-    let image = image::load_from_memory(&encoded)
+    let (image, profile) = decode(&encoded)
         .map_err(|err| image_failure(source, &encoded, &err).wanting(&[AssetKind::Image]))?;
-    let straight_alpha = image.color().has_alpha() && !declares_associated_alpha(&encoded);
-    let rgba = image.to_rgba8();
+    let has_alpha = image.color().has_alpha();
+    let straight_alpha = has_alpha && !declares_associated_alpha(&encoded);
+    let (color, color_warning) = match profile {
+        Ok(None) => (ImageColor::SRGB, None),
+        Ok(Some(profile)) => match ImageColor::of_profile(&profile, !image.color().has_color()) {
+            Ok(color) => (color, None),
+            Err(why) => (ImageColor::SRGB, Some(why)),
+        },
+        Err(error) => (
+            ImageColor::SRGB,
+            Some(format!(
+                "its ICC profile can't be read ({error}), so it is read as sRGB"
+            )),
+        ),
+    };
     let metadata = ImageMetadata {
-        width: rgba.width(),
-        height: rgba.height(),
+        width: image.width(),
+        height: image.height(),
+    };
+    let eight_bit = matches!(
+        image.color(),
+        ColorType::L8 | ColorType::La8 | ColorType::Rgb8 | ColorType::Rgba8
+    );
+    let frame = match (eight_bit, &color.curves, color.gamut) {
+        (true, None, None) => {
+            let frame = rgba8_frame(image);
+            if straight_alpha {
+                MediaFrame::RawRgba(frame)
+            } else {
+                MediaFrame::CpuRgba(frame)
+            }
+        }
+        (true, None, Some(gamut)) if straight_alpha || !has_alpha => MediaFrame::WideRgba {
+            gamut: GamutMatrix(gamut.map(|row| row.map(|value| value as f32))),
+            frame: rgba8_frame(image),
+        },
+        _ => {
+            let premultiplied = has_alpha && !straight_alpha;
+            let rgba = color.to_linear(image.into_rgba16().into_raw(), premultiplied);
+            MediaFrame::LinearRgba(Arc::new(LinearMediaFrame {
+                rgba,
+                width: metadata.width,
+                height: metadata.height,
+            }))
+        }
     };
     Ok(CachedImage {
         metadata,
-        straight_alpha,
-        frame: Arc::new(CpuMediaFrame {
-            row_bytes: metadata.width as usize * 4,
-            width: metadata.width,
-            height: metadata.height,
-            rgba: Arc::new(rgba.into_raw()),
-        }),
+        frame,
+        color_warning,
     })
+}
+
+fn rgba8_frame(image: DynamicImage) -> Arc<CpuMediaFrame> {
+    let rgba = image.into_rgba8();
+    Arc::new(CpuMediaFrame {
+        row_bytes: rgba.width() as usize * 4,
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: Arc::new(rgba.into_raw()),
+    })
+}
+
+/// The image `encoded` holds, and its embedded ICC profile, or why that can't be read.
+fn decode(
+    encoded: &[u8],
+) -> image::ImageResult<(DynamicImage, image::ImageResult<Option<Vec<u8>>>)> {
+    let mut decoder = image::ImageReader::new(Cursor::new(encoded))
+        .with_guessed_format()?
+        .into_decoder()?;
+    let profile = decoder.icc_profile();
+    let mut limits = image::Limits::default();
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
+    Ok((DynamicImage::from_decoder(decoder)?, profile))
 }
 
 /// Why `encoded`, the file `source`, isn't an image that can be decoded.

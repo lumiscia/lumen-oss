@@ -219,6 +219,10 @@ impl<T: ImageResolver> ImageResolver for Written<T> {
     fn frame(&self) -> Result<lumen_engine::media::MediaFrame, MediaError> {
         self.inner.frame().map_err(|error| self.named(error))
     }
+
+    fn color_warning(&self) -> Option<&str> {
+        self.inner.color_warning()
+    }
 }
 
 impl<T: VideoFrameResolver> VideoFrameResolver for Written<T> {

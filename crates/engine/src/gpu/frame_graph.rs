@@ -52,17 +52,21 @@ use super::{
 /// The format CPU RGBA frames are uploaded in, before `INGEST_SHADER` brings them into the working
 /// space.
 const UPLOAD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-/// Brings an sRGB-encoded 8-bit texture into the working space: linear light, premultiplied after
-/// decoding. Colour already premultiplied is divided back out first.
+/// Brings an image or CPU video texture into the working space: an sRGB-encoded one is decoded,
+/// its linear light goes from its primaries to BT.709 with colour outside BT.709 clipped at zero,
+/// and it is premultiplied. Colour already premultiplied is divided back out first.
 const INGEST_SHADER: &str = concat!(
     include_str!("shaders/alpha.wgsl"),
     include_str!("shaders/color.wgsl"),
     "
 struct Params {
     premultiplied: u32,
+    // Non-zero when the texture holds sRGB-encoded colour rather than linear light.
+    encoded: u32,
     _pad0: u32,
     _pad1: u32,
-    _pad2: u32,
+    // The texture's primaries to BT.709, in linear light.
+    gamut: mat3x3<f32>,
 }
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
@@ -79,10 +83,50 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (params.premultiplied != 0u) {
         color = unpremultiply(color);
     }
-    textureStore(output_tex, vec2<i32>(id.xy), premultiply(vec4<f32>(lumen_srgb_to_linear(color.rgb), color.a)));
+    var linear = color.rgb;
+    if (params.encoded != 0u) {
+        linear = lumen_srgb_to_linear(linear);
+    }
+    linear = max(params.gamut * linear, vec3<f32>(0.0));
+    textureStore(output_tex, vec2<i32>(id.xy), premultiply(vec4<f32>(linear, color.a)));
 }
 "
 );
+/// `INGEST_SHADER`'s parameters.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct IngestParams {
+    premultiplied: u32,
+    encoded: u32,
+    _pad: [u32; 2],
+    /// Columns of the gamut matrix, each padded to four floats as WGSL lays out a `mat3x3`.
+    gamut: [[f32; 4]; 3],
+}
+
+impl IngestParams {
+    fn new(premultiplied: bool, encoded: bool, gamut: Option<crate::media::GamutMatrix>) -> Self {
+        let rows = gamut.map_or(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            |gamut| gamut.0,
+        );
+        Self {
+            premultiplied: u32::from(premultiplied),
+            encoded: u32::from(encoded),
+            _pad: [0; 2],
+            gamut: [0, 1, 2].map(|column| [rows[0][column], rows[1][column], rows[2][column], 0.0]),
+        }
+    }
+}
+
+/// An image frame's pixels as they are uploaded.
+#[derive(Clone, Copy)]
+enum ImageUpload<'a> {
+    /// RGBA8, sRGB-encoded.
+    Srgb8(&'a CpuMediaFrame),
+    /// Straight linear half floats.
+    Linear(&'a crate::media::LinearMediaFrame),
+}
+
 /// Copies the visible part of a clip's raster into a texture of the parent canvas.
 const CLIP_CROP_SHADER: &str = "
 struct Params {
@@ -432,8 +476,8 @@ struct RecordState {
     kept_sources: HashMap<(AssetKind, String), Option<MediaIdentity>>,
     /// The template, node and family of each font fallback reported for this composition.
     font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
-    /// The template, node and video of each unsupported colour reported for this composition.
-    video_colors: HashSet<(Option<String>, NodeId, String)>,
+    /// The template, node and source of each unsupported colour reported for this composition.
+    media_colors: HashSet<(Option<String>, NodeId, String)>,
     /// How large this composition can show each image, found once it shows one.
     shown_sizes: Option<Arc<super::image_size::ShownSizes>>,
     /// Each image reported as reduced to fit the size limit for this composition.
@@ -941,7 +985,7 @@ impl FrameGraph {
         state.paths.clear();
         state.kept_sources.clear();
         state.font_fallbacks.clear();
-        state.video_colors.clear();
+        state.media_colors.clear();
         state.shown_sizes = None;
         state.reduced_images.clear();
         #[cfg(feature = "3d")]
@@ -1329,21 +1373,28 @@ impl<'a> FrameCx<'a> {
         self.st.font_fallbacks.insert(key);
     }
 
-    /// Warns once per composition, `media_in` node `node_id` and `video` that `details` of its
-    /// colour tags aren't converted.
-    pub(crate) fn note_video_color(&mut self, node_id: NodeId, video: &str, details: &str) {
+    /// Warns once per composition, `media_in` node `node_id` and `media`, a `kind` source, that
+    /// `details` of its colour aren't converted.
+    pub(crate) fn note_media_color(
+        &mut self,
+        node_id: NodeId,
+        kind: AssetKind,
+        media: &str,
+        details: &str,
+    ) {
         let key = (
             self.scope.template_name().map(str::to_string),
             node_id,
-            video.to_string(),
+            media.to_string(),
         );
-        if self.st.video_colors.contains(&key) {
+        if self.st.media_colors.contains(&key) {
             return;
         }
-        let warning = crate::error::Warning::UnsupportedVideoColor {
+        let warning = crate::error::Warning::UnsupportedColor {
             template: key.0.clone(),
             node_id,
-            video: key.2.clone(),
+            kind,
+            media: key.2.clone(),
             details: details.to_string(),
         };
         tracing::warn!(target: "lumen_media", "{warning}");
@@ -1351,7 +1402,7 @@ impl<'a> FrameCx<'a> {
         self.st
             .diagnostics
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
-        self.st.video_colors.insert(key);
+        self.st.media_colors.insert(key);
     }
 
     pub(crate) fn media(&self) -> Option<&'a dyn MediaStore> {
@@ -2120,18 +2171,22 @@ impl<'a> FrameCx<'a> {
             .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
     }
 
-    /// An image in the working space at `size`, the size of `key`. Its 8-bit texture is uploaded
-    /// once and kept in the renderer's media cache, and each frame that shows it brings it into
-    /// the working space.
+    /// An image in the working space at `size`, the size of `key`. Its texture, 8-bit for
+    /// sRGB-encoded frames and half float for linear ones, is uploaded once and kept in the
+    /// renderer's media cache, and each frame that shows it brings it into the working space.
     pub(crate) fn image_texture(
         &mut self,
         key: super::MediaTextureKey,
         frame: &MediaFrame,
         size: Size,
     ) -> crate::Result<TexRef> {
-        let (cpu, premultiplied) = match frame {
-            MediaFrame::CpuRgba(cpu) => (cpu, true),
-            MediaFrame::RawRgba(cpu) => (cpu, false),
+        let (upload, premultiplied, gamut) = match frame {
+            MediaFrame::CpuRgba(cpu) => (ImageUpload::Srgb8(cpu), true, None),
+            MediaFrame::RawRgba(cpu) => (ImageUpload::Srgb8(cpu), false, None),
+            MediaFrame::WideRgba { frame, gamut } => {
+                (ImageUpload::Srgb8(frame), false, Some(*gamut))
+            }
+            MediaFrame::LinearRgba(linear) => (ImageUpload::Linear(linear), false, None),
             MediaFrame::Yuv(_) => {
                 return Err(internal("an image resolver returned a video frame"));
             }
@@ -2140,38 +2195,60 @@ impl<'a> FrameCx<'a> {
                 return Err(internal("an image resolver returned a GPU frame"));
             }
         };
+        let native = match upload {
+            ImageUpload::Srgb8(cpu) => (cpu.width, cpu.height),
+            ImageUpload::Linear(linear) => (linear.width, linear.height),
+        };
         // A copy at another size is stored straight, which is known before the cache is asked.
-        let stored_premultiplied =
-            premultiplied && (cpu.width, cpu.height) == (size.width, size.height);
+        let stored_premultiplied = premultiplied && native == (size.width, size.height);
+        let encoded = matches!(upload, ImageUpload::Srgb8(_));
         let texture = match self.media_cache.get(&key) {
             Some(texture) => texture,
             None => {
-                let texture = super::renderer::create_media_texture(self.rec.device(), size);
-                let rgba = super::image_size::rgba8_at(cpu, premultiplied, size);
-                self.rec.queue().write_texture(
-                    texture.as_image_copy(),
-                    &rgba,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(size.width * 4),
-                        rows_per_image: Some(size.height),
-                    },
-                    size.as_extent(),
-                );
+                let format = if encoded {
+                    UPLOAD_FORMAT
+                } else {
+                    wgpu::TextureFormat::Rgba16Float
+                };
+                let texture =
+                    super::renderer::create_media_texture(self.rec.device(), size, format);
+                let write = |bytes: &[u8]| {
+                    self.rec.queue().write_texture(
+                        texture.as_image_copy(),
+                        bytes,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(
+                                size.width * format.block_copy_size(None).unwrap_or(4),
+                            ),
+                            rows_per_image: Some(size.height),
+                        },
+                        size.as_extent(),
+                    );
+                };
+                match upload {
+                    ImageUpload::Srgb8(cpu) => {
+                        write(&super::image_size::rgba8_at(cpu, premultiplied, size));
+                    }
+                    ImageUpload::Linear(linear) => {
+                        write(bytemuck::cast_slice(&super::image_size::linear_at(
+                            linear, size,
+                        )));
+                    }
+                }
                 self.media_cache.insert(key.clone(), Arc::clone(&texture));
                 texture
             }
         };
         let tex = self.adopted_media(texture, Some(key));
-        self.ingest(tex, size, stored_premultiplied)
+        let params = IngestParams::new(stored_premultiplied, encoded, gamut);
+        self.ingest(tex, size, &params)
     }
 
-    /// The 8-bit sRGB-encoded `tex` of `size` in the working space, its colour divided by alpha
-    /// first when it is `premultiplied`.
-    fn ingest(&mut self, tex: TexRef, size: Size, premultiplied: bool) -> crate::Result<TexRef> {
+    /// `tex` of `size` in the working space, as `params` says it is stored.
+    fn ingest(&mut self, tex: TexRef, size: Size, params: &IngestParams) -> crate::Result<TexRef> {
         let target = self.storage_target(size);
-        let params = [u32::from(premultiplied), 0, 0, 0];
-        self.spatial_pass("ingest", INGEST_SHADER, tex, &params, target, size)?;
+        self.spatial_pass("ingest", INGEST_SHADER, tex, params, target, size)?;
         Ok(target)
     }
 
@@ -2203,7 +2280,7 @@ impl<'a> FrameCx<'a> {
         let usage = TextureDesc::sampled(size, UPLOAD_FORMAT).usage;
         let tex = self.rec.acquire_written_early(size, UPLOAD_FORMAT, usage);
         self.st.video_uploads.push(VideoUpload { tex, frame, size });
-        self.ingest(tex, size, premultiplied)
+        self.ingest(tex, size, &IngestParams::new(premultiplied, true, None))
     }
 
     /// The texture of a frame decoded on the CPU, either as RGBA or as YUV planes.
@@ -2219,6 +2296,9 @@ impl<'a> FrameCx<'a> {
                 self.cpu_video_texture(frame, size, alpha == AlphaMode::Premultiplied)
             }
             MediaFrame::Yuv(frame) => self.yuv_video_texture(frame, size, alpha),
+            MediaFrame::WideRgba { .. } | MediaFrame::LinearRgba(_) => {
+                Err(internal("a video resolver returned an image frame"))
+            }
             #[cfg(feature = "ffmpeg")]
             MediaFrame::GpuVideo(_) => Err(internal("a CPU frame was expected, not a GPU one")),
         }
@@ -2360,9 +2440,11 @@ impl<'a> FrameCx<'a> {
         alpha: AlphaMode,
     ) -> crate::Result<TexRef> {
         match frame {
-            frame @ (MediaFrame::CpuRgba(_) | MediaFrame::RawRgba(_) | MediaFrame::Yuv(_)) => {
-                self.cpu_frame_texture(frame, size, alpha)
-            }
+            frame @ (MediaFrame::CpuRgba(_)
+            | MediaFrame::RawRgba(_)
+            | MediaFrame::WideRgba { .. }
+            | MediaFrame::LinearRgba(_)
+            | MediaFrame::Yuv(_)) => self.cpu_frame_texture(frame, size, alpha),
             #[cfg(feature = "ffmpeg")]
             MediaFrame::GpuVideo(frame) => {
                 // Imports copy into their slot's textures before the frame's passes run, so each

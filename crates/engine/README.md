@@ -51,6 +51,16 @@ So an 8-bit image passed straight through comes out unchanged, and 50% white ove
   gives `max(R, G, B)` so hue is kept. HDR reference white shows at 0.78, sRGB code 229; light
   over 1000 nits clips. BT.2020 constant-luminance video is `media.unsupported`; other
   transfers and primaries read as SDR BT.709 with a `media.color_unsupported` warning.
+- Images follow their embedded ICC profile (PNG `iCCP`, JPEG `APP2`, WebP `ICCP`, TIFF and GIF),
+  read with `moxcms`; one without a profile is sRGB, and PNG `sRGB`, `gAMA` and `cHRM` chunks
+  are not read. Matrix/TRC RGB profiles (sRGB, Display P3, Adobe RGB, ProPhoto, Rec. 2020) and
+  grey profiles convert to BT.709 in linear light, colour outside BT.709 clipped at zero and
+  kept above 1. An 8-bit image whose profile matches sRGB (every 8-bit code within half a code)
+  is read as untagged; one with the sRGB curve in other primaries, such as Display P3, keeps its
+  8-bit texture and converts on the GPU. 16-bit PNG and TIFF, float TIFF (read as encoded, as
+  before), and 8-bit images with another curve are converted on the CPU to linear half floats,
+  8 bytes a pixel. Lookup-table, CMYK, mismatched, oversized (past 1 MiB) or malformed profiles
+  read as sRGB with a `media.color_unsupported` warning.
 - `wgsl_shader` inputs are linear and premultiplied, its output is `rgba16float`, and its prelude
   has `lumen_srgb_to_linear` and `lumen_linear_to_srgb`.
 
@@ -443,7 +453,7 @@ the engine's own reads and in FFmpeg's, while opening and while decoding) is a `
 | `font.no_outlines`                   | warning  | render        | A `text_3d` node's glyphs have no outlines to extrude, such as colour emoji, so they are left out.                                                                                                                                                                             |
 | `scene.shadow_limit`                 | warning  | render        | A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none.                                                                                                                                                                               |
 | `scene.model_primitives_skipped`     | warning  | render        | A `model_3d`'s model has points, lines, or triangle strips or fans, which aren't drawn.                                                                                                                                                                                        |
-| `media.color_unsupported`            | warning  | render        | A video's colour tags name a transfer or primaries the engine doesn't convert, so it renders as SDR or BT.709 in their place.                                                                                                                                                  |
+| `media.color_unsupported`            | warning  | render        | A video's colour tags name a transfer or primaries the engine doesn't convert, so it renders as SDR or BT.709 in their place, or an image's ICC profile can't be honoured, so it renders as sRGB.                                                                              |
 | `media.image_reduced`                | warning  | render        | An image every use of which is a literal `resize` is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit.                                                                                          |
 | `property.invalid_type`              | error    | render        | An expression gave a param a value of the wrong type.                                                                                                                                                                                                                          |
 | `expression.parse`                   | error    | render        | An expression built at render time doesn't parse.                                                                                                                                                                                                                              |
