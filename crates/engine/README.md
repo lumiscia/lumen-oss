@@ -30,9 +30,10 @@ breaking, so there is no migration between lines. Absent means the engine's own 
 Every raster is `Rgba16Float` (`gpu::WORKING_COLOR_FORMAT`): linear light with BT.709 primaries
 and premultiplied alpha, where 1.0 is SDR white and colour may go past it. JSON colours, images
 and video are sRGB-encoded, and decode to linear light on the way in; `media_output` encodes back
-to sRGB once, quantising 8-bit targets with an ordered dither below half a code
-(`GpuCompositionRenderer::set_output_dither`). So an 8-bit image passed straight through comes out
-unchanged, and 50% white over black is code 188, half the light, not 128.
+to sRGB once, quantising 8-bit targets with an ordered dither that keeps the mean of flat areas
+(`GpuCompositionRenderer::set_output_dither`); a value within a tenth of a code of one keeps it.
+So an 8-bit image passed straight through comes out unchanged, and 50% white over black is code
+188, half the light, not 128. Float outputs take the working space unchanged.
 
 - Normal merges, opacity, masks, transform and resize sampling, blurs, glow, shadows, motion blur,
   text and shape antialiasing work in linear light. A luma matte is the linear BT.709 luminance;
