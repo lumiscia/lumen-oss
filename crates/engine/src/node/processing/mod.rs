@@ -1,6 +1,7 @@
 pub mod blur;
 pub mod color_grade;
 pub mod crop;
+pub(crate) mod cube_lut;
 pub mod directional_blur;
 pub mod displacement_map;
 pub mod exposure;

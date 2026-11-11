@@ -50,6 +50,7 @@ lumen-gpu = { workspace = true }
 lumen-3d = { workspace = true, optional = true }
 lumen-text = { workspace = true }
 bytemuck = { version = "1.25.0", features = ["derive"] }
+half = "2.7.1"
 objc2-metal = { version = "0.3.2", optional = true }
 
 [dev-dependencies]

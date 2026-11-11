@@ -89,6 +89,8 @@ pub struct BufRef(u32);
 #[derive(Debug, Clone, Copy)]
 pub enum LayoutKind {
     Texture,
+    /// A filterable float texture of three dimensions.
+    Texture3d,
     /// A float texture read with `textureLoad`, such as `R32Float`, which can't be filtered.
     UnfilterableTexture,
     /// An unsigned-integer texture, read with `textureLoad`.
@@ -1291,6 +1293,11 @@ impl Recorder {
                     LayoutKind::Texture => wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    LayoutKind::Texture3d => wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
                         multisampled: false,
                     },
                     LayoutKind::UnfilterableTexture => wgpu::BindingType::Texture {

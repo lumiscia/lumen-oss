@@ -12,6 +12,10 @@ use std::{
 };
 
 use futures_util::{TryStreamExt, stream};
+use lumen_engine::{
+    composition::Composition,
+    media::{AssetKind, MAX_LUT_BYTES},
+};
 use reqwest::{
     Url,
     dns::{Addrs, Name, Resolve, Resolving},
@@ -249,11 +253,31 @@ impl Resolve for PublicAddressResolver {
     }
 }
 
+/// The sources `composition` names that every use reads as a LUT, which may not be larger than
+/// [`MAX_LUT_BYTES`]. Nothing is claimed of a source an expression computes.
+pub(super) fn lut_only_sources(composition: &Composition) -> HashSet<String> {
+    let inventory = composition.media_dependencies();
+    if inventory
+        .dynamic
+        .iter()
+        .any(|param| param.kinds != [AssetKind::Lut])
+    {
+        return HashSet::new();
+    }
+    inventory
+        .media
+        .into_iter()
+        .filter(|dependency| dependency.kinds == [AssetKind::Lut])
+        .map(|dependency| dependency.source)
+        .collect()
+}
+
 /// Staging always yields a directory of its own, even with an empty manifest, because the render's
 /// media store can only read sources inside the directory it is given.
 pub(super) async fn stage_remote_media(
     client: &MediaClient,
     media: HashMap<String, String>,
+    lut_only: &HashSet<String>,
 ) -> Result<TempDir, RenderJobError> {
     let dir = tempfile::tempdir().map_err(|err| {
         tracing::warn!(error = %err, "failed to create media staging directory");
@@ -268,15 +292,14 @@ pub(super) async fn stage_remote_media(
         .try_for_each_concurrent(MEDIA_DOWNLOAD_CONCURRENCY, |(alias, url)| {
             let path = dir.path().join(&alias);
             let staged_bytes = &staged_bytes;
+            let limit = if lut_only.contains(&alias) {
+                MAX_LUT_BYTES as u64
+            } else {
+                MAX_REMOTE_MEDIA_BYTES
+            };
             async move {
                 client
-                    .download(
-                        &alias,
-                        &url,
-                        &path,
-                        MAX_REMOTE_MEDIA_BYTES,
-                        Some(staged_bytes),
-                    )
+                    .download(&alias, &url, &path, limit, Some(staged_bytes))
                     .await
                     .map(drop)
                     .map_err(|failure| failure.error)
@@ -406,7 +429,8 @@ fn is_non_public_ipv6(ip: Ipv6Addr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_non_public_ip, is_valid_media_alias};
+    use super::{is_non_public_ip, is_valid_media_alias, lut_only_sources};
+    use lumen_engine::composition::Composition;
 
     #[test]
     fn non_public_addresses_are_refused_in_every_form() {
@@ -483,5 +507,29 @@ mod tests {
         for alias in ["hero", "hero.final-2_v1.png", ".hidden"] {
             assert!(is_valid_media_alias(alias), "{alias:?} should be allowed");
         }
+    }
+
+    #[test]
+    fn only_sources_read_as_luts_alone_get_the_lut_size_limit() {
+        let composition: Composition = lumen_engine::json::parse_value(&serde_json::json!({
+            "timeline": { "fps": 30, "duration_frames": 1 },
+            "render_settings": { "width": 8, "height": 8 },
+            "nodes": [
+                { "id": 1, "type": "background" },
+                { "id": 2, "type": "color_grade", "params": { "lut_source": "a.cube" } },
+                { "id": 3, "type": "color_grade", "params": { "lut_source": "b.cube" } },
+                { "id": 4, "type": "media_in", "params": { "kind": "image", "source": "photo.png" } },
+                { "id": 5, "type": "media_output" }
+            ],
+            "connections": [
+                { "from_node": 1, "to_node": 2, "to_port": "source" },
+                { "from_node": 2, "to_node": 3, "to_port": "source" },
+                { "from_node": 3, "to_node": 5, "to_port": "source" }
+            ]
+        }))
+        .unwrap();
+        let mut sources: Vec<_> = lut_only_sources(&composition).into_iter().collect();
+        sources.sort();
+        assert_eq!(sources, ["a.cube", "b.cube"]);
     }
 }

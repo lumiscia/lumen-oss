@@ -162,3 +162,12 @@ pub trait ModelResolver: Send + Sync {
 pub trait EnvironmentResolver: Send + Sync {
     fn data(&self) -> Result<Vec<u8>, MediaError>;
 }
+
+/// The largest `.cube` file a host should read: a table of the largest size, written with six
+/// decimals, is about 58 MB.
+pub const MAX_LUT_BYTES: usize = 64 << 20;
+
+/// A `.cube` colour lookup table file.
+pub trait LutResolver: Send + Sync {
+    fn data(&self) -> Result<Vec<u8>, MediaError>;
+}

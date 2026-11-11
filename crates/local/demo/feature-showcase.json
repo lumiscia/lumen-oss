@@ -98,7 +98,7 @@
       "id": 8,
       "type": "color_grade",
       "params": {
-        "lut_source": "rgb1d:0,0,0;0.22,0.18,0.28;1,1,1",
+        "lut": "rgb1d:0,0,0;0.22,0.18,0.28;1,1,1",
         "strength": 0.75
       }
     },

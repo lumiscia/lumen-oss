@@ -8,7 +8,7 @@ export type NodePortKind = "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
 export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "model_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
-export type MediaSourceKind = "audio" | "environment" | "image" | "model" | "video";
+export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
 
 export const schemaVersion = 1 as const;
 
@@ -1760,7 +1760,20 @@ export interface ColorGradeNode extends CompositionNodeBase<"color_grade"> {
   readonly params?: {
     /** Sampling filter used when reading LUT data. */
     readonly interpolation?: ExpressionValue<RasterSampling>;
-    /** LUT data source or named LUT preset. */
+    /**
+     * An inline 1D LUT: `rgb1d:` and RGB stops separated by `;`, each three numbers from 0 to 1,
+     * such as `rgb1d:0,0,0;0.2,0.1,0.3;1,1,1`; or `identity`. A value outside 0..1 is an error:
+     * divide 0..255 values by 255. Set either this or `lut_source`.
+     */
+    readonly lut?: ExpressionValue<string>;
+    /**
+     * A 3D `.cube` LUT file (Adobe/Resolve) to grade with: a path or `media` alias, or
+     * `asset:<id>` for an asset of the host's. Tables up to 129 points per axis and 64 MiB are
+     * read, sampled with trilinear interpolation (`interpolation` `nearest` takes the nearest
+     * point), and `DOMAIN_MIN`/`DOMAIN_MAX` set the input range they cover. 1D `.cube` tables are
+     * not supported. Empty uses `lut`; setting both is an error. The browser preview does not
+     * load `.cube` files.
+     */
     readonly lut_source?: ExpressionValue<string>;
     /** Blend amount for the LUT transform. */
     readonly strength?: ExpressionValue<number>;
@@ -3416,7 +3429,7 @@ export const nodeMediaSources = {
   "boolean": {},
   "camera_3d": {},
   "clip": {},
-  "color_grade": {},
+  "color_grade": { "lut_source": { kinds: ["lut"] } },
   "crop": {},
   "directional_blur": {},
   "displacement_map": {},

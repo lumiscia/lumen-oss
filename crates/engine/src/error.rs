@@ -598,6 +598,7 @@ impl Serialize for MediaFailure {
 fn kind_noun(kind: AssetKind) -> &'static str {
     match kind {
         AssetKind::Environment => "environment map",
+        AssetKind::Lut => "LUT",
         kind => kind.name(),
     }
 }

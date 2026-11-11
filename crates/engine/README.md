@@ -80,7 +80,8 @@ A host gives a render its media through one method, `MediaStore::resolve(source,
 is what the composition wrote (a path, an alias, `asset:<id>`, or a font family) and `kind` is the
 `AssetKind` the use reads it as. The store answers with a `ResolvedMedia`: an `identity` and a
 `MediaResolver`, which holds the kind's resolver trait object (`ImageResolver`,
-`VideoFrameResolver`, `AudioResolver`, `FontResolver`, `ModelResolver` or `EnvironmentResolver`).
+`VideoFrameResolver`, `AudioResolver`, `FontResolver`, `ModelResolver`, `EnvironmentResolver` or
+`LutResolver`).
 Video decode settings, such as hardware decode, are the store's own, set when it is made.
 
 The `MediaIdentity` names the bytes. The engine treats equal identities, from any store in the

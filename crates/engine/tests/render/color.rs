@@ -268,7 +268,7 @@ fn transparent_and_coloured_edges_have_no_dark_fringe() {
         ),
         (
             "color_grade",
-            json!({ "lut_source": "rgb1d: 0,0,0; 255,128,0", "interpolation": "linear" }),
+            json!({ "lut": "rgb1d: 0,0,0; 1,0.5,0", "interpolation": "linear" }),
         ),
         ("blur", json!({ "radius": 2 })),
     ]
@@ -785,5 +785,148 @@ fn emissive_light_past_a_half_float_stays_finite() {
                 .check_working_space()
             })
             .collect(),
+    );
+}
+
+/// A `.cube` file of `size` points per axis whose entry for lattice point `(r, g, b)` is
+/// `entry(r, g, b)`, red varying fastest.
+fn cube_file(size: u32, entry: impl Fn(u32, u32, u32) -> [f64; 3]) -> String {
+    let mut text = format!("TITLE \"test\"\nLUT_3D_SIZE {size}\n");
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                let [x, y, z] = entry(r, g, b);
+                text += &format!("{x} {y} {z}\n");
+            }
+        }
+    }
+    text
+}
+
+/// `pixels` through `color_grade` with the `.cube` file `text`.
+fn grade_with_cube(text: &str, params: Value, pixels: &[[u8; 4]], straight: bool) -> Vec<[u8; 4]> {
+    let rgba: Vec<u8> = pixels.iter().flatten().copied().collect();
+    let width = pixels.len() as u32;
+    let media = if straight {
+        TestMedia::default().straight_image("image", width, 1, rgba)
+    } else {
+        TestMedia::default().image("image", width, 1, rgba)
+    };
+    let media = media.lut("grade.cube", text);
+    let mut params = params;
+    params["lut_source"] = json!("grade.cube");
+    let composition: Composition = chain(
+        (width, 1),
+        vec![
+            json!({ "type": "media_in", "params": { "kind": "image", "source": "image" } }),
+            json!({ "type": "color_grade", "params": params }),
+        ],
+    )
+    .into();
+    let mut renderer = gpu().renderer();
+    let first = render(&mut renderer, &composition, 0.0, &media);
+    render(&mut renderer, &composition, 0.0, &media);
+    assert_eq!(media.lut_loads(), 1, "the table is read once per identity");
+    (0..width).map(|x| first.pixel(x, 0)).collect()
+}
+
+#[test]
+fn cube_luts_sample_the_lattice_and_interpolate_in_the_encoded_domain() {
+    let linear_cube = |size: u32| {
+        let last = f64::from(size - 1);
+        cube_file(size, |r, g, b| {
+            [
+                f64::from(r) / last,
+                f64::from(g) / last,
+                f64::from(b) / last,
+            ]
+        })
+    };
+
+    // An identity table of an odd size leaves every code within one.
+    let ramp: Vec<[u8; 4]> = (0..=255u8)
+        .map(|code| [code, 255 - code, code / 2 + 64, 255])
+        .collect();
+    let identity = grade_with_cube(&linear_cube(17), json!({}), &ramp, false);
+    for (code, (out, source)) in identity.iter().zip(&ramp).enumerate() {
+        for channel in 0..4 {
+            assert!(
+                out[channel].abs_diff(source[channel]) <= 1,
+                "code {code}: {out:?} != {source:?}"
+            );
+        }
+    }
+
+    // Swapping red and blue does exactly that at the lattice points.
+    let corners: Vec<[u8; 4]> = (0..8u8)
+        .map(|n| [(n & 1) * 255, (n >> 1 & 1) * 255, (n >> 2 & 1) * 255, 255])
+        .collect();
+    let swapped = grade_with_cube(
+        &cube_file(2, |r, g, b| [b, g, r].map(f64::from)),
+        json!({}),
+        &corners,
+        false,
+    );
+    for (out, source) in swapped.iter().zip(&corners) {
+        assert_eq!(*out, [source[2], source[1], source[0], 255]);
+    }
+
+    // A size-2 table is trilinear between its corners, which a calculation in the encoded domain
+    // repeats: the lookup takes the encoded colour and the output decodes the table's value.
+    let corner = |r: u32, g: u32, b: u32| {
+        [
+            0.1 + 0.8 * f64::from(r) * f64::from(g),
+            0.9 - 0.7 * f64::from(g) + 0.3 * f64::from(b),
+            0.2 + 0.5 * f64::from(r) + 0.2 * f64::from(b) * f64::from(g),
+        ]
+    };
+    let input = [128u8, 64, 200, 255];
+    let weights = [128.0 / 255.0, 64.0 / 255.0, 200.0 / 255.0];
+    let mut expected = [0.0; 3];
+    for (corner_index, bits) in (0..8u32).enumerate() {
+        let (r, g, b) = (bits & 1, bits >> 1 & 1, bits >> 2 & 1);
+        let weight: f64 = [r, g, b]
+            .iter()
+            .zip(weights)
+            .map(|(&bit, w)| if bit == 1 { w } else { 1.0 - w })
+            .product();
+        let value = corner(r, g, b);
+        for channel in 0..3 {
+            expected[channel] += weight * value[channel];
+        }
+        let _ = corner_index;
+    }
+    let out = grade_with_cube(&cube_file(2, corner), json!({}), &[input], false)[0];
+    for channel in 0..3 {
+        let code = (expected[channel] * 255.0).round();
+        assert!(
+            (f64::from(out[channel]) - code).abs() <= 2.0,
+            "channel {channel}: {out:?}, expected {code}"
+        );
+    }
+
+    // Strength blends the graded colour with the source, as it does for the JSON table.
+    let half = grade_with_cube(
+        &cube_file(2, |r, g, b| [b, g, r].map(f64::from)),
+        json!({ "strength": 0.5 }),
+        &[[255, 0, 0, 255]],
+        false,
+    )[0];
+    assert!(
+        half[0].abs_diff(128) <= 1 && half[2].abs_diff(128) <= 1 && half[1] == 0,
+        "{half:?}"
+    );
+
+    // A translucent pixel keeps its alpha, and its colour is graded straight.
+    let faded = grade_with_cube(
+        &cube_file(2, |r, g, b| [b, g, r].map(f64::from)),
+        json!({}),
+        &[[255, 0, 0, 128]],
+        true,
+    )[0];
+    assert_eq!(faded[3], 128);
+    assert!(
+        faded[0] == 0 && faded[1] == 0 && (unpremultiplied(&faded, 2) - 255.0).abs() < 2.0,
+        "{faded:?}"
     );
 }

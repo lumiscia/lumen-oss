@@ -14,8 +14,8 @@ use lumen_engine::{
     gpu::{BoundFrame, GpuCompositionRenderer, WORKING_COLOR_FORMAT},
     media::{
         AssetKind, CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver,
-        MediaFrame, MediaIdentity, MediaResolver, MediaStore, ModelResolver, ResolvedMedia,
-        TextSession, VideoFrameResolver, VideoMetadata, YuvFrame,
+        LutResolver, MediaFrame, MediaIdentity, MediaResolver, MediaStore, ModelResolver,
+        ResolvedMedia, TextSession, VideoFrameResolver, VideoMetadata, YuvFrame,
     },
     node::NodeKind,
 };
@@ -150,6 +150,10 @@ pub struct TestMedia {
     environments: HashMap<String, (String, Arc<Vec<u8>>)>,
     /// How many times environment map bytes were read, shared with its clones.
     environment_loads: Arc<AtomicUsize>,
+    /// Identity key and file of each `.cube` LUT by source.
+    luts: HashMap<String, (String, Arc<Vec<u8>>)>,
+    /// How many times LUT bytes were read, shared with its clones.
+    lut_loads: Arc<AtomicUsize>,
 }
 
 impl TestMedia {
@@ -274,6 +278,19 @@ impl TestMedia {
     pub fn environment_loads(&self) -> usize {
         self.environment_loads.load(Ordering::Relaxed)
     }
+
+    /// Serves `text` as the `.cube` file `source`.
+    pub fn lut(mut self, source: &str, text: &str) -> Self {
+        self.luts.insert(
+            source.to_string(),
+            (source.to_string(), Arc::new(text.as_bytes().to_vec())),
+        );
+        self
+    }
+
+    pub fn lut_loads(&self) -> usize {
+        self.lut_loads.load(Ordering::Relaxed)
+    }
 }
 
 /// A run-length encoded Radiance `.hdr` file of `width` by `height` linear RGB `texels`, rows
@@ -382,6 +399,18 @@ impl FontResolver for TestFont {
     }
 }
 
+struct TestLut {
+    data: Arc<Vec<u8>>,
+    loads: Arc<AtomicUsize>,
+}
+
+impl LutResolver for TestLut {
+    fn data(&self) -> Result<Vec<u8>, MediaError> {
+        self.loads.fetch_add(1, Ordering::Relaxed);
+        Ok(self.data.to_vec())
+    }
+}
+
 struct TestModel {
     data: Arc<Vec<u8>>,
     loads: Arc<AtomicUsize>,
@@ -456,6 +485,14 @@ impl MediaStore for TestMedia {
                     MediaIdentity::of_key(id),
                     MediaResolver::Environment(Box::new(environment)),
                 )
+            }
+            AssetKind::Lut => {
+                let (id, data) = self.luts.get(source).ok_or_else(missing)?;
+                let lut = TestLut {
+                    data: Arc::clone(data),
+                    loads: Arc::clone(&self.lut_loads),
+                };
+                (MediaIdentity::of_key(id), MediaResolver::Lut(Box::new(lut)))
             }
             AssetKind::Audio => return Err(missing()),
         };

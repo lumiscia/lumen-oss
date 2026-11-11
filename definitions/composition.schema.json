@@ -2045,7 +2045,7 @@
                     ],
                     "x-lumen-kind": "enum"
                   },
-                  "lut_source": {
+                  "lut": {
                     "anyOf": [
                       {
                         "type": "string"
@@ -2055,14 +2055,34 @@
                       }
                     ],
                     "default": "identity",
-                    "description": "LUT data source or named LUT preset.",
-                    "title": "LUT source",
+                    "description": "An inline 1D LUT: `rgb1d:` and RGB stops separated by `;`, each three numbers from 0 to 1,\nsuch as `rgb1d:0,0,0;0.2,0.1,0.3;1,1,1`; or `identity`. A value outside 0..1 is an error:\ndivide 0..255 values by 255. Set either this or `lut_source`.",
+                    "title": "LUT",
                     "x-lumen-constraints": {
                       "multiline": true,
                       "recommendedRows": 4,
-                      "role": "lut_source"
+                      "role": "lut"
                     },
                     "x-lumen-kind": "string"
+                  },
+                  "lut_source": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": "",
+                    "description": "A 3D `.cube` LUT file (Adobe/Resolve) to grade with: a path or `media` alias, or\n`asset:<id>` for an asset of the host's. Tables up to 129 points per axis and 64 MiB are\nread, sampled with trilinear interpolation (`interpolation` `nearest` takes the nearest\npoint), and `DOMAIN_MIN`/`DOMAIN_MAX` set the input range they cover. 1D `.cube` tables are\nnot supported. Empty uses `lut`; setting both is an error. The browser preview does not\nload `.cube` files.",
+                    "title": "LUT source",
+                    "x-lumen-constraints": {
+                      "role": "source_id"
+                    },
+                    "x-lumen-kind": "string",
+                    "x-lumen-media": {
+                      "kinds": ["lut"]
+                    }
                   },
                   "strength": {
                     "anyOf": [
