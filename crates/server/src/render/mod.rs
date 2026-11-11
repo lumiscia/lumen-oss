@@ -22,7 +22,10 @@ use lumen_engine::{
     composition::{BitDepth, Composition, OutputCodec},
     media::AssetResolver,
 };
-use lumen_ffmpeg::{EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoice};
+use lumen_ffmpeg::{
+    AudioEncoderConfig, EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoice,
+    check_audio_encoder,
+};
 
 pub use error::{ErrorCode, ServerRenderError};
 pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir};
@@ -120,14 +123,27 @@ pub struct RenderOptions {
 
 /// The encoders a render of `composition` to `format` tries: `request`'s preset, codec, bit depth
 /// and alpha where it names them, then the composition's `render_settings`, then the codec a MOV or
-/// WebM holds, then `config`'s defaults. A codec or alpha `format` can't hold is
-/// [`ErrorCode::InvalidOutput`], and anything else no encoder here can write is
+/// WebM holds, then `config`'s defaults. A codec or alpha `format` can't hold, or audio in a
+/// composition with audio when this FFmpeg has no encoder for `format`'s audio (Opus in WebM, AAC
+/// otherwise), is [`ErrorCode::InvalidOutput`], and anything else no encoder here can write is
 /// [`ErrorCode::InvalidQuality`].
 pub fn resolve_encoder(
     config: &QualityConfig,
     composition: &Composition,
     format: OutputFormat,
+    request: QualityRequest,
+) -> Result<VideoEncoderChoice, ServerRenderError> {
+    resolve_encoder_with(config, composition, format, request, &check_audio_encoder)
+}
+
+/// [`resolve_encoder`], with `audio_encoder` saying whether this FFmpeg can encode an audio
+/// config.
+fn resolve_encoder_with(
+    config: &QualityConfig,
+    composition: &Composition,
+    format: OutputFormat,
     mut request: QualityRequest,
+    audio_encoder: &dyn Fn(&AudioEncoderConfig) -> Result<(), String>,
 ) -> Result<VideoEncoderChoice, ServerRenderError> {
     let output = composition.output_settings();
     request.preset = request.preset.or_else(|| output.quality.clone());
@@ -151,6 +167,10 @@ pub fn resolve_encoder(
     format
         .check_video(request.codec, request.alpha.unwrap_or(false))
         .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
+    if encoder::has_audio(composition) {
+        audio_encoder(&encoder::audio_config(format == OutputFormat::Webm))
+            .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
+    }
     config
         .resolve(&request)
         .map_err(|message| ServerRenderError::new(ErrorCode::InvalidQuality, message, false))

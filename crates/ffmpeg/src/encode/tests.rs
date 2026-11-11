@@ -459,3 +459,67 @@ fn alpha_needs_an_encoder_that_writes_it() {
     );
     let _ = fs::remove_file(path);
 }
+
+/// prores_ks drops the alpha plane at `alpha_bits` 0 and outside the 4444 profiles, so a preset
+/// or direct caller asking for either fails when the encoder opens instead of writing opaque video.
+#[test]
+fn prores_options_that_would_drop_alpha_fail_at_open() {
+    use crate::{EncodeCodec, QualityConfig, QualityRequest};
+
+    if super::codec::encoder_info("prores_ks").is_err() {
+        eprintln!("prores_ks not in this FFmpeg build; skipping");
+        return;
+    }
+    let config_with = |alpha_bits: &str| {
+        let presets = QualityConfig::from_json(&format!(
+            r#"{{ "presets": {{ "keyed": {{ "encoders": {{ "prores_ks": {{ "qp": 4, "options": {{ "alpha_bits": "{alpha_bits}" }} }} }} }} }} }}"#
+        ))
+        .expect("config");
+        let choice = presets
+            .resolve(&QualityRequest {
+                preset: Some("keyed".into()),
+                codec: Some(EncodeCodec::ProRes),
+                alpha: Some(true),
+                ..QualityRequest::default()
+            })
+            .expect("keyed resolves");
+        let mut config = VideoEncoderConfig::cpu_rgba(64, 64, 30, "prores_ks");
+        config.quality = choice.first().quality.clone();
+        config.bit_depth = choice.bit_depth();
+        config.alpha = choice.alpha();
+        config
+    };
+    let refused = |config: VideoEncoderConfig, option: &str| {
+        let path = temp_path("prores_refused", "mov");
+        match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+            Ok(_) => panic!("{option} would drop alpha"),
+            Err(error) => assert!(error.message.contains(option), "{error}"),
+        }
+        let _ = fs::remove_file(path);
+    };
+
+    refused(config_with("0"), "`alpha_bits` to 0");
+    refused(config_with("8"), "`alpha_bits` to 8");
+    let mut hq = VideoEncoderConfig::cpu_rgba(64, 64, 30, "prores_ks");
+    hq.bit_depth = super::codec::BitDepth::Ten;
+    hq.alpha = true;
+    hq.quality.options = vec![("profile".into(), "hq".into())];
+    refused(hq, "`profile` to 3");
+
+    let path = temp_path("prores_alpha_bits", "mov");
+    let mut muxed =
+        MuxedEncoder::create(path.to_string_lossy().to_string(), config_with("16")).expect("open");
+    for pts in 0..3 {
+        let frame = CpuVideoFrame {
+            pts: Some(pts),
+            ..yuva_frame(PixelFormat::Yuva444p10, 64, 500, 1023, 300)
+        };
+        muxed.write_video_frame(&frame).expect("write frame");
+    }
+    muxed.finish().expect("finish encode");
+    let (decoded, _) = decode_first_yuv(&path);
+    assert!(decoded.has_alpha, "alpha_bits 16 keeps the alpha plane");
+    let shift = decoded.depth - 10;
+    assert_eq!(alpha_sample(&decoded, 56, 32) >> shift, 300);
+    let _ = fs::remove_file(path);
+}

@@ -17,7 +17,7 @@ pub use encode::{
     AudioEncoderConfig, BUILT_IN_PRESETS, BitDepth, ContainerCrop, EncodeCodec, EncoderCandidate,
     EncoderFamily, EncoderInfo, EncoderQuality, MuxedEncoder, QUALITY_CONFIG_ENV, QualityConfig,
     QualityRequest, RateControl, VideoEncoderChoice, VideoEncoderConfig, check_alpha,
-    check_bit_depth, encoder_info, parse_bitrate,
+    check_audio_encoder, check_bit_depth, encoder_info, parse_bitrate,
 };
 pub use format::{
     ALLOWED_INPUT_FORMATS, ALLOWED_INPUT_PROTOCOLS, AudioStreamInfo, InputContext, MediaInfo,

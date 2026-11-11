@@ -14,7 +14,10 @@ mod video_gpu;
 
 pub use audio::AudioEncoderConfig;
 pub use choice::{EncoderCandidate, VideoEncoderChoice};
-pub use codec::{BitDepth, EncoderFamily, EncoderInfo, check_alpha, check_bit_depth, encoder_info};
+pub use codec::{
+    BitDepth, EncoderFamily, EncoderInfo, check_alpha, check_audio_encoder, check_bit_depth,
+    encoder_info,
+};
 pub use muxed::MuxedEncoder;
 pub use preset::{
     BUILT_IN_PRESETS, EncodeCodec, QUALITY_CONFIG_ENV, QualityConfig, QualityRequest,

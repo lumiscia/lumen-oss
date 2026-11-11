@@ -881,6 +881,10 @@ fn resolving_alpha_names_what_can_hold_it() {
     );
     let h264 = alpha(OutputFormat::Mov, Some(lumen_ffmpeg::EncodeCodec::H264)).unwrap_err();
     assert!(h264.to_string().contains("a .mov holds prores"), "{h264}");
+    if lumen_ffmpeg::encoder_info("prores_ks").is_err() {
+        eprintln!("prores_ks not in this FFmpeg build; skipping the ProRes selections");
+        return;
+    }
     let prores = alpha(OutputFormat::Mov, None).unwrap();
     assert_eq!(prores.first().encoder, "prores_ks");
     assert!(prores.alpha());
@@ -921,4 +925,50 @@ fn resolving_alpha_names_what_can_hold_it() {
     )
     .unwrap();
     assert!(!opaque.alpha());
+}
+
+/// A composition with audio is refused while resolving, before any render is queued or GPU work
+/// starts, when this FFmpeg can't encode its container's audio: Opus for WebM, AAC for the rest.
+#[test]
+fn a_missing_audio_encoder_refuses_the_render_while_resolving() {
+    use std::cell::RefCell;
+
+    let quality = lumen_ffmpeg::QualityConfig::built_in();
+    let asked = RefCell::new(Vec::new());
+    let no_audio_encoders = |config: &lumen_ffmpeg::AudioEncoderConfig| {
+        let name = config.encoder_name.clone().unwrap_or_else(|| "aac".into());
+        asked.borrow_mut().push(name.clone());
+        Err(format!("no `{name}` here"))
+    };
+    let resolve = |composition: &Composition, format| {
+        super::resolve_encoder_with(
+            &quality,
+            composition,
+            format,
+            lumen_ffmpeg::QualityRequest::default(),
+            &no_audio_encoders,
+        )
+    };
+
+    for (format, encoder) in [
+        (OutputFormat::Webm, "libopus"),
+        (OutputFormat::Mov, "aac"),
+        (OutputFormat::Mp4, "aac"),
+    ] {
+        let error = resolve(&translucent_disc(), format).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidOutput, "{format:?}");
+        assert!(error.to_string().contains(encoder), "{format:?}: {error}");
+        assert_eq!(asked.take(), [encoder], "{format:?}");
+    }
+    // Without audio no audio encoder is needed, so the stand-in is never asked.
+    let _ = resolve(&transparent(), OutputFormat::Webm);
+    assert!(asked.take().is_empty());
+
+    let opus = lumen_ffmpeg::AudioEncoderConfig::opus(48_000, 2);
+    if let Err(message) = lumen_ffmpeg::check_audio_encoder(&opus) {
+        assert!(
+            message.contains("render without audio or to .mov"),
+            "{message}"
+        );
+    }
 }

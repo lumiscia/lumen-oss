@@ -18,7 +18,7 @@ cargo run -p lumen-local -- --composition crates/local/demo/gradient-paints.json
 
 `.mp4`, `.mov` (ProRes 4444) and `.webm` (VP9) render every frame, `.png` and `.jpg` (or `.jpeg`) render one, and an output name with `%d` renders an image per frame. `--help` lists every flag.
 
-`--alpha` keeps the frame's transparency as an alpha channel, in a `.mov` or `.webm`: the colour is straight, as a PNG holds it, and alpha is full range. Alpha in an `.mp4`, or with a hardware encoder, is an error rather than an opaque video. A `.webm`'s audio is Opus, which needs an FFmpeg with `libopus`.
+`--alpha` keeps the frame's transparency as an alpha channel, in a `.mov` or `.webm`: the colour is straight, as a PNG holds it, and alpha is full range. Alpha in an `.mp4`, or with a hardware encoder, is an error rather than an opaque video. A `.webm`'s audio is Opus, which needs an FFmpeg with `libopus`; without it, a composition with audio fails before rendering.
 
 ```sh
 cargo run -p lumen-local -- --composition title.json --output title.mov --alpha

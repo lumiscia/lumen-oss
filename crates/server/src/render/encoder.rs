@@ -55,7 +55,10 @@ impl EncoderSink {
         config.quality = quality.clone();
         config.bit_depth = bit_depth;
         config.alpha = alpha;
-        let audio = include_audio.then(|| audio_config(output));
+        let webm = output
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("webm"));
+        let audio = include_audio.then(|| audio_config(webm));
 
         let (message_tx, message_rx) =
             mpsc::sync_channel::<EncoderMessage>(ENCODER_FRAME_QUEUE_CAPACITY);
@@ -164,14 +167,10 @@ impl Drop for EncoderSink {
     }
 }
 
-/// The audio a video at `output` holds: Opus in a WebM, which takes nothing else, and AAC in the
-/// rest.
-fn audio_config(output: &Path) -> AudioEncoderConfig {
+/// The audio a video holds: Opus in a WebM, which takes nothing else, and AAC in the rest.
+pub(super) fn audio_config(webm: bool) -> AudioEncoderConfig {
     let channels = AUDIO_CHANNELS as u16;
-    if output
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("webm"))
-    {
+    if webm {
         AudioEncoderConfig::opus(AUDIO_SAMPLE_RATE, channels)
     } else {
         AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, channels)

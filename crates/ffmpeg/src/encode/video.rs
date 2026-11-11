@@ -279,6 +279,9 @@ impl VideoEncoder {
                     ),
                 ));
             }
+            if codec_id == crate::video::VideoCodec::ProRes {
+                check_prores_options(context, config.alpha, encoder_name)?;
+            }
             ffi::check(
                 sys::avcodec_open2(context, codec, ptr::null_mut()),
                 "avcodec_open2",
@@ -746,6 +749,56 @@ fn check_container_holds(
                 ),
             )
             .with_path(output.path()));
+        }
+    }
+    Ok(())
+}
+
+/// prores_ks's own `profile` value for ProRes 4444.
+const PRORES_KS_PROFILE_4444: i64 = 4;
+
+/// Errors when the options applied to a ProRes encoder leave a profile other than 4444, or with
+/// `alpha`, an `alpha_bits` other than 16: prores_ks silently drops the alpha plane outside the
+/// 4444 profiles and at `alpha_bits` 0.
+///
+/// # Safety
+///
+/// `context` must be a live, unopened prores_ks codec context.
+unsafe fn check_prores_options(
+    context: *mut sys::AVCodecContext,
+    alpha: bool,
+    encoder: &str,
+) -> Result<()> {
+    let required: &[(&std::ffi::CStr, i64, &str)] = if alpha {
+        &[
+            (
+                c"profile",
+                PRORES_KS_PROFILE_4444,
+                "lumen always encodes 4444",
+            ),
+            (c"alpha_bits", 16, "alpha output needs 16"),
+        ]
+    } else {
+        &[(
+            c"profile",
+            PRORES_KS_PROFILE_4444,
+            "lumen always encodes 4444",
+        )]
+    };
+    for &(name, expected, reason) in required {
+        let mut value = 0;
+        ffi::check(
+            unsafe { sys::av_opt_get_int((*context).priv_data, name.as_ptr(), 0, &mut value) },
+            "av_opt_get_int",
+        )?;
+        if value != expected {
+            return Err(FfmpegError::new(
+                "VideoEncoder::new",
+                format!(
+                    "encoder `{encoder}`: its options set `{}` to {value}, and {reason}",
+                    name.to_string_lossy()
+                ),
+            ));
         }
     }
     Ok(())

@@ -341,6 +341,14 @@ fn missing_audio_encoder_message(name: &str) -> String {
 /// The Opus encoder WebM audio uses.
 pub(crate) const OPUS_ENCODER: &str = "libopus";
 
+/// Errors, with a message naming what to do instead, when this FFmpeg build has no encoder for
+/// `config`.
+pub fn check_audio_encoder(config: &AudioEncoderConfig) -> std::result::Result<(), String> {
+    find_audio_encoder(config)
+        .map(|_| ())
+        .map_err(|error| error.message)
+}
+
 pub(crate) fn find_audio_encoder(config: &AudioEncoderConfig) -> Result<*const sys::AVCodec> {
     if let Some(name) = config.encoder_name.as_deref() {
         return encoder_by_name(name).map_err(|mut error| {
