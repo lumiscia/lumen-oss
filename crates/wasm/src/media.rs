@@ -636,7 +636,7 @@ impl ImageResolver for WasmImageResolver {
             .get(&self.source)
             .map(|entry| Arc::clone(&entry.frame))
             .ok_or_else(|| MediaError::source_not_found(&self.source, "image is not registered"))
-            .map(MediaFrame::CpuRgba)
+            .map(MediaFrame::RawRgba)
     }
 }
 
@@ -864,7 +864,7 @@ mod tests {
                 },
             )
             .expect("set metadata");
-        let frame = crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
+        let frame = crate::utils::raw_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
         store
             .set_video_frame("intro".to_string(), 0, frame)
             .expect("set frame");
@@ -976,7 +976,7 @@ mod tests {
 
     #[test]
     fn an_image_has_a_new_identity_when_it_is_replaced_or_set_again() {
-        let image = || crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).unwrap();
+        let image = || crate::utils::raw_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).unwrap();
         let id = |store: &WasmMediaStore| identity(store, "plate", AssetKind::Image);
         let store = WasmMediaStore::default();
         store.set_image("plate".to_string(), image()).unwrap();
@@ -1024,7 +1024,7 @@ mod tests {
     fn insert_frames(store: &WasmMediaStore, stream_id: &str, frames: std::ops::Range<u32>) {
         for frame in frames {
             let image =
-                crate::utils::image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
+                crate::utils::raw_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
             store
                 .set_video_frame(stream_id.to_string(), frame, image)
                 .expect("set frame");

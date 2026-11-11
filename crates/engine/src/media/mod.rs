@@ -11,7 +11,6 @@ mod asset;
 mod failures;
 mod identity;
 mod inventory;
-mod pixels;
 mod prediction;
 mod resolver;
 mod sniff;
@@ -33,7 +32,6 @@ pub use inventory::{
     NodeParamAt,
 };
 pub(crate) use inventory::{Found, walk as walk_media};
-pub use pixels::premultiply_rgba_in_place_if_needed;
 pub use prediction::{FrameRequirements, VideoFrameRequirement, collect_frame_requirements};
 #[cfg(feature = "ffmpeg")]
 pub use resolver::GpuVideoMediaFrame;

@@ -2,10 +2,7 @@ use std::{fs, io::Cursor, path::Path, sync::Arc};
 
 use crate::error::{MediaError, MediaFailure};
 
-use super::{
-    AssetKind, CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, Sniff,
-    premultiply_rgba_in_place_if_needed, sniff,
-};
+use super::{AssetKind, CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, Sniff, sniff};
 
 /// The memory the image decoder may use for one image.
 const MAX_DECODE_BYTES: u64 = 512 << 20;
@@ -14,6 +11,7 @@ const MAX_DECODE_BYTES: u64 = 512 << 20;
 struct CachedImage {
     metadata: ImageMetadata,
     frame: Arc<CpuMediaFrame>,
+    straight_alpha: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -34,7 +32,12 @@ impl ImageResolver for ImageFileResolver {
     }
 
     fn frame(&self) -> Result<MediaFrame, MediaError> {
-        Ok(MediaFrame::CpuRgba(Arc::clone(&self.cached.frame)))
+        let frame = Arc::clone(&self.cached.frame);
+        Ok(if self.cached.straight_alpha {
+            MediaFrame::RawRgba(frame)
+        } else {
+            MediaFrame::CpuRgba(frame)
+        })
     }
 }
 
@@ -49,17 +52,14 @@ fn load_cached_image(source: &str) -> Result<CachedImage, MediaError> {
         width: rgba.width(),
         height: rgba.height(),
     };
-    let mut pixels = rgba.into_raw();
-    if straight_alpha {
-        premultiply_rgba_in_place_if_needed(&mut pixels);
-    }
     Ok(CachedImage {
         metadata,
+        straight_alpha,
         frame: Arc::new(CpuMediaFrame {
             row_bytes: metadata.width as usize * 4,
             width: metadata.width,
             height: metadata.height,
-            rgba: Arc::new(pixels),
+            rgba: Arc::new(rgba.into_raw()),
         }),
     })
 }
@@ -139,11 +139,11 @@ mod tests {
         assert_eq!(metadata.width, 2);
         assert_eq!(metadata.height, 1);
 
-        let MediaFrame::CpuRgba(first) = resolver.frame().expect("first resolve") else {
-            panic!("expected CPU frame");
+        let MediaFrame::RawRgba(first) = resolver.frame().expect("first resolve") else {
+            panic!("expected a straight-alpha frame");
         };
-        let MediaFrame::CpuRgba(second) = resolver.frame().expect("second resolve") else {
-            panic!("expected CPU frame");
+        let MediaFrame::RawRgba(second) = resolver.frame().expect("second resolve") else {
+            panic!("expected a straight-alpha frame");
         };
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(first.width, 2);
@@ -186,16 +186,22 @@ mod tests {
     }
 
     #[test]
-    fn only_tiffs_declared_associated_keep_their_colour() {
-        for (extra_samples, expected) in [(1, [30, 60, 100, 128]), (2, [15, 30, 50, 128])] {
+    fn only_tiffs_declared_associated_are_premultiplied() {
+        for (extra_samples, premultiplied) in [(1, true), (2, false)] {
             let path = temp_png_path().with_extension("tiff");
             fs::write(&path, tiff_pixel([30, 60, 100, 128], extra_samples)).expect("write tiff");
             let resolver =
                 ImageFileResolver::open(path.to_string_lossy().to_string()).expect("open tiff");
-            let MediaFrame::CpuRgba(frame) = resolver.frame().expect("resolve") else {
-                panic!("expected CPU frame");
+            let frame = resolver.frame().expect("resolve");
+            let (MediaFrame::CpuRgba(cpu) | MediaFrame::RawRgba(cpu)) = &frame else {
+                panic!("expected a CPU frame");
             };
-            assert_eq!(frame.rgba[..4], expected, "ExtraSamples {extra_samples}");
+            assert_eq!(cpu.rgba[..4], [30, 60, 100, 128]);
+            assert_eq!(
+                matches!(frame, MediaFrame::CpuRgba(_)),
+                premultiplied,
+                "ExtraSamples {extra_samples}"
+            );
             let _ = fs::remove_file(path);
         }
     }

@@ -279,6 +279,7 @@ async fn cpu_encode(
 ) -> anyhow::Result<RunTimes> {
     let setup_started = Instant::now();
     let mut renderer = renderer(workload).await?;
+    renderer.set_opaque_output(true);
     let width = workload.composition.render_settings().width;
     let height = workload.composition.render_settings().height;
     let mut encoder = MuxedEncoder::create(
@@ -314,6 +315,7 @@ async fn metal_videotoolbox(
     let setup_started = Instant::now();
     let mut renderer =
         renderer_with_format(workload, lumen_gpu::wgpu::TextureFormat::Bgra8Unorm).await?;
+    renderer.set_opaque_output(true);
     let output_size = composition_size(workload.composition);
     let mut target_pool = MetalVideoToolboxTargetPool::bgra8(renderer.gpu_renderer(), output_size)?;
     let mut config = video_config(workload.composition, "h264_videotoolbox")?;
@@ -407,8 +409,9 @@ async fn vulkan_video(
     }
     let (mut renderer, device) = GpuCompositionRenderer::new_vulkan_video().await?;
     renderer.set_static_output_reuse(!workload.full_render);
-    renderer.compile(workload.composition)?;
-    let target = VulkanVideoTarget::nv12(renderer.gpu_renderer(), size);
+    renderer.set_opaque_output(true);
+    renderer.compile_with_output_format(workload.composition, VulkanVideoTarget::FORMAT)?;
+    let target = VulkanVideoTarget::nv12(renderer.gpu_renderer(), size, true);
     let (mut encoder, encoder_name) = open_vulkan_encoder(workload.composition, &device, output)?;
     let setup = setup_started.elapsed();
     println!("composition_bench vulkan_video encoder={encoder_name}");
@@ -475,9 +478,11 @@ async fn vk_cuda_nvenc(
     phases: &mut Option<&mut PhaseTimes>,
 ) -> anyhow::Result<RunTimes> {
     let setup_started = Instant::now();
-    let mut renderer = renderer(workload).await?;
+    let mut renderer =
+        renderer_with_format(workload, lumen_gpu::wgpu::TextureFormat::Rgba16Float).await?;
+    renderer.set_opaque_output(true);
     let output_size = composition_size(workload.composition);
-    let target_pool = CudaNvencTargetPool::rgba8(renderer.gpu_renderer(), output_size)?;
+    let target_pool = CudaNvencTargetPool::new(renderer.gpu_renderer(), output_size, true)?;
     let target = target_pool.acquire(renderer.gpu_renderer())?;
     let mut config = video_config(workload.composition, "h264_nvenc")?;
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);

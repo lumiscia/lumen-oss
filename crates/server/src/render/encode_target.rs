@@ -42,7 +42,7 @@ pub(super) enum EncodeTarget {
     /// Converts frames to NV12 on the render device, which the encoder shares.
     #[cfg(all(target_os = "linux", feature = "vulkan"))]
     Vulkan(vulkan::VulkanTarget),
-    /// Renders into memory CUDA imports, and NVENC converts the RGBA frames itself.
+    /// Renders into memory CUDA imports, converts the frames to NV12 there, and NVENC reads them.
     #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
     Cuda(cuda::CudaTarget),
     /// Renders into pixel buffers VideoToolbox reads.
@@ -200,11 +200,17 @@ impl EncodeTarget {
         })
     }
 
+    /// The format frames render to. Targets that convert to NV12 on the GPU take unquantised
+    /// float colour and quantise once, after chroma averaging.
     pub(super) fn output_format(&self) -> lumen_gpu::wgpu::TextureFormat {
         match self {
+            Self::Cpu(_) => lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            #[cfg(all(target_os = "linux", feature = "vulkan"))]
+            Self::Vulkan(_) => lumen_gpu::wgpu::TextureFormat::Rgba16Float,
+            #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
+            Self::Cuda(_) => lumen_gpu::wgpu::TextureFormat::Rgba16Float,
             #[cfg(all(target_os = "macos", feature = "metal"))]
             Self::Metal(_) => lumen_gpu::wgpu::TextureFormat::Bgra8Unorm,
-            _ => lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
         }
     }
 

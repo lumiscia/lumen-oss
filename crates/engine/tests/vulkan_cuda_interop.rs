@@ -25,14 +25,17 @@ fn rendered_texture_encodes_with_nvenc_as_bt709() {
     let renderer = pollster::block_on(lumen_gpu::Renderer::new())
         .expect("create Vulkan-capable wgpu renderer");
     let size = lumen_gpu::Size::new(640, 360);
-    let pool = CudaNvencTargetPool::rgba8(&renderer, size).expect("create CUDA/NVENC target pool");
+    let pool =
+        CudaNvencTargetPool::new(&renderer, size, false).expect("create CUDA/NVENC target pool");
     let target = pool.acquire(&renderer).expect("create CUDA/NVENC target");
+    // Opaque red in half floats: 1.0 is 0x3c00.
+    let red = [0x00, 0x3c, 0, 0, 0, 0, 0x00, 0x3c];
     renderer.queue.write_texture(
         target.external_texture().texture_arc().as_image_copy(),
-        &[255, 0, 0, 255].repeat((size.width * size.height) as usize),
+        &red.repeat((size.width * size.height) as usize),
         lumen_gpu::wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(size.width * 4),
+            bytes_per_row: Some(size.width * 8),
             rows_per_image: Some(size.height),
         },
         size.as_extent(),

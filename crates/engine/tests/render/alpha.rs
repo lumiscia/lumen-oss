@@ -10,6 +10,7 @@ use lumen_engine::media::{
 };
 use serde_json::{Value, json};
 
+use crate::color::{over, premultiplied, rgba8};
 use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, scene};
 use crate::text_pixels;
 
@@ -74,10 +75,10 @@ fn image_source(directory: &std::path::Path) -> Source {
         .save(&path)
         .expect("write png");
     let resolver = ImageFileResolver::open(path.to_string_lossy()).expect("open png");
-    let MediaFrame::CpuRgba(frame) = resolver.frame().expect("decode png") else {
-        panic!("expected a CPU frame");
+    let MediaFrame::RawRgba(frame) = resolver.frame().expect("decode png") else {
+        panic!("expected a straight-alpha frame");
     };
-    let media = TestMedia::default().image("plate", width, height, frame.rgba.to_vec());
+    let media = TestMedia::default().straight_image("plate", width, height, frame.rgba.to_vec());
     media_source("image", json!({ "source": "plate" }), media, 0)
 }
 
@@ -196,7 +197,7 @@ fn rows(source: &Source) -> Vec<Case> {
             scene(source.canvas, json!([source.node])),
             vec![at(inside, TRANSLUCENT), at(outside, CLEAR)],
         ),
-        // Colour + 64 × (1 - 128 / 255), which adds 31.87.
+        // The colour's light plus that of grey times 1 - 128 / 255.
         row(
             "merge over grey",
             scene(
@@ -204,7 +205,10 @@ fn rows(source: &Source) -> Vec<Case> {
                 json!([source.node, base, { "id": 2, "type": "merge", "params": {},
                     "in": { "base": 3, "overlay": 1 } }]),
             ),
-            vec![at(inside, [62, 92, 132, 255]), at(outside, GREY)],
+            vec![
+                at(inside, rgba8(over(premultiplied(STRAIGHT), premultiplied(GREY)))),
+                at(outside, GREY),
+            ],
         ),
         // Every channel halves.
         row(
@@ -229,7 +233,7 @@ fn rows(source: &Source) -> Vec<Case> {
             through(source, "wgsl_shader", json!({ "shader": COPY_SHADER })),
             vec![at(inside, TRANSLUCENT), at(outside, CLEAR)],
         ),
-        // A black shadow under the source adds alpha and no colour:
+        // A black shadow under the source adds alpha and no light:
         // 128 + 128 × (1 - 128 / 255) = 192.
         row(
             "shadow",
@@ -239,7 +243,13 @@ fn rows(source: &Source) -> Vec<Case> {
                 json!({ "offset_x": 0, "offset_y": 0, "radius": 0,
                     "color": [0, 0, 0, 255], "opacity": 1 }),
             ),
-            vec![at(inside, [30, 60, 100, 192]), at(outside, CLEAR)],
+            vec![
+                at(
+                    inside,
+                    rgba8(over(premultiplied(STRAIGHT), premultiplied([0, 0, 0, 128]))),
+                ),
+                at(outside, CLEAR),
+            ],
         ),
     ]
 }
