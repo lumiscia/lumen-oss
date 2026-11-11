@@ -28,8 +28,8 @@ use sys::{
     AVPixelFormat::{
         AV_PIX_FMT_BGRA, AV_PIX_FMT_CUDA, AV_PIX_FMT_NONE, AV_PIX_FMT_NV12, AV_PIX_FMT_P010BE,
         AV_PIX_FMT_P010LE, AV_PIX_FMT_RGBA, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_VULKAN,
-        AV_PIX_FMT_YUVJ411P, AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ440P,
-        AV_PIX_FMT_YUVJ444P,
+        AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P10LE, AV_PIX_FMT_YUVJ411P, AV_PIX_FMT_YUVJ420P,
+        AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ440P, AV_PIX_FMT_YUVJ444P,
     },
 };
 
@@ -49,6 +49,11 @@ pub enum PixelFormat {
     Bgra8,
     Nv12,
     P010,
+    /// Planar 8-bit YUV 4:2:0.
+    Yuv420p,
+    /// Planar 10-bit YUV 4:2:0, each sample two little-endian bytes holding its value in the low
+    /// bits.
+    Yuv420p10,
     Vulkan,
     Metal,
     Unknown,
@@ -88,6 +93,10 @@ pub struct ColorTags {
     pub full_range: bool,
 }
 
+/// A frame in CPU memory. RGBA rows are `stride` bytes apart. A YUV 4:2:0 frame (`Nv12`, `P010`,
+/// `Yuv420p`, `Yuv420p10`) holds `height` luma rows `stride` bytes apart, then `height.div_ceil(2)`
+/// chroma rows: interleaved Cb, Cr rows `stride` bytes apart, or for the planar formats the Cb
+/// plane and then the Cr plane, rows `stride / 2` bytes apart.
 #[derive(Debug, Clone)]
 pub struct CpuVideoFrame {
     pub width: u32,
@@ -254,6 +263,8 @@ impl PixelFormat {
             AV_PIX_FMT_BGRA => Self::Bgra8,
             AV_PIX_FMT_NV12 => Self::Nv12,
             AV_PIX_FMT_P010LE | AV_PIX_FMT_P010BE => Self::P010,
+            AV_PIX_FMT_YUV420P => Self::Yuv420p,
+            AV_PIX_FMT_YUV420P10LE => Self::Yuv420p10,
             AV_PIX_FMT_VULKAN => Self::Vulkan,
             AV_PIX_FMT_VIDEOTOOLBOX => Self::Metal,
             _ => Self::Unknown,
@@ -266,6 +277,8 @@ impl PixelFormat {
             Self::Bgra8 => AV_PIX_FMT_BGRA,
             Self::Nv12 => AV_PIX_FMT_NV12,
             Self::P010 => AV_PIX_FMT_P010LE,
+            Self::Yuv420p => AV_PIX_FMT_YUV420P,
+            Self::Yuv420p10 => AV_PIX_FMT_YUV420P10LE,
             Self::Vulkan => AV_PIX_FMT_VULKAN,
             Self::Metal => AV_PIX_FMT_VIDEOTOOLBOX,
             Self::Unknown => AV_PIX_FMT_NONE,

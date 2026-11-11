@@ -19,7 +19,7 @@ use std::{
 };
 
 use lumen_engine::{
-    composition::{Composition, OutputCodec},
+    composition::{BitDepth, Composition, OutputCodec},
     media::AssetResolver,
 };
 use lumen_ffmpeg::{EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoice};
@@ -118,8 +118,8 @@ pub struct RenderOptions {
     pub cancel: CancelToken,
 }
 
-/// The encoders a render of `composition` tries: `request`'s preset and codec where it names them,
-/// then the composition's `render_settings`, then `config`'s defaults.
+/// The encoders a render of `composition` tries: `request`'s preset, codec and bit depth where it
+/// names them, then the composition's `render_settings`, then `config`'s defaults.
 pub fn resolve_encoder(
     config: &QualityConfig,
     composition: &Composition,
@@ -132,6 +132,12 @@ pub fn resolve_encoder(
         OutputCodec::Hevc => EncodeCodec::Hevc,
         OutputCodec::Av1 => EncodeCodec::Av1,
     }));
+    request.bit_depth = request
+        .bit_depth
+        .or(output.bit_depth.map(|depth| match depth {
+            BitDepth::Eight => lumen_ffmpeg::BitDepth::Eight,
+            BitDepth::Ten => lumen_ffmpeg::BitDepth::Ten,
+        }));
     config.resolve(&request)
 }
 

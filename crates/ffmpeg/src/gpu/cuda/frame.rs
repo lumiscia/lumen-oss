@@ -3,14 +3,16 @@ use std::sync::Arc;
 
 pub const BACKEND: GpuBackend = GpuBackend::Cuda;
 
-/// An NV12 frame in CUDA device memory: `height` luma rows of `pitch` bytes, directly followed by
-/// `height.div_ceil(2)` rows of interleaved CbCr pairs with the same pitch.
+/// An NV12 or P010 frame in CUDA device memory: `height` luma rows of `pitch` bytes, directly
+/// followed by `height.div_ceil(2)` rows of interleaved CbCr pairs with the same pitch. A P010
+/// sample is two little-endian bytes holding its value in the high bits.
 #[derive(Clone)]
 pub struct CudaVideoFrame {
     device_ptr: u64,
     width: u32,
     height: u32,
     pitch: u64,
+    depth: u8,
     pts: Option<i64>,
     // Keeps library-owned CUDA memory alive while FFmpeg retains a submitted frame.
     retention: Option<Arc<dyn Send + Sync>>,
@@ -24,6 +26,7 @@ impl std::fmt::Debug for CudaVideoFrame {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("pitch", &self.pitch)
+            .field("depth", &self.depth)
             .field("pts", &self.pts)
             .field("retained", &self.retention.is_some())
             .finish()
@@ -53,6 +56,7 @@ impl CudaVideoFrame {
             width,
             height,
             pitch,
+            depth: 8,
             pts,
             retention: None,
         }
@@ -63,6 +67,7 @@ impl CudaVideoFrame {
         width: u32,
         height: u32,
         pitch: u64,
+        depth: u8,
         pts: Option<i64>,
         retention: Arc<dyn Send + Sync>,
     ) -> Self {
@@ -71,6 +76,7 @@ impl CudaVideoFrame {
             width,
             height,
             pitch,
+            depth,
             pts,
             retention: Some(retention),
         }
@@ -82,6 +88,11 @@ impl CudaVideoFrame {
 
     pub fn pitch(&self) -> u64 {
         self.pitch
+    }
+
+    /// Significant bits per sample: 8 for NV12, 10 for P010.
+    pub fn depth(&self) -> u8 {
+        self.depth
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
@@ -117,11 +128,16 @@ impl CudaVideoFrame {
                 .map_err(|error| error.to_string())?;
         }
         let pitch = self.pitch as usize;
+        let sample = if self.depth > 8 { 2 } else { 1 };
         let planes = [
-            (self.device_ptr, self.width as usize, self.height as usize),
+            (
+                self.device_ptr,
+                self.width as usize * sample,
+                self.height as usize,
+            ),
             (
                 self.device_ptr + self.pitch * u64::from(self.height),
-                self.width.next_multiple_of(2) as usize,
+                self.width.next_multiple_of(2) as usize * sample,
                 self.height.div_ceil(2) as usize,
             ),
         ];

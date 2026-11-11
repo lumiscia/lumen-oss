@@ -41,8 +41,7 @@ fn cpu_upload_encoder_rejects_gpu_input() {
         VulkanVideoFrame::new(
             ash::vk::Device::from_raw(1),
             ash::vk::Buffer::from_raw(1),
-            16,
-            16,
+            crate::gpu::VulkanFrameLayout::nv12(16, 16),
             None,
             std::sync::Arc::new(()),
         )
@@ -187,6 +186,19 @@ fn unsupported_rate_control_errors_at_create() {
         Err(error) => error,
     };
     assert!(error.message.contains("invalid preset"), "{error}");
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn an_option_that_changes_the_pixel_format_errors_at_create() {
+    let path = temp_path("pixel_format_option", "mp4");
+    let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
+    config.quality.options = vec![("pixel_format".to_string(), "yuv444p".to_string())];
+    let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+        Ok(_) => panic!("the bit depth sets the pixel format, not an option"),
+        Err(error) => error,
+    };
+    assert!(error.message.contains("pixel format"), "{error}");
     let _ = fs::remove_file(path);
 }
 

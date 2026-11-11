@@ -6,28 +6,22 @@ use lumen_ffmpeg::{
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use lumen_ffmpeg::{GpuVideoInput, MetalPixelBufferFrame, MetalPixelBufferPool, MetalTextureCache};
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
-use lumen_ffmpeg::{VulkanDevice, VulkanDeviceDesc, VulkanRenderQueue, VulkanVideoFrame, ash::vk};
+use lumen_ffmpeg::{
+    VulkanDevice, VulkanDeviceDesc, VulkanFrameLayout, VulkanRenderQueue, VulkanVideoFrame, ash::vk,
+};
 
 use crate::error::RenderError;
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
-use crate::gpu::GpuCompositionRenderer;
+use crate::{
+    composition::BitDepth,
+    gpu::{GpuCompositionRenderer, YuvConverter, YuvFormat, YuvLayout},
+};
 
-/// Converts rendered frames to NV12 for a Vulkan Video encoder sharing the renderer's device. Frames
-/// render to `Rgba16Float`, so colour is quantised once, in the conversion.
+/// Converts rendered frames to NV12 or P010 for a Vulkan Video encoder sharing the renderer's
+/// device. Frames render to `Rgba16Float`, so colour is quantised once, in the conversion.
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub struct VulkanVideoTarget {
-    pass: Nv12Pass,
-}
-
-/// Converts the working space, linear and premultiplied, to BT.709 limited-range NV12 of its
-/// sRGB-encoded colour over black, in a buffer laid out as
-/// [`VulkanVideoFrame`] describes, with the ordered dither when it is on.
-#[cfg(all(target_os = "linux", feature = "vulkan"))]
-struct Nv12Pass {
-    pipeline: lumen_gpu::wgpu::ComputePipeline,
-    params: lumen_gpu::wgpu::Buffer,
-    nv12: std::sync::Arc<lumen_gpu::wgpu::Buffer>,
-    size: lumen_gpu::Size,
+    converter: YuvConverter,
 }
 
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
@@ -117,158 +111,54 @@ impl VulkanRenderQueue for WgpuRenderQueue {
 }
 
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
-impl Nv12Pass {
-    fn new(
-        renderer: &lumen_gpu::Renderer,
-        size: lumen_gpu::Size,
-        nv12: std::sync::Arc<lumen_gpu::wgpu::Buffer>,
-        dither: bool,
-    ) -> Self {
-        use lumen_gpu::wgpu;
-
-        let device = &renderer.device;
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("lumen RGBA to NV12"),
-            source: wgpu::ShaderSource::Wgsl(
-                concat!(
-                    include_str!("shaders/color.wgsl"),
-                    include_str!("shaders/dither.wgsl"),
-                    include_str!("shaders/rgba_to_nv12.wgsl")
-                )
-                .into(),
-            ),
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("lumen RGBA to NV12"),
-            layout: None,
-            module: &module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-        let pitch = VulkanVideoFrame::nv12_pitch(size.width);
-        let chroma_offset = VulkanVideoFrame::nv12_chroma_offset(size.width, size.height) as u32;
-        let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("lumen NV12 params"),
-            size: 32,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        renderer.queue.write_buffer(
-            &params,
-            0,
-            bytemuck::cast_slice(&[
-                size.width,
-                size.height,
-                pitch,
-                chroma_offset,
-                u32::from(dither),
-                0,
-                0,
-                0,
-            ]),
-        );
-        Self {
-            pipeline,
-            params,
-            nv12,
-            size,
-        }
-    }
-
-    fn submit(
-        &self,
-        renderer: &lumen_gpu::Renderer,
-        texture: &lumen_gpu::wgpu::Texture,
-    ) -> lumen_gpu::wgpu::SubmissionIndex {
-        use lumen_gpu::wgpu;
-
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = renderer
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("lumen RGBA to NV12"),
-                layout: &self.pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.nv12.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.params.as_entire_binding(),
-                    },
-                ],
-            });
-        let mut encoder = renderer
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("lumen RGBA to NV12"),
-            });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("lumen RGBA to NV12"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(
-                self.size.width.div_ceil(4).div_ceil(8),
-                self.size.height.div_ceil(2).div_ceil(8),
-                1,
-            );
-        }
-        renderer.queue.submit([encoder.finish()])
-    }
-}
-
-#[cfg(all(target_os = "linux", feature = "vulkan"))]
 impl VulkanVideoTarget {
     /// The format frames for this target render to.
     pub const FORMAT: lumen_gpu::wgpu::TextureFormat = lumen_gpu::wgpu::TextureFormat::Rgba16Float;
 
-    /// A target for frames of `size`, which adds the ordered dither as it quantises if `dither`.
-    pub fn nv12(renderer: &lumen_gpu::Renderer, size: lumen_gpu::Size, dither: bool) -> Self {
-        use lumen_gpu::wgpu;
-
-        let nv12 = renderer.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("lumen NV12 frame"),
-            size: VulkanVideoFrame::nv12_size(size.width, size.height),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+    /// A target for frames of `size`, NV12 at 8 bits and P010 at 10, which adds the ordered
+    /// dither as it quantises if `dither`.
+    pub fn new(
+        renderer: &lumen_gpu::Renderer,
+        size: lumen_gpu::Size,
+        depth: BitDepth,
+        dither: bool,
+    ) -> Self {
+        let layout = YuvLayout::new(size.width, size.height, YuvFormat::semi_planar(depth));
         Self {
-            pass: Nv12Pass::new(renderer, size, std::sync::Arc::new(nv12), dither),
+            converter: YuvConverter::new(renderer, layout, dither),
         }
     }
 
-    /// Submits the conversion of `texture` and returns the NV12 frame for the encoder. The frame
-    /// must be sent before the next conversion, which reuses the buffer.
+    /// Submits the conversion of `texture` and returns the frame for the encoder. The frame must
+    /// be sent before the next conversion, which reuses the buffer.
     pub fn convert(
         &self,
         renderer: &lumen_gpu::Renderer,
         texture: &lumen_gpu::wgpu::Texture,
         pts: Option<i64>,
     ) -> crate::Result<VulkanVideoFrame> {
-        self.pass.submit(renderer, texture);
+        self.converter.submit(renderer, texture);
         let device =
             lumen_gpu::raw_vulkan_device(&renderer.device).map_err(|error| RenderError::Gpu {
                 details: error.to_string(),
             })?;
-        let buffer =
-            lumen_gpu::raw_vulkan_buffer(&self.pass.nv12).map_err(|error| RenderError::Gpu {
-                details: error.to_string(),
-            })?;
-        let lumen_gpu::Size { width, height } = self.pass.size;
-        // SAFETY: The buffer lives on `device`, the conversion writing it was just submitted to
-        // that device's render queue, and the frame retains the buffer, which retains the device.
-        Ok(unsafe {
-            VulkanVideoFrame::new(device, buffer, width, height, pts, self.pass.nv12.clone())
-        })
+        let yuv = self.converter.buffer();
+        let buffer = lumen_gpu::raw_vulkan_buffer(yuv).map_err(|error| RenderError::Gpu {
+            details: error.to_string(),
+        })?;
+        let YuvLayout {
+            width,
+            height,
+            format,
+        } = self.converter.layout();
+        let layout = match format.depth() {
+            BitDepth::Eight => VulkanFrameLayout::nv12(width, height),
+            BitDepth::Ten => VulkanFrameLayout::p010(width, height),
+        };
+        // SAFETY: The buffer lives on `device`, the conversion writing it in `layout` was just
+        // submitted to that device's render queue, and the frame retains the buffer, which retains
+        // the device.
+        Ok(unsafe { VulkanVideoFrame::new(device, buffer, layout, pts, yuv.clone()) })
     }
 }
 
@@ -277,17 +167,18 @@ pub struct CudaNvencTargetPool {
     driver: CudaDriver,
     cuda_ordinal: i32,
     size: lumen_gpu::Size,
+    depth: BitDepth,
     dither: bool,
     vulkan_device: lumen_gpu::VulkanDeviceInfo,
 }
 
-/// A float RGBA render target whose frames are converted to NV12 in Vulkan memory that CUDA maps,
-/// for NVENC to read.
+/// A float RGBA render target whose frames are converted to NV12, or P010 at 10 bits, in Vulkan
+/// memory that CUDA maps, for NVENC to read.
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 pub struct CudaNvencTarget {
     external: lumen_gpu::ExternalTexture,
     imported: ImportedCudaExternalBuffer,
-    pass: Nv12Pass,
+    converter: YuvConverter,
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
@@ -306,11 +197,12 @@ pub struct MetalVideoToolboxTarget {
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 impl CudaNvencTargetPool {
-    /// A pool of targets for frames of `size`, which add the ordered dither as they quantise if
-    /// `dither`.
+    /// A pool of targets for frames of `size`, NV12 at 8 bits and P010 at 10, which add the
+    /// ordered dither as they quantise if `dither`.
     pub fn new(
         renderer: &lumen_gpu::Renderer,
         size: lumen_gpu::Size,
+        depth: BitDepth,
         dither: bool,
     ) -> crate::Result<Self> {
         let vulkan_device =
@@ -337,6 +229,7 @@ impl CudaNvencTargetPool {
             driver,
             cuda_ordinal,
             size,
+            depth,
             dither,
             vulkan_device,
         })
@@ -359,11 +252,15 @@ impl CudaNvencTargetPool {
             usage: cuda_nvenc_usage(),
             view_formats: &[],
         });
-        let nv12_size = VulkanVideoFrame::nv12_size(self.size.width, self.size.height);
+        let layout = YuvLayout::new(
+            self.size.width,
+            self.size.height,
+            YuvFormat::semi_planar(self.depth),
+        );
         let exportable = renderer
             .create_exportable_vulkan_buffer(
-                Some("lumen CUDA/NVENC NV12 frame"),
-                nv12_size,
+                Some("lumen CUDA/NVENC YUV frame"),
+                layout.size(),
                 wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             )
             .map_err(|error| RenderError::Gpu {
@@ -378,13 +275,18 @@ impl CudaNvencTargetPool {
                     details: format!("failed to duplicate Vulkan memory fd: {error}"),
                 })?,
             exportable.allocation_size(),
-            nv12_size,
+            layout.size(),
         )
         .map_err(|details| RenderError::Gpu { details })?;
         Ok(CudaNvencTarget {
             external: lumen_gpu::ExternalTexture::from_texture(texture),
             imported,
-            pass: Nv12Pass::new(renderer, self.size, exportable.buffer_arc(), self.dither),
+            converter: YuvConverter::with_buffer(
+                renderer,
+                layout,
+                exportable.buffer_arc(),
+                self.dither,
+            ),
         })
     }
 
@@ -415,19 +317,21 @@ impl CudaNvencTarget {
         self.external.clone()
     }
 
-    /// Submits the conversion of the rendered frame to NV12. Once the submission has finished,
+    /// Submits the conversion of the rendered frame. Once the submission has finished,
     /// [`video_frame`](Self::video_frame) holds the frame until the next conversion.
     pub fn convert(&self, renderer: &lumen_gpu::Renderer) -> lumen_gpu::wgpu::SubmissionIndex {
-        self.pass.submit(renderer, &self.external.texture_arc())
+        self.converter
+            .submit(renderer, &self.external.texture_arc())
     }
 
     pub fn video_frame(&self, pts: Option<i64>) -> crate::Result<CudaVideoFrame> {
-        let lumen_gpu::Size { width, height } = self.pass.size;
-        let pitch = u64::from(VulkanVideoFrame::nv12_pitch(width));
-        Ok(self
-            .imported
-            .nv12_frame(width, height, pitch, pts)
-            .map_err(|details| RenderError::Gpu { details })?)
+        let layout = self.converter.layout();
+        let (width, height, pitch) = (layout.width, layout.height, u64::from(layout.pitch()));
+        let frame = match layout.format.depth() {
+            BitDepth::Eight => self.imported.nv12_frame(width, height, pitch, pts),
+            BitDepth::Ten => self.imported.p010_frame(width, height, pitch, pts),
+        };
+        Ok(frame.map_err(|details| RenderError::Gpu { details })?)
     }
 
     pub fn video_input<'a>(&'a self, frame: &'a CudaVideoFrame) -> GpuVideoInput<'a> {
@@ -566,14 +470,14 @@ mod tests {
     fn read_nv12(renderer: &lumen_gpu::Renderer, target: &VulkanVideoTarget) -> Vec<u8> {
         let readback = renderer.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: target.pass.nv12.size(),
+            size: target.converter.buffer().size(),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
         let mut encoder = renderer
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        let nv12 = &target.pass.nv12;
+        let nv12 = target.converter.buffer();
         encoder.copy_buffer_to_buffer(nv12, 0, &readback, 0, nv12.size());
         renderer.queue.submit([encoder.finish()]);
         readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
@@ -617,7 +521,7 @@ mod tests {
             },
             size.as_extent(),
         );
-        let target = VulkanVideoTarget::nv12(gpu, size, false);
+        let target = VulkanVideoTarget::new(gpu, size, BitDepth::Eight, false);
 
         target.convert(gpu, &texture, None).expect("convert");
         let nv12 = read_nv12(gpu, &target);
@@ -647,8 +551,7 @@ mod tests {
             VulkanVideoFrame::new(
                 vk::Device::from_raw(1),
                 vk::Buffer::from_raw(1),
-                width,
-                height,
+                VulkanFrameLayout::nv12(width, height),
                 None,
                 std::sync::Arc::new(()),
             )
@@ -673,6 +576,97 @@ mod tests {
         assert_eq!(stream.codec, VideoCodec::Av1);
         assert_eq!((stream.width, stream.height), (width, height));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn vulkan_video_target_encodes_ten_bit_or_says_why_not() {
+        let (renderer, device) = match pollster::block_on(GpuCompositionRenderer::new_vulkan_video())
+        {
+            Ok(created) => created,
+            Err(error) => {
+                eprintln!("Vulkan Video unavailable ({error}); skipping 10-bit zero-copy test");
+                return;
+            }
+        };
+        let gpu = renderer.gpu_renderer();
+        let (width, height) = (256, 144);
+        let size = lumen_gpu::Size::new(width, height);
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: size.as_extent(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        gpu.queue.write_texture(
+            texture.as_image_copy(),
+            &[255, 255, 255, 255].repeat((width * height) as usize),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: None,
+            },
+            size.as_extent(),
+        );
+        let target = VulkanVideoTarget::new(gpu, size, BitDepth::Ten, false);
+        target.convert(gpu, &texture, None).expect("convert");
+        let p010 = read_nv12(gpu, &target);
+        let layout = VulkanFrameLayout::p010(width, height);
+        assert_eq!(target.converter.buffer().size(), layout.size());
+        let sample = |offset: usize| u16::from_le_bytes([p010[offset], p010[offset + 1]]);
+        // White in 10-bit limited range, in the high bits.
+        assert_eq!(sample(0), 940 << 6);
+        assert_eq!(sample(layout.chroma_offset() as usize), 512 << 6);
+        assert_eq!(sample(layout.chroma_offset() as usize + 2), 512 << 6);
+
+        for encoder in ["av1_vulkan", "hevc_vulkan"] {
+            let mut config = VideoEncoderConfig::cpu_rgba(width, height, 30, encoder);
+            config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
+            config.vulkan_device = Some(device.clone());
+            config.bit_depth = lumen_ffmpeg::BitDepth::Ten;
+            let path = std::env::temp_dir().join(format!(
+                "lumen_vulkan_10bit_{encoder}_{}.mkv",
+                std::process::id()
+            ));
+            let mut muxed = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+                Ok(muxed) => muxed,
+                Err(error) => {
+                    // The device has no 10-bit encode for this codec: the error says so, and no
+                    // 8-bit stream is written in its place.
+                    eprintln!("{encoder} can't encode 10-bit here: {error}");
+                    assert!(!path.exists() || std::fs::metadata(&path).unwrap().len() == 0);
+                    let _ = std::fs::remove_file(&path);
+                    continue;
+                }
+            };
+            let eight_bit = VulkanVideoTarget::new(gpu, size, BitDepth::Eight, false)
+                .convert(gpu, &texture, Some(0))
+                .expect("convert");
+            let error = muxed
+                .write_gpu_frame(&GpuVideoInput::Vulkan(&eight_bit))
+                .expect_err("an NV12 frame must not reach a 10-bit encoder");
+            assert!(error.message.contains("8-bit"), "{error}");
+            for frame in 0..5 {
+                let video_frame = target.convert(gpu, &texture, Some(frame)).expect("convert");
+                muxed
+                    .write_gpu_frame(&GpuVideoInput::Vulkan(&video_frame))
+                    .expect("encode Vulkan frame");
+            }
+            muxed.finish().expect("finish encode");
+            let info = InputContext::open(path.to_string_lossy().to_string())
+                .expect("open encoded file")
+                .media_info();
+            assert_eq!(
+                info.video_streams[0].pixel_format,
+                lumen_ffmpeg::PixelFormat::Yuv420p10,
+                "{encoder}"
+            );
+            eprintln!("{encoder} wrote 10-bit {}", path.display());
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     /// The half float nearest below `value`, which must be a positive normal one.
@@ -714,7 +708,7 @@ mod tests {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let target = VulkanVideoTarget::nv12(&gpu, size, true);
+        let target = VulkanVideoTarget::new(&gpu, size, BitDepth::Eight, true);
         let pitch = VulkanVideoFrame::nv12_pitch(size.width) as usize;
         for fraction in [0.2, 0.25, 0.4, 0.5, 0.6, 0.75, 0.8] {
             let grey = f16_bits(crate::gpu::color::srgb_to_linear(
@@ -735,7 +729,7 @@ mod tests {
                 },
                 size.as_extent(),
             );
-            target.pass.submit(&gpu, &texture);
+            target.converter.submit(&gpu, &texture);
             let nv12 = read_nv12(&gpu, &target);
             let sum: f64 = (0..size.height as usize)
                 .flat_map(|row| &nv12[row * pitch..row * pitch + size.width as usize])

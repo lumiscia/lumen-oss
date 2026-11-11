@@ -13,7 +13,7 @@ export interface FrameRange {
 
 /**
  * What to render: the format and which frames. Without it a render is an MP4 of the whole
- * timeline. `quality` and `codec` on `RenderOptions` apply to `mp4` only.
+ * timeline. `quality`, `codec` and `bitDepth` on `RenderOptions` apply to `mp4` only.
  */
 export interface RenderOutput {
   /** Defaults to `mp4`. */

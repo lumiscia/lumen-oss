@@ -39,10 +39,33 @@ impl ImportedCudaExternalBuffer {
         pitch: u64,
         pts: Option<i64>,
     ) -> Result<CudaVideoFrame, String> {
+        self.frame(width, height, pitch, 8, pts)
+    }
+
+    /// [`nv12_frame`](Self::nv12_frame) for a P010 frame.
+    pub fn p010_frame(
+        &self,
+        width: u32,
+        height: u32,
+        pitch: u64,
+        pts: Option<i64>,
+    ) -> Result<CudaVideoFrame, String> {
+        self.frame(width, height, pitch, 10, pts)
+    }
+
+    fn frame(
+        &self,
+        width: u32,
+        height: u32,
+        pitch: u64,
+        depth: u8,
+        pts: Option<i64>,
+    ) -> Result<CudaVideoFrame, String> {
         let rows = u64::from(height) + u64::from(height.div_ceil(2));
-        if pitch < u64::from(width.next_multiple_of(2)) || pitch * rows > self.inner.size {
+        let sample = if depth > 8 { 2 } else { 1 };
+        if pitch < u64::from(width.next_multiple_of(2)) * sample || pitch * rows > self.inner.size {
             return Err(format!(
-                "a {width}x{height} NV12 frame with pitch {pitch} doesn't fit the {}-byte imported buffer",
+                "a {width}x{height} {depth}-bit frame with pitch {pitch} doesn't fit the {}-byte imported buffer",
                 self.inner.size
             ));
         }
@@ -51,6 +74,7 @@ impl ImportedCudaExternalBuffer {
             width,
             height,
             pitch,
+            depth,
             pts,
             self.inner.clone(),
         ))

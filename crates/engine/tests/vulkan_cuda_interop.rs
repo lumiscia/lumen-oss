@@ -25,8 +25,13 @@ fn rendered_texture_encodes_with_nvenc_as_bt709() {
     let renderer = pollster::block_on(lumen_gpu::Renderer::new())
         .expect("create Vulkan-capable wgpu renderer");
     let size = lumen_gpu::Size::new(640, 360);
-    let pool =
-        CudaNvencTargetPool::new(&renderer, size, false).expect("create CUDA/NVENC target pool");
+    let pool = CudaNvencTargetPool::new(
+        &renderer,
+        size,
+        lumen_engine::composition::BitDepth::Eight,
+        false,
+    )
+    .expect("create CUDA/NVENC target pool");
     let target = pool.acquire(&renderer).expect("create CUDA/NVENC target");
     // Opaque red in half floats: 1.0 is 0x3c00.
     let red = [0x00, 0x3c, 0, 0, 0, 0, 0x00, 0x3c];

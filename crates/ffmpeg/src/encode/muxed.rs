@@ -63,6 +63,12 @@ impl MuxedEncoder {
         self.video.container_crop()
     }
 
+    /// The YUV format [`write_video_frame`](Self::write_video_frame) takes without converting, or
+    /// `None` for an encoder that takes GPU frames. An 8-bit encoder also takes RGBA8.
+    pub fn cpu_input_format(&self) -> Option<crate::video::PixelFormat> {
+        self.video.cpu_input_format()
+    }
+
     pub fn finish(mut self) -> Result<()> {
         self.video.flush(&mut self.output)?;
         if let Some(audio) = self.audio.as_mut() {

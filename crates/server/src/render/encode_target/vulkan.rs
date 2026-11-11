@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, anyhow};
 use lumen_engine::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE},
-    composition::Composition,
+    composition::{BitDepth, Composition},
     gpu::{GpuCompositionRenderer, VulkanVideoTarget},
 };
 use lumen_ffmpeg::{
@@ -33,21 +33,23 @@ impl VulkanTarget {
         output: &Path,
         encoder: &str,
         quality: &EncoderQuality,
+        depth: BitDepth,
     ) -> anyhow::Result<(GpuCompositionRenderer, Self)> {
         let settings = composition.render_settings();
         let (width, height) = (settings.width, settings.height);
         if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(anyhow!(
-                "NV12 frames need even dimensions, got {width}x{height}"
+                "YUV 4:2:0 frames for Vulkan encode need even dimensions, got {width}x{height}"
             ));
         }
         let (renderer, device) = pollster::block_on(
             GpuCompositionRenderer::new_vulkan_video_with_settings(&media_store.gpu),
         )?;
         renderer.check_output_size(composition)?;
-        let target = VulkanVideoTarget::nv12(
+        let target = VulkanVideoTarget::new(
             renderer.gpu_renderer(),
             lumen_gpu::Size::new(width, height),
+            depth,
             true,
         );
         let mut config = VideoEncoderConfig::cpu_rgba(
@@ -59,6 +61,10 @@ impl VulkanTarget {
         config.mode = EncodeMode::GpuTexture(GpuBackend::Vulkan);
         config.vulkan_device = Some(device.clone());
         config.quality = quality.clone();
+        config.bit_depth = match depth {
+            BitDepth::Eight => lumen_ffmpeg::BitDepth::Eight,
+            BitDepth::Ten => lumen_ffmpeg::BitDepth::Ten,
+        };
         let audio = has_audio(composition)
             .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
         let encoder =
@@ -95,7 +101,7 @@ impl VulkanTarget {
                 Some(i64::from(pts)),
             )
         })
-        .map_err(|err| render_failed(format!("NV12 conversion failed at frame {frame}: {err}")))?;
+        .map_err(|err| render_failed(format!("YUV conversion failed at frame {frame}: {err}")))?;
         // Holds the GPU to the frame before this one, so a frame waits for about one frame's work.
         // With the queue free to run ahead, that wait builds up in the encoder and lands on every
         // third frame, where B-frames make it take three at once.

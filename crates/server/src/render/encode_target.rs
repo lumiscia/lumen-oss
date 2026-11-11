@@ -6,9 +6,12 @@ use std::{
 
 use lumen_engine::{
     composition::Composition,
-    gpu::{GpuCompositionRenderer, RasterHandle},
+    gpu::{GpuCompositionRenderer, RasterHandle, YuvConverter, YuvFormat, YuvLayout},
 };
-use lumen_ffmpeg::{EncoderCandidate, EncoderFamily, FfmpegError, VideoEncoderChoice};
+use lumen_ffmpeg::{
+    BitDepth, CpuVideoFrame, EncoderCandidate, EncoderFamily, FfmpegError, PixelFormat,
+    VideoEncoderChoice, check_bit_depth,
+};
 use lumen_gpu::wgpu::{PollType, SubmissionIndex};
 
 use super::{
@@ -34,15 +37,18 @@ mod vulkan;
 /// frame at a time and owns what has to happen between submitting it and encoding it.
 #[allow(clippy::large_enum_variant)]
 pub(super) enum EncodeTarget {
-    /// Reads frames back through a ring of buffers and encodes them on a writer thread.
+    /// Converts frames to the encoder's YUV format on the GPU, reads them back through a ring of
+    /// buffers and encodes them on a writer thread.
     Cpu {
         sink: EncoderSink,
+        converter: YuvConverter,
         ring: ReadbackRing,
     },
-    /// Converts frames to NV12 on the render device, which the encoder shares.
+    /// Converts frames to NV12 or P010 on the render device, which the encoder shares.
     #[cfg(all(target_os = "linux", feature = "vulkan"))]
     Vulkan(vulkan::VulkanTarget),
-    /// Renders into memory CUDA imports, converts the frames to NV12 there, and NVENC reads them.
+    /// Renders into memory CUDA imports, converts the frames to NV12 or P010 there, and NVENC reads
+    /// them.
     #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
     Cuda(cuda::CudaTarget),
     /// Renders into pixel buffers VideoToolbox reads.
@@ -59,8 +65,9 @@ pub(super) struct OpenedTarget {
 }
 
 impl EncodeTarget {
-    /// Opens the choice's encoders in order until one starts, warning for each that won't. A
-    /// cancelled `cancel` ends the wait for GPU device room with the cancelled error.
+    /// Opens the choice's encoders in order until one starts at the choice's bit depth, warning
+    /// for each that won't. A cancelled `cancel` ends the wait for GPU device room with the
+    /// cancelled error.
     pub(super) fn open(
         choice: &VideoEncoderChoice,
         composition: &Composition,
@@ -74,6 +81,7 @@ impl EncodeTarget {
                     Self::open_encoder(
                         candidate,
                         EncoderFamily::of(&candidate.encoder),
+                        choice.bit_depth(),
                         composition,
                         media_store,
                         output,
@@ -88,10 +96,12 @@ impl EncodeTarget {
     }
 
     /// Opens one encoder on the target its family has, and CPU upload for the rest. A hardware
-    /// target that won't open moves to CPU upload with the same encoder.
+    /// target that won't open moves to CPU upload with the same encoder. An encoder that can't
+    /// write `bit_depth` fails to open.
     fn open_encoder(
         candidate: &EncoderCandidate,
         family: EncoderFamily,
+        bit_depth: BitDepth,
         composition: &Composition,
         media_store: &mut LocalMediaStore,
         output: &Path,
@@ -101,12 +111,21 @@ impl EncodeTarget {
             return Err(ServerRenderError::cancelled());
         }
         let (name, quality) = (candidate.encoder.as_str(), &candidate.quality);
+        check_bit_depth(name, bit_depth)
+            .map_err(|message| ServerRenderError::new(ErrorCode::EncodeFailed, message, false))?;
         let hardware_decode = media_store.video_options.prefer_hardware_decode;
         let unavailable: Option<anyhow::Error> = match family {
             #[cfg(all(target_os = "linux", feature = "vulkan"))]
             EncoderFamily::Vulkan => {
                 let devices = reserve_shared_video_device(cancel)?;
-                match vulkan::VulkanTarget::open(composition, media_store, output, name, quality) {
+                match vulkan::VulkanTarget::open(
+                    composition,
+                    media_store,
+                    output,
+                    name,
+                    quality,
+                    engine_bit_depth(bit_depth),
+                ) {
                     Ok((renderer, target)) => {
                         return Ok(OpenedTarget {
                             renderer,
@@ -122,7 +141,14 @@ impl EncodeTarget {
             #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
             EncoderFamily::Nvenc => {
                 let devices = reserve_devices(family, hardware_decode, cancel)?;
-                match cuda::CudaTarget::open(composition, media_store, output, name, quality) {
+                match cuda::CudaTarget::open(
+                    composition,
+                    media_store,
+                    output,
+                    name,
+                    quality,
+                    engine_bit_depth(bit_depth),
+                ) {
                     Ok((renderer, target)) => {
                         return Ok(OpenedTarget {
                             renderer,
@@ -172,6 +198,7 @@ impl EncodeTarget {
             composition.timeline().fps,
             name,
             quality,
+            bit_depth,
             has_audio(composition),
         )
         .map_err(|err| {
@@ -182,10 +209,19 @@ impl EncodeTarget {
             }
             encoder_start_failed(err)
         })?;
-        let ring = ReadbackRing::new(
-            &renderer.gpu_renderer().device,
-            lumen_gpu::Size::new(settings.width, settings.height),
-        );
+        let format = yuv_format(sink.input_format()).ok_or_else(|| {
+            ServerRenderError::new(
+                ErrorCode::EncodeFailed,
+                format!(
+                    "`{name}` takes {:?} frames, which lumen can't convert to",
+                    sink.input_format()
+                ),
+                false,
+            )
+        })?;
+        let layout = YuvLayout::new(settings.width, settings.height, format);
+        let converter = YuvConverter::new(renderer.gpu_renderer(), layout, true);
+        let ring = ReadbackRing::new(&renderer.gpu_renderer().device, layout.size());
         if let Some(error) = unavailable {
             tracing::warn!(
                 "{name} can't keep frames on the GPU, uploading them instead: {error:#}"
@@ -193,18 +229,22 @@ impl EncodeTarget {
         }
         Ok(OpenedTarget {
             renderer,
-            target: Self::Cpu { sink, ring },
+            target: Self::Cpu {
+                sink,
+                converter,
+                ring,
+            },
             encoder: name.to_string(),
             path: "cpu_upload",
             devices,
         })
     }
 
-    /// The format frames render to. Targets that convert to NV12 on the GPU take unquantised
+    /// The format frames render to. Targets that convert to YUV on the GPU take unquantised
     /// float colour and quantise once, after chroma averaging.
     pub(super) fn output_format(&self) -> lumen_gpu::wgpu::TextureFormat {
         match self {
-            Self::Cpu { .. } => lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            Self::Cpu { .. } => lumen_gpu::wgpu::TextureFormat::Rgba16Float,
             #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(_) => lumen_gpu::wgpu::TextureFormat::Rgba16Float,
             #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
@@ -226,16 +266,23 @@ impl EncodeTarget {
         timing: &mut RenderTiming,
     ) -> Result<(), ServerRenderError> {
         match self {
-            Self::Cpu { sink, ring } => {
+            Self::Cpu {
+                sink,
+                converter,
+                ring,
+            } => {
                 let (raster, _submission) =
                     render_raster(renderer, composition, media_store, frame, timing)?;
                 poll(renderer, frame, timing, None)?;
                 checked_size(composition, &raster, frame)?;
+                timed(&mut timing.render, || {
+                    converter.submit(renderer.gpu_renderer(), &raster.texture)
+                });
                 let read = timed(&mut timing.readback, || {
-                    ring.push(renderer.gpu_renderer(), &raster.texture, pts)
+                    ring.push(renderer.gpu_renderer(), converter.buffer(), pts)
                 })
                 .map_err(readback_failed)?;
-                send_read(sink, read, timing)
+                send_read(sink, converter.layout(), read, timing)
             }
             #[cfg(all(target_os = "linux", feature = "vulkan"))]
             Self::Vulkan(target) => {
@@ -266,7 +313,11 @@ impl EncodeTarget {
         #[cfg(not(all(target_os = "macos", feature = "metal")))]
         let _ = renderer;
         match self {
-            Self::Cpu { mut sink, mut ring } => {
+            Self::Cpu {
+                mut sink,
+                converter,
+                mut ring,
+            } => {
                 loop {
                     cancel.check()?;
                     let Some(read) =
@@ -275,7 +326,7 @@ impl EncodeTarget {
                     else {
                         break;
                     };
-                    send_read(&mut sink, Some(read), timing)?;
+                    send_read(&mut sink, converter.layout(), Some(read), timing)?;
                 }
                 timed(&mut timing.audio_mix, || {
                     write_composited_audio(composition, media_store, frames, cancel, |frame| {
@@ -347,17 +398,45 @@ pub(super) fn timed<T>(total: &mut Duration, work: impl FnOnce() -> T) -> T {
     result
 }
 
-/// A frame the readback ring returned, handed to the encoder.
+/// A frame the readback ring returned, laid out as `layout` says, handed to the encoder.
 fn send_read(
     sink: &mut EncoderSink,
+    layout: YuvLayout,
     read: Option<(u32, Vec<u8>)>,
     timing: &mut RenderTiming,
 ) -> Result<(), ServerRenderError> {
-    let Some((frame, pixels)) = read else {
+    let Some((frame, data)) = read else {
         return Ok(());
     };
-    timed(&mut timing.encode_send, || sink.send_frame(frame, pixels))
+    let frame = CpuVideoFrame {
+        width: layout.width,
+        height: layout.height,
+        stride: layout.pitch() as usize,
+        pixel_format: sink.input_format(),
+        pts: Some(i64::from(frame)),
+        data,
+    };
+    timed(&mut timing.encode_send, || sink.send_frame(frame))
         .map_err(|err| encode_failed(format!("{err:#}")))
+}
+
+/// The converter format for frames an encoder takes in `format`.
+fn yuv_format(format: PixelFormat) -> Option<YuvFormat> {
+    match format {
+        PixelFormat::Nv12 => Some(YuvFormat::Nv12),
+        PixelFormat::P010 => Some(YuvFormat::P010),
+        PixelFormat::Yuv420p => Some(YuvFormat::Yuv420p),
+        PixelFormat::Yuv420p10 => Some(YuvFormat::Yuv420p10),
+        _ => None,
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "vulkan"))]
+fn engine_bit_depth(depth: BitDepth) -> lumen_engine::composition::BitDepth {
+    match depth {
+        BitDepth::Eight => lumen_engine::composition::BitDepth::Eight,
+        BitDepth::Ten => lumen_engine::composition::BitDepth::Ten,
+    }
 }
 
 pub(super) fn readback_failed(err: anyhow::Error) -> ServerRenderError {
@@ -550,6 +629,7 @@ mod start_failure_tests {
             30.0,
             "libx264",
             &EncoderQuality::default(),
+            BitDepth::Eight,
             false,
         ) else {
             panic!("the output can't be created");
@@ -636,6 +716,7 @@ mod tests {
         } = EncodeTarget::open_encoder(
             &candidate,
             EncoderFamily::Nvenc,
+            BitDepth::Eight,
             &composition,
             &mut media_store,
             &output,

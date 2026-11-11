@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use lumen_engine::{composition::Composition, media::AssetResolver};
-use lumen_ffmpeg::QualityRequest;
+use lumen_ffmpeg::{BitDepth, QualityRequest};
 use lumen_server::render::{check_composition, resolve_encoder};
 use tokio::sync::OwnedSemaphorePermit;
 
@@ -94,10 +94,14 @@ pub(super) async fn create_render(
                 RenderJobError::refused(&error),
             )
         })?;
-    if !output.format.is_video() && (input.quality.is_some() || input.codec.is_some()) {
+    if !output.format.is_video()
+        && (input.quality.is_some() || input.codec.is_some() || input.bit_depth.is_some())
+    {
         return Err(ApiError::rejected(
             StatusCode::UNPROCESSABLE_ENTITY,
-            RenderJobError::invalid_output("quality and codec only apply to the mp4 format"),
+            RenderJobError::invalid_output(
+                "quality, codec and bit_depth only apply to the mp4 format",
+            ),
         ));
     }
     let codec = input
@@ -106,10 +110,16 @@ pub(super) async fn create_render(
         .map(str::parse)
         .transpose()
         .map_err(invalid_quality)?;
+    let bit_depth = input
+        .bit_depth
+        .map(BitDepth::try_from)
+        .transpose()
+        .map_err(invalid_quality)?;
     let encoder = if output.format.is_video() {
         let request = QualityRequest {
             preset: input.quality,
             codec,
+            bit_depth,
             ..QualityRequest::default()
         }
         .with_env_encoder();
