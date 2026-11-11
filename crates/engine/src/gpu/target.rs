@@ -490,6 +490,8 @@ mod tests {
 
     #[test]
     fn vulkan_video_target_encodes_rendered_texture() {
+        // Held to the end, so that the instance this test makes and drops overlaps no other test's.
+        let _shared = crate::gpu::test_device::shared();
         let (renderer, device) = match pollster::block_on(GpuCompositionRenderer::new_vulkan_video())
         {
             Ok(created) => created,
@@ -580,6 +582,8 @@ mod tests {
 
     #[test]
     fn vulkan_video_target_encodes_ten_bit_or_says_why_not() {
+        // Held to the end, so that the instance this test makes and drops overlaps no other test's.
+        let _shared = crate::gpu::test_device::shared();
         let (renderer, device) = match pollster::block_on(GpuCompositionRenderer::new_vulkan_video())
         {
             Ok(created) => created,
