@@ -119,7 +119,8 @@ pub struct GradientPaint {
     /// How the gradient continues past its first and last stops.
     #[meta()]
     pub spread: GradientSpread,
-    /// Color space the stops blend in.
+    /// Color space the stops blend in: `srgb` blends the sRGB-encoded stops, `linear_srgb` blends
+    /// them in linear light.
     #[meta()]
     pub interpolation: GradientInterpolation,
     /// Start point of a linear gradient.

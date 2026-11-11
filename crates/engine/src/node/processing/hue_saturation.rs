@@ -5,10 +5,11 @@ use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("../../gpu/shaders/color.wgsl"),
     include_str!("hue_saturation.wgsl")
 );
 
-/// Adjusts raster hue, saturation, and lightness.
+/// Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct HueSaturationParams {
     /// Hue rotation in degrees.
@@ -32,7 +33,7 @@ impl Default for HueSaturationParams {
     }
 }
 
-/// Adjusts raster hue, saturation, and lightness.
+/// Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "hue_saturation",

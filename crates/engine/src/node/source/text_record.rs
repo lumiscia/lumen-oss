@@ -16,6 +16,7 @@ use super::text_content::{TextContentDelegate, TextLineDelegate, TextSpanDelegat
 fn text_shader() -> String {
     [
         include_str!("../../gpu/shaders/alpha.wgsl"),
+        include_str!("../../gpu/shaders/color.wgsl"),
         include_str!("../vector/paint/paint.wgsl"),
         DRAWABLE_SHADER,
         lumen_text::TEXT_SHADER,
@@ -153,7 +154,7 @@ fn shared_text_shader() -> &'static str {
 }
 
 fn text_blend(blend: lumen_gpu::wgpu::BlendState) -> lumen_gpu::RenderTargetSpec {
-    lumen_gpu::RenderTargetSpec::flat(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm, blend)
+    lumen_gpu::RenderTargetSpec::flat(crate::gpu::WORKING_COLOR_FORMAT, blend)
 }
 
 fn opacity_blend() -> lumen_gpu::wgpu::BlendState {

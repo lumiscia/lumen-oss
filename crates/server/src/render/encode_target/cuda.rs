@@ -36,9 +36,10 @@ impl CudaTarget {
             .map_err(|err| ServerRenderError::engine("the output can't be rendered", err))?;
         let settings = composition.render_settings();
         let (width, height) = (settings.width, settings.height);
-        let pool = CudaNvencTargetPool::rgba8(
+        let pool = CudaNvencTargetPool::new(
             renderer.gpu_renderer(),
             lumen_gpu::Size::new(width, height),
+            true,
         )
         .map_err(|err| {
             ServerRenderError::new(

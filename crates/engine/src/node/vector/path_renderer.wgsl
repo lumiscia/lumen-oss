@@ -61,7 +61,7 @@ struct PathBands {
 @group(0) @binding(0) var<uniform> params: PathUniforms;
 @group(0) @binding(1) var<storage, read> path_points: PathPoints;
 @group(0) @binding(2) var<storage, read> path_bands: PathBands;
-@group(0) @binding(3) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(3) var output_tex: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(4) var<storage, read> repeat_copies: array<RepeatCopy>;
 @group(0) @binding(5) var<storage, read> repeat_taps: array<DrawableTransform>;
 @group(0) @binding(6) var<storage, read> repeat_tiles: array<u32>;

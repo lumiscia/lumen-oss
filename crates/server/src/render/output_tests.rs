@@ -396,10 +396,42 @@ fn a_png_keeps_transparency_and_a_jpeg_is_that_colour_over_black() {
         .to_rgb8()
         .get_pixel(8, 8)
         .0;
+    // Half-covered red over black is half the light of red: code 188.
     assert!(
-        pixel[0].abs_diff(128) <= 6 && pixel[1] <= 6 && pixel[2] <= 6,
+        pixel[0].abs_diff(188) <= 6 && pixel[1] <= 6 && pixel[2] <= 6,
         "{pixel:?}"
     );
+}
+
+#[test]
+fn a_png_keeps_the_straight_colour_of_faint_pixels() {
+    // White at opacity 0.002 has alpha 0.5 of a code: every pixel the PNG keeps is still white,
+    // and none is colour without alpha.
+    let setup = Setup::new();
+    let composition = parse_composition(&json!({
+        "timeline": { "fps": FPS, "duration_frames": 1 },
+        "render_settings": { "width": 16, "height": 16 },
+        "nodes": [
+            { "id": 1, "type": "background", "params": { "paint": [255, 255, 255, 255] } },
+            { "id": 2, "type": "opacity", "params": { "opacity": 0.002 } },
+            { "id": 3, "type": "media_output" }
+        ],
+        "connections": [
+            { "from_node": 1, "to_node": 2, "to_port": "source" },
+            { "from_node": 2, "to_node": 3, "to_port": "source" }
+        ]
+    }))
+    .unwrap();
+    let png = setup.render(&composition, RenderOutput::of(OutputFormat::Png));
+    let image = image::load_from_memory(&png).unwrap().to_rgba8();
+    for pixel in image.pixels() {
+        let [r, g, b, a] = pixel.0;
+        assert!(
+            (a > 0 && [r, g, b] == [255; 3]) || pixel.0 == [0; 4],
+            "{:?}",
+            pixel.0
+        );
+    }
 }
 
 #[test]

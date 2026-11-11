@@ -1,9 +1,14 @@
-use crate::gpu::params;
 use crate::node::NodeId;
 
-const SHADER: &str = include_str!("media_output.wgsl");
+const SHADER: &str = concat!(
+    include_str!("../gpu/shaders/alpha.wgsl"),
+    include_str!("../gpu/shaders/color.wgsl"),
+    include_str!("../gpu/shaders/dither.wgsl"),
+    include_str!("media_output.wgsl")
+);
 
-/// Copies its source into the final composition output.
+/// Converts its source into the final composition output: sRGB-encoded and quantised once to the
+/// output's format.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "media_output", name = "Media Output", category = "output")]
 pub struct MediaOutput {
@@ -25,6 +30,36 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     ),
 ];
 
+/// `media_output.wgsl`'s `Output`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct OutputParams {
+    pub(crate) origin: [i32; 2],
+    /// 0 premultiplied, 1 straight, 2 opaque.
+    pub(crate) alpha: u32,
+    pub(crate) dither: u32,
+    pub(crate) levels: f32,
+    pub(crate) srgb_target: u32,
+    pub(crate) _pad: [u32; 2],
+}
+
+/// The highest code of a format's colour channels, or 0 for a float format, which takes the output
+/// unquantised.
+fn levels(format: lumen_gpu::wgpu::TextureFormat) -> f32 {
+    use lumen_gpu::wgpu::TextureFormat;
+    match format {
+        TextureFormat::Rgba8Unorm
+        | TextureFormat::Rgba8UnormSrgb
+        | TextureFormat::Bgra8Unorm
+        | TextureFormat::Bgra8UnormSrgb => 255.0,
+        _ => 0.0,
+    }
+}
+
+fn target(format: lumen_gpu::wgpu::TextureFormat) -> lumen_gpu::RenderTargetSpec {
+    lumen_gpu::RenderTargetSpec::flat(format, lumen_gpu::wgpu::BlendState::REPLACE)
+}
+
 impl crate::gpu::frame_graph::RecordNode for MediaOutput {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         let format = programs.output_format();
@@ -34,7 +69,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
             "vs_main",
             "fs_main",
             RECORD_LAYOUT,
-            lumen_gpu::RenderTargetSpec::flat(format, lumen_gpu::wgpu::BlendState::REPLACE),
+            target(format),
             0,
         )
     }
@@ -47,11 +82,14 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
         let settings = cx.composition().render_settings();
         let size = lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1));
         let format = cx.output_format();
+        let encoding = cx.output_encoding();
+        // A float output takes the working space as it is, so a source that fills the frame is
+        // the output.
         let written = cx.rec.usage(source.tex).intersects(
             lumen_gpu::wgpu::TextureUsages::STORAGE_BINDING
                 | lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
-        if format == lumen_gpu::wgpu::TextureFormat::Rgba8Unorm
+        if format == crate::gpu::WORKING_COLOR_FORMAT
             && source.domain == lumen_gpu::TextureDomain::full_frame(size)
             && written
         {
@@ -64,15 +102,24 @@ impl crate::gpu::frame_graph::RecordNode for MediaOutput {
             "vs_main",
             "fs_main",
             RECORD_LAYOUT,
-            lumen_gpu::RenderTargetSpec::flat(format, lumen_gpu::wgpu::BlendState::REPLACE),
+            target(format),
             0,
         )?;
-        let origin = cx.rec.uniform(&params::SourceOriginParams {
+        let output = cx.rec.uniform(&OutputParams {
             origin: source.origin(),
+            alpha: match encoding.alpha {
+                crate::gpu::OutputAlpha::Premultiplied => 0,
+                crate::gpu::OutputAlpha::Straight => 1,
+                crate::gpu::OutputAlpha::Opaque => 2,
+            },
+            dither: u32::from(encoding.dither),
+            levels: levels(format),
+            srgb_target: u32::from(format.is_srgb()),
+            _pad: [0; 2],
         });
         cx.rec.draw(
             program,
-            &[(0, lumen_gpu::Res::Tex(source.tex)), (1, origin)],
+            &[(0, lumen_gpu::Res::Tex(source.tex)), (1, output)],
             tex,
             lumen_gpu::TargetLoad::Clear,
             3,

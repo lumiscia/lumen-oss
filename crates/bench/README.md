@@ -14,7 +14,7 @@ This crate is experimental. Benchmarks track renderer development and may change
 
 Render benchmarks build compositions in Rust under `src/bench/composition/compositions/` instead of loading `crates/local/demo/*.json`.
 
-`lumen-bench-frame-graph` reads fonts, and the `launch` composition, from a directory you pass with `--launch-dir` (it holds `fonts/` and `launch-video.json`). `launch`, `dynamic_text`, `dynamic_path`, `motion_blur`, `shader_switch` and `file:<path>` fail with a clear error without it. `remapped_media` and the named in-process compositions don't need it.
+`lumen-bench-frame-graph` reads fonts, and the `launch` composition, from a directory you pass with `--launch-dir` (it holds `fonts/` and `launch-video.json`). `launch`, `dynamic_text`, `dynamic_path`, `motion_blur`, `shader_switch` and `file:<path>` fail with a clear error without it. `remapped_media` and the named in-process compositions don't need it. A `file:<path>` composition can also show the in-memory 1920x1080 `video` source that `remapped_media` plays.
 
 ## Platform Notes
 

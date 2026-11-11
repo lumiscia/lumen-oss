@@ -4,33 +4,13 @@
 
 @group(0) @binding(0) var source: texture_2d<f32>;
 
-// How a raster stores colour, and its conversion to and from the light that is averaged. Rasters
-// hold premultiplied colour encoded with the sRGB curve; when they hold linear light instead,
-// `to_linear` and `to_stored` return their argument and nothing else changes.
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
-}
-
-fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
-    return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
-}
-
-// Premultiplied linear light from a stored texel.
+// Rasters hold premultiplied linear light, which is what is averaged.
 fn to_linear(stored: vec4<f32>) -> vec4<f32> {
-    if (stored.a <= 0.0) {
-        return vec4<f32>(0.0);
-    }
-    let straight = clamp(stored.rgb / stored.a, vec3<f32>(0.0), vec3<f32>(1.0));
-    return vec4<f32>(srgb_to_linear(straight) * stored.a, stored.a);
+    return stored;
 }
 
-// A texel as it is stored, from premultiplied linear light.
 fn to_stored(light: vec4<f32>) -> vec4<f32> {
-    if (light.a <= 0.0) {
-        return vec4<f32>(0.0);
-    }
-    let straight = clamp(light.rgb / light.a, vec3<f32>(0.0), vec3<f32>(1.0));
-    return vec4<f32>(linear_to_srgb(straight) * light.a, light.a);
+    return light;
 }
 
 // A triangle covering the target.

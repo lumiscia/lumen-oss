@@ -72,7 +72,8 @@ fn coded_samples(reference: [u8; 3]) -> Vec<[u8; 4]> {
 }
 
 /// The premultiplied RGBA each coded pixel shows. A source that is premultiplied already shows
-/// its converted colour as it is.
+/// its converted colour as it is, up to its alpha: the light past white it holds above its alpha
+/// is kept, but an 8-bit output can't show it.
 fn coded_expected(row: &Row) -> Vec<[u8; 4]> {
     coded_samples(row.reference.0)
         .into_iter()
@@ -90,7 +91,7 @@ fn coded_expected(row: &Row) -> Vec<[u8; 4]> {
             let a = if row.alpha { a } else { 255 };
             let premultiply = |c: u8| {
                 if row.premultiplied {
-                    c
+                    c.min(a)
                 } else {
                     (f32::from(c) * f32::from(a) / 255.0).round() as u8
                 }
@@ -318,6 +319,45 @@ fn raw_rgba_video_is_premultiplied_unless_the_node_says_it_already_is() {
                 .zip(expected)
                 .all(|(&actual, expected)| actual.abs_diff(expected) <= 1),
             "{alpha}: {actual:?}, expected {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn premultiplied_colour_above_its_alpha_keeps_its_light_as_rgba_video_does() {
+    // Block (1, 1) is grey 128 at alpha 64, premultiplied: its straight colour is encoded 2.0,
+    // light past white. Three stops down bring it into range, where both paths must agree.
+    let row = Row {
+        interleaved: false,
+        alpha: true,
+        premultiplied: true,
+        ..nv12("i420 with premultiplied alpha")
+    };
+    let darkened = |media: &TestMedia| {
+        let composition = scene(
+            (WIDTH, HEIGHT),
+            json!([
+                { "id": 1, "type": "media_in", "params": { "kind": "video", "source": "clip", "alpha": "premultiplied" } },
+                { "id": 2, "type": "exposure", "in": { "source": 1 }, "params": { "exposure": -3 } },
+            ]),
+        )
+        .into();
+        render(&mut gpu().renderer(), &composition, 0.0, media).pixel(2, 2)
+    };
+    let yuv = darkened(&TestMedia::default().yuv_video("clip", WIDTH, HEIGHT, frame(&row)));
+    let rgba = darkened(&TestMedia::default().raw_video(
+        "clip",
+        WIDTH,
+        HEIGHT,
+        [128, 128, 128, 64].repeat((WIDTH * HEIGHT) as usize),
+    ));
+    let light = crate::color::decode(2.0) / 8.0;
+    let code = (crate::color::encode(light) * 64.0).round() as u8;
+    assert_eq!(code, 52);
+    for (path, pixel) in [("yuv", yuv), ("rgba", rgba)] {
+        assert!(
+            pixel[..3].iter().all(|&c| c.abs_diff(code) <= 1) && pixel[3] == 64,
+            "{path}: {pixel:?}, expected [{code}, {code}, {code}, 64]"
         );
     }
 }

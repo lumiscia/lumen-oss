@@ -45,7 +45,7 @@ struct GaussianParams {
 @group(0) @binding(3) var<uniform> params: GaussianParams;
 @group(0) @binding(4) var linear_sampler: sampler;
 @group(0) @binding(5) var out_float: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(6) var out_unorm: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(6) var out_raster: texture_storage_2d<rgba16float, write>;
 
 const GAUSSIAN_MIN_SIGMA: f32 = 0.001;
 const GAUSSIAN_EXTENT_SIGMAS: f32 = 3.0;
@@ -306,7 +306,7 @@ fn gaussian_sample_reduced(tex: texture_2d<f32>, canvas: vec2<f32>, factor: f32,
 // (`tex_c`) results, weighted by how far sigma is into each band.
 @compute @workgroup_size(8, 8, 1)
 fn resolve_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let size = textureDimensions(out_unorm);
+    let size = textureDimensions(out_raster);
     if (id.x >= size.x || id.y >= size.y) {
         return;
     }
@@ -327,5 +327,6 @@ fn resolve_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (gaussian_uses_sixteenth(sigma)) {
         color = color + reduced * sixteenth * gaussian_sample_reduced(tex_c, canvas, 16.0, GAUSSIAN_SIXTEENTH_PAD);
     }
-    textureStore(out_unorm, vec2<i32>(id.xy), color);
+    // A blurred light, such as glow, may be brighter than its coverage; only alpha is bounded.
+    textureStore(out_raster, vec2<i32>(id.xy), vec4<f32>(color.rgb, clamp(color.a, 0.0, 1.0)));
 }

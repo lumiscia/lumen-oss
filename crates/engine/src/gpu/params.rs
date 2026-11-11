@@ -172,13 +172,6 @@ pub(crate) struct CropPassParams {
     pub(crate) source_origin: [i32; 2],
 }
 
-/// Where a bounded source's first texel sits in the display.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct SourceOriginParams {
-    pub(crate) origin: [i32; 2],
-}
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ResizeParams {
@@ -294,7 +287,7 @@ fn lut_error(node_id: NodeId, details: impl Into<String>) -> crate::error::Lumen
 pub(crate) fn copyable_texture_desc(size: lumen_gpu::Size) -> lumen_gpu::TextureDesc {
     lumen_gpu::TextureDesc {
         domain: lumen_gpu::TextureDomain::full_frame(size),
-        format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+        format: super::WORKING_COLOR_FORMAT,
         usage: lumen_gpu::wgpu::TextureUsages::COPY_DST
             | lumen_gpu::wgpu::TextureUsages::COPY_SRC
             | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING

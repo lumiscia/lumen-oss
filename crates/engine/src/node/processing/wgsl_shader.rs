@@ -6,7 +6,7 @@
 //! |---------|-----------------|--------------------------------------------|
 //! | 0       | `input0`        | `texture_2d<f32>`                          |
 //! | 1       | (user uniform)  | the shader's own `var<uniform>` struct     |
-//! | 2       | `output`        | `texture_storage_2d<rgba8unorm, write>`    |
+//! | 2       | `output`        | `texture_storage_2d<rgba16float, write>`   |
 //! | 3       | `lumen`         | `LumenGlobals { resolution, time, frame }` |
 //! | 4       | `input_sampler` | linear, clamp-to-edge `sampler`            |
 //! | 4 + i   | `input{i}`      | `texture_2d<f32>`, for `i` in `1..N`       |
@@ -15,10 +15,17 @@
 //! them out; bindings 3 and up belong to the prelude. The entry point is `cs_main` with
 //! `@workgroup_size(8, 8, 1)`, dispatched over input0's size.
 //!
-//! Every input is bound as premultiplied alpha, and the output is treated as premultiplied alpha.
+//! Every input holds linear light with premultiplied alpha, and the output is read the same way.
+//! Values above 1 are brighter than SDR white and are kept. The engine clamps the output's alpha
+//! to `0..=1` and its colour to the half-float range, and makes a NaN channel 0. A shader that works on sRGB-encoded
+//! colour converts with the prelude's `lumen_srgb_to_linear` and `lumen_linear_to_srgb`, which
+//! take and return `vec3<f32>`. A shader that declares `output` itself must declare it
+//! `rgba16float`.
 //!
 //! Uniform fields are read from the struct behind the shader's single `var<uniform>`, laid out
-//! with WGSL's uniform rules, and set by name through `uniforms`. Unset fields are zero.
+//! with WGSL's uniform rules, and set by name through `uniforms`. Unset fields are zero. Colour
+//! values (`#rrggbb`, `rgb(...)`) arrive as linear light, premultiplied by their alpha; numbers
+//! and vectors arrive as written.
 
 use crate::{
     error::RenderError,
@@ -36,10 +43,13 @@ pub const MAX_INPUTS: usize = 16;
 
 const OUTPUT_BINDING: u32 = 2;
 
-pub const PRELUDE: &str = "
+pub const PRELUDE: &str = concat!(
+    "
 // wgsl_shader prelude
-// Every input is premultiplied alpha, and `output` is read as premultiplied alpha.
-struct LumenGlobals {
+// Every input is linear light with premultiplied alpha, and `output` is read the same way.
+",
+    include_str!("../../gpu/shaders/color.wgsl"),
+    "struct LumenGlobals {
     // Output size in pixels.
     resolution: vec2<f32>,
     // Seconds since the start of the composition: frame / fps.
@@ -49,7 +59,32 @@ struct LumenGlobals {
 }
 @group(0) @binding(3) var<uniform> lumen: LumenGlobals;
 @group(0) @binding(4) var input_sampler: sampler;
-";
+"
+);
+
+/// Keeps a shader's output in the working space, as the module documentation describes.
+const SANITISE_SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/color.wgsl"),
+    "
+@group(0) @binding(0) var source: texture_2d<f32>;
+@group(0) @binding(1) var output: texture_storage_2d<rgba16float, write>;
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = textureDimensions(output);
+    if (id.x >= size.x || id.y >= size.y) {
+        return;
+    }
+    let texel = lumen_finite(textureLoad(source, vec2<i32>(id.xy), 0));
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(texel.rgb, clamp(texel.a, 0.0, 1.0)));
+}
+"
+);
+
+const SANITISE_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
+    lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
+    lumen_gpu::LayoutEntry::compute(1, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
+];
 
 const DEFAULT_SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
@@ -155,6 +190,7 @@ impl ShaderInterface {
                 return Err("only `@group(0)` is available".to_string());
             }
         }
+        check_storage_formats(&tokens)?;
         let mut bindings = Vec::new();
         for binding in attribute_values(&tokens, "binding") {
             let binding = binding?;
@@ -253,7 +289,7 @@ impl ShaderInterface {
         }
         if !self.declares_output {
             shader.push_str(
-                "@group(0) @binding(2) var output: texture_storage_2d<rgba8unorm, write>;\n",
+                "@group(0) @binding(2) var output: texture_storage_2d<rgba16float, write>;\n",
             );
         }
         for index in 1..inputs {
@@ -366,7 +402,7 @@ fn uniform_components(
                     if field.lanes == 3 && rgba[3] != 1.0 {
                         return Err(invalid("vec3<f32> colours must be opaque".to_string()));
                     }
-                    rgba[..field.lanes].to_vec()
+                    linear_color(rgba, field.lanes)
                 }
                 value => vec![number(value)?],
             }
@@ -388,15 +424,9 @@ fn uniform_components(
                     "vec3<f32> colours take `#rrggbb`, without alpha".to_string(),
                 ));
             }
-            let mut values: Vec<f64> = rgb
-                .iter()
-                .chain(alpha)
-                .map(|&channel| f64::from(channel) / 255.0)
-                .collect();
-            if values.len() < field.lanes {
-                values.push(1.0);
-            }
-            values
+            let [r, g, b] = rgb.map(|channel| f64::from(channel) / 255.0);
+            let a = alpha.map_or(1.0, |alpha| f64::from(alpha) / 255.0);
+            linear_color([r, g, b, a], field.lanes)
         }
     };
 
@@ -424,6 +454,19 @@ fn uniform_components(
         }
     }
     Ok(values)
+}
+
+/// A straight sRGB-encoded colour as `lanes` components of linear light, premultiplied by its alpha.
+fn linear_color(rgba: [f64; 4], lanes: usize) -> Vec<f64> {
+    let alpha = rgba[3];
+    let mut values: Vec<f64> = rgba[..3]
+        .iter()
+        .map(|&channel| f64::from(crate::gpu::color::srgb_to_linear(channel as f32)) * alpha)
+        .collect();
+    if lanes == 4 {
+        values.push(alpha);
+    }
+    values
 }
 
 fn parse_type(ty: &str) -> Option<(Scalar, usize)> {
@@ -506,6 +549,22 @@ fn attribute_values<'a>(
         }
         .ok_or_else(|| format!("`@{name}({})` must use an integer literal", args.concat()))
     })
+}
+
+/// Errors unless every storage texture is `rgba16float`, the format of the rasters the engine binds.
+fn check_storage_formats(tokens: &[&str]) -> Result<(), String> {
+    for window in tokens.windows(3) {
+        if let ["texture_storage_2d", "<", format] = window
+            && *format != "rgba16float"
+        {
+            return Err(format!(
+                "`texture_storage_2d<{format}, ...>` is not supported; declare \
+                 `texture_storage_2d<rgba16float, write>`, the format of every raster, which holds \
+                 linear light"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Errors unless every `@workgroup_size(...)` is 8, 8, 1, the size the engine dispatches for.
@@ -606,7 +665,7 @@ fn record_parts(
         LayoutEntry::compute(1, LayoutKind::Uniform),
         LayoutEntry::compute(
             OUTPUT_BINDING,
-            LayoutKind::StorageTexture(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm),
+            crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE,
         ),
         LayoutEntry::compute(3, LayoutKind::Uniform),
         LayoutEntry::compute(4, LayoutKind::Sampler),
@@ -645,6 +704,12 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
         let inputs = self.sources.len();
         self.check_input_count()?;
+        programs.compute(
+            "wgsl-shader-sanitise",
+            SANITISE_SHADER,
+            "cs_main",
+            SANITISE_LAYOUT,
+        )?;
         let Deferred::Value(source) = &self.params.shader else {
             return Ok(());
         };
@@ -735,8 +800,20 @@ impl crate::gpu::frame_graph::RecordNode for WgslShader {
             bindings.push((input_binding(index), Res::Tex(input.tex)));
         }
         cx.dispatch(program, &bindings, params::dispatch_for(size));
+        let sanitise = cx.program(
+            "wgsl-shader-sanitise",
+            SANITISE_SHADER,
+            "cs_main",
+            SANITISE_LAYOUT,
+        )?;
+        let sanitised = cx.storage_target(size);
+        cx.dispatch(
+            sanitise,
+            &[(0, Res::Tex(tex)), (1, Res::Tex(sanitised))],
+            params::dispatch_for(size),
+        );
         Ok(crate::gpu::frame_graph::Raster {
-            tex,
+            tex: sanitised,
             domain: first.domain,
             bounds: None,
         })
@@ -841,7 +918,8 @@ mod tests {
             .unwrap();
         let floats: &[f32] = bytemuck::cast_slice(&bytes);
         assert_eq!(floats[0], 0.0, "unset fields stay zero");
-        assert_eq!(&floats[4..7], &[1.0, 0.0, 0.2]);
+        let blue = crate::gpu::color::srgb_to_linear(0.2);
+        assert_eq!(&floats[4..7], &[1.0, 0.0, blue]);
         assert_eq!(floats[8..10], [2.0, 0.5]);
         assert_eq!(bytemuck::cast_slice::<u8, u32>(&bytes)[7], 3);
         let bytes = interface
@@ -861,7 +939,7 @@ mod tests {
             )
             .unwrap();
         let floats: &[f32] = bytemuck::cast_slice(&bytes);
-        assert_eq!(&floats[4..7], &[1.0, 0.0, 0.2]);
+        assert_eq!(&floats[4..7], &[1.0, 0.0, blue]);
         let bytes = interface
             .uniform_bytes(
                 node_id,
@@ -956,6 +1034,10 @@ mod tests {
                 "`Missing`",
             ),
             (
+                "@group(0) @binding(2) var out: texture_storage_2d<rgba8unorm, write>;",
+                "declare `texture_storage_2d<rgba16float, write>`",
+            ),
+            (
                 "@compute @workgroup_size(16) fn cs_main() {}",
                 "must be `@workgroup_size(8, 8, 1)`",
             ),
@@ -971,7 +1053,7 @@ mod tests {
         let interface = ShaderInterface::parse(
             "@group(0) @binding(0) var input_tex: texture_2d<f32>;
              // @group(0) @binding(9) var nope: sampler;
-             @group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;",
+             @group(0) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;",
         )
         .unwrap();
         assert!(interface.declares_input0 && interface.declares_output);

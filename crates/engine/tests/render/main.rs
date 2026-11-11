@@ -4,6 +4,7 @@ mod alpha;
 mod binding;
 mod cache;
 mod clips;
+mod color;
 mod depth;
 mod displacement;
 mod edits;

@@ -52,10 +52,20 @@ fn two_planes(camera: Option<Value>) -> Vec<Value> {
     nodes
 }
 
-/// Asserts `pixel` is opaque grey within a level of `depth` in 0..1.
+/// The 8-bit code an output encodes the working-space `value` in 0..1 as.
+fn code(value: f32) -> u8 {
+    let encoded = if value <= 0.003_130_8 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded * 255.0).round() as u8
+}
+
+/// Asserts `pixel` is opaque grey within a level of the code `depth` in 0..1 is output as.
 fn grey(pixel: [u8; 4], depth: f32, what: &str) {
     let [r, g, b, a] = pixel;
-    let expected = (depth * 255.0).round() as u8;
+    let expected = code(depth);
     assert!(
         r == g && g == b && a == 255 && r.abs_diff(expected) <= 1,
         "{what}: expected opaque grey {expected}, got {pixel:?}"
@@ -246,9 +256,7 @@ fn sphere_normal((x, y): (u32, u32)) -> Option<Vec3> {
 }
 
 fn encoded(normal: Vec3) -> [u8; 3] {
-    (normal * 0.5 + 0.5)
-        .to_array()
-        .map(|n| (n * 255.0).round() as u8)
+    (normal * 0.5 + 0.5).to_array().map(code)
 }
 
 #[test]
@@ -309,9 +317,10 @@ fn the_back_of_a_double_sided_surface_has_the_normal_it_is_lit_by() {
         );
         frame.pixel(32, 32)
     };
-    // +Z, towards the camera, which is 127.5 in red and green.
+    // +Z, towards the camera, which is 0.5 in red and green.
+    let half = code(0.5);
     let towards = |pixel: [u8; 4]| {
-        pixel[0].abs_diff(128) <= 1 && pixel[1].abs_diff(128) <= 1 && pixel[2..] == [255, 255]
+        pixel[0].abs_diff(half) <= 1 && pixel[1].abs_diff(half) <= 1 && pixel[2..] == [255, 255]
     };
     let front = normal_of(json!({}));
     assert!(towards(front), "the front faces the camera: {front:?}");
@@ -414,17 +423,19 @@ fn a_depth_render_of_a_scene_shares_its_loads_with_the_colour_render_and_skips_i
     let (unfogged, _) = passes(fog_nodes(false, false), &media());
 
     // The fox, the box and the plane draw once each, then the depth is stored: no shadow map, no
-    // mipmaps and no environment. The plane reads its source's texture as it is.
+    // mipmaps and no environment. The plane reads its source's texture as it is. Beside those
+    // four, the plane's source is taken into the working space and the frame is output, which a
+    // colour render of the scene shares.
     let mut depth_alone = fog_nodes(true, true);
     depth_alone.retain(|node| ![7, 9, 10].contains(&node["id"].as_u64().unwrap()));
     let (depth_passes, _) = passes(depth_alone, &media());
     assert_eq!(
-        depth_passes, 4,
+        depth_passes, 6,
         "the depth render records {depth_passes} passes"
     );
     assert_eq!(
         fogged - unfogged,
-        depth_passes,
+        depth_passes - 2,
         "beside the colour render, the depth render records only its own passes"
     );
 }

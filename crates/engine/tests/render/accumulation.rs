@@ -6,7 +6,10 @@ use lumen_engine::{
 };
 use serde_json::{Value, json};
 
-use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
+use crate::color::{linear_average, srgb8};
+use crate::support::{
+    Case, Expect, Frame, Scene, TestMedia, check, gpu, render, render_working_space, scene,
+};
 
 const ORANGE: [u8; 4] = [255, 128, 0, 255];
 
@@ -56,7 +59,17 @@ fn spreading(kind: &str, motion_blur: f64) -> Value {
     json!({ "id": 1, "type": kind, "params": params })
 }
 
-/// The mean of `source` rendered at the 8 sub-frames of a 180° shutter around `at`.
+/// Whether `blurred` is `average` to within a code. The average is of sub-frames rounded to bytes,
+/// and the blur averages its samples before rounding.
+fn is_average(blurred: &[u8], average: &[u8]) -> bool {
+    blurred.len() == average.len()
+        && blurred
+            .iter()
+            .zip(average)
+            .all(|(&blurred, &average)| blurred.abs_diff(average) <= 1)
+}
+
+/// The linear-light mean of `source` rendered at the 8 sub-frames of a 180° shutter around `at`.
 fn sub_frame_average(
     renderer: &mut GpuCompositionRenderer,
     source: &Composition,
@@ -67,12 +80,11 @@ fn sub_frame_average(
         .map(|sample| at + ((2 * sample + 1) as f64 / 8.0 - 1.0) * 0.25)
         .map(|sub_frame| render(renderer, source, sub_frame, &media))
         .collect();
-    (0..sub_frames[0].rgba.len())
-        .map(|index| {
-            let sum: u32 = sub_frames.iter().map(|f| u32::from(f.rgba[index])).sum();
-            (f64::from(sum) / 8.0).round() as u8
-        })
-        .collect()
+    let frames: Vec<&[u8]> = sub_frames
+        .iter()
+        .map(|frame| frame.rgba.as_slice())
+        .collect();
+    linear_average(&frames)
 }
 
 #[test]
@@ -89,7 +101,10 @@ fn an_animated_width_blurs_to_the_average_of_its_sub_frames() {
     );
     let source: Composition = canvas(json!([growing(0.0)])).into();
     assert!(
-        blurred.rgba == sub_frame_average(&mut renderer, &source, at),
+        is_average(
+            &blurred.rgba,
+            &sub_frame_average(&mut renderer, &source, at)
+        ),
         "the blur is not the average of its sub-frames"
     );
     let held = render(&mut renderer, &source, at, &media);
@@ -112,7 +127,10 @@ fn repeated_copies_blur_once_across_the_sub_frames() {
         );
         let source: Composition = canvas(json!([spreading(kind, 0.0)])).into();
         assert!(
-            blurred.rgba == sub_frame_average(&mut renderer, &source, at),
+            is_average(
+                &blurred.rgba,
+                &sub_frame_average(&mut renderer, &source, at)
+            ),
             "the {kind}'s blurred copies are not the average of their sub-frames"
         );
         let held = render(&mut renderer, &source, at, &media);
@@ -177,7 +195,8 @@ fn video_blurs_across_the_source_frames_its_sub_frames_show() {
     let media = TestMedia::default().numbered_video("v");
     let required = collect_frame_requirements(&video().into(), &media, 0).unwrap();
     assert_eq!(required.videos[0].frames, [0, 1, 3]);
-    // Half the samples fall before frame 1, showing video `a`, and half show frame 0 of `b`.
+    // Half the samples fall before frame 1, showing video `a`, and half show frame 0 of `b`: half
+    // the light of each.
     let switching = scene(
         (1, 1),
         json!([
@@ -198,7 +217,7 @@ fn video_blurs_across_the_source_frames_its_sub_frames_show() {
         Case::new(
             "video whose source changes across the shutter",
             switching,
-            Expect::Uniform([128, 0, 128, 255]),
+            Expect::Uniform([srgb8(0.5), 0, srgb8(0.5), 255]),
         )
         .media(
             TestMedia::default()
@@ -238,15 +257,42 @@ fn blank_samples_leave_the_domain_where_the_source_draws() {
         .recorded_domain(&still, lumen_engine::node::NodeId::new(1))
         .expect("the shape recorded");
     assert_eq!(domain, drawn, "the blur's domain is not the shape's");
-    let half: Vec<u8> = held
-        .rgba
-        .iter()
-        .map(|&channel| (f64::from(channel) * 4.0 / 8.0).round() as u8)
-        .collect();
-    assert!(frame.rgba == half, "the blur is not half the shape");
+    let blank = vec![0; held.rgba.len()];
+    let half = linear_average(&[&held.rgba, &held.rgba, &blank, &blank]);
+    assert!(
+        is_average(&frame.rgba, &half),
+        "the blur is not half the shape"
+    );
     let hidden = render(&mut renderer, &blurred, 0.0, &media);
     assert!(
         hidden.rgba.iter().all(|&channel| channel == 0),
         "samples that are all blank draw something"
     );
+}
+
+#[test]
+fn a_stationary_source_comes_through_every_sample_count_unchanged() {
+    // Compared as float texels, colour and alpha, which 8-bit output would round away.
+    let gpu = gpu();
+    let media = TestMedia::default();
+    for color in [
+        [255, 255, 255, 255],
+        [128, 128, 128, 255],
+        [200, 100, 50, 128],
+    ] {
+        let source = json!({ "id": 1, "type": "background", "params": { "paint": color } });
+        let plain: Composition = canvas(json!([source.clone()])).into();
+        let expected = render_working_space(&mut gpu.renderer(), &plain, 0.0, &media);
+        let mut renderer = gpu.renderer();
+        for samples in 1..=64 {
+            let scene: Composition = blurred(samples, 180.0, source.clone()).into();
+            let texels = render_working_space(&mut renderer, &scene, 0.0, &media);
+            assert!(
+                texels == expected,
+                "{samples} samples of {color:?}: {:?}, expected {:?}",
+                texels[0],
+                expected[0]
+            );
+        }
+    }
 }

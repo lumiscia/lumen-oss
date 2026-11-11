@@ -16,7 +16,7 @@ struct ShapeUniforms {
 }
 
 @group(0) @binding(0) var<uniform> params: ShapeUniforms;
-@group(0) @binding(1) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(1) var output_tex: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var<storage, read> repeat_copies: array<RepeatCopy>;
 @group(0) @binding(3) var<storage, read> repeat_taps: array<DrawableTransform>;
 @group(0) @binding(4) var<storage, read> repeat_tiles: array<u32>;

@@ -3,7 +3,7 @@ use lumen_engine::{
     diagnostic::Diagnostic,
     error::{LumenError, MediaError, MediaFailure},
     json::ParseError,
-    media::{CpuMediaFrame, premultiply_rgba_in_place_if_needed},
+    media::CpuMediaFrame,
 };
 use std::sync::Arc;
 use wasm_bindgen::JsValue;
@@ -56,16 +56,6 @@ pub fn raw_frame_from_rgba(
         height,
         row_bytes: width as usize * 4,
     })
-}
-
-/// A frame of straight-alpha `rgba` with its colour premultiplied.
-pub fn image_frame_from_rgba(
-    width: u32,
-    height: u32,
-    mut rgba: Vec<u8>,
-) -> Result<CpuMediaFrame, String> {
-    premultiply_rgba_in_place_if_needed(&mut rgba);
-    raw_frame_from_rgba(width, height, rgba)
 }
 
 /// `diagnostics` as a JS array of plain objects.

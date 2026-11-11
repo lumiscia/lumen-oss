@@ -5,10 +5,11 @@ use crate::gpu::params;
 
 pub(crate) const SHADER: &str = concat!(
     include_str!("../../gpu/shaders/alpha.wgsl"),
+    include_str!("../../gpu/shaders/color.wgsl"),
     include_str!("levels.wgsl")
 );
 
-/// Remaps raster black, white, gamma, and output range.
+/// Remaps raster black, white, gamma, and output range of the sRGB-encoded colour.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct LevelsParams {
     /// Input black point.
@@ -40,7 +41,7 @@ impl Default for LevelsParams {
     }
 }
 
-/// Remaps raster black, white, gamma, and output range.
+/// Remaps raster black, white, gamma, and output range of the sRGB-encoded colour.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "levels", name = "Levels", category = "processing")]
 pub struct Levels {

@@ -115,6 +115,29 @@ fn texture_bytes(key: &MediaTextureKey) -> u64 {
     u64::from(key.width) * u64::from(key.height) * 4
 }
 
+/// How an 8-bit output holds alpha. Float outputs take the working space as it is: linear light,
+/// premultiplied, which a reader that drops alpha shows over black.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OutputAlpha {
+    /// sRGB-encoded colour multiplied by alpha, as canvases and compositors take it. No channel is
+    /// above alpha, and a pixel of alpha 0 is transparent black.
+    #[default]
+    Premultiplied,
+    /// sRGB-encoded colour apart from its alpha, as PNG holds it. A pixel of alpha 0 is
+    /// transparent black.
+    Straight,
+    /// Shown over black at full alpha, for encoders and formats without alpha.
+    Opaque,
+}
+
+/// How `media_output` writes a frame's output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OutputEncoding {
+    pub(crate) alpha: OutputAlpha,
+    /// Dithers the quantisation to 8 bits.
+    pub(crate) dither: bool,
+}
+
 /// What recording has cost, across every frame so far.
 #[derive(Debug, Clone, Copy)]
 pub struct FrameGraphStats {
@@ -142,6 +165,7 @@ pub struct GpuCompositionRenderer {
     text_atlas: Arc<Mutex<lumen_text::GlyphAtlas>>,
     text_atlas_texture: Option<Arc<lumen_gpu::wgpu::Texture>>,
     output_format: lumen_gpu::wgpu::TextureFormat,
+    output_encoding: OutputEncoding,
     reuse_static_output: bool,
     full_frame_sources: bool,
     single_tile_repeats: bool,
@@ -182,6 +206,10 @@ impl GpuCompositionRenderer {
             ))),
             text_atlas_texture: None,
             output_format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            output_encoding: OutputEncoding {
+                alpha: OutputAlpha::Premultiplied,
+                dither: true,
+            },
             reuse_static_output: true,
             full_frame_sources: false,
             single_tile_repeats: false,
@@ -252,13 +280,36 @@ impl GpuCompositionRenderer {
         }
     }
 
+    /// Sets how an 8-bit output holds alpha, [`OutputAlpha::Premultiplied`] by default. Drops
+    /// what frames recorded so far when it changes.
+    pub fn set_output_alpha(&mut self, alpha: OutputAlpha) {
+        if self.output_encoding.alpha != alpha {
+            self.output_encoding.alpha = alpha;
+            self.reset_recorded(self.output_format);
+        }
+    }
+
+    /// Sets whether quantising the output to 8 bits adds an ordered dither, which breaks up banding
+    /// in smooth gradients and keeps the mean of flat areas. It is on by default. A value within a
+    /// tenth of a code of one keeps it, so 8-bit content passes through exactly. Float outputs are
+    /// never quantised. Drops what frames recorded so far when it changes.
+    pub fn set_output_dither(&mut self, enabled: bool) {
+        if self.output_encoding.dither != enabled {
+            self.output_encoding.dither = enabled;
+            self.reset_recorded(self.output_format);
+        }
+    }
+
     /// Builds every program `composition` may record with, so that a literal shader that doesn't
     /// compile fails here, before any frame renders.
     pub fn compile(&mut self, composition: &Composition) -> crate::Result<()> {
         self.compile_with_output_format(composition, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
     }
 
-    /// `compile`, for frames whose output is in `output_format`.
+    /// `compile`, for frames whose output is in `output_format`. An 8-bit format takes the output
+    /// sRGB-encoded and quantised once, and an `*Srgb` format encodes it as it stores. A float
+    /// format takes the working space unchanged, linear and premultiplied, for a converter that
+    /// encodes and quantises it itself.
     pub fn compile_with_output_format(
         &mut self,
         composition: &Composition,
@@ -476,6 +527,7 @@ impl GpuCompositionRenderer {
             frame,
             media: Some(media),
             output_format: self.output_format,
+            output_encoding: self.output_encoding,
             full_frame_sources: self.full_frame_sources,
             single_tile_repeats: self.single_tile_repeats,
             retain_static: self.reuse_static_output,

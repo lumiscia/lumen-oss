@@ -9,14 +9,18 @@ use crate::node::{
 use super::displacement_map::EdgeMode;
 use super::gaussian;
 
-const SHADER: &str = include_str!("glow.wgsl");
+const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/color.wgsl"),
+    include_str!("glow.wgsl")
+);
 /// Keeps the brightest light well inside the half-float range the bright pass stores it in.
 const MAX_INTENSITY: f64 = 1000.0;
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct GlowParams {
-    /// Luminance from 0 to 1 where the glow starts. Brighter pixels glow more, white at full
-    /// strength, and 1 lets nothing glow. Past 254/255 white dims too, so the glow fades out
+    /// Luminance from 0 to 1 where the glow starts, on the sRGB-encoded scale, so 0.5 is half way
+    /// up from black to white as they look. Brighter pixels glow more, white at full strength,
+    /// and 1 lets nothing glow. Past 254/255 white dims too, so the glow fades out
     /// continuously as the threshold reaches 1.
     #[meta(min = 0, max = 1, step = 0.01)]
     pub threshold: f64,
@@ -125,8 +129,8 @@ impl crate::gpu::frame_graph::RecordNode for Glow {
                 }
                 .into());
             };
-            let alpha = f32::from(a) / 255.0;
-            [r, g, b].map(|channel| f32::from(channel) / 255.0 * alpha)
+            let [r, g, b, _] = crate::gpu::color::linear_premultiplied([r, g, b, a]);
+            [r, g, b]
         } else {
             [0.0; 3]
         };

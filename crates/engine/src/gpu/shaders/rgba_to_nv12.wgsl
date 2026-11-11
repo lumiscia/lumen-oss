@@ -1,9 +1,16 @@
-// Full-range RGBA to BT.709 limited-range NV12, matching the CPU encoder's colour conversion.
+// The working space, linear and premultiplied, to BT.709 limited-range NV12 of its sRGB-encoded
+// colour over black, matching the CPU encoder's colour conversion. Each code is rounded once,
+// from float colour, with the ordered dither when `dither` is set. Requires the colour and dither
+// chunks prepended.
 struct Params {
     width: u32,
     height: u32,
     pitch: u32,
     chroma_offset: u32,
+    dither: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;
@@ -13,21 +20,24 @@ struct Params {
 const KR: f32 = 0.2126;
 const KB: f32 = 0.0722;
 
+// The encoded colour at a pixel. Premultiplied colour over black is the colour itself.
 fn rgb(x: u32, y: u32) -> vec3<f32> {
     let clamped = vec2<u32>(min(x, params.width - 1u), min(y, params.height - 1u));
-    return textureLoad(source, clamped, 0).rgb;
+    let light = max(textureLoad(source, clamped, 0).rgb, vec3<f32>(0.0));
+    return clamp(lumen_linear_to_srgb(light), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 fn luma(color: vec3<f32>) -> f32 {
     return dot(color, vec3<f32>(KR, 1.0 - KR - KB, KB));
 }
 
-fn to_byte(value: f32) -> u32 {
-    return u32(clamp(floor(value + 0.5), 0.0, 255.0));
+// `value` rounded to a byte, dithered at `pixel` of the plane it belongs to.
+fn to_byte(value: f32, pixel: vec2<u32>) -> u32 {
+    return u32(clamp(lumen_quantise(value, pixel, params.dither != 0u), 0.0, 255.0));
 }
 
-fn luma_byte(color: vec3<f32>) -> u32 {
-    return to_byte(16.0 + 219.0 * luma(color));
+fn luma_byte(color: vec3<f32>, pixel: vec2<u32>) -> u32 {
+    return to_byte(16.0 + 219.0 * luma(color), pixel);
 }
 
 // Each invocation writes a 4x2 pixel block: four luma bytes on each row and two CbCr pairs.
@@ -49,14 +59,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let c = rgb(left, y + 1u);
         let d = rgb(left + 1u, y + 1u);
         let shift = pair * 16u;
-        top |= (luma_byte(a) | (luma_byte(b) << 8u)) << shift;
-        bottom |= (luma_byte(c) | (luma_byte(d) << 8u)) << shift;
+        top |= (luma_byte(a, vec2<u32>(left, y)) | (luma_byte(b, vec2<u32>(left + 1u, y)) << 8u)) << shift;
+        bottom |= (luma_byte(c, vec2<u32>(left, y + 1u)) | (luma_byte(d, vec2<u32>(left + 1u, y + 1u)) << 8u)) << shift;
 
         let average = (a + b + c + d) * 0.25;
         let average_luma = luma(average);
         let cb = 128.0 + 224.0 * (average.b - average_luma) / (2.0 * (1.0 - KB));
         let cr = 128.0 + 224.0 * (average.r - average_luma) / (2.0 * (1.0 - KR));
-        chroma |= (to_byte(cb) | (to_byte(cr) << 8u)) << shift;
+        let sample = vec2<u32>(left / 2u, y / 2u);
+        chroma |= (to_byte(cb, sample) | (to_byte(cr, sample) << 8u)) << shift;
     }
 
     let row_words = params.pitch / 4u;

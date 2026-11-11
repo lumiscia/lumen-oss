@@ -14,7 +14,7 @@ struct SourceBounds {
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> params: ResizeParams;
-@group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(3) var<uniform> source_bounds: SourceBounds;
 
 // Taps outside the source bounds clamp to the nearest edge texel inside them.

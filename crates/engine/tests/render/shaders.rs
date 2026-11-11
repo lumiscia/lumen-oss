@@ -3,6 +3,7 @@
 use lumen_engine::composition::Composition;
 use serde_json::{Value, json};
 
+use crate::color::{linear, opaque, srgb8};
 use crate::support::{Case, Expect, Scene, TestMedia, check, gpu, render, scene};
 
 const BLACK: [u8; 4] = [0, 0, 0, 255];
@@ -32,11 +33,15 @@ pub fn shader_scene(shader: &str, uniforms: Value, inputs: &[[u8; 4]]) -> Scene 
     scene((8, 4), json!(nodes))
 }
 
+/// The time and resolution as sRGB codes on the left half, and the frame on the right.
 const GLOBALS_SHADER: &str = "
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let color = vec4<f32>(lumen.time, lumen.resolution / 255.0, f32(lumen.frame) / 255.0);
-    textureStore(output, vec2<i32>(id.xy), color);
+    var codes = vec3<f32>(lumen.time, lumen.resolution / 255.0);
+    if (id.x >= 4u) {
+        codes = vec3<f32>(f32(lumen.frame) / 255.0, 0.0, 0.0);
+    }
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(lumen_srgb_to_linear(codes), 1.0));
 }
 ";
 
@@ -51,7 +56,8 @@ struct Params {
 
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let color = vec4<f32>(params.tint.xy, params.amount * f32(params.count), params.alpha);
+    let blue = lumen_srgb_to_linear(vec3<f32>(params.amount * f32(params.count))).x;
+    let color = vec4<f32>(params.tint.xy, blue, 1.0) * params.alpha;
     textureStore(output, vec2<i32>(id.xy), color);
 }
 ";
@@ -78,7 +84,7 @@ struct ShaderParams {
 }
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> params: ShaderParams;
-@group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;
 
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -113,11 +119,12 @@ fn shader_abi() {
                 .frames(12)
                 .fps(24.0),
             Expect::PerFrame(vec![
-                Expect::Uniform([0, 8, 4, 0]),
-                Expect::Uniform([64, 8, 4, 6]),
+                Expect::Probes(vec![(0, 0, [0, 8, 4, 255]), (7, 3, [0, 0, 0, 255])]),
+                Expect::Probes(vec![(0, 0, [64, 8, 4, 255]), (7, 3, [6, 0, 0, 255])]),
             ]),
         )
         .frames([0.0, 6.0]),
+        // The tint arrives as linear light, which the output encodes back to its codes.
         Case::new(
             "vec3 uniforms keep the alignment and expressions their time",
             shader_scene(
@@ -127,7 +134,7 @@ fn shader_abi() {
             )
             .frames(12)
             .fps(24.0),
-            Expect::Uniform([255, 128, 64, 128]),
+            Expect::Uniform([128, 64, 32, 128]),
         )
         .frames([6.0]),
         Case::new(
@@ -137,7 +144,7 @@ fn shader_abi() {
                 json!({ "gain": [1, 2, 4] }),
                 &[[200, 0, 0, 255], [0, 50, 0, 255], [0, 0, 25, 255]],
             ),
-            Expect::Uniform([200, 100, 100, 255]),
+            Expect::Uniform(opaque([linear(200), 2.0 * linear(50), 4.0 * linear(25)])),
         ),
         Case::new(
             "a shader that declares its own bindings",
@@ -146,7 +153,7 @@ fn shader_abi() {
                 json!({ "values": [0.5, 0, 0, 0] }),
                 &[BLACK],
             ),
-            Expect::Uniform([128, 0, 0, 255]),
+            Expect::Uniform([srgb8(0.5), 0, 0, 255]),
         ),
         Case::new(
             "uniforms from composition JSON",
@@ -159,7 +166,7 @@ fn shader_abi() {
             )
             .frames(12)
             .fps(24.0),
-            Expect::Uniform([128, 64, 12, 255]),
+            Expect::Uniform(opaque([0.5, 64.0 / 255.0, 12.0 / 255.0])),
         )
         .frames([6.0]),
     ]);
@@ -171,7 +178,7 @@ fn shader_errors_name_the_problem_and_leave_the_renderer_usable() {
     let mut renderer = gpu.renderer();
     let media = TestMedia::default();
     let write_only_input = "
-@group(0) @binding(0) var input_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(0) var input_tex: texture_storage_2d<rgba16float, write>;
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(input_tex, vec2<i32>(id.xy), vec4<f32>(1.0));
@@ -196,6 +203,12 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
             "GPU validation failed",
         ),
         (write_only_input, json!({}), "GPU validation failed"),
+        (
+            &DECLARED_SHADER.replace("rgba16float", "rgba8unorm"),
+            json!({}),
+            "`texture_storage_2d<rgba8unorm, ...>` is not supported; declare \
+             `texture_storage_2d<rgba16float, write>`",
+        ),
     ];
     for (shader, uniforms, expected) in rows {
         let composition = Composition::from(shader_scene(shader, uniforms, &[BLACK]));
@@ -270,4 +283,61 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         )
         .frames([0.0, 1.0, 2.0, 3.0]),
     ]);
+}
+
+/// How far, times 1000, a colour uniform's decoded value is from the prelude decoding `ENCODED`.
+const PARITY_SHADER: &str = "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let prelude = lumen_srgb_to_linear(vec3<f32>(ENCODED));
+    let difference = abs(uniforms.tint.rgb - prelude) * 1000.0;
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(difference, 1.0));
+}
+
+struct Uniforms {
+    tint: vec4<f32>,
+}
+@group(0) @binding(1) var<uniform> uniforms: Uniforms;
+";
+
+#[test]
+fn colour_uniforms_decode_past_black_and_white_as_the_prelude_does() {
+    // Extrapolated colours reach the CPU decoder, which must mirror the curve about zero as
+    // `lumen_srgb_to_linear` does, and keep white at exactly 1.
+    let cases = [-0.5f64, -0.01, 0.0, 0.5, 1.0, 1.5]
+        .map(|encoded| {
+            let shader = PARITY_SHADER.replace("ENCODED", &format!("{encoded:.4}"));
+            let tint = format!("=lerp(#000000, #ffffff, {encoded})");
+            Case::new(
+                format!("encoded {encoded}"),
+                shader_scene(&shader, json!({ "tint": tint }), &[[0, 0, 0, 255]]),
+                Expect::Uniform([0, 0, 0, 255]),
+            )
+        })
+        .into();
+    check(cases);
+}
+
+#[test]
+fn shader_output_is_kept_in_the_working_space() {
+    // Alpha past 1 is clamped and colour keeps its light; a NaN texel, here 0 / 0 at time 0,
+    // is transparent black.
+    let cases = [
+        (
+            "alpha past one",
+            "vec4<f32>(1.5, 0.5, 0.0, 2.0)",
+            [255, 188, 0, 255],
+        ),
+        ("not a number", "vec4<f32>(lumen.time / lumen.time)", [0; 4]),
+    ]
+    .map(|(name, value, expected)| {
+        Case::new(
+            name,
+            shader_scene(&fill_shader(value), json!({}), &[[0, 0, 0, 255]]),
+            Expect::Uniform(expected),
+        )
+        .check_working_space()
+    })
+    .into();
+    check(cases);
 }

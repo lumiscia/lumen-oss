@@ -6,7 +6,7 @@ struct HueSaturationParams {
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> params: HueSaturationParams;
-@group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;
 
 fn rgb_to_hsl(rgb: vec3<f32>) -> vec3<f32> {
     let max_value = max(max(rgb.r, rgb.g), rgb.b);
@@ -71,11 +71,12 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
+    // Hue, saturation and lightness are those of the sRGB-encoded colour.
     let color = unpremultiply(textureLoad(input_tex, vec2<i32>(id.xy), 0));
-    var hsl = rgb_to_hsl(color.rgb);
+    var hsl = rgb_to_hsl(clamp(lumen_linear_to_srgb(color.rgb), vec3<f32>(0.0), vec3<f32>(1.0)));
     hsl.x = fract(hsl.x + params.hue_offset);
     hsl.y = clamp(hsl.y * params.saturation, 0.0, 1.0);
     hsl.z = clamp(hsl.z + params.lightness, 0.0, 1.0);
     let rgb = clamp(hsl_to_rgb(hsl), vec3<f32>(0.0), vec3<f32>(1.0));
-    textureStore(output_tex, vec2<i32>(id.xy), premultiply(vec4<f32>(rgb, color.a)));
+    textureStore(output_tex, vec2<i32>(id.xy), lumen_finite(premultiply(vec4<f32>(lumen_srgb_to_linear(rgb), color.a))));
 }

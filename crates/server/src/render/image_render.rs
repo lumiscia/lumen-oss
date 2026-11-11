@@ -4,7 +4,10 @@ use image::{
     ExtendedColorType, ImageEncoder,
     codecs::{jpeg::JpegEncoder, png::PngEncoder},
 };
-use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer};
+use lumen_engine::{
+    composition::Composition,
+    gpu::{GpuCompositionRenderer, OutputAlpha},
+};
 use lumen_ffmpeg::EncoderFamily;
 use lumen_gpu::{Size, wgpu::TextureFormat};
 
@@ -65,6 +68,12 @@ impl<'a> ImageRender<'a> {
             &cancel,
         )?;
         let mut renderer = create_gpu_renderer(&mut media_store).map_err(gpu_renderer_failed)?;
+        // A JPEG is the frame over black, composited in linear light; a PNG keeps straight alpha.
+        renderer.set_output_alpha(if output.format.is_jpeg() {
+            OutputAlpha::Opaque
+        } else {
+            OutputAlpha::Straight
+        });
         renderer
             .compile_with_output_format(composition, TextureFormat::Rgba8Unorm)
             .map_err(|err| ServerRenderError::engine("failed to compile composition", err))?;
@@ -162,17 +171,16 @@ impl<'a> ImageRender<'a> {
     }
 }
 
-/// `premultiplied` RGBA pixels as a PNG with straight alpha, or as an opaque JPEG, which keeps the
-/// colour as it is over black.
+/// RGBA pixels as a PNG, or their colour as a JPEG.
 fn encode_image(
-    mut premultiplied: Vec<u8>,
+    pixels: Vec<u8>,
     size: Size,
     format: OutputFormat,
     jpeg_quality: u8,
 ) -> anyhow::Result<Vec<u8>> {
     let mut encoded = Vec::new();
     if format.is_jpeg() {
-        let rgb: Vec<u8> = premultiplied
+        let rgb: Vec<u8> = pixels
             .as_chunks::<4>()
             .0
             .iter()
@@ -185,43 +193,12 @@ fn encode_image(
             ExtendedColorType::Rgb8,
         )?;
     } else {
-        unpremultiply_rgba8(&mut premultiplied);
         PngEncoder::new(&mut encoded).write_image(
-            &premultiplied,
+            &pixels,
             size.width,
             size.height,
             ExtendedColorType::Rgba8,
         )?;
     }
     Ok(encoded)
-}
-
-/// PNG holds straight alpha, so colour is divided back out of premultiplied pixels. Fully
-/// transparent pixels stay zero.
-fn unpremultiply_rgba8(pixels: &mut [u8]) {
-    for pixel in pixels.as_chunks_mut::<4>().0 {
-        let alpha = u32::from(pixel[3]);
-        if alpha == 0 || alpha == 255 {
-            continue;
-        }
-        for channel in &mut pixel[..3] {
-            *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unpremultiply_restores_straight_colour() {
-        let mut pixels = [
-            64, 32, 0, 128, // half-covered colour
-            0, 0, 0, 0, // transparent stays zero
-            10, 20, 30, 255, // opaque is unchanged
-        ];
-        unpremultiply_rgba8(&mut pixels);
-        assert_eq!(pixels, [128, 64, 0, 128, 0, 0, 0, 0, 10, 20, 30, 255]);
-    }
 }

@@ -3,7 +3,10 @@ use bytemuck::{Pod, Zeroable};
 use crate::gpu::params;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams};
 
-pub(crate) const SHADER: &str = include_str!("fractal_noise.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/color.wgsl"),
+    include_str!("fractal_noise.wgsl")
+);
 
 /// The most layers of detail one noise sums.
 pub const MAX_NOISE_OCTAVES: usize = 8;

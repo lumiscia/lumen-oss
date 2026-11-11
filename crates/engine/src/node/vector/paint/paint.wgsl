@@ -1,7 +1,7 @@
-// Shared paint sampling for background, shape and path shaders. Requires the
-// alpha chunk. Paint colours arrive as straight sRGB and are sampled as
-// premultiplied colour, with gradient stops interpolated in premultiplied space, in sRGB or in
-// linear light as the paint asks.
+// Shared paint sampling for background, shape, path and text shaders. Requires the alpha and
+// colour chunks. Paint colours arrive as straight sRGB and are sampled as linear, premultiplied
+// colour. Gradient stops are interpolated premultiplied, sRGB-encoded or in linear light as the
+// paint asks.
 
 struct Paint {
     colors: array<vec4<f32>, 8>,
@@ -34,19 +34,21 @@ fn spread_t(paint: Paint, value: f32) -> f32 {
     return clamp(value, 0.0, 1.0);
 }
 
-fn srgb_to_linear(color: vec3<f32>) -> vec3<f32> {
-    return select(pow((color + 0.055) / 1.055, vec3<f32>(2.4)), color / 12.92, color <= vec3<f32>(0.04045));
+// A straight sRGB colour as linear, premultiplied colour.
+fn decoded_color(color: vec4<f32>) -> vec4<f32> {
+    return premultiply(vec4<f32>(lumen_srgb_to_linear(color.rgb), color.a));
 }
 
-fn linear_to_srgb(color: vec3<f32>) -> vec3<f32> {
-    return select(1.055 * pow(color, vec3<f32>(1.0 / 2.4)) - 0.055, color * 12.92, color <= vec3<f32>(0.0031308));
+// The first colour of `paint`, which is all a solid paint has.
+fn paint_solid(paint: Paint) -> vec4<f32> {
+    return decoded_color(paint.colors[0]);
 }
 
-// Stop `index` premultiplied, with its colour in linear light when the paint interpolates there.
+// Stop `index` premultiplied, sRGB-encoded or in linear light as the paint interpolates.
 fn gradient_stop(paint: Paint, index: u32) -> vec4<f32> {
     let stop = paint.colors[index];
     if (paint.interpolation == 1u) {
-        return premultiply(vec4<f32>(srgb_to_linear(stop.rgb), stop.a));
+        return decoded_color(stop);
     }
     return premultiply(stop);
 }
@@ -66,11 +68,10 @@ fn interpolate_color(paint: Paint, t_raw: f32) -> vec4<f32> {
         }
     }
     if (paint.interpolation == 1u) {
-        // Encoding needs straight colour, and unpremultiply maps alpha 0 to transparent black.
-        let straight = unpremultiply(color);
-        return premultiply(vec4<f32>(linear_to_srgb(straight.rgb), straight.a));
+        return color;
     }
-    return color;
+    // Decoding needs straight colour, and unpremultiply maps alpha 0 to transparent black.
+    return decoded_color(unpremultiply(color));
 }
 
 // Position of `p` between the focal point (0) and the radial circle (1). In the space where that
@@ -101,6 +102,6 @@ fn sample_paint(paint: Paint, pixel: vec2<f32>, local01: vec2<f32>) -> vec4<f32>
         let angle = atan2(p.y - paint.center.y, p.x - paint.center.x) / 6.28318530718 + 0.5;
         return interpolate_color(paint, fract(angle - paint.angle / 360.0));
     }
-    return premultiply(paint.colors[0]);
+    return paint_solid(paint);
 }
 

@@ -2,7 +2,8 @@
 //! through a full-frame reference. Set `LUMEN_CASE=substring` to run only the rows it names.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::mem::Discriminant;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
@@ -10,7 +11,7 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use lumen_engine::{
     composition::Composition,
     error::MediaError,
-    gpu::{BoundFrame, GpuCompositionRenderer},
+    gpu::{BoundFrame, GpuCompositionRenderer, WORKING_COLOR_FORMAT},
     media::{
         AssetKind, CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver,
         MediaFrame, MediaIdentity, MediaResolver, MediaStore, ModelResolver, ResolvedMedia,
@@ -46,8 +47,16 @@ pub fn gpu() -> Gpu {
 }
 
 impl Gpu {
-    /// A production renderer with nothing held yet, on the shared device.
+    /// A production renderer with nothing held yet, on the shared device. Its output isn't
+    /// dithered, so pixels are the exact rounding of the working space.
     pub fn renderer(&self) -> GpuCompositionRenderer {
+        let mut renderer = self.dithered_renderer();
+        renderer.set_output_dither(false);
+        renderer
+    }
+
+    /// A production renderer with its default output dither.
+    pub fn dithered_renderer(&self) -> GpuCompositionRenderer {
         GpuCompositionRenderer::from_renderer(lumen_gpu::Renderer::from_device_with_adapter_info(
             self.0.device.clone(),
             self.0.queue.clone(),
@@ -121,7 +130,7 @@ impl From<Scene> for Composition {
 #[derive(Debug, Default, Clone)]
 pub struct TestMedia {
     /// The identity key and pixels by source.
-    images: HashMap<String, (String, Arc<CpuMediaFrame>)>,
+    images: HashMap<String, (String, MediaFrame)>,
     /// The size and pixels of every frame by source.
     still_videos: HashMap<String, ((u32, u32), MediaFrame)>,
     numbered_video: Option<String>,
@@ -158,9 +167,17 @@ impl TestMedia {
         height: u32,
         rgba: Vec<u8>,
     ) -> Self {
-        let frame = still_frame(width, height, rgba);
+        let frame = MediaFrame::CpuRgba(still_frame(width, height, rgba));
         self.images
             .insert(source.to_string(), (id.to_string(), frame));
+        self
+    }
+
+    /// Like `image`, with straight-alpha pixels, as a decoded image file has.
+    pub fn straight_image(mut self, source: &str, width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        let frame = MediaFrame::RawRgba(still_frame(width, height, rgba));
+        self.images
+            .insert(source.to_string(), (source.to_string(), frame));
         self
     }
 
@@ -386,7 +403,7 @@ impl MediaStore for TestMedia {
                 self.image_requests.fetch_add(1, Ordering::Relaxed);
                 let (id, frame) = self.images.get(source).ok_or_else(missing)?;
                 let image = TestImage {
-                    frame: Arc::clone(frame),
+                    frame: frame.clone(),
                 };
                 (
                     MediaIdentity::of_key(id),
@@ -451,19 +468,22 @@ impl MediaStore for TestMedia {
 }
 
 struct TestImage {
-    frame: Arc<CpuMediaFrame>,
+    frame: MediaFrame,
 }
 
 impl ImageResolver for TestImage {
     fn metadata(&self) -> ImageMetadata {
+        let (MediaFrame::CpuRgba(frame) | MediaFrame::RawRgba(frame)) = &self.frame else {
+            unreachable!("test images are RGBA");
+        };
         ImageMetadata {
-            width: self.frame.width,
-            height: self.frame.height,
+            width: frame.width,
+            height: frame.height,
         }
     }
 
     fn frame(&self) -> Result<MediaFrame, MediaError> {
-        Ok(MediaFrame::CpuRgba(Arc::clone(&self.frame)))
+        Ok(self.frame.clone())
     }
 }
 
@@ -614,6 +634,94 @@ pub fn read_rgba8(
         .unwrap_or_else(|error| panic!("readback fails: {error}"))
 }
 
+/// Every channel is finite and alpha is within `0..=1`. Colour may be brighter than its alpha.
+pub fn in_working_space(texel: [f32; 4]) -> bool {
+    texel.iter().all(|channel| channel.is_finite()) && (0.0..=1.0).contains(&texel[3])
+}
+
+/// Renders `scene` at `at` to a float output, which takes the working space unchanged, and reads
+/// back its texels.
+pub fn render_working_space(
+    renderer: &mut GpuCompositionRenderer,
+    scene: &Composition,
+    at: f64,
+    media: &impl MediaStore,
+) -> Vec<[f32; 4]> {
+    renderer
+        .compile_with_output_format(scene, WORKING_COLOR_FORMAT)
+        .unwrap_or_else(|error| panic!("the scene does not compile: {error}"));
+    let raster = renderer
+        .render_frame_at(scene, at, media)
+        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
+    read_rgba16f(
+        renderer.gpu_renderer(),
+        &raster.texture,
+        raster.domain.storage_size,
+    )
+}
+
+/// The texels of a `WORKING_COLOR_FORMAT` texture.
+pub fn read_rgba16f(
+    gpu: &lumen_gpu::Renderer,
+    texture: &wgpu::Texture,
+    size: lumen_gpu::Size,
+) -> Vec<[f32; 4]> {
+    assert_eq!(texture.format(), WORKING_COLOR_FORMAT);
+    let row = size.width as usize * 8;
+    let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: (padded_row * size.height as usize) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_row as u32),
+                rows_per_image: None,
+            },
+        },
+        size.as_extent(),
+    );
+    gpu.queue.submit([encoder.finish()]);
+    buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("wait for readback");
+    let bytes = buffer.slice(..).get_mapped_range().expect("map").to_vec();
+    bytes
+        .chunks(padded_row)
+        .flat_map(|row_bytes| row_bytes[..row].chunks(8))
+        .map(|texel| {
+            std::array::from_fn(|channel| {
+                f16_to_f32(u16::from_le_bytes([
+                    texel[channel * 2],
+                    texel[channel * 2 + 1],
+                ]))
+            })
+        })
+        .collect()
+}
+
+fn f16_to_f32(bits: u16) -> f32 {
+    let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
+    let exponent = i32::from((bits >> 10) & 0x1f);
+    let mantissa = f32::from(bits & 0x3ff);
+    sign * match exponent {
+        0 => mantissa * 2f32.powi(-24),
+        31 if mantissa == 0.0 => f32::INFINITY,
+        31 => f32::NAN,
+        _ => (1.0 + mantissa / 1024.0) * 2f32.powi(exponent - 15),
+    }
+}
+
 type FramesCheck = dyn Fn(&[Frame]);
 
 /// What a row's frames must look like, besides matching the reference render.
@@ -648,6 +756,8 @@ pub struct Case {
     expect: Expect,
     tolerance: u8,
     bounded: Option<bool>,
+    uniform_columns: bool,
+    check_working_space: bool,
 }
 
 impl Case {
@@ -661,7 +771,37 @@ impl Case {
             expect,
             tolerance: 1,
             bounded: None,
+            uniform_columns: false,
+            check_working_space: false,
         }
+    }
+
+    /// For a scene that is the same down every column: compares it with the reference to within 1
+    /// in every byte, without bounding how many bytes differ. The reference's float rasters round
+    /// in the output like the render's, and one column that rounds the other way differs in all
+    /// of its pixels.
+    pub fn uniform_columns(mut self) -> Self {
+        self.uniform_columns = true;
+        self
+    }
+
+    /// Checks the working space of this row even when every node kind in it has been checked.
+    pub fn check_working_space(mut self) -> Self {
+        self.check_working_space = true;
+        self
+    }
+
+    /// Whether the scene has a node kind no row has had its working space checked with yet, and
+    /// marks its kinds checked.
+    fn has_unchecked_kind(&self) -> bool {
+        static CHECKED: LazyLock<Mutex<HashSet<Discriminant<NodeKind>>>> =
+            LazyLock::new(Default::default);
+        let mut checked = CHECKED.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut unchecked = false;
+        for node in self.scene.graph().nodes.values() {
+            unchecked |= checked.insert(std::mem::discriminant(node));
+        }
+        unchecked
     }
 
     pub fn media(mut self, media: TestMedia) -> Self {
@@ -688,12 +828,41 @@ impl Case {
 
     fn run(&self, gpu: &Gpu) {
         assert!(!self.frames.is_empty(), "a case needs at least one frame");
-        let frames = self.render_frames(&mut gpu.renderer(), self.bounded);
+        let mut renderer = gpu.renderer();
+        let frames = self.render_frames(&mut renderer, self.bounded);
         self.expect.assert(self, gpu, &frames);
+        if self.check_working_space || self.has_unchecked_kind() {
+            self.assert_working_space(&mut renderer);
+        }
         let reference = self.render_frames(&mut gpu.reference(), self.bounded.map(|_| false));
         for (frame, reference) in frames.iter().zip(&reference) {
-            if let Err(error) = within_rounding(&frame.rgba, &reference.rgba) {
+            if self.uniform_columns {
+                assert!(
+                    frame.rgba.len() == reference.rgba.len()
+                        && channels_within(&frame.rgba, &reference.rgba, 1),
+                    "frame {} differs from the reference by more than 1",
+                    frame.at
+                );
+            } else if let Err(error) = within_rounding(&frame.rgba, &reference.rgba) {
                 panic!("frame {} differs from the reference: {error}", frame.at);
+            }
+        }
+    }
+
+    /// Renders each frame again to a float output, which takes the working space unchanged, on
+    /// the renderer that drew them, and checks it holds what `WORKING_COLOR_FORMAT` promises. A row
+    /// is checked when it has a node kind no earlier row had, or asks with `check_working_space`,
+    /// so every kind is covered once per run. Only the final raster is checked, and tests that
+    /// call `render` themselves are not.
+    fn assert_working_space(&self, renderer: &mut GpuCompositionRenderer) {
+        for &at in &self.frames {
+            let texels = render_working_space(renderer, &self.scene, at, &self.media);
+            if let Some((index, texel)) = texels
+                .iter()
+                .enumerate()
+                .find(|(_, texel)| !in_working_space(**texel))
+            {
+                panic!("frame {at}: texel {index} is {texel:?}, outside the working space");
             }
         }
     }
@@ -705,22 +874,28 @@ impl Case {
     ) -> Vec<Frame> {
         self.frames
             .iter()
-            .map(|&at| {
+            .enumerate()
+            .map(|(index, &at)| {
                 let frame = render(renderer, &self.scene, at, &self.media);
                 if let Some(bounded) = bounded {
+                    // A later frame that shows the output kept from an earlier one records
+                    // nothing.
                     let domain = self.output_domain(renderer);
-                    assert_eq!(
-                        !domain.is_full_frame(),
-                        bounded,
-                        "frame {at}: output source has the domain {domain:?}"
-                    );
+                    assert!(index > 0 || domain.is_some(), "the output source recorded");
+                    if let Some(domain) = domain {
+                        assert_eq!(
+                            !domain.is_full_frame(),
+                            bounded,
+                            "frame {at}: output source has the domain {domain:?}"
+                        );
+                    }
                 }
                 frame
             })
             .collect()
     }
 
-    fn output_domain(&self, renderer: &GpuCompositionRenderer) -> lumen_gpu::TextureDomain {
+    fn output_domain(&self, renderer: &GpuCompositionRenderer) -> Option<lumen_gpu::TextureDomain> {
         let source = self
             .scene
             .graph()
@@ -731,9 +906,7 @@ impl Case {
                 _ => None,
             })
             .expect("scene has a media_output");
-        renderer
-            .recorded_domain(&self.scene, source)
-            .expect("the output source recorded")
+        renderer.recorded_domain(&self.scene, source)
     }
 }
 

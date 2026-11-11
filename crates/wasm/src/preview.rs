@@ -15,8 +15,7 @@ use crate::{
     renderer::SurfaceCompositionRenderer,
     types::{AudioTimelinePayload, FrameRequirementsPayload},
     utils::{
-        composition_json_to_composition, image_frame_from_rgba, parse_failure, raw_frame_from_rgba,
-        validate_rgba_len,
+        composition_json_to_composition, parse_failure, raw_frame_from_rgba, validate_rgba_len,
     },
 };
 
@@ -321,8 +320,7 @@ impl LumenPreviewController {
         if !validate_rgba_len(width, height, rgba.len()) {
             return Err(JsValue::from_str("invalid image rgba buffer length"));
         }
-        let frame =
-            image_frame_from_rgba(width, height, rgba).map_err(|e| JsValue::from_str(&e))?;
+        let frame = raw_frame_from_rgba(width, height, rgba).map_err(|e| JsValue::from_str(&e))?;
         self.change_media(|media| media.set_image(image_id.to_string(), frame))?;
         self.reset_renderer()
     }
@@ -711,7 +709,7 @@ mod tests {
 
     fn upload(media: &WasmMediaStore, frame: u32) {
         for stream_id in ["a", "b"] {
-            let image = image_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
+            let image = raw_frame_from_rgba(1, 1, vec![255, 0, 0, 255]).expect("frame");
             media
                 .set_video_frame(stream_id.to_string(), frame, image)
                 .expect("set frame");

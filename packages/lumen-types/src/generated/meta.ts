@@ -1453,7 +1453,10 @@ export type GradientPaint = {
    * from `center`, along the same direction.
    */
   readonly focal?: Vec2;
-  /** Color space the stops blend in. */
+  /**
+   * Color space the stops blend in: `srgb` blends the sRGB-encoded stops, `linear_srgb` blends
+   * them in linear light.
+   */
   readonly interpolation?: GradientInterpolation;
   /** Horizontal and vertical radius of a radial gradient. A number sets both. */
   readonly radius?: number | Vec2;
@@ -1752,7 +1755,7 @@ export interface ClipNode extends CompositionNodeBase<"clip"> {
   };
 }
 
-/** Applies a LUT-driven color transform to a raster. */
+/** Applies a LUT-driven color transform to a raster, looking up its sRGB-encoded colour. */
 export interface ColorGradeNode extends CompositionNodeBase<"color_grade"> {
   readonly params?: {
     /** Sampling filter used when reading LUT data. */
@@ -1791,9 +1794,9 @@ export interface DirectionalBlurNode extends CompositionNodeBase<"directional_bl
 }
 
 /**
- * Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. Map bytes are
- * premultiplied by alpha, so transparent areas of the map, and everything outside it, leave
- * the source in place.
+ * Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. A channel byte is
+ * the sRGB code of the map's colour, and its move is scaled by the map's alpha, so transparent
+ * areas of the map, and everything outside it, leave the source in place.
  */
 export interface DisplacementMapNode extends CompositionNodeBase<"displacement_map"> {
   readonly params?: {
@@ -1821,11 +1824,11 @@ export interface DisplacementMapNode extends CompositionNodeBase<"displacement_m
 /** Adjusts raster exposure, contrast, and offset. */
 export interface ExposureNode extends CompositionNodeBase<"exposure"> {
   readonly params?: {
-    /** Contrast multiplier. */
+    /** Contrast multiplier around sRGB-encoded mid grey, after the exposure. */
     readonly contrast?: ExpressionValue<number>;
-    /** Exposure offset in stops. */
+    /** Exposure in stops, multiplying linear light by 2 to the power of this. */
     readonly exposure?: ExpressionValue<number>;
-    /** Linear color offset. */
+    /** Offset added to the sRGB-encoded colour, after the exposure and before the contrast. */
     readonly offset?: ExpressionValue<number>;
   };
 }
@@ -1876,8 +1879,9 @@ export interface GlowNode extends CompositionNodeBase<"glow"> {
     /** Glow blur radius in pixels, as on `blur`. Radii above about 588 look the same. */
     readonly radius?: ExpressionValue<number>;
     /**
-     * Luminance from 0 to 1 where the glow starts. Brighter pixels glow more, white at full
-     * strength, and 1 lets nothing glow. Past 254/255 white dims too, so the glow fades out
+     * Luminance from 0 to 1 where the glow starts, on the sRGB-encoded scale, so 0.5 is half way
+     * up from black to white as they look. Brighter pixels glow more, white at full strength,
+     * and 1 lets nothing glow. Past 254/255 white dims too, so the glow fades out
      * continuously as the threshold reaches 1.
      */
     readonly threshold?: ExpressionValue<number>;
@@ -1891,7 +1895,7 @@ export interface GlowNode extends CompositionNodeBase<"glow"> {
   };
 }
 
-/** Adjusts raster hue, saturation, and lightness. */
+/** Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour. */
 export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation"> {
   readonly params?: {
     /** Hue rotation in degrees. */
@@ -2010,7 +2014,7 @@ export interface Instance3dNode extends CompositionNodeBase<"instance_3d"> {
   };
 }
 
-/** Remaps raster black, white, gamma, and output range. */
+/** Remaps raster black, white, gamma, and output range of the sRGB-encoded colour. */
 export interface LevelsNode extends CompositionNodeBase<"levels"> {
   readonly params?: {
     /** Input black point. */
@@ -2089,7 +2093,10 @@ export interface MediaInNode extends CompositionNodeBase<"media_in"> {
   };
 }
 
-/** Copies its source into the final composition output. */
+/**
+ * Converts its source into the final composition output: sRGB-encoded and quantised once to the
+ * output's format.
+ */
 export interface MediaOutputNode extends CompositionNodeBase<"media_output"> {
   readonly params?: Readonly<Record<string, never>>;
 }
@@ -2097,7 +2104,11 @@ export interface MediaOutputNode extends CompositionNodeBase<"media_output"> {
 /** Composites an overlay raster over a base raster. */
 export interface MergeNode extends CompositionNodeBase<"merge"> {
   readonly params?: {
-    /** Blend mode used when combining the overlay with the base raster. */
+    /**
+     * Blend mode used when combining the overlay with the base raster. `normal` composites in
+     * linear light; every other mode applies its formula to the sRGB-encoded colours and
+     * composites the result in linear light.
+     */
     readonly blend_mode?: ExpressionValue<BlendMode>;
     /** Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`. Radii above about 588 look the same. */
     readonly feather?: ExpressionValue<number>;
@@ -2311,7 +2322,11 @@ export interface RadialBlurNode extends CompositionNodeBase<"radial_blur"> {
 /** Composites a variadic stack of raster layers in order. */
 export interface RasterMultimergeNode extends CompositionNodeBase<"raster_multimerge"> {
   readonly params?: {
-    /** Blend mode used for each layer in the stack. */
+    /**
+     * Blend mode used for each layer in the stack. `normal` composites in linear light; every
+     * other mode applies its formula to the sRGB-encoded colours and composites the result in
+     * linear light.
+     */
     readonly blend_mode?: ExpressionValue<BlendMode>;
     /** Opacity of each layer above the first, which is the base and is used as is. */
     readonly opacity?: ExpressionValue<number>;
@@ -3244,16 +3259,16 @@ export const nodeInputPorts = {
   "camera_3d": {},
   /** Plays a composition template, or its source, over a window of time. */
   "clip": { "source": { kind: "raster", variadic: false } },
-  /** Applies a LUT-driven color transform to a raster. */
+  /** Applies a LUT-driven color transform to a raster, looking up its sRGB-encoded colour. */
   "color_grade": { "source": { kind: "raster", variadic: false } },
   /** Keeps a raster region in place and clears everything outside it. */
   "crop": { "source": { kind: "raster", variadic: false } },
   /** Blurs a raster along a line, as a straight motion blur. */
   "directional_blur": { "source": { kind: "raster", variadic: false } },
   /**
-   * Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. Map bytes are
-   * premultiplied by alpha, so transparent areas of the map, and everything outside it, leave
-   * the source in place.
+   * Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. A channel byte is
+   * the sRGB code of the map's colour, and its move is scaled by the map's alpha, so transparent
+   * areas of the map, and everything outside it, leave the source in place.
    */
   "displacement_map": { "source": { kind: "raster", variadic: false }, "map": { kind: "raster", variadic: false } },
   /** Adjusts raster exposure, contrast, and offset. */
@@ -3265,7 +3280,7 @@ export const nodeInputPorts = {
    * brightest channel, so dark pixels add nothing.
    */
   "glow": { "source": { kind: "raster", variadic: false } },
-  /** Adjusts raster hue, saturation, and lightness. */
+  /** Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour. */
   "hue_saturation": { "source": { kind: "raster", variadic: false } },
   /**
    * Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by
@@ -3297,13 +3312,16 @@ export const nodeInputPorts = {
    * and its scene is static.
    */
   "instance_3d": { "scene": { kind: "scene", variadic: false } },
-  /** Remaps raster black, white, gamma, and output range. */
+  /** Remaps raster black, white, gamma, and output range of the sRGB-encoded colour. */
   "levels": { "source": { kind: "raster", variadic: false } },
   /** A light. A scene without any is lit by a default key light and ambient fill. */
   "light_3d": {},
   /** Binds an external image or video frame as a GPU texture. */
   "media_in": {},
-  /** Copies its source into the final composition output. */
+  /**
+   * Converts its source into the final composition output: sRGB-encoded and quantised once to the
+   * output's format.
+   */
   "media_output": { "source": { kind: "raster", variadic: false } },
   /** Composites an overlay raster over a base raster. */
   "merge": { "base": { kind: "raster", variadic: false }, "overlay": { kind: "raster", variadic: false }, "mask": { kind: "raster", variadic: false } },

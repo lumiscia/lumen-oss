@@ -12,14 +12,16 @@ use crate::error::RenderError;
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 use crate::gpu::GpuCompositionRenderer;
 
-/// Converts rendered RGBA frames to NV12 for a Vulkan Video encoder sharing the renderer's device.
+/// Converts rendered frames to NV12 for a Vulkan Video encoder sharing the renderer's device. Frames
+/// render to `Rgba16Float`, so colour is quantised once, in the conversion.
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 pub struct VulkanVideoTarget {
     pass: Nv12Pass,
 }
 
-/// Converts an RGBA texture to BT.709 limited-range NV12 in a buffer laid out as
-/// [`VulkanVideoFrame`] describes.
+/// Converts the working space, linear and premultiplied, to BT.709 limited-range NV12 of its
+/// sRGB-encoded colour over black, in a buffer laid out as
+/// [`VulkanVideoFrame`] describes, with the ordered dither when it is on.
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 struct Nv12Pass {
     pipeline: lumen_gpu::wgpu::ComputePipeline,
@@ -120,13 +122,21 @@ impl Nv12Pass {
         renderer: &lumen_gpu::Renderer,
         size: lumen_gpu::Size,
         nv12: std::sync::Arc<lumen_gpu::wgpu::Buffer>,
+        dither: bool,
     ) -> Self {
         use lumen_gpu::wgpu;
 
         let device = &renderer.device;
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("lumen RGBA to NV12"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/rgba_to_nv12.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(
+                    include_str!("shaders/color.wgsl"),
+                    include_str!("shaders/dither.wgsl"),
+                    include_str!("shaders/rgba_to_nv12.wgsl")
+                )
+                .into(),
+            ),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("lumen RGBA to NV12"),
@@ -140,14 +150,23 @@ impl Nv12Pass {
         let chroma_offset = VulkanVideoFrame::nv12_chroma_offset(size.width, size.height) as u32;
         let params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("lumen NV12 params"),
-            size: 16,
+            size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         renderer.queue.write_buffer(
             &params,
             0,
-            bytemuck::cast_slice(&[size.width, size.height, pitch, chroma_offset]),
+            bytemuck::cast_slice(&[
+                size.width,
+                size.height,
+                pitch,
+                chroma_offset,
+                u32::from(dither),
+                0,
+                0,
+                0,
+            ]),
         );
         Self {
             pipeline,
@@ -209,7 +228,11 @@ impl Nv12Pass {
 
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 impl VulkanVideoTarget {
-    pub fn nv12(renderer: &lumen_gpu::Renderer, size: lumen_gpu::Size) -> Self {
+    /// The format frames for this target render to.
+    pub const FORMAT: lumen_gpu::wgpu::TextureFormat = lumen_gpu::wgpu::TextureFormat::Rgba16Float;
+
+    /// A target for frames of `size`, which adds the ordered dither as it quantises if `dither`.
+    pub fn nv12(renderer: &lumen_gpu::Renderer, size: lumen_gpu::Size, dither: bool) -> Self {
         use lumen_gpu::wgpu;
 
         let nv12 = renderer.device.create_buffer(&wgpu::BufferDescriptor {
@@ -219,7 +242,7 @@ impl VulkanVideoTarget {
             mapped_at_creation: false,
         });
         Self {
-            pass: Nv12Pass::new(renderer, size, std::sync::Arc::new(nv12)),
+            pass: Nv12Pass::new(renderer, size, std::sync::Arc::new(nv12), dither),
         }
     }
 
@@ -254,12 +277,12 @@ pub struct CudaNvencTargetPool {
     driver: CudaDriver,
     cuda_ordinal: i32,
     size: lumen_gpu::Size,
-    format: lumen_gpu::wgpu::TextureFormat,
+    dither: bool,
     vulkan_device: lumen_gpu::VulkanDeviceInfo,
 }
 
-/// An RGBA render target whose frames are converted to NV12 in Vulkan memory that CUDA maps, for
-/// NVENC to read.
+/// A float RGBA render target whose frames are converted to NV12 in Vulkan memory that CUDA maps,
+/// for NVENC to read.
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 pub struct CudaNvencTarget {
     external: lumen_gpu::ExternalTexture,
@@ -283,7 +306,13 @@ pub struct MetalVideoToolboxTarget {
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
 impl CudaNvencTargetPool {
-    pub fn rgba8(renderer: &lumen_gpu::Renderer, size: lumen_gpu::Size) -> crate::Result<Self> {
+    /// A pool of targets for frames of `size`, which add the ordered dither as they quantise if
+    /// `dither`.
+    pub fn new(
+        renderer: &lumen_gpu::Renderer,
+        size: lumen_gpu::Size,
+        dither: bool,
+    ) -> crate::Result<Self> {
         let vulkan_device = renderer
             .vulkan_device_info()
             .map_err(|error| RenderError::Gpu {
@@ -307,7 +336,7 @@ impl CudaNvencTargetPool {
             driver,
             cuda_ordinal,
             size,
-            format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+            dither,
             vulkan_device,
         })
     }
@@ -325,7 +354,7 @@ impl CudaNvencTargetPool {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: self.format,
+            format: self.format(),
             usage: cuda_nvenc_usage(),
             view_formats: &[],
         });
@@ -354,12 +383,12 @@ impl CudaNvencTargetPool {
         Ok(CudaNvencTarget {
             external: lumen_gpu::ExternalTexture::from_texture(texture),
             imported,
-            pass: Nv12Pass::new(renderer, self.size, exportable.buffer_arc()),
+            pass: Nv12Pass::new(renderer, self.size, exportable.buffer_arc(), self.dither),
         })
     }
 
     pub fn format(&self) -> lumen_gpu::wgpu::TextureFormat {
-        self.format
+        VulkanVideoTarget::FORMAT
     }
 
     pub fn size(&self) -> lumen_gpu::Size {
@@ -519,6 +548,7 @@ fn external_output_usage() -> lumen_gpu::wgpu::TextureUsages {
     lumen_gpu::wgpu::TextureUsages::RENDER_ATTACHMENT
         | lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
         | lumen_gpu::wgpu::TextureUsages::COPY_SRC
+        | lumen_gpu::wgpu::TextureUsages::COPY_DST
 }
 
 #[cfg(all(test, target_os = "linux", feature = "vulkan"))]
@@ -586,7 +616,7 @@ mod tests {
             },
             size.as_extent(),
         );
-        let target = VulkanVideoTarget::nv12(gpu, size);
+        let target = VulkanVideoTarget::nv12(gpu, size, false);
 
         target.convert(gpu, &texture, None).expect("convert");
         let nv12 = read_nv12(gpu, &target);
@@ -642,5 +672,79 @@ mod tests {
         assert_eq!(stream.codec, VideoCodec::Av1);
         assert_eq!((stream.width, stream.height), (width, height));
         let _ = std::fs::remove_file(path);
+    }
+
+    /// The half float nearest below `value`, which must be a positive normal one.
+    fn f16_bits(value: f32) -> u16 {
+        let bits = value.to_bits();
+        ((((bits >> 23) & 0xff) - 112) << 10 | ((bits >> 13) & 0x3ff)) as u16
+    }
+
+    fn f16_value(bits: u16) -> f32 {
+        let exponent = i32::from(bits >> 10) - 15;
+        (1.0 + f32::from(bits & 0x3ff) / 1024.0) * 2f32.powi(exponent)
+    }
+
+    fn srgb_encode(linear: f32) -> f32 {
+        if linear <= 0.003_130_8 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    #[test]
+    fn the_nv12_dither_keeps_the_mean_of_fractional_luma() {
+        let gpu = match pollster::block_on(lumen_gpu::Renderer::new()) {
+            Ok(gpu) => gpu,
+            Err(error) => {
+                eprintln!("no GPU ({error}); skipping NV12 dither test");
+                return;
+            }
+        };
+        let size = lumen_gpu::Size::new(16, 16);
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: size.as_extent(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let target = VulkanVideoTarget::nv12(&gpu, size, true);
+        let pitch = VulkanVideoFrame::nv12_pitch(size.width) as usize;
+        for fraction in [0.2, 0.25, 0.4, 0.5, 0.6, 0.75, 0.8] {
+            let grey = f16_bits(crate::gpu::color::srgb_to_linear(
+                (60.0 + fraction - 16.0) / 219.0,
+            ));
+            let luma = 16.0 + 219.0 * srgb_encode(f16_value(grey));
+            let texel: Vec<u8> = [grey, grey, grey, f16_bits(1.0)]
+                .iter()
+                .flat_map(|half| half.to_le_bytes())
+                .collect();
+            gpu.queue.write_texture(
+                texture.as_image_copy(),
+                &texel.repeat((size.width * size.height) as usize),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size.width * 8),
+                    rows_per_image: None,
+                },
+                size.as_extent(),
+            );
+            target.pass.submit(&gpu, &texture);
+            let nv12 = read_nv12(&gpu, &target);
+            let sum: f64 = (0..size.height as usize)
+                .flat_map(|row| &nv12[row * pitch..row * pitch + size.width as usize])
+                .map(|&code| f64::from(code))
+                .sum();
+            let mean = sum / (size.width * size.height) as usize as f64;
+            assert!(
+                (mean - f64::from(luma)).abs() <= 1.0 / 64.0 + 0.01,
+                "luma {luma} averaged {mean}"
+            );
+        }
     }
 }
