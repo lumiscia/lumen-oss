@@ -774,6 +774,17 @@ pub enum Warning {
         /// The lights left without shadows, in scene order.
         lights: Vec<NodeId>,
     },
+    /// A video's colour tags name a transfer or primaries the renderer doesn't convert, so it reads
+    /// as SDR or BT.709 in their place.
+    #[code("media.color_unsupported")]
+    #[error("{}media_in node {node_id}: video `{video}`: {details}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
+    UnsupportedVideoColor {
+        /// The template the node is in, or `None` at the root.
+        template: Option<String>,
+        node_id: NodeId,
+        video: String,
+        details: String,
+    },
     /// A `model_3d`'s model has primitives that aren't triangle lists, which aren't drawn.
     #[code("scene.model_primitives_skipped")]
     #[error("{}model_3d node {node_id}: model `{model}` has primitives of points, lines, or triangle strips or fans, which aren't drawn ({count} left out)", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]

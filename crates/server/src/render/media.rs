@@ -239,6 +239,10 @@ impl<T: VideoFrameResolver> VideoFrameResolver for Written<T> {
     fn retain_frames(&self, frames: &[u32]) {
         self.inner.retain_frames(frames);
     }
+
+    fn color_warning(&self) -> Option<&str> {
+        self.inner.color_warning()
+    }
 }
 
 impl<T: AudioResolver> AudioResolver for Written<T> {

@@ -30,11 +30,148 @@ impl YuvMatrix {
     }
 }
 
+/// The RGB primaries a source is in, which the renderer converts to the working space's BT.709.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorPrimaries {
+    /// BT.709, and the BT.601 primaries, which are read as BT.709.
+    Bt709,
+    Bt2020,
+    /// The P3 primaries with a D65 white point (SMPTE EG 432-1).
+    DisplayP3,
+    /// The P3 primaries with the DCI white point (SMPTE RP 431-2), adapted to D65.
+    DciP3,
+}
+
+/// D65 white, as xy chromaticities.
+const D65: [f64; 2] = [0.3127, 0.3290];
+
+impl ColorPrimaries {
+    /// The xy chromaticities of red, green, blue and white.
+    fn chromaticities(self) -> [[f64; 2]; 4] {
+        match self {
+            Self::Bt709 => [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06], D65],
+            Self::Bt2020 => [[0.708, 0.292], [0.170, 0.797], [0.131, 0.046], D65],
+            Self::DisplayP3 => [[0.680, 0.320], [0.265, 0.690], [0.150, 0.060], D65],
+            Self::DciP3 => [
+                [0.680, 0.320],
+                [0.265, 0.690],
+                [0.150, 0.060],
+                [0.314, 0.351],
+            ],
+        }
+    }
+
+    /// The matrix taking linear RGB in these primaries to linear BT.709 RGB, by rows. A white
+    /// other than D65 is adapted to it with the Bradford transform.
+    pub(crate) fn to_bt709(self) -> [[f64; 3]; 3] {
+        if self == Self::Bt709 {
+            return IDENTITY;
+        }
+        let [.., white] = self.chromaticities();
+        let adapt = bradford(xyz(white), xyz(D65));
+        let to_709 = invert(rgb_to_xyz(Self::Bt709));
+        multiply(to_709, multiply(adapt, rgb_to_xyz(self)))
+    }
+}
+
+/// How a source's samples encode light.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferFunction {
+    /// SDR (BT.709, BT.601, BT.2020 SDR and sRGB tags), decoded with the sRGB curve.
+    Sdr,
+    /// SMPTE ST 2084, tone-mapped to SDR.
+    Pq,
+    /// ARIB STD-B67 (HLG), tone-mapped to SDR.
+    Hlg,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct YuvColor {
     pub matrix: YuvMatrix,
     /// Samples span the whole code range rather than the limited (16–235 at 8 bits) one.
     pub full_range: bool,
+    pub primaries: ColorPrimaries,
+    pub transfer: TransferFunction,
+}
+
+impl YuvColor {
+    /// SDR colour in BT.709 primaries, read with `matrix`.
+    pub fn sdr(matrix: YuvMatrix, full_range: bool) -> Self {
+        Self {
+            matrix,
+            full_range,
+            primaries: ColorPrimaries::Bt709,
+            transfer: TransferFunction::Sdr,
+        }
+    }
+}
+
+/// The peak an HDR source is taken to be mastered to, in nits.
+const HDR_PEAK_NITS: f64 = 1000.0;
+/// The HDR light that is SDR white, 1.0 in the working space (BT.2408 HDR reference white).
+const SDR_WHITE_NITS: f64 = 203.0;
+
+/// The PQ (SMPTE ST 2084) code value of `nits`.
+fn pq_encode(nits: f64) -> f64 {
+    const M1: f64 = 2610.0 / 16384.0;
+    const M2: f64 = 2523.0 / 4096.0 * 128.0;
+    const C1: f64 = 3424.0 / 4096.0;
+    const C2: f64 = 2413.0 / 4096.0 * 32.0;
+    const C3: f64 = 2392.0 / 4096.0 * 32.0;
+    let y = (nits / 10000.0).clamp(0.0, 1.0).powf(M1);
+    ((C1 + C2 * y) / (1.0 + C3 * y)).powf(M2)
+}
+
+/// The BT.2390 EETF's constants for an `HDR_PEAK_NITS` source on an `SDR_WHITE_NITS` display: the
+/// source peak's PQ code, the display peak's as a fraction of it, and the knee, with a zero.
+fn tone_map_constants() -> [f64; 4] {
+    let peak = pq_encode(HDR_PEAK_NITS);
+    let max_lum = pq_encode(SDR_WHITE_NITS) / peak;
+    [peak, max_lum, 1.5 * max_lum - 0.5, 0.0]
+}
+
+const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+fn xyz([x, y]: [f64; 2]) -> [f64; 3] {
+    [x / y, 1.0, (1.0 - x - y) / y]
+}
+
+/// The matrix taking linear RGB in `primaries` to CIE XYZ, by rows.
+fn rgb_to_xyz(primaries: ColorPrimaries) -> [[f64; 3]; 3] {
+    let [r, g, b, white] = primaries.chromaticities().map(xyz);
+    let columns = [[r[0], g[0], b[0]], [r[1], g[1], b[1]], [r[2], g[2], b[2]]];
+    let scale = apply(invert(columns), white);
+    columns.map(|row| [row[0] * scale[0], row[1] * scale[1], row[2] * scale[2]])
+}
+
+/// The Bradford chromatic adaptation from white `from` to white `to`, in XYZ.
+fn bradford(from: [f64; 3], to: [f64; 3]) -> [[f64; 3]; 3] {
+    const CONE: [[f64; 3]; 3] = [
+        [0.8951, 0.2664, -0.1614],
+        [-0.7502, 1.7135, 0.0367],
+        [0.0389, -0.0685, 1.0296],
+    ];
+    let (from, to) = (apply(CONE, from), apply(CONE, to));
+    let scaled = [0, 1, 2].map(|i| CONE[i].map(|value| value * to[i] / from[i]));
+    multiply(invert(CONE), scaled)
+}
+
+fn apply(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    m.map(|row| row[0] * v[0] + row[1] * v[1] + row[2] * v[2])
+}
+
+fn multiply(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    a.map(|row| [0, 1, 2].map(|j| row[0] * b[0][j] + row[1] * b[1][j] + row[2] * b[2][j]))
+}
+
+fn invert(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let cofactor = |r: usize, c: usize| {
+        let (r0, r1) = ((r + 1) % 3, (r + 2) % 3);
+        let (c0, c1) = ((c + 1) % 3, (c + 2) % 3);
+        m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0]
+    };
+    let det = m[0][0] * cofactor(0, 0) + m[0][1] * cofactor(0, 1) + m[0][2] * cofactor(0, 2);
+    [0, 1, 2].map(|r| [0, 1, 2].map(|c| cofactor(c, r) / det))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,7 +449,14 @@ pub(crate) struct YuvUniform {
     pub(crate) b_cb: f32,
     /// Non-zero when the planes' colour is already multiplied by alpha.
     pub(crate) premultiplied: u32,
-    pub(crate) _pad: [f32; 2],
+    /// 0 for SDR, 1 for PQ, 2 for HLG.
+    pub(crate) transfer: u32,
+    pub(crate) _pad: u32,
+    /// The source primaries to BT.709 matrix, by columns padded to four.
+    pub(crate) gamut: [[f32; 4]; 3],
+    /// The tone map: the PQ code of the HDR peak, SDR white's PQ code as a fraction of it, and
+    /// the knee the roll-off starts at in the same units.
+    pub(crate) tone: [f32; 4],
 }
 
 impl YuvUniform {
@@ -338,6 +482,7 @@ impl YuvUniform {
         let (kr, kb) = format.color.matrix.kr_kb();
         let kg = 1.0 - kr - kb;
         let (chroma_shift_x, chroma_shift_y) = format.subsampling.shifts();
+        let gamut = format.color.primaries.to_bt709();
         let sample_shift = if format.msb_aligned && format.bytes_per_sample() == 2 {
             16 - depth
         } else {
@@ -362,7 +507,16 @@ impl YuvUniform {
             g_cr: -2.0 * (1.0 - kr) * kr / kg,
             b_cb: 2.0 * (1.0 - kb),
             premultiplied: u32::from(premultiplied),
-            _pad: [0.0; 2],
+            transfer: match format.color.transfer {
+                TransferFunction::Sdr => 0,
+                TransferFunction::Pq => 1,
+                TransferFunction::Hlg => 2,
+            },
+            _pad: 0,
+            gamut: [0, 1, 2].map(|column| {
+                [gamut[0][column], gamut[1][column], gamut[2][column], 0.0].map(|v| v as f32)
+            }),
+            tone: tone_map_constants().map(|v| v as f32),
         }
     }
 }
@@ -378,7 +532,7 @@ mod tests {
             subsampling: ChromaSubsampling::Yuv420,
             depth,
             msb_aligned: false,
-            color: YuvColor { matrix, full_range },
+            color: YuvColor::sdr(matrix, full_range),
             rotation: Rotation::None,
         }
     }
@@ -428,6 +582,42 @@ mod tests {
         );
         let ten_bit = YuvUniform::new(&format(10, false, YuvMatrix::Bt709), true, false, false);
         assert_near(rgb(&ten_bit, red.map(|s| s * 4.0)), [219, 30, 30], "10-bit");
+    }
+
+    #[test]
+    fn primaries_matrices_match_the_published_ones() {
+        // ITU-R BT.2087 for BT.2020; Display P3 from its SMPTE EG 432-1 chromaticities.
+        let published = [
+            (
+                ColorPrimaries::Bt2020,
+                [
+                    [1.6605, -0.5876, -0.0728],
+                    [-0.1246, 1.1329, -0.0083],
+                    [-0.0182, -0.1006, 1.1187],
+                ],
+            ),
+            (
+                ColorPrimaries::DisplayP3,
+                [
+                    [1.2249, -0.2249, 0.0],
+                    [-0.0421, 1.0421, 0.0],
+                    [-0.0196, -0.0786, 1.0983],
+                ],
+            ),
+        ];
+        for (primaries, expected) in published {
+            let actual = primaries.to_bt709();
+            for (row, expected) in actual.iter().zip(expected) {
+                for (a, e) in row.iter().zip(expected) {
+                    assert!((a - e).abs() < 1e-4, "{primaries:?}: {actual:?}");
+                }
+            }
+        }
+        assert_eq!(ColorPrimaries::Bt709.to_bt709(), IDENTITY);
+        // DCI white adapts to D65 white.
+        for row in ColorPrimaries::DciP3.to_bt709() {
+            assert!((row.iter().sum::<f64>() - 1.0).abs() < 1e-9, "{row:?}");
+        }
     }
 
     #[test]

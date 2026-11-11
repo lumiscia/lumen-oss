@@ -118,6 +118,11 @@ pub trait VideoFrameResolver: Send + Sync {
     fn frame(&self, frame: u32) -> Result<MediaFrame, MediaError>;
 
     fn retain_frames(&self, _frames: &[u32]) {}
+
+    /// What the source's colour tags ask for that it is read without, which a render warns of.
+    fn color_warning(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl<T: ImageResolver + ?Sized> ImageResolver for Arc<T> {
@@ -145,6 +150,10 @@ impl<T: VideoFrameResolver + ?Sized> VideoFrameResolver for Arc<T> {
 
     fn retain_frames(&self, frames: &[u32]) {
         (**self).retain_frames(frames);
+    }
+
+    fn color_warning(&self) -> Option<&str> {
+        (**self).color_warning()
     }
 }
 

@@ -759,7 +759,11 @@ fn assert_patches(frame: &YuvVideoFrame, matrix: Matrix, full_range: bool, conte
 }
 
 fn assert_tags(frame: &YuvVideoFrame, expected: ColorTags, context: &str) {
-    assert_eq!(frame.color, expected, "{context}");
+    assert_eq!(
+        (frame.color.matrix, frame.color.full_range),
+        (expected.matrix, expected.full_range),
+        "{context}"
+    );
 }
 
 const BT709_TV: &[&str] = &["-colorspace", "bt709", "-color_range", "tv"];
@@ -844,10 +848,7 @@ fn decodes_known_ycbcr_unchanged_with_the_stream_tags() {
         };
         let frames = decode_all(&path);
         assert_eq!(frames.len(), 2, "{}", case.name);
-        let reported = ColorTags {
-            matrix: case.reported,
-            full_range: case.full_range,
-        };
+        let reported = ColorTags::new(case.reported, case.full_range);
         for frame in &frames {
             assert_tags(frame, reported, case.name);
             assert_patches(frame, case.matrix, case.full_range, case.name);
@@ -879,10 +880,7 @@ fn keeps_the_tags_across_a_resolution_change() {
             "missing {width}x{height}"
         );
     }
-    let bt709 = ColorTags {
-        matrix: ColorMatrix::Bt709,
-        full_range: false,
-    };
+    let bt709 = ColorTags::new(ColorMatrix::Bt709, false);
     for frame in &frames {
         let context = format!("{}x{}", frame.width, frame.height);
         assert_tags(frame, bt709, &context);

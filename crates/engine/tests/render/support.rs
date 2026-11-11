@@ -133,6 +133,8 @@ pub struct TestMedia {
     images: HashMap<String, (String, MediaFrame)>,
     /// The size and pixels of every frame by source.
     still_videos: HashMap<String, ((u32, u32), MediaFrame)>,
+    /// What each video's colour tags ask for that it is read without, by source.
+    color_warnings: HashMap<String, String>,
     numbered_video: Option<String>,
     /// The identity key and font data by family.
     fonts: HashMap<String, (String, Arc<Vec<u8>>)>,
@@ -206,6 +208,13 @@ impl TestMedia {
         let frame = MediaFrame::Yuv(Arc::new(frame));
         self.still_videos
             .insert(source.to_string(), ((width, height), frame));
+        self
+    }
+
+    /// Has video `source` report `details` of its colour tags as read without.
+    pub fn color_warning(mut self, source: &str, details: &str) -> Self {
+        self.color_warnings
+            .insert(source.to_string(), details.to_string());
         self
     }
 
@@ -445,6 +454,7 @@ impl MediaStore for TestMedia {
                         Box::new(StillVideo {
                             size: *size,
                             frame: frame.clone(),
+                            color_warning: self.color_warnings.get(source).cloned(),
                         })
                     } else if self.numbered_video.as_deref() == Some(source) {
                         Box::new(NumberedVideo)
@@ -527,6 +537,7 @@ impl ImageResolver for TestImage {
 struct StillVideo {
     size: (u32, u32),
     frame: MediaFrame,
+    color_warning: Option<String>,
 }
 
 impl VideoFrameResolver for StillVideo {
@@ -541,6 +552,10 @@ impl VideoFrameResolver for StillVideo {
 
     fn frame(&self, _frame: u32) -> Result<MediaFrame, MediaError> {
         Ok(self.frame.clone())
+    }
+
+    fn color_warning(&self) -> Option<&str> {
+        self.color_warning.as_deref()
     }
 }
 

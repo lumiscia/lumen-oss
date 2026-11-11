@@ -947,10 +947,7 @@ mod tests {
             subsampling: ChromaSubsampling::Yuv420,
             depth: 8,
             msb_aligned: false,
-            color: YuvColor {
-                matrix: YuvMatrix::Bt709,
-                full_range: false,
-            },
+            color: YuvColor::sdr(YuvMatrix::Bt709, false),
             rotation: Rotation::Cw90,
         };
         let (layout, bytes) = YuvLayout::packed(&format, true, false);

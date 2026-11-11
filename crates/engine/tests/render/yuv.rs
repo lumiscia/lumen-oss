@@ -113,10 +113,7 @@ fn frame(row: &Row) -> YuvFrame {
         subsampling: row.subsampling,
         depth: row.depth,
         msb_aligned: row.msb_aligned,
-        color: YuvColor {
-            matrix: row.matrix,
-            full_range: row.full_range,
-        },
+        color: YuvColor::sdr(row.matrix, row.full_range),
         rotation: row.rotation,
     };
     let (layout, bytes) = YuvLayout::packed(&format, row.interleaved, row.alpha);
