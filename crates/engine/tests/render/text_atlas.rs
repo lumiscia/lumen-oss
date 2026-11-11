@@ -968,7 +968,7 @@ fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
 fn text_whose_data_does_not_fit_the_device_is_a_limit_not_a_gpu_fault() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    renderer.limit_frame_storage(1 << 10, 1 << 11);
+    renderer.limit_frame_storage(1 << 10, 1 << 16);
     let text: Composition = scene(
         (64, 64),
         json!([text_node(

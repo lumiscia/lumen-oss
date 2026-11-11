@@ -313,11 +313,12 @@ impl CudaNvencTargetPool {
         size: lumen_gpu::Size,
         dither: bool,
     ) -> crate::Result<Self> {
-        let vulkan_device = renderer
-            .vulkan_device_info()
-            .map_err(|error| RenderError::Gpu {
-                details: error.to_string(),
-            })?;
+        let vulkan_device =
+            renderer
+                .vulkan_device_info()
+                .map_err(|error| RenderError::Internal {
+                    details: error.to_string(),
+                })?;
         let driver = CudaDriver::load().map_err(|details| RenderError::Gpu { details })?;
         let cuda_ordinal = driver
             .devices()
@@ -456,7 +457,7 @@ impl MetalVideoToolboxTargetPool {
     pub fn bgra8(renderer: &lumen_gpu::Renderer, size: lumen_gpu::Size) -> crate::Result<Self> {
         let metal_device =
             lumen_gpu::metal_device_from_wgpu(&renderer.device).map_err(|error| {
-                RenderError::Gpu {
+                RenderError::Internal {
                     details: error.to_string(),
                 }
             })?;

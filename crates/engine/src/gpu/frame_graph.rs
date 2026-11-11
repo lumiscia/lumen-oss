@@ -224,13 +224,14 @@ impl Programs<'_> {
     /// Builds a shader from runtime source, which recording it again then finds.
     pub(crate) fn dynamic(
         &mut self,
+        node: NodeId,
         label: &str,
         source: &str,
         inputs: usize,
         build: impl FnOnce() -> crate::Result<ShaderParts>,
     ) -> crate::Result<CachedShader> {
         let shader = self.st.cached_shader(source, inputs, build)?;
-        dynamic_program(self.rec, label, &shader)?;
+        dynamic_program(self.rec, node, label, &shader)?;
         Ok(shader)
     }
 }
@@ -243,8 +244,11 @@ pub(crate) type ShaderParts = (
     Vec<LayoutEntry>,
 );
 
+/// The program of `node`'s shader. The source is the composition's, so a shader the device
+/// refuses is the node's failure rather than the device's.
 fn dynamic_program(
     rec: &mut Recorder,
+    node: NodeId,
     label: &str,
     shader: &CachedShader,
 ) -> crate::Result<ProgramRef> {
@@ -255,7 +259,14 @@ fn dynamic_program(
         "cs_main",
         &shader.layout,
     )
-    .map_err(gpu_error)
+    .map_err(|error| {
+        RenderError::NodeEvaluation {
+            node_id: node,
+            node_kind: "wgsl_shader",
+            details: error.to_string(),
+        }
+        .into()
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1921,10 +1932,11 @@ impl<'a> FrameCx<'a> {
 
     pub(crate) fn dynamic_program(
         &mut self,
+        node: NodeId,
         label: &str,
         shader: &CachedShader,
     ) -> crate::Result<ProgramRef> {
-        dynamic_program(self.rec, label, shader)
+        dynamic_program(self.rec, node, label, shader)
     }
 
     /// The param `param` of node `node` in the graph being recorded.
