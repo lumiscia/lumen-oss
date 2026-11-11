@@ -1,10 +1,19 @@
 use crate::node::{
-    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, processing::RasterSampling,
+    DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams,
+    processing::{
+        RasterSampling,
+        minify::{self, Minification},
+    },
 };
+
+use lumen_gpu::Size;
 
 use crate::gpu::params;
 
-pub(crate) const SHADER: &str = include_str!("resize.wgsl");
+pub(crate) const SHADER: &str = concat!(
+    include_str!("resize.wgsl"),
+    include_str!("../../gpu/shaders/minify.wgsl")
+);
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
@@ -73,8 +82,21 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(3, lumen_gpu::LayoutKind::Uniform),
 ];
 
+/// Texels of a source of `source` size that one pixel of the `output` size covers along the
+/// source's axes.
+fn footprint(mode: ResizeMode, source: [u32; 2], output: [u32; 2]) -> [f32; 2] {
+    let ratio = [0, 1].map(|axis| source[axis] as f32 / output[axis].max(1) as f32);
+    match mode {
+        ResizeMode::Stretch => ratio,
+        // Each axis is as much as the one that sets the scale.
+        ResizeMode::Fit => [ratio[0].max(ratio[1]); 2],
+        ResizeMode::Fill => [ratio[0].min(ratio[1]); 2],
+    }
+}
+
 impl crate::gpu::frame_graph::RecordNode for Resize {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        crate::gpu::mips::programs(programs)?;
         programs.compute("resize", SHADER, "cs_main", RECORD_LAYOUT)
     }
 
@@ -87,7 +109,7 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
             node_id: self.id,
             expr: &cx.expr(),
         })?;
-        let params = params::ResizeParams {
+        let mut params = params::ResizeParams {
             origin: [
                 params::pixel_origin(self.id, "x", evaluated.x)?,
                 params::pixel_origin(self.id, "y", evaluated.y)?,
@@ -98,10 +120,10 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
             ],
             mode: evaluated.mode as u32,
             sampling: evaluated.sampling as u32,
-            _pad: [0; 2],
+            ..bytemuck::Zeroable::zeroed()
         };
         // Sources that don't publish bounds fill their whole storage texture.
-        let bounds = source.bounds.unwrap_or(params::CropParams {
+        let mut bounds = source.bounds.unwrap_or(params::CropParams {
             origin: [0, 0],
             size: [
                 source.domain.storage_size.width,
@@ -110,13 +132,29 @@ impl crate::gpu::frame_graph::RecordNode for Resize {
         });
         let size = cx.canvas_size();
         let tex = cx.storage_target(size);
+        let mut input = source.tex;
+        let image = Size::new(bounds.size[0], bounds.size[1]);
+        if evaluated.sampling == RasterSampling::Linear && image.width > 0 && image.height > 0 {
+            let footprint = footprint(evaluated.mode, bounds.size, params.size);
+            let mips = Minification::mips_fit(cx, image);
+            if let Some(minification) = Minification::new(footprint, image, mips) {
+                params.footprint = minification.footprint;
+                params.lod = minification.lod;
+                // A chain holds the image alone, from its first texel.
+                input =
+                    minify::source(cx, self.source, source, Some(bounds), minification.levels())?;
+                if input != source.tex {
+                    bounds.origin = [0, 0];
+                }
+            }
+        }
         let program = cx.program("resize", SHADER, "cs_main", RECORD_LAYOUT)?;
         let uniform = cx.rec.uniform(&params);
         let bounds = cx.rec.uniform(&bounds);
         cx.dispatch(
             program,
             &[
-                (0, lumen_gpu::Res::Tex(source.tex)),
+                (0, lumen_gpu::Res::Tex(input)),
                 (1, uniform),
                 (2, lumen_gpu::Res::Tex(tex)),
                 (3, bounds),

@@ -27,6 +27,14 @@ fn gradient(width: u32, height: u32) -> Vec<u8> {
     rgba
 }
 
+/// Bytes of a mip chain of `levels` Rgba16Float levels over a `width` by `height` level 0, which
+/// a node shrinking its source adds to the textures adopted.
+fn mip_bytes(width: u32, height: u32, levels: u32) -> u64 {
+    (0..levels)
+        .map(|level| u64::from((width >> level).max(1)) * u64::from((height >> level).max(1)) * 8)
+        .sum()
+}
+
 fn photo(width: u32, height: u32) -> TestMedia {
     TestMedia::default().image("photo", width, height, gradient(width, height))
 }
@@ -131,7 +139,10 @@ fn an_image_is_reduced_only_to_its_own_aspect_ratio() {
         0.0,
         &media,
     );
-    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 1000 * 9 * 4);
+    assert_eq!(
+        renderer.frame_graph_stats().adopted_bytes,
+        1000 * 9 * 4 + mip_bytes(1000, 9, 5)
+    );
 
     let mut renderer = gpu.renderer();
     let unbounded = render(
@@ -164,7 +175,7 @@ fn an_image_wider_than_the_device_allows_renders_reduced_through_a_resize() {
     assert_eq!(shown.pixel(31, 15), RED);
     assert_eq!(
         renderer.frame_graph_stats().adopted_bytes,
-        u64::from(limit) * 4
+        u64::from(limit) * 4 + mip_bytes(limit, 1, 6)
     );
     let warnings = renderer.take_diagnostics();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
@@ -226,7 +237,10 @@ fn an_image_shown_at_a_tenth_by_a_literal_resize_is_decoded_at_a_fifth() {
     );
     let mut renderer = gpu.renderer();
     let native = render(&mut renderer, &scaled, 0.0, &media);
-    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 4000 * 3000 * 4);
+    assert_eq!(
+        renderer.frame_graph_stats().adopted_bytes,
+        4000 * 3000 * 4 + mip_bytes(4000, 3000, 5)
+    );
 
     let difference = largest_channel_difference(&reduced.rgba, &native.rgba);
     assert!(
@@ -254,16 +268,24 @@ fn uses_of_one_image_take_the_largest_and_a_larger_one_decodes_it_again() {
     };
     let mut renderer = gpu.renderer();
     render(&mut renderer, &shown(200), 0.0, &media);
+    // Shown at a quarter or more, a use reads the image itself, with no chain.
     assert_eq!(renderer.frame_graph_stats().adopted_bytes, 400 * 320 * 4);
     assert_eq!(renderer.media_texture_upload_count(), 1);
 
     render(&mut renderer, &shown(400), 0.0, &media);
-    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 800 * 640 * 4);
+    assert_eq!(
+        renderer.frame_graph_stats().adopted_bytes,
+        800 * 640 * 4 + mip_bytes(800, 640, 4)
+    );
     assert_eq!(renderer.media_texture_upload_count(), 2);
 
     // Shown at half its size or more, the image keeps its own.
     render(&mut renderer, &shown(500), 0.0, &media);
-    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 1000 * 800 * 4);
+    assert_eq!(
+        renderer.frame_graph_stats().adopted_bytes,
+        // The chain of the image decoded before stays until it has been idle for a while.
+        1000 * 800 * 4 + mip_bytes(1000, 800, 5) + mip_bytes(800, 640, 4)
+    );
 }
 
 #[test]
@@ -279,5 +301,8 @@ fn an_image_a_transform_reads_keeps_its_own_size() {
     );
     let mut renderer = gpu.renderer();
     render(&mut renderer, &composition, 0.0, &photo(2000, 1500));
-    assert_eq!(renderer.frame_graph_stats().adopted_bytes, 2000 * 1500 * 4);
+    assert_eq!(
+        renderer.frame_graph_stats().adopted_bytes,
+        2000 * 1500 * 4 + mip_bytes(2000, 1500, 5)
+    );
 }

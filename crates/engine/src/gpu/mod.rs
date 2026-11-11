@@ -10,6 +10,7 @@ pub(crate) mod frame_graph;
 mod image_size;
 #[cfg(feature = "ffmpeg")]
 mod media;
+pub(crate) mod mips;
 pub(crate) mod params;
 mod renderer;
 #[cfg(test)]
@@ -19,6 +20,8 @@ mod shader_layouts;
     all(target_os = "linux", feature = "ffmpeg", feature = "vulkan")
 ))]
 mod target;
+#[cfg(test)]
+pub(crate) mod test_device;
 mod types;
 mod yuv;
 
