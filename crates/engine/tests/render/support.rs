@@ -132,8 +132,8 @@ pub struct TestMedia {
     font_requests: Arc<AtomicUsize>,
     /// How many image resolvers were asked for, shared with its clones.
     image_requests: Arc<AtomicUsize>,
-    /// Model files by source.
-    models: HashMap<String, Arc<Vec<u8>>>,
+    /// Resolver ID and file of each model by source.
+    models: HashMap<String, (String, Arc<Vec<u8>>)>,
     /// How many times model bytes were read, shared with its clones.
     model_loads: Arc<AtomicUsize>,
     /// Environment map files by source.
@@ -221,8 +221,16 @@ impl TestMedia {
     }
 
     #[cfg(feature = "3d")]
-    pub fn model(mut self, source: &str, bytes: Vec<u8>) -> Self {
-        self.models.insert(source.to_string(), Arc::new(bytes));
+    pub fn model(self, source: &str, bytes: Vec<u8>) -> Self {
+        self.model_with_id(source, source, bytes)
+    }
+
+    /// Like `model`, under the resolver ID `id`. The engine tells two files of one source apart by
+    /// their IDs, so give an ID per distinct file.
+    #[cfg(feature = "3d")]
+    pub fn model_with_id(mut self, source: &str, id: &str, bytes: Vec<u8>) -> Self {
+        self.models
+            .insert(source.to_string(), (id.to_string(), Arc::new(bytes)));
         self
     }
 
@@ -392,12 +400,12 @@ impl MediaStore for TestMedia {
     }
 
     fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
-        let data = self
+        let (id, data) = self
             .models
             .get(source)
             .ok_or_else(|| MediaError::source_not_found(source, "not registered"))?;
         Ok(Box::new(TestModel {
-            id: source.to_string(),
+            id: id.clone(),
             data: Arc::clone(data),
             loads: Arc::clone(&self.model_loads),
         }))

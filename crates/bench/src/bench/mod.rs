@@ -4,6 +4,8 @@ pub mod composition;
 pub mod decode;
 pub mod expression;
 pub mod json_parse;
+#[cfg(feature = "3d")]
+pub mod scene_3d;
 pub mod text;
 
 mod fixtures;

@@ -1910,7 +1910,8 @@ export interface HueSaturationNode extends CompositionNodeBase<"hue_saturation">
  * separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
  * `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
  * A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
- * filtered by `render_3d`'s `supersample`.
+ * filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample`
+ * averages it.
  */
 export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> {
   readonly params?: {
@@ -3257,7 +3258,8 @@ export const nodeInputPorts = {
    * separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
    * `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
    * A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
-   * filtered by `render_3d`'s `supersample`.
+   * filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample`
+   * averages it.
    */
   "image_plane_3d": { "source": { kind: "raster", variadic: false } },
   /**

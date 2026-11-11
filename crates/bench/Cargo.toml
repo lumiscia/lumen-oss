@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
+"3d" = ["lumen-engine/3d"]
 cuda = ["lumen-engine/cuda", "lumen-ffmpeg/cuda"]
 vulkan = ["lumen-engine/vulkan", "lumen-gpu/vulkan", "lumen-ffmpeg/vulkan"]
 metal = ["lumen-engine/metal", "lumen-ffmpeg/metal", "lumen-gpu/metal"]
@@ -32,6 +33,11 @@ path = "src/bin/composition.rs"
 [[bin]]
 name = "lumen-bench-frame-graph"
 path = "src/bin/frame_graph.rs"
+
+[[bin]]
+name = "lumen-bench-3d"
+path = "src/bin/scene_3d.rs"
+required-features = ["3d"]
 
 [[bin]]
 name = "lumen-bench-decode"

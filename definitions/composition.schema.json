@@ -3094,7 +3094,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by\ndefault, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,\nordered by its centre among blended objects, so its transparent parts show what is behind it.\nPlanes that intersect, or overlap while crossing in depth, can show in the wrong order; layers\nseparated in depth, and opaque shapes in front of or behind planes, are ordered correctly.\n`opaque` draws a plane that has no transparent pixels with the opaque objects instead.\nA source keeps its detail when it is shown at its own size or larger; shown smaller, it is\nfiltered by `render_3d`'s `supersample`.",
+            "description": "Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by\ndefault, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,\nordered by its centre among blended objects, so its transparent parts show what is behind it.\nPlanes that intersect, or overlap while crossing in depth, can show in the wrong order; layers\nseparated in depth, and opaque shapes in front of or behind planes, are ordered correctly.\n`opaque` draws a plane that has no transparent pixels with the opaque objects instead.\nA source keeps its detail when it is shown at its own size or larger; shown smaller, it is\nfiltered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample`\naverages it.",
             "properties": {
               "id": {
                 "minimum": 0,

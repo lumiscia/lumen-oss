@@ -59,7 +59,10 @@ pub(super) struct Channel {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Animation {
     pub(super) name: String,
-    /// The last key's time, over all channels.
+    /// The first key's time over all channels, before which the pose doesn't change, or 0 for a
+    /// clip without keys.
+    pub(super) start: f32,
+    /// The last key's time, over all channels, from which the pose doesn't change.
     pub(super) duration: f32,
     pub(super) channels: Vec<Channel>,
 }

@@ -632,9 +632,10 @@ fn pixel_centre_uv(position: vec2<f32>, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f
     return uv + weight * (dx * to_centre.x + dy * to_centre.y);
 }
 
-// The raster at `uv` as linear colour with straight alpha.
-fn raster_texel(uv: vec2<f32>) -> vec4<f32> {
-    let texel = textureSampleLevel(raster_tex, raster_sampler, uv, 0.0);
+// The raster at `uv`, over a footprint of `dx` and `dy`, as linear colour with straight alpha. A
+// raster with mip levels is filtered to the footprint.
+fn raster_texel(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
+    let texel = textureSampleGrad(raster_tex, raster_sampler, uv, dx, dy);
     let straight = clamp(texel.rgb / max(texel.a, 1e-6), vec3<f32>(0.0), vec3<f32>(1.0));
     return vec4<f32>(srgb_to_linear(straight), texel.a);
 }
@@ -776,7 +777,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     let raster = has(o.flags, FLAG_RASTER);
     var texel = vec4<f32>(1.0);
     if (raster) {
-        texel = raster_texel(pixel_centre_uv(in.clip.xy, in.uv, uv_dx, uv_dy));
+        texel = raster_texel(pixel_centre_uv(in.clip.xy, in.uv, uv_dx, uv_dy), uv_dx, uv_dy);
     }
     var emissive = o.emissive * texel.rgb;
     if (has(o.flags, FLAG_EMISSIVE_MAP)) {

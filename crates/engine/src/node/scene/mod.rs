@@ -10,6 +10,8 @@ pub(crate) mod collect;
 mod environment;
 mod instance;
 #[cfg(feature = "3d")]
+pub(crate) mod mips;
+#[cfg(feature = "3d")]
 pub(crate) mod render;
 mod text_3d;
 #[cfg(feature = "3d")]
@@ -228,7 +230,8 @@ impl Default for ImagePlane3dParams {
 /// separated in depth, and opaque shapes in front of or behind planes, are ordered correctly.
 /// `opaque` draws a plane that has no transparent pixels with the opaque objects instead.
 /// A source keeps its detail when it is shown at its own size or larger; shown smaller, it is
-/// filtered by `render_3d`'s `supersample`.
+/// filtered with mipmaps, trilinearly and anisotropically, before `render_3d`'s `supersample`
+/// averages it.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(
     kind = "image_plane_3d",

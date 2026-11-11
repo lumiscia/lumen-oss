@@ -15,5 +15,6 @@ export type {
   LumenPreviewStatsCallback,
   LumenPreviewTimeUpdate,
   LumenPreviewTimeUpdateCallback,
+  MediaRegistration,
   MediaSourceInput,
 } from "@lumiscia/lumen-preview";

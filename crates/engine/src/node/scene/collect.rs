@@ -17,7 +17,7 @@ use lumen_gpu::{BufRef, Recorder, TexRef, wgpu};
 
 use super::{Light3dKind, Material3d, Model3d, Placement3d, Pose3d, Projection3d, Shape3dKind};
 use crate::error::{LumenError, MediaError, MediaFailure, RenderError};
-use crate::gpu::frame_graph::FrameCx;
+use crate::gpu::frame_graph::{FrameCx, Raster, SceneFile};
 use crate::media::{AssetKind, ModelResolver};
 use crate::node::vector::paint::Paint;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, required_input};
@@ -107,6 +107,7 @@ pub(crate) struct SceneCache {
     quad: Option<(GpuMesh, u32)>,
     models: HashMap<String, CachedModel>,
     model_bytes: u64,
+    pub(super) mips: super::mips::MipCache,
     /// A depth texture bound in place of a shadow atlas by scenes without shadows.
     no_shadows: Option<TexRef>,
     pub(super) environments: super::environment::EnvironmentCache,
@@ -129,6 +130,19 @@ impl SceneCache {
         self.model_bytes = 0;
         self.environments.release(rec);
         self.texts.release(rec);
+        self.mips.release(rec);
+    }
+
+    pub(crate) fn trim_mips(&mut self, rec: &mut Recorder, tick: u64) {
+        self.mips.trim(rec, tick);
+    }
+
+    pub(crate) fn commit_mips(&mut self) {
+        self.mips.commit();
+    }
+
+    pub(crate) fn discard_pending_mips(&mut self) {
+        self.mips.discard_pending();
     }
 
     /// Frees environment maps as [`Self::trim`] frees models.
@@ -504,6 +518,45 @@ fn surface(
     })
 }
 
+/// The frames, both ends included, around `frame` on which a model plays a clip that spans `span`
+/// seconds as `params` say, at `fps`, and shows the same pose. A looping clip never does, and a
+/// clip without a span, or a composition without a frame rate, always does.
+fn held_frames(
+    span: Option<(f32, f32)>,
+    params: &super::Model3dParams,
+    fps: f64,
+    frame: f64,
+) -> (f64, f64) {
+    let everywhere = (f64::NEG_INFINITY, f64::INFINITY);
+    let Some((start, end)) = span else {
+        return everywhere;
+    };
+    if fps <= 0.0 {
+        return everywhere;
+    }
+    if params.animation_loop || params.animation_speed == 0.0 {
+        return (f64::INFINITY, f64::NEG_INFINITY);
+    }
+    // Where the clip's time is `time`, on the frame axis.
+    let at = |time: f32| (f64::from(time) - params.animation_offset) / params.animation_speed * fps;
+    // The pose holds from the frame the clip's end reaches, or its start when it plays backwards,
+    // onwards, and up to the frame the other bound reaches.
+    let (hold_from, hold_to) = if params.animation_speed > 0.0 {
+        (at(end), at(start))
+    } else {
+        (at(start), at(end))
+    };
+    // A frame is held once its time is clear of the bounds' rounding to `f32`.
+    let margin = |bound: f64| 1e-3 + 1e-6 * bound.abs();
+    if frame >= hold_from + margin(hold_from) {
+        (hold_from + margin(hold_from), f64::INFINITY)
+    } else if frame <= hold_to - margin(hold_to) {
+        (f64::NEG_INFINITY, hold_to - margin(hold_to))
+    } else {
+        (f64::INFINITY, f64::NEG_INFINITY)
+    }
+}
+
 /// How a model's `material` shades `primitive`, reading the model's `textures`.
 fn model_surface(
     material: &Material,
@@ -574,6 +627,10 @@ pub(super) struct Collected {
     reached: usize,
     /// Indices the objects draw in all.
     indices: u64,
+    /// The rasters objects show, each with the node it is the output of.
+    pub(super) rasters: Vec<(NodeId, Raster)>,
+    /// The mesh of image planes, once the scene has one.
+    pub(super) quad: Option<GpuMesh>,
     /// How many `instance_3d` nodes hold the scene being collected.
     nesting: u32,
     /// The most objects an `instance_3d` may bring the scene to, which is what the nodes holding it
@@ -591,6 +648,8 @@ impl Collected {
             render_id,
             reached: 0,
             indices: 0,
+            rasters: Vec::new(),
+            quad: None,
             nesting: 0,
             instance_room: MAX_SCENE_NODES,
         }
@@ -733,7 +792,9 @@ impl Collected {
             }
             NodeKind::ImagePlane3d(plane) => {
                 let params = plane.params.eval(&ctx)?;
-                let source = cx.input_native(required_input(node_id, "source", plane.source)?)?;
+                let source_node = required_input(node_id, "source", plane.source)?;
+                let source = cx.input_native(source_node)?;
+                self.rasters.push((source_node, source));
                 let display = source.domain.display_size();
                 let scale = lumen_3d::plane_scale(
                     params.width.max(0.0) as f32,
@@ -752,6 +813,7 @@ impl Collected {
                 surface.texture = Some(source.tex);
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.quad(rec);
+                self.quad = Some(mesh);
                 self.push(
                     Object {
                         world,
@@ -865,7 +927,7 @@ impl Collected {
         let model = cache
             .model(rec, tick, source, &*resolver)
             .map_err(in_node)?;
-        cx.drew_model(resolver.id());
+        cx.drew_file(SceneFile::Model, source, resolver.id());
         let scene = &model.scene;
         if scene.skipped_primitives() > 0 {
             cx.note_skipped_primitives(node.id, source, scene.skipped_primitives());
@@ -883,7 +945,11 @@ impl Collected {
             (name, texture) => {
                 let material = scene.material(name).map_err(error)?;
                 match texture {
-                    Some(texture) => Some((material, cx.input_native(texture)?.tex)),
+                    Some(texture) => {
+                        let raster = cx.input_native(texture)?;
+                        self.rasters.push((texture, raster));
+                        Some((material, raster.tex))
+                    }
                     None => None,
                 }
             }
@@ -900,6 +966,16 @@ impl Collected {
             seconds: (seconds * params.animation_speed + params.animation_offset) as f32,
             looped: params.animation_loop,
         });
+        if let Some(clip) = clip
+            && node.animates()
+        {
+            cx.held_on(held_frames(
+                scene.clip_span(clip),
+                &params,
+                f64::from(cx.expr().fps),
+                cx.frame_time().value(),
+            ));
+        }
         let pose = scene.pose(playback);
         let first_joint = self.scene.joints.len();
         if first_joint + pose.joints.len() > MAX_SCENE_JOINTS {
@@ -1028,9 +1104,54 @@ impl Collected {
 mod tests {
     use lumen_3d::model::{Model, ModelError};
 
-    use super::{evictions, model_failure};
+    use super::{evictions, held_frames, model_failure};
     use crate::error::MediaReason;
     use crate::media::AssetKind;
+    use crate::node::scene::Model3dParams;
+
+    fn clip(speed: f64, offset: f64, looped: bool) -> Model3dParams {
+        Model3dParams {
+            animation_speed: speed,
+            animation_offset: offset,
+            animation_loop: looped,
+            ..Model3dParams::default()
+        }
+    }
+
+    #[test]
+    fn a_pose_is_held_on_the_frames_the_clip_is_clear_of_its_keys() {
+        let span = Some((0.5, 2.0));
+        let held = |params: &Model3dParams, frame: f64| held_frames(span, params, 10.0, frame);
+        let contains = |(from, to): (f64, f64), frame: f64| from <= frame && frame <= to;
+        // Playing forwards, the clip is over from frame 20 and not begun up to frame 5.
+        let forwards = clip(1.0, 0.0, false);
+        assert!(contains(held(&forwards, 30.0), 21.0));
+        assert!(!contains(held(&forwards, 30.0), 19.0));
+        assert!(contains(held(&forwards, 3.0), 4.0));
+        assert!(!contains(held(&forwards, 3.0), 6.0));
+        assert!(
+            !contains(held(&forwards, 12.0), 12.0),
+            "a playing clip holds nothing"
+        );
+        // Twice as fast, with an offset of a second: over from frame 5, not begun up to frame -2.5.
+        let quick = clip(2.0, 1.0, false);
+        assert!(contains(held(&quick, 8.0), 5.5));
+        assert!(!contains(held(&quick, 8.0), 4.5));
+        assert!(contains(held(&quick, -5.0), -3.0));
+        assert!(!contains(held(&quick, -5.0), -2.0));
+        // Backwards, the clip is at its first key from frame -5 on and at its last up to frame -20.
+        let backwards = clip(-1.0, 0.0, false);
+        assert!(contains(held(&backwards, 0.0), 1.0));
+        assert!(!contains(held(&backwards, 0.0), -6.0));
+        assert!(contains(held(&backwards, -30.0), -21.0));
+        assert!(!contains(held(&backwards, -10.0), -10.0));
+        // A looped clip is never held, and one without keys, or frames, always is.
+        assert!(!contains(held(&clip(1.0, 0.0, true), 30.0), 30.0));
+        let everywhere = held_frames(None, &forwards, 10.0, 7.0);
+        assert!(contains(everywhere, -1e9) && contains(everywhere, 1e9));
+        let timeless = held_frames(span, &forwards, 0.0, 7.0);
+        assert!(contains(timeless, 7.0));
+    }
 
     #[test]
     fn evictions_free_the_least_recently_drawn_down_to_the_budget_and_spare_protected_models() {

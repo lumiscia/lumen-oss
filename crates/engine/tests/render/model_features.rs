@@ -549,14 +549,9 @@ fn shadowed_ground(model: Value) -> Scene {
     )
 }
 
-#[test]
-fn a_model_weighted_past_1_casts_its_whole_shadow() {
-    // A level square half a unit up, which its one morph target raises 1 towards the light, and a
-    // clip taking the target's weight from 0 to 4 over a second.
-    let level = |gltf: &mut Gltf, y: f32| {
-        gltf.json["nodes"][0]["translation"] = json!([0, y, 0]);
-        gltf.json["nodes"][0]["rotation"] = json!([-0.70710677, 0, 0, 0.70710677]);
-    };
+/// A level square half a unit up, which its one morph target raises 1 towards the light, and a
+/// clip `move` taking the target's weight from 0 to 4 over a second, with 2 for the mesh.
+fn rising_square() -> Gltf {
     let mut morphed = square(json!([matte()]));
     level(&mut morphed, 0.5);
     let along = morphed.floats("VEC3", &[0.0, 0.0, 1.0].repeat(4));
@@ -569,6 +564,18 @@ fn a_model_weighted_past_1_casts_its_whole_shadow() {
         "samplers": [{ "input": times, "output": values }],
         "channels": [{ "sampler": 0, "target": { "node": 0, "path": "weights" } }],
     }]);
+    morphed
+}
+
+/// Lays a square flat, `y` up.
+fn level(gltf: &mut Gltf, y: f32) {
+    gltf.json["nodes"][0]["translation"] = json!([0, y, 0]);
+    gltf.json["nodes"][0]["rotation"] = json!([-0.70710677, 0, 0, 0.70710677]);
+}
+
+#[test]
+fn a_model_weighted_past_1_casts_its_whole_shadow() {
+    let morphed = rising_square();
     let mut moved = square(json!([matte()]));
     level(&mut moved, 2.5);
     let media = TestMedia::default()
@@ -625,6 +632,127 @@ fn a_model_with_still_weights_is_kept_and_one_playing_a_weight_clip_is_drawn_eac
     for pair in sliding.windows(2) {
         assert!(pair[0] != pair[1], "the square slides");
     }
+}
+
+/// The `count` frames of `composition` at its frame rate, with the passes each recorded, on a
+/// renderer that keeps what doesn't change, or on one that draws every frame in full.
+fn run_frames(
+    composition: &Composition,
+    media: &TestMedia,
+    count: u32,
+    keeping: bool,
+) -> (Vec<Vec<u8>>, Vec<usize>) {
+    let gpu = gpu();
+    let mut renderer = if keeping {
+        gpu.renderer()
+    } else {
+        gpu.reference()
+    };
+    (0..count)
+        .map(|frame| {
+            let frame = render(&mut renderer, composition, f64::from(frame), media);
+            (frame.rgba, renderer.recorded_pass_count())
+        })
+        .unzip()
+}
+
+/// Checks that a clip of one second at 4 frames a second, playing from frame 0, is drawn as it
+/// is without keeping anything, and that from frame 6 on its last pose is kept: pixel for pixel
+/// the frame it ended on, and recording no passes.
+fn assert_the_last_pose_is_kept(composition: &Composition, media: &TestMedia) {
+    let (kept, passes) = run_frames(composition, media, 10, true);
+    let (drawn, _) = run_frames(composition, media, 10, false);
+    for (frame, (kept, drawn)) in kept.iter().zip(&drawn).enumerate() {
+        assert!(kept == drawn, "frame {frame} differs when kept");
+    }
+    for frame in 6..10 {
+        assert!(kept[frame] == kept[4], "the pose holds at frame {frame}");
+        assert_eq!(passes[frame], 0, "frame {frame} records {passes:?}");
+    }
+}
+
+#[test]
+fn a_morph_clip_that_has_ended_is_kept_as_its_weights_bounds_and_shadow_no_longer_change() {
+    // The weight climbs to 4, which widens the model's bounds and so its shadow, and stays there.
+    let media = TestMedia::default().model("morphed.glb", rising_square().glb());
+    let ended = json!({ "source": "morphed.glb", "animation": "move", "animation_loop": false });
+    let composition: Composition =
+        shadowed_ground(json!({ "id": 1, "type": "model_3d", "params": ended }))
+            .frames(10)
+            .fps(4.0)
+            .into();
+    assert_the_last_pose_is_kept(&composition, &media);
+}
+
+#[test]
+fn a_morph_clip_that_has_ended_is_kept_as_the_shape_its_weights_left() {
+    // A square a quarter unit to the right for each unit of weight, which a clip takes from 0 to
+    // 4: past its end the square is a unit to the right.
+    let mut gltf = square(json!([unlit([0.0, 1.0, 0.0, 1.0])]));
+    let along = gltf.floats("VEC3", &[0.25, 0.0, 0.0].repeat(4));
+    gltf.primitive()["targets"] = json!([{ "POSITION": along }]);
+    gltf.json["meshes"][0]["weights"] = json!([0.0]);
+    let times = gltf.floats("SCALAR", &[0.0, 1.0]);
+    let values = gltf.floats("SCALAR", &[0.0, 4.0]);
+    gltf.json["animations"] = json!([{
+        "name": "move",
+        "samplers": [{ "input": times, "output": values }],
+        "channels": [{ "sampler": 0, "target": { "node": 0, "path": "weights" } }],
+    }]);
+    let media = TestMedia::default().model("slide.glb", gltf.glb());
+    let params = json!({ "source": "slide.glb", "animation": "move", "animation_loop": false });
+    let composition: Composition = view(json!({}), &[params], vec![])
+        .frames(10)
+        .fps(4.0)
+        .into();
+    assert_the_last_pose_is_kept(&composition, &media);
+    let (frames, _) = run_frames(&composition, &media, 10, true);
+    assert!(
+        frames[1] != frames[3],
+        "the square slides while the clip plays"
+    );
+    assert!(
+        frames[0] != frames[4],
+        "and ends a unit from where it began"
+    );
+}
+
+#[test]
+fn a_clip_that_has_ended_keeps_the_lights_and_camera_it_moved() {
+    // One node carries a point light and the camera, and a clip slides it 1 unit along X and back
+    // 1 unit along Z over a second.
+    let mut rig = square(json!([matte()]));
+    rig.json["extensionsUsed"] = json!(["KHR_lights_punctual"]);
+    rig.json["extensions"] = json!({ "KHR_lights_punctual": { "lights": [
+        { "type": "point", "intensity": 20 }] } });
+    rig.json["cameras"] = json!([{ "type": "perspective", "perspective": {
+        "yfov": 50f64.to_radians(), "znear": 0.05 } }]);
+    rig.json["nodes"] = json!([
+        { "mesh": 0 },
+        { "translation": [0, 0, 3], "camera": 0,
+          "extensions": { "KHR_lights_punctual": { "light": 0 } } },
+    ]);
+    rig.json["scenes"] = json!([{ "nodes": [0, 1] }]);
+    let times = rig.floats("SCALAR", &[0.0, 1.0]);
+    let values = rig.floats("VEC3", &[0.0, 0.0, 3.0, 1.0, 0.0, 2.0]);
+    rig.json["animations"] = json!([{
+        "name": "move",
+        "samplers": [{ "input": times, "output": values }],
+        "channels": [{ "sampler": 0, "target": { "node": 1, "path": "translation" } }],
+    }]);
+    let media = TestMedia::default().model("rig.glb", rig.glb());
+    let params = json!({ "source": "rig.glb", "animation": "move", "animation_loop": false,
+                         "lights": true, "camera": "0" });
+    let composition: Composition = view(json!({ "environment": 0 }), &[params], vec![])
+        .frames(10)
+        .fps(4.0)
+        .into();
+    assert_the_last_pose_is_kept(&composition, &media);
+    let (frames, _) = run_frames(&composition, &media, 10, true);
+    assert!(
+        frames[1] != frames[3],
+        "the light and camera move while the clip plays"
+    );
 }
 
 /// A unit square facing +Z, and the model's `light` 2 units in front of it, facing it.

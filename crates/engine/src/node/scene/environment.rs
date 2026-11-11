@@ -261,7 +261,11 @@ pub(super) fn environment(
         .environments
         .load(rec, tick, source, &*resolver, background)
         .map_err(in_node)?;
-    cx.drew_model(resolver.id());
+    cx.drew_file(
+        crate::gpu::frame_graph::SceneFile::Environment,
+        source,
+        resolver.id(),
+    );
     Ok(Some(loaded))
 }
 

@@ -1,4 +1,4 @@
-import type { LumenBindings } from "@lumiscia/lumen-preview/advanced";
+import type { LumenBindings } from "@lumiscia/lumen-preview";
 
 import { createBindings } from "../bindings.js";
 
