@@ -1656,8 +1656,11 @@ impl<'a> FrameCx<'a> {
     }
 
     pub(crate) fn render_target(&mut self, size: Size) -> TexRef {
-        self.rec
-            .acquire(size, WORKING, TextureDesc::render_target(size, WORKING).usage)
+        self.rec.acquire(
+            size,
+            WORKING,
+            TextureDesc::render_target(size, WORKING).usage,
+        )
     }
 
     /// The frame's output. An output kept from an earlier frame is copied into an external target,

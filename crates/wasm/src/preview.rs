@@ -15,8 +15,7 @@ use crate::{
     renderer::SurfaceCompositionRenderer,
     types::{AudioTimelinePayload, FrameRequirementsPayload},
     utils::{
-        composition_json_to_composition, parse_failure, raw_frame_from_rgba,
-        validate_rgba_len,
+        composition_json_to_composition, parse_failure, raw_frame_from_rgba, validate_rgba_len,
     },
 };
 

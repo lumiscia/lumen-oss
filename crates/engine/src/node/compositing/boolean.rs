@@ -59,10 +59,7 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
-    lumen_gpu::LayoutEntry::compute(
-        3,
-        crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE,
-    ),
+    lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
 
 impl crate::gpu::frame_graph::RecordNode for Boolean {

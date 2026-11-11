@@ -25,6 +25,25 @@ is that value, and a full `major.minor.patch` of the same line is read too. A do
 another line fails with `document.schema_version`, naming both versions. 0.x minor releases are
 breaking, so there is no migration between lines. Absent means the engine's own version.
 
+## Colour
+
+Every raster is `Rgba16Float` (`gpu::WORKING_COLOR_FORMAT`): linear light with BT.709 primaries
+and premultiplied alpha, where 1.0 is SDR white and colour may go past it. JSON colours, images
+and video are sRGB-encoded, and decode to linear light on the way in; `media_output` encodes back
+to sRGB once, quantising 8-bit targets with an ordered dither below half a code
+(`GpuCompositionRenderer::set_output_dither`). So an 8-bit image passed straight through comes out
+unchanged, and 50% white over black is code 188, half the light, not 128.
+
+- Normal merges, opacity, masks, transform and resize sampling, blurs, glow, shadows, motion blur,
+  text and shape antialiasing work in linear light. A luma matte is the linear BT.709 luminance;
+  the glow threshold compares sRGB-encoded luminance, so 0.5 is half way up the visible range.
+- Every other blend mode, `levels`, `hue_saturation`, the `color_grade` LUT, `exposure`'s
+  contrast and offset, `displacement_map` (byte 128 is neutral) and `fractal_noise` work on
+  sRGB-encoded values, as design tools do.
+- Gradients blend their stops encoded (`srgb`, the default) or in linear light (`linear_srgb`).
+- `wgsl_shader` inputs are linear and premultiplied, its output is `rgba16float`, and its prelude
+  has `lumen_srgb_to_linear` and `lumen_linear_to_srgb`.
+
 ## Asset references
 
 A source field can name a file in the host's asset store as `asset:<id>`: `media_in`'s `source`,

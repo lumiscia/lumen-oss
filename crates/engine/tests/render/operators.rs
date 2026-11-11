@@ -133,7 +133,12 @@ fn operators_produce_hand_computed_colors() {
             let encoded = (encode(linear(code) * gain) + offset - 0.5) * contrast + 0.5;
             (encoded.clamp(0.0, 1.0) * alpha * 255.0).round() as u8
         };
-        [channel(TEAL[0]), channel(TEAL[1]), channel(TEAL[2]), TEAL[3]]
+        [
+            channel(TEAL[0]),
+            channel(TEAL[1]),
+            channel(TEAL[2]),
+            TEAL[3],
+        ]
     };
     // Screen works on encoded colour: each layer screens the running result to full green, then
     // full blue, which is composited in at alpha .251.
@@ -530,7 +535,10 @@ fn feather_blurs_the_mask_before_inverting() {
             "a wide feather of a square mask falls off evenly on both axes",
             feathered(solid_mask(WHITE, 64, 64), json!(64)),
             Expect::Custom(Box::new(|frames| {
-                let (right, bottom) = (matte_value(&frames[0], 23, 12), matte_value(&frames[0], 12, 23));
+                let (right, bottom) = (
+                    matte_value(&frames[0], 23, 12),
+                    matte_value(&frames[0], 12, 23),
+                );
                 assert!(
                     right > 0 && right.abs_diff(bottom) <= 2,
                     "{right}, {bottom}"

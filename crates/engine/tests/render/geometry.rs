@@ -575,7 +575,12 @@ fn shape_rotation_and_anchor_match_the_transform_node() {
             .flat_map(|pixel| {
                 let alpha = f64::from(pixel[3]) / 255.0;
                 let channel = |code: u8| decode(f64::from(code) / 255.0 / alpha.max(1e-9)) * alpha;
-                [channel(pixel[0]), channel(pixel[1]), channel(pixel[2]), alpha]
+                [
+                    channel(pixel[0]),
+                    channel(pixel[1]),
+                    channel(pixel[2]),
+                    alpha,
+                ]
             })
             .collect()
     };

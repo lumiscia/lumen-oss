@@ -40,7 +40,12 @@ fn light(color: [u8; 3], threshold: f64) -> [f64; 3] {
 fn bytes(rgb: [f64; 3], alpha: f64) -> [u8; 4] {
     let alpha = alpha.clamp(0.0, 1.0);
     let channel = |value: f64| (encode(value / alpha) * alpha * 255.0).round() as u8;
-    [channel(rgb[0]), channel(rgb[1]), channel(rgb[2]), (alpha * 255.0).round() as u8]
+    [
+        channel(rgb[0]),
+        channel(rgb[1]),
+        channel(rgb[2]),
+        (alpha * 255.0).round() as u8,
+    ]
 }
 
 /// A uniform source blurs to itself, so its glow is its light everywhere.

@@ -61,10 +61,7 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
-    lumen_gpu::LayoutEntry::compute(
-        3,
-        crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE,
-    ),
+    lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
 
 impl crate::gpu::frame_graph::RecordNode for Shadow {
@@ -119,7 +116,8 @@ impl crate::gpu::frame_graph::RecordNode for Shadow {
             }
             .into());
         };
-        let color = [r, g, b].map(|channel| crate::gpu::color::srgb_to_linear(f32::from(channel) / 255.0));
+        let color =
+            [r, g, b].map(|channel| crate::gpu::color::srgb_to_linear(f32::from(channel) / 255.0));
         let opacity = evaluated.opacity.clamp(0.0, 1.0) as f32 * f32::from(a) / 255.0;
         let params = params::ShadowParams {
             color: [color[0], color[1], color[2], opacity],

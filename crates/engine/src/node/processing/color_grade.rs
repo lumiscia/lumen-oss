@@ -12,7 +12,7 @@ pub(crate) const SHADER: &str = concat!(
 
 pub const IDENTITY_LUT: &str = "identity";
 
-/// Applies a LUT-driven color transform to a raster.
+/// Applies a LUT-driven color transform to a raster, looking up its sRGB-encoded colour.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ColorGradeParams {
     /// LUT data source or named LUT preset.
@@ -41,7 +41,7 @@ impl Default for ColorGradeParams {
     }
 }
 
-/// Applies a LUT-driven color transform to a raster.
+/// Applies a LUT-driven color transform to a raster, looking up its sRGB-encoded colour.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "color_grade", name = "Color Grade", category = "processing")]
 pub struct ColorGrade {
@@ -57,10 +57,7 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Uniform),
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Storage),
-    lumen_gpu::LayoutEntry::compute(
-        3,
-        crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE,
-    ),
+    lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
 
 impl crate::gpu::frame_graph::RecordNode for ColorGrade {

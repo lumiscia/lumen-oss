@@ -35,7 +35,9 @@ pub struct MergeParams {
     /// Overlay opacity applied before compositing.
     #[meta(min = 0, max = 1, step = 0.05)]
     pub opacity: f64,
-    /// Blend mode used when combining the overlay with the base raster.
+    /// Blend mode used when combining the overlay with the base raster. `normal` composites in
+    /// linear light; every other mode applies its formula to the sRGB-encoded colours and
+    /// composites the result in linear light.
     #[meta()]
     pub blend_mode: BlendMode,
     /// Channel of the `mask` input that controls overlay visibility.
@@ -89,10 +91,7 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(3, lumen_gpu::LayoutKind::Uniform),
     lumen_gpu::LayoutEntry::compute(5, lumen_gpu::LayoutKind::Texture),
-    lumen_gpu::LayoutEntry::compute(
-        4,
-        crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE,
-    ),
+    lumen_gpu::LayoutEntry::compute(4, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
 
 impl crate::gpu::frame_graph::RecordNode for Merge {

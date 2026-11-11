@@ -206,7 +206,10 @@ fn rows(source: &Source) -> Vec<Case> {
                     "in": { "base": 3, "overlay": 1 } }]),
             ),
             vec![
-                at(inside, rgba8(over(premultiplied(STRAIGHT), premultiplied(GREY)))),
+                at(
+                    inside,
+                    rgba8(over(premultiplied(STRAIGHT), premultiplied(GREY))),
+                ),
                 at(outside, GREY),
             ],
         ),

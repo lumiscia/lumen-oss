@@ -11,13 +11,13 @@ pub(crate) const SHADER: &str = concat!(
 
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct ExposureParams {
-    /// Exposure offset in stops.
+    /// Exposure in stops, multiplying linear light by 2 to the power of this.
     #[meta(step = 0.01)]
     pub exposure: f64,
-    /// Contrast multiplier.
+    /// Contrast multiplier around sRGB-encoded mid grey, after the exposure.
     #[meta(min = 0, step = 0.01)]
     pub contrast: f64,
-    /// Linear color offset.
+    /// Offset added to the sRGB-encoded colour, after the exposure and before the contrast.
     #[meta(step = 0.01)]
     pub offset: f64,
 }

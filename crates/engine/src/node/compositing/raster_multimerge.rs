@@ -18,7 +18,9 @@ pub struct RasterMultiMergeParams {
     /// Opacity of each layer above the first, which is the base and is used as is.
     #[meta(min = 0, max = 1, step = 0.05)]
     pub opacity: f64,
-    /// Blend mode used for each layer in the stack.
+    /// Blend mode used for each layer in the stack. `normal` composites in linear light; every
+    /// other mode applies its formula to the sRGB-encoded colours and composites the result in
+    /// linear light.
     #[meta(kind = "enum", enum_type = BlendMode)]
     pub blend_mode: BlendMode,
 }
@@ -52,10 +54,7 @@ const RECORD_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(1, lumen_gpu::LayoutKind::Texture),
     lumen_gpu::LayoutEntry::compute(2, lumen_gpu::LayoutKind::Uniform),
-    lumen_gpu::LayoutEntry::compute(
-        3,
-        crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE,
-    ),
+    lumen_gpu::LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
 
 impl crate::gpu::frame_graph::RecordNode for RasterMultiMerge {

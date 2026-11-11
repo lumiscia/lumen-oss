@@ -78,7 +78,10 @@ fn sub_frame_average(
         .map(|sample| at + ((2 * sample + 1) as f64 / 8.0 - 1.0) * 0.25)
         .map(|sub_frame| render(renderer, source, sub_frame, &media))
         .collect();
-    let frames: Vec<&[u8]> = sub_frames.iter().map(|frame| frame.rgba.as_slice()).collect();
+    let frames: Vec<&[u8]> = sub_frames
+        .iter()
+        .map(|frame| frame.rgba.as_slice())
+        .collect();
     linear_average(&frames)
 }
 
@@ -96,7 +99,10 @@ fn an_animated_width_blurs_to_the_average_of_its_sub_frames() {
     );
     let source: Composition = canvas(json!([growing(0.0)])).into();
     assert!(
-        is_average(&blurred.rgba, &sub_frame_average(&mut renderer, &source, at)),
+        is_average(
+            &blurred.rgba,
+            &sub_frame_average(&mut renderer, &source, at)
+        ),
         "the blur is not the average of its sub-frames"
     );
     let held = render(&mut renderer, &source, at, &media);
@@ -119,7 +125,10 @@ fn repeated_copies_blur_once_across_the_sub_frames() {
         );
         let source: Composition = canvas(json!([spreading(kind, 0.0)])).into();
         assert!(
-            is_average(&blurred.rgba, &sub_frame_average(&mut renderer, &source, at)),
+            is_average(
+                &blurred.rgba,
+                &sub_frame_average(&mut renderer, &source, at)
+            ),
             "the {kind}'s blurred copies are not the average of their sub-frames"
         );
         let held = render(&mut renderer, &source, at, &media);
@@ -248,7 +257,10 @@ fn blank_samples_leave_the_domain_where_the_source_draws() {
     assert_eq!(domain, drawn, "the blur's domain is not the shape's");
     let blank = vec![0; held.rgba.len()];
     let half = linear_average(&[&held.rgba, &held.rgba, &blank, &blank]);
-    assert!(is_average(&frame.rgba, &half), "the blur is not half the shape");
+    assert!(
+        is_average(&frame.rgba, &half),
+        "the blur is not half the shape"
+    );
     let hidden = render(&mut renderer, &blurred, 0.0, &media);
     assert!(
         hidden.rgba.iter().all(|&channel| channel == 0),
