@@ -39,6 +39,7 @@ impl MetalTarget {
     ) -> anyhow::Result<(GpuCompositionRenderer, Self)> {
         let renderer = pollster::block_on(GpuCompositionRenderer::new())
             .context("failed to initialize wgpu renderer")?;
+        renderer.check_output_size(composition)?;
         let settings = composition.render_settings();
         let (width, height) = (settings.width, settings.height);
         let pool = MetalVideoToolboxTargetPool::bgra8(

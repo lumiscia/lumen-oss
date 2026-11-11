@@ -208,6 +208,82 @@ export const expressionBuiltins = [
     "args": [
       {
         "kind": "number",
+        "name": "value"
+      }
+    ],
+    "doc": "-1, 0 or 1 by the sign of a number.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "sign",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "y"
+      },
+      {
+        "kind": "number",
+        "name": "x"
+      }
+    ],
+    "doc": "Angle in radians of the point `(x, y)` from the +x axis, in `-π..=π`.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "atan2",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "x"
+      },
+      {
+        "kind": "number",
+        "name": "y"
+      }
+    ],
+    "doc": "Length of the vector `(x, y)`.",
+    "maxArgs": 2,
+    "minArgs": 2,
+    "name": "hypot",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "value"
+      },
+      {
+        "kind": "number",
+        "name": "from_min"
+      },
+      {
+        "kind": "number",
+        "name": "from_max"
+      },
+      {
+        "kind": "number",
+        "name": "to_min"
+      },
+      {
+        "kind": "number",
+        "name": "to_max"
+      }
+    ],
+    "doc": "Maps `value` from `from_min..from_max` onto `to_min..to_max` without clamping. `from_min` and `from_max` must differ.",
+    "maxArgs": 5,
+    "minArgs": 5,
+    "name": "remap",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
         "name": "edge0"
       },
       {
@@ -764,6 +840,240 @@ export const expressionBuiltins = [
     "minArgs": 1,
     "name": "in_out_back",
     "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Sinusoidal ease-in.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_sine",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Sinusoidal ease-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_sine",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Sinusoidal ease-in-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_sine",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quartic ease-in.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_quart",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quartic ease-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_quart",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quartic ease-in-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_quart",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quintic ease-in.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_quint",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quintic ease-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_quint",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Quintic ease-in-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_quint",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Circular ease-in.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_circ",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Circular ease-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_circ",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Circular ease-in-out.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_circ",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-in that oscillates like a spring.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_elastic",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-out that overshoots and oscillates like a spring.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_elastic",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-in-out that oscillates at both ends.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_elastic",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-in that bounces.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_bounce",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-out that bounces like a dropped ball.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "out_bounce",
+    "returns": "number"
+  },
+  {
+    "args": [
+      {
+        "kind": "number",
+        "name": "t"
+      }
+    ],
+    "doc": "Ease-in-out that bounces at both ends.",
+    "maxArgs": 1,
+    "minArgs": 1,
+    "name": "in_out_bounce",
+    "returns": "number"
   }
 ] as const;
 export type ExpressionBuiltinName = (typeof expressionBuiltins)[number]["name"];
@@ -782,7 +1092,25 @@ export const easingNames = [
   "in_out_expo",
   "in_back",
   "out_back",
-  "in_out_back"
+  "in_out_back",
+  "in_sine",
+  "out_sine",
+  "in_out_sine",
+  "in_quart",
+  "out_quart",
+  "in_out_quart",
+  "in_quint",
+  "out_quint",
+  "in_out_quint",
+  "in_circ",
+  "out_circ",
+  "in_out_circ",
+  "in_elastic",
+  "out_elastic",
+  "in_out_elastic",
+  "in_bounce",
+  "out_bounce",
+  "in_out_bounce"
 ] as const;
 /** Easing names accepted by `tween`. */
 export type EasingName = (typeof easingNames)[number];
@@ -876,6 +1204,10 @@ export const expressionReservedNames = [
   "pow",
   "mod",
   "fract",
+  "sign",
+  "atan2",
+  "hypot",
+  "remap",
   "smoothstep",
   "step",
   "text_height",
@@ -909,6 +1241,24 @@ export const expressionReservedNames = [
   "in_back",
   "out_back",
   "in_out_back",
+  "in_sine",
+  "out_sine",
+  "in_out_sine",
+  "in_quart",
+  "out_quart",
+  "in_out_quart",
+  "in_quint",
+  "out_quint",
+  "in_out_quint",
+  "in_circ",
+  "out_circ",
+  "in_out_circ",
+  "in_elastic",
+  "out_elastic",
+  "in_out_elastic",
+  "in_bounce",
+  "out_bounce",
+  "in_out_bounce",
   "frame",
   "time",
   "fps",
@@ -1478,6 +1828,8 @@ export interface MergeNode extends CompositionNodeBase<"merge"> {
  * Blurs everything that moves in its source, including what analytic motion blur can't see:
  * animated sizes, path data, motion upstream of a transform and motion inside video. Analytic
  * motion blur in the source is off while it samples, and so is a `motion_blur` inside it.
+ * Content that already has its own motion blur, like a video recorded with it, is blurred
+ * twice.
  */
 export interface MotionBlurNode extends CompositionNodeBase<"motion_blur"> {
   readonly params?: {

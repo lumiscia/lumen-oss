@@ -56,6 +56,18 @@ pub struct MediaTextureKey {
     pub height: u32,
 }
 
+impl MediaTextureKey {
+    /// The key of the texture an image is drawn from at its own size.
+    pub(crate) fn of_image(resolver: &dyn crate::media::ImageResolver) -> Self {
+        let metadata = resolver.metadata();
+        Self {
+            source: resolver.id().to_string(),
+            width: metadata.width.max(1),
+            height: metadata.height.max(1),
+        }
+    }
+}
+
 impl BoundFrame {
     pub(crate) fn new() -> Self {
         Self::default()
