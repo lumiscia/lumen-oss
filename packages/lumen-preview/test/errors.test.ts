@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createLumenPreviewRuntime, type LumenPreviewBindings } from "../src/runtime.js";
+import { createLumenPreviewRuntime, type LumenPreviewBindings } from "../src/index.js";
 import {
   LumenMediaError,
   type LumenMediaErrorCode,
@@ -33,11 +33,7 @@ function controllerFailingWith(error: unknown) {
   } as unknown as LumenPreviewBindings);
   const controller = new LumenPreviewController();
   const canvas = {} as HTMLCanvasElement;
-  const render = async () => {
-    await controller.prepareFrame();
-    await controller.renderPrepared(canvas);
-  };
-  return { render, renders };
+  return { render: () => controller.renderNowAsync(canvas), renders };
 }
 
 describe("preview errors", () => {

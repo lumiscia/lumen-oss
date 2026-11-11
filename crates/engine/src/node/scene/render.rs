@@ -609,16 +609,7 @@ impl RecordNode for Render3d {
         let background = params.environment_background && !params.environment_map.is_empty();
         let environment =
             super::environment::environment(cx, self.id, &params.environment_map, background)?;
-        let scene = &collected.scene;
-        let fog = solid_linear(self.id, "Render3d", &params.fog_color)?;
-        let camera = scene.camera.unwrap_or_default();
-        let view = camera.view();
-        let draws = Draws::new(&scene.objects, &view)
-            .map_err(|error| render_error(self.id, error.to_string()))?;
-        if draws.runs.is_empty() && !background {
-            return Ok(cx.transparent(size));
-        }
-
+        let camera = collected.scene.camera.unwrap_or_default();
         // The output fits, so a supersample of 1 always does.
         let mut supersample = params.supersample.clamp(1, 4);
         while supersample > 1
@@ -632,6 +623,15 @@ impl RecordNode for Render3d {
         }
         let target_size = Size::new(size.width * supersample, size.height * supersample);
         let aspect = size.width as f32 / size.height.max(1) as f32;
+        let mipped = mip_rasters(cx, &mut collected, &camera, aspect, target_size)?;
+        let scene = &collected.scene;
+        let fog = solid_linear(self.id, "Render3d", &params.fog_color)?;
+        let view = camera.view();
+        let draws = Draws::new(&scene.objects, &view)
+            .map_err(|error| render_error(self.id, error.to_string()))?;
+        if draws.runs.is_empty() && !background {
+            return Ok(cx.transparent(size));
+        }
 
         // An environment map lights a scene without lights in place of the default ones.
         let lighting = if environment.is_some() && scene.lights.is_empty() {
@@ -740,6 +740,9 @@ impl RecordNode for Render3d {
             min_filter: wgpu::FilterMode::Linear,
             ..wgpu::SamplerDescriptor::default()
         });
+        let mipped_sampler = cx
+            .rec
+            .sampler(super::mips::RASTER_SAMPLER, super::mips::raster_sampler);
         // Objects without a raster or a map still bind a texture and sampler in its place, which
         // their shader doesn't read, as meshes without skins bind their vertices.
         let unread = cx.transparent(size).tex;
@@ -900,7 +903,13 @@ impl RecordNode for Render3d {
                 (4, lights),
                 (5, rows),
                 (6, Res::Tex(run.key.texture.unwrap_or(unread))),
-                (7, Res::Sampler(clamp)),
+                (
+                    7,
+                    Res::Sampler(match run.key.texture {
+                        Some(texture) if mipped.contains(&texture) => mipped_sampler,
+                        _ => clamp,
+                    }),
+                ),
                 (8, joints),
                 (
                     9,
@@ -991,6 +1000,77 @@ impl RecordNode for Render3d {
             bounds: None,
         })
     }
+}
+
+/// Gives each raster that objects show smaller than it is a mip chain, in place of the raster in
+/// the objects that show it, so that they are filtered rather than sampled sparsely. Returns the
+/// textures it made.
+fn mip_rasters(
+    cx: &mut FrameCx<'_>,
+    collected: &mut Collected,
+    camera: &Camera,
+    aspect: f32,
+    target: Size,
+) -> crate::Result<std::collections::HashSet<TexRef>> {
+    use super::mips;
+    if collected.rasters.is_empty() {
+        return Ok(Default::default());
+    }
+    let view_proj = camera.projection_matrix(aspect) * camera.view();
+    let rasters: std::collections::HashMap<TexRef, _> = collected
+        .rasters
+        .iter()
+        .map(|&(node, raster)| (raster.tex, (node, raster)))
+        .collect();
+    if collected
+        .scene
+        .objects
+        .iter()
+        .any(|object| object.surface.texture.is_some() && Some(object.mesh) != collected.quad)
+    {
+        collected.place_bounds();
+    }
+    // The most texels of each raster any object shows in a pixel.
+    let mut worst: std::collections::HashMap<TexRef, f32> = Default::default();
+    for object in &collected.scene.objects {
+        let Some(tex) = object.surface.texture else {
+            continue;
+        };
+        let Some(&(_, raster)) = rasters.get(&tex) else {
+            continue;
+        };
+        let size = raster.domain.storage_size;
+        // A model's surface can stretch a raster across any shape, so a texel's footprint isn't
+        // known from the object's bounds: its raster gets all its levels wherever it is in view.
+        let shown = if Some(object.mesh) == collected.quad {
+            mips::plane_texels_per_pixel(&object.world, &view_proj, size, target)
+        } else {
+            (mips::model_raster_is_mipped(size) && mips::bounds_in_view(&object.bounds, &view_proj))
+                .then_some(f32::INFINITY)
+        };
+        if let Some(shown) = shown {
+            let worst = worst.entry(tex).or_insert(shown);
+            *worst = worst.max(shown);
+        }
+    }
+    let mut made = std::collections::HashMap::new();
+    for (node, raster) in collected.rasters.clone() {
+        let Some(&shown) = worst.get(&raster.tex) else {
+            continue;
+        };
+        let levels = mips::levels_for(raster.domain.storage_size, shown);
+        if mips::is_minified(shown) && levels > 1 && !made.contains_key(&raster.tex) {
+            made.insert(raster.tex, mips::mipped(cx, node, raster, levels)?);
+        }
+    }
+    for object in &mut collected.scene.objects {
+        if let Some(texture) = object.surface.texture.as_mut()
+            && let Some(&mipped) = made.get(texture)
+        {
+            *texture = mipped;
+        }
+    }
+    Ok(made.into_values().collect())
 }
 
 /// The environment `loaded` lights the scene with, if any, seen from `camera`.

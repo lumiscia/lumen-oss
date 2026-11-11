@@ -48,6 +48,15 @@ impl TexRef {
     }
 }
 
+/// A texture with a mip chain, adopted whole and level by level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MipChain {
+    /// Every level, to sample with filtering between them.
+    pub sampled: TexRef,
+    /// Each level alone, largest first.
+    pub levels: Vec<TexRef>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProgramRef(u32);
 
@@ -845,7 +854,17 @@ impl Recorder {
 
     fn insert(&mut self, texture: Arc<wgpu::Texture>, key: PoolKey, external: bool) -> TexRef {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bytes = pool_entry_bytes(key);
+        self.insert_view(texture, view, key, pool_entry_bytes(key), external)
+    }
+
+    fn insert_view(
+        &mut self,
+        texture: Arc<wgpu::Texture>,
+        view: wgpu::TextureView,
+        key: PoolKey,
+        bytes: u64,
+        external: bool,
+    ) -> TexRef {
         if external {
             self.adopted_bytes += bytes;
         } else {
@@ -869,6 +888,54 @@ impl Recorder {
                 self.entries.push(Some(entry));
                 TexRef(self.entries.len() as u32 - 1)
             }
+        }
+    }
+
+    /// Registers a texture with a mip chain made elsewhere, both whole, to sample every level,
+    /// and as a texture per level, to draw into or sample alone.
+    pub fn adopt_mips(&mut self, texture: Arc<wgpu::Texture>) -> MipChain {
+        let usage = texture.usage();
+        let format = texture.format();
+        let levels = (0..texture.mip_level_count())
+            .map(|level| {
+                let key = PoolKey {
+                    width: (texture.width() >> level).max(1),
+                    height: (texture.height() >> level).max(1),
+                    format,
+                    usage,
+                };
+                let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                    base_mip_level: level,
+                    mip_level_count: Some(1),
+                    ..wgpu::TextureViewDescriptor::default()
+                });
+                self.insert_view(Arc::clone(&texture), view, key, 0, true)
+            })
+            .collect();
+        let key = PoolKey {
+            width: texture.width(),
+            height: texture.height(),
+            format,
+            usage,
+        };
+        let bytes = (0..texture.mip_level_count())
+            .map(|level| {
+                format.theoretical_memory_footprint(wgpu::Extent3d {
+                    width: (key.width >> level).max(1),
+                    height: (key.height >> level).max(1),
+                    depth_or_array_layers: 1,
+                })
+            })
+            .sum();
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampled = self.insert_view(texture, view, key, bytes, true);
+        MipChain { sampled, levels }
+    }
+
+    /// Lets go of a chain from `adopt_mips`.
+    pub fn forget_mips(&mut self, chain: &MipChain) {
+        for &tex in chain.levels.iter().chain([&chain.sampled]) {
+            self.forget(tex);
         }
     }
 
@@ -969,6 +1036,13 @@ impl Recorder {
         match tex.frame_index() {
             Some(index) => pool_entry_bytes(self.frame_textures[index].key),
             None => self.entry(tex).bytes,
+        }
+    }
+
+    pub fn format(&self, tex: TexRef) -> wgpu::TextureFormat {
+        match tex.frame_index() {
+            Some(index) => self.frame_textures[index].key.format,
+            None => self.entry(tex).key.format,
         }
     }
 

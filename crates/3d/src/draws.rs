@@ -2,10 +2,10 @@
 //! that bind the same mesh, textures and pipeline, laid out in one table whose rows a shader finds from the
 //! vertex it is drawing.
 
-use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 
+use foldhash::HashMap;
 use glam::{Mat3, Mat4};
 
 use crate::{Blending, MAX_SCENE_NODES, Maps, Object, mirrors, normal_matrix};
@@ -103,7 +103,7 @@ impl<M: Copy + Eq + Hash, T: Copy + Eq + Hash> Draws<M, T> {
             return Err(DrawError::TooManyObjects);
         }
         let keys: Vec<DrawKey<M, T>> = objects.iter().map(DrawKey::of).collect();
-        let mut seen: HashMap<DrawKey<M, T>, usize> = HashMap::new();
+        let mut seen: HashMap<DrawKey<M, T>, usize> = HashMap::default();
         let groups: Vec<usize> = keys
             .iter()
             .map(|&key| {

@@ -1633,6 +1633,7 @@ dependencies = [
  "bytemuck",
  "draco-core",
  "exr",
+ "foldhash",
  "glam 0.32.1",
  "gltf-json",
  "half",
