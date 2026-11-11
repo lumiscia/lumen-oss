@@ -169,7 +169,7 @@ Params:
 
 ## `color_grade`
 
-Applies a LUT-driven color transform to a raster.
+Applies a LUT-driven color transform to a raster, looking up its sRGB-encoded colour.
 
 Category: processing. Output: raster.
 
@@ -218,7 +218,7 @@ Params:
 
 ## `displacement_map`
 
-Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. Map bytes are premultiplied by alpha, so transparent areas of the map, and everything outside it, leave the source in place.
+Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. A channel byte is the sRGB code of the map's colour, and its move is scaled by the map's alpha, so transparent areas of the map, and everything outside it, leave the source in place.
 
 Category: processing. Output: raster.
 
@@ -248,9 +248,9 @@ Inputs:
 
 Params:
 
-- **`contrast`** (number, at least 0; default `1`) Contrast multiplier.
-- **`exposure`** (number; default `0`) Exposure offset in stops.
-- **`offset`** (number; default `0`) Linear color offset.
+- **`contrast`** (number, at least 0; default `1`) Contrast multiplier around sRGB-encoded mid grey, after the exposure.
+- **`exposure`** (number; default `0`) Exposure in stops, multiplying linear light by 2 to the power of this.
+- **`offset`** (number; default `0`) Offset added to the sRGB-encoded colour, after the exposure and before the contrast.
 
 ## `glow`
 
@@ -268,13 +268,13 @@ Params:
 - **`glow_only`** (boolean; default `false`) Outputs only the glow instead of adding it to the source.
 - **`intensity`** (number, 0 to 1000; default `1`) Multiplies the glow's brightness, up to 1000.
 - **`radius`** (number, at least 0; default `12`) Glow blur radius in pixels, as on `blur`. Radii above about 588 look the same.
-- **`threshold`** (number, 0 to 1; default `0.6`) Luminance from 0 to 1 where the glow starts. Brighter pixels glow more, white at full strength, and 1 lets nothing glow. Past 254/255 white dims too, so the glow fades out continuously as the threshold reaches 1.
+- **`threshold`** (number, 0 to 1; default `0.6`) Luminance from 0 to 1 where the glow starts, on the sRGB-encoded scale, so 0.5 is half way up from black to white as they look. Brighter pixels glow more, white at full strength, and 1 lets nothing glow. Past 254/255 white dims too, so the glow fades out continuously as the threshold reaches 1.
 - **`tint`** ([paint](#type-paint); default `[255,255,255,255]`) Glow colour when `tint_enabled` is set, at the brightness of the light that casts it. Must be a solid color; a gradient is an error.
 - **`tint_enabled`** (boolean; default `false`) Colours the glow with `tint` instead of the colours that cast it.
 
 ## `hue_saturation`
 
-Adjusts raster hue, saturation, and lightness.
+Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour.
 
 Category: processing. Output: raster.
 
@@ -290,7 +290,7 @@ Params:
 
 ## `levels`
 
-Remaps raster black, white, gamma, and output range.
+Remaps raster black, white, gamma, and output range of the sRGB-encoded colour.
 
 Category: processing. Output: raster.
 
@@ -509,7 +509,7 @@ Inputs:
 
 Params:
 
-- **`blend_mode`** (`"normal"` | `"multiply"` | `"screen"` | `"overlay"` | `"darken"` | `"lighten"` | `"add"` | `"difference"` | `"exclusion"` | `"color_dodge"` | `"color_burn"` | `"hard_light"` | `"soft_light"` | `"hue"` | `"saturation"` | `"color"` | `"luminosity"`; default `"normal"`) Blend mode used when combining the overlay with the base raster.
+- **`blend_mode`** (`"normal"` | `"multiply"` | `"screen"` | `"overlay"` | `"darken"` | `"lighten"` | `"add"` | `"difference"` | `"exclusion"` | `"color_dodge"` | `"color_burn"` | `"hard_light"` | `"soft_light"` | `"hue"` | `"saturation"` | `"color"` | `"luminosity"`; default `"normal"`) Blend mode used when combining the overlay with the base raster. `normal` composites in linear light; every other mode applies its formula to the sRGB-encoded colours and composites the result in linear light.
 - **`feather`** (number, at least 0; default `0`) Softens the mask edge with a Gaussian blur of this radius in pixels, applied before `invert`. Radii above about 588 look the same.
 - **`invert`** (boolean; default `false`) Swaps the masked and unmasked areas.
 - **`mask_mode`** (`"alpha"` | `"luma"`; default `"alpha"`; literal only) Channel of the `mask` input that controls overlay visibility.
@@ -527,7 +527,7 @@ Inputs:
 
 Params:
 
-- **`blend_mode`** (`"normal"` | `"multiply"` | `"screen"` | `"overlay"` | `"darken"` | `"lighten"` | `"add"` | `"difference"` | `"exclusion"` | `"color_dodge"` | `"color_burn"` | `"hard_light"` | `"soft_light"` | `"hue"` | `"saturation"` | `"color"` | `"luminosity"`; default `"normal"`) Blend mode used for each layer in the stack.
+- **`blend_mode`** (`"normal"` | `"multiply"` | `"screen"` | `"overlay"` | `"darken"` | `"lighten"` | `"add"` | `"difference"` | `"exclusion"` | `"color_dodge"` | `"color_burn"` | `"hard_light"` | `"soft_light"` | `"hue"` | `"saturation"` | `"color"` | `"luminosity"`; default `"normal"`) Blend mode used for each layer in the stack. `normal` composites in linear light; every other mode applies its formula to the sRGB-encoded colours and composites the result in linear light.
 - **`opacity`** (number, 0 to 1; default `1`) Opacity of each layer above the first, which is the base and is used as is.
 
 ## `switch`
@@ -762,7 +762,7 @@ Params:
 
 ## `media_output`
 
-Copies its source into the final composition output.
+Converts its source into the final composition output: sRGB-encoded and quantised once to the output's format.
 
 Category: output. Output: raster.
 
@@ -808,7 +808,7 @@ Fields:
 - **`center`** ([number, number]; default `[0.5,0.5]`; literal as a whole) Center of a radial or conic gradient.
 - **`end`** ([number, number]; default `[1,0]`; literal as a whole) End point of a linear gradient.
 - **`focal`** ([number, number]; literal as a whole) Focal point of a radial gradient, where the first stop's color sits. The gradient widens from it to the circle at `center` and `radius`, which gives an off-centre highlight. Defaults to `center`. A point on or outside that circle is moved to 99% of the way to it from `center`, along the same direction.
-- **`interpolation`** (`"srgb"` | `"linear_srgb"` | `"linear"`; default `"srgb"`; literal only) Color space the stops blend in.
+- **`interpolation`** (`"srgb"` | `"linear_srgb"` | `"linear"`; default `"srgb"`; literal only) Color space the stops blend in: `srgb` blends the sRGB-encoded stops, `linear_srgb` blends them in linear light.
 - **`radius`** (number | [number, number]; default `[0.5,0.5]`; literal as a whole) Horizontal and vertical radius of a radial gradient. A number sets both.
 - **`spread`** (`"pad"` | `"repeat"` | `"reflect"`; default `"pad"`; literal only) How the gradient continues past its first and last stops.
 - **`start`** ([number, number]; default `[0,0]`; literal as a whole) Start point of a linear gradient.
