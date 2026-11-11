@@ -47,6 +47,25 @@ mountPreview(document.body, {
 });
 ```
 
+A media source that can't be used (an image, video, audio, font, model or environment map that is missing, of another kind, unsupported, too large or corrupt) is reported the same way for every kind. `media` on the error says which source, what was wanted, why and where the composition uses it, and its `code` is one of `media.not_found`, `media.wrong_kind`, `media.unsupported`, `media.too_large` or `media.decode`. It is `null` for any other failure:
+
+```ts
+onError: ({ media }) => {
+  if (!media) return;
+  const where = media.at?.type === "node" ? `node ${media.at.node} \`${media.at.param}\`` : "the composition";
+  switch (media.code) {
+    case "media.not_found":
+      console.warn(`${media.source} is missing from ${where}`);
+      break;
+    case "media.too_large":
+      console.warn(`${media.source} is ${media.actual ?? "over"} (limit ${media.limit}): ${media.details}`);
+      break;
+    default:
+      console.warn(`${media.code} ${media.source}: ${media.details}`);
+  }
+},
+```
+
 Diagnostic codes are public API, and new ones can appear in a patch release, so handle codes you don't know by their `severity`. The [engine README](https://github.com/lumiscia/lumen-oss/tree/main/crates/engine#diagnostics) lists them.
 
 ## Playback controls
