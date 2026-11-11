@@ -28,6 +28,9 @@ pub struct RenderJobInput {
     /// `h264`, `hevc` or `av1`, which wins over the composition's.
     #[serde(default)]
     pub codec: Option<String>,
+    /// 8 or 10, which wins over the composition's.
+    #[serde(default)]
+    pub bit_depth: Option<u8>,
     /// What to render: the format and the frames. Without it, an MP4 of the whole timeline.
     #[serde(default)]
     pub output: Option<RenderOutput>,

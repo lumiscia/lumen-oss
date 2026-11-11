@@ -21,8 +21,8 @@ use serde_json::{Number, Value};
 use crate::{
     audio::{AudioClip, AudioGain, AudioTimeline, AudioTrack},
     composition::{
-        Composition, CompositionBuilder, CompositionTemplate, OutputCodec, OutputSettings, PropDef,
-        PropKind, RenderSettings, Scene, TimelineSettings,
+        BitDepth, Composition, CompositionBuilder, CompositionTemplate, OutputCodec,
+        OutputSettings, PropDef, PropKind, RenderSettings, Scene, TimelineSettings,
     },
     diagnostic::{Diagnostic, MAX_DIAGNOSTICS},
     error::{DocumentError, GraphValidationError, LumenError, Warning},
@@ -157,6 +157,8 @@ struct RootRenderSettingsJson {
     codec: Option<OutputCodec>,
     #[serde(default, deserialize_with = "present")]
     quality: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    bit_depth: Option<BitDepth>,
 }
 
 impl RootRenderSettingsJson {
@@ -167,10 +169,12 @@ impl RootRenderSettingsJson {
             background_color: (),
             codec,
             ref quality,
+            bit_depth,
         } = *self;
         let output = OutputSettings {
             codec,
             quality: quality.clone(),
+            bit_depth,
         };
         (RenderSettings { width, height }, output)
     }

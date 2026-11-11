@@ -29,6 +29,27 @@ pub enum OutputCodec {
     Av1,
 }
 
+/// Bits per sample of the encoded video.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(try_from = "u8")]
+pub enum BitDepth {
+    #[default]
+    Eight,
+    Ten,
+}
+
+impl TryFrom<u8> for BitDepth {
+    type Error = String;
+
+    fn try_from(bits: u8) -> Result<Self, String> {
+        match bits {
+            8 => Ok(Self::Eight),
+            10 => Ok(Self::Ten),
+            _ => Err(format!("bit depth must be 8 or 10, got {bits}")),
+        }
+    }
+}
+
 /// How the root composition asks to be encoded. Renderers ignore it; the host that encodes reads
 /// it, and resolves `quality` against the presets it defines.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -36,6 +57,7 @@ pub struct OutputSettings {
     pub codec: Option<OutputCodec>,
     /// A quality preset name, such as `high`.
     pub quality: Option<String>,
+    pub bit_depth: Option<BitDepth>,
 }
 
 /// A validated composition that can no longer change. It is fingerprinted once when built, so

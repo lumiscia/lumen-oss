@@ -2,6 +2,7 @@ import type {
   LumenModelAnimation,
   LumenModelCamera,
   LumenModelMaterial,
+  VideoBitDepth,
   VideoCodec,
 } from "@lumiscia/lumen-types";
 
@@ -31,8 +32,13 @@ export interface RenderOptions {
   /** Wins over the composition's `render_settings.codec`. Unset, the host's default applies. */
   readonly codec?: VideoCodec;
   /**
-   * The format and frames to render. Unset, an MP4 of the whole timeline. `quality` and `codec`
-   * apply to `mp4` only, and a host rejects them with another format.
+   * 10 encodes `hevc` or `av1` at 10 bits per sample. Wins over the composition's
+   * `render_settings.bit_depth`. Unset, 8. A host that can't write 10 bits rejects the render.
+   */
+  readonly bitDepth?: VideoBitDepth;
+  /**
+   * The format and frames to render. Unset, an MP4 of the whole timeline. `quality`, `codec` and
+   * `bitDepth` apply to `mp4` only, and a host rejects them with another format.
    */
   readonly output?: RenderOutput;
 }

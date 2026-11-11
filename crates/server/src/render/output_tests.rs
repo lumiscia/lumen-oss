@@ -575,3 +575,93 @@ fn quality_settings_do_not_apply_to_images() {
     ));
     assert!(render_project(&ramp(false), &options, &mut |_| {}).is_ok());
 }
+
+/// A 1024 x 64 composition, sRGB-encoded black to 30% grey from left to right.
+fn dark_gradient() -> Composition {
+    parse_composition(&json!({
+        "timeline": { "fps": FPS, "duration_frames": 2 },
+        "render_settings": { "width": 1024, "height": 64 },
+        "nodes": [
+            { "id": 1, "type": "background", "params": {
+                "paint": {
+                    "type": "linear_gradient", "start": [0, 0], "end": [1, 0],
+                    "stops": [[0, [0, 0, 0, 255]], [1, [77, 77, 77, 255]]]
+                },
+                "width": 1024, "height": 64, "paint_supersample": false
+            } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_ten_bit_video_keeps_more_luma_levels_than_eight_bits_have() {
+    let setup = Setup::new();
+    let scratch = tempfile::tempdir().unwrap();
+    let lossless = EncoderQuality {
+        options: vec![("x265-params".to_string(), "lossless=1".to_string())],
+        ..EncoderQuality::default()
+    };
+    let mut rendered = 0;
+    for (encoder, quality) in [
+        ("libx265", lossless),
+        ("libsvtav1", EncoderQuality::default()),
+    ] {
+        if lumen_ffmpeg::encoder_info(encoder).is_err() {
+            eprintln!("{encoder} isn't in this FFmpeg build; skipping its 10-bit render");
+            continue;
+        }
+        let mut options = setup.options(RenderOutput::default());
+        options.encoder = Some(
+            VideoEncoderChoice::single(encoder, quality)
+                .with_bit_depth(lumen_ffmpeg::BitDepth::Ten),
+        );
+        let bytes = render_project(&dark_gradient(), &options, &mut |_| {})
+            .unwrap()
+            .bytes;
+        let path = scratch.path().join(format!("{encoder}.mp4"));
+        fs::write(&path, &bytes).unwrap();
+        let input = InputContext::open(path.to_string_lossy().to_string()).unwrap();
+        assert_eq!(
+            input.best_video_stream().unwrap().pixel_format,
+            lumen_ffmpeg::PixelFormat::Yuv420p10,
+            "{encoder}"
+        );
+        rendered += 1;
+        if encoder != "libx265" {
+            continue;
+        }
+        let (frames, _) = decode(&bytes, scratch.path());
+        let frame = &frames[0];
+        assert_eq!(frame.depth, 10);
+        let levels: std::collections::BTreeSet<u16> =
+            (0..frame.width).map(|x| frame.sample(x, 32)[0]).collect();
+        // Eight bits hold 67 codes from black to 30% grey, ten bits 264.
+        assert!(levels.len() > 256, "{} luma levels", levels.len());
+        assert!(
+            levels.iter().all(|code| (64..=330).contains(code)),
+            "{levels:?}"
+        );
+    }
+    if rendered == 0 {
+        eprintln!("no 10-bit software encoder in this FFmpeg build");
+    }
+}
+
+#[test]
+fn a_ten_bit_render_fails_where_the_encoder_cannot_rather_than_writing_eight_bits() {
+    let setup = Setup::new();
+    let mut options = setup.options(RenderOutput::default());
+    options.encoder = Some(
+        VideoEncoderChoice::single("libx264", EncoderQuality::default())
+            .with_bit_depth(lumen_ffmpeg::BitDepth::Ten),
+    );
+    let Err(error) = render_project(&dark_gradient(), &options, &mut |_| {}) else {
+        panic!("H.264 can't be encoded at 10 bits");
+    };
+    assert_eq!(error.code(), ErrorCode::EncodeFailed);
+    assert!(error.to_string().contains("always 8-bit"), "{error}");
+    assert!(setup.nothing_left_behind());
+}

@@ -32,6 +32,13 @@ impl VulkanFrameLayout {
         }
     }
 
+    pub fn p010(width: u32, height: u32) -> Self {
+        Self {
+            depth: 10,
+            ..Self::nv12(width, height)
+        }
+    }
+
     pub fn bytes_per_sample(&self) -> u32 {
         if self.depth > 8 { 2 } else { 1 }
     }
@@ -93,15 +100,13 @@ impl VulkanFrameLayout {
     }
 }
 
-/// An NV12 frame in a Vulkan buffer on a [`VulkanDevice`]: [`nv12_pitch`](Self::nv12_pitch)-byte
-/// luma rows, followed at [`nv12_chroma_offset`](Self::nv12_chroma_offset) by interleaved CbCr rows
-/// of the same pitch.
+/// An NV12 or P010 frame in a Vulkan buffer on a [`VulkanDevice`], laid out as its
+/// [`VulkanFrameLayout`] describes.
 #[derive(Clone)]
 pub struct VulkanVideoFrame {
     device: vk::Device,
     buffer: vk::Buffer,
-    width: u32,
-    height: u32,
+    layout: VulkanFrameLayout,
     pts: Option<i64>,
     // Keeps the buffer alive until the GPU copy that reads it has finished.
     _retention: Arc<dyn Send + Sync>,
@@ -113,8 +118,7 @@ impl std::fmt::Debug for VulkanVideoFrame {
             .debug_struct("VulkanVideoFrame")
             .field("device", &self.device)
             .field("buffer", &self.buffer)
-            .field("width", &self.width)
-            .field("height", &self.height)
+            .field("layout", &self.layout)
             .field("pts", &self.pts)
             .finish_non_exhaustive()
     }
@@ -124,21 +128,20 @@ impl VulkanVideoFrame {
     /// # Safety
     ///
     /// `buffer` must belong to `device`, have `TRANSFER_SRC` usage and hold at least
-    /// [`nv12_size`](Self::nv12_size) bytes written by work already submitted to the device's render
-    /// queue. `retention` must keep `device` and `buffer` alive.
+    /// `layout.size()` bytes written by work already submitted to the device's render queue.
+    /// `layout` must be [`VulkanFrameLayout::nv12`] or [`VulkanFrameLayout::p010`]. `retention`
+    /// must keep `device` and `buffer` alive.
     pub unsafe fn new(
         device: vk::Device,
         buffer: vk::Buffer,
-        width: u32,
-        height: u32,
+        layout: VulkanFrameLayout,
         pts: Option<i64>,
         retention: Arc<dyn Send + Sync>,
     ) -> Self {
         Self {
             device,
             buffer,
-            width,
-            height,
+            layout,
             pts,
             _retention: retention,
         }
@@ -166,7 +169,11 @@ impl VulkanVideoFrame {
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
+        (self.layout.width, self.layout.height)
+    }
+
+    pub fn layout(&self) -> VulkanFrameLayout {
+        self.layout
     }
 
     pub fn pts(&self) -> Option<i64> {
@@ -608,8 +615,8 @@ impl VulkanDevice {
     ///
     /// # Safety
     ///
-    /// `frame` must be on this device and `target` must be a locked, single-image NV12 frame of the
-    /// same size from a frames context on this device.
+    /// `frame` must be on this device and `target` must be a locked, single-image frame of the
+    /// frame's size and format from a frames context on this device.
     pub(crate) unsafe fn upload(
         &self,
         frame: &VulkanVideoFrame,
@@ -620,7 +627,7 @@ impl VulkanDevice {
             if (*target).img[1] != 0 {
                 return Err(FfmpegError::new(
                     "VulkanDevice::upload",
-                    "expected encoder frames to be a single multi-planar NV12 image",
+                    "expected encoder frames to be a single multi-planar image",
                 )
                 .with_backend(BACKEND));
             }
@@ -633,8 +640,9 @@ impl VulkanDevice {
             )
         };
 
-        let (width, height) = frame.dimensions();
-        let pitch = VulkanVideoFrame::nv12_pitch(width);
+        let layout = frame.layout();
+        let (width, height) = (layout.width, layout.height);
+        let sample = layout.bytes_per_sample();
         let plane = |aspect, offset, row_length, width, height| vk::BufferImageCopy {
             buffer_offset: offset,
             buffer_row_length: row_length,
@@ -652,12 +660,19 @@ impl VulkanDevice {
                 depth: 1,
             },
         };
+        // Row lengths count texels: a sample in the luma plane, a Cb, Cr pair in the chroma one.
         let regions = [
-            plane(vk::ImageAspectFlags::PLANE_0, 0, pitch, width, height),
+            plane(
+                vk::ImageAspectFlags::PLANE_0,
+                0,
+                layout.luma_pitch() / sample,
+                width,
+                height,
+            ),
             plane(
                 vk::ImageAspectFlags::PLANE_1,
-                VulkanVideoFrame::nv12_chroma_offset(width, height),
-                pitch / 2,
+                layout.chroma_offset(),
+                layout.chroma_pitch() / (2 * sample),
                 width / 2,
                 height / 2,
             ),

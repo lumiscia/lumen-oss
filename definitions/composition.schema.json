@@ -576,8 +576,14 @@
     },
     "renderSettings": {
       "additionalProperties": false,
-      "description": "The canvas, and how the host that renders the video encodes it. Previews ignore `codec` and `quality`.",
+      "description": "The canvas, and how the host that renders the video encodes it. Previews ignore `codec`, `quality` and `bit_depth`.",
       "properties": {
+        "bit_depth": {
+          "description": "Bits per sample of the rendered video: 8, the default, or 10 for `hevc` and `av1`. H.264 is always 8-bit, and a host whose encoders can't write 10 bits rejects the render rather than writing 8. A render request's `bit_depth` wins over it.",
+          "enum": [8, 10],
+          "type": "integer",
+          "x-lumen-type": "VideoBitDepth"
+        },
         "codec": {
           "description": "Video codec of the rendered file. A render request's `codec` wins over it.",
           "enum": ["h264", "hevc", "av1"],

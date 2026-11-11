@@ -1,4 +1,6 @@
-use std::ffi::CString;
+use std::{ffi::CString, fmt, str::FromStr};
+
+use serde::Deserialize;
 
 use crate::ffi::sys;
 use crate::gpu::GpuBackend;
@@ -53,6 +55,82 @@ impl EncoderFamily {
                 | (Self::Vulkan, GpuBackend::Vulkan)
                 | (Self::VideoToolbox, GpuBackend::Metal)
         )
+    }
+}
+
+/// Bits per sample of an encoded video stream.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(try_from = "u8")]
+pub enum BitDepth {
+    #[default]
+    Eight,
+    Ten,
+}
+
+impl BitDepth {
+    pub fn bits(self) -> u8 {
+        match self {
+            Self::Eight => 8,
+            Self::Ten => 10,
+        }
+    }
+}
+
+impl TryFrom<u8> for BitDepth {
+    type Error = String;
+
+    fn try_from(bits: u8) -> std::result::Result<Self, String> {
+        match bits {
+            8 => Ok(Self::Eight),
+            10 => Ok(Self::Ten),
+            _ => Err(format!("bit depth must be 8 or 10, got {bits}")),
+        }
+    }
+}
+
+impl FromStr for BitDepth {
+    type Err = String;
+
+    fn from_str(bits: &str) -> std::result::Result<Self, String> {
+        bits.parse::<u8>()
+            .map_err(|_| format!("bit depth must be 8 or 10, got `{bits}`"))?
+            .try_into()
+    }
+}
+
+impl fmt::Display for BitDepth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}-bit", self.bits())
+    }
+}
+
+/// Errors with why `encoder` can't write `depth`, without opening it. H.264 output is always
+/// 8-bit, VideoToolbox has no 10-bit path, and a software encoder must take 10-bit YUV 4:2:0.
+/// Vulkan and NVENC encoders find out whether their device can when they open.
+pub fn check_bit_depth(encoder: &str, depth: BitDepth) -> std::result::Result<(), String> {
+    if depth == BitDepth::Eight {
+        return Ok(());
+    }
+    let codec = video_encoder_by_name(encoder).map_err(|error| error.message)?;
+    if VideoCodec::from_av_codec_id(unsafe { (*codec).id }) == VideoCodec::H264 {
+        return Err(format!(
+            "H.264 output is always 8-bit, so `{encoder}` can't encode {depth}; use hevc or av1"
+        ));
+    }
+    match EncoderFamily::of(encoder) {
+        EncoderFamily::VideoToolbox => Err(format!(
+            "{depth} is not supported by this encoder (`{encoder}`)"
+        )),
+        EncoderFamily::Vulkan | EncoderFamily::Nvenc => Ok(()),
+        _ if pixel_formats(codec).is_none_or(|formats| {
+            formats.contains(&sys::AVPixelFormat::AV_PIX_FMT_YUV420P10LE)
+        }) =>
+        {
+            Ok(())
+        }
+        _ => Err(format!(
+            "`{encoder}` doesn't take the {depth} YUV 4:2:0 frames lumen encodes from"
+        )),
     }
 }
 
@@ -258,6 +336,30 @@ mod tests {
             let error = encoder_info(name).unwrap_err();
             assert!(error.message.contains(expected), "{name}: {error}");
         }
+    }
+
+    #[test]
+    fn ten_bit_needs_an_encoder_that_writes_it() {
+        assert_eq!(check_bit_depth("libx264", BitDepth::Eight), Ok(()));
+        let h264 = check_bit_depth("libx264", BitDepth::Ten).unwrap_err();
+        assert!(h264.contains("always 8-bit"), "{h264}");
+        for encoder in [
+            "libx265",
+            "libsvtav1",
+            "hevc_vulkan",
+            "av1_vulkan",
+            "hevc_nvenc",
+        ] {
+            if encoder_info(encoder).is_ok() {
+                assert_eq!(check_bit_depth(encoder, BitDepth::Ten), Ok(()), "{encoder}");
+            }
+        }
+        if encoder_info("hevc_videotoolbox").is_ok() {
+            let error = check_bit_depth("hevc_videotoolbox", BitDepth::Ten).unwrap_err();
+            assert!(error.contains("not supported by this encoder"), "{error}");
+        }
+        assert_eq!("10".parse(), Ok(BitDepth::Ten));
+        assert!("12".parse::<BitDepth>().is_err());
     }
 
     #[test]

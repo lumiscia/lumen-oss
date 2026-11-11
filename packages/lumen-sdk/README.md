@@ -36,14 +36,15 @@ const composition = new Composition({ timeline: { durationSeconds: 3 } }).addOut
 );
 ```
 
-`render` takes `quality`, a preset name (`draft`, `standard`, `high` or `lossless` on every host), and `codec`, `h264`, `hevc` or `av1`. They win over the composition's `renderSettings.quality` and `renderSettings.codec`, and a host that can't serve them rejects the render:
+`render` takes `quality`, a preset name (`draft`, `standard`, `high` or `lossless` on every host), `codec`, `h264`, `hevc` or `av1`, and `bitDepth`, 8 (the default) or 10 for `hevc` and `av1`. They win over the composition's `renderSettings.quality`, `renderSettings.codec` and `renderSettings.bit_depth`, and a host that can't serve them rejects the render:
 
 ```ts
 const composition = new Composition({ renderSettings: { codec: "hevc", quality: "high" } });
 await lumen.render(composition, { quality: "lossless", codec: "h264" });
+await lumen.render(composition, { codec: "hevc", bitDepth: 10 });
 ```
 
-`output` picks what is rendered: an `mp4` (the default), a `png` or `jpeg` still, or a `png_sequence` or `jpeg_sequence`. `frames` is `start..end` of the timeline with `end` not included, like the player's `range: { in, out }`; an MP4 or sequence starts at time 0 and an MP4's audio is cut to the same span. A still is the frame at `start` (0 by default). A PNG keeps transparency, a JPEG is opaque and takes `jpegQuality` from 1 to 100 (default 90), and a sequence downloads as one ZIP of `frame_0000.png`-style files named with the timeline's frame numbers. `quality` and `codec` apply to `mp4` only. The downloaded response carries the right `Content-Type` and filename, and `outputFile(output)` gives the same content type and extension up front:
+`output` picks what is rendered: an `mp4` (the default), a `png` or `jpeg` still, or a `png_sequence` or `jpeg_sequence`. `frames` is `start..end` of the timeline with `end` not included, like the player's `range: { in, out }`; an MP4 or sequence starts at time 0 and an MP4's audio is cut to the same span. A still is the frame at `start` (0 by default). A PNG keeps transparency, a JPEG is opaque and takes `jpegQuality` from 1 to 100 (default 90), and a sequence downloads as one ZIP of `frame_0000.png`-style files named with the timeline's frame numbers. `quality`, `codec` and `bitDepth` apply to `mp4` only. The downloaded response carries the right `Content-Type` and filename, and `outputFile(output)` gives the same content type and extension up front:
 
 ```ts
 const clip = await lumen.render(composition, { output: { frames: { start: 30, end: 90 } } });

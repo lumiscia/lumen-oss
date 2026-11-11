@@ -9,8 +9,9 @@ use sys::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA;
 use sys::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN;
 #[cfg(feature = "cuda")]
 use sys::AVPixelFormat::AV_PIX_FMT_CUDA;
-use sys::AVPixelFormat::{AV_PIX_FMT_NV12, AV_PIX_FMT_VULKAN};
+use sys::AVPixelFormat::{AV_PIX_FMT_NV12, AV_PIX_FMT_P010LE, AV_PIX_FMT_VULKAN};
 
+use super::codec::BitDepth;
 use super::video::VideoEncoderConfig;
 
 pub(crate) struct EncoderHwContexts {
@@ -38,11 +39,12 @@ pub(crate) fn create_encoder_hw_contexts(
                 GpuBackend::Cuda,
                 ordinal.as_deref(),
             )?;
+            let sw_format = semi_planar(config.bit_depth);
             let frames = AvBufferRef::new_hw_frames(
                 &device,
                 GpuBackend::Cuda,
                 AV_PIX_FMT_CUDA,
-                AV_PIX_FMT_NV12,
+                sw_format,
                 config.width,
                 config.height,
             )?;
@@ -50,7 +52,7 @@ pub(crate) fn create_encoder_hw_contexts(
                 backend: GpuBackend::Cuda,
                 frames,
                 hw_format: AV_PIX_FMT_CUDA,
-                sw_format: AV_PIX_FMT_NV12,
+                sw_format,
             }))
         }
         #[cfg(feature = "vulkan")]
@@ -60,7 +62,7 @@ pub(crate) fn create_encoder_hw_contexts(
                 .as_ref()
                 .ok_or_else(missing_vulkan_device)?
                 .hw_device()?;
-            vulkan_nv12_contexts(&device, config).map(Some)
+            vulkan_contexts(&device, config).map(Some)
         }
         #[cfg(feature = "metal")]
         EncodeMode::GpuTexture(GpuBackend::Metal) => Ok(None),
@@ -70,33 +72,49 @@ pub(crate) fn create_encoder_hw_contexts(
             format!("this build has no {backend:?} texture encode"),
         )
         .with_backend(backend)),
-        // Vulkan Video encoders only accept Vulkan frames, so CPU frames are uploaded as NV12.
+        // Vulkan Video encoders only accept Vulkan frames, so CPU frames are uploaded as NV12 or
+        // P010.
         EncodeMode::CpuUpload if takes_hw_frames(codec, AV_PIX_FMT_VULKAN) => {
             let device =
                 AvBufferRef::new_hw_device(AV_HWDEVICE_TYPE_VULKAN, GpuBackend::Vulkan, None)?;
-            vulkan_nv12_contexts(&device, config).map(Some)
+            vulkan_contexts(&device, config).map(Some)
         }
         EncodeMode::CpuUpload => Ok(None),
     }
 }
 
-fn vulkan_nv12_contexts(
-    device: &AvBufferRef,
-    config: &VideoEncoderConfig,
-) -> Result<EncoderHwContexts> {
+/// The two-plane format hardware encoders of `depth` read.
+fn semi_planar(depth: BitDepth) -> sys::AVPixelFormat {
+    match depth {
+        BitDepth::Eight => AV_PIX_FMT_NV12,
+        BitDepth::Ten => AV_PIX_FMT_P010LE,
+    }
+}
+
+fn vulkan_contexts(device: &AvBufferRef, config: &VideoEncoderConfig) -> Result<EncoderHwContexts> {
+    let sw_format = semi_planar(config.bit_depth);
     let frames = AvBufferRef::new_hw_frames(
         device,
         GpuBackend::Vulkan,
         AV_PIX_FMT_VULKAN,
-        AV_PIX_FMT_NV12,
+        sw_format,
         config.width,
         config.height,
-    )?;
+    )
+    .map_err(|mut error| {
+        if config.bit_depth == BitDepth::Ten {
+            error.message = format!(
+                "the Vulkan device has no P010 frames for 10-bit encode: {}",
+                error.message
+            );
+        }
+        error
+    })?;
     Ok(EncoderHwContexts {
         backend: GpuBackend::Vulkan,
         frames,
         hw_format: AV_PIX_FMT_VULKAN,
-        sw_format: AV_PIX_FMT_NV12,
+        sw_format,
     })
 }
 

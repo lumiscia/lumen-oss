@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, env, fmt, path::Path, str::FromStr};
 use serde::Deserialize;
 
 use super::choice::{EncoderCandidate, VideoEncoderChoice};
-use super::codec::{EncoderFamily, encoder_info};
+use super::codec::{BitDepth, EncoderFamily, check_bit_depth, encoder_info};
 use super::quality::{
     EncoderQuality, RateControl, check_raw_options, one_rate_control, parse_bitrate,
     portable_options,
@@ -175,6 +175,8 @@ const BUILT_IN: [(&str, &[(&str, BuiltIn)]); 4] = [
 struct Preset {
     /// The codec used when neither the request nor the composition names one.
     codec: Option<EncodeCodec>,
+    /// The bit depth used when neither the request nor the composition names one.
+    bit_depth: Option<BitDepth>,
     encoders: BTreeMap<String, EncoderQuality>,
 }
 
@@ -193,6 +195,8 @@ pub struct QualityConfig {
 pub struct QualityRequest {
     pub preset: Option<String>,
     pub codec: Option<EncodeCodec>,
+    /// 8-bit unless the request or its preset asks for 10.
+    pub bit_depth: Option<BitDepth>,
     /// Settings every candidate uses in place of a preset's, from lumen-local's rate-control flags.
     pub settings: Option<EncoderQuality>,
     /// The one encoder to use, with no fallback.
@@ -246,6 +250,7 @@ impl QualityConfig {
                     .collect();
                 let preset = Preset {
                     codec: None,
+                    bit_depth: None,
                     encoders,
                 };
                 (name.to_string(), preset)
@@ -313,6 +318,11 @@ impl QualityConfig {
                             "presets.{name}.codec: built-in presets have no codec"
                         ));
                     }
+                    if preset.bit_depth.is_some() {
+                        return Err(format!(
+                            "presets.{name}.bit_depth: built-in presets have no bit depth"
+                        ));
+                    }
                     built_in.encoders.extend(encoders);
                 }
                 None => {
@@ -320,6 +330,7 @@ impl QualityConfig {
                         name,
                         Preset {
                             codec: preset.codec,
+                            bit_depth: preset.bit_depth,
                             encoders,
                         },
                     );
@@ -341,18 +352,19 @@ impl QualityConfig {
         Ok(config)
     }
 
-    /// The encoders a render tries for `request`, in order, each with its preset's settings.
-    /// Errors when the preset isn't defined, when no encoder of the codec has an entry in it or is
-    /// in this FFmpeg build, or when the pinned encoder isn't in the build or doesn't fit the
-    /// request's codec or the preset.
+    /// The encoders a render tries for `request`, in order, each with its preset's settings, at
+    /// the request's bit depth. Errors when the preset isn't defined, when no encoder of the codec
+    /// has an entry in it, is in this FFmpeg build or can write the bit depth, or when the pinned
+    /// encoder isn't in the build or doesn't fit the request's codec, bit depth or the preset.
     pub fn resolve(&self, request: &QualityRequest) -> Result<VideoEncoderChoice, String> {
-        self.resolve_with(request, encoder_codec)
+        self.resolve_with(request, encoder_codec, check_bit_depth)
     }
 
     fn resolve_with(
         &self,
         request: &QualityRequest,
         codec_of: impl Fn(&str) -> Result<EncodeCodec, String>,
+        writes_depth: impl Fn(&str, BitDepth) -> Result<(), String>,
     ) -> Result<VideoEncoderChoice, String> {
         let pinned = request
             .encoder
@@ -370,6 +382,7 @@ impl QualityConfig {
             Some(settings) => Some(settings.clone()),
             None => preset.encoders.get(encoder).cloned(),
         };
+        let bit_depth = request.bit_depth.or(preset.bit_depth).unwrap_or_default();
 
         if let Some(encoder) = pinned {
             let encodes = codec_of(encoder)?;
@@ -383,10 +396,16 @@ impl QualityConfig {
             let quality = quality_for(encoder).ok_or_else(|| {
                 format!("quality preset `{name}` has no settings for `{encoder}`, the encoder this host uses")
             })?;
-            return Ok(VideoEncoderChoice::single(encoder, quality));
+            writes_depth(encoder, bit_depth)?;
+            return Ok(VideoEncoderChoice::single(encoder, quality).with_bit_depth(bit_depth));
         }
 
         let codec = request.codec.or(preset.codec).unwrap_or(self.default_codec);
+        if bit_depth == BitDepth::Ten && codec == EncodeCodec::H264 {
+            return Err(
+                "H.264 output is always 8-bit; ask for hevc or av1 to encode 10-bit".to_string(),
+            );
+        }
         let encoders = self.encoders(codec);
         let candidates: Vec<_> = encoders
             .iter()
@@ -411,12 +430,33 @@ impl QualityConfig {
                     .join(", ")
             ));
         }
-        VideoEncoderChoice::new(candidates).ok_or_else(|| {
-            format!(
-                "quality preset `{name}` has no settings for any {codec} encoder this host tries: {}",
-                encoders.join(", ")
+        let mut refusals = Vec::new();
+        let candidates: Vec<_> = candidates
+            .into_iter()
+            .filter(
+                |candidate| match writes_depth(&candidate.encoder, bit_depth) {
+                    Ok(()) => true,
+                    Err(reason) => {
+                        refusals.push(reason);
+                        false
+                    }
+                },
             )
-        })
+            .collect();
+        if candidates.is_empty() && !refusals.is_empty() {
+            return Err(format!(
+                "no {codec} encoder this host tries can encode {bit_depth}: {}",
+                refusals.join("; ")
+            ));
+        }
+        VideoEncoderChoice::new(candidates)
+            .map(|choice| choice.with_bit_depth(bit_depth))
+            .ok_or_else(|| {
+                format!(
+                    "quality preset `{name}` has no settings for any {codec} encoder this host tries: {}",
+                    encoders.join(", ")
+                )
+            })
     }
 
     /// The encoders tried for `codec`, in order.
@@ -464,6 +504,7 @@ struct CodecFile {
 #[serde(deny_unknown_fields)]
 struct PresetFile {
     codec: Option<EncodeCodec>,
+    bit_depth: Option<BitDepth>,
     #[serde(default)]
     encoders: BTreeMap<String, EncoderFile>,
 }
@@ -568,6 +609,18 @@ mod tests {
         }
     }
 
+    /// Which encoders write 10-bit, standing in for this FFmpeg build.
+    fn depth_by_name(encoder: &str, depth: BitDepth) -> Result<(), String> {
+        let eight_bit_only = encoder == "libx264"
+            || encoder.starts_with("h264_")
+            || encoder.ends_with("_videotoolbox");
+        if depth == BitDepth::Ten && eight_bit_only {
+            Err(format!("`{encoder}` can't encode 10-bit"))
+        } else {
+            Ok(())
+        }
+    }
+
     impl QualityConfig {
         fn resolve_with_env(
             &self,
@@ -575,7 +628,7 @@ mod tests {
             from_env: Option<&str>,
         ) -> Result<VideoEncoderChoice, String> {
             let request = request.clone().with_encoder_fallback(from_env);
-            self.resolve_with(&request, codec_by_name)
+            self.resolve_with(&request, codec_by_name, depth_by_name)
         }
     }
 
@@ -766,7 +819,7 @@ mod tests {
         let config = QualityConfig::built_in();
         let hevc = request(None, Some(EncodeCodec::Hevc));
         let error = config
-            .resolve_with(&hevc, |_| Err("not built".to_string()))
+            .resolve_with(&hevc, |_| Err("not built".to_string()), depth_by_name)
             .unwrap_err();
         assert!(error.contains("libx265"), "{error}");
         // A missing candidate before an available one is left to fall through at look-up.
@@ -774,8 +827,81 @@ mod tests {
             "libx265" => Ok(EncodeCodec::Hevc),
             _ => Err("not built".to_string()),
         };
-        let choice = config.resolve_with(&hevc, only_software).unwrap();
+        let choice = config
+            .resolve_with(&hevc, only_software, depth_by_name)
+            .unwrap();
         assert_eq!(encoders(&choice), EncodeCodec::Hevc.default_encoders());
+    }
+
+    #[test]
+    fn ten_bit_is_asked_for_and_never_given_by_an_encoder_that_cant() {
+        let ten = |codec, encoder: Option<&str>| QualityRequest {
+            codec,
+            bit_depth: Some(BitDepth::Ten),
+            encoder: encoder.map(str::to_string),
+            ..QualityRequest::default()
+        };
+        let config = QualityConfig::built_in();
+        let default = config
+            .resolve_with_env(&QualityRequest::default(), None)
+            .unwrap();
+        assert_eq!(default.bit_depth(), BitDepth::Eight);
+
+        let hevc = config
+            .resolve_with_env(&ten(Some(EncodeCodec::Hevc), None), None)
+            .unwrap();
+        assert_eq!(hevc.bit_depth(), BitDepth::Ten);
+        assert!(encoders(&hevc).contains(&"libx265"), "{hevc:?}");
+        assert!(
+            !encoders(&hevc)
+                .iter()
+                .any(|name| name.ends_with("_videotoolbox"))
+        );
+
+        let h264 = config.resolve_with_env(&ten(None, None), None).unwrap_err();
+        assert!(h264.contains("always 8-bit"), "{h264}");
+        let pinned = config
+            .resolve_with_env(&ten(None, Some("hevc_videotoolbox")), None)
+            .unwrap_err();
+        assert!(pinned.contains("hevc_videotoolbox"), "{pinned}");
+
+        let only_videotoolbox = self::config(json!({
+            "codecs": { "hevc": { "encoders": ["hevc_videotoolbox"] } }
+        }));
+        if let Ok(only_videotoolbox) = only_videotoolbox {
+            let error = only_videotoolbox
+                .resolve_with_env(&ten(Some(EncodeCodec::Hevc), None), None)
+                .unwrap_err();
+            assert!(error.contains("can encode 10-bit"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_configured_preset_can_ask_for_ten_bit() {
+        let config = config(json!({
+            "presets": {
+                "master": {
+                    "codec": "hevc",
+                    "bit_depth": 10,
+                    "encoders": { "libx265": { "crf": 16 } }
+                }
+            }
+        }));
+        // This FFmpeg build may not have libx265.
+        let Ok(config) = config else { return };
+        let choice = config
+            .resolve_with_env(&request(Some("master"), None), None)
+            .unwrap();
+        assert_eq!(choice.bit_depth(), BitDepth::Ten);
+        let eight = QualityRequest {
+            preset: Some("master".to_string()),
+            bit_depth: Some(BitDepth::Eight),
+            ..QualityRequest::default()
+        };
+        assert_eq!(
+            config.resolve_with_env(&eight, None).unwrap().bit_depth(),
+            BitDepth::Eight
+        );
     }
 
     #[test]
@@ -882,6 +1008,14 @@ mod tests {
             (
                 json!({ "default_preset": "archive" }),
                 "default_preset `archive`",
+            ),
+            (
+                json!({ "presets": { "high": { "bit_depth": 10 } } }),
+                "built-in presets have no bit depth",
+            ),
+            (
+                json!({ "presets": { "x": { "bit_depth": 12 } } }),
+                "bit depth must be 8 or 10",
             ),
         ] {
             let error = config(value.clone()).unwrap_err();

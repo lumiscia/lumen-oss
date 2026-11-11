@@ -101,7 +101,7 @@ A failed render is a `ServerRenderError`. `code()` is an `ErrorCode` to match on
 | Code                      | Meaning                                                                                                                                                                          |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `invalid_project_payload` | The payload is not a composition. The source is the engine's `ParseError` with its diagnostics.                                                                                  |
-| `invalid_quality`         | The quality preset or codec resolves to no encoder.                                                                                                                              |
+| `invalid_quality`         | The quality preset, codec or bit depth resolves to no encoder.                                                                                                                   |
 | `invalid_output`          | The output can't be rendered: an empty range, a range past the timeline, a still of several frames, or a JPEG quality outside 1 to 100 or on a format that isn't JPEG.           |
 | `output_too_large`        | An image sequence has more frames, or adds up to more bytes, than its limits allow.                                                                                              |
 | `invalid_render_profile`  | An encoder that doesn't exist, or a frame rate the encoder can't take.                                                                                                           |
@@ -143,13 +143,15 @@ The exposed Axum API is intentionally binary-owned. The HTTP binary accepts the 
 }
 ```
 
-`quality` and `codec` are optional. `quality` names a preset: `draft`, `standard`, `high` and `lossless` exist on every host, and the [quality config](#quality-config) can add others. `codec` is `h264`, `hevc` or `av1`. Each wins over the composition's `render_settings.quality` and `render_settings.codec`, which win over the config's defaults, then `standard` and `h264`.
+`quality`, `codec` and `bit_depth` are optional. `quality` names a preset: `draft`, `standard`, `high` and `lossless` exist on every host, and the [quality config](#quality-config) can add others. `codec` is `h264`, `hevc` or `av1`. `bit_depth` is `8` (the default) or `10`, which encodes HEVC Main 10 or 10-bit AV1, quantised once from the renderer's float colour. Each wins over the composition's `render_settings.quality`, `render_settings.codec` and `render_settings.bit_depth`, which win over the config's defaults, then `standard`, `h264` and 8 bits.
 
 ```json
-{ "composition": { "...": "..." }, "quality": "high", "codec": "hevc" }
+{ "composition": { "...": "..." }, "quality": "high", "codec": "hevc", "bit_depth": 10 }
 ```
 
-They're resolved when the render is requested, with the same resolver the render uses. A preset this host doesn't define, a codec none of the encoders it tries has settings for, or a codec other than the one `LUMEN_VIDEO_ENCODER`'s encoder writes returns `422` with the code `invalid_quality`.
+They're resolved when the render is requested, with the same resolver the render uses. A preset this host doesn't define, a codec none of the encoders it tries has settings for, a codec other than the one `LUMEN_VIDEO_ENCODER`'s encoder writes, or 10 bits with `h264` or with no encoder that writes them returns `422` with the code `invalid_quality`.
+
+10-bit is never traded for 8: an encoder that can't write it is skipped like one that won't open, and a pinned one fails the render. `libx265` and `libsvtav1` write `yuv420p10le`; `hevc_vulkan`, `av1_vulkan` and NVENC take P010 where the device supports it, which is only known when they open; H.264 and VideoToolbox are always 8-bit.
 
 `output` is optional and picks what is rendered. Without it the artifact is an MP4 of the whole timeline, as before:
 
@@ -169,7 +171,7 @@ They're resolved when the render is requested, with the same resolver the render
 | `jpeg`                          | `image/jpeg`      | One opaque frame, transparent pixels composited onto black.                                  |
 | `png_sequence`, `jpeg_sequence` | `application/zip` | A stored ZIP with `frame_0000.png` or `.jpg` per frame, numbered with the timeline's frames. |
 
-`quality` and `codec` apply to `mp4` only: sent with another format they return `422` with `invalid_output`, and an `output` can't carry encoder settings. The range and the format's options are checked when the render is requested: an empty range, one past the timeline, a still of more than one frame or a `jpeg_quality` outside 1 to 100 or on another format is `422` with `invalid_output`, and a sequence longer than `--max-sequence-frames` is `422` with `output_too_large`. A sequence whose images add up to more than `--max-sequence-bytes` ends as `failed` with `output_too_large`. Progress counts the frames of the range, and cancelling a sequence stops it before its next frame.
+`quality`, `codec` and `bit_depth` apply to `mp4` only: sent with another format they return `422` with `invalid_output`, and an `output` can't carry encoder settings. The range and the format's options are checked when the render is requested: an empty range, one past the timeline, a still of more than one frame or a `jpeg_quality` outside 1 to 100 or on another format is `422` with `invalid_output`, and a sequence longer than `--max-sequence-frames` is `422` with `output_too_large`. A sequence whose images add up to more than `--max-sequence-bytes` ends as `failed` with `output_too_large`. Progress counts the frames of the range, and cancelling a sequence stops it before its next frame.
 
 Inside the composition, media nodes and audio clips reference either a manifest alias (`"hero"`), whose URL the render downloads, or [uploaded media](#media-uploads) as `asset:<id>`. They never name a URL directly. The self-hosted server does not implement artifact staging, provider progress callbacks, billing, accounts, durable queueing, or durable artifact storage; it renders in a local background task, stores the artifact (an MP4, an image or a ZIP of images) in memory, and exposes it at `GET /renders/:id/artifact`.
 
@@ -247,7 +249,7 @@ Renders run in submission order, `--max-concurrent-renders` at a time (default 1
 - `codecs.<codec>.encoders` is the order a codec's encoders are tried in, and the first that opens wins, with a warning for each that didn't. Without it, Linux tries `<codec>_vulkan` then `libx264`, `libx265` or `libsvtav1`, macOS tries `h264_videotoolbox` or `hevc_videotoolbox` then the same software encoders, and elsewhere only the software encoder. NVENC is only tried when named here or in `LUMEN_VIDEO_ENCODER`.
 - A preset's `encoders` are keyed by FFmpeg encoder name. Each sets at most one of `crf`, `qp` and `bitrate` (bits per second, or text such as `"14M"`), plus an optional `preset`, which lumen translates for the encoder: `crf` is `rc=vbr` plus `cq` on NVENC, and `qp` is `rc_mode=cqp` on Vulkan. `options` are FFmpeg AVOptions, set after those, and may not repeat a key they set. Startup checks each option's name and, for numbers and named values, its range. Free-text values such as libx264's `tune` or `profile` are only checked when the encoder opens, so a bad one fails renders instead of startup.
 - A render only tries the encoders its preset has settings for, so `lossless` skips to an encoder that is truly lossless: `libx264` (`qp` 0), `libx265` (`x265-params lossless=1`) and NVENC H.264 and HEVC (`tune=lossless`).
-- An entry for a built-in preset replaces that encoder's built-in settings, and other encoders keep theirs. A custom preset's `codec` applies when neither the request nor the composition names one.
+- An entry for a built-in preset replaces that encoder's built-in settings, and other encoders keep theirs. A custom preset's `codec` and `bit_depth` (`8` or `10`) apply when neither the request nor the composition names one.
 - `LUMEN_VIDEO_ENCODER` pins one encoder with no fallback. A preset without settings for it, or a codec it doesn't write, returns `422`.
 
 The built-in settings are in `crates/ffmpeg/src/encode/preset.rs`.

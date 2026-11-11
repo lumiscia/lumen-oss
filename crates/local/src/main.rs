@@ -13,7 +13,7 @@ use lumen_engine::{
     media::{AssetKind, MediaStore},
 };
 use lumen_ffmpeg::{
-    EncodeCodec, EncoderQuality, QUALITY_CONFIG_ENV, QualityConfig, QualityRequest,
+    BitDepth, EncodeCodec, EncoderQuality, QUALITY_CONFIG_ENV, QualityConfig, QualityRequest,
     VideoEncoderChoice, parse_bitrate,
 };
 use lumen_server::render::{
@@ -38,7 +38,9 @@ system, matched by the family name inside each font file. A family none of them 
 and renders in the bundled font.
 
 On .mp4 output, --quality names a preset: draft, standard (the default), high, lossless, or one \
---quality-config defines. --codec picks h264 (the default), hevc or av1. Both win over the \
+--quality-config defines. --codec picks h264 (the default), hevc or av1. --bit-depth 10 encodes \
+hevc or av1 at 10 bits, from the renderer's float colour; the default is 8, h264 is always 8, and \
+an encoder that can't write 10 bits is skipped, or fails the render when pinned. They win over the \
 composition's render_settings, which win over the config's defaults. Each codec tries its encoders \
 in order, warning when one won't open: on Linux the Vulkan encoder, then libx264, libx265 or \
 libsvtav1, and on macOS VideoToolbox, then the same CPU encoders. A preset with no settings for an encoder skips it, so \
@@ -108,6 +110,10 @@ struct Cli {
     /// Video codec: h264, hevc or av1. .mp4 only
     #[arg(long, value_name = "CODEC")]
     codec: Option<EncodeCodec>,
+
+    /// Bits per sample: 8 or 10 (hevc and av1). .mp4 only
+    #[arg(long, value_name = "BITS")]
+    bit_depth: Option<BitDepth>,
 
     /// JSON file of quality presets and encoder orders, checked before rendering
     #[arg(long, env = QUALITY_CONFIG_ENV, value_name = "PATH")]
@@ -294,6 +300,7 @@ impl Cli {
         let request = QualityRequest {
             preset: self.quality.clone(),
             codec: self.codec,
+            bit_depth: self.bit_depth,
             settings: self.quality(),
             encoder: self.encoder.clone(),
         }
@@ -332,10 +339,11 @@ impl Cli {
             && (self.encoder.is_some()
                 || self.quality.is_some()
                 || self.codec.is_some()
+                || self.bit_depth.is_some()
                 || self.quality().is_some())
         {
             bail!(
-                "--encoder, --quality, --codec, --bitrate, --crf, --qp and --preset are only supported when output is .mp4"
+                "--encoder, --quality, --codec, --bit-depth, --bitrate, --crf, --qp and --preset are only supported when output is .mp4"
             );
         }
         if format.is_video() && self.frame.is_some() {
@@ -952,6 +960,7 @@ mod tests {
             );
         }
         assert!(parse(&["--output", "o.mp4", "--codec", "vp9"]).is_err());
+        assert!(parse(&["--output", "o.mp4", "--bit-depth", "12"]).is_err());
         assert!(parse(&["--output", "o.mp4", "--crf", "300"]).is_err());
         assert!(parse(&["--output", "o.mp4", "--bitrate", "0"]).is_err());
     }
@@ -973,6 +982,7 @@ mod tests {
             ["--preset", "fast"],
             ["--quality", "high"],
             ["--codec", "hevc"],
+            ["--bit-depth", "10"],
         ] {
             for output in ["o.png", "o.jpg", "o_%d.png"] {
                 assert!(
@@ -1122,6 +1132,11 @@ mod tests {
         );
         let error = choice(&["--quality", "cinema"]).unwrap_err();
         assert!(error.to_string().contains("`cinema`"), "{error}");
+        let ten_bit_h264 = choice(&["--bit-depth", "10"]).unwrap_err();
+        assert!(
+            ten_bit_h264.to_string().contains("always 8-bit"),
+            "{ten_bit_h264}"
+        );
     }
 
     /// Runs `parsed_font_dir` in a child process, since clap reads `LUMEN_FONT_DIR` from the real

@@ -840,6 +840,10 @@ fn rejects_quality_the_pinned_encoder_cannot_serve() {
         post(json!({ "quality": "lossless", "codec": "h264" })).status(),
         StatusCode::ACCEPTED
     );
+    let ten_bit = invalid_quality_message(post(json!({ "bit_depth": 10 })));
+    assert!(ten_bit.contains("8-bit"), "{ten_bit}");
+    let twelve = invalid_quality_message(post(json!({ "bit_depth": 12 })));
+    assert!(twelve.contains("8 or 10"), "{twelve}");
 
     let vulkan = Server::start_with(&[], |command| {
         command.env("LUMEN_VIDEO_ENCODER", "h264_vulkan");

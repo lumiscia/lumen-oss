@@ -411,7 +411,12 @@ async fn vulkan_video(
     renderer.set_static_output_reuse(!workload.full_render);
     renderer.set_output_alpha(lumen_engine::gpu::OutputAlpha::Opaque);
     renderer.compile_with_output_format(workload.composition, VulkanVideoTarget::FORMAT)?;
-    let target = VulkanVideoTarget::nv12(renderer.gpu_renderer(), size, true);
+    let target = VulkanVideoTarget::new(
+        renderer.gpu_renderer(),
+        size,
+        lumen_engine::composition::BitDepth::Eight,
+        true,
+    );
     let (mut encoder, encoder_name) = open_vulkan_encoder(workload.composition, &device, output)?;
     let setup = setup_started.elapsed();
     println!("composition_bench vulkan_video encoder={encoder_name}");
@@ -482,7 +487,12 @@ async fn vk_cuda_nvenc(
         renderer_with_format(workload, lumen_gpu::wgpu::TextureFormat::Rgba16Float).await?;
     renderer.set_output_alpha(lumen_engine::gpu::OutputAlpha::Opaque);
     let output_size = composition_size(workload.composition);
-    let target_pool = CudaNvencTargetPool::new(renderer.gpu_renderer(), output_size, true)?;
+    let target_pool = CudaNvencTargetPool::new(
+        renderer.gpu_renderer(),
+        output_size,
+        lumen_engine::composition::BitDepth::Eight,
+        true,
+    )?;
     let target = target_pool.acquire(renderer.gpu_renderer())?;
     let mut config = video_config(workload.composition, "h264_nvenc")?;
     config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
