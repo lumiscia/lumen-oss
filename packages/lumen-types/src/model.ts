@@ -1,8 +1,14 @@
 /** An animation clip of a binary glTF (`.glb`) model. */
 export interface LumenModelAnimation {
-  /** The clip's position in the file. A `model_3d`'s `animation` selects a clip by this, as text. */
+  /**
+   * The clip's position in the file. A `model_3d`'s `animation` selects a clip by this, as text,
+   * when no clip has that text as its name.
+   */
   readonly index: number;
-  /** What a `model_3d`'s `animation` selects the clip by. Absent when the file doesn't name it. */
+  /**
+   * What a `model_3d`'s `animation` selects the clip by. Of clips sharing a name, it selects the
+   * first. Absent when the file doesn't name it.
+   */
   readonly name?: string;
   /** Seconds from the clip's start to its last key. */
   readonly duration: number;
@@ -12,8 +18,9 @@ export interface LumenModelAnimation {
 export interface LumenModelMaterial {
   readonly index: number;
   /**
-   * What a `model_3d`'s `texture_material` selects the material by. Absent when the file doesn't
-   * name it, which leaves the material unselectable.
+   * What a `model_3d`'s `texture_material` selects the material by. Of materials sharing a name,
+   * it selects the first. Absent when the file doesn't name it, which leaves the material
+   * unselectable.
    */
   readonly name?: string;
   /** Whether a texture multiplies the material's base colour, which a `texture` input replaces. */

@@ -176,6 +176,35 @@ fn probe_model(path: &Path) -> Result<MediaMetadata, String> {
     let bytes = fs::read(path).map_err(|error| format!("the file could not be read: {error}"))?;
     let info = ModelInfo::from_glb(&bytes)
         .map_err(|error| format!("the model could not be read: {error}"))?;
+    model_metadata(info)
+}
+
+/// The most the names of a model's clips and materials may take together, in bytes.
+const MAX_MODEL_NAME_BYTES: usize = 64 << 10;
+
+/// The most clips and materials a model may list together.
+const MAX_MODEL_ENTRIES: usize = 4096;
+
+/// A model's clips and materials, unless there are more of them, or their names are longer, than
+/// a media record keeps.
+fn model_metadata(info: ModelInfo) -> Result<MediaMetadata, String> {
+    if info.animations.len() + info.materials.len() > MAX_MODEL_ENTRIES {
+        return Err(format!(
+            "the model has more than {MAX_MODEL_ENTRIES} animations and materials"
+        ));
+    }
+    let clips = info.animations.iter().map(|clip| clip.name.as_deref());
+    let materials = info
+        .materials
+        .iter()
+        .map(|material| material.name.as_deref());
+    let names: usize = clips.chain(materials).flatten().map(str::len).sum();
+    if names > MAX_MODEL_NAME_BYTES {
+        return Err(format!(
+            "the model's animation and material names take more than {} KiB",
+            MAX_MODEL_NAME_BYTES >> 10
+        ));
+    }
     Ok(MediaMetadata {
         animations: Some(info.animations),
         materials: Some(info.materials),
@@ -263,5 +292,25 @@ fn codec_name(codec: VideoCodec) -> Option<&'static str> {
         VideoCodec::Vp9 => Some("vp9"),
         VideoCodec::ProRes => Some("prores"),
         VideoCodec::Unknown => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_model_with_oversized_names_is_rejected() {
+        let named = |name: String| ModelInfo {
+            animations: Vec::new(),
+            materials: vec![MaterialInfo {
+                index: 0,
+                name: Some(name),
+                has_base_color_texture: false,
+            }],
+        };
+        assert!(model_metadata(named("a".repeat(MAX_MODEL_NAME_BYTES))).is_ok());
+        let error = model_metadata(named("a".repeat(MAX_MODEL_NAME_BYTES + 1))).unwrap_err();
+        assert!(error.contains("64 KiB"), "{error}");
     }
 }

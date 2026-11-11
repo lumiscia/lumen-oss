@@ -11,7 +11,8 @@ pub struct ModelInfo {
     pub materials: Vec<MaterialInfo>,
 }
 
-/// One animation clip. `animation` selects it by `name`, or else by `index`.
+/// One animation clip. `animation` selects the first clip of that `name`, or else the clip at that
+/// `index`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnimationInfo {
@@ -23,7 +24,8 @@ pub struct AnimationInfo {
     pub duration: f32,
 }
 
-/// One material. `texture_material` selects it by `name`; an unnamed material can't be selected.
+/// One material. `texture_material` selects the first material of that `name`; an unnamed material
+/// can't be selected.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MaterialInfo {
