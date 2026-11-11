@@ -327,5 +327,6 @@ fn resolve_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (gaussian_uses_sixteenth(sigma)) {
         color = color + reduced * sixteenth * gaussian_sample_reduced(tex_c, canvas, 16.0, GAUSSIAN_SIXTEENTH_PAD);
     }
-    textureStore(out_raster, vec2<i32>(id.xy), color);
+    // A blurred light, such as glow, may be brighter than its coverage; only alpha is bounded.
+    textureStore(out_raster, vec2<i32>(id.xy), vec4<f32>(color.rgb, clamp(color.a, 0.0, 1.0)));
 }

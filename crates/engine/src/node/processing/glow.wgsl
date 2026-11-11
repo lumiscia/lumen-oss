@@ -28,8 +28,8 @@ fn glow_read(tex: texture_2d<f32>, pixel: vec2<i32>, origin: vec2<i32>) -> vec4<
 
 // The light a premultiplied pixel casts. Its linear luminance `l`, sRGB-encoded, is remapped from
 // `threshold..1` to `0..1` and the colour scaled to match, so white glows at full strength and
-// anything at or below the threshold not at all. Alpha is the brightest channel: the glow is
-// light, so black adds nothing.
+// anything at or below the threshold not at all. Alpha is the brightest channel, which the blur
+// bounds to 1: the glow is light, so black adds nothing and bright light keeps its headroom.
 @compute @workgroup_size(8, 8, 1)
 fn bright_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = textureDimensions(bright_tex);

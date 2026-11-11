@@ -280,3 +280,29 @@ fn glow_bounds_match_reference() {
     );
     check(cases);
 }
+
+#[test]
+fn glow_only_light_keeps_its_headroom_with_alpha_at_most_one() {
+    // White at threshold 0 and radius 0 is `intensity` times white. Its alpha is 1, so taking
+    // the stops back off with `exposure` gives white again.
+    let cases = [2.0f64, 10.0]
+        .map(|intensity| {
+            Case::new(
+                format!("intensity {intensity}"),
+                scene(
+                    (8, 8),
+                    json!([
+                        fill([255, 255, 255, 255]),
+                        glow(json!({
+                            "threshold": 0, "radius": 0, "intensity": intensity, "glow_only": true
+                        })),
+                        { "id": 3, "type": "exposure", "in": { "source": 2 },
+                          "params": { "exposure": -intensity.log2() } },
+                    ]),
+                ),
+                Expect::Uniform([255, 255, 255, 255]),
+            )
+        })
+        .into();
+    check(cases);
+}
