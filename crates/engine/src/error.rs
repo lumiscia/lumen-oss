@@ -796,6 +796,22 @@ pub enum Warning {
         model: String,
         count: usize,
     },
+    /// An image is larger on a side than the textures the device makes, or than the host lets
+    /// images be decoded at, so it is shown from a copy reduced to fit.
+    #[code("media.image_reduced")]
+    #[error("{}media_in node {node_id}: image `{image}` is {width}x{height}, past the {limit}-pixel limit on a side, so it is shown reduced to {reduced_width}x{reduced_height}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
+    ImageReduced {
+        /// The template the node is in, or `None` at the root.
+        template: Option<String>,
+        node_id: NodeId,
+        /// The image's source.
+        image: String,
+        width: u32,
+        height: u32,
+        reduced_width: u32,
+        reduced_height: u32,
+        limit: u32,
+    },
 }
 
 #[cfg(test)]

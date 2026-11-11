@@ -112,6 +112,18 @@ keeps the old identity, and renders keep the old bytes. A host that knows when i
 from immutable uploads, content hashes or version counters, should use `of_key` instead;
 lumen-server names `asset:` sources by their asset id this way.
 
+An image is decoded and uploaded once per identity and size. Its size is its own, unless that is
+more than the device's texture limit (or `GpuCompositionRenderer::set_max_image_side`) on a
+side, when it is reduced to fit with a `media.image_reduced` warning, or the composition shows
+it at under half its size, when it is kept at twice the size it is shown. The second needs every
+use of the image to bound its size before rendering: each `media_in` that shows it must be read
+only by `resize` nodes with a literal `width`, `height` and `mode`, in the root composition, and
+what follows each resize to the output may only scale by a literal `transform` scale or keep
+pixels as they are (merges, colour and alpha nodes, crops, blurs, glows and shadows). Any other
+use, such as a `transform` reading the image itself, a shader, a 3D scene, a template, or a source
+picked by an expression, keeps the image at its own size. A reduced copy is averaged over each
+pixel's footprint in linear light on the CPU, before upload.
+
 The engine asks again on each frame that uses a source, to see whether its identity changed, so a
 store should resolve an opened source cheaply and let font, model and environment resolvers read
 their bytes only when asked. A source the store doesn't have fails as `media.not_found`, which for
@@ -377,6 +389,7 @@ the engine's own reads and in FFmpeg's, while opening and while decoding) is a `
 | `scene.shadow_limit`                 | warning  | render        | A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none.                                                                                                                                                                               |
 | `scene.model_primitives_skipped`     | warning  | render        | A `model_3d`'s model has points, lines, or triangle strips or fans, which aren't drawn.                                                                                                                                                                                        |
 | `media.color_unsupported`            | warning  | render        | A video's colour tags name a transfer or primaries the engine doesn't convert, so it renders as SDR or BT.709 in their place.                                                                                                                                                  |
+| `media.image_reduced`                | warning  | render        | An image is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit.                                                                                                                                   |
 | `property.invalid_type`              | error    | render        | An expression gave a param a value of the wrong type.                                                                                                                                                                                                                          |
 | `expression.parse`                   | error    | render        | An expression built at render time doesn't parse.                                                                                                                                                                                                                              |
 | `expression.evaluate`                | error    | render        | An expression failed to evaluate.                                                                                                                                                                                                                                              |

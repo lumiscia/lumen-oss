@@ -13,6 +13,7 @@ mod frame_graph;
 mod geometry;
 mod glow;
 mod harness;
+mod image_size;
 #[cfg(feature = "3d")]
 mod instance;
 mod media;

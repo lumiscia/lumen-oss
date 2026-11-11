@@ -198,8 +198,8 @@ pub fn map_to_source_frame(
 }
 
 impl MediaIn {
-    /// The size of the media the node shows at `ctx`'s frame, which is the size of its texture.
-    /// `None` without a media store.
+    /// The native size of the media the node shows at `ctx`'s frame. An image's texture may be
+    /// smaller. `None` without a media store.
     pub(crate) fn native_size(
         &self,
         ctx: &crate::expr::ExpressionContext<'_>,
@@ -240,7 +240,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
             node_kind: <MediaIn as JsonNode>::KIND,
             details: "media store is required for media input nodes".to_string(),
         })?;
-        let (kind, fps, size) = {
+        let (kind, fps, mut size) = {
             let expr = cx.expr();
             let size = self.native_size(&expr)?.unwrap_or_else(|| cx.canvas_size());
             (self.resolve(&expr)?, expr.fps, size)
@@ -248,9 +248,13 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
         let tex = match kind {
             MediaInKind::Image { image_id } => {
                 let (identity, resolver) = resolve_as::<dyn ImageResolver>(media, &image_id)?;
-                cx.ensure_media_fits(&image_id, size)?;
                 cx.read_source(AssetKind::Image, &image_id, Some(&identity));
-                let key = MediaTextureKey::of_image(identity, &*resolver);
+                size = cx.image_size(self.id, &image_id, size);
+                let key = MediaTextureKey {
+                    identity,
+                    width: size.width,
+                    height: size.height,
+                };
                 cx.image_texture(key, &resolver.frame()?, size)?
             }
             MediaInKind::Video {
