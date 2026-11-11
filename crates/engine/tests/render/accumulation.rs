@@ -275,7 +275,11 @@ fn a_stationary_source_comes_through_every_sample_count_unchanged() {
     // Compared as float texels, colour and alpha, which 8-bit output would round away.
     let gpu = gpu();
     let media = TestMedia::default();
-    for color in [[255, 255, 255, 255], [128, 128, 128, 255], [200, 100, 50, 128]] {
+    for color in [
+        [255, 255, 255, 255],
+        [128, 128, 128, 255],
+        [200, 100, 50, 128],
+    ] {
         let source = json!({ "id": 1, "type": "background", "params": { "paint": color } });
         let plain: Composition = canvas(json!([source.clone()])).into();
         let expected = render_working_space(&mut gpu.renderer(), &plain, 0.0, &media);

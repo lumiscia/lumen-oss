@@ -52,4 +52,63 @@ mod tests {
         }
         assert!((srgb_to_linear(2.0) - 4.9538).abs() < 1e-3);
     }
+
+    /// `value` as a half float, rounded to nearest or, as AMD stores them, toward zero.
+    fn half(value: f32, toward_zero: bool) -> f32 {
+        let exponent = ((value.to_bits() >> 23) & 0xff) as i32 - 127;
+        let step = 2f32.powi(exponent.max(-14) - 10);
+        let steps = value / step;
+        if toward_zero {
+            steps.trunc() * step
+        } else {
+            steps.round_ties_even() * step
+        }
+    }
+
+    fn encode(linear: f32) -> f32 {
+        if linear <= 0.003_130_8 {
+            linear * 12.92
+        } else {
+            let p = linear.powf(1.0 / 2.4);
+            p + 0.055 * (p - 1.0)
+        }
+    }
+
+    /// `LUMEN_SNAP` from the dither chunk.
+    fn snap() -> f32 {
+        let source = include_str!("shaders/dither.wgsl");
+        let line = source
+            .lines()
+            .find_map(|line| line.strip_prefix("const LUMEN_SNAP: f32 = "))
+            .expect("dither.wgsl defines LUMEN_SNAP");
+        line.trim_end_matches(';').parse().expect("a number")
+    }
+
+    #[test]
+    fn half_floats_keep_every_8_bit_code_inside_the_snap() {
+        // Each 8-bit straight colour and alpha as the working space stores them, and as the
+        // output reads them back: opaque, translucent and straight, and NV12 luma. The error must
+        // stay inside `LUMEN_SNAP` for 8-bit content to come out exactly.
+        let snap = snap();
+        for toward_zero in [false, true] {
+            let mut worst = [0f32; 3];
+            for code in 0..=255u8 {
+                let light = srgb_to_linear(f32::from(code) / 255.0);
+                let stored = half(light, toward_zero);
+                worst[0] = worst[0].max((encode(stored) * 255.0 - f32::from(code)).abs());
+                worst[2] = worst[2].max((encode(stored) - f32::from(code) / 255.0).abs() * 219.0);
+                for alpha in 1..255u8 {
+                    let a = f32::from(alpha) / 255.0;
+                    let straight = half(light * a, toward_zero) / half(a, toward_zero);
+                    worst[1] = worst[1].max((encode(straight) * 255.0 - f32::from(code)).abs());
+                }
+            }
+            for (path, error) in ["opaque", "translucent", "NV12 luma"].iter().zip(worst) {
+                assert!(
+                    error < snap,
+                    "{path}, toward zero {toward_zero}: {error} codes, snap {snap}"
+                );
+            }
+        }
+    }
 }

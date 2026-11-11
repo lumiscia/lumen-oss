@@ -1,7 +1,7 @@
 //! The working space: sources decode to linear light, arithmetic happens there, and the output
 //! encodes back to sRGB once. Expected values come from the sRGB curve, worked out here.
 
-use lumen_engine::composition::Composition;
+use lumen_engine::{composition::Composition, gpu::OutputAlpha};
 use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
@@ -146,6 +146,33 @@ fn every_srgb_code_passes_through_unchanged() {
             .map(|x| (x, frame.pixel(x, 0)))
             .collect();
         assert!(changed.is_empty(), "dither {dither}: {changed:?}");
+    }
+}
+
+#[test]
+fn every_straight_colour_and_alpha_passes_through_a_straight_output() {
+    // Column `x` is code `x`, and row `y` alpha `y + 1`: every 8-bit straight colour at every
+    // translucent alpha, as a PNG output takes them.
+    let rgba: Vec<u8> = (1..=255u8)
+        .flat_map(|alpha| {
+            (0..=255u8).flat_map(move |code| [code, 255 - code, code / 2 + 64, alpha])
+        })
+        .collect();
+    let media = TestMedia::default().straight_image("image", 256, 255, rgba.clone());
+    let gpu = gpu();
+    for (dither, mut renderer) in [(false, gpu.renderer()), (true, gpu.dithered_renderer())] {
+        renderer.set_output_alpha(OutputAlpha::Straight);
+        let frame = render(&mut renderer, &image_scene(256, 255), 0.0, &media);
+        let changed = frame
+            .rgba
+            .chunks(4)
+            .zip(rgba.chunks(4))
+            .filter(|(got, want)| got != want)
+            .count();
+        assert_eq!(
+            changed, 0,
+            "dither {dither}: {changed} of 65280 pixels changed"
+        );
     }
 }
 
@@ -528,6 +555,59 @@ fn the_output_dither_keeps_the_mean_of_every_fractional_code() {
 }
 
 #[test]
+fn a_ramp_across_one_code_is_flat_within_the_snap_of_each_end() {
+    // 1000 values from code 5 to code 6, each over an 8 × 8 tile so that every dither threshold
+    // sees it. A value within a tenth of a code of 5 or 6 is that code exactly, a fifth of the
+    // ramp in all; every other tile keeps its value as its mean.
+    let shader = "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let code = 5.0 + f32(id.x / 8u) / 999.0;
+    let light = lumen_srgb_to_linear(vec3<f32>(code / 255.0));
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(light, 1.0));
+}";
+    let composition: Composition = scene(
+        (8000, 8),
+        json!([
+            { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 255] } },
+            { "id": 2, "type": "wgsl_shader", "in": { "source": [1] }, "params": { "shader": shader } },
+        ]),
+    )
+    .into();
+    let gpu = gpu();
+    let frame = render(
+        &mut gpu.dithered_renderer(),
+        &composition,
+        0.0,
+        &TestMedia::default(),
+    );
+    let mut flat = 0;
+    for tile in 0..1000u32 {
+        let reds: Vec<u8> = (0..8)
+            .flat_map(|y| (0..8).map(move |x| (tile * 8 + x, y)))
+            .map(|(x, y)| frame.pixel(x, y)[0])
+            .collect();
+        let fraction = f64::from(tile) / 999.0;
+        let mean = reds.iter().map(|&red| f64::from(red)).sum::<f64>() / 64.0;
+        let uniform = reds.iter().all(|&red| red == reds[0]);
+        flat += usize::from(uniform);
+        if fraction < 0.09 || fraction > 0.91 {
+            assert!(
+                uniform && f64::from(reds[0]) == 5.0 + fraction.round(),
+                "tile {tile}: {reds:?}"
+            );
+        } else if (0.11..0.89).contains(&fraction) {
+            assert!(!uniform, "tile {tile} is flat");
+            assert!(
+                (mean - 5.0 - fraction).abs() <= 1.0 / 64.0 + 0.01,
+                "tile {tile}: {mean}"
+            );
+        }
+    }
+    assert!((190..=210).contains(&flat), "{flat} of 1000 tiles are flat");
+}
+
+#[test]
 fn quantised_colour_never_exceeds_its_quantised_alpha() {
     let gpu = gpu();
     for opacity in [0.0019, 0.002, 0.003, 0.0045, 0.01, 0.3] {
@@ -595,10 +675,9 @@ fn a_float_output_is_the_working_space_without_an_output_pass() {
 fn extreme_parameters_store_finite_light() {
     // Every case checks the working space holds finite values, so these rows are the invariant at
     // each node whose arithmetic can overflow a half float or make NaN from finite parameters.
-    let grey = json!({ "id": 1, "type": "background", "params": { "paint": [128, 128, 128, 255] } });
-    let exposure = |id: u32, from: u32, params: Value| {
-        json!({ "id": id, "type": "exposure", "params": params, "in": { "source": from } })
-    };
+    let grey =
+        json!({ "id": 1, "type": "background", "params": { "paint": [128, 128, 128, 255] } });
+    let exposure = |id: u32, from: u32, params: Value| json!({ "id": id, "type": "exposure", "params": params, "in": { "source": from } });
     // Translucent light far brighter than its alpha.
     let bright = || {
         json!([
@@ -607,12 +686,17 @@ fn extreme_parameters_store_finite_light() {
         ])
     };
     let after_bright = |node: Value| {
-        let Value::Array(mut nodes) = bright() else { unreachable!() };
+        let Value::Array(mut nodes) = bright() else {
+            unreachable!()
+        };
         nodes.push(node);
         Value::Array(nodes)
     };
     let rows: Vec<(&str, Value)> = vec![
-        ("exposure", json!([grey, exposure(2, 1, json!({ "exposure": 129 }))])),
+        (
+            "exposure",
+            json!([grey, exposure(2, 1, json!({ "exposure": 129 }))]),
+        ),
         (
             "exposure, then opacity 0",
             json!([
@@ -623,7 +707,10 @@ fn extreme_parameters_store_finite_light() {
         ),
         (
             "exposure contrast and offset",
-            json!([grey, exposure(2, 1, json!({ "contrast": 1e30, "offset": 1e30 }))]),
+            json!([
+                grey,
+                exposure(2, 1, json!({ "contrast": 1e30, "offset": 1e30 }))
+            ]),
         ),
         (
             "levels",
@@ -642,8 +729,10 @@ fn extreme_parameters_store_finite_light() {
         ),
         (
             "hue and saturation",
-            after_bright(json!({ "id": 3, "type": "hue_saturation", "in": { "source": 2 },
-                "params": { "hue_degrees": 1e30, "saturation": 1e30, "lightness": 1e30 } })),
+            after_bright(
+                json!({ "id": 3, "type": "hue_saturation", "in": { "source": 2 },
+                "params": { "hue_degrees": 1e30, "saturation": 1e30, "lightness": 1e30 } }),
+            ),
         ),
         (
             "normal merge",
@@ -668,7 +757,9 @@ fn extreme_parameters_store_finite_light() {
     ];
     let mut cases: Vec<Case> = rows
         .into_iter()
-        .map(|(name, nodes)| Case::new(name, scene((8, 8), nodes), Expect::Custom(Box::new(|_| {}))))
+        .map(|(name, nodes)| {
+            Case::new(name, scene((8, 8), nodes), Expect::Custom(Box::new(|_| {})))
+        })
         .collect();
     for tone_mapping in ["none", "aces", "agx"] {
         cases.push(Case::new(

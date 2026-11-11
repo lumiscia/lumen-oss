@@ -1,8 +1,10 @@
 // Quantising to whole code values with an ordered dither. The 8x8 Bayer thresholds,
-// `(rank + 0.5) / 64 - 0.5`, span the whole code step, so a flat area of any value averages to
-// that value, to 1/64 of a code. A value within `LUMEN_SNAP` of a code takes that code without
-// dither: half-float rasters hold an 8-bit sRGB code to within 0.08 of it, so 8-bit content
-// comes out exactly, at the cost of a bias of up to `LUMEN_SNAP` for values that close to a code.
+// `(rank + 0.5) / 64 - 0.5`, span the whole code step, so a flat area keeps its value as its mean,
+// to 1/64 of a code, except within `LUMEN_SNAP` of a code, where it takes that code exactly: a
+// bias of up to `LUMEN_SNAP`. Half floats hold an 8-bit sRGB code to within 0.092 of it
+// (translucent straight colour, either rounding mode; 0.080 opaque), which `gpu::color`'s tests
+// check against this width, so 8-bit content comes out exactly. A slow gradient flattens there: a
+// ramp across one code is that code for its first tenth and the next for its last.
 
 const LUMEN_SNAP: f32 = 0.1;
 
