@@ -284,3 +284,36 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         .frames([0.0, 1.0, 2.0, 3.0]),
     ]);
 }
+
+/// How far, times 1000, a colour uniform's decoded value is from the prelude decoding `ENCODED`.
+const PARITY_SHADER: &str = "
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let prelude = lumen_srgb_to_linear(vec3<f32>(ENCODED));
+    let difference = abs(uniforms.tint.rgb - prelude) * 1000.0;
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(difference, 1.0));
+}
+
+struct Uniforms {
+    tint: vec4<f32>,
+}
+@group(0) @binding(1) var<uniform> uniforms: Uniforms;
+";
+
+#[test]
+fn colour_uniforms_decode_past_black_and_white_as_the_prelude_does() {
+    // Extrapolated colours reach the CPU decoder, which must mirror the curve about zero as
+    // `lumen_srgb_to_linear` does, and keep white at exactly 1.
+    let cases = [-0.5f64, -0.01, 0.0, 0.5, 1.0, 1.5]
+        .map(|encoded| {
+            let shader = PARITY_SHADER.replace("ENCODED", &format!("{encoded:.4}"));
+            let tint = format!("=lerp(#000000, #ffffff, {encoded})");
+            Case::new(
+                format!("encoded {encoded}"),
+                shader_scene(&shader, json!({ "tint": tint }), &[[0, 0, 0, 255]]),
+                Expect::Uniform([0, 0, 0, 255]),
+            )
+        })
+        .into();
+    check(cases);
+}

@@ -5,13 +5,16 @@
 pub const WORKING_COLOR_FORMAT: lumen_gpu::wgpu::TextureFormat =
     lumen_gpu::wgpu::TextureFormat::Rgba16Float;
 
-/// An sRGB-encoded channel in `0..=1` as linear light.
+/// An sRGB-encoded channel as linear light. Values outside `0..=1` follow the curve mirrored
+/// about zero, as `lumen_srgb_to_linear` does.
 pub(crate) fn srgb_to_linear(encoded: f32) -> f32 {
-    if encoded <= 0.04045 {
-        encoded / 12.92
+    let c = encoded.abs();
+    let linear = if c <= 0.04045 {
+        c / 12.92
     } else {
-        ((encoded + 0.055) / 1.055).powf(2.4)
-    }
+        ((c + 0.055) / 1.055).powf(2.4)
+    };
+    linear.copysign(encoded)
 }
 
 /// A straight sRGB colour of 8-bit channels as linear light, premultiplied by its alpha.
@@ -33,5 +36,15 @@ mod tests {
         let [r, _, _, a] = linear_premultiplied([188, 0, 0, 51]);
         assert!((r - 0.5 * 0.2).abs() < 0.002, "{r}");
         assert_eq!(a, 0.2);
+    }
+
+    #[test]
+    fn the_curve_is_mirrored_about_zero_and_keeps_white() {
+        assert_eq!(srgb_to_linear(1.0), 1.0);
+        assert_eq!(srgb_to_linear(0.0), 0.0);
+        for encoded in [0.01, 0.04045, 0.2, 0.5, 1.0, 1.5, 2.0] {
+            assert_eq!(srgb_to_linear(-encoded), -srgb_to_linear(encoded), "{encoded}");
+        }
+        assert!((srgb_to_linear(2.0) - 4.9538).abs() < 1e-3);
     }
 }
