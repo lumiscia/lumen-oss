@@ -2089,6 +2089,13 @@ fn malformed_or_oversized_morph_targets_are_errors() {
         glb.json["meshes"][0]["primitives"][0]["targets"][0]["POSITION"] = json!(99);
     });
     assert_eq!(past, invalid("an accessor index is out of range"));
+    if cfg!(feature = "draco") {
+        let draco = edit(&|glb| {
+            glb.json["meshes"][0]["primitives"][0]["extensions"] =
+                json!({ "KHR_draco_mesh_compression": { "bufferView": 0, "attributes": {} } });
+        });
+        assert!(matches!(draco, ModelError::Unsupported(_)), "{draco}");
+    }
     let infinite = edit(&|glb| {
         let accessor = glb.accessor(FLOAT, "VEC3", 3, &floats(&[f32::NAN; 9]));
         glb.json["meshes"][0]["primitives"][0]["targets"][1]["NORMAL"] = json!(accessor);
