@@ -62,7 +62,8 @@ impl Diagnostic {
             | Warning::NoOutlines { node_id, .. }
             | Warning::ShadowLimit { node_id, .. }
             | Warning::UnsupportedVideoColor { node_id, .. }
-            | Warning::ModelPrimitivesSkipped { node_id, .. } => Some(*node_id),
+            | Warning::ModelPrimitivesSkipped { node_id, .. }
+            | Warning::ImageReduced { node_id, .. } => Some(*node_id),
         };
         Self {
             severity: Severity::Warning,

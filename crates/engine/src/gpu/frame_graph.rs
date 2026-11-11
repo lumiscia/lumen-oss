@@ -437,6 +437,10 @@ struct RecordState {
     font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
     /// The template, node and video of each unsupported colour reported for this composition.
     video_colors: HashSet<(Option<String>, NodeId, String)>,
+    /// How large this composition can show each image, found once it shows one.
+    shown_sizes: Option<Arc<super::image_size::ShownSizes>>,
+    /// Each image reported as reduced to fit the size limit for this composition.
+    reduced_images: HashSet<String>,
     /// The template and `render_3d` node of each shadow limit reported for this composition.
     #[cfg(feature = "3d")]
     shadow_limits: HashSet<(Option<String>, NodeId)>,
@@ -488,6 +492,8 @@ pub(crate) struct RecordInput<'a> {
     pub(crate) atlas_texture: &'a mut Option<Arc<wgpu::Texture>>,
     pub(crate) max_rebinds: usize,
     pub(crate) max_text_glyphs: usize,
+    /// The longest side an image is decoded at, below the device's own limit.
+    pub(crate) max_image_side: u32,
     /// The renderer whose device GPU video frames were decoded on.
     #[cfg(feature = "ffmpeg")]
     pub(crate) renderer: &'a lumen_gpu::Renderer,
@@ -568,6 +574,7 @@ impl FrameGraph {
             atlas_texture,
             max_rebinds,
             max_text_glyphs,
+            max_image_side,
             #[cfg(feature = "ffmpeg")]
             renderer,
             #[cfg(feature = "ffmpeg")]
@@ -620,6 +627,7 @@ impl FrameGraph {
                 depth: 0,
                 bound: BoundFrame::new(),
                 max_text_glyphs,
+                max_image_side,
                 text_atlas,
                 atlas_texture: &mut *atlas_texture,
                 #[cfg(feature = "ffmpeg")]
@@ -933,6 +941,8 @@ impl FrameGraph {
         state.kept_sources.clear();
         state.font_fallbacks.clear();
         state.video_colors.clear();
+        state.shown_sizes = None;
+        state.reduced_images.clear();
         #[cfg(feature = "3d")]
         state.shadow_limits.clear();
         #[cfg(feature = "3d")]
@@ -1133,6 +1143,7 @@ pub(crate) struct FrameCx<'a> {
     depth: u32,
     pub(crate) bound: BoundFrame,
     max_text_glyphs: usize,
+    max_image_side: u32,
     text_atlas: &'a Arc<Mutex<lumen_text::GlyphAtlas>>,
     atlas_texture: &'a mut Option<Arc<wgpu::Texture>>,
     #[cfg(feature = "ffmpeg")]
@@ -2007,8 +2018,86 @@ impl<'a> FrameCx<'a> {
         .into())
     }
 
-    /// An image in the working space. Its 8-bit texture is uploaded once and kept in the
-    /// renderer's media cache, and each frame that shows it brings it into the working space.
+    /// The size image `source`, of `native` size, is decoded at for `node_id` to show it (see
+    /// [`super::image_size::decoded_size`]), with a warning once per composition when it is
+    /// reduced to fit the size limit. Fails as `media.too_large` when it is past the device's
+    /// limit and can't be reduced.
+    pub(crate) fn image_size(
+        &mut self,
+        node_id: NodeId,
+        source: &str,
+        native: Size,
+    ) -> crate::Result<Size> {
+        use super::image_size::{Decoded, decoded_size};
+        let shown = Arc::clone(
+            self.st
+                .shown_sizes
+                .get_or_insert_with(|| super::image_size::ShownSizes::of(self.composition)),
+        );
+        let device_max = self.rec.device().limits().max_texture_dimension_2d.max(1);
+        let size = match decoded_size(&shown, source, native, self.max_image_side, device_max) {
+            Decoded::Native => native,
+            Decoded::Reduced { size, limited } => {
+                if limited {
+                    self.warn_image_reduced(node_id, source, native, size);
+                }
+                size
+            }
+            Decoded::TooLarge => {
+                let side = native.width.max(native.height);
+                return Err(crate::error::MediaFailure::too_large(
+                    source,
+                    format!(
+                        "it is {}x{} pixels, over the {device_max}-pixel texture limit of this \
+                         device, and only an image every use of which is a `resize` to a literal \
+                         size, in the root composition, is shown reduced to its aspect ratio",
+                        native.width, native.height
+                    ),
+                    u64::from(device_max),
+                    Some(u64::from(side)),
+                )
+                .into());
+            }
+        };
+        Ok(size)
+    }
+
+    fn warn_image_reduced(&mut self, node_id: NodeId, source: &str, native: Size, size: Size) {
+        // Warnings stop at a fixed number of sources, so a composition of many large images
+        // doesn't fill the diagnostics.
+        const WARNED_SOURCES: usize = 32;
+        if self.st.reduced_images.len() >= WARNED_SOURCES
+            || !self.st.reduced_images.insert(source.to_string())
+        {
+            return;
+        }
+        let limit = self
+            .rec
+            .device()
+            .limits()
+            .max_texture_dimension_2d
+            .min(self.max_image_side)
+            .max(1);
+        let warning = crate::error::Warning::ImageReduced {
+            template: self.scope.template_name().map(str::to_string),
+            node_id,
+            image: source.to_string(),
+            width: native.width,
+            height: native.height,
+            reduced_width: size.width,
+            reduced_height: size.height,
+            limit,
+        };
+        tracing::warn!(target: "lumen_render", "{warning}");
+        let path = crate::diagnostic::scene_pointer(self.scope.template_name());
+        self.st
+            .diagnostics
+            .push(crate::diagnostic::Diagnostic::from_warning(&warning, path));
+    }
+
+    /// An image in the working space at `size`, the size of `key`. Its 8-bit texture is uploaded
+    /// once and kept in the renderer's media cache, and each frame that shows it brings it into
+    /// the working space.
     pub(crate) fn image_texture(
         &mut self,
         key: super::MediaTextureKey,
@@ -2026,11 +2115,14 @@ impl<'a> FrameCx<'a> {
                 return Err(internal("an image resolver returned a GPU frame"));
             }
         };
+        // A copy at another size is stored straight, which is known before the cache is asked.
+        let stored_premultiplied =
+            premultiplied && (cpu.width, cpu.height) == (size.width, size.height);
         let texture = match self.media_cache.get(&key) {
             Some(texture) => texture,
             None => {
                 let texture = super::renderer::create_media_texture(self.rec.device(), size);
-                let rgba = fit_frame_to_rgba8(cpu, size.width, size.height);
+                let rgba = super::image_size::rgba8_at(cpu, premultiplied, size);
                 self.rec.queue().write_texture(
                     texture.as_image_copy(),
                     &rgba,
@@ -2046,7 +2138,7 @@ impl<'a> FrameCx<'a> {
             }
         };
         let tex = self.adopted_media(texture, Some(key));
-        self.ingest(tex, size, premultiplied)
+        self.ingest(tex, size, stored_premultiplied)
     }
 
     /// The 8-bit sRGB-encoded `tex` of `size` in the working space, its colour divided by alpha
