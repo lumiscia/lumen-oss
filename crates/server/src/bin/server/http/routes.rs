@@ -269,6 +269,14 @@ pub(super) async fn get_render_artifact(
     }
 }
 
+struct ReleaseQueueSpot(Arc<RenderRecord>);
+
+impl Drop for ReleaseQueueSpot {
+    fn drop(&mut self) {
+        self.0.release_queue_spot();
+    }
+}
+
 fn spawn_render_task(
     state: AppState,
     record: Arc<RenderRecord>,
@@ -276,6 +284,8 @@ fn spawn_render_task(
     job: RenderJob,
 ) {
     tokio::spawn(async move {
+        // A queued task that ends any other way still gives its queue place back.
+        let _queue_place = ReleaseQueueSpot(Arc::clone(&record));
         let _render_slot = match slot {
             Some(permit) => permit,
             None => {

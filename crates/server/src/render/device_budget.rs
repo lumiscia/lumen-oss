@@ -105,11 +105,14 @@ impl DeviceBudget {
         let ticket = state.next_ticket;
         state.next_ticket += 1;
         state.waiting.push_back(ticket);
-        while state.waiting.front() != Some(&ticket) || state.used + contexts > self.capacity {
+        loop {
             if cancel.is_cancelled() {
                 state.waiting.retain(|waiting| *waiting != ticket);
                 self.freed.notify_all();
                 return Err(ServerRenderError::cancelled());
+            }
+            if state.waiting.front() == Some(&ticket) && state.used + contexts <= self.capacity {
+                break;
             }
             state = self
                 .freed
@@ -149,8 +152,9 @@ mod tests {
         budget.reserve(contexts, &CancelToken::new()).unwrap()
     }
 
-    fn wait_for_tickets(budget: &DeviceBudget, tickets: u64) {
-        while budget.state.lock().unwrap().next_ticket < tickets {
+    /// Returns once `waiting` renders are queued behind the ones holding room.
+    fn wait_for_waiting(budget: &DeviceBudget, waiting: usize) {
+        while budget.state.lock().unwrap().waiting.len() < waiting {
             std::thread::yield_now();
         }
     }
@@ -193,7 +197,7 @@ mod tests {
                 let _large = reserve(budget, 8);
                 large_started.send("large").unwrap();
             });
-            wait_for_tickets(budget, 2);
+            wait_for_waiting(budget, 1);
             scope.spawn(move || {
                 let _small = reserve(budget, 4);
                 started.send("small").unwrap();
@@ -219,7 +223,7 @@ mod tests {
                 let result = budget.reserve(8, &large_cancel).map(|_| ());
                 large_done.send(("large", result)).unwrap();
             });
-            wait_for_tickets(budget, 1);
+            wait_for_waiting(budget, 1);
             scope.spawn(move || {
                 let result = budget.reserve(4, &CancelToken::new()).map(|reserved| {
                     assert_eq!(budget.state.lock().unwrap().used, 10);
@@ -227,18 +231,33 @@ mod tests {
                 });
                 done.send(("small", result)).unwrap();
             });
-            wait_for_tickets(budget, 2);
+            wait_for_waiting(budget, 2);
 
             cancel.cancel();
 
-            let (name, result) = results.recv_timeout(Duration::from_secs(10)).unwrap();
-            assert_eq!(name, "large");
-            assert_eq!(result.unwrap_err().code(), ErrorCode::Cancelled);
-            let (name, result) = results.recv_timeout(Duration::from_secs(10)).unwrap();
-            assert_eq!(name, "small");
-            result.unwrap();
+            // The two end in either order: the cancelled wait wakes the other before it reports.
+            for _ in 0..2 {
+                match results.recv_timeout(Duration::from_secs(10)).unwrap() {
+                    ("large", result) => {
+                        assert_eq!(result.unwrap_err().code(), ErrorCode::Cancelled);
+                    }
+                    (_, result) => result.unwrap(),
+                }
+            }
         });
         drop(first);
+        let state = budget.state.lock().unwrap();
+        assert_eq!(state.used, 0);
+        assert!(state.waiting.is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_render_takes_no_room_that_is_free() {
+        let budget = DeviceBudget::new(10);
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let error = budget.reserve(4, &cancel).map(|_| ()).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::Cancelled);
         let state = budget.state.lock().unwrap();
         assert_eq!(state.used, 0);
         assert!(state.waiting.is_empty());
@@ -252,13 +271,14 @@ mod tests {
         std::thread::scope(|scope| {
             let (done, order) = mpsc::channel();
             let budget = &budget;
-            let spawn = |name: &'static str, cancel: CancelToken, tickets: u64| {
+            let spawn = |name: &'static str, cancel: CancelToken, waiting: usize| {
                 let done = done.clone();
                 scope.spawn(move || {
-                    let result = budget.reserve(6, &cancel).map(|_| ());
+                    // Its room is held until it has reported, so the next can't report first.
+                    let result = budget.reserve(6, &cancel);
                     done.send((name, result.is_ok())).unwrap();
                 });
-                wait_for_tickets(budget, tickets);
+                wait_for_waiting(budget, waiting);
             };
             spawn("a", CancelToken::new(), 1);
             spawn("b", cancel.clone(), 2);
