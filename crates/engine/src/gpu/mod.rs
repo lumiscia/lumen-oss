@@ -4,6 +4,7 @@
 //! pooled textures, bump buffers and cached programs. Rasters are linear, premultiplied
 //! [`WORKING_COLOR_FORMAT`] textures; `media_output` encodes them to sRGB for the output.
 
+mod caches;
 pub(crate) mod color;
 pub(crate) mod frame_graph;
 mod image_size;
@@ -21,6 +22,7 @@ mod target;
 mod types;
 mod yuv;
 
+pub use caches::{CacheBudgets, CacheStats};
 pub use color::WORKING_COLOR_FORMAT;
 pub use renderer::{
     DEFAULT_MAX_TEXT_GLYPHS, FrameGraphStats, GpuCompositionRenderer, MAX_TEXT_GLYPHS_CEILING,

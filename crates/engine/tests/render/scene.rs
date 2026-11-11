@@ -2517,7 +2517,11 @@ fn how_far_directional_shadows_reach_doesnt_depend_on_their_softness() {
 
 /// A `width` by `height` equirectangular `.hdr` whose texels hold `radiance` of the direction
 /// through their centres.
-fn environment_file(width: u32, height: u32, radiance: impl Fn(Vec3) -> Vec3) -> Vec<u8> {
+pub(super) fn environment_file(
+    width: u32,
+    height: u32,
+    radiance: impl Fn(Vec3) -> Vec3,
+) -> Vec<u8> {
     let map = Equirect::from_fn(width, height, radiance);
     let texels: Vec<[f32; 3]> = map.texels().iter().map(|texel| texel.to_array()).collect();
     crate::support::hdr_file(width, height, &texels)

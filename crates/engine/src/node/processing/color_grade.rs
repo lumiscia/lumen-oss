@@ -264,9 +264,6 @@ struct CachedLut {
     last_used: u64,
 }
 
-/// The bytes of tables the cache keeps beyond those the latest frame used.
-const LUT_BUDGET_BYTES: u64 = 128 << 20;
-
 /// `.cube` tables on the GPU by their media identity, uploaded once.
 #[derive(Default)]
 pub(crate) struct LutCache {
@@ -357,10 +354,10 @@ impl LutCache {
         Ok(lut)
     }
 
-    /// Frees tables, least recently used first, while the cache holds more than
-    /// [`LUT_BUDGET_BYTES`], keeping those frame `tick` used.
-    pub(crate) fn trim(&mut self, rec: &mut Recorder, tick: u64) {
-        while self.bytes > LUT_BUDGET_BYTES {
+    /// Frees tables, least recently used first, while the cache holds more than `budget` bytes,
+    /// keeping those frame `tick` used.
+    pub(crate) fn trim(&mut self, rec: &mut Recorder, tick: u64, budget: u64) {
+        while self.bytes > budget {
             let Some((id, _)) = self
                 .luts
                 .iter()
@@ -375,6 +372,10 @@ impl LutCache {
                 self.bytes -= cached.bytes;
             }
         }
+    }
+
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes
     }
 
     pub(crate) fn release(&mut self, rec: &mut Recorder) {

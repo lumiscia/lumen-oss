@@ -31,8 +31,6 @@ const SHAPE_EM: f64 = 128.0;
 /// ems.
 const CURVE_TOLERANCE: f64 = 0.001;
 const MAX_BEVEL_SEGMENTS: u32 = 16;
-/// Bytes of text meshes kept on the GPU beyond those the latest frame drew or a kept output drew.
-const TEXT_BUDGET_BYTES: u64 = 64 << 20;
 /// Most text meshes kept, counting those of text with nothing to draw.
 const MAX_TEXTS: usize = 256;
 /// Bytes of glyph meshes kept in memory for building other text from, which the least recently
@@ -256,6 +254,10 @@ fn glyph_bytes(mesh: &Mesh) -> u64 {
 }
 
 impl TextMeshes {
+    pub(super) fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
     pub(super) fn release(&mut self, rec: &mut Recorder) {
         for text in self.texts.drain(..) {
             if let Some(mesh) = text.mesh {
@@ -266,10 +268,16 @@ impl TextMeshes {
         self.glyphs = GlyphMeshes::default();
     }
 
-    /// Frees text meshes, least recently drawn first, while more than [`MAX_TEXTS`] or
-    /// [`TEXT_BUDGET_BYTES`] are kept, sparing those frame `tick` drew and those `kept` names.
-    pub(super) fn trim(&mut self, rec: &mut Recorder, tick: u64, kept: &HashSet<&String>) {
-        while self.texts.len() > MAX_TEXTS || self.bytes > TEXT_BUDGET_BYTES {
+    /// Frees text meshes, least recently drawn first, while more than [`MAX_TEXTS`] or `budget`
+    /// bytes are kept, sparing those frame `tick` drew and those `kept` names.
+    pub(super) fn trim(
+        &mut self,
+        rec: &mut Recorder,
+        tick: u64,
+        kept: &HashSet<&String>,
+        budget: u64,
+    ) {
+        while self.texts.len() > MAX_TEXTS || self.bytes > budget {
             let oldest = self
                 .texts
                 .iter()

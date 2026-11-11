@@ -358,7 +358,10 @@ fn with_no_budget_only_a_frames_textures_are_held() {
     let media = TestMedia::default();
     let composition = Composition::from(animated_shader_scene(9));
     render(&mut renderer, &composition, 0.0, &media);
-    renderer.set_frame_graph_pool_budget(0);
+    renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
+        pooled_textures: 0,
+        ..renderer.cache_budgets()
+    });
     let bytes = renderer.held_bytes();
     for frame in 1..512_u32 {
         let rendered = render(&mut renderer, &composition, f64::from(frame), &media);
@@ -385,7 +388,10 @@ fn with_no_budget_a_smaller_canvas_lets_the_larger_textures_go() {
     };
     render(&mut renderer, &with_canvas(128, 128), 0.0, &media);
     let large = renderer.held_bytes();
-    renderer.set_frame_graph_pool_budget(0);
+    renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
+        pooled_textures: 0,
+        ..renderer.cache_budgets()
+    });
     let rendered = render(&mut renderer, &with_canvas(8, 4), 1.0, &media);
     assert_uniform(&rendered.rgba, layer_color(1), "the small canvas");
     assert!(renderer.held_bytes() < large);

@@ -87,7 +87,10 @@ fn a_zero_budget_keeps_what_a_bound_frame_renders_with() {
     let composition: Composition = static_under_animated().into();
     assert!(nonblank(&at(&mut renderer, &composition, 0.0)));
     let bound = renderer.bind_frame_at(&composition, 1.0, &media).unwrap();
-    renderer.set_frame_graph_pool_budget(0);
+    renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
+        pooled_textures: 0,
+        ..renderer.cache_budgets()
+    });
     let (raster, _) = renderer.submit_bound_frame(&bound).unwrap();
     let pixels = read_raster(&renderer, raster);
     assert!(pixels == uncached(&mut reference, &composition, 1.0));
@@ -228,7 +231,10 @@ fn kept_output_survives_switches_and_is_dropped_on_release() {
     for budget in [None, Some(0)] {
         let mut renderer = gpu.renderer();
         if let Some(budget) = budget {
-            renderer.set_frame_graph_pool_budget(budget);
+            renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
+                pooled_textures: budget,
+                ..renderer.cache_budgets()
+            });
         }
         for frame in 0..8 {
             let pixels = at(&mut renderer, &composition, f64::from(frame));
@@ -251,7 +257,10 @@ fn a_layer_past_the_retained_budget_renders_again_when_revisited() {
     at(&mut renderer, &composition, 0.0);
     let budget = renderer.frame_graph_stats().retained_bytes;
     assert!(budget > 0);
-    renderer.set_frame_graph_retained_budget(budget);
+    renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
+        retained_outputs: budget,
+        ..renderer.cache_budgets()
+    });
     for frame in 1..6 {
         let pixels = at(&mut renderer, &composition, f64::from(frame));
         assert_switched_layer(&pixels, frame);

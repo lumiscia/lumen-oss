@@ -22,10 +22,6 @@ use crate::media::{AssetKind, MediaIdentity, ModelResolver, resolve_as};
 use crate::node::vector::paint::Paint;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, NodeId, NodeKind, required_input};
 
-/// The bytes of models the cache keeps on the GPU beyond those the latest frame drew or a kept
-/// output drew.
-const MODEL_BUDGET_BYTES: u64 = 256 << 20;
-
 /// The most joint matrices one frame's scene may hold.
 const MAX_SCENE_JOINTS: usize = 1 << 16;
 /// The most morph target weights one frame's scene may hold.
@@ -133,6 +129,15 @@ impl SceneCache {
         self.mips.release(rec);
     }
 
+    /// The bytes of models, environment maps and text meshes held.
+    pub(crate) fn held_bytes(&self) -> (u64, u64, u64) {
+        (
+            self.model_bytes,
+            self.environments.bytes(),
+            self.texts.bytes(),
+        )
+    }
+
     pub(crate) fn trim_mips(&mut self, rec: &mut Recorder, tick: u64) {
         self.mips.trim(rec, tick);
     }
@@ -151,23 +156,25 @@ impl SceneCache {
         rec: &mut Recorder,
         tick: u64,
         kept: impl IntoIterator<Item = &'k String>,
+        budget: u64,
     ) {
         self.environments
-            .trim(rec, tick, &kept.into_iter().collect());
+            .trim(rec, tick, &kept.into_iter().collect(), budget);
     }
 
-    /// Frees models, least recently drawn first, while the cache holds more than
-    /// [`MODEL_BUDGET_BYTES`], keeping those frame `tick` drew and those `kept` names, and frees
-    /// text meshes the same way.
+    /// Frees models, least recently drawn first, while the cache holds more than the models'
+    /// budget, keeping those frame `tick` drew and those `kept` names, and frees text meshes the
+    /// same way.
     pub(crate) fn trim<'k>(
         &mut self,
         rec: &mut Recorder,
         tick: u64,
         kept: impl IntoIterator<Item = &'k String>,
+        budgets: &crate::gpu::CacheBudgets,
     ) {
         let kept: std::collections::HashSet<&String> = kept.into_iter().collect();
-        self.texts.trim(rec, tick, &kept);
-        if self.model_bytes <= MODEL_BUDGET_BYTES {
+        self.texts.trim(rec, tick, &kept, budgets.text_meshes);
+        if self.model_bytes <= budgets.models {
             return;
         }
         let freed = evictions(
@@ -176,7 +183,7 @@ impl SceneCache {
                 (id, cached.bytes, cached.last_used, protected)
             }),
             self.model_bytes,
-            MODEL_BUDGET_BYTES,
+            budgets.models,
         );
         let freed: Vec<String> = freed.into_iter().cloned().collect();
         for id in freed {
