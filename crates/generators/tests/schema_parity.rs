@@ -523,8 +523,13 @@ fn timeline_schema_matches_engine_parsing() {
 fn version_keys_match_engine_parsing() {
     let validator = schema_validator();
 
+    let own = lumen_engine::SCHEMA_VERSION;
     for (key, version, valid) in [
-        ("lumenSchemaVersion", json!("0.1.0"), true),
+        ("lumenSchemaVersion", json!(own), true),
+        ("lumenSchemaVersion", json!(format!("{own}.3")), true),
+        ("lumenSchemaVersion", json!(format!("{own}.x")), false),
+        ("lumenSchemaVersion", json!(format!("v{own}")), false),
+        ("lumenSchemaVersion", json!("0.1.0"), false),
         ("lumenSchemaVersion", json!(1), false),
         ("lumenSchemaVersion", json!("99.0.0"), false),
         // Retired, so like any unknown root key it can hold anything.

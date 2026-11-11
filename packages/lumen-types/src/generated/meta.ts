@@ -10,6 +10,9 @@ export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" 
 
 export const schemaVersion = 1 as const;
 
+/** The Lumen major.minor compositions are written for; an engine reads only its own. */
+export const lumenSchemaVersion = "0.6" as const;
+
 export const expressionBuiltins = [
   {
     "args": [

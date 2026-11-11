@@ -16,8 +16,8 @@ export type LumenComposition = {
   readonly connections: readonly Connection[];
   /** Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used. */
   readonly functions?: Readonly<Record<`${string}(${string})`, string>>;
-  /** Version of the composition format. Absent means the current version. */
-  readonly lumenSchemaVersion?: "0.1.0";
+  /** The Lumen major.minor the composition was written for, such as `0.6`; an engine reads only its own line. Absent means the engine's own version. */
+  readonly lumenSchemaVersion?: string;
   readonly metadata?: {
     /** Display name of the composition. */
     readonly name?: string;

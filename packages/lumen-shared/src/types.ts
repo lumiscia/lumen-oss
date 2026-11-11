@@ -28,7 +28,6 @@ export interface CompositionOptions {
   readonly metadata?: LumenComposition["metadata"];
   readonly renderSettings?: RenderSettingsInput;
   readonly timeline?: TimelineInput;
-  readonly lumenSchemaVersion?: LumenComposition["lumenSchemaVersion"];
 }
 
 export type NodeInput<TKind extends NodeKind = NodeKind> = NodeInputByKind[TKind];

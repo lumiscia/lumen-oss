@@ -229,6 +229,9 @@ export type NodeKind = ${union(uniqueSorted(nodes.map((node) => node.kind)))};
 
 export const schemaVersion = ${JSON.stringify(schema["x-lumen-schemaVersion"])} as const;
 
+/** The Lumen major.minor compositions are written for; an engine reads only its own. */
+export const lumenSchemaVersion = ${JSON.stringify(schema["x-lumen-lumenSchemaVersion"])} as const;
+
 ${renderExpressionTables(schema)}
 
 ${namedTypes}

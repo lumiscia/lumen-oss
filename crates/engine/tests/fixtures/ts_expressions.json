@@ -21,6 +21,7 @@
       { "from_node": 0, "to_node": 1, "to_port": "source" },
       { "from_node": 1, "to_node": 3, "to_port": "source" }
     ],
+    "lumenSchemaVersion": "0.6",
     "functions": {
       "rise(start)": "tween(vec2(0, 60), vec2(0, 0), start, 16, 'out_expo')",
       "bob(start, offset)": "(rise(start) + offset)"
