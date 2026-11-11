@@ -278,7 +278,7 @@ impl TimelineIndex {
                 continue;
             }
             let middle = from + (to - from) / 2;
-            if !(self.latest_end[middle] >= low) {
+            if self.latest_end[middle] < low {
                 continue;
             }
             *looked_at += 1;

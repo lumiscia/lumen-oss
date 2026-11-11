@@ -131,21 +131,22 @@ describe("mixTimelineChunk looping", () => {
 
 describe("mixTimelineChunk over a range", () => {
   // One second of a ramp on a one second timeline, so each sample says where it came from.
-  const timeline = {
-    clips: [
-      {
-        durationMs: 1_000,
-        id: "clip",
-        sourceId: "ramp",
-        sourceStartMs: 0,
-        startMs: 0,
-        trackId: "track",
-        volume: 1,
-      },
-    ],
+  const timeline: AudioEngineTimeline = {
     durationFrames: 10,
     fps: 10,
-    tracks: [{ id: "track", muted: false, solo: false, volume: 1 }],
+    segments: [
+      {
+        frames: 48_000,
+        from: 0,
+        gain: [1, 1],
+        position: 0,
+        start: 0,
+        step: 1,
+        to: 48_000,
+        voice: 0,
+      },
+    ],
+    voices: [{ duration: 48_000, fadeIn: 0, fadeOut: 0, sourceId: "ramp", sourceStart: 0 }],
   };
   const sources = new Map([
     [
