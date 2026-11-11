@@ -59,6 +59,19 @@ const merged = composition.addNode({ type: "merge", inputs: { base: bg, overlay:
 composition.addNode({ type: "media_output", inputs: { source: merged } });
 ```
 
+Or as nested node values, with the same node names, ports and JSON:
+
+```ts
+import { Composition, nodes as n } from "@lumiscia/lumen-sdk";
+
+export const composition = new Composition({ timeline: { durationSeconds: 3 } }).addOutput(
+  n.merge({
+    base: n.background({ paint: [24, 28, 36, 255] }),
+    overlay: n.text({ content: "Hello, Lumen", font_size: 120, position: [96, 480] }),
+  }),
+);
+```
+
 **2. Render it.** Start a [`lumen-server`](crates/server/README.md) on your GPU machine:
 
 ```bash

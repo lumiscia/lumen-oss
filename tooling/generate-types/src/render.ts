@@ -151,6 +151,24 @@ const renderNodeInputPortKindMapMember = (node: NodeVariant): string => {
   return `  readonly ${quote(node.kind)}: ${ports.length === 0 ? "{}" : `{ ${ports.join("; ")} }`};`;
 };
 
+const renderNodeInputPortTableMember = (node: NodeVariant): string => {
+  const ports = node.inputs.map(
+    (port) => `${quote(port.name)}: { kind: ${quote(port.kind)}, variadic: ${port.variadic} }`,
+  );
+  return `${docComment(node.description, "  ")}  ${quote(node.kind)}: ${ports.length === 0 ? "{}" : `{ ${ports.join(", ")} }`},`;
+};
+
+/** `nodes` tells a node's params from its input ports by name, so no kind may share one. */
+function assertDistinctParamAndPortNames(node: NodeVariant): void {
+  const ports = new Set(node.inputs.map((port) => port.name));
+  const shared = node.paramKinds.map(([id]) => id).filter((id) => ports.has(id));
+  if (shared.length > 0) {
+    throw new Error(
+      `\`${node.kind}\` has a param and an input port named ${shared.map((id) => `\`${id}\``).join(", ")}`,
+    );
+  }
+}
+
 const renderConst = (name: string, value: unknown): string =>
   `export const ${name} = ${JSON.stringify(value, null, 2)} as const;`;
 
@@ -188,6 +206,7 @@ const importValueTypes = (used: ReadonlySet<string>): string => {
 /** The node and `$defs` types, the node tables, and what the root needs to import from them. */
 function renderMetaTypes(schema: JsonSchema, context: TypeContext): string {
   const nodes = nodeVariants(schema);
+  for (const node of nodes) assertDistinctParamAndPortNames(node);
   declareDefs(context, object(schema.$defs) as Record<string, JsonSchema>);
   const nodeInterfaces = nodes.map((node) => renderNodeInterface(node, context)).join("\n\n");
   for (const node of nodes) declareEnumAliases(node, context);
@@ -262,6 +281,36 @@ export type NodeInputPortKind<
     ? NodeInputPortKindByKind[TKind][TPort]
     : never
   : never;
+
+/**
+ * A name a node kind gives both a param and an input port: \`never\`, since \`nodes\` tells a node's
+ * params from its inputs by name. \`nodeInputPorts\` fails to compile otherwise.
+ */
+export type NodeParamPortNameClash = {
+  readonly [TKind in NodeKind]: Extract<
+    keyof NonNullable<CompositionNodeByKind[TKind]["params"]>,
+    NodeInputPortName<TKind>
+  >;
+}[NodeKind];
+
+type NodeInputPortTable = {
+  readonly [TKind in NodeKind]: {
+    readonly [TPort in NodeInputPortName<TKind>]: {
+      readonly kind: NodeInputPortKind<TKind, TPort>;
+      readonly variadic: TPort extends NodeVariadicInputPortName<TKind> ? true : false;
+    };
+  };
+};
+
+/**
+ * The input ports of each node kind by name, in the schema's order: what each takes, and whether
+ * it takes a list of nodes.
+ */
+export const nodeInputPorts = {
+${nodes.map(renderNodeInputPortTableMember).join("\n")}
+} as const satisfies [NodeParamPortNameClash] extends [never]
+  ? NodeInputPortTable
+  : \`a param and an input port share the name \${NodeParamPortNameClash}\`;
 `;
 }
 
