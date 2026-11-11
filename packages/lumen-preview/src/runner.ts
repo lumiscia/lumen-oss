@@ -73,10 +73,10 @@ export class PreviewRunner<TTimer> {
     this.#wake();
   }
 
-  /** Plays another range of the loaded timeline. */
-  setRange(range: PlaybackRange): void {
+  /** Plays another range of the loaded timeline, from the position `clock` gives under it. */
+  setRange(range: PlaybackRange, clock: PreviewClock): void {
     this.#range = range;
-    this.#clock = this.#fit(this.#clock);
+    this.#clock = this.#fit(clock);
     this.#wake();
   }
 

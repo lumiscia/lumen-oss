@@ -148,7 +148,13 @@ describe("createLumenPreviewWorkerHost", () => {
     receive({ logLevel: "off", lookaheadCount: 0, type: "start", wasmUrl: "lumen.wasm" });
     await settle();
     receive({ canvas: {} as OffscreenCanvas, type: "attach-canvas" });
-    receive({ loop: false, range: { in: 10, out: 14 }, type: "set-playback" });
+    receive({
+      clock: { atEpochMs: 0, originMs: 0, rate: 0 },
+      loop: false,
+      range: { in: 10, out: 14 },
+      revision: 3,
+      type: "set-playback",
+    });
 
     // 30 fps: frame 10 starts at 333 ms.
     const startMs = (10 * 1_000) / 30;
@@ -166,7 +172,7 @@ describe("createLumenPreviewWorkerHost", () => {
 
     expect(shown).toEqual([10, 11, 12, 13]);
     expect(sent.filter((event) => event.type === "ended")).toEqual([
-      { loadId: 1, seekId: 0, type: "ended" },
+      { loadId: 1, playbackRevision: 3, seekId: 0, type: "ended" },
     ]);
   });
 });

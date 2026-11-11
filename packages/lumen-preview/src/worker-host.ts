@@ -67,9 +67,13 @@ export type LumenPreviewWorkerCommand =
       type: "set-options";
     }
   | {
+      /** The same position under the new loop and range, so time counted under the old ones isn't reread. */
+      clock: PreviewClock;
       loop: boolean;
       /** Null plays the whole timeline. */
       range: LumenPreviewRange | null;
+      /** Counts changes of loop and range; `ended` events say which they ended under. */
+      revision: number;
       type: "set-playback";
     };
 
@@ -113,6 +117,8 @@ export type LumenPreviewWorkerEvent =
     }
   | {
       loadId: number;
+      /** The loop and range revision the playback ended under. */
+      playbackRevision: number;
       /** The newest seek the worker had heard, so a late answer can't end a playback begun since. */
       seekId: number;
       type: "ended";
@@ -146,6 +152,7 @@ export function createLumenPreviewWorkerHost({
   let lastRenderMs = 0;
   let loadId = 0;
   let loop = false;
+  let playbackRevision = 0;
   let range: LumenPreviewRange | null = null;
 
   const runner = new PreviewRunner<ReturnType<typeof setTimeout>>(
@@ -163,7 +170,7 @@ export function createLumenPreviewWorkerHost({
       clearTimer: (timer) => clearTimeout(timer),
       now: epochNow,
       onEnded: (seekId) => {
-        scope.postMessage({ loadId, seekId, type: "ended" });
+        scope.postMessage({ loadId, playbackRevision, seekId, type: "ended" });
       },
       onFailure: (error) => {
         scope.postMessage({ loadId, message: describeError(error), type: "render-failed" });
@@ -218,10 +225,12 @@ export function createLumenPreviewWorkerHost({
         requireController().setLookaheadCount(message.lookaheadCount);
         break;
       case "set-playback":
+        followClock(message.clock);
         loop = message.loop;
+        playbackRevision = message.revision;
         range = message.range;
         if (durationFrames > 0) {
-          runner.setRange(applyPlaybackRange(requireController()));
+          runner.setRange(applyPlaybackRange(requireController()), message.clock);
         }
         break;
     }

@@ -110,6 +110,7 @@ type WorkletMessage =
       generation: number;
       holdFrames: number;
       rate: number;
+      rateRevision: number;
       startSample: number;
       type: "play";
     }
@@ -118,6 +119,7 @@ type WorkletMessage =
     }
   | {
       rate: number;
+      rateRevision: number;
       type: "rate";
     };
 
@@ -131,6 +133,8 @@ type WorkletEventMessage =
       currentSample: number;
       generation: number;
       rate: number;
+      /** The rate change the worklet had heard when it reported. */
+      rateRevision: number;
       stalled: boolean;
       type: "position";
     };
@@ -179,6 +183,8 @@ export class LumenAudioEngine {
   #queuedChunkStarts = new Set<number>();
   #range: AudioPlaybackRange | null = null;
   #rate = 1;
+  // Bumped by every rate change, so a report from before one is told apart even at the same rate.
+  #rateRevision = 0;
   #sources = new Map<string, AudioSourceEntry>();
   // Only the latest sync reports failures, because a newer one may have replaced those sources.
   #sourceSync = 0;
@@ -313,8 +319,9 @@ export class LumenAudioEngine {
       this.#playback = this.#rebased(playback);
     }
     this.#rate = rate;
-    if (playback?.workletReported && this.#node) {
-      this.#post(this.#node, { type: "rate", rate });
+    this.#rateRevision += 1;
+    if (playback && this.#node) {
+      this.#post(this.#node, { type: "rate", rate, rateRevision: this.#rateRevision });
     }
   }
 
@@ -380,7 +387,14 @@ export class LumenAudioEngine {
         }
         const startSample = msToLumenAudioSample(this.currentTimeMs());
         const holdFrames = msToLumenAudioSample(Math.max(holdUntil - performance.now(), 0));
-        this.#post(node, { type: "play", generation, holdFrames, rate: this.#rate, startSample });
+        this.#post(node, {
+          type: "play",
+          generation,
+          holdFrames,
+          rate: this.#rate,
+          rateRevision: this.#rateRevision,
+          startSample,
+        });
         this.#queueChunks(startSample);
       })
       .catch((error: unknown) => {
@@ -573,7 +587,7 @@ export class LumenAudioEngine {
         console.error("[LumenAudioEngine]", message.message ?? "audio worklet failed");
       } else if (
         message.generation === this.#generation &&
-        message.rate === this.#rate &&
+        message.rateRevision === this.#rateRevision &&
         this.#playback
       ) {
         const wasRunning = this.isClockRunning();

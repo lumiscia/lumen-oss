@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LumenComposition } from "@lumiscia/lumen-types";
 
-import { clockPositionMs } from "../../src/clock.js";
+import { clockPositionMs, type PreviewClock } from "../../src/clock.js";
 import { LumenPreviewContext } from "../../src/preview.js";
 import { LumenPreviewSession } from "../../src/session/session.js";
 import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../../src/worker-host.js";
@@ -885,6 +885,14 @@ describe("LumenPreviewSession", () => {
         type: "frame",
       });
 
+    const ended = (worker: FakeWorker, seekId = 0, playbackRevision = 0) =>
+      worker.emit({
+        loadId: worker.ofType("load").at(-1)?.loadId as number,
+        playbackRevision,
+        seekId,
+        type: "ended",
+      });
+
     it("changes nothing for a player that sets none", async () => {
       const { session, worker } = await playable();
       const [engine] = audio.instances;
@@ -911,8 +919,8 @@ describe("LumenPreviewSession", () => {
       });
       const [engine] = audio.instances;
 
-      expect(worker.ofType("set-playback")).toEqual([
-        { loop: true, range: { in: 20, out: 50 }, type: "set-playback" },
+      expect(worker.ofType("set-playback")).toMatchObject([
+        { loop: true, range: { in: 20, out: 50 }, revision: 1, type: "set-playback" },
       ]);
       expect(worker.posted.findIndex(({ type }) => type === "set-playback")).toBeLessThan(
         worker.posted.findIndex(({ type }) => type === "load"),
@@ -933,8 +941,8 @@ describe("LumenPreviewSession", () => {
 
       update(session, { loop: true });
       update(session, { loop: true });
-      expect(worker.ofType("set-playback")).toEqual([
-        { loop: true, range: null, type: "set-playback" },
+      expect(worker.ofType("set-playback")).toMatchObject([
+        { loop: true, range: null, revision: 1, type: "set-playback" },
       ]);
       update(session, { loop: true, range: { in: 10, out: 20 } });
       update(session, { loop: true, range: { in: 10, out: 20 } });
@@ -1009,7 +1017,104 @@ describe("LumenPreviewSession", () => {
       });
     });
 
+    describe("changing loop or range", () => {
+      const epochAt = (ms: number) => performance.timeOrigin + ms;
+
+      it("keeps the position a looping playback had reached when loop is turned off", async () => {
+        let nowMs = 0;
+        vi.spyOn(performance, "now").mockImplementation(() => nowMs);
+        const { preview, session, worker } = await playable({ loop: true }, null);
+        preview.play();
+        nowMs = 15_000;
+
+        update(session, { loop: false });
+        expect(worker.ofType("seek")).toEqual([]);
+        const { clock } = worker.ofType("set-playback").at(-1) as { clock: PreviewClock };
+        expect(clockPositionMs(clock, epochAt(15_000))).toBeCloseTo(5_000);
+        expect(clock.rate).toBe(1);
+      });
+
+      it("keeps the position when the range gets a different length", async () => {
+        let nowMs = 0;
+        vi.spyOn(performance, "now").mockImplementation(() => nowMs);
+        const { preview, session, worker } = await playable({ loop: true }, null);
+        preview.play();
+        nowMs = 25_000;
+
+        update(session, { loop: true, range: { in: 0, out: 60 } });
+        const { clock } = worker.ofType("set-playback").at(-1) as { clock: PreviewClock };
+        expect(clockPositionMs(clock, epochAt(25_000))).toBeCloseTo(5_000);
+        expect(worker.ofType("seek")).toEqual([]);
+      });
+
+      it("keeps a paused position, and moves one outside the new range to its start", async () => {
+        const { preview, session, worker } = await playable();
+        void preview.seek(30);
+
+        update(session, { range: { in: 0, out: 50 } });
+        expect(worker.ofType("set-playback").at(-1)?.clock).toMatchObject({
+          originMs: 3_000,
+          rate: 0,
+        });
+        expect(worker.ofType("seek")).toHaveLength(1);
+
+        update(session, { range: { in: 40, out: 60 } });
+        expect(worker.ofType("seek").at(-1)?.clock).toMatchObject({ originMs: 4_000, rate: 0 });
+      });
+    });
+
     describe("invalid values", () => {
+      it("leaves every input as it was, and loads nothing, when an update is rejected", async () => {
+        const onError = vi.fn();
+        const onEnded = vi.fn();
+        const { preview, session, worker } = await playable({ lookaheadCount: 8, onError });
+        const posted = worker.posted.length;
+
+        session.update({
+          composition: composition("replacement"),
+          lookaheadCount: 2,
+          onEnded,
+          onError: vi.fn(),
+          rate: 9,
+        });
+        session.update({ rate: 9 });
+        expect(worker.posted.slice(posted)).toEqual([]);
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(preview.getSnapshot()).toMatchObject({
+          errorCode: "invalid_option",
+          isLoaded: true,
+        });
+
+        preview.play();
+        ended(worker);
+        expect(onEnded).not.toHaveBeenCalled();
+      });
+
+      it("keeps the error while an earlier load completes, and reports the same value after a valid update", async () => {
+        const onError = vi.fn();
+        const { preview, session, worker } = await playable({ onError });
+        update(session, { composition: composition("second"), onError });
+        update(session, { composition: composition("second"), onError, rate: 9 });
+        expect(onError).toHaveBeenCalledTimes(1);
+
+        const { loadId } = worker.ofType("load").at(-1) as { loadId: number };
+        worker.emit({
+          audioTimelineJson: null,
+          fps: 10,
+          height: 720,
+          loadId,
+          totalFrames: 100,
+          type: "loaded",
+          width: 1280,
+        });
+        expect(preview.getSnapshot()).toMatchObject({ errorCode: "invalid_option" });
+
+        update(session, { composition: composition("second"), onError, rate: 2 });
+        expect(preview.getSnapshot().errorCode).toBeNull();
+        update(session, { composition: composition("second"), onError, rate: 9 });
+        expect(onError).toHaveBeenCalledTimes(2);
+      });
+
       it.each([
         [{ rate: 0.1 }, "rate"],
         [{ rate: 4.5 }, "rate"],
@@ -1146,13 +1251,6 @@ describe("LumenPreviewSession", () => {
     });
 
     describe("ended", () => {
-      const ended = (worker: FakeWorker, seekId = 0) =>
-        worker.emit({
-          loadId: worker.ofType("load").at(-1)?.loadId as number,
-          seekId,
-          type: "ended",
-        });
-
       it("stops on the last frame and says so once", async () => {
         const onEnded = vi.fn();
         const { preview, worker } = await playable({ onEnded });
@@ -1181,13 +1279,32 @@ describe("LumenPreviewSession", () => {
         expect(preview.getSnapshot().isPlaying).toBe(true);
       });
 
+      it("ignores an ending from a range that has since changed", async () => {
+        const onEnded = vi.fn();
+        const { preview, session, worker } = await playable({
+          onEnded,
+          range: { in: 0, out: 50 },
+        });
+        preview.play();
+
+        update(session, { onEnded, range: { in: 0, out: 100 } });
+        expect(worker.ofType("seek")).toEqual([]);
+        ended(worker, 0, 1);
+        expect(onEnded).not.toHaveBeenCalled();
+        expect(preview.getSnapshot()).toMatchObject({ frame: 0, isPlaying: true });
+
+        ended(worker, 0, 2);
+        expect(onEnded).toHaveBeenCalledTimes(1);
+        expect(preview.getSnapshot()).toMatchObject({ frame: 99, isPlaying: false });
+      });
+
       it("plays again from the start of the range after it ended", async () => {
         const { preview, worker } = await playable({
           onEnded: () => {},
           range: { in: 20, out: 50 },
         });
         preview.play();
-        ended(worker);
+        ended(worker, 0, 1);
         expect(preview.getSnapshot()).toMatchObject({ frame: 49, isPlaying: false });
 
         preview.play();
@@ -1236,6 +1353,44 @@ describe("LumenPreviewSession", () => {
         update(session, { onTimeUpdate: null });
         showFrame(worker, 11, 1);
         expect(onTimeUpdate).toHaveBeenCalledTimes(3);
+      });
+
+      it("isn't called again when a seek is answered on the frame already shown", async () => {
+        const onTimeUpdate = vi.fn();
+        const { preview, worker } = await playable({ onTimeUpdate });
+        showFrame(worker, 10);
+        expect(onTimeUpdate).toHaveBeenCalledTimes(1);
+
+        const first = preview.seek(10);
+        const second = preview.seek(10);
+        showFrame(worker, 10, 1);
+        showFrame(worker, 10, 2);
+        await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+        expect(onTimeUpdate).toHaveBeenCalledTimes(1);
+
+        void preview.seek(11);
+        showFrame(worker, 11, 3);
+        expect(onTimeUpdate).toHaveBeenCalledTimes(2);
+      });
+
+      it("is called again for a frame of a composition that replaced the one shown", async () => {
+        const onTimeUpdate = vi.fn();
+        const { session, worker } = await playable({ onTimeUpdate });
+        showFrame(worker, 10);
+
+        update(session, { composition: composition("second"), onTimeUpdate });
+        const { loadId } = worker.ofType("load").at(-1) as { loadId: number };
+        worker.emit({
+          audioTimelineJson: audioTimeline(100),
+          fps: 10,
+          height: 720,
+          loadId,
+          totalFrames: 100,
+          type: "loaded",
+          width: 1280,
+        });
+        showFrame(worker, 10);
+        expect(onTimeUpdate).toHaveBeenCalledTimes(2);
       });
     });
   });

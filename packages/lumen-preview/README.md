@@ -83,9 +83,9 @@ session.rate; // 1.5: the options in effect are readable as loop, rate, volume, 
 
 `update()` replaces every input, so pass the ones that should stay. Some details:
 
-- A value that can't be used (a `rate` outside `0.25` to `4`, a `volume` outside `0` to `1`, a `range` that isn't whole frames with `0 <= in < out`, or any of them not finite) is reported through `onError` with the code `"invalid_option"` and the state's `error`. None of the options in that call are applied, and the earlier ones stay in effect.
+- A value that can't be used (a `rate` outside `0.25` to `4`, a `volume` outside `0` to `1`, a `range` that isn't whole frames with `0 <= in < out`, or any of them not finite) is reported through `onError` with the code `"invalid_option"` and the state's `error`. The whole call is rejected: none of its inputs (composition, media, fonts, callbacks or other options) are applied, and the earlier ones stay in effect.
 - A `range` with `out` past the end of the composition is cut to the end, with a console warning. An `in` past the end is ignored with a warning, which plays the whole composition. The range is checked again when a different composition loads.
-- Seeks land inside the range, whether or not it loops, and a playhead outside a new range moves to its `in`. Clearing the range restores the whole timeline without moving the playhead.
+- Seeks land inside the range, whether or not it loops, and a playhead outside a new range moves to its `in`. Clearing the range restores the whole timeline without moving the playhead. Changing `loop` or `range` keeps the position playback had reached, also when a looping playback has already wrapped round.
 - Playback that reached the end of the range stops on its last frame and calls `onEnded` once. A pause or a seek there doesn't. Playing from the last frame of a range that doesn't loop starts it from `in` again.
 - Changing `loop` or `range` while audio plays restarts the audio mix at the current position, which can leave a brief gap in the sound. Changing `rate`, `volume` and `muted` doesn't.
 - Lookahead decoding stays inside the range, and wraps round it only when it loops.

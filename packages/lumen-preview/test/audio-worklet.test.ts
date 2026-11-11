@@ -322,14 +322,16 @@ describe("LumenAudioWorkletProcessor", () => {
     });
 
     it("changes rate mid-playback from the position it has reached", async () => {
-      const { render, worklet } = await createWorklet();
+      const { render, reports, worklet } = await createWorklet();
       worklet.handleMessage({ generation: 1, holdFrames: 0, startSample: 0, type: "play" });
       ramp(worklet);
       render();
       expect(worklet.currentSample).toBe(QUANTUM);
 
-      worklet.handleMessage({ rate: 4, type: "rate" });
+      worklet.handleMessage({ rate: 4, rateRevision: 3, type: "rate" });
       const [left] = render();
+      worklet.reportPosition(0);
+      expect(reports.at(-1)).toMatchObject({ rate: 4, rateRevision: 3 });
       expect(left?.[0]).toBeCloseTo(QUANTUM / 1_000);
       expect(left?.[1]).toBeCloseTo((QUANTUM + 4) / 1_000);
       expect(worklet.currentSample).toBe(QUANTUM + 4 * QUANTUM);

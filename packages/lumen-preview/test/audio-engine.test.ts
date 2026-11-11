@@ -543,7 +543,7 @@ describe("LumenAudioEngine", () => {
         contextTime,
         currentSample: seconds * LUMEN_AUDIO_SAMPLE_RATE,
         generation,
-        rate: 1,
+        rateRevision: 0,
         stalled,
         type: "position",
       });
@@ -582,7 +582,7 @@ describe("LumenAudioEngine", () => {
         contextTime: context.currentTime,
         currentSample: 0,
         generation,
-        rate: 1,
+        rateRevision: 0,
         stalled,
         type: "position",
       });
@@ -620,7 +620,7 @@ describe("LumenAudioEngine", () => {
           contextTime: 0,
           currentSample: 0,
           generation,
-          rate: 1,
+          rateRevision: 0,
           stalled,
           type: "position",
         });
@@ -763,7 +763,7 @@ describe("LumenAudioEngine", () => {
       contextTime: 1,
       currentSample: 48_000,
       generation,
-      rate: 1,
+      rateRevision: 0,
       stalled: false,
       type: "position",
     });
@@ -788,7 +788,7 @@ describe("LumenAudioEngine", () => {
       contextTime: 1,
       currentSample: 24_000,
       generation,
-      rate: 1,
+      rateRevision: 0,
       stalled: false,
       type: "position",
     });
@@ -810,12 +810,12 @@ describe("LumenAudioEngine", () => {
       const context = fakes.contexts[0];
       if (!node || !context) throw new Error("not playing");
       const generation = postedOfType(node.posted, "play")[0]?.generation;
-      const report = (contextTime: number, seconds: number, rate: number) =>
+      const report = (contextTime: number, seconds: number, rateRevision: number) =>
         node.onmessage({
           contextTime,
           currentSample: seconds * LUMEN_AUDIO_SAMPLE_RATE,
           generation,
-          rate,
+          rateRevision,
           stalled: false,
           type: "position",
         });
@@ -828,7 +828,7 @@ describe("LumenAudioEngine", () => {
       engine.setRate(4);
       const { node } = await start(engine, 0);
 
-      expect(postedOfType(node.posted, "play")[0]).toMatchObject({ rate: 4 });
+      expect(postedOfType(node.posted, "play")[0]).toMatchObject({ rate: 4, rateRevision: 1 });
       const requested = postedOfType(fakes.workers[0]?.posted, "request-chunk").map(
         (message) => message.startSample,
       );
@@ -837,22 +837,67 @@ describe("LumenAudioEngine", () => {
 
     it("carries on from the same position at a new rate, ignoring reports from the old one", async () => {
       const { context, engine, node, report } = await playing();
-      report(0, 0, 1);
+      report(0, 0, 0);
       context.currentTime = 1;
       expect(engine.currentTimeMs()).toBeCloseTo(1_000);
 
       engine.setRate(2);
-      expect(postedOfType(node.posted, "rate")).toEqual([{ rate: 2, type: "rate" }]);
+      expect(postedOfType(node.posted, "rate")).toEqual([
+        { rate: 2, rateRevision: 1, type: "rate" },
+      ]);
       expect(engine.currentTimeMs()).toBeCloseTo(1_000);
       context.currentTime = 2;
       expect(engine.currentTimeMs()).toBeCloseTo(3_000);
 
-      report(1.5, 1.5, 1);
+      report(1.5, 1.5, 0);
       expect(engine.currentTimeMs()).toBeCloseTo(3_000);
-      report(2, 3, 2);
+      report(2, 3, 1);
       context.currentTime = 2.5;
       expect(engine.currentTimeMs()).toBeCloseTo(4_000);
       expect(postedOfType(node.posted, "pause")).toHaveLength(0);
+    });
+
+    it("sends a rate change made before the first report, and follows the reports that answer it", async () => {
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("a"));
+      engine.play(0);
+      await settled(fakes);
+      const node = fakes.nodes[0];
+      if (!node) throw new Error("not playing");
+      const generation = postedOfType(node.posted, "play")[0]?.generation;
+      const report = (rateRevision: number, seconds: number) =>
+        node.onmessage({
+          contextTime: 0,
+          currentSample: seconds * LUMEN_AUDIO_SAMPLE_RATE,
+          generation,
+          rateRevision,
+          stalled: false,
+          type: "position",
+        });
+
+      engine.setRate(2);
+      expect(postedOfType(node.posted, "rate")).toEqual([
+        { rate: 2, rateRevision: 1, type: "rate" },
+      ]);
+
+      report(0, 0);
+      expect(engine.isClockRunning()).toBe(false);
+      report(1, 0.25);
+      expect(engine.currentTimeMs()).toBeCloseTo(250);
+      expect(engine.isClockRunning()).toBe(true);
+    });
+
+    it("tells apart reports from before a rate that returned to its old value", async () => {
+      const { context, engine, report } = await playing();
+      report(0, 0, 0);
+      engine.setRate(2);
+      engine.setRate(1);
+
+      context.currentTime = 1;
+      report(0.5, 5, 0);
+      expect(engine.currentTimeMs()).not.toBeCloseTo(5_000);
+      report(1, 1, 2);
+      expect(engine.currentTimeMs()).toBeCloseTo(1_000);
     });
 
     it("wraps a looping range at its end and stays inside one that doesn't loop", async () => {

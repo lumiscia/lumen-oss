@@ -13,7 +13,7 @@ The preview player can loop, change speed, change volume, play a section and tel
 - `onEnded`: called once when playback reaches the end of the range without `loop`.
 - `onTimeUpdate({ frame, timeMs })`: called at most once for each frame shown. It costs nothing while unset and doesn't re-render a React or Svelte component.
 
-A value that can't be used (a `rate` outside 0.25 to 4, a `volume` outside 0 to 1, a malformed `range`, or a non-finite number) is reported through `onError` and the state's `error` with the new code `"invalid_option"`, and the previous options stay in effect. `session.loop`, `rate`, `volume`, `muted` and `range` read the options in effect.
+A value that can't be used (a `rate` outside 0.25 to 4, a `volume` outside 0 to 1, a malformed `range`, or a non-finite number) is reported through `onError` and the state's `error` with the new code `"invalid_option"`, and the whole update is rejected: the previous inputs and options stay in effect. `session.loop`, `rate`, `volume`, `muted` and `range` read the options in effect.
 
 ```tsx
 <Player

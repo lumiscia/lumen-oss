@@ -13,6 +13,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
     this.holdFrames = 0;
     this.playing = false;
     this.rate = 1;
+    this.rateRevision = 0;
     this.recoveryFrames = 0;
     this.stalled = true;
     this.sampleRate = DEFAULT_SAMPLE_RATE;
@@ -33,6 +34,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
           this.heardAudio = false;
           this.holdFrames = Number(message.holdFrames);
           this.rate = Number(message.rate) || 1;
+          this.rateRevision = Number(message.rateRevision) || 0;
           this.recoveryFrames = 0;
           this.playing = true;
           this.stalled = this.holdFrames > 0;
@@ -43,6 +45,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
           break;
         case "rate":
           this.rate = Number(message.rate) || 1;
+          this.rateRevision = Number(message.rateRevision) || 0;
           break;
       }
     } catch (error) {
@@ -154,6 +157,7 @@ export class LumenAudioWorkletProcessor extends globalThis.AudioWorkletProcessor
       currentSample: this.currentSample,
       generation: this.generation,
       rate: this.rate,
+      rateRevision: this.rateRevision,
       stalled: this.stalled,
       type: "position",
     });

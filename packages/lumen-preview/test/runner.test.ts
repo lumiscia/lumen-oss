@@ -387,10 +387,22 @@ describe("PreviewRunner ranges", () => {
     await fake.advance(250);
     expect(fake.rendered).toEqual([0, 1, 2]);
 
-    fake.runner.setRange({ inFrame: 10, loop: true, outFrame: 14 });
+    fake.runner.setRange({ inFrame: 10, loop: true, outFrame: 14 }, fake.clock(250, 1));
     await fake.advance(500);
     expect(fake.rendered.slice(3).every((frame) => frame >= 10 && frame < 14)).toBe(true);
     expect(fake.rendered.at(-1)).toBeGreaterThanOrEqual(10);
+  });
+
+  it("follows the clock given with a range, not the time counted under the old one", async () => {
+    const fake = await inRange(LOOP, 0);
+    fake.runner.setClock(fake.clock(0, 1));
+    await fake.advance(2_500);
+    expect(fake.rendered.at(-1)).toBe(5);
+
+    fake.runner.setRange({ inFrame: 0, loop: false, outFrame: 20 }, fake.clock(500, 1));
+    await fake.advance(100);
+    expect(fake.ended).toEqual([]);
+    expect(fake.rendered.at(-1)).toBe(6);
   });
 
   it("parks a pause before the range on its first frame", async () => {
