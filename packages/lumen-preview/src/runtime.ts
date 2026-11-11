@@ -20,17 +20,20 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   height(): number;
   hasEnvironment(sourceId: string): boolean;
   hasFont(fontFamily: string): boolean;
+  hasLut(sourceId: string): boolean;
   hasModel(modelId: string): boolean;
   loadComposition(compositionJson: string): void;
   removeEnvironmentSource(sourceId: string): void;
   removeFontFamily(fontFamily: string): void;
   removeImageSource(imageId: string): void;
+  removeLutSource(sourceId: string): void;
   removeModelSource(modelId: string): void;
   removeVideoSource(streamId: string): void;
   renderNow(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
   setEnvironment(sourceId: string, bytes: Uint8Array): void;
   setFrame(frame: number): void;
   setFont(fontFamily: string, bytes: Uint8Array): void;
+  setLut(sourceId: string, bytes: Uint8Array): void;
   setModel(modelId: string, bytes: Uint8Array): void;
   setLogLevel(level: LumenLogLevel): void;
   /** Throws as `loadComposition` would on a composition the engine rejects, without loading it. */
@@ -68,6 +71,7 @@ export interface LumenPreviewController extends LumenPreviewControllerBinding {
   registerEnvironmentSource(sourceId: string, source: MediaSourceInput): Promise<void>;
   registerFontFamily(fontFamily: string, bytes: BufferSource): void;
   registerImageSource(imageId: string, source: MediaSourceInput): Promise<void>;
+  registerLutSource(sourceId: string, source: MediaSourceInput): Promise<void>;
   registerModelSource(modelId: string, source: MediaSourceInput): Promise<void>;
   registerVideoSource(
     streamId: string,
@@ -150,6 +154,11 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       this.bridge.removeEnvironmentSource(sourceId, false);
     }
 
+    removeLutSource(sourceId: string): void {
+      super.removeLutSource(sourceId);
+      this.bridge.removeLutSource(sourceId, false);
+    }
+
     removeFontFamily(fontFamily: string): void {
       super.removeFontFamily(fontFamily);
       this.requirements.reset();
@@ -177,6 +186,10 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
 
     async registerEnvironmentSource(sourceId: string, source: MediaSourceInput): Promise<void> {
       await this.bridge.registerEnvironmentSource(sourceId, source);
+    }
+
+    async registerLutSource(sourceId: string, source: MediaSourceInput): Promise<void> {
+      await this.bridge.registerLutSource(sourceId, source);
     }
 
     async registerVideoSource(

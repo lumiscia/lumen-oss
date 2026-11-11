@@ -31,7 +31,7 @@ document.querySelector("button")?.addEventListener("click", () => {
 
 ## Media
 
-Pass `media` and `fonts` when the composition uses them. `media` maps each source the composition writes (in `media_in.source`, `model_3d.source`, `render_3d.environment_map` or an audio clip's `source_id`) to a URL, a `Blob` or bytes: images, videos, audio, binary glTF (`.glb`) models and Radiance `.hdr` or OpenEXR `.exr` environment maps. `fonts` maps each font family to its file.
+Pass `media` and `fonts` when the composition uses them. `media` maps each source the composition writes (in `media_in.source`, `model_3d.source`, `render_3d.environment_map`, `color_grade.lut_source` or an audio clip's `source_id`) to a URL, a `Blob` or bytes: images, videos, audio, binary glTF (`.glb`) models, Radiance `.hdr` or OpenEXR `.exr` environment maps and `.cube` 3D LUTs. `fonts` maps each font family to its file.
 
 ```ts
 mountPreview(document.body, {
@@ -43,14 +43,15 @@ mountPreview(document.body, {
     logo: { source: logoBlob, kind: "image" },
     fox: "/models/Fox.glb",
     "studio.hdr": "/env/studio.hdr",
+    "looks/warm.cube": "/luts/warm.cube",
   },
   fonts: { Inter: "/fonts/Inter.ttf" },
 });
 ```
 
-Every kind, fonts included, loads the same way. The engine lists what the composition reads, and only those entries are fetched; the rest of `media` is left alone. When an expression computes a source, any entry could be read, so every entry is also read as the kind that expression reads, unless its `kind` or blob type says it holds another, or a node already reads it as one of them. An entry that could be either of several kinds says which with `kind` or its blob's type.
+Every kind, fonts included, loads the same way. The engine lists what the composition reads, and only those entries are fetched; the rest of `media` is left alone. When an expression computes a source, any entry could be read, so every entry is also read as the kind that expression reads, unless its `kind` or blob type says it holds another, or a node already reads it as one of them. An entry that could be either of several kinds says which with `kind` or its blob's type; a `File` named `*.cube`, or a URL or path ending in `.cube`, is a LUT without one.
 
-Each source is `pending` until it is fetched, read and handed to the renderer, then `ready` or `failed`. An image is decoded and a model or environment map read in full first, so a file that isn't one fails here, with the code a render would give. A video is ready once its stream is opened and its length and size read; its frames decode as playback reaches them, so a corrupt frame later in a video fails the render that needs it. The state's `media` counts the sources, and `whenReady()` resolves once a frame of the current composition is drawn and nothing it needs is pending:
+Each source is `pending` until it is fetched, read and handed to the renderer, then `ready` or `failed`. An image is decoded and a model, environment map or LUT read in full first, so a file that isn't one fails here, with the code a render would give. A video is ready once its stream is opened and its length and size read; its frames decode as playback reaches them, so a corrupt frame later in a video fails the render that needs it. The state's `media` counts the sources, and `whenReady()` resolves once a frame of the current composition is drawn and nothing it needs is pending:
 
 ```ts
 const error = await preview.whenReady(); // or session.whenReady()
@@ -60,7 +61,7 @@ const { pending, ready, failed } = preview.getSnapshot().media;
 
 `whenReady()` never rejects, so check what it resolves with: the error that stopped the composition loading, the `render_failed` error of a first frame that couldn't be drawn, the `audio_failed` error of an audio source that failed while the picture plays on, or `null`. Changing the composition, `media` or `fonts` starts again, and a call made before then resolves for the newest composition.
 
-While anything the composition needs is pending, the preview holds the last frame it showed, at its size. A new composition appears once its images, videos, models, environment maps and fonts are ready and its first frame is drawn. It fails to load with the media error of the first that failed, as soon as one does, and what was still loading for it is cancelled. Playback holds too: while any source, audio included, is pending, or the frame playback is on has spent 100 ms decoding its video frames, the playhead stops where it is and the audio pauses. Both start again together once nothing is pending and that frame is drawn, so the sound can't run ahead of the picture.
+While anything the composition needs is pending, the preview holds the last frame it showed, at its size. A new composition appears once its images, videos, models, environment maps, LUTs and fonts are ready and its first frame is drawn. It fails to load with the media error of the first that failed, as soon as one does, and what was still loading for it is cancelled. Playback holds too: while any source, audio included, is pending, or the frame playback is on has spent 100 ms decoding its video frames, the playhead stops where it is and the audio pauses. Both start again together once nothing is pending and that frame is drawn, so the sound can't run ahead of the picture.
 
 A source the composition stops naming is released: a read still in flight is cancelled, the renderer unregisters it, and its decoded frames, bitmaps and audio are freed. A source the old and new compositions share stays loaded, and a source whose entry changes loads again.
 
@@ -110,7 +111,7 @@ mountPreview(document.body, {
 });
 ```
 
-A media source that can't be used (an image, video, audio, font, model or environment map that is missing, of another kind, unsupported, too large or corrupt) is reported the same way for every kind. `media` on the error says which source, what was wanted, why and where the composition uses it, and its `code` is one of `media.not_found`, `media.wrong_kind`, `media.unsupported`, `media.too_large` or `media.decode`. It is `null` for any other failure:
+A media source that can't be used (an image, video, audio, font, model, environment map or LUT that is missing, of another kind, unsupported, too large or corrupt) is reported the same way for every kind. `media` on the error says which source, what was wanted, why and where the composition uses it, and its `code` is one of `media.not_found`, `media.wrong_kind`, `media.unsupported`, `media.too_large` or `media.decode`. It is `null` for any other failure:
 
 ```ts
 onError: ({ media }) => {
@@ -125,6 +126,16 @@ onError: ({ media }) => {
       break;
     default:
       console.warn(`${media.code} ${media.source}: ${media.details}`);
+  }
+},
+```
+
+A frame that fails to render is a `render_failed` error whose `diagnostics` hold one entry with the engine's code for it, such as `render.gpu` for a GPU fault, `render.limit` for a limit the composition exceeds or `render.node_evaluation` for a node that failed, with an empty `path`. A render that failed on a media source has no diagnostic; `media` says which:
+
+```ts
+onError: ({ code, diagnostics }) => {
+  if (code === "render_failed" && diagnostics[0]?.code === "render.gpu") {
+    console.warn("the GPU failed; trying again may work");
   }
 },
 ```

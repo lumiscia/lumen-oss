@@ -575,7 +575,7 @@ export class LumenPreviewSession {
             "render_failed",
             "render",
             event.message,
-            [],
+            event.diagnostics,
             event.media,
           );
           if (!this.#ready) {

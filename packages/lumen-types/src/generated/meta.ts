@@ -1774,8 +1774,7 @@ export interface ColorGradeNode extends CompositionNodeBase<"color_grade"> {
      * `asset:<id>` for an asset of the host's. Tables up to 129 points per axis and 64 MiB are
      * read, sampled with trilinear interpolation (`interpolation` `nearest` takes the nearest
      * point), and `DOMAIN_MIN`/`DOMAIN_MAX` set the input range they cover. 1D `.cube` tables are
-     * not supported. Empty uses `lut`; setting both is an error. The browser preview does not
-     * load `.cube` files.
+     * not supported. Empty uses `lut`; setting both is an error.
      */
     readonly lut_source?: ExpressionValue<string>;
     /** Blend amount for the LUT transform. */

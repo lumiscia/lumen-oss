@@ -20,7 +20,12 @@ import type { LumenPreviewErrorCode } from "./preview.js";
 import { resolvePlaybackRange, type LumenPreviewRange } from "./playback-range.js";
 import { PreviewRunner } from "./runner.js";
 import { assetHint } from "./asset-hint.js";
-import { describeError, errorDiagnostics, errorMediaFailure } from "./session/errors.js";
+import {
+  describeError,
+  errorDiagnostics,
+  errorMediaFailure,
+  errorRenderDiagnostics,
+} from "./session/errors.js";
 import { PlaybackFpsMeter } from "./session/stats.js";
 
 export interface LumenPreviewWorkerHostOptions {
@@ -126,6 +131,8 @@ export type LumenPreviewWorkerEvent =
       type: "frame";
     }
   | {
+      /** The engine's code for the failure, when it has one, as the one diagnostic. */
+      diagnostics: LumenDiagnostic[];
       loadId: number;
       /** The media source that couldn't be used, when that is why the frame failed. */
       media: MediaFailure | null;
@@ -227,6 +234,7 @@ export function createLumenPreviewWorkerHost({
       },
       onFailure: (error) => {
         scope.postMessage({
+          diagnostics: errorRenderDiagnostics(error),
           loadId,
           media: errorMediaFailure(error),
           message: describeError(error),
@@ -329,6 +337,8 @@ export function createLumenPreviewWorkerHost({
             return target.registerModelSource(source, input);
           case "environment":
             return target.registerEnvironmentSource(source, input);
+          case "lut":
+            return target.registerLutSource(source, input);
           case "font": {
             const bytes = await readFont(source, input, signal);
             if (!signal.aborted) {
@@ -350,6 +360,8 @@ export function createLumenPreviewWorkerHost({
             return target.removeModelSource(source);
           case "environment":
             return target.removeEnvironmentSource(source);
+          case "lut":
+            return target.removeLutSource(source);
           case "font":
             return target.removeFontFamily(source);
           case "audio":

@@ -7,8 +7,9 @@ use lumen_engine::{
     error::{MediaError, MediaFailure},
     media::{
         AssetKind, CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver,
-        MediaFrame, MediaIdentity, MediaResolver, MediaStore, ModelResolver, ResolvedMedia,
-        TextSession, VideoFrameRequirement, VideoFrameResolver, VideoMetadata, YuvFrame,
+        LutResolver, MediaFrame, MediaIdentity, MediaResolver, MediaStore, ModelResolver,
+        ResolvedMedia, TextSession, VideoFrameRequirement, VideoFrameResolver, VideoMetadata,
+        YuvFrame,
     },
 };
 /// Total bytes of decoded video frames kept across all streams of one media store.
@@ -206,7 +207,7 @@ impl Default for StoredVideo {
     }
 }
 
-/// The bytes of a model or environment map file, which the engine reads when it draws it.
+/// The bytes of a model, environment map or `.cube` LUT file, which the engine reads when it draws it.
 #[derive(Debug, Clone)]
 struct StoredFile {
     data: Arc<Vec<u8>>,
@@ -231,6 +232,7 @@ struct WasmMediaStoreInner {
     fonts: RwLock<HashMap<String, StoredFont>>,
     environments: RwLock<HashMap<String, StoredFile>>,
     images: RwLock<HashMap<String, StoredImage>>,
+    luts: RwLock<HashMap<String, StoredFile>>,
     models: RwLock<HashMap<String, StoredFile>>,
     videos: RwLock<VideoStore>,
     text: TextSession,
@@ -250,6 +252,11 @@ impl WasmMediaStore {
             .clear();
         self.inner
             .environments
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .clear();
+        self.inner
+            .luts
             .write()
             .map_err(|_| "media store lock poisoned")?
             .clear();
@@ -321,6 +328,15 @@ impl WasmMediaStore {
         Ok(())
     }
 
+    pub fn remove_lut(&self, source: &str) -> Result<(), &'static str> {
+        self.inner
+            .luts
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .remove(source);
+        Ok(())
+    }
+
     pub fn remove_video(&self, stream_id: &str) -> Result<(), &'static str> {
         self.inner
             .videos
@@ -365,6 +381,14 @@ impl WasmMediaStore {
             .read()
             .ok()
             .is_some_and(|environments| environments.contains_key(source))
+    }
+
+    pub fn has_lut(&self, source: &str) -> bool {
+        self.inner
+            .luts
+            .read()
+            .ok()
+            .is_some_and(|luts| luts.contains_key(source))
     }
 
     pub fn has_font(&self, font_family: &str) -> bool {
@@ -459,6 +483,23 @@ impl WasmMediaStore {
     pub fn set_environment(&self, source: String, data: Vec<u8>) -> Result<(), &'static str> {
         self.inner
             .environments
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .insert(
+                source,
+                StoredFile {
+                    data: Arc::new(data),
+                    identity: MediaIdentity::unique(),
+                },
+            );
+        Ok(())
+    }
+
+    /// Stores the bytes of the `.cube` file `source` names, which the engine reads when a
+    /// `color_grade` first grades with it.
+    pub fn set_lut(&self, source: String, data: Vec<u8>) -> Result<(), &'static str> {
+        self.inner
+            .luts
             .write()
             .map_err(|_| "media store lock poisoned")?
             .insert(
@@ -624,6 +665,27 @@ impl WasmMediaStore {
         ))
     }
 
+    fn lut(&self, source: &str) -> Result<ResolvedMedia, MediaError> {
+        let luts = self
+            .inner
+            .luts
+            .read()
+            .map_err(|_| MediaError::source_not_found(source, "media store lock poisoned"))?;
+        let lut = luts.get(source).ok_or_else(|| {
+            MediaFailure::not_found(
+                source,
+                "the preview has no .cube LUT by this name in `media`",
+            )
+            .wanting(&[AssetKind::Lut])
+        })?;
+        Ok(ResolvedMedia::new(
+            lut.identity.clone(),
+            MediaResolver::Lut(Box::new(WasmFileResolver {
+                data: Arc::clone(&lut.data),
+            })),
+        ))
+    }
+
     fn font(&self, font_family: &str) -> Result<ResolvedMedia, MediaError> {
         let fonts =
             self.inner.fonts.read().map_err(|_| {
@@ -654,13 +716,7 @@ impl MediaStore for WasmMediaStore {
             AssetKind::Model => self.model(source),
             AssetKind::Font => self.font(source),
             AssetKind::Environment => self.environment(source),
-            AssetKind::Lut => Err(MediaFailure::unsupported(
-                source,
-                "the browser preview does not load .cube LUT files; use the inline `lut` or \
-                 render this composition on a Lumen server",
-            )
-            .wanting(&[AssetKind::Lut])
-            .into()),
+            AssetKind::Lut => self.lut(source),
             AssetKind::Audio => Err(MediaError::source_not_found(
                 source,
                 "the browser preview plays audio itself",
@@ -755,7 +811,7 @@ impl VideoFrameResolver for WasmVideoResolver {
     }
 }
 
-/// A model or environment map file.
+/// A model, environment map or `.cube` LUT file.
 struct WasmFileResolver {
     data: Arc<Vec<u8>>,
 }
@@ -767,6 +823,12 @@ impl ModelResolver for WasmFileResolver {
 }
 
 impl EnvironmentResolver for WasmFileResolver {
+    fn data(&self) -> Result<Vec<u8>, MediaError> {
+        Ok(self.data.as_ref().clone())
+    }
+}
+
+impl LutResolver for WasmFileResolver {
     fn data(&self) -> Result<Vec<u8>, MediaError> {
         Ok(self.data.as_ref().clone())
     }
@@ -1087,6 +1149,21 @@ mod tests {
         store.remove_model("fox").unwrap();
         assert!(!store.has_model("fox"));
         assert!(store.resolve("fox", AssetKind::Model).is_err());
+    }
+
+    #[test]
+    fn a_lut_serves_the_set_bytes_until_it_is_removed() {
+        let store = WasmMediaStore::default();
+        assert!(store.resolve("warm.cube", AssetKind::Lut).is_err());
+
+        store.set_lut("warm.cube".to_string(), vec![7, 8]).unwrap();
+        let lut = resolver::<dyn LutResolver>(&store, "warm.cube");
+        assert_eq!(lut.data().unwrap(), [7, 8]);
+        assert!(store.has_lut("warm.cube"));
+
+        store.remove_lut("warm.cube").unwrap();
+        assert!(!store.has_lut("warm.cube"));
+        assert!(store.resolve("warm.cube", AssetKind::Lut).is_err());
     }
 
     #[test]

@@ -18,8 +18,10 @@ export interface LumenPreviewError {
   code: LumenPreviewErrorCode;
   message: string;
   /**
-   * What is wrong with the composition, when it didn't load because the engine rejected it. Empty
-   * for every other failure.
+   * What is wrong with the composition, when it didn't load because the engine rejected it; for a
+   * `render_failed` error, the engine's code for the failure (such as `render.gpu`, `render.limit`
+   * or `render.node_evaluation`) as one error diagnostic with an empty `path`. Empty for every
+   * other failure, and for a render that failed on a media source, which `media` says.
    */
   diagnostics: readonly LumenDiagnostic[];
   /**
