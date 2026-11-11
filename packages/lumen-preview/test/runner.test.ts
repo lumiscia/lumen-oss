@@ -16,6 +16,7 @@ function createRunner() {
   const frames: { frame: number; renderMs: number | null; seekId: number }[] = [];
   const rendered: number[] = [];
   const held: (() => void)[] = [];
+  const waits: boolean[] = [];
   let holdRenders = false;
   let nextFailure: Error | null = null;
   let now = 0;
@@ -44,6 +45,7 @@ function createRunner() {
       onEnded: (seekId) => ended.push(seekId),
       onFailure: (error) => failures.push(error),
       onFrame: (frame, seekId, renderMs) => frames.push({ frame, renderMs, seekId }),
+      onWaiting: (waiting) => waits.push(waiting),
       setTimer: (callback, delayMs) => {
         timers.set(nextTimer, { at: now + delayMs, callback });
         return nextTimer++;
@@ -72,6 +74,7 @@ function createRunner() {
     rendered,
     runner,
     settle,
+    waits,
     get now() {
       return now;
     },
@@ -215,6 +218,39 @@ describe("PreviewRunner", () => {
     expect(fake.rendered).not.toContain(3);
   });
 
+  it("says playback should wait while a playing frame's media loads, until that frame is drawn", async () => {
+    const fake = await loaded();
+    fake.holdRenders(true);
+    fake.runner.setClock(fake.clock(0, 1));
+    // Frame 1 starts loading at 100 ms.
+    await fake.advance(199);
+    expect(fake.waits).toEqual([]);
+
+    await fake.advance(1);
+    expect(fake.waits).toEqual([true]);
+
+    fake.runner.setClock(fake.clock(200, 0));
+    fake.holdRenders(false);
+    fake.held.splice(0).forEach((release) => release());
+    await fake.settle();
+    expect(fake.waits).toEqual([true, false]);
+  });
+
+  it("stops waiting when a seek lands on the frame already on screen", async () => {
+    const fake = await loaded();
+    fake.holdRenders(true);
+    fake.runner.setClock(fake.clock(0, 1));
+    await fake.advance(200);
+    expect(fake.waits).toEqual([true]);
+
+    fake.runner.seek(1, fake.clock(0, 0));
+    fake.holdRenders(false);
+    fake.held.splice(0).forEach((release) => release());
+    await fake.settle();
+    expect(fake.waits).toEqual([true, false]);
+    expect(fake.frames.at(-1)).toMatchObject({ frame: 0, seekId: 1 });
+  });
+
   it("drops a render a newer seek overtakes, and acknowledges only the newest", async () => {
     const fake = await loaded();
     fake.holdRenders(true);
@@ -286,6 +322,7 @@ describe("PreviewRunner", () => {
         onEnded: () => {},
         onFailure: (error) => failures.push(error),
         onFrame: (frame, seekId) => answered.push({ frame, seekId }),
+        onWaiting: () => {},
         setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       },
     );

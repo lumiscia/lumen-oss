@@ -9,6 +9,13 @@ import type { LumenPreviewContext } from "./preview.js";
 
 export interface PlayerProps extends LumenPreviewSessionInputs {
   preview: LumenPreviewContext;
+  /**
+   * A directory serving the preview's runtime files: `worker.js` and `lumen_wasm_bg.wasm` from
+   * `@lumiscia/lumen-bindings`, and `audio-worker.js` and `audio-worklet.js` from
+   * `@lumiscia/lumen-preview`. When set, every runtime URL not passed on its own is that file in
+   * it; otherwise each is found next to its package.
+   */
+  runtimeUrl?: string | URL | undefined;
   /** Where the preview worker's wasm is served. Defaults to the copy in `@lumiscia/lumen-bindings`. */
   wasmUrl?: string | URL | undefined;
   /** Where the preview worker is served. Defaults to the copy in `@lumiscia/lumen-bindings`. */
@@ -20,6 +27,7 @@ export interface PlayerProps extends LumenPreviewSessionInputs {
 
 export function Player({
   preview,
+  runtimeUrl,
   wasmUrl,
   workerUrl,
   composition,
@@ -57,19 +65,21 @@ export function Player({
     rate,
     volume,
   };
-  const wasm = String(wasmUrl ?? defaults.wasmUrl);
-  const worker = String(workerUrl ?? defaults.workerUrl);
+  const runtime = runtimeUrl === undefined ? undefined : String(runtimeUrl);
+  const wasm = runtimeAssetUrl(wasmUrl, runtime, defaults.wasmUrl);
+  const worker = runtimeAssetUrl(workerUrl, runtime, defaults.workerUrl);
 
   useEffect(() => {
     const session = mountPreview(hostRef.current as HTMLDivElement, {
       ...inputs,
       preview,
+      runtimeUrl: runtime,
       wasmUrl: wasm,
       workerUrl: worker,
     });
     sessionRef.current = session;
     return () => session.dispose();
-  }, [preview, wasm, worker]);
+  }, [preview, runtime, wasm, worker]);
 
   useEffect(() => {
     sessionRef.current?.update(inputs);
@@ -93,4 +103,16 @@ export function Player({
   ]);
 
   return <div ref={hostRef} className={className} style={style} />;
+}
+
+/** The URL passed, else none when `runtimeUrl` gives it, else the package's own copy. */
+function runtimeAssetUrl(
+  url: string | URL | undefined,
+  runtimeUrl: string | undefined,
+  fallback: URL,
+): string | undefined {
+  if (url !== undefined) {
+    return String(url);
+  }
+  return runtimeUrl === undefined ? String(fallback) : undefined;
 }

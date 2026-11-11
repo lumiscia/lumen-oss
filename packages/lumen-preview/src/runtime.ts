@@ -1,7 +1,7 @@
 import type { LumenDiagnostic, LumenModelInfo, MediaInventory } from "@lumiscia/lumen-types";
 
 import { LumenMediaBridge, toUint8Array } from "./media/index.js";
-import type { LumenMediaTarget, MediaRegistration } from "./media/index.js";
+import type { LumenMediaTarget, MediaSourceInput, VideoSourceRegistration } from "./media/index.js";
 import type { PlaybackRange } from "./playback-range.js";
 import { FrameRequirementLoader } from "./requirements-loader.js";
 
@@ -18,14 +18,17 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   frameRequirements(frame: number): string;
   fps(): number;
   height(): number;
+  hasEnvironment(sourceId: string): boolean;
   hasFont(fontFamily: string): boolean;
   hasModel(modelId: string): boolean;
   loadComposition(compositionJson: string): void;
+  removeEnvironmentSource(sourceId: string): void;
   removeFontFamily(fontFamily: string): void;
   removeImageSource(imageId: string): void;
   removeModelSource(modelId: string): void;
   removeVideoSource(streamId: string): void;
   renderNow(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
+  setEnvironment(sourceId: string, bytes: Uint8Array): void;
   setFrame(frame: number): void;
   setFont(fontFamily: string, bytes: Uint8Array): void;
   setModel(modelId: string, bytes: Uint8Array): void;
@@ -60,9 +63,17 @@ export interface LumenBindings {
   preview: () => Promise<LumenPreviewBindings>;
 }
 
+/** The binding with each kind's browser-side decode in front of it. */
 export interface LumenPreviewController extends LumenPreviewControllerBinding {
+  registerEnvironmentSource(sourceId: string, source: MediaSourceInput): Promise<void>;
   registerFontFamily(fontFamily: string, bytes: BufferSource): void;
-  syncMediaSources(registrations: Iterable<MediaRegistration>): Promise<void>;
+  registerImageSource(imageId: string, source: MediaSourceInput): Promise<void>;
+  registerModelSource(modelId: string, source: MediaSourceInput): Promise<void>;
+  registerVideoSource(
+    streamId: string,
+    source: MediaSourceInput,
+    options: Omit<VideoSourceRegistration, "source">,
+  ): Promise<void>;
   /** Limits lookahead to the range being played. It wraps round the range only if it loops. */
   setPlaybackRange(range: PlaybackRange | null): void;
   /** Loads what the playhead's frame needs, then starts decoding the frames after it. */
@@ -134,6 +145,16 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       this.bridge.removeModelSource(modelId, false);
     }
 
+    removeEnvironmentSource(sourceId: string): void {
+      super.removeEnvironmentSource(sourceId);
+      this.bridge.removeEnvironmentSource(sourceId, false);
+    }
+
+    removeFontFamily(fontFamily: string): void {
+      super.removeFontFamily(fontFamily);
+      this.requirements.reset();
+    }
+
     removeVideoSource(streamId: string): void {
       super.removeVideoSource(streamId);
       this.bridge.removeVideoSource(streamId, false);
@@ -145,9 +166,26 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       super.setFont(fontFamily, toUint8Array(bytes));
     }
 
-    async syncMediaSources(registrations: Iterable<MediaRegistration>): Promise<void> {
+    async registerImageSource(imageId: string, source: MediaSourceInput): Promise<void> {
       this.requirements.reset();
-      await this.bridge.syncMediaSources(registrations);
+      await this.bridge.registerImageSource(imageId, source);
+    }
+
+    async registerModelSource(modelId: string, source: MediaSourceInput): Promise<void> {
+      await this.bridge.registerModelSource(modelId, source);
+    }
+
+    async registerEnvironmentSource(sourceId: string, source: MediaSourceInput): Promise<void> {
+      await this.bridge.registerEnvironmentSource(sourceId, source);
+    }
+
+    async registerVideoSource(
+      streamId: string,
+      source: MediaSourceInput,
+      options: Omit<VideoSourceRegistration, "source">,
+    ): Promise<void> {
+      this.requirements.reset();
+      await this.bridge.registerVideoSource(streamId, source, options);
     }
 
     setLookaheadCount(lookaheadCount: number): void {

@@ -61,6 +61,21 @@ describe("Player", () => {
     expect(sessions[1]?.dispose).toHaveBeenCalledOnce();
   });
 
+  it("finds the runtime files in runtimeUrl when it is set", async () => {
+    const component = mount(Harness, {
+      target: document.body,
+      props: { initialOptions: { runtimeUrl: "/lumen/" }, initialPreview: createLumenPreview() },
+    });
+    flushSync();
+    expect(sessions[0]?.options).toMatchObject({
+      runtimeUrl: "/lumen/",
+      wasmUrl: undefined,
+      workerUrl: undefined,
+    });
+
+    await unmount(component);
+  });
+
   it("sends a changed input to the current session", async () => {
     const component = mount(Harness, {
       target: document.body,

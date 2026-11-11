@@ -539,6 +539,53 @@ mod tests {
         }
     }
 
+    /// The cases `@lumiscia/lumen-preview` checks too, so the server and the browser preview accept
+    /// the same sources for the same composition.
+    #[test]
+    fn sources_resolve_as_the_browser_preview_resolves_them() {
+        #[derive(serde::Deserialize)]
+        struct Case {
+            source: String,
+            provided: bool,
+            code: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Rules {
+            cases: Vec<Case>,
+        }
+        #[derive(Debug)]
+        struct OneModel(PathBuf);
+        impl AssetResolver for OneModel {
+            fn resolve(&self, id: &str) -> Option<Asset> {
+                (id == "logo").then(|| Asset::Model(self.0.clone()))
+            }
+        }
+
+        let rules: Rules =
+            serde_json::from_str(include_str!("../../tests/fixtures/source-rules.json")).unwrap();
+        for case in rules.cases {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("root");
+            std::fs::create_dir_all(root.join("clips")).unwrap();
+            let mut store = LocalMediaStore::new(root.clone(), &RenderConfig::default());
+            if case.provided {
+                if asset_id(&case.source).is_some() {
+                    let file = dir.path().join("stored.glb");
+                    std::fs::write(&file, b"glTF").unwrap();
+                    store = store.with_assets(Arc::new(OneModel(file)));
+                } else if !case.source.contains("://") || case.source.starts_with("file://") {
+                    let path = case.source.trim_start_matches("file://");
+                    std::fs::write(root.join(path), b"glTF").unwrap();
+                }
+            }
+            let code = store
+                .resolve(&case.source, AssetKind::Model)
+                .err()
+                .map(|error| error.failure().expect("a media failure").code().to_string());
+            assert_eq!(code, case.code, "{}", case.source);
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn running_out_of_descriptors_while_resolving_a_path_is_not_a_missing_file() {

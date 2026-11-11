@@ -2,18 +2,30 @@ import { toMediaError } from "./errors.js";
 import { sourceInputToBlob } from "./source.js";
 import type { MediaSourceInput } from "./types.js";
 
-/** The bytes of the model file `source` holds, or a media error naming `modelId`. */
-export async function readModel(modelId: string, source: MediaSourceInput): Promise<Uint8Array> {
+/** A file the engine reads itself: a binary glTF model, or an `.hdr` or `.exr` environment map. */
+export type SceneFileKind = "environment" | "model";
+
+const NAMES: Record<SceneFileKind, string> = { environment: "environment map", model: "model" };
+
+/** The bytes of the file `source` holds, or a media error naming `id`. */
+export async function readSceneFile(
+  kind: SceneFileKind,
+  id: string,
+  source: MediaSourceInput,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
   try {
-    const blob = await sourceInputToBlob(source);
+    const blob = await sourceInputToBlob(source, signal);
     return new Uint8Array(await blob.arrayBuffer());
   } catch (error) {
     throw toMediaError(
       "invalid_source",
-      modelId,
-      `model source "${modelId}" failed to load`,
+      id,
+      `${NAMES[kind]} source "${id}" failed to load`,
       error,
-      { wanted: ["model"] },
+      {
+        wanted: [kind],
+      },
     );
   }
 }

@@ -1,4 +1,5 @@
-import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
+import { toMediaError, type LumenMediaError } from "./media/errors.js";
+import { sourceInputToBlob } from "./media/source.js";
 import type { MediaSourceInput } from "./media/types.js";
 import { assetHint } from "./asset-hint.js";
 import { createModuleWorker } from "./module-worker.js";
@@ -51,12 +52,6 @@ export interface AudioPlaybackRange {
   startMs: number;
 }
 
-export interface AudioSourceRegistration {
-  id: string;
-  kind: "audio";
-  source: MediaSourceInput;
-}
-
 export interface LumenAudioEngineOptions {
   latencyHint?: AudioContextLatencyCategory | number;
   /** Called when the position starts or stops moving, or jumps because the mix restarted. */
@@ -98,8 +93,8 @@ function msPastHold(playback: PlaybackClock): number {
 // Async work holds on to its entry and publishes only while the map still holds that same object.
 type AudioSourceEntry = {
   abort: AbortController;
-  /** Resolves to a failure message, or null once loaded or superseded. */
-  failure: Promise<string | null>;
+  /** Resolves to why it failed, or null once loaded or superseded. */
+  failure: Promise<LumenMediaError | null>;
   /** The mixer holds samples under this id, possibly from the source this entry replaced. */
   mixed: boolean;
   source: MediaSourceInput;
@@ -195,8 +190,6 @@ export class LumenAudioEngine {
   // Bumped by every rate change, so a report from before one is told apart even at the same rate.
   #rateRevision = 0;
   #sources = new Map<string, AudioSourceEntry>();
-  // Only the latest sync reports failures, because a newer one may have replaced those sources.
-  #sourceSync = 0;
   #audioAbandoned = false;
   #stallTimer: ReturnType<typeof setTimeout> | null = null;
   #timeline: AudioEngineTimeline | null = null;
@@ -228,44 +221,25 @@ export class LumenAudioEngine {
   }
 
   /**
-   * Rejects naming every source that failed to load. Those play silent and are retried by the
-   * next sync; the others still sync. A source being loaded is shared by overlapping syncs, and
-   * replacing or removing it aborts the load without waiting for it.
+   * Decodes `source` for the clips that play `id`, replacing what `id` held, and restarts the mix
+   * at its position to add it. Rejects with a media error when it can't be decoded, and the clips
+   * then play silent. Resolves without effect once `removeSource` or another `loadSource` of `id`
+   * replaces it, which aborts its fetch.
    */
-  async syncAudioSources(registrations: Iterable<AudioSourceRegistration>): Promise<void> {
+  async loadSource(id: string, source: MediaSourceInput): Promise<void> {
     if (this.#disposed) {
       return;
     }
-
-    const sync = ++this.#sourceSync;
-    const desired = new Map<string, AudioSourceRegistration>();
-    for (const registration of registrations) {
-      desired.set(registration.id, registration);
+    const failure = await this.#startSourceLoad(id, source, this.#sources.get(id)).failure;
+    if (failure) {
+      throw failure;
     }
+  }
 
-    let removedMixed = false;
-    for (const id of this.#sources.keys()) {
-      if (!desired.has(id)) {
-        removedMixed = this.#removeSource(id) || removedMixed;
-      }
-    }
-    if (removedMixed) {
+  /** Drops the samples of `id`, whose clips then play silent. */
+  removeSource(id: string): void {
+    if (this.#removeSource(id)) {
       this.#restartMix();
-    }
-
-    const loads: Promise<string | null>[] = [];
-    for (const { id, source } of this.#hasClips() ? desired.values() : []) {
-      const current = this.#sources.get(id);
-      const entry =
-        current && sameMediaInput(current.source, source)
-          ? current
-          : this.#startSourceLoad(id, source, current);
-      loads.push(entry.failure);
-    }
-
-    const failures = (await Promise.all(loads)).filter((failure) => failure !== null);
-    if (failures.length > 0 && sync === this.#sourceSync && !this.#disposed) {
-      throw new Error(failures.join("\n"));
     }
   }
 
@@ -286,7 +260,7 @@ export class LumenAudioEngine {
     return entry;
   }
 
-  async #loadSource(id: string, entry: AudioSourceEntry): Promise<string | null> {
+  async #loadSource(id: string, entry: AudioSourceEntry): Promise<LumenMediaError | null> {
     try {
       const samples = await decodeStereo(entry.source, entry.abort.signal);
       if (this.#sources.get(id) !== entry) {
@@ -301,7 +275,9 @@ export class LumenAudioEngine {
       if (this.#removeSource(id)) {
         this.#restartMix();
       }
-      return `audio source "${id}" could not be loaded: ${errorMessage(error)}`;
+      return toMediaError("decode_failed", id, `audio source "${id}" could not be loaded`, error, {
+        wanted: ["audio"],
+      });
     }
     this.#restartMix();
     return null;
@@ -749,10 +725,6 @@ export function defaultAudioWorkerUrl(): URL {
 
 export function defaultAudioWorkletUrl(): URL {
   return new URL("./audio-worklet.js", import.meta.url);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 async function decodeStereo(source: MediaSourceInput, signal: AbortSignal): Promise<Float32Array> {

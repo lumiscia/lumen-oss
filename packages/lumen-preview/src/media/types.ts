@@ -50,30 +50,6 @@ export interface ImageSourceRegistration {
   source: MediaSourceInput;
 }
 
-export interface RegisteredImageSource {
-  kind: "image";
-  id: string;
-  source: MediaSourceInput;
-}
-
-export interface RegisteredVideoSource extends Omit<VideoSourceRegistration, "source"> {
-  kind: "video";
-  id: string;
-  source: MediaSourceInput;
-}
-
-/** A binary glTF (`.glb`) file a `model_3d` reads. */
-export interface RegisteredModelSource {
-  kind: "model";
-  id: string;
-  source: MediaSourceInput;
-}
-
-export type MediaRegistration =
-  | RegisteredImageSource
-  | RegisteredModelSource
-  | RegisteredVideoSource;
-
 export interface DecodedImageFrame {
   width: number;
   height: number;
@@ -111,14 +87,18 @@ export interface LumenMediaTarget {
   clear(): void;
   clearVideos(): void;
   clearVideoSource(streamId: string): void;
+  removeEnvironmentSource?(sourceId: string): void;
   removeFontFamily?(fontFamily: string): void;
   removeImageSource?(imageId: string): void;
   removeModelSource?(modelId: string): void;
   removeVideoSource?(streamId: string): void;
+  hasEnvironment?(sourceId: string): boolean;
   hasFont?(fontFamily: string): boolean;
   hasImage(imageId: string): boolean;
   hasModel?(modelId: string): boolean;
   hasVideoFrame(streamId: string, frame: number): boolean;
+  /** Takes an `.hdr` or `.exr` file's bytes, which the engine reads when a scene first lights with it. */
+  setEnvironment?(sourceId: string, bytes: Uint8Array): void;
   setFont?(fontFamily: string, bytes: Uint8Array): void;
   setImage(imageId: string, width: number, height: number, rgba: Uint8Array): void;
   /** Takes a `.glb` file's bytes, which the engine reads when a render first draws the model. */

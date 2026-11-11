@@ -61,6 +61,12 @@ import wasmUrl from "@lumiscia/lumen-bindings/wasm?url";
 import workerUrl from "@lumiscia/lumen-bindings/worker?url";
 ```
 
+The reliable way to host these files with any bundler or CDN is `runtimeUrl`: a directory serving `worker.js`, `lumen_wasm_bg.wasm`, `audio-worker.js` and `audio-worklet.js`, which the `@lumiscia/lumen-preview` README lists. With it, `Player` derives every runtime URL from that directory and needs none of the Vite settings below.
+
+```jsx
+<Player preview={preview} composition={composition} runtimeUrl="/lumen-runtime/" />
+```
+
 With Vite 6 or 7, keep `@lumiscia/lumen-bindings` and `@lumiscia/lumen-preview` out of the dev server's dependency pre-bundling. It moves the modules that locate the worker, wasm and audio worker into `node_modules/.vite/deps`, so they 404. Vite 8 and `vite build` need nothing.
 
 ```js

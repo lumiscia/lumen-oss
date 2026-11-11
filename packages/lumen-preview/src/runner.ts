@@ -5,6 +5,8 @@ import { rangeFrame, type PlaybackRange } from "./playback-range.js";
 const CLOCK_TOLERANCE_MS = 30;
 // Frame times round-trip through floats, and a frame must not land just below its own start.
 const FRAME_EPSILON = 1e-6;
+// How long a playing frame's media may take to load before playback waits for it.
+const WAIT_AFTER_MS = 100;
 
 export interface PreviewRunnerRenderer {
   /** Moves the playhead, which protects what that frame needs from eviction. */
@@ -22,6 +24,11 @@ export interface PreviewRunnerHost<TTimer> {
   onFailure(error: unknown): void;
   /** `renderMs` is null when the frame was already on screen. */
   onFrame(frame: number, seekId: number, renderMs: number | null): void;
+  /**
+   * True once the frame playback is on has spent `WAIT_AFTER_MS` loading its media, so playback
+   * should wait; false once a render after that has finished.
+   */
+  onWaiting(waiting: boolean): void;
   setTimer(callback: () => void, delayMs: number): TTimer;
 }
 
@@ -49,6 +56,7 @@ export class PreviewRunner<TTimer> {
   #running = false;
   #seekId = 0;
   #timer: TTimer | null = null;
+  #waiting = false;
 
   constructor(renderer: PreviewRunnerRenderer, host: PreviewRunnerHost<TTimer>) {
     this.#renderer = renderer;
@@ -67,6 +75,7 @@ export class PreviewRunner<TTimer> {
     this.#failed = false;
     this.#fps = fps;
     this.#rendered = null;
+    this.#waiting = false;
     if (clock.rate === 0 || !this.#isJitter(clock)) {
       this.#clock = fitClock(clock, range, fps);
     }
@@ -122,6 +131,7 @@ export class PreviewRunner<TTimer> {
     const frame = this.#targetFrame();
     if (frame === this.#rendered && !this.#dirty) {
       this.#answerSeek(frame);
+      this.#setWaiting(false);
       this.#scheduleNextFrame();
       return;
     }
@@ -139,17 +149,33 @@ export class PreviewRunner<TTimer> {
     const isStale = () => generation !== this.#generation || seekId !== this.#seekId;
     const startedAt = this.#host.now();
     this.#dirty = false;
+    let waitTimer =
+      this.#clock.rate > 0
+        ? this.#host.setTimer(() => {
+            waitTimer = null;
+            if (generation === this.#generation) {
+              this.#setWaiting(true);
+            }
+          }, WAIT_AFTER_MS)
+        : null;
     try {
       this.#renderer.setFrame(frame);
       await this.#renderer.prepareFrame();
+      if (waitTimer !== null) {
+        this.#host.clearTimer(waitTimer);
+      }
       if (isStale()) {
         return;
       }
       await this.#renderer.renderFrame();
     } catch (error) {
+      if (waitTimer !== null) {
+        this.#host.clearTimer(waitTimer);
+      }
       if (!isStale()) {
         this.#failed = true;
         this.#host.onFailure(error);
+        this.#setWaiting(false);
       }
       return;
     }
@@ -157,6 +183,17 @@ export class PreviewRunner<TTimer> {
       this.#rendered = frame;
       this.#acknowledgedSeekId = seekId;
       this.#host.onFrame(frame, seekId, this.#host.now() - startedAt);
+      // A frame a newer seek overtook isn't the one playback waits for.
+      if (seekId === this.#seekId) {
+        this.#setWaiting(false);
+      }
+    }
+  }
+
+  #setWaiting(waiting: boolean): void {
+    if (waiting !== this.#waiting) {
+      this.#waiting = waiting;
+      this.#host.onWaiting(waiting);
     }
   }
 

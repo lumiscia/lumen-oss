@@ -261,6 +261,13 @@ impl SceneCache {
 }
 
 /// Why `bytes`, the file `source`, is not a model that can be read.
+/// Reads `bytes` as the model `source` names, and fails as a render that draws it would.
+pub fn check_model(source: &str, bytes: &[u8]) -> Result<(), MediaError> {
+    Model::from_glb(bytes)
+        .map(drop)
+        .map_err(|error| model_failure(source, bytes, error))
+}
+
 fn model_failure(source: &str, bytes: &[u8], error: ModelError) -> MediaError {
     let wanted = [AssetKind::Model];
     let failure = match error {

@@ -17,6 +17,10 @@ mod text_3d;
 #[cfg(feature = "3d")]
 mod text_mesh;
 
+#[cfg(feature = "3d")]
+pub use collect::check_model;
+#[cfg(feature = "3d")]
+pub use environment::check_environment;
 pub use text_3d::{Text3d, Text3dParams, Text3dParamsDelegate};
 
 pub use instance::{Instance3d, Instance3dParams, InstanceCount, MAX_INSTANCES};

@@ -3,7 +3,7 @@ import { ALL_FORMATS, type InputFormat } from "mediabunny";
 import { closeVideoFrame, syncVideoFrameToTarget, takesYuvPlanes } from "./canvas.js";
 import { LumenMediaError } from "./errors.js";
 import { ImageSession } from "./image-session.js";
-import { readModel } from "./model.js";
+import { readSceneFile, type SceneFileKind } from "./model.js";
 import {
   DEFAULT_BLOB_CACHE_BYTES,
   DEFAULT_URL_CACHE_BYTES,
@@ -13,12 +13,8 @@ import {
 import type {
   FrameRequirementsPayload,
   LumenMediaBridgeOptions,
-  MediaRegistration,
   MediaSourceInput,
   NativeVideoFrameTarget,
-  RegisteredImageSource,
-  RegisteredModelSource,
-  RegisteredVideoSource,
   VideoFrameMetadata,
   VideoFramePayload,
   VideoSourceRegistration,
@@ -34,12 +30,15 @@ type NormalizedBridgeOptions = Required<LumenMediaBridgeOptions>;
 
 // Async work holds on to its entry and uploads only while the map still holds that same object,
 // so nothing from a removed source can land on a later source with the same id.
+// Removing an entry aborts its reads.
 type ImageEntry = {
+  abort: AbortController;
   session: ImageSession;
   source: MediaSourceInput;
 };
 
-type ModelEntry = {
+type FileEntry = {
+  abort: AbortController;
   source: MediaSourceInput;
   /** The read and hand-over in flight, which loads of the same entry join. */
   upload: Promise<void> | null;
@@ -51,11 +50,14 @@ type VideoEntry = {
   syncedMetadata: VideoFrameMetadata | null;
 };
 
+/** Hands each kind of media to the wasm target: images and video frames decoded, files as bytes. */
 export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
+  private readonly files: Record<SceneFileKind, Map<string, FileEntry>> = {
+    environment: new Map(),
+    model: new Map(),
+  };
   private readonly images = new Map<string, ImageEntry>();
-  private readonly models = new Map<string, ModelEntry>();
   private readonly options: NormalizedBridgeOptions;
-  private syncGeneration = 0;
   private readonly videos = new Map<string, VideoEntry>();
 
   constructor(
@@ -67,9 +69,16 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
   }
 
   clear(): void {
-    this.syncGeneration += 1;
+    for (const entry of [
+      ...this.images.values(),
+      ...this.files.environment.values(),
+      ...this.files.model.values(),
+    ]) {
+      entry.abort.abort();
+    }
     this.images.clear();
-    this.models.clear();
+    this.files.environment.clear();
+    this.files.model.clear();
     for (const video of this.videos.values()) {
       video.session.dispose();
     }
@@ -91,6 +100,7 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
   }
 
   removeImageSource(imageId: string, syncTarget = true): void {
+    this.images.get(imageId)?.abort.abort();
     this.images.delete(imageId);
     if (syncTarget) {
       this.target.removeImageSource?.(imageId);
@@ -98,9 +108,18 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
   }
 
   removeModelSource(modelId: string, syncTarget = true): void {
-    this.models.delete(modelId);
+    this.files.model.get(modelId)?.abort.abort();
+    this.files.model.delete(modelId);
     if (syncTarget) {
       this.target.removeModelSource?.(modelId);
+    }
+  }
+
+  removeEnvironmentSource(sourceId: string, syncTarget = true): void {
+    this.files.environment.get(sourceId)?.abort.abort();
+    this.files.environment.delete(sourceId);
+    if (syncTarget) {
+      this.target.removeEnvironmentSource?.(sourceId);
     }
   }
 
@@ -113,70 +132,6 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     }
   }
 
-  /** A newer sync or `clear` abandons this one, which then resolves without registering more. */
-  async syncMediaSources(registrations: Iterable<MediaRegistration>): Promise<void> {
-    const generation = ++this.syncGeneration;
-    const desiredImages = new Map<string, RegisteredImageSource>();
-    const desiredModels = new Map<string, RegisteredModelSource>();
-    const desiredVideos = new Map<string, RegisteredVideoSource>();
-
-    for (const registration of registrations) {
-      if (registration.kind === "image") {
-        desiredImages.set(registration.id, registration);
-      } else if (registration.kind === "model") {
-        desiredModels.set(registration.id, registration);
-      } else {
-        desiredVideos.set(registration.id, registration);
-      }
-    }
-
-    for (const imageId of this.images.keys()) {
-      if (!desiredImages.has(imageId)) {
-        this.removeImageSource(imageId);
-      }
-    }
-
-    for (const modelId of this.models.keys()) {
-      if (!desiredModels.has(modelId)) {
-        this.removeModelSource(modelId);
-      }
-    }
-
-    for (const streamId of this.videos.keys()) {
-      if (!desiredVideos.has(streamId)) {
-        this.removeVideoSource(streamId);
-      }
-    }
-
-    try {
-      for (const image of desiredImages.values()) {
-        if (generation !== this.syncGeneration) {
-          return;
-        }
-        await this.registerImageSource(image.id, image.source);
-      }
-
-      for (const model of desiredModels.values()) {
-        if (generation !== this.syncGeneration) {
-          return;
-        }
-        await this.registerModelSource(model.id, model.source);
-      }
-
-      for (const video of desiredVideos.values()) {
-        if (generation !== this.syncGeneration) {
-          return;
-        }
-        const { id, source, ...options } = video;
-        await this.registerVideoSource(id, source, options);
-      }
-    } catch (error) {
-      if (generation === this.syncGeneration) {
-        throw error;
-      }
-    }
-  }
-
   async registerImageSource(imageId: string, source: MediaSourceInput): Promise<void> {
     const existing = this.images.get(imageId);
     if (existing && sameMediaInput(existing.source, source)) {
@@ -185,23 +140,23 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     }
 
     this.removeImageSource(imageId);
+    const abort = new AbortController();
     this.images.set(imageId, {
-      session: new ImageSession(imageId, source),
+      abort,
+      session: new ImageSession(imageId, source, abort.signal),
       source,
     });
     await this.loadImageSource(imageId);
   }
 
+  /** Hands a binary glTF (`.glb`) file to the `model_3d` nodes whose `source` is `modelId`. */
   async registerModelSource(modelId: string, source: MediaSourceInput): Promise<void> {
-    const existing = this.models.get(modelId);
-    if (existing && sameMediaInput(existing.source, source)) {
-      await this.loadModelSource(modelId);
-      return;
-    }
+    await this.registerFile("model", modelId, source);
+  }
 
-    this.removeModelSource(modelId);
-    this.models.set(modelId, { source, upload: null });
-    await this.loadModelSource(modelId);
+  /** Hands an `.hdr` or `.exr` file to the `environment_map` params that name `sourceId`. */
+  async registerEnvironmentSource(sourceId: string, source: MediaSourceInput): Promise<void> {
+    await this.registerFile("environment", sourceId, source);
   }
 
   async registerVideoSource(
@@ -255,29 +210,43 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     }
   }
 
-  async loadModelSource(modelId: string): Promise<void> {
-    const entry = this.models.get(modelId);
-    if (!entry) {
-      throw new LumenMediaError(
-        "source_not_registered",
-        `model source "${modelId}" is not registered`,
-        { sourceId: modelId },
-      );
+  private async registerFile(
+    kind: SceneFileKind,
+    id: string,
+    source: MediaSourceInput,
+  ): Promise<void> {
+    const files = this.files[kind];
+    let entry = files.get(id);
+    if (!entry || !sameMediaInput(entry.source, source)) {
+      if (kind === "model") {
+        this.removeModelSource(id);
+      } else {
+        this.removeEnvironmentSource(id);
+      }
+      entry = { abort: new AbortController(), source, upload: null };
+      files.set(id, entry);
     }
-    if (this.target.hasModel?.(modelId)) {
+    const has = kind === "model" ? this.target.hasModel : this.target.hasEnvironment;
+    if (has?.call(this.target, id)) {
       return;
     }
 
-    entry.upload ??= readModel(modelId, entry.source)
+    const current = entry;
+    current.upload ??= readSceneFile(kind, id, source, current.abort.signal)
       .then((bytes) => {
-        if (this.models.get(modelId) === entry) {
-          this.target.setModel?.(modelId, bytes);
+        if (files.get(id) !== current) {
+          return;
+        }
+        if (kind === "model") {
+          this.target.setModel?.(id, bytes);
+        } else {
+          this.target.setEnvironment?.(id, bytes);
         }
       })
       .finally(() => {
-        entry.upload = null;
+        current.upload = null;
       });
-    await entry.upload;
+    await current.upload;
   }
 
   async loadVideoMetadata(streamId: string): Promise<VideoFrameMetadata> {
