@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import type { LumenBindings } from "@lumiscia/lumen-preview";
+import type { LumenBindings } from "@lumiscia/lumen-preview/advanced";
 
 import * as previewBindings from "../../wasm/lumen_wasm.js";
 
