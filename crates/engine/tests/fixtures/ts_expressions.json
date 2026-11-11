@@ -80,6 +80,12 @@
     "text_width": { "expression": "=text_width('Hello', 32, 300, 'Roboto')" },
     "uppercase": { "expression": "=uppercase('it\\'s a\\\\b\\n')", "expected": "IT'S A\\B\n" },
     "lowercase": { "expression": "=lowercase('ABC')", "expected": "abc" },
+    "format": { "expression": "=format((frame / 7), 2, 8, '0')", "expected": "00006.43" },
+    "format_defaults": { "expression": "=format(-2.5)", "expected": "-3" },
+    "concat": {
+      "expression": "=concat('frame ', format(frame, 0, 4, '0'), ' / ', 1200, ' it\\'s')",
+      "expected": "frame 0045 / 1200 it's"
+    },
     "vec2": { "expression": "=vec2(1, -2)", "expected": [1, -2] },
     "vec3": { "expression": "=vec3(1, -2, 3)", "expected": [1, -2, 3] },
     "rgb": { "expression": "=rgb(255, 128, 0)", "expected": "#ff8000ff" },

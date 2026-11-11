@@ -978,6 +978,197 @@ mod tests {
     }
 
     #[test]
+    fn format_writes_fixed_decimals_and_pads() {
+        for (source, expected) in [
+            ("format(4.3, 2)", "4.30"),
+            ("format(4.285714, 2)", "4.29"),
+            ("format(frame / 7, 2)", "6.43"),
+            ("format(2.5)", "3"),
+            ("format(-2.5)", "-3"),
+            ("format(0.125, 2)", "0.13"),
+            ("format(-0.125, 2)", "-0.13"),
+            ("format(1.005, 2)", "1.01"),
+            ("format(2.675, 2)", "2.68"),
+            ("format(0.4)", "0"),
+            ("format(999.5)", "1000"),
+            ("format(9.999, 2)", "10.00"),
+            ("format(0.999, 0)", "1"),
+            ("format(12, 3)", "12.000"),
+            ("format(0.5, 1)", "0.5"),
+            ("format(pow(10, 21))", "1000000000000000000000"),
+            ("format(0.1 + 0.2, 20)", "0.30000000000000004000"),
+            ("format(true)", "1"),
+            ("format(-0.4)", "0"),
+            ("format(-0.001, 2)", "0.00"),
+            ("format(-0)", "0"),
+            ("format(-0, 2)", "0.00"),
+            ("format(5, 0, 4)", "   5"),
+            ("format(5, 0, 4, '0')", "0005"),
+            ("format(-5, 0, 4, '0')", "-005"),
+            ("format(-5, 0, 4)", "  -5"),
+            ("format(-5, 0, 4, '*')", "**-5"),
+            ("format(3.14159, 2, 8, '0')", "00003.14"),
+            ("format(12345, 0, 3, '0')", "12345"),
+            ("format(7, 0, 3, 'é')", "éé7"),
+            ("format(7, 0, 3, '日')", "日日7"),
+            ("format(7, 0, 0)", "7"),
+        ] {
+            assert_eq!(
+                evaluate(source, 45).unwrap(),
+                ExpressionValue::String(expected.to_string()),
+                "{source}"
+            );
+        }
+        let ExpressionValue::String(widest) = evaluate("format(1, 0, 64, '0')", 0).unwrap() else {
+            panic!("expected a string");
+        };
+        assert_eq!(widest, format!("{}1", "0".repeat(63)));
+        // The width counts characters, not bytes.
+        let ExpressionValue::String(wide) = evaluate("format(1, 0, 5, '日')", 0).unwrap() else {
+            panic!("expected a string");
+        };
+        assert_eq!(wide.chars().count(), 5);
+        assert_eq!(wide.len(), 13);
+    }
+
+    #[test]
+    fn format_rejects_bad_arguments() {
+        for (source, expected) in [
+            ("format(pow(10, 999))", "`value` must be finite"),
+            ("format(-pow(10, 999))", "`value` must be finite"),
+            (
+                "format(1, 21)",
+                "`decimals` must be a whole number from 0 to 20",
+            ),
+            (
+                "format(1, -1)",
+                "`decimals` must be a whole number from 0 to 20",
+            ),
+            (
+                "format(1, 1.5)",
+                "`decimals` must be a whole number from 0 to 20",
+            ),
+            (
+                "format(1, 0, 65)",
+                "`width` must be a whole number from 0 to 64",
+            ),
+            (
+                "format(1, 0, -1)",
+                "`width` must be a whole number from 0 to 64",
+            ),
+            (
+                "format(1, 0, 2.5)",
+                "`width` must be a whole number from 0 to 64",
+            ),
+            (
+                "format(1, 0, 4, '')",
+                "`fill` must be a string of exactly one character",
+            ),
+            (
+                "format(1, 0, 4, '00')",
+                "`fill` must be a string of exactly one character",
+            ),
+            (
+                "format(1, 0, 4, 0)",
+                "`fill` must be a string of exactly one character",
+            ),
+            ("format('1')", "format expects numeric arguments"),
+            ("format()", "expects 1 to 4 arguments, got 0"),
+            ("format(1, 2, 3, ' ', 5)", "expects 1 to 4 arguments, got 5"),
+        ] {
+            let error = match Expression::parse(source) {
+                Ok(expression) => expression
+                    .evaluate(&test_context())
+                    .unwrap_err()
+                    .to_string(),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+        for source in ["format(0, 20)", "format(1, 0, 64)"] {
+            assert!(evaluate(source, 0).is_ok(), "{source}");
+        }
+        let nan = evaluate("format(pow(-1, 0.5))", 0).unwrap_err();
+        assert!(nan.to_string().contains("`value` must be finite"), "{nan}");
+    }
+
+    #[test]
+    fn concat_joins_strings_and_numbers_like_a_text_param() {
+        for (source, expected) in [
+            ("concat('a')", "a"),
+            ("concat(3)", "3"),
+            ("concat('x ', round(frame * 3.7))", "x 111"),
+            ("concat('f ', frame / 7)", "f 4.285714285714286"),
+            ("concat('a', 'b', 'c')", "abc"),
+            ("concat('', '')", ""),
+            ("concat('on: ', true, ' ', frame > 100)", "on: true false"),
+            ("concat(uppercase('x'), 1.5, lowercase('Y'))", "X1.5y"),
+            (
+                "concat('frame ', format(frame, 0, 4, '0'), ' / 1200')",
+                "frame 0030 / 1200",
+            ),
+        ] {
+            assert_eq!(
+                evaluate(source, 30).unwrap(),
+                ExpressionValue::String(expected.to_string()),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn concat_rejects_values_without_a_text_form() {
+        for (source, expected) in [
+            ("concat()", "expects at least 1 arguments, got 0"),
+            (
+                "concat('a', vec2(1, 2))",
+                "`parts` must be a string or number, got vec2",
+            ),
+            (
+                "concat(vec3(1, 2, 3))",
+                "`parts` must be a string or number, got vec3",
+            ),
+            (
+                "concat('a', #ff0000)",
+                "`parts` must be a string or number, got color",
+            ),
+            ("concat('a', key(1, 2))", "does not take a key"),
+            (
+                "concat('a', cubic_bezier(vec2(0, 0), vec2(1, 1)))",
+                "does not take an easing",
+            ),
+            ("concat(if(frame > 0, vec2(1, 2), vec2(3, 4)))", "got vec2"),
+        ] {
+            let error = match Expression::parse(source) {
+                Ok(expression) => expression
+                    .evaluate(&test_context())
+                    .unwrap_err()
+                    .to_string(),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains(expected), "{source}: {error}");
+        }
+        // `+` stays numeric.
+        let error = evaluate("'x ' + 1", 0).unwrap_err().to_string();
+        assert!(
+            error.contains("cannot convert string `x ` into a number"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn concat_builds_path_data_from_numbers() {
+        let ExpressionValue::Vec2(point) = evaluate(
+            "path_point(concat('M0 0 L', format(frame * 2, 1), ' ', 0), 0.5)",
+            50,
+        )
+        .unwrap() else {
+            panic!("expected a point");
+        };
+        assert_eq!(point, (50.0, 0.0));
+    }
+
+    #[test]
     fn only_exact_zero_is_zero() {
         let tiny = 10_f64.powf(-20.0);
         for (source, expected) in [
