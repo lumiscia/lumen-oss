@@ -123,6 +123,7 @@ impl Literal {
             ExpressionValue::String(text) => (2, [0; 4], text),
             ExpressionValue::Vec2((x, y)) => (3, [x.to_bits(), y.to_bits(), 0, 0], ""),
             ExpressionValue::Color(color) => (4, color.map(f64::to_bits), ""),
+            ExpressionValue::Vec3([x, y, z]) => (5, [x.to_bits(), y.to_bits(), z.to_bits(), 0], ""),
             ExpressionValue::Easing(_) | ExpressionValue::Key(_) => {
                 unreachable!("the parser makes no easing or key literals")
             }
@@ -334,6 +335,7 @@ fn unary(op: UnaryOp, value: ExpressionValue) -> crate::Result<ExpressionValue> 
     match op {
         UnaryOp::Neg => match value {
             ExpressionValue::Vec2((x, y)) => Ok(ExpressionValue::Vec2((-x, -y))),
+            ExpressionValue::Vec3(vector) => Ok(ExpressionValue::Vec3(vector.map(|x| -x))),
             other => Ok(ExpressionValue::Number(-to_number(&other)?)),
         },
         UnaryOp::Not => Ok(ExpressionValue::Boolean(!value.as_bool())),
@@ -404,14 +406,63 @@ fn global_value(global: GlobalVar, ctx: &ExpressionContext<'_>) -> crate::Result
     }))
 }
 
-/// Numbers combine as usual. Two vec2 values combine componentwise, and a vec2 can be
-/// multiplied or divided by a number on either side. Colours have no arithmetic.
+/// Numbers combine as usual. Two vec2 or two vec3 values combine componentwise, and a vector
+/// can be multiplied or divided by a number on either side. Colours have no arithmetic.
 fn arithmetic(
     op: BinaryOp,
     lhs: &ExpressionValue,
     rhs: &ExpressionValue,
 ) -> crate::Result<ExpressionValue> {
-    let apply = |a: f64, b: f64| match op {
+    let vec2 = |value: &ExpressionValue| value.as_vec2().map(|(x, y)| [x, y]);
+    if let Some([x, y]) = componentwise(op, lhs, rhs, vec2)? {
+        return Ok(ExpressionValue::Vec2((x, y)));
+    }
+    if let Some(vector) = componentwise(op, lhs, rhs, ExpressionValue::as_vec3)? {
+        return Ok(ExpressionValue::Vec3(vector));
+    }
+    match (lhs, rhs) {
+        (ExpressionValue::Vec2(_) | ExpressionValue::Vec3(_) | ExpressionValue::Color(_), _)
+        | (_, ExpressionValue::Vec2(_) | ExpressionValue::Vec3(_) | ExpressionValue::Color(_)) => {
+            Err(LumenError::evaluate(format!(
+                "cannot apply `{}` to {} and {}",
+                operator_symbol(op),
+                lhs.type_name(),
+                rhs.type_name()
+            )))
+        }
+        _ => Ok(ExpressionValue::Number(apply(
+            op,
+            to_number(lhs)?,
+            to_number(rhs)?,
+        )?)),
+    }
+}
+
+/// `lhs op rhs` for vectors that `vector` reads, or `None` when neither side is one or the
+/// operator doesn't apply to them. A number on either side of `*` or `/` scales the vector.
+fn componentwise<const N: usize>(
+    op: BinaryOp,
+    lhs: &ExpressionValue,
+    rhs: &ExpressionValue,
+    vector: impl Fn(&ExpressionValue) -> Option<[f64; N]>,
+) -> crate::Result<Option<[f64; N]>> {
+    let scales = matches!(op, BinaryOp::Mul | BinaryOp::Div);
+    let (a, b) = match (vector(lhs), vector(rhs)) {
+        (Some(a), Some(b)) if op != BinaryOp::Mod => (a, b),
+        (Some(a), None) if scales => (a, [to_number(rhs)?; N]),
+        (None, Some(b)) if scales => ([to_number(lhs)?; N], b),
+        _ => return Ok(None),
+    };
+    let mut result = [0.0; N];
+    for (index, component) in result.iter_mut().enumerate() {
+        *component = apply(op, a[index], b[index])?;
+    }
+    Ok(Some(result))
+}
+
+/// `a op b` for an arithmetic operator.
+fn apply(op: BinaryOp, a: f64, b: f64) -> crate::Result<f64> {
+    match op {
         BinaryOp::Add => Ok(a + b),
         BinaryOp::Sub => Ok(a - b),
         BinaryOp::Mul => Ok(a * b),
@@ -419,33 +470,7 @@ fn arithmetic(
         BinaryOp::Div => Ok(a / b),
         BinaryOp::Mod if b == 0.0 => Err(LumenError::evaluate("modulo by zero")),
         _ => Ok(a % b),
-    };
-    let scales = matches!(op, BinaryOp::Mul | BinaryOp::Div);
-    let (a, b) = match (lhs, rhs) {
-        (ExpressionValue::Vec2(a), ExpressionValue::Vec2(b)) if op != BinaryOp::Mod => (*a, *b),
-        (ExpressionValue::Vec2(a), other) if scales => {
-            let scalar = to_number(other)?;
-            (*a, (scalar, scalar))
-        }
-        (other, ExpressionValue::Vec2(b)) if scales => {
-            let scalar = to_number(other)?;
-            ((scalar, scalar), *b)
-        }
-        (ExpressionValue::Vec2(_) | ExpressionValue::Color(_), _)
-        | (_, ExpressionValue::Vec2(_) | ExpressionValue::Color(_)) => {
-            return Err(LumenError::evaluate(format!(
-                "cannot apply `{}` to {} and {}",
-                operator_symbol(op),
-                lhs.type_name(),
-                rhs.type_name()
-            )));
-        }
-        _ => {
-            let value = apply(to_number(lhs)?, to_number(rhs)?)?;
-            return Ok(ExpressionValue::Number(value));
-        }
-    };
-    Ok(ExpressionValue::Vec2((apply(a.0, b.0)?, apply(a.1, b.1)?)))
+    }
 }
 
 fn operator_symbol(op: BinaryOp) -> &'static str {
@@ -850,6 +875,10 @@ mod tests {
                 "keyframes(frame, key(0, 0), key(10, vec2(1, 1)))",
                 "same kind of value, got number and vec2",
             ),
+            (
+                "keyframes(frame, key(0, vec3(0, 0, 0)), key(10, vec2(0, 0)))",
+                "same kind of value, got vec3 and vec2",
+            ),
             ("keyframes(frame, 'linear')", "expects at least one key"),
             (
                 "key(0, 'a')",
@@ -1118,6 +1147,56 @@ mod tests {
         ] {
             let details = evaluate(source, 0).unwrap_err().to_string();
             assert!(details.starts_with(expected), "{source}: {details}");
+        }
+    }
+
+    #[test]
+    fn vec3_arithmetic_and_interpolation_are_componentwise() {
+        for (source, expected) in [
+            ("vec3(1, 2, 3) + vec3(10, 20, 30)", [11.0, 22.0, 33.0]),
+            ("-vec3(1, -2, 0)", [-1.0, 2.0, -0.0]),
+            ("2 * vec3(1, 2, 3) / vec3(1, 2, 4)", [2.0, 2.0, 1.5]),
+            (
+                "lerp(vec3(0, 10, 20), vec3(10, 30, 60), 0.25)",
+                [2.5, 15.0, 30.0],
+            ),
+            (
+                "tween(vec3(0, 0, 0), vec3(10, 20, 30), 0, 10)",
+                [5.0, 10.0, 15.0],
+            ),
+            (
+                "keyframes(frame, key(0, vec3(0, 0, 0)), key(10, vec3(10, 20, 30)))",
+                [5.0, 10.0, 15.0],
+            ),
+        ] {
+            assert_eq!(
+                evaluate(source, 5).unwrap(),
+                ExpressionValue::Vec3(expected),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn vec3_rejects_mismatched_values() {
+        for (source, expected) in [
+            (
+                "vec3(1, 2, 3) + vec2(1, 2)",
+                "cannot apply `+` to vec3 and vec2",
+            ),
+            ("vec3(1, 2, 3) % 2", "cannot apply `%` to vec3 and number"),
+            (
+                "vec3(1, 2, 3) * vec2(1, 2)",
+                "cannot convert vec3 `[1, 2, 3]` into a number",
+            ),
+            ("vec3(1, vec2(2, 3), 4)", "vec3 expects numeric arguments"),
+            (
+                "lerp(vec3(1, 2, 3), vec2(1, 2), 0.5)",
+                "`lerp` expects `from` and `to` of the same type",
+            ),
+        ] {
+            let details = evaluate(source, 0).unwrap_err().to_string();
+            assert!(details.contains(expected), "{source}: {details}");
         }
     }
 

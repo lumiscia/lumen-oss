@@ -725,7 +725,8 @@ mod tests {
             ),
             (
                 "lerp('M 0 0', 1, 0.5)".to_string(),
-                "numbers, vec2 values, colours or path data, got string and number".to_string(),
+                "numbers, vec2 or vec3 values, colours or path data, got string and number"
+                    .to_string(),
             ),
         ] {
             let error = string(&source, 5.0).unwrap_err();

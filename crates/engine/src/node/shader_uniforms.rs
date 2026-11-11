@@ -21,7 +21,7 @@ pub struct ShaderUniforms(pub BTreeMap<String, ShaderUniformValue>);
 #[derive(Debug, Clone, lumen_macros::StructuralHash)]
 pub enum ShaderUniformValue {
     Number(f64),
-    /// One expression for the whole field; a `vec2` result fills two components.
+    /// One expression for the whole field; a `vec2` or `vec3` result fills two or three components.
     Expr(Expression),
     /// 2-4 components, each a number or a numeric expression.
     Vector(Vec<Deferred<f64>>),

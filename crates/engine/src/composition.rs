@@ -94,6 +94,7 @@ pub enum PropKind {
     Number,
     Color,
     Vec2,
+    Vec3,
 }
 
 impl PropKind {
@@ -103,6 +104,7 @@ impl PropKind {
             Self::Number => "number",
             Self::Color => "color",
             Self::Vec2 => "vec2",
+            Self::Vec3 => "vec3",
         }
     }
 
@@ -113,10 +115,11 @@ impl PropKind {
             Self::Number => ExpressionValue::Number(0.0),
             Self::Color => ExpressionValue::Color([0.0; 4]),
             Self::Vec2 => ExpressionValue::Vec2((0.0, 0.0)),
+            Self::Vec3 => ExpressionValue::Vec3([0.0; 3]),
         }
     }
 
-    /// `value` when it is of this kind; numbers and vec2 values never convert to strings.
+    /// `value` when it is of this kind; numbers and vectors never convert to strings.
     pub fn check(self, value: ExpressionValue) -> Result<ExpressionValue, String> {
         let matches = matches!(
             (self, &value),
@@ -124,6 +127,7 @@ impl PropKind {
                 | (Self::Number, ExpressionValue::Number(_))
                 | (Self::Color, ExpressionValue::Color(_))
                 | (Self::Vec2, ExpressionValue::Vec2(_))
+                | (Self::Vec3, ExpressionValue::Vec3(_))
         );
         if matches {
             Ok(value)
@@ -137,7 +141,7 @@ impl PropKind {
     }
 
     /// Reads a JSON literal of this kind: a string, a number, a `[r, g, b(, a)]` array or
-    /// `#rrggbb(aa)` string, or a `[x, y]` array.
+    /// `#rrggbb(aa)` string, or a `[x, y]` or `[x, y, z]` array.
     pub fn literal(self, value: &serde_json::Value) -> Result<ExpressionValue, String> {
         let invalid = || format!("expected a {}, got {value}", self.name());
         match self {
@@ -158,6 +162,13 @@ impl PropKind {
                     .zip(y.as_f64())
                     .map(ExpressionValue::Vec2)
                     .ok_or_else(invalid),
+                _ => Err(invalid()),
+            },
+            Self::Vec3 => match value.as_array().map(Vec::as_slice) {
+                Some([x, y, z]) => match (x.as_f64(), y.as_f64(), z.as_f64()) {
+                    (Some(x), Some(y), Some(z)) => Ok(ExpressionValue::Vec3([x, y, z])),
+                    _ => Err(invalid()),
+                },
                 _ => Err(invalid()),
             },
         }

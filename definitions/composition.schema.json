@@ -88,6 +88,9 @@
           "$ref": "#/$defs/vec2"
         },
         {
+          "$ref": "#/$defs/vec3"
+        },
+        {
           "$ref": "#/$defs/color"
         }
       ],
@@ -121,7 +124,7 @@
       ]
     },
     "compositionProp": {
-      "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent or [0, 0].",
+      "description": "A template prop's type and the value clips that don't set it get. Without a default it is empty, 0, transparent, [0, 0] or [0, 0, 0].",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -170,6 +173,19 @@
             },
             "type": {
               "const": "vec2"
+            }
+          },
+          "required": ["type"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "default": {
+              "$ref": "#/$defs/vec3"
+            },
+            "type": {
+              "const": "vec3"
             }
           },
           "required": ["type"],
@@ -1282,6 +1298,23 @@
       "maxItems": 2,
       "minItems": 2,
       "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "type": "array"
+    },
+    "vec3": {
+      "items": false,
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "type": "number"
+        },
         {
           "type": "number"
         },
@@ -6108,7 +6141,7 @@
             "name": "t"
           }
         ],
-        "doc": "Interpolates two numbers, vec2 values, colours or path data strings by `t`. Colours mix premultiplied. Path data strings must have the same commands in the same order, and interpolate point by point.",
+        "doc": "Interpolates two numbers, vec2 or vec3 values, colours or path data strings by `t`. Colours mix premultiplied. Path data strings must have the same commands in the same order, and interpolate point by point.",
         "maxArgs": 3,
         "minArgs": 3,
         "name": "lerp",
@@ -6376,6 +6409,27 @@
         "args": [
           {
             "kind": "number",
+            "name": "x"
+          },
+          {
+            "kind": "number",
+            "name": "y"
+          },
+          {
+            "kind": "number",
+            "name": "z"
+          }
+        ],
+        "doc": "Builds a 3D vector.",
+        "maxArgs": 3,
+        "minArgs": 3,
+        "name": "vec3",
+        "returns": "vec3"
+      },
+      {
+        "args": [
+          {
+            "kind": "number",
             "name": "r"
           },
           {
@@ -6513,7 +6567,7 @@
             "name": "ease"
           }
         ],
-        "doc": "A keyframe for `keyframes`: `value` at `at`, a number, vec2, colour or path data. `ease` is how the curve leaves this key toward the next.",
+        "doc": "A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour or path data. `ease` is how the curve leaves this key toward the next.",
         "maxArgs": 3,
         "minArgs": 2,
         "name": "key",
@@ -7162,6 +7216,7 @@
       "uppercase",
       "lowercase",
       "vec2",
+      "vec3",
       "rgb",
       "rgba",
       "progress",

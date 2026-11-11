@@ -92,6 +92,7 @@ import {
   tween,
   uppercase,
   vec2,
+  vec3,
   when,
   width,
   type Arg,
@@ -136,6 +137,7 @@ const cases: Readonly<Record<string, Case>> = {
   uppercase: { expression: uppercase("it's a\\b\n"), expected: "IT'S A\\B\n" },
   lowercase: { expression: lowercase("ABC"), expected: "abc" },
   vec2: { expression: vec2(1, -2), expected: [1, -2] },
+  vec3: { expression: vec3(1, -2, 3), expected: [1, -2, 3] },
   rgb: { expression: rgb(255, 128, 0), expected: "#ff8000ff" },
   rgba: { expression: rgba(0, 0, 255, 51), expected: "#0000ff33" },
   progress: { expression: progress(30, 60), expected: 0.5 },
@@ -208,6 +210,12 @@ const cases: Readonly<Record<string, Case>> = {
     expression: vec2(1, 2).add([10, 20]).mul(2).sub(vec2(2, 4)),
     expected: [20, 40],
   },
+  vec3_arithmetic: {
+    expression: lerp(vec3(0, 0, 0), vec3(10, 20, 30), 0.5)
+      .add(vec3(1, 1, 1))
+      .mul(2),
+    expected: [12, 22, 32],
+  },
   scalar_vec2: { expression: frame.mul(vec2(1, 2)).div(fps.div([3, 2])), expected: [4.5, 6] },
   one_minus_clamp: { expression: progress(30, 60).oneMinus().clamp(0, 0.25), expected: 0.25 },
   units: { expression: sec(1.5).add(ms(300)).sub(sec(-0.5)), expected: 69 },
@@ -240,6 +248,10 @@ const cases: Readonly<Record<string, Case>> = {
     expected: 2,
   },
   tag_escapes: { expression: expr<string>`uppercase('it\'s a\\b')`, expected: "IT'S A\\B" },
+  when_vec3: {
+    expression: when(vec3(1, 2, 3).eq(vec3(1, 2, 3)), vec3(4, 5, 6), vec3(0, 0, 0)).mul(2),
+    expected: [8, 10, 12],
+  },
   raw_operand_not: { expression: when(expr<boolean>("frame > 100").not(), 1, 0), expected: 1 },
   raw_operand_and: {
     expression: when(expr<boolean>("frame > 0 || frame < -10").and(frame.lt(5)), 1, 0),

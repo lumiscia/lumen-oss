@@ -81,6 +81,7 @@
     "uppercase": { "expression": "=uppercase('it\\'s a\\\\b\\n')", "expected": "IT'S A\\B\n" },
     "lowercase": { "expression": "=lowercase('ABC')", "expected": "abc" },
     "vec2": { "expression": "=vec2(1, -2)", "expected": [1, -2] },
+    "vec3": { "expression": "=vec3(1, -2, 3)", "expected": [1, -2, 3] },
     "rgb": { "expression": "=rgb(255, 128, 0)", "expected": "#ff8000ff" },
     "rgba": { "expression": "=rgba(0, 0, 255, 51)", "expected": "#0000ff33" },
     "progress": { "expression": "=progress(30, 60)", "expected": 0.5 },
@@ -156,6 +157,10 @@
       "expression": "=(((vec2(1, 2) + vec2(10, 20)) * 2) - vec2(2, 4))",
       "expected": [20, 40]
     },
+    "vec3_arithmetic": {
+      "expression": "=((lerp(vec3(0, 0, 0), vec3(10, 20, 30), 0.5) + vec3(1, 1, 1)) * 2)",
+      "expected": [12, 22, 32]
+    },
     "scalar_vec2": {
       "expression": "=((frame * vec2(1, 2)) / (fps / vec2(3, 2)))",
       "expected": [4.5, 6]
@@ -194,6 +199,10 @@
       "expected": 2
     },
     "tag_escapes": { "expression": "=uppercase('it\\'s a\\\\b')", "expected": "IT'S A\\B" },
+    "when_vec3": {
+      "expression": "=(if((vec3(1, 2, 3) == vec3(1, 2, 3)), vec3(4, 5, 6), vec3(0, 0, 0)) * 2)",
+      "expected": [8, 10, 12]
+    },
     "raw_operand_not": { "expression": "=if((!(frame > 100)), 1, 0)", "expected": 1 },
     "raw_operand_and": {
       "expression": "=if(((frame > 0 || frame < -10) && (frame < 5)), 1, 0)",

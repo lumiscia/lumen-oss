@@ -1718,7 +1718,7 @@ mod tests {
         for (props, expected) in [
             (
                 serde_json::json!({ "a": { "type": "bool" } }),
-                "props.a.type: unknown variant `bool`, expected one of `string`, `number`, `color`, `vec2`",
+                "props.a.type: unknown variant `bool`, expected one of `string`, `number`, `color`, `vec2`, `vec3`",
             ),
             (
                 serde_json::json!({ "a": { "type": "color", "default": "red" } }),
@@ -1731,6 +1731,10 @@ mod tests {
             (
                 serde_json::json!({ "a": { "type": "vec2", "default": [1] } }),
                 "expected a vec2",
+            ),
+            (
+                serde_json::json!({ "a": { "type": "vec3", "default": [1, 2] } }),
+                "expected a vec3",
             ),
             (
                 serde_json::json!({ "a": { "type": "number", "deflt": 1 } }),

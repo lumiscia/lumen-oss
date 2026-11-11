@@ -88,6 +88,9 @@ fn matches(value: &ExpressionValue, expected: &Value) -> bool {
         (ExpressionValue::Vec2((x, y)), Value::Array(expected)) => {
             expected.len() == 2 && close(*x, &expected[0]) && close(*y, &expected[1])
         }
+        (ExpressionValue::Vec3(vector), Value::Array(expected)) => {
+            expected.len() == 3 && vector.iter().zip(expected).all(|(x, e)| close(*x, e))
+        }
         (ExpressionValue::Color(color), expected @ Value::String(_)) => {
             json::parse_color(expected)
                 == Some(color.map(|channel| (channel * 255.0).round() as u8))
