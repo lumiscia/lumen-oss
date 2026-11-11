@@ -2082,10 +2082,12 @@ fn malformed_or_oversized_morph_targets_are_errors() {
         edit(&mut glb);
         glb.read().unwrap_err()
     };
+    // A weight past what a float holds is refused by the JSON reader or as a weight, depending
+    // on how the reader was built.
     let nan = edit(&|glb| glb.json["meshes"][0]["weights"] = json!([0.5, 1e39]));
-    assert_eq!(nan, invalid("a morph target weight isn't a finite number"));
+    assert!(matches!(nan, ModelError::Invalid(_)), "{nan}");
     let nan = edit(&|glb| glb.json["nodes"][0]["weights"] = json!([1e39, 0]));
-    assert_eq!(nan, invalid("a morph target weight isn't a finite number"));
+    assert!(matches!(nan, ModelError::Invalid(_)), "{nan}");
     let short = edit(&|glb| glb.json["meshes"][0]["weights"] = json!([0.5]));
     assert_eq!(
         short,
