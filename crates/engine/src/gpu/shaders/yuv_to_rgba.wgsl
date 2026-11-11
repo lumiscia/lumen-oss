@@ -77,9 +77,11 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (params.has_alpha != 0u) {
         a = min(f32(textureLoad(alpha, coded, 0).x >> shift) * params.a_scale, 1.0);
     }
+    // Premultiplied colour may be brighter than its alpha: its straight colour is then past
+    // white, which the curve extends to, as RGBA frames do.
     var straight = rgb;
     if (params.premultiplied != 0u) {
-        straight = select(vec3<f32>(0.0), min(rgb / a, vec3<f32>(1.0)), a > 0.0);
+        straight = select(vec3<f32>(0.0), rgb / a, a > 0.0);
     }
     textureStore(output, id.xy, vec4<f32>(lumen_srgb_to_linear(straight) * a, a));
 }
