@@ -3,6 +3,7 @@ import {
   type CompositionNode,
   type CompositionTemplate,
   type Connection,
+  type ExpressionString,
   type LumenComposition,
   type NodeInputPortKind,
   type NodeInputPortName,
@@ -320,7 +321,7 @@ export class Composition {
    * track, so declare a track with `addAudioTrack` first to mute it or set its gain.
    */
   addAudio(options: AudioClipOptions): this {
-    const { source, start, duration, offset, gain, id, name } = options;
+    const { source, start, duration, offset, gain, fadeIn, fadeOut, id, name } = options;
     const trackId = options.trackId ?? defaultAudioTrackId;
     const audio = this.#audio ?? { clips: [], tracks: [] };
     const taken = new Set(audio.clips.map((clip) => clip.id));
@@ -334,13 +335,15 @@ export class Composition {
         ...audio.clips,
         {
           duration_ms: milliseconds(duration),
+          ...(fadeIn === undefined ? {} : { fade_in_ms: milliseconds(fadeIn) }),
+          ...(fadeOut === undefined ? {} : { fade_out_ms: milliseconds(fadeOut) }),
           id: id ?? `${trackId}-clip-${number}`,
           ...(name === undefined ? {} : { name }),
           source_id: source,
           ...(offset === undefined ? {} : { source_start_ms: milliseconds(offset) }),
           start_ms: milliseconds(start),
           track_id: trackId,
-          ...(gain === undefined ? {} : { volume: gain }),
+          ...(gain === undefined ? {} : { volume: volume(gain) }),
         },
       ],
       tracks: audio.tracks.some((track) => track.id === trackId)
@@ -367,7 +370,7 @@ export class Composition {
           ...(muted === undefined ? {} : { muted }),
           ...(name === undefined ? {} : { name }),
           ...(solo === undefined ? {} : { solo }),
-          ...(gain === undefined ? {} : { volume: gain }),
+          ...(gain === undefined ? {} : { volume: volume(gain) }),
         },
       ],
     };
@@ -449,6 +452,10 @@ function timeline(input: TimelineInput = {}): LumenComposition["timeline"] {
       durationSeconds === undefined ? durationFrames : Math.ceil(durationSeconds * fps),
     fps,
   };
+}
+
+function volume(gain: number | Expr<number>): number | ExpressionString {
+  return gain instanceof Expr ? gain.toString() : gain;
 }
 
 /** Audio times are whole milliseconds on the wire, whatever the composition's fps. */

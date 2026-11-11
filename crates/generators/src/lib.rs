@@ -71,21 +71,7 @@ fn render_schema() -> Result<String> {
                 "additionalProperties": true
             },
             "timeline": { "$ref": "#/$defs/timeline" },
-            "audio": {
-                "type": "object",
-                "required": ["tracks", "clips"],
-                "properties": {
-                    "tracks": {
-                        "type": "array",
-                        "items": { "$ref": "#/$defs/audioTrack" }
-                    },
-                    "clips": {
-                        "type": "array",
-                        "items": { "$ref": "#/$defs/audioClip" }
-                    }
-                },
-                "additionalProperties": true
-            },
+            "audio": { "$ref": "#/$defs/audio" },
             "render_settings": { "$ref": "#/$defs/renderSettings" },
             "functions": {
                 "description": "Expression functions keyed by signature, such as `rise(start)`. Calls expand where they're used.",
@@ -165,6 +151,7 @@ fn render_schema() -> Result<String> {
                 "properties": {
                     "render_settings": { "$ref": "#/$defs/templateRenderSettings" },
                     "timeline": { "$ref": "#/$defs/timeline" },
+                    "audio": { "$ref": "#/$defs/audio" },
                     "props": {
                         "description": "Props that `prop('name')` reads inside the template, set per `clip`.",
                         "type": "object",
@@ -234,6 +221,23 @@ fn render_schema() -> Result<String> {
                 },
                 "additionalProperties": false
             },
+            "audio": {
+                "x-lumen-type": "AudioTimeline",
+                "description": "Audio tracks and clips. A template's audio plays wherever a `clip` plays the template, following the clip's start, duration, offset, speed and end.",
+                "type": "object",
+                "required": ["tracks", "clips"],
+                "properties": {
+                    "tracks": {
+                        "type": "array",
+                        "items": { "$ref": "#/$defs/audioTrack" }
+                    },
+                    "clips": {
+                        "type": "array",
+                        "items": { "$ref": "#/$defs/audioClip" }
+                    }
+                },
+                "additionalProperties": true
+            },
             "audioTrack": {
                 "x-lumen-type": "AudioTrack",
                 "type": "object",
@@ -243,7 +247,7 @@ fn render_schema() -> Result<String> {
                     "name": { "type": "string" },
                     "muted": { "type": "boolean" },
                     "solo": { "type": "boolean" },
-                    "volume": { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 }
+                    "volume": audio_volume_json()
                 },
                 "additionalProperties": true
             },
@@ -259,7 +263,17 @@ fn render_schema() -> Result<String> {
                     "start_ms": { "type": "integer", "minimum": 0 },
                     "duration_ms": { "type": "integer", "minimum": 1 },
                     "source_start_ms": { "type": "integer", "minimum": 0 },
-                    "volume": { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 }
+                    "volume": audio_volume_json(),
+                    "fade_in_ms": {
+                        "description": "Milliseconds the clip rises from silence over at its start, on an equal-power curve.",
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "fade_out_ms": {
+                        "description": "Milliseconds the clip falls to silence over at its end, on an equal-power curve.",
+                        "type": "integer",
+                        "minimum": 0
+                    }
                 },
                 "not": {
                     "description": "Retired timing keys, which the engine rejects.",
@@ -282,6 +296,17 @@ fn render_schema() -> Result<String> {
             media_json(media);
     }
     Ok(format!("{}\n", serde_json::to_string_pretty(&schema)?))
+}
+
+/// An audio track's or clip's volume: a gain, or an expression of the composition's time.
+fn audio_volume_json() -> Value {
+    json!({
+        "description": "Gain, 1 by default. An expression is evaluated in the time of the composition the audio is in, and reads `frame`, `time`, `fps`, `width`, `height` and props.",
+        "anyOf": [
+            { "type": "number", "minimum": 0, "maximum": f32::MAX as f64 },
+            { "$ref": "#/$defs/expression" }
+        ]
+    })
 }
 
 /// `$defs` of the param kinds whose fields are a delegate's `property_defs()`, and the outer

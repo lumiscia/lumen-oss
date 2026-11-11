@@ -156,15 +156,18 @@ impl LumenPreviewController {
             .map_err(|error| parse_failure(&error))
     }
 
-    /// The audio timeline the engine parsed from the loaded composition, as JSON.
+    /// What the loaded composition's audio plays over its timeline, as the JSON of an
+    /// [`AudioTimelinePayload`], or `None` when it has no audio.
     #[wasm_bindgen(js_name = "audioTimeline")]
     pub fn audio_timeline(&self) -> Result<Option<String>, JsValue> {
         let state = self.state()?;
-        let Some(timeline) = state.composition.as_ref().and_then(Composition::audio) else {
+        let Some(composition) = state.composition.as_ref().filter(|c| c.has_audio()) else {
             return Ok(None);
         };
+        let plan = lumen_engine::audio::preview_plan(composition, Some(&self.media))
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
         let payload = AudioTimelinePayload {
-            timeline,
+            plan: &plan,
             duration_frames: state.duration_frames,
             fps: state.fps,
         };
@@ -716,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_timeline_is_what_the_engine_parsed() {
+    fn audio_timeline_is_the_plan_of_the_engine_parsed_audio() {
         let controller = controller(8);
         assert_eq!(controller.audio_timeline().expect("no composition"), None);
         controller
@@ -751,20 +754,22 @@ mod tests {
         assert_eq!(
             timeline,
             serde_json::json!({
-                "tracks": [{
-                    "id": "music",
-                    "muted": false,
-                    "solo": false,
-                    "volume": 0.5,
-                }],
-                "clips": [{
-                    "id": "intro",
+                "voices": [{
                     "sourceId": "song",
-                    "trackId": "music",
-                    "startMs": 33,
-                    "durationMs": 1500,
-                    "sourceStartMs": 250,
-                    "volume": 1.0,
+                    "sourceStart": 12_000.0,
+                    "duration": 72_000.0,
+                    "fadeIn": 0.0,
+                    "fadeOut": 0.0,
+                }],
+                "segments": [{
+                    "voice": 0,
+                    "start": 1_584,
+                    "frames": 72_000,
+                    "position": 0.0,
+                    "step": 1.0,
+                    "from": 0.0,
+                    "to": 72_000.0,
+                    "gain": [0.5, 0.5],
                 }],
                 "durationFrames": 200,
                 "fps": 30.0,

@@ -29,7 +29,11 @@ export function resolvePreviewInputs(
   fonts: LumenPreviewFonts = {},
 ): ResolvedPreviewInputs {
   const document = composition ? compositionDocument(composition) : null;
-  const audioAliases = new Set(document?.audio?.clips.map((clip) => clip.source_id));
+  const audioAliases = new Set(
+    [document?.audio, ...Object.values(document?.compositions ?? {}).map(({ audio }) => audio)]
+      .flatMap((audio) => audio?.clips ?? [])
+      .map((clip) => clip.source_id),
+  );
   const sourceKinds = literalSourceKinds(document);
   const audio: AudioSourceRegistration[] = [];
   const visual = new Map<string, MediaRegistration>();

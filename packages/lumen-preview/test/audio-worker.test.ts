@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { AudioEngineTimeline } from "../src/audio-engine.js";
 import { mixTimelineChunk } from "../src/audio-worker.js";
 
 type MixFixture = {
@@ -8,7 +9,7 @@ type MixFixture = {
   name: string;
   sources: Record<string, { frames: number; pattern: [number, number][] }>;
   startSample: number;
-  timeline: { durationFrames: number; fps: number };
+  timeline: AudioEngineTimeline;
 };
 
 // Written by `browser_mixer_fixtures_match_this_mixer` in crates/engine/src/audio.rs.
@@ -90,16 +91,17 @@ describe("mixTimelineChunk looping", () => {
   const timeline = {
     durationFrames: 10,
     fps: 10,
-    tracks: [{ id: "t", muted: false, solo: false, volume: 1 }],
-    clips: [
+    voices: [{ duration: 96_000, fadeIn: 0, fadeOut: 0, sourceId: "a", sourceStart: 0 }],
+    segments: [
       {
-        durationMs: 2_000,
-        id: "a",
-        sourceId: "a",
-        sourceStartMs: 0,
-        startMs: 0,
-        trackId: "t",
-        volume: 1,
+        frames: 48_000,
+        from: 0,
+        gain: [1, 1] as [number, number],
+        position: 0,
+        start: 0,
+        step: 1,
+        to: 96_000,
+        voice: 0,
       },
     ],
   };

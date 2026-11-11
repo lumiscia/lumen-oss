@@ -191,13 +191,16 @@ export type TimelineInput = Partial<LumenComposition["timeline"]> & {
   readonly durationSeconds?: number;
 };
 
-/** A track declared with `addAudioTrack`. Gain scales every clip on the track. */
+/**
+ * A track declared with `addAudioTrack`. Gain scales every clip on the track; an expression is
+ * evaluated in the time of the composition the track is in, as `when(time.gte(2), 0.25, 1)`.
+ */
 export interface AudioTrackOptions {
   readonly id: string;
   readonly name?: string;
   readonly muted?: boolean;
   readonly solo?: boolean;
-  readonly gain?: number;
+  readonly gain?: number | Expr<number>;
 }
 
 /** A clip of an audio source, with every time in seconds. */
@@ -211,7 +214,12 @@ export interface AudioClipOptions {
   readonly offset?: number;
   /** The track to play on, declared as a plain track if it isn't one yet. Defaults to `main`. */
   readonly trackId?: string;
-  readonly gain?: number;
+  /** A gain, or an expression evaluated in the time of the composition the clip is in. */
+  readonly gain?: number | Expr<number>;
+  /** How long the clip rises from silence at its start, on an equal-power curve. */
+  readonly fadeIn?: number;
+  /** How long the clip falls to silence at its end, on an equal-power curve. */
+  readonly fadeOut?: number;
   readonly id?: string;
   readonly name?: string;
 }

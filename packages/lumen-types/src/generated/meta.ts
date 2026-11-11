@@ -1354,13 +1354,24 @@ export const expressionReservedNames = [
 export type AlphaMode = "straight" | "premultiplied";
 export type AudioClip = {
   readonly duration_ms: number;
+  /** Milliseconds the clip rises from silence over at its start, on an equal-power curve. */
+  readonly fade_in_ms?: number;
+  /** Milliseconds the clip falls to silence over at its end, on an equal-power curve. */
+  readonly fade_out_ms?: number;
   readonly id: string;
   readonly name?: string;
   readonly source_id: string;
   readonly source_start_ms?: number;
   readonly start_ms: number;
   readonly track_id: string;
-  readonly volume?: number;
+  /** Gain, 1 by default. An expression is evaluated in the time of the composition the audio is in, and reads `frame`, `time`, `fps`, `width`, `height` and props. */
+  readonly volume?: ExpressionValue<number>;
+  readonly [key: string]: unknown;
+};
+/** Audio tracks and clips. A template's audio plays wherever a `clip` plays the template, following the clip's start, duration, offset, speed and end. */
+export type AudioTimeline = {
+  readonly clips: readonly AudioClip[];
+  readonly tracks: readonly AudioTrack[];
   readonly [key: string]: unknown;
 };
 export type AudioTrack = {
@@ -1368,7 +1379,8 @@ export type AudioTrack = {
   readonly muted?: boolean;
   readonly name?: string;
   readonly solo?: boolean;
-  readonly volume?: number;
+  /** Gain, 1 by default. An expression is evaluated in the time of the composition the audio is in, and reads `frame`, `time`, `fps`, `width`, `height` and props. */
+  readonly volume?: ExpressionValue<number>;
   readonly [key: string]: unknown;
 };
 export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten" | "add" | "difference" | "exclusion" | "color_dodge" | "color_burn" | "hard_light" | "soft_light" | "hue" | "saturation" | "color" | "luminosity";
@@ -1399,6 +1411,7 @@ export type CompositionPropDeclaration = {
 };
 /** A composition a `clip` plays. Without `render_settings` it takes the root's size, and without `timeline` the root's timeline; a `timeline` without `fps` takes the root's fps. */
 export type CompositionTemplate = {
+  readonly audio?: AudioTimeline;
   readonly connections: readonly Connection[];
   readonly nodes: readonly CompositionNode[];
   /** Props that `prop('name')` reads inside the template, set per `clip`. */

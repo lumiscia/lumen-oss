@@ -47,10 +47,11 @@ function postChunk({ chunkFrames, generation, startSample }) {
 }
 
 /**
- * Mixes interleaved stereo for the export mixer's rules. Playback sample `startSample` is a
+ * Mixes interleaved stereo from the engine's audio plan. Playback sample `startSample` is a
  * position in the timeline that keeps counting past the end of `range`: a looping range repeats,
  * and one that doesn't is silent from its end. Without `range` the whole timeline loops.
- * `crates/engine/src/audio.rs` writes the fixtures `audio-worker.test.ts` checks this against.
+ * `crates/engine/src/audio/mix.rs` plays plans the same way and writes the fixtures
+ * `audio-worker.test.ts` checks this against.
  *
  * @param {{ startMs: number, endMs: number, loop: boolean } | null} [range] `endMs` is exclusive.
  */
@@ -86,7 +87,7 @@ export function mixTimelineChunk(nextTimeline, nextSources, startSample, frames,
       timelineStart = sample;
       segmentFrames = Math.min(frames - outputFrame, endSample - sample);
     }
-    mixTimelineRange(
+    mixPlanRange(
       nextTimeline,
       nextSources,
       output,
@@ -98,64 +99,58 @@ export function mixTimelineChunk(nextTimeline, nextSources, startSample, frames,
   }
 
   for (let index = 0; index < output.length; index += 1) {
-    output[index] = Math.min(1, Math.max(-1, output[index]));
+    const sample = output[index];
+    output[index] = Number.isNaN(sample) ? 0 : Math.min(1, Math.max(-1, sample));
   }
   return output;
 }
 
-function mixTimelineRange(
-  nextTimeline,
-  nextSources,
-  output,
-  outputStartFrame,
-  startSample,
-  endSample,
-) {
-  const hasSolo = nextTimeline.tracks.some((track) => track.solo);
-  const tracks = new Map(nextTimeline.tracks.map((track) => [track.id, track]));
-
-  for (const clip of nextTimeline.clips) {
-    const track = tracks.get(clip.trackId);
-    if (
-      !track ||
-      track.muted ||
-      (hasSolo && !track.solo) ||
-      track.volume <= 0 ||
-      clip.volume <= 0
-    ) {
-      continue;
-    }
-
-    const source = nextSources.get(clip.sourceId);
+/**
+ * Adds plan samples `[startSample, endSample)` to `output` from `outputStartFrame`. Segment sample
+ * `i` plays its voice's clip at `position + step * i`, between `from` and `to`, at a gain moving
+ * linearly across the segment, with the clip's edge ramps and equal-power fades, reading the
+ * source between whole samples linearly.
+ */
+function mixPlanRange(plan, nextSources, output, outputStartFrame, startSample, endSample) {
+  for (const segment of plan.segments) {
+    const voice = plan.voices[segment.voice];
+    const source = voice && nextSources.get(voice.sourceId);
     if (!source) {
       continue;
     }
-
-    const clipStartSample = msToSample(clip.startMs);
-    const clipDurationSamples = Math.max(1, msToSample(clip.durationMs));
-    const clipEndSample = clipStartSample + clipDurationSamples;
-    const overlapStartSample = Math.max(startSample, clipStartSample);
-    const overlapEndSample = Math.min(endSample, clipEndSample);
-    if (overlapEndSample <= overlapStartSample) {
-      continue;
-    }
-
-    const baseGain = track.volume * clip.volume;
-    const sourceStartSample = msToSample(clip.sourceStartMs);
-    for (let sample = overlapStartSample; sample < overlapEndSample; sample += 1) {
-      const clipOffset = sample - clipStartSample;
-      const sourceFrame = sourceStartSample + clipOffset;
-      if (sourceFrame * CHANNELS >= source.length) {
-        break;
+    const first = Math.max(0, startSample - segment.start);
+    const last = Math.min(segment.frames, endSample - segment.start);
+    const sourceFrames = source.length / CHANNELS;
+    for (let i = first; i < last; i += 1) {
+      const position = segment.position + segment.step * i;
+      if (!(position >= segment.from && position < segment.to)) {
+        continue;
       }
-
-      const gain = baseGain * clipEnvelope(clipOffset, clipDurationSamples);
-      const outputFrame = outputStartFrame + sample - startSample;
+      const along = i / segment.frames;
+      const gain =
+        (segment.gain[0] + (segment.gain[1] - segment.gain[0]) * along) *
+        edgeFade(position - segment.from, segment.to - segment.from) *
+        fade(position, voice.fadeIn) *
+        fade(voice.duration - position, voice.fadeOut);
+      const sourcePosition = voice.sourceStart + position;
+      const whole = Math.floor(sourcePosition);
+      const fraction = sourcePosition - whole;
+      const outputFrame = outputStartFrame + segment.start + i - startSample;
       for (let channel = 0; channel < CHANNELS; channel += 1) {
-        output[outputFrame * CHANNELS + channel] += source[sourceFrame * CHANNELS + channel] * gain;
+        const at = sourceSample(source, sourceFrames, whole, channel);
+        const value =
+          fraction === 0
+            ? at
+            : at * (1 - fraction) +
+              sourceSample(source, sourceFrames, whole + 1, channel) * fraction;
+        output[outputFrame * CHANNELS + channel] += value * gain;
       }
     }
   }
+}
+
+function sourceSample(source, sourceFrames, frame, channel) {
+  return frame >= 0 && frame < sourceFrames ? source[frame * CHANNELS + channel] : 0;
 }
 
 // Loop k covers playback samples [floor(start + k * length), floor(start + (k + 1) * length)), so a
@@ -171,18 +166,20 @@ function loopBounds(sample, start, length) {
   return [Math.floor(start + loop * length), Math.floor(start + (loop + 1) * length)];
 }
 
-function msToSample(ms) {
-  return Math.floor((Math.max(0, ms) * SAMPLE_RATE) / 1_000);
-}
-
-function clipEnvelope(clipSample, clipDuration) {
-  const fade = Math.min(CLIP_EDGE_FADE_SAMPLES, Math.floor(clipDuration / 2));
-  if (fade === 0) {
+function edgeFade(offset, length) {
+  const fadeSamples = Math.min(CLIP_EDGE_FADE_SAMPLES, Math.floor(length / 2));
+  if (fadeSamples <= 0) {
     return 1;
   }
-  if (clipSample < fade) {
-    return clipSample / fade;
+  if (offset < fadeSamples) {
+    return offset / fadeSamples;
   }
-  const remaining = clipDuration - clipSample;
-  return remaining < fade ? remaining / fade : 1;
+  const remaining = length - offset;
+  return remaining < fadeSamples ? remaining / fadeSamples : 1;
+}
+
+function fade(distance, length) {
+  return length > 0 && distance < length
+    ? Math.sin((Math.max(0, distance) / length) * (Math.PI / 2))
+    : 1;
 }

@@ -54,6 +54,28 @@ as `asset:<id>` or a `media` alias. Faces that don't carry that name answer to i
 own, so a font asset or a renamed file shapes as asked, and can't be picked by its internal family
 name instead of another font of that name.
 
+## Audio
+
+The root composition and each template can hold an `audio` timeline of tracks and clips. A
+template's audio plays wherever a `clip` node that reaches the output plays the template, at the
+template time the clip shows: its `start`, `duration`, `offset`, `speed` and `end` place the sound
+as they place the frames, through nested clips. Speed resamples linearly, so pitch follows it. A
+`hold` past the window, and a `time_remap` whose time holds or runs backwards, are silent. A
+`switch` plays only its selected layer's audio. A template's solo tracks silence only its own
+tracks.
+
+A track's or clip's `volume` is a gain or an `=expression` of the time of the composition it is
+in, such as `"=if(time >= 2 && time < 6, 0.25, 1)"` to duck music under a voice-over, or
+`"=prop('level')"` in a template. Expressions can't read nodes, glyphs or text. Values below 0 are
+silence. Clip `fade_in_ms` and `fade_out_ms` fade from and to silence at the clip's start and end
+on an equal-power curve, `sin(π/2 · t)`, so a fade-out overlapping a fade-in keeps the loudness of
+the two clips steady; on a clip shorter than both, the two multiply. Every clip also ramps over its
+first and last 384 samples, and where a window cuts it, so it never clicks.
+
+`audio::plan` evaluates gains and clip timing every 512 samples, with gains moving linearly in
+between, into segments that `audio::AudioMixer` plays. The browser preview plays the same plan, so
+both mix alike.
+
 ## Diagnostics
 
 `json::check` reads a composition the way a render would, without rendering it, and returns every
@@ -161,7 +183,7 @@ literal: one the store doesn't have is `asset.not_found`, and one of another kin
 | `clip.invalid`                       | error    | check         | A clip names a composition that doesn't exist, sets props it doesn't declare or of the wrong kind, plays a composition and a `source` together, or has a negative `duration` other than -1.               |
 | `expression.invalid_prop_read`       | error    | check         | `prop()` is used outside a template, names an undeclared prop, or doesn't name it with a string literal.                                                                                                  |
 | `settings.invalid`                   | error    | check         | A timeline, canvas or prop default can't render, such as an `fps` of 0.                                                                                                                                   |
-| `audio.invalid`                      | error    | check         | Audio tracks or clips are duplicated, unknown, or have invalid timing or volume.                                                                                                                          |
+| `audio.invalid`                      | error    | check         | Audio tracks or clips are duplicated, unknown, or have invalid timing or volume, or a volume expression reads a node, a glyph, text or an undeclared prop.                                                |
 | `composition.cycle`                  | error    | check         | Templates instantiate themselves.                                                                                                                                                                         |
 | `font.fallback`                      | warning  | check, render | A text node's font family resolved to no font, so it renders in a fallback.                                                                                                                               |
 | `scene.shadow_limit`                 | warning  | render        | A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none.                                                                                                          |
