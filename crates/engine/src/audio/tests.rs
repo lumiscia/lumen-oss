@@ -656,6 +656,45 @@ fn nested_audio_sounds_right_after_a_parent_loop_restarts() {
 }
 
 #[test]
+fn a_loop_restart_reads_the_props_of_the_frame_it_begins_on() {
+    let provider = TestProvider::with(&[("tone", constant(1.0, 1.0))]);
+    let mut outer = template(
+        30.0,
+        30,
+        None,
+        vec![clip_node(
+            json!({ "composition": "blip", "duration": 1, "start": "=prop('at')" }),
+        )],
+    );
+    outer["props"] = json!({ "at": { "type": "number", "default": 0 } });
+    let document = document(
+        30.0,
+        120,
+        None,
+        json!({
+            "blip": template(
+                30.0,
+                30,
+                Some(audio(vec![audio_clip("c", "tone", 0, 200, json!({}))])),
+                vec![],
+            ),
+            "outer": outer,
+        }),
+        vec![clip_node(json!({
+            "composition": "outer",
+            "duration": 30,
+            "end": "loop",
+            "props": { "at": "=if(frame >= 30, 0, 2)" },
+        }))],
+    );
+    let composition = composition(&document);
+    // The restart at sample 48000 is the first frame whose props start the blip at once.
+    let mixed = mix(&composition, &provider, 47_616, 512, 512);
+    assert!(mixed[..384].iter().all(|sample| *sample == 0.0));
+    assert!((f64::from(mixed[384 + 100]) - 100.0 / 384.0).abs() < 1e-6);
+}
+
+#[test]
 fn props_set_by_expression_move_the_gain_between_control_points() {
     let provider = TestProvider::with(&[("tone", constant(1.0, 3.0))]);
     let mut inner = template(

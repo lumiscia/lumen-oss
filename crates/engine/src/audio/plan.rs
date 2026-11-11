@@ -634,9 +634,15 @@ impl<'a> Planner<'a> {
                 clip.id, found.start
             )));
         }
-        let props = template
-            .map(|(template, _)| clip.instance_props(template, &ctx))
-            .transpose()?;
+        // A restart reads the clip's props where it begins.
+        let props_at = |frame: f64| {
+            template
+                .map(|(template, _)| {
+                    let ctx = walk.scope.expr_context(frame.into(), self.media);
+                    clip.instance_props(template, &ctx)
+                })
+                .transpose()
+        };
         // The sample of the walk where a restart begins, or after its last if it begins later.
         let begins = |repeat: i64| {
             let ahead = repeat as f64 * window.duration - elapsed;
@@ -680,7 +686,9 @@ impl<'a> Planner<'a> {
                 path: [walk.path.as_slice(), &[(clip.id, repeat)]].concat(),
                 depth: walk.depth + 1,
             };
-            let (Some((template, output)), Some(props)) = (template, &props) else {
+            let restart = window.start + repeat as f64 * window.duration;
+            let props = props_at(if begin > 0.0 { restart } else { walk.frame })?;
+            let (Some((template, output)), Some(props)) = (template, props) else {
                 if let Some(source) = clip.source {
                     found.stack.push(Walk {
                         node: source,
@@ -689,7 +697,7 @@ impl<'a> Planner<'a> {
                 }
                 continue;
             };
-            next.scope = Scope::template(self.composition, template, output, props.clone());
+            next.scope = Scope::template(self.composition, template, output, props);
             if let (Some(timeline), Some(index)) = (
                 &template.audio,
                 clip.template_name()
