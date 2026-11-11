@@ -10,7 +10,7 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use lumen_engine::{
     composition::Composition,
     error::MediaError,
-    gpu::{BoundFrame, GpuCompositionRenderer},
+    gpu::{BoundFrame, GpuCompositionRenderer, WORKING_COLOR_FORMAT},
     media::{
         AssetKind, CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver,
         MediaFrame, MediaIdentity, MediaResolver, MediaStore, ModelResolver, ResolvedMedia,
@@ -633,6 +633,70 @@ pub fn read_rgba8(
         .unwrap_or_else(|error| panic!("readback fails: {error}"))
 }
 
+/// Every channel is finite and alpha is within `0..=1`. Colour may be brighter than its alpha.
+pub fn in_working_space(texel: [f32; 4]) -> bool {
+    texel.iter().all(|channel| channel.is_finite()) && (0.0..=1.0).contains(&texel[3])
+}
+
+/// The texels of a `WORKING_COLOR_FORMAT` texture.
+pub fn read_rgba16f(
+    gpu: &lumen_gpu::Renderer,
+    texture: &wgpu::Texture,
+    size: lumen_gpu::Size,
+) -> Vec<[f32; 4]> {
+    assert_eq!(texture.format(), WORKING_COLOR_FORMAT);
+    let row = size.width as usize * 8;
+    let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: (padded_row * size.height as usize) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_row as u32),
+                rows_per_image: None,
+            },
+        },
+        size.as_extent(),
+    );
+    gpu.queue.submit([encoder.finish()]);
+    buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("wait for readback");
+    let bytes = buffer.slice(..).get_mapped_range().expect("map").to_vec();
+    bytes
+        .chunks(padded_row)
+        .flat_map(|row_bytes| row_bytes[..row].chunks(8))
+        .map(|texel| {
+            std::array::from_fn(|channel| {
+                f16_to_f32(u16::from_le_bytes([texel[channel * 2], texel[channel * 2 + 1]]))
+            })
+        })
+        .collect()
+}
+
+fn f16_to_f32(bits: u16) -> f32 {
+    let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
+    let exponent = i32::from((bits >> 10) & 0x1f);
+    let mantissa = f32::from(bits & 0x3ff);
+    sign * match exponent {
+        0 => mantissa * 2f32.powi(-24),
+        31 if mantissa == 0.0 => f32::INFINITY,
+        31 => f32::NAN,
+        _ => (1.0 + mantissa / 1024.0) * 2f32.powi(exponent - 15),
+    }
+}
+
 type FramesCheck = dyn Fn(&[Frame]);
 
 /// What a row's frames must look like, besides matching the reference render.
@@ -720,6 +784,7 @@ impl Case {
         assert!(!self.frames.is_empty(), "a case needs at least one frame");
         let frames = self.render_frames(&mut gpu.renderer(), self.bounded);
         self.expect.assert(self, gpu, &frames);
+        self.assert_working_space(gpu);
         let reference = self.render_frames(&mut gpu.reference(), self.bounded.map(|_| false));
         for (frame, reference) in frames.iter().zip(&reference) {
             if self.uniform_columns {
@@ -731,6 +796,33 @@ impl Case {
                 );
             } else if let Err(error) = within_rounding(&frame.rgba, &reference.rgba) {
                 panic!("frame {} differs from the reference: {error}", frame.at);
+            }
+        }
+    }
+
+    /// Renders each frame to a float output, which takes the working space unchanged, and checks
+    /// it holds what `WORKING_COLOR_FORMAT` promises.
+    fn assert_working_space(&self, gpu: &Gpu) {
+        let mut renderer = gpu.renderer();
+        renderer
+            .compile_with_output_format(&self.scene, WORKING_COLOR_FORMAT)
+            .unwrap_or_else(|error| panic!("the scene does not compile: {error}"));
+        for &at in &self.frames {
+            let raster = renderer
+                .render_frame_at(&self.scene, at, &self.media)
+                .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
+            let size = raster.domain.storage_size;
+            let texels = read_rgba16f(renderer.gpu_renderer(), &raster.texture, size);
+            if let Some((index, texel)) = texels
+                .iter()
+                .enumerate()
+                .find(|(_, texel)| !in_working_space(**texel))
+            {
+                panic!(
+                    "frame {at}: pixel ({}, {}) is {texel:?}, outside the working space",
+                    index as u32 % size.width,
+                    index as u32 / size.width
+                );
             }
         }
     }

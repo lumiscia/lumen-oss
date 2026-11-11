@@ -306,9 +306,10 @@ impl GpuCompositionRenderer {
         self.compile_with_output_format(composition, lumen_gpu::wgpu::TextureFormat::Rgba8Unorm)
     }
 
-    /// `compile`, for frames whose output is in `output_format`. The output is sRGB-encoded: an
-    /// 8-bit format takes it quantised once, an `*Srgb` format encodes it as it stores, and a float
-    /// format takes it unquantised, for a converter that quantises it itself.
+    /// `compile`, for frames whose output is in `output_format`. An 8-bit format takes the output
+    /// sRGB-encoded and quantised once, and an `*Srgb` format encodes it as it stores. A float
+    /// format takes the working space unchanged, linear and premultiplied, for a converter that
+    /// encodes and quantises it itself.
     pub fn compile_with_output_format(
         &mut self,
         composition: &Composition,

@@ -1,7 +1,8 @@
 //! The working colour space and the sRGB transfer function on the CPU, matching `color.wgsl`.
 
 /// The format of every raster the compositor writes: linear light with BT.709 primaries and
-/// premultiplied alpha, where 1.0 is SDR white and colour may go past it.
+/// premultiplied alpha, where 1.0 is SDR white and colour may go past it. Every node keeps alpha
+/// within `0..=1`, while colour may be brighter than its alpha, as light such as glow is.
 pub const WORKING_COLOR_FORMAT: lumen_gpu::wgpu::TextureFormat =
     lumen_gpu::wgpu::TextureFormat::Rgba16Float;
 
