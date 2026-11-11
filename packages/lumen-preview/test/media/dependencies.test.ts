@@ -60,6 +60,29 @@ describe("previewDependencies", () => {
     });
   });
 
+  it("reads an entry named `.cube` as a LUT where an expression can name either kind", () => {
+    const dependencies = previewDependencies(
+      inventory([], [["environment", "lut"]]),
+      entries({
+        "warm.cube": { source: "https://a.test/warm.cube?v=2" },
+        "sky.hdr": { kind: "environment", source: "https://a.test/sky" },
+      }),
+      new Map(),
+    ).map(({ key }) => key);
+
+    expect(dependencies).toEqual(["lut:warm.cube", "environment:sky.hdr"]);
+  });
+
+  it("takes `.cube` from a URL's path, not from its query", () => {
+    const read = () =>
+      previewDependencies(
+        inventory([], [["environment", "lut"]]),
+        entries({ dusk: { source: "https://a.test/dusk.hdr?grade=warm.cube" } }),
+        new Map(),
+      );
+    expect(read).toThrow("needs a kind");
+  });
+
   it("loads a source read as video and as audio once for each, and nothing unnamed", () => {
     const dependencies = previewDependencies(
       inventory([{ kinds: ["video", "audio"], source: "clip.mp4" }]),

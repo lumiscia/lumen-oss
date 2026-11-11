@@ -2,10 +2,17 @@ import { toMediaError } from "./errors.js";
 import { sourceInputToBlob } from "./source.js";
 import type { MediaSourceInput } from "./types.js";
 
-/** A file the engine reads itself: a binary glTF model, or an `.hdr` or `.exr` environment map. */
-export type SceneFileKind = "environment" | "model";
+/**
+ * A file the engine reads itself: a binary glTF model, an `.hdr` or `.exr` environment map, or a
+ * `.cube` LUT.
+ */
+export type SceneFileKind = "environment" | "lut" | "model";
 
-const NAMES: Record<SceneFileKind, string> = { environment: "environment map", model: "model" };
+const NAMES: Record<SceneFileKind, string> = {
+  environment: "environment map",
+  lut: "LUT",
+  model: "model",
+};
 
 /** The bytes of the file `source` holds, or a media error naming `id`. */
 export async function readSceneFile(

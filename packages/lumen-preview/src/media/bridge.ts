@@ -54,6 +54,7 @@ type VideoEntry = {
 export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
   private readonly files: Record<SceneFileKind, Map<string, FileEntry>> = {
     environment: new Map(),
+    lut: new Map(),
     model: new Map(),
   };
   private readonly images = new Map<string, ImageEntry>();
@@ -72,12 +73,14 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     for (const entry of [
       ...this.images.values(),
       ...this.files.environment.values(),
+      ...this.files.lut.values(),
       ...this.files.model.values(),
     ]) {
       entry.abort.abort();
     }
     this.images.clear();
     this.files.environment.clear();
+    this.files.lut.clear();
     this.files.model.clear();
     for (const video of this.videos.values()) {
       video.session.dispose();
@@ -123,6 +126,14 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     }
   }
 
+  removeLutSource(sourceId: string, syncTarget = true): void {
+    this.files.lut.get(sourceId)?.abort.abort();
+    this.files.lut.delete(sourceId);
+    if (syncTarget) {
+      this.target.removeLutSource?.(sourceId);
+    }
+  }
+
   removeVideoSource(streamId: string, syncTarget = true): void {
     const entry = this.videos.get(streamId);
     entry?.session.dispose();
@@ -157,6 +168,11 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
   /** Hands an `.hdr` or `.exr` file to the `environment_map` params that name `sourceId`. */
   async registerEnvironmentSource(sourceId: string, source: MediaSourceInput): Promise<void> {
     await this.registerFile("environment", sourceId, source);
+  }
+
+  /** Hands a `.cube` file to the `color_grade` params whose `lut_source` is `sourceId`. */
+  async registerLutSource(sourceId: string, source: MediaSourceInput): Promise<void> {
+    await this.registerFile("lut", sourceId, source);
   }
 
   async registerVideoSource(
@@ -218,15 +234,25 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
     const files = this.files[kind];
     let entry = files.get(id);
     if (!entry || !sameMediaInput(entry.source, source)) {
-      if (kind === "model") {
-        this.removeModelSource(id);
-      } else {
-        this.removeEnvironmentSource(id);
+      switch (kind) {
+        case "environment":
+          this.removeEnvironmentSource(id);
+          break;
+        case "lut":
+          this.removeLutSource(id);
+          break;
+        case "model":
+          this.removeModelSource(id);
+          break;
       }
       entry = { abort: new AbortController(), source, upload: null };
       files.set(id, entry);
     }
-    const has = kind === "model" ? this.target.hasModel : this.target.hasEnvironment;
+    const has = {
+      environment: this.target.hasEnvironment,
+      lut: this.target.hasLut,
+      model: this.target.hasModel,
+    }[kind];
     if (has?.call(this.target, id)) {
       return;
     }
@@ -237,10 +263,16 @@ export class LumenMediaBridge<TTarget extends NativeVideoFrameTarget> {
         if (files.get(id) !== current) {
           return;
         }
-        if (kind === "model") {
-          this.target.setModel?.(id, bytes);
-        } else {
-          this.target.setEnvironment?.(id, bytes);
+        switch (kind) {
+          case "environment":
+            this.target.setEnvironment?.(id, bytes);
+            break;
+          case "lut":
+            this.target.setLut?.(id, bytes);
+            break;
+          case "model":
+            this.target.setModel?.(id, bytes);
+            break;
         }
       })
       .finally(() => {

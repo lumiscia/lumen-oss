@@ -32,8 +32,7 @@ pub struct ColorGradeParams {
     /// `asset:<id>` for an asset of the host's. Tables up to 129 points per axis and 64 MiB are
     /// read, sampled with trilinear interpolation (`interpolation` `nearest` takes the nearest
     /// point), and `DOMAIN_MIN`/`DOMAIN_MAX` set the input range they cover. 1D `.cube` tables are
-    /// not supported. Empty uses `lut`; setting both is an error. The browser preview does not
-    /// load `.cube` files.
+    /// not supported. Empty uses `lut`; setting both is an error.
     #[meta(name = "LUT source", role = "source_id")]
     #[media(lut)]
     pub lut_source: String,
@@ -384,6 +383,14 @@ impl LutCache {
         }
         self.bytes = 0;
     }
+}
+
+/// Reads `bytes` as the `.cube` table `source` names, and fails as a render that grades with it
+/// would, short of the device's 3D texture size limit.
+pub fn check_lut(source: &str, bytes: &[u8]) -> Result<(), MediaError> {
+    CubeLut::parse(bytes)
+        .map(drop)
+        .map_err(|error| lut_failure(source, error))
 }
 
 /// Why `error`, from reading `source` as a `.cube` file, makes it unusable.

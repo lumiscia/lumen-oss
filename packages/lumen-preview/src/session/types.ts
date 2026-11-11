@@ -12,7 +12,8 @@ export type LumenPreviewComposition = LumenComposition | { toJSON(): LumenCompos
 
 /**
  * `model` is a binary glTF (`.glb`) file, which a `model_3d` reads, and `environment` a Radiance
- * `.hdr` or OpenEXR `.exr` file, which a `render_3d` lights with.
+ * `.hdr` or OpenEXR `.exr` file, which a `render_3d` lights with. `lut` is an Adobe/Resolve `.cube`
+ * 3D table, which a `color_grade` reads through `lut_source`.
  */
 export type LumenPreviewMediaKind = MediaSourceKind;
 
