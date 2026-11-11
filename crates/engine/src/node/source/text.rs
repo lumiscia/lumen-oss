@@ -13,7 +13,8 @@ use crate::node::vector::{
     paint::Paint,
 };
 use crate::node::{
-    Deferred, DelegateEvalContext, DelegateEvaluable, NodeId, NodeParams, Override, ParamValue,
+    Deferred, DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams, Override,
+    ParamValue,
 };
 
 use super::text_content::{
@@ -415,7 +416,7 @@ impl TextInstance {
         }
         Err(RenderError::NodeEvaluation {
             node_id: self.node_id,
-            node_kind: "Text",
+            node_kind: <Text as JsonNode>::KIND,
             details: format!(
                 "text draws {drawn} glyphs, strokes and decorations, more than the \
                  {MAX_TEXT_GLYPHS} a text node can draw; split it across nodes or shorten it"

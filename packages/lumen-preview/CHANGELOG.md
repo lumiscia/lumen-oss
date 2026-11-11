@@ -1,5 +1,13 @@
 # @lumiscia/lumen-preview
 
+## 0.5.1
+
+### Patch Changes
+
+- Updated dependencies [6285ab0]
+- Updated dependencies [87164d8]
+  - @lumiscia/lumen-types@0.5.1
+
 ## 0.5.0
 
 ### Minor Changes

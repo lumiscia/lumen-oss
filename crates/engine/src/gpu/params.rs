@@ -1,6 +1,9 @@
 use bytemuck::{Pod, Zeroable};
 
-use crate::{error::RenderError, node::NodeId};
+use crate::{
+    error::RenderError,
+    node::{JsonNode, NodeId},
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -159,6 +162,23 @@ pub(crate) struct CropParams {
     pub(crate) size: [u32; 2],
 }
 
+/// A crop over a source stored from `source_origin`, which is where its first texel sits in the
+/// display.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct CropPassParams {
+    pub(crate) origin: [i32; 2],
+    pub(crate) size: [u32; 2],
+    pub(crate) source_origin: [i32; 2],
+}
+
+/// Where a bounded source's first texel sits in the display.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct SourceOriginParams {
+    pub(crate) origin: [i32; 2],
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub(crate) struct ResizeParams {
@@ -265,7 +285,7 @@ fn normalize_lut_component(value: f32) -> f32 {
 fn lut_error(node_id: NodeId, details: impl Into<String>) -> crate::error::LumenError {
     RenderError::NodeEvaluation {
         node_id,
-        node_kind: "ColorGrade",
+        node_kind: <crate::node::processing::color_grade::ColorGrade as JsonNode>::KIND,
         details: details.into(),
     }
     .into()
