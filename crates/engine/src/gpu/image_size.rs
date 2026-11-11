@@ -16,7 +16,9 @@ use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use lumen_gpu::Size;
 
 use crate::composition::Composition;
-use crate::media::CpuMediaFrame;
+use half::f16;
+
+use crate::media::{CpuMediaFrame, LinearMediaFrame};
 use crate::node::processing::resize::ResizeMode;
 use crate::node::source::media_in::MediaInSourceKindDelegate;
 use crate::node::{Deferred, Node, NodeId, NodeKind};
@@ -332,7 +334,133 @@ pub(crate) fn rgba8_at(frame: &CpuMediaFrame, premultiplied: bool, size: Size) -
     if (frame.width, frame.height) == (size.width, size.height) {
         return super::renderer::fit_frame_to_rgba8(frame, size.width, size.height);
     }
-    Cow::Owned(area_filtered(frame, premultiplied, size))
+    let texels = Srgb8 {
+        frame,
+        premultiplied,
+        decode: std::array::from_fn(|code| srgb_to_linear(code as f32 / 255.0)),
+    };
+    Cow::Owned(area_filtered(&texels, size))
+}
+
+/// `frame`'s straight linear half floats at `size`, filtered as `rgba8_at` filters.
+pub(crate) fn linear_at(frame: &LinearMediaFrame, size: Size) -> Cow<'_, [f16]> {
+    if (frame.width, frame.height) == (size.width, size.height) {
+        return Cow::Borrowed(&frame.rgba);
+    }
+    Cow::Owned(area_filtered(&Linear(frame), size))
+}
+
+/// An image's texels as the area filter reads and writes them.
+trait Texels: Sync {
+    type Sample: Copy + Default + Send;
+
+    fn width(&self) -> u32;
+
+    fn height(&self) -> u32;
+
+    /// The samples of source row `y`, four per texel.
+    fn row(&self, y: usize) -> &[Self::Sample];
+
+    /// One texel as linear light, premultiplied.
+    fn read(&self, texel: &[Self::Sample; 4]) -> [f32; 4];
+
+    /// Linear premultiplied light as a straight texel.
+    fn write(pixel: [f32; 4]) -> [Self::Sample; 4];
+}
+
+/// 8-bit sRGB-encoded texels, premultiplied as `premultiplied` says.
+struct Srgb8<'a> {
+    frame: &'a CpuMediaFrame,
+    premultiplied: bool,
+    /// Each code's linear light.
+    decode: [f32; 256],
+}
+
+impl Texels for Srgb8<'_> {
+    type Sample = u8;
+
+    fn width(&self) -> u32 {
+        self.frame.width
+    }
+
+    fn height(&self) -> u32 {
+        self.frame.height
+    }
+
+    fn row(&self, y: usize) -> &[u8] {
+        let start = y * self.frame.row_bytes;
+        &self.frame.rgba[start..start + self.frame.width as usize * 4]
+    }
+
+    fn read(&self, texel: &[u8; 4]) -> [f32; 4] {
+        let alpha = f32::from(texel[3]) / 255.0;
+        // Only partly transparent premultiplied colour is divided out of its code.
+        let divided = self.premultiplied && !matches!(texel[3], 0 | 255);
+        let mut pixel = [0.0; 4];
+        for channel in 0..3 {
+            let light = if divided {
+                srgb_to_linear(((f32::from(texel[channel]) / 255.0) / alpha).min(1.0))
+            } else {
+                self.decode[texel[channel] as usize]
+            };
+            pixel[channel] = light * alpha;
+        }
+        pixel[3] = alpha;
+        pixel
+    }
+
+    fn write(pixel: [f32; 4]) -> [u8; 4] {
+        let alpha = pixel[3].clamp(0.0, 1.0);
+        let mut texel = [0; 4];
+        if alpha > 0.0 {
+            for channel in 0..3 {
+                let encoded = linear_to_srgb((pixel[channel] / alpha).clamp(0.0, 1.0));
+                texel[channel] = (encoded * 255.0 + 0.5) as u8;
+            }
+        }
+        texel[3] = (alpha * 255.0 + 0.5) as u8;
+        texel
+    }
+}
+
+/// Straight linear half floats, whose colour may be above 1.
+struct Linear<'a>(&'a LinearMediaFrame);
+
+impl Texels for Linear<'_> {
+    type Sample = f16;
+
+    fn width(&self) -> u32 {
+        self.0.width
+    }
+
+    fn height(&self) -> u32 {
+        self.0.height
+    }
+
+    fn row(&self, y: usize) -> &[f16] {
+        let row = self.0.width as usize * 4;
+        &self.0.rgba[y * row..(y + 1) * row]
+    }
+
+    fn read(&self, texel: &[f16; 4]) -> [f32; 4] {
+        let alpha = texel[3].to_f32();
+        [0, 1, 2, 3].map(|channel| {
+            if channel == 3 {
+                alpha
+            } else {
+                texel[channel].to_f32() * alpha
+            }
+        })
+    }
+
+    fn write(pixel: [f32; 4]) -> [f16; 4] {
+        let alpha = pixel[3].clamp(0.0, 1.0);
+        [0, 1, 2, 3].map(|channel| match channel {
+            3 => f16::from_f32(alpha),
+            _ if alpha > 0.0 => f16::from_f32((pixel[channel] / alpha).max(0.0)),
+            _ => f16::ZERO,
+        })
+    }
 }
 
 /// For each output pixel along one axis, the source pixels its footprint covers and how much of
@@ -356,40 +484,38 @@ fn footprints(source: u32, output: u32) -> Vec<Vec<(usize, f32)>> {
         .collect()
 }
 
-fn area_filtered(frame: &CpuMediaFrame, premultiplied: bool, size: Size) -> Vec<u8> {
-    let columns = footprints(frame.width, size.width);
-    let rows = footprints(frame.height, size.height);
-    let row_bytes = size.width as usize * 4;
-    let mut out = vec![0_u8; row_bytes * size.height as usize];
+fn area_filtered<T: Texels>(texels: &T, size: Size) -> Vec<T::Sample> {
+    let columns = footprints(texels.width(), size.width);
+    let rows = footprints(texels.height(), size.height);
+    let row_samples = size.width as usize * 4;
+    let mut out = vec![T::Sample::default(); row_samples * size.height as usize];
     #[cfg(not(target_arch = "wasm32"))]
     {
         let threads = std::thread::available_parallelism().map_or(1, usize::from);
         let band = rows.len().div_ceil(threads).max(1);
         std::thread::scope(|scope| {
-            for (rows, out) in rows.chunks(band).zip(out.chunks_mut(band * row_bytes)) {
+            for (rows, out) in rows.chunks(band).zip(out.chunks_mut(band * row_samples)) {
                 let columns = &columns;
-                scope.spawn(move || filter_rows(frame, premultiplied, columns, rows, out));
+                scope.spawn(move || filter_rows(texels, columns, rows, out));
             }
         });
     }
     #[cfg(target_arch = "wasm32")]
-    filter_rows(frame, premultiplied, &columns, &rows, &mut out);
+    filter_rows(texels, &columns, &rows, &mut out);
     out
 }
 
 /// Writes to `out` the output rows whose footprints are `rows`.
-fn filter_rows(
-    frame: &CpuMediaFrame,
-    premultiplied: bool,
+fn filter_rows<T: Texels>(
+    texels: &T,
     columns: &[Vec<(usize, f32)>],
     rows: &[Vec<(usize, f32)>],
-    out: &mut [u8],
+    out: &mut [T::Sample],
 ) {
-    let decode: [f32; 256] = std::array::from_fn(|code| srgb_to_linear(code as f32 / 255.0));
     let width = columns.len();
     // One source row in linear premultiplied light, and that row averaged across each column's
     // footprint.
-    let mut linear = vec![0.0_f32; frame.width as usize * 4];
+    let mut linear = vec![0.0_f32; texels.width() as usize * 4];
     let mut reduced = vec![0.0_f32; width * 4];
     let mut reduced_row = None;
     let mut sum = vec![0.0_f32; width * 4];
@@ -397,26 +523,13 @@ fn filter_rows(
         sum.fill(0.0);
         for &(source_y, weight) in footprint {
             if reduced_row != Some(source_y) {
-                let start = source_y * frame.row_bytes;
-                let texels = &frame.rgba[start..start + frame.width as usize * 4];
                 for (pixel, texel) in linear
                     .as_chunks_mut::<4>()
                     .0
                     .iter_mut()
-                    .zip(texels.as_chunks::<4>().0)
+                    .zip(texels.row(source_y).as_chunks::<4>().0)
                 {
-                    let alpha = f32::from(texel[3]) / 255.0;
-                    // Only partly transparent premultiplied colour is divided out of its code.
-                    let divided = premultiplied && !matches!(texel[3], 0 | 255);
-                    for channel in 0..3 {
-                        let light = if divided {
-                            srgb_to_linear(((f32::from(texel[channel]) / 255.0) / alpha).min(1.0))
-                        } else {
-                            decode[texel[channel] as usize]
-                        };
-                        pixel[channel] = light * alpha;
-                    }
-                    pixel[3] = alpha;
+                    *pixel = texels.read(texel);
                 }
                 for (pixel, footprint) in reduced.as_chunks_mut::<4>().0.iter_mut().zip(columns) {
                     let mut total = [0.0_f32; 4];
@@ -439,14 +552,7 @@ fn filter_rows(
             .iter_mut()
             .zip(sum.as_chunks::<4>().0)
         {
-            let alpha = pixel[3].clamp(0.0, 1.0);
-            if alpha > 0.0 {
-                for channel in 0..3 {
-                    let encoded = linear_to_srgb((pixel[channel] / alpha).clamp(0.0, 1.0));
-                    texel[channel] = (encoded * 255.0 + 0.5) as u8;
-                }
-            }
-            texel[3] = (alpha * 255.0 + 0.5) as u8;
+            *texel = T::write(*pixel);
         }
     }
 }
@@ -496,6 +602,43 @@ mod tests {
         )
         .into_owned();
         assert_eq!(premultiplied, [255, 0, 0, 128]);
+    }
+
+    #[test]
+    fn linear_images_are_averaged_at_half_float_precision() {
+        // A ramp of 2048 levels halved keeps a level per output pixel, each the mean of the two
+        // it covers, and translucent colour is weighted by alpha as 8-bit colour is.
+        let ramp: Vec<f16> = (0..2048)
+            .flat_map(|x| {
+                let value = f16::from_f32(x as f32 / 2047.0);
+                [value, value, value, f16::ONE]
+            })
+            .collect();
+        let frame = LinearMediaFrame {
+            rgba: ramp.clone(),
+            width: 2048,
+            height: 1,
+        };
+        let reduced = linear_at(&frame, Size::new(1024, 1));
+        let mut levels: Vec<u16> = reduced.iter().step_by(4).map(|v| v.to_bits()).collect();
+        levels.dedup();
+        assert_eq!(levels.len(), 1024);
+        for (x, texel) in reduced.as_chunks::<4>().0.iter().enumerate() {
+            let mean = (ramp[x * 8].to_f32() + ramp[x * 8 + 4].to_f32()) / 2.0;
+            assert!((texel[0].to_f32() - mean).abs() <= mean * 1e-3, "{x}");
+        }
+        let edge = LinearMediaFrame {
+            rgba: [1.5, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0]
+                .map(f16::from_f32)
+                .to_vec(),
+            width: 2,
+            height: 1,
+        };
+        let texel: Vec<f32> = linear_at(&edge, Size::new(1, 1))
+            .iter()
+            .map(|value| value.to_f32())
+            .collect();
+        assert_eq!(texel, [1.5, 0.0, 0.0, 0.5]);
     }
 
     #[test]

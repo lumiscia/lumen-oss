@@ -1,8 +1,14 @@
 use std::{fs, io::Cursor, path::Path, sync::Arc};
 
+use image::{ColorType, DynamicImage, ImageDecoder};
+
 use crate::error::{MediaError, MediaFailure};
 
-use super::{AssetKind, CpuMediaFrame, ImageMetadata, ImageResolver, MediaFrame, Sniff, sniff};
+use super::icc::ImageColor;
+use super::{
+    AssetKind, CpuMediaFrame, GamutMatrix, ImageMetadata, ImageResolver, LinearMediaFrame,
+    MediaFrame, Sniff, sniff,
+};
 
 /// The memory the image decoder may use for one image.
 const MAX_DECODE_BYTES: u64 = 512 << 20;
@@ -10,10 +16,13 @@ const MAX_DECODE_BYTES: u64 = 512 << 20;
 #[derive(Debug, Clone)]
 struct CachedImage {
     metadata: ImageMetadata,
-    frame: Arc<CpuMediaFrame>,
-    straight_alpha: bool,
+    frame: MediaFrame,
+    color_warning: Option<String>,
 }
 
+/// An image file, decoded once. Its embedded ICC profile is honoured: 8-bit sRGB stays as it is
+/// decoded, 8-bit colour with the sRGB curve in other primaries is converted on the GPU, and
+/// deeper samples or other curves are converted to linear half floats here.
 #[derive(Debug, Clone)]
 pub struct ImageFileResolver {
     cached: CachedImage,
@@ -32,35 +41,138 @@ impl ImageResolver for ImageFileResolver {
     }
 
     fn frame(&self) -> Result<MediaFrame, MediaError> {
-        let frame = Arc::clone(&self.cached.frame);
-        Ok(if self.cached.straight_alpha {
-            MediaFrame::RawRgba(frame)
-        } else {
-            MediaFrame::CpuRgba(frame)
-        })
+        Ok(self.cached.frame.clone())
+    }
+
+    fn color_warning(&self) -> Option<&str> {
+        self.cached.color_warning.as_deref()
     }
 }
 
 fn load_cached_image(source: &str) -> Result<CachedImage, MediaError> {
     let encoded = fs::read(Path::new(source))
         .map_err(|err| MediaFailure::from_io(source, "image", &err).wanting(&[AssetKind::Image]))?;
-    let image = image::load_from_memory(&encoded)
-        .map_err(|err| image_failure(source, &encoded, &err).wanting(&[AssetKind::Image]))?;
-    let straight_alpha = image.color().has_alpha() && !declares_associated_alpha(&encoded);
-    let rgba = image.to_rgba8();
-    let metadata = ImageMetadata {
-        width: rgba.width(),
-        height: rgba.height(),
+    let failure =
+        |err: image::ImageError| image_failure(source, &encoded, &err).wanting(&[AssetKind::Image]);
+    let mut decoder = image::ImageReader::new(Cursor::new(&encoded[..]))
+        .with_guessed_format()
+        .map_err(|err| failure(err.into()))?
+        .into_decoder()
+        .map_err(failure)?;
+    let color_type = decoder.color_type();
+    let (width, height) = decoder.dimensions();
+    let has_alpha = color_type.has_alpha();
+    let straight_alpha = has_alpha && !declares_associated_alpha(&encoded);
+    let (color, color_warning) = match decoder.icc_profile() {
+        Ok(None) => (ImageColor::SRGB, None),
+        Ok(Some(profile)) => match ImageColor::of_profile(&profile, !color_type.has_color()) {
+            Ok(color) => (color, None),
+            Err(why) => (ImageColor::SRGB, Some(why)),
+        },
+        Err(error) => (
+            ImageColor::SRGB,
+            Some(format!(
+                "its ICC profile can't be read ({error}), so it is read as sRGB"
+            )),
+        ),
+    };
+    let ingest = Ingest::of(color_type, &color, straight_alpha);
+    let peak = ingest.peak_bytes(
+        color_type,
+        decoder.total_bytes(),
+        u64::from(width) * u64::from(height),
+    );
+    let mut limits = image::Limits::default();
+    limits.reserve(peak).map_err(failure)?;
+    decoder.set_limits(limits).map_err(failure)?;
+    let image = DynamicImage::from_decoder(decoder).map_err(failure)?;
+    let linear = |rgba| {
+        MediaFrame::LinearRgba(Arc::new(LinearMediaFrame {
+            rgba,
+            width,
+            height,
+        }))
+    };
+    let premultiplied = has_alpha && !straight_alpha;
+    let frame = match ingest {
+        Ingest::Rgba8 { gamut: None } => {
+            let frame = rgba8_frame(image);
+            if straight_alpha {
+                MediaFrame::RawRgba(frame)
+            } else {
+                MediaFrame::CpuRgba(frame)
+            }
+        }
+        Ingest::Rgba8 { gamut: Some(gamut) } => MediaFrame::WideRgba {
+            gamut: GamutMatrix(gamut.map(|row| row.map(|value| value as f32))),
+            frame: rgba8_frame(image),
+        },
+        Ingest::Linear16 => linear(color.to_linear(image.into_rgba16().into_raw(), premultiplied)),
+        Ingest::LinearFloat => {
+            linear(color.float_to_linear(&image.into_rgba32f().into_raw(), premultiplied))
+        }
     };
     Ok(CachedImage {
-        metadata,
-        straight_alpha,
-        frame: Arc::new(CpuMediaFrame {
-            row_bytes: metadata.width as usize * 4,
-            width: metadata.width,
-            height: metadata.height,
-            rgba: Arc::new(rgba.into_raw()),
-        }),
+        metadata: ImageMetadata { width, height },
+        frame,
+        color_warning,
+    })
+}
+
+/// What an image's samples become.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Ingest {
+    /// 8-bit RGBA as decoded, sRGB or with the sRGB curve in `gamut`'s primaries, which the GPU
+    /// converts.
+    Rgba8 { gamut: Option<[[f64; 3]; 3]> },
+    /// Linear half floats, converted from 16-bit samples in place.
+    Linear16,
+    /// Linear half floats, converted from float samples.
+    LinearFloat,
+}
+
+impl Ingest {
+    fn of(color_type: ColorType, color: &ImageColor, straight_alpha: bool) -> Self {
+        let eight_bit = matches!(
+            color_type,
+            ColorType::L8 | ColorType::La8 | ColorType::Rgb8 | ColorType::Rgba8
+        );
+        // The GPU converts primaries of straight colour only.
+        let gpu_gamut = color.gamut.is_none() || straight_alpha || !color_type.has_alpha();
+        match color_type {
+            ColorType::Rgb32F | ColorType::Rgba32F => Self::LinearFloat,
+            _ if eight_bit && color.curves.is_none() && gpu_gamut => {
+                Self::Rgba8 { gamut: color.gamut }
+            }
+            _ => Self::Linear16,
+        }
+    }
+
+    /// The memory decoding an image of `color_type`, whose samples take `decoded` bytes, and
+    /// converting its `pixels` take at once. An 8-bit image's expansion to RGBA isn't counted.
+    fn peak_bytes(self, color_type: ColorType, decoded: u64, pixels: u64) -> u64 {
+        let (rgba_type, texel_bytes, converted) = match self {
+            Self::Rgba8 { .. } => return decoded,
+            Self::Linear16 => (ColorType::Rgba16, 8, 0),
+            Self::LinearFloat => (ColorType::Rgba32F, 16, pixels.saturating_mul(8)),
+        };
+        if color_type == rgba_type {
+            return decoded.saturating_add(converted);
+        }
+        let rgba = pixels.saturating_mul(texel_bytes);
+        decoded
+            .saturating_add(rgba)
+            .max(rgba.saturating_add(converted))
+    }
+}
+
+fn rgba8_frame(image: DynamicImage) -> Arc<CpuMediaFrame> {
+    let rgba = image.into_rgba8();
+    Arc::new(CpuMediaFrame {
+        row_bytes: rgba.width() as usize * 4,
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: Arc::new(rgba.into_raw()),
     })
 }
 
@@ -72,7 +184,8 @@ fn image_failure(source: &str, encoded: &[u8], error: &image::ImageError) -> Med
         ImageError::Limits(limit) if matches!(limit.kind(), LimitErrorKind::InsufficientMemory) => {
             MediaFailure::too_large(
                 source,
-                "decoding the image needs more memory than the 512 MiB one image may",
+                "decoding and converting the image needs more memory than the 512 MiB one image \
+                 may",
                 MAX_DECODE_BYTES,
                 None,
             )
@@ -204,6 +317,84 @@ mod tests {
             );
             let _ = fs::remove_file(path);
         }
+    }
+
+    fn open(file: &[u8], extension: &str) -> Result<ImageFileResolver, MediaError> {
+        let path = temp_png_path().with_extension(extension);
+        fs::write(&path, file).expect("write image");
+        let resolver = ImageFileResolver::open(path.to_string_lossy().to_string());
+        let _ = fs::remove_file(path);
+        resolver
+    }
+
+    #[test]
+    fn float_tiff_samples_keep_light_above_one_and_drop_what_isnt_a_number() {
+        use ::image::{ExtendedColorType, ImageEncoder, codecs::tiff::TiffEncoder};
+
+        let samples: [f32; 8] = [2.0, 0.5, -0.25, 1.0, f32::NAN, f32::INFINITY, 0.0, 1.0];
+        let mut file = Vec::new();
+        TiffEncoder::new(Cursor::new(&mut file))
+            .write_image(
+                bytemuck::cast_slice(&samples),
+                2,
+                1,
+                ExtendedColorType::Rgba32F,
+            )
+            .expect("encode float TIFF");
+        let frame = open(&file, "tiff").expect("open").frame().expect("frame");
+        let MediaFrame::LinearRgba(frame) = frame else {
+            panic!("a float TIFF is linear half floats");
+        };
+        let light: Vec<f32> = frame.rgba.iter().map(|value| value.to_f32()).collect();
+        let srgb_to_linear = crate::gpu::color::srgb_to_linear;
+        let close = |got: f32, expected: f32| (got - expected).abs() <= expected * 1e-3;
+        assert!(
+            close(light[0], srgb_to_linear(2.0)) && light[0] > 4.0,
+            "{light:?}"
+        );
+        assert!(close(light[1], srgb_to_linear(0.5)), "{light:?}");
+        assert_eq!(light[2..], [0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn the_size_limit_counts_what_converting_to_half_floats_takes() {
+        use ::image::{
+            ExtendedColorType, ImageEncoder,
+            codecs::png::{CompressionType, FilterType, PngEncoder},
+        };
+
+        // Its samples take 243 MB, within the limit, and as 16-bit RGBA another 648 MB.
+        let (width, height) = (9000, 9000);
+        let mut file = Vec::new();
+        let mut encoder =
+            PngEncoder::new_with_quality(&mut file, CompressionType::Fast, FilterType::NoFilter);
+        encoder
+            .set_icc_profile(super::super::icc::tests::adobe_rgb())
+            .expect("PNG takes a profile");
+        encoder
+            .write_image(
+                &vec![0; width as usize * height as usize * 3],
+                width,
+                height,
+                ExtendedColorType::Rgb8,
+            )
+            .expect("encode PNG");
+        let error = open(&file, "png").expect_err("too large to convert");
+        assert!(
+            matches!(&error, MediaError::Failed(failure)
+                if matches!(failure.reason, crate::error::MediaReason::TooLarge { .. })),
+            "{error}"
+        );
+        // Float samples are expanded to RGBA, and that is converted to half floats beside it.
+        let pixels = 1000;
+        assert_eq!(
+            Ingest::LinearFloat.peak_bytes(ColorType::Rgb32F, pixels * 12, pixels),
+            pixels * 28
+        );
+        assert_eq!(
+            Ingest::LinearFloat.peak_bytes(ColorType::Rgba32F, pixels * 16, pixels),
+            pixels * 24
+        );
     }
 
     fn temp_png_path() -> PathBuf {

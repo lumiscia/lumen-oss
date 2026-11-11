@@ -18,6 +18,7 @@ use super::media::GpuMediaFrameImporter;
 struct CachedMediaTexture {
     texture: Arc<lumen_gpu::wgpu::Texture>,
     last_used: u64,
+    bytes: u64,
 }
 
 /// Image textures, which are never written once cached. Replaced images get new keys, so textures
@@ -50,11 +51,15 @@ impl MediaTextureCache {
     pub(super) fn insert(&mut self, key: MediaTextureKey, texture: Arc<lumen_gpu::wgpu::Texture>) {
         self.upload_count += 1;
         self.clock += 1;
+        let bytes = u64::from(texture.width())
+            * u64::from(texture.height())
+            * u64::from(texture.format().block_copy_size(None).unwrap_or(4));
         self.textures.insert(
             key,
             CachedMediaTexture {
                 texture,
                 last_used: self.clock,
+                bytes,
             },
         );
     }
@@ -66,23 +71,23 @@ impl MediaTextureCache {
             .textures
             .iter()
             .filter(|(_, cached)| Arc::strong_count(&cached.texture) == 1)
-            .map(|(key, cached)| (cached.last_used, key.clone()))
+            .map(|(key, cached)| (cached.last_used, cached.bytes, key.clone()))
             .collect();
-        let mut held: u64 = unbound.iter().map(|(_, key)| texture_bytes(key)).sum();
-        unbound.sort_unstable_by_key(|(last_used, _)| std::cmp::Reverse(*last_used));
+        let mut held: u64 = unbound.iter().map(|(_, bytes, _)| bytes).sum();
+        unbound.sort_unstable_by_key(|(last_used, ..)| std::cmp::Reverse(*last_used));
         while held > self.budget {
-            let Some((_, key)) = unbound.pop() else {
+            let Some((_, bytes, key)) = unbound.pop() else {
                 return;
             };
             if let Some(evicted) = self.textures.remove(&key) {
                 evicted.texture.destroy();
             }
-            held -= texture_bytes(&key);
+            held -= bytes;
         }
     }
 
     fn held_bytes(&self) -> u64 {
-        self.textures.keys().map(texture_bytes).sum()
+        self.textures.values().map(|cached| cached.bytes).sum()
     }
 
     fn destroy_all(&mut self) {
@@ -96,6 +101,7 @@ impl MediaTextureCache {
 pub(super) fn create_media_texture(
     device: &lumen_gpu::wgpu::Device,
     size: lumen_gpu::Size,
+    format: lumen_gpu::wgpu::TextureFormat,
 ) -> Arc<lumen_gpu::wgpu::Texture> {
     Arc::new(device.create_texture(&lumen_gpu::wgpu::TextureDescriptor {
         label: Some("lumen media frame"),
@@ -103,16 +109,12 @@ pub(super) fn create_media_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: lumen_gpu::wgpu::TextureDimension::D2,
-        format: lumen_gpu::wgpu::TextureFormat::Rgba8Unorm,
+        format,
         usage: lumen_gpu::wgpu::TextureUsages::TEXTURE_BINDING
             | lumen_gpu::wgpu::TextureUsages::COPY_DST
             | lumen_gpu::wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     }))
-}
-
-fn texture_bytes(key: &MediaTextureKey) -> u64 {
-    u64::from(key.width) * u64::from(key.height) * 4
 }
 
 /// How an 8-bit output holds alpha. Float outputs take the working space as it is: linear light,

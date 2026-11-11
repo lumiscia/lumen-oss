@@ -249,6 +249,9 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
             MediaInKind::Image { image_id } => {
                 let (identity, resolver) = resolve_as::<dyn ImageResolver>(media, &image_id)?;
                 cx.read_source(AssetKind::Image, &image_id, Some(&identity));
+                if let Some(details) = resolver.color_warning() {
+                    cx.note_media_color(self.id, AssetKind::Image, &image_id, details);
+                }
                 size = cx.image_size(self.id, &image_id, size)?;
                 let key = MediaTextureKey {
                     identity,
@@ -267,7 +270,7 @@ impl crate::gpu::frame_graph::RecordNode for MediaIn {
                 let (identity, resolver) = resolve_as::<dyn VideoFrameResolver>(media, &stream_id)?;
                 cx.ensure_media_fits(&stream_id, size)?;
                 if let Some(details) = resolver.color_warning() {
-                    cx.note_video_color(self.id, &stream_id, details);
+                    cx.note_media_color(self.id, AssetKind::Video, &stream_id, details);
                 }
                 let metadata = resolver.metadata();
                 let source_frame = map_to_source_frame(
