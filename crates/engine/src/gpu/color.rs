@@ -18,6 +18,15 @@ pub(crate) fn srgb_to_linear(encoded: f32) -> f32 {
     linear.copysign(encoded)
 }
 
+/// Linear light within `0..=1` as an sRGB-encoded channel.
+pub(crate) fn linear_to_srgb(linear: f32) -> f32 {
+    if linear <= 0.003_130_8 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    }
+}
+
 /// A straight sRGB colour of 8-bit channels as linear light, premultiplied by its alpha.
 pub(crate) fn linear_premultiplied(color: [u8; 4]) -> [f32; 4] {
     let alpha = f32::from(color[3]) / 255.0;

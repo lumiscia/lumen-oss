@@ -170,6 +170,7 @@ pub struct GpuCompositionRenderer {
     full_frame_sources: bool,
     single_tile_repeats: bool,
     max_text_glyphs: usize,
+    max_image_side: u32,
     media_texture_cache: MediaTextureCache,
     #[cfg(feature = "ffmpeg")]
     gpu_media_importer: GpuMediaFrameImporter,
@@ -214,6 +215,7 @@ impl GpuCompositionRenderer {
             full_frame_sources: false,
             single_tile_repeats: false,
             max_text_glyphs: DEFAULT_MAX_TEXT_GLYPHS,
+            max_image_side: u32::MAX,
             media_texture_cache: MediaTextureCache::new(),
             #[cfg(feature = "ffmpeg")]
             gpu_media_importer: GpuMediaFrameImporter::default(),
@@ -226,6 +228,19 @@ impl GpuCompositionRenderer {
     /// before rendering: frames kept from before are not checked again.
     pub fn set_max_text_glyphs(&mut self, glyphs: usize) {
         self.max_text_glyphs = glyphs.min(MAX_TEXT_GLYPHS_CEILING);
+    }
+
+    /// Sets the longest side an image is decoded at where its uses let it be reduced (only literal
+    /// `resize` nodes read it). Such an image past it, or past the device's texture limit, is shown
+    /// from a copy reduced to fit, with a `media.image_reduced` warning. Any other image keeps its
+    /// own size. There is no limit but the device's by default. Drops what frames recorded so far
+    /// when it changes.
+    pub fn set_max_image_side(&mut self, pixels: u32) {
+        let pixels = pixels.max(1);
+        if self.max_image_side != pixels {
+            self.max_image_side = pixels;
+            self.reset_recorded(self.output_format);
+        }
     }
 
     /// Bounds what recorded frames keep in pooled textures.
@@ -540,6 +555,7 @@ impl GpuCompositionRenderer {
             atlas_texture: &mut self.text_atlas_texture,
             max_rebinds: max_font_rebinds(composition),
             max_text_glyphs: self.max_text_glyphs,
+            max_image_side: self.max_image_side,
             #[cfg(feature = "ffmpeg")]
             renderer: &self.renderer,
             #[cfg(feature = "ffmpeg")]
