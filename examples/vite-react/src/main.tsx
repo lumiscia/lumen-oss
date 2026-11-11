@@ -4,6 +4,8 @@ import { createRoot } from "react-dom/client";
 
 import clipUrl from "../../assets/clip.mp4?url";
 import robotoUrl from "../../../crates/text/assets/roboto/Roboto-Regular.ttf?url";
+// The glTF sample fox, CC BY 4.0: its credits are in Fox.README.md beside it.
+import foxUrl from "../../../crates/engine/tests/fixtures/Fox.glb?url";
 import "./style.css";
 
 const composition = new Composition({
@@ -40,8 +42,8 @@ composition
   .addAudioTrack({ id: "clip-audio", name: "Clip audio" })
   .addAudio({ source: "clip", start: 0, duration: 4, trackId: "clip-audio" });
 
-// Open with `?scene=3d` for a 3D scene: shapes, a video on a plane, a light and a camera drawn by
-// render_3d.
+// Open with `?scene=3d` for a 3D scene: shapes, a video on a plane, an animated glTF model, a light
+// and a camera drawn by render_3d.
 const scene3d = new Composition({
   renderSettings: { width: 1280, height: 720 },
   timeline: { fps: 30, durationSeconds: 4 },
@@ -96,6 +98,17 @@ const screen = scene3d.addNode({
   params: { width: 4, position: [0, 1.3, -2.5] },
   inputs: { source: screenSource },
 });
+const fox = scene3d.addNode({
+  type: "model_3d",
+  params: {
+    source: "fox",
+    animation: "Walk",
+    scale: [0.01, 0.01, 0.01],
+    // Round the shapes on the far side from the camera, facing the way it walks.
+    position: "=vec3(2.9 * sin(time * 0.4 + 2.2), -0.8, 2.9 * cos(time * 0.4 + 2.2))",
+    rotation: "=vec3(0, (time * 0.4 + 2.2) * 57.3 + 90, 0)",
+  },
+});
 const camera = scene3d.addNode({
   type: "camera_3d",
   params: { look_at: true, position: "=vec3(5 * sin(time * 0.4), 1.4, 5 * cos(time * 0.4))" },
@@ -107,7 +120,7 @@ const sun = scene3d.addNode({
 const fill = scene3d.addNode({ type: "light_3d", params: { light: "ambient", intensity: 0.4 } });
 const objects = scene3d.addNode({
   type: "merge_3d",
-  inputs: { objects: [floor, ring, cube, glass, screen, camera, sun, fill] },
+  inputs: { objects: [floor, ring, cube, glass, screen, fox, camera, sun, fill] },
 });
 const rendered = scene3d.addNode({
   type: "render_3d",
@@ -119,7 +132,7 @@ scene3d.addNode({ type: "media_output", inputs: { source: framed } });
 
 const is3d = new URLSearchParams(location.search).get("scene") === "3d";
 const preview = createLumenPreview();
-const media = { clip: clipUrl };
+const media = is3d ? { clip: clipUrl, fox: foxUrl } : { clip: clipUrl };
 const fonts = { Roboto: robotoUrl };
 
 function App() {

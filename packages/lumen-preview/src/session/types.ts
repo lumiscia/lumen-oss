@@ -8,7 +8,8 @@ import type { LumenPreviewStatsCallback } from "./stats.js";
 
 export type LumenPreviewComposition = LumenComposition | { toJSON(): LumenComposition };
 
-export type LumenPreviewMediaKind = "audio" | "image" | "video";
+/** `model` is a binary glTF (`.glb`) file, which a `model_3d` reads. */
+export type LumenPreviewMediaKind = "audio" | "image" | "model" | "video";
 
 export interface LumenPreviewMediaEntry extends Omit<VideoSourceRegistration, "source"> {
   /** Needed only when the blob's type or the composition doesn't already say. */
@@ -16,7 +17,10 @@ export interface LumenPreviewMediaEntry extends Omit<VideoSourceRegistration, "s
   source: MediaSourceInput;
 }
 
-/** What each alias in the composition reads, as `media_in.source` and audio `source_id` name it. */
+/**
+ * What each alias in the composition reads, as `media_in.source`, `model_3d.source` and audio
+ * `source_id` name it.
+ */
 export type LumenPreviewMedia = Readonly<Record<string, MediaSourceInput | LumenPreviewMediaEntry>>;
 
 /** Bytes or a URL for each font family the composition names. */

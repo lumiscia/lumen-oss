@@ -257,6 +257,9 @@ export function createLumenPreviewWorkerHost({
     );
 
     try {
+      // A composition the engine rejects fails before any media is fetched. It becomes the one
+      // renders draw only once its media is in, as a render still in flight draws whichever is.
+      activeController.validateComposition(message.compositionJson);
       await syncFonts(activeController, isCurrent);
       await activeController.syncMediaSources([...media.values()]);
       if (!isCurrent()) {

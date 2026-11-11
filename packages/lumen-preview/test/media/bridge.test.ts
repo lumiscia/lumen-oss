@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LumenMediaBridge } from "../../src/media/bridge.js";
-import type { NativeVideoFrameTarget } from "../../src/media/types.js";
+import type { MediaSourceInput, NativeVideoFrameTarget } from "../../src/media/types.js";
 
 type FakeSample = {
   clone(): FakeSample;
@@ -114,19 +114,23 @@ function steadySamples(failAt = Number.POSITIVE_INFINITY) {
 function fakeTarget(overrides: Partial<NativeVideoFrameTarget> = {}) {
   const frames = new Set<string>();
   const images = new Map<string, number>();
+  const models = new Map<string, Uint8Array>();
   const target = {
     clear: () => {},
     clearVideoSource: () => {},
     clearVideos: () => frames.clear(),
     hasImage: (id: string) => images.has(id),
+    hasModel: (id: string) => models.has(id),
     hasVideoFrame: (id: string, frame: number) => frames.has(`${id}:${frame}`),
     removeImageSource: (id: string) => images.delete(id),
+    removeModelSource: vi.fn((id: string) => models.delete(id)),
     removeVideoSource: (id: string) => {
       for (const key of frames) {
         if (key.startsWith(`${id}:`)) frames.delete(key);
       }
     },
     setImage: vi.fn((id: string, width: number) => images.set(id, width)),
+    setModel: vi.fn((id: string, bytes: Uint8Array) => models.set(id, bytes)),
     setVideoFrame: vi.fn((id: string, frame: number) => frames.add(`${id}:${frame}`)),
     setVideoMetadata: vi.fn(),
     ...overrides,
@@ -546,6 +550,52 @@ describe("LumenMediaBridge", () => {
 
       expect(target.setImage).toHaveBeenCalledOnce();
       expect(vi.mocked(target.setImage).mock.calls[0]?.[1]).toBe(2);
+    });
+  });
+
+  describe("models", () => {
+    const model = (source: MediaSourceInput) => ({ id: "fox", kind: "model" as const, source });
+
+    it("hands over a model's bytes once, and removes it when a sync leaves it out", async () => {
+      const { target } = fakeTarget();
+      const bridge = new LumenMediaBridge(target);
+      const source = new Uint8Array([0x67, 0x6c, 0x54, 0x46]);
+
+      await bridge.syncMediaSources([model(source)]);
+      await bridge.syncMediaSources([model(source)]);
+      expect(target.setModel).toHaveBeenCalledOnce();
+      expect(vi.mocked(target.setModel).mock.calls[0]).toEqual(["fox", source]);
+
+      await bridge.syncMediaSources([]);
+      expect(target.removeModelSource).toHaveBeenCalledWith("fox");
+    });
+
+    it("hands over a model once when the same source is registered twice at a time", async () => {
+      const { target } = fakeTarget();
+      const bridge = new LumenMediaBridge(target);
+      const source = new Uint8Array([0x67, 0x6c, 0x54, 0x46]);
+
+      await Promise.all([
+        bridge.registerModelSource("fox", source),
+        bridge.registerModelSource("fox", source),
+      ]);
+      expect(target.setModel).toHaveBeenCalledOnce();
+    });
+
+    it("names the model in a failed fetch", async () => {
+      vi.stubGlobal(
+        "fetch",
+        async () => new Response(null, { status: 404, statusText: "Not Found" }),
+      );
+      const bridge = new LumenMediaBridge(fakeTarget().target);
+
+      await expect(
+        bridge.syncMediaSources([model("https://a.test/fox.glb")]),
+      ).rejects.toMatchObject({
+        code: "invalid_source",
+        message: 'model source "fox" failed to load: failed to load media source: 404 Not Found',
+        sourceId: "fox",
+      });
     });
   });
 });

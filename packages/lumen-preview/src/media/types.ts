@@ -62,7 +62,17 @@ export interface RegisteredVideoSource extends Omit<VideoSourceRegistration, "so
   source: MediaSourceInput;
 }
 
-export type MediaRegistration = RegisteredImageSource | RegisteredVideoSource;
+/** A binary glTF (`.glb`) file a `model_3d` reads. */
+export interface RegisteredModelSource {
+  kind: "model";
+  id: string;
+  source: MediaSourceInput;
+}
+
+export type MediaRegistration =
+  | RegisteredImageSource
+  | RegisteredModelSource
+  | RegisteredVideoSource;
 
 export interface DecodedImageFrame {
   width: number;
@@ -103,12 +113,16 @@ export interface LumenMediaTarget {
   clearVideoSource(streamId: string): void;
   removeFontFamily?(fontFamily: string): void;
   removeImageSource?(imageId: string): void;
+  removeModelSource?(modelId: string): void;
   removeVideoSource?(streamId: string): void;
   hasFont?(fontFamily: string): boolean;
   hasImage(imageId: string): boolean;
+  hasModel?(modelId: string): boolean;
   hasVideoFrame(streamId: string, frame: number): boolean;
   setFont?(fontFamily: string, bytes: Uint8Array): void;
   setImage(imageId: string, width: number, height: number, rgba: Uint8Array): void;
+  /** Takes a `.glb` file's bytes, which the engine reads when a render first draws the model. */
+  setModel?(modelId: string, bytes: Uint8Array): void;
   setVideoFrameCacheBytes?(bytes: number): void;
   setVideoMetadata(
     streamId: string,

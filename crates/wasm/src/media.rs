@@ -198,6 +198,12 @@ struct StoredVideo {
 }
 
 #[derive(Debug, Clone)]
+struct StoredModel {
+    data: Arc<Vec<u8>>,
+    version: u64,
+}
+
+#[derive(Debug, Clone)]
 struct StoredFont {
     data: Arc<Vec<u8>>,
     version: u64,
@@ -216,6 +222,9 @@ struct WasmMediaStoreInner {
     images: RwLock<HashMap<String, StoredImage>>,
     /// Images set so far, which versions each without repeating after one is removed.
     images_set: AtomicU64,
+    models: RwLock<HashMap<String, StoredModel>>,
+    /// Models set so far, which versions each as `images_set` does.
+    models_set: AtomicU64,
     videos: RwLock<VideoStore>,
     text: TextSession,
 }
@@ -224,6 +233,11 @@ impl WasmMediaStore {
     pub fn clear(&self) -> Result<(), &'static str> {
         self.inner
             .images
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .clear();
+        self.inner
+            .models
             .write()
             .map_err(|_| "media store lock poisoned")?
             .clear();
@@ -277,6 +291,15 @@ impl WasmMediaStore {
         Ok(())
     }
 
+    pub fn remove_model(&self, source: &str) -> Result<(), &'static str> {
+        self.inner
+            .models
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .remove(source);
+        Ok(())
+    }
+
     pub fn remove_video(&self, stream_id: &str) -> Result<(), &'static str> {
         self.inner
             .videos
@@ -305,6 +328,14 @@ impl WasmMediaStore {
             .read()
             .ok()
             .is_some_and(|images| images.contains_key(image_id))
+    }
+
+    pub fn has_model(&self, source: &str) -> bool {
+        self.inner
+            .models
+            .read()
+            .ok()
+            .is_some_and(|models| models.contains_key(source))
     }
 
     pub fn has_font(&self, font_family: &str) -> bool {
@@ -373,6 +404,22 @@ impl WasmMediaStore {
                     metadata,
                     frame: Arc::new(frame),
                     version: self.inner.images_set.fetch_add(1, Ordering::Relaxed),
+                },
+            );
+        Ok(())
+    }
+
+    /// Stores the bytes of the model file `source` names, which the engine reads when it draws it.
+    pub fn set_model(&self, source: String, data: Vec<u8>) -> Result<(), &'static str> {
+        self.inner
+            .models
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .insert(
+                source,
+                StoredModel {
+                    data: Arc::new(data),
+                    version: self.inner.models_set.fetch_add(1, Ordering::Relaxed),
                 },
             );
         Ok(())
@@ -488,10 +535,18 @@ impl MediaStore for WasmMediaStore {
     }
 
     fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
-        Err(MediaError::source_not_found(
-            source,
-            "the browser preview has no models; render this composition on a Lumen server",
-        ))
+        let models = self
+            .inner
+            .models
+            .read()
+            .map_err(|_| MediaError::source_not_found(source, "media store lock poisoned"))?;
+        let model = models.get(source).ok_or_else(|| {
+            MediaError::source_not_found(source, "the preview has no model by this name in `media`")
+        })?;
+        Ok(Box::new(WasmModelResolver {
+            id: format!("wasm-model:{source}:{}", model.version),
+            data: Arc::clone(&model.data),
+        }))
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {
@@ -609,6 +664,22 @@ impl VideoFrameResolver for WasmVideoResolver {
             .protected
             .insert(self.id.clone(), frames.iter().copied().collect());
         videos.evict_to_budget(None);
+    }
+}
+
+struct WasmModelResolver {
+    /// Changes when the model at its source is replaced.
+    id: String,
+    data: Arc<Vec<u8>>,
+}
+
+impl ModelResolver for WasmModelResolver {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> Result<Vec<u8>, MediaError> {
+        Ok(self.data.as_ref().clone())
     }
 }
 
@@ -903,6 +974,30 @@ mod tests {
         store.remove_image("plate").unwrap();
         store.set_image("plate".to_string(), image()).unwrap();
         assert_ne!(id(&store), second);
+    }
+
+    #[test]
+    fn model_resolver_serves_the_set_bytes_under_an_id_each_set_changes() {
+        let store = WasmMediaStore::default();
+        let resolve = |store: &WasmMediaStore| {
+            let resolver = store.get_model_resolver("fox").unwrap();
+            (resolver.id().to_string(), resolver.data().unwrap())
+        };
+        assert!(store.get_model_resolver("fox").is_err());
+
+        store.set_model("fox".to_string(), vec![1, 2]).unwrap();
+        let (first, data) = resolve(&store);
+        assert_eq!(data, [1, 2]);
+        assert_eq!(resolve(&store).0, first);
+
+        store.set_model("fox".to_string(), vec![3]).unwrap();
+        let (second, data) = resolve(&store);
+        assert_eq!(data, [3]);
+        assert_ne!(second, first);
+
+        store.remove_model("fox").unwrap();
+        assert!(!store.has_model("fox"));
+        assert!(store.get_model_resolver("fox").is_err());
     }
 
     const FRAME_BYTES: usize = 4;

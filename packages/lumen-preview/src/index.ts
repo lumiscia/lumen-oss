@@ -48,6 +48,7 @@ export type {
   MediaSourceInput,
   NativeVideoFrameTarget,
   RegisteredImageSource,
+  RegisteredModelSource,
   RegisteredVideoSource,
   UrlMediaSourceInput,
   VideoFrameMetadata,
@@ -69,14 +70,19 @@ export interface LumenPreviewControllerBinding extends LumenMediaTarget {
   fps(): number;
   height(): number;
   hasFont(fontFamily: string): boolean;
+  hasModel(modelId: string): boolean;
   loadComposition(compositionJson: string): void;
   removeFontFamily(fontFamily: string): void;
   removeImageSource(imageId: string): void;
+  removeModelSource(modelId: string): void;
   removeVideoSource(streamId: string): void;
   renderNow(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
   setFrame(frame: number): void;
   setFont(fontFamily: string, bytes: Uint8Array): void;
+  setModel(modelId: string, bytes: Uint8Array): void;
   setLogLevel(level: LumenLogLevel): void;
+  /** Throws as `loadComposition` would on a composition the engine rejects, without loading it. */
+  validateComposition(compositionJson: string): void;
   width(): number;
 }
 
@@ -112,6 +118,8 @@ function isLumenBindings(bindings: LumenPreviewBindingSource): bindings is Lumen
 export interface LumenPreviewController extends LumenPreviewControllerBinding {
   registerFontFamily(fontFamily: string, bytes: BufferSource): void;
   registerImageSource(imageId: string, source: MediaSourceInput): Promise<void>;
+  /** Reads a binary glTF (`.glb`) file for the `model_3d` nodes whose `source` is `modelId`. */
+  registerModelSource(modelId: string, source: MediaSourceInput): Promise<void>;
   registerVideoSource(
     streamId: string,
     source: MediaSourceInput,
@@ -191,6 +199,11 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       this.requirements.reset();
     }
 
+    removeModelSource(modelId: string): void {
+      super.removeModelSource(modelId);
+      this.bridge.removeModelSource(modelId, false);
+    }
+
     removeVideoSource(streamId: string): void {
       super.removeVideoSource(streamId);
       this.bridge.removeVideoSource(streamId, false);
@@ -205,6 +218,10 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
     async registerImageSource(imageId: string, source: MediaSourceInput): Promise<void> {
       this.requirements.reset();
       await this.bridge.registerImageSource(imageId, source);
+    }
+
+    async registerModelSource(modelId: string, source: MediaSourceInput): Promise<void> {
+      await this.bridge.registerModelSource(modelId, source);
     }
 
     async registerVideoSource(
