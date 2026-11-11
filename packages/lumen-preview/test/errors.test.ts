@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createLumenPreviewRuntime, type LumenPreviewBindings } from "../src/index.js";
-import { LumenMediaError } from "../src/media/errors.js";
+import {
+  LumenMediaError,
+  type LumenMediaErrorCode,
+  type LumenMediaErrorKinds,
+} from "../src/media/errors.js";
 import { ImageSession } from "../src/media/image-session.js";
 import { describeError, errorMediaFailure } from "../src/session/errors.js";
 
@@ -106,6 +110,27 @@ describe("media failures from the bindings", () => {
       details: "no demuxer for it",
     });
     expect(errorMediaFailure(new LumenMediaError("decode_failed", "no source"))).toBeNull();
+
+    // Each browser-side reason agrees with the engine's, with the kinds it knows.
+    const mapped = (code: LumenMediaErrorCode, kinds: LumenMediaErrorKinds = {}) =>
+      errorMediaFailure(new LumenMediaError(code, "x", { sourceId: "clip", ...kinds }))?.code;
+    expect(mapped("source_not_registered")).toBe("media.not_found");
+    expect(mapped("invalid_source")).toBe("media.not_found");
+    expect(mapped("track_not_found")).toBe("media.not_found");
+    expect(mapped("no_video_track", { wanted: ["video"], found: "audio" })).toBe(
+      "media.wrong_kind",
+    );
+    expect(mapped("track_not_decodable")).toBe("media.unsupported");
+    expect(mapped("decode_failed")).toBe("media.decode");
+    expect(
+      errorMediaFailure(
+        new LumenMediaError("no_video_track", "x", {
+          sourceId: "clip",
+          wanted: ["video"],
+          found: "audio",
+        }),
+      ),
+    ).toMatchObject({ wanted: ["video"], found: "audio" });
     expect(errorMediaFailure(Object.assign(new Error("x"), { media: { code: 3 } }))).toBeNull();
   });
 });

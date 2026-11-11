@@ -42,7 +42,7 @@ export async function createVideoTimeline({
     throw new LumenMediaError(
       "decode_failed",
       `video source "${streamId}": unable to determine stream frame rate`,
-      { sourceId: streamId },
+      { sourceId: streamId, wanted: ["video"] },
     );
   }
 
@@ -51,7 +51,7 @@ export async function createVideoTimeline({
     throw new LumenMediaError(
       "decode_failed",
       `video source "${streamId}": video track has an invalid duration`,
-      { sourceId: streamId },
+      { sourceId: streamId, wanted: ["video"] },
     );
   }
 
@@ -90,7 +90,7 @@ function assertFrameInRange(frame: number, frameCount: number, streamId: string)
     throw new LumenMediaError(
       "frame_unavailable",
       `video source "${streamId}": frame ${frame} is out of range (${frameCount} frames)`,
-      { sourceId: streamId },
+      { sourceId: streamId, wanted: ["video"] },
     );
   }
 }

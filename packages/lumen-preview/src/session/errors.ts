@@ -17,8 +17,10 @@ const MEDIA_ERROR_CODES: Record<LumenMediaErrorCode, MediaFailureCode> = {
   decode_failed: "media.decode",
   frame_unavailable: "media.decode",
   invalid_source: "media.not_found",
+  no_video_track: "media.wrong_kind",
   source_not_registered: "media.not_found",
   track_not_decodable: "media.unsupported",
+  track_not_found: "media.not_found",
   unsupported_container: "media.unsupported",
 };
 
@@ -34,7 +36,8 @@ export function errorMediaFailure(error: unknown): MediaFailure | null {
       : {
           code: MEDIA_ERROR_CODES[error.code],
           source: error.sourceId,
-          wanted: [],
+          wanted: error.wanted,
+          ...(error.found === undefined ? {} : { found: error.found }),
           details: error.message,
         };
   }
