@@ -911,6 +911,169 @@ fn renders_stay_queued_until_a_slot_frees() {
     server.wait_for_state(&waiting, &["failed"]);
 }
 
+fn cancel(server: &Server, id: &str) -> Response {
+    server
+        .http
+        .post(format!("{}/renders/{id}/cancel", server.base))
+        .bearer_auth(TOKEN)
+        .send()
+        .expect("POST /renders/:id/cancel")
+}
+
+/// Starts a render whose media download never ends until `media` releases it.
+fn submit_held(server: &Server, media: &MediaServer) -> String {
+    let id = server.submit(&json!({
+        "composition": solid_composition(),
+        "media": { "hero": media.url("localhost", "/held") },
+    }));
+    server.wait_for_state(&id, &["processing"]);
+    id
+}
+
+/// A render that fails as soon as it gets a slot, so it is the one that starts if cancelling
+/// doesn't hold.
+fn failing_body() -> Value {
+    json!({
+        "composition": solid_composition(),
+        "media": { "hero": "http://127.0.0.1/forbidden.png" },
+    })
+}
+
+#[test]
+fn a_cancelled_queued_render_never_starts() {
+    let media = MediaServer::start();
+    let server = Server::start(&["--allow-media-host", "localhost"]);
+    let held = submit_held(&server, &media);
+    let waiting = server.submit(&failing_body());
+    let mut socket = open_socket(&server, &waiting);
+
+    let response = cancel(&server, &waiting);
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = response.json().expect("cancel body");
+    assert_eq!(body["render"]["status"], "cancelled");
+    let expected = json!({
+        "code": "render_cancelled",
+        "message": "the render was cancelled",
+        "retryable": false,
+    });
+    assert_eq!(body["render"]["error"], expected);
+
+    media.release.send(()).expect("release held download");
+    server.wait_for_state(&held, &["failed", "succeeded"]);
+    thread::sleep(Duration::from_millis(200));
+    let progress = server.progress(&waiting);
+    assert_eq!(progress["state"], "cancelled", "{progress}");
+    assert_eq!(progress["stage"], "cancelled");
+    assert_eq!(progress["errorCode"], "render_cancelled");
+    assert_eq!(progress["retryable"], false);
+
+    let events = socket_events(&mut socket);
+    assert_eq!(
+        events.last().unwrap(),
+        &json!({ "type": "render.cancelled", "renderId": waiting })
+    );
+    let artifact = server.get(&format!("/renders/{waiting}/artifact"));
+    assert_eq!(artifact.status(), StatusCode::CONFLICT);
+    assert_eq!(error_code(artifact), "render_cancelled");
+}
+
+#[test]
+fn cancelling_a_running_render_frees_its_slot() {
+    let media = MediaServer::start();
+    let server = Server::start(&["--allow-media-host", "localhost"]);
+    let held = submit_held(&server, &media);
+    let waiting = server.submit(&failing_body());
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(server.progress(&waiting)["state"], "queued");
+
+    let response = cancel(&server, &held);
+    assert!(
+        [StatusCode::OK, StatusCode::ACCEPTED].contains(&response.status()),
+        "{}",
+        response.status()
+    );
+    // The held download is never released: the render stops without waiting for its media.
+    let progress = server.wait_for_state(&held, &["cancelled"]);
+    assert_eq!(progress["errorCode"], "render_cancelled");
+    assert_eq!(progress["retryable"], false);
+    server.wait_for_state(&waiting, &["failed"]);
+
+    let again = cancel(&server, &held);
+    assert_eq!(again.status(), StatusCode::OK);
+    let body: Value = again.json().expect("cancel body");
+    assert_eq!(body["render"]["status"], "cancelled");
+}
+
+#[test]
+fn cancelling_a_finished_render_leaves_it_as_it_is() {
+    let server = Server::start(&[]);
+    let id = server.submit(&failing_body());
+    let before = server.wait_for_state(&id, &["failed"]);
+
+    let response = cancel(&server, &id);
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = response.json().expect("cancel body");
+    assert_eq!(body["render"]["status"], "failed");
+    assert_eq!(body["render"]["error"]["code"], before["errorCode"]);
+    assert_eq!(server.progress(&id), before);
+
+    let unknown = cancel(&server, "r_missing");
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    assert_eq!(error_code(unknown), "render_not_found");
+}
+
+#[test]
+fn renders_past_the_queue_limit_are_refused_until_one_leaves() {
+    let media = MediaServer::start();
+    let server = Server::start(&[
+        "--allow-media-host",
+        "localhost",
+        "--max-queued-renders",
+        "1",
+    ]);
+    let held = submit_held(&server, &media);
+    let waiting = server.submit(&failing_body());
+
+    let refused = server.post(&failing_body());
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(refused.headers().get("retry-after").is_none());
+    assert_eq!(error_code(refused), "render_queue_full");
+    // An invalid request is refused for the queue, the same as a valid one.
+    let invalid = server.post(&json!({ "composition": {} }));
+    assert_eq!(invalid.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    cancel(&server, &waiting);
+    let accepted = server.submit(&failing_body());
+    assert_eq!(server.progress(&accepted)["state"], "queued");
+
+    media.release.send(()).expect("release held download");
+    server.wait_for_state(&held, &["failed", "succeeded"]);
+    server.wait_for_state(&accepted, &["failed"]);
+    // With the queue empty and a slot free, an invalid request is judged on its own.
+    let invalid = server.post(&json!({ "composition": {} }));
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[test]
+fn a_zero_queue_limit_only_takes_renders_a_slot_can_start() {
+    let media = MediaServer::start();
+    let server = Server::start(&[
+        "--allow-media-host",
+        "localhost",
+        "--max-queued-renders",
+        "0",
+    ]);
+    let held = submit_held(&server, &media);
+
+    let refused = server.post(&failing_body());
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_code(refused), "render_queue_full");
+
+    cancel(&server, &held);
+    server.wait_for_state(&held, &["cancelled"]);
+    server.submit(&failing_body());
+}
+
 #[test]
 fn oldest_finished_render_is_evicted() {
     let server = Server::start(&["--retained-renders", "1"]);

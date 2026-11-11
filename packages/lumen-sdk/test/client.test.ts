@@ -169,6 +169,41 @@ describe("Lumen render and download", () => {
     expect(bodies[1]).toMatchObject({ codec: "hevc", quality: "high" });
   });
 
+  test("cancelRender posts to the cancel route and returns the render", async () => {
+    const { requests, stub } = recordingFetch(() => ({
+      render: {
+        id: "r 1",
+        status: "cancelled",
+        error: { code: "render_cancelled", message: "the render was cancelled", retryable: false },
+      },
+    }));
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    const render = await lumen.cancelRender("r 1");
+
+    expect(requests.map((request) => [request.init.method, request.url])).toEqual([
+      ["POST", "https://api.test/v1/renders/r%201/cancel"],
+    ]);
+    expect(render).toEqual({
+      id: "r 1",
+      status: "cancelled",
+      error: { code: "render_cancelled", message: "the render was cancelled", retryable: false },
+    });
+  });
+
+  test("download of a cancelled render fails with its code", async () => {
+    const { stub } = recordingFetch(() => ({
+      render: {
+        id: "r",
+        status: "cancelled",
+        error: { code: "render_cancelled", message: "the render was cancelled" },
+      },
+    }));
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await expect(lumen.download("r")).rejects.toMatchObject({ code: "render_cancelled" });
+  });
+
   test("download sends the key to the API origin only", async () => {
     const seen: (string | null)[] = [];
     const stub = (async (_url: unknown, init: RequestInit = {}) => {

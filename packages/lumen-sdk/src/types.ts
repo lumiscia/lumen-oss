@@ -25,7 +25,8 @@ export interface RenderOptions {
   readonly codec?: VideoCodec;
 }
 
-export type RenderStatus = "queued" | "processing" | "succeeded" | "failed";
+/** `cancelled` is a render stopped by `cancelRender`, which only lumen-server supports. */
+export type RenderStatus = "queued" | "processing" | "succeeded" | "failed" | "cancelled";
 
 export interface RenderFailure {
   readonly code: string;

@@ -37,6 +37,7 @@ const statusOrder: Record<RenderStatus, number> = {
   processing: 1,
   succeeded: 2,
   failed: 2,
+  cancelled: 2,
 };
 
 type SendInit = Omit<RequestInit, "signal"> & {
@@ -93,7 +94,20 @@ export class Lumen {
   }
 
   /**
-   * Waits for a render to finish and returns it, or rejects with a `LumenError` if it failed.
+   * Asks lumen-server to stop a render and returns it. A queued render comes back `cancelled`; a
+   * running one comes back still `processing` and ends as `cancelled` at its next frame, so follow
+   * with `waitForRender`, which then rejects with the `render_cancelled` code (not retryable). A
+   * render that already ended is returned as it is, and one that finishes while the request is in
+   * flight may still end `succeeded`. Only lumen-server has this route.
+   */
+  async cancelRender(id: string, options: { signal?: AbortSignal } = {}): Promise<Render> {
+    const body = await this.#request("POST", `/renders/${encodeURIComponent(id)}/cancel`, options);
+    return parseRender(body.render, this.#baseUrl);
+  }
+
+  /**
+   * Waits for a render to finish and returns it, or rejects with a `LumenError` if it failed or
+   * was cancelled.
    *
    * The render is read from `GET /renders/:id/progress`, which is the source of truth. Between
    * reads a socket is held open for up to a minute to hear about progress, but is never relied on:
@@ -180,7 +194,7 @@ export class Lumen {
     let url = typeof render === "string" ? undefined : render.url;
     if (url === undefined) {
       const current = await this.getRender(id, options);
-      if (current.status === "failed") {
+      if (current.status === "failed" || current.status === "cancelled") {
         throw renderError(current);
       }
       url = current.url;
