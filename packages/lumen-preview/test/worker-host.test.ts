@@ -50,15 +50,18 @@ const calls: string[] = [];
 const drawn: string[] = [];
 const shown: number[] = [];
 let gpuReady = deferred();
-/** Models the fake wasm store refuses, as it refuses a file that isn't a model. */
-const corruptModels = new Set<string>();
+/** Files the fake wasm store refuses, as it refuses one that isn't a model or a LUT. */
+const corruptFiles = new Set<string>();
+/** What the next draw fails with. */
+let renderFailure: Error | null = null;
 /** Sources each composition's frames need video frames of. */
 const framesOf = new Map<string, string[]>();
 let testCanvas = { height: 0, width: 0 };
 /** What the wasm store holds, by kind. */
-const stored: Record<"environment" | "image" | "model" | "video", Set<string>> = {
+const stored: Record<"environment" | "image" | "lut" | "model" | "video", Set<string>> = {
   environment: new Set(),
   image: new Set(),
+  lut: new Set(),
   model: new Set(),
   video: new Set(),
 };
@@ -97,6 +100,9 @@ class FakeController {
   hasImage(id: string) {
     return stored.image.has(id);
   }
+  hasLut(id: string) {
+    return stored.lut.has(id);
+  }
   hasModel(id: string) {
     return stored.model.has(id);
   }
@@ -111,6 +117,9 @@ class FakeController {
   }
   removeImageSource(id: string) {
     stored.image.delete(id);
+  }
+  removeLutSource(id: string) {
+    stored.lut.delete(id);
   }
   removeModelSource(id: string) {
     stored.model.delete(id);
@@ -130,8 +139,17 @@ class FakeController {
     stored.image.add(id);
   }
   setLogLevel() {}
+  setLut(id: string) {
+    if (corruptFiles.has(id)) {
+      throw Object.assign(new Error(`${id}: not a LUT`), {
+        media: { code: "media.decode", details: "not a LUT", source: id, wanted: ["lut"] },
+      });
+    }
+    calls.push(`lut ${id}`);
+    stored.lut.add(id);
+  }
   setModel(id: string) {
-    if (corruptModels.has(id)) {
+    if (corruptFiles.has(id)) {
       throw Object.assign(new Error(`${id}: not a model`), {
         media: { code: "media.decode", details: "not a model", source: id, wanted: ["model"] },
       });
@@ -152,6 +170,9 @@ class FakeController {
   }
   async renderNow() {
     await gpuReady.promise;
+    if (renderFailure) {
+      throw renderFailure;
+    }
     drawn.push(this.#composition ?? "nothing");
     shown.push(this.#frame);
   }
@@ -206,7 +227,8 @@ beforeEach(() => {
   shown.length = 0;
   sent.length = 0;
   inventories.clear();
-  corruptModels.clear();
+  corruptFiles.clear();
+  renderFailure = null;
   framesOf.clear();
   testCanvas = { height: 0, width: 0 };
   video.frames = null;
@@ -275,7 +297,7 @@ describe("createLumenPreviewWorkerHost", () => {
     expect(drawn.at(-1)).toBe("B");
   });
 
-  for (const kind of ["image", "video", "model", "environment"] as const) {
+  for (const kind of ["image", "video", "model", "environment", "lut"] as const) {
     it(`holds the last frame shown until a pending ${kind} is ready, then shows the new composition`, async () => {
       const pending = deferred<Response>();
       const opened = deferred();
@@ -327,7 +349,7 @@ describe("createLumenPreviewWorkerHost", () => {
     gpuReady.resolve();
     await startWorker();
     needs("B", [["fox", "model"]]);
-    corruptModels.add("fox");
+    corruptFiles.add("fox");
     load(1, "A");
     await settle();
 
@@ -340,6 +362,49 @@ describe("createLumenPreviewWorkerHost", () => {
     });
     expect(lastMedia()?.media[0]).toMatchObject({ source: "fox", status: "failed" });
     expect(drawn).toEqual(["A"]);
+  });
+
+  it("fails the load with the decode failure of a LUT that isn't one", async () => {
+    gpuReady.resolve();
+    await startWorker();
+    needs("A", [["warm.cube", "lut"]]);
+    corruptFiles.add("warm.cube");
+
+    load(1, "A", ["warm.cube"]);
+    await settle();
+
+    expect(sent.find((event) => event.type === "load-failed")).toMatchObject({
+      loadId: 1,
+      media: { code: "media.decode", source: "warm.cube", wanted: ["lut"] },
+    });
+    expect(lastMedia()?.media[0]).toMatchObject({ source: "warm.cube", status: "failed" });
+    expect(drawn).toEqual([]);
+  });
+
+  it("sends the engine's code for a failed render as its diagnostic", async () => {
+    gpuReady.resolve();
+    await startWorker();
+    renderFailure = Object.assign(new Error("a texture is over the device's limit"), {
+      code: "render.limit",
+    });
+
+    load(1, "A");
+    await settle();
+
+    expect(sent.find((event) => event.type === "render-failed")).toEqual({
+      diagnostics: [
+        {
+          code: "render.limit",
+          message: "a texture is over the device's limit",
+          path: "",
+          severity: "error",
+        },
+      ],
+      loadId: 1,
+      media: null,
+      message: "a texture is over the device's limit",
+      type: "render-failed",
+    });
   });
 
   it("keeps the last frame and its size while a video frame decodes, and says playback waits", async () => {
@@ -394,17 +459,24 @@ describe("createLumenPreviewWorkerHost", () => {
     needs("B", [
       ["clip", "video"],
       ["sky", "environment"],
+      ["warm.cube", "lut"],
       ["shared", "image"],
     ]);
-    const media = ["logo", "fox", "clip", "sky", "shared"];
+    const media = ["logo", "fox", "clip", "sky", "warm.cube", "shared"];
 
     for (let loadId = 1; loadId <= 6; loadId += 1) {
       load(loadId, loadId % 2 ? "A" : "B", media);
       await settle();
       const expected =
         loadId % 2
-          ? { environment: [], image: ["logo", "shared"], model: ["fox"], video: [] }
-          : { environment: ["sky"], image: ["shared"], model: [], video: ["clip"] };
+          ? { environment: [], image: ["logo", "shared"], lut: [], model: ["fox"], video: [] }
+          : {
+              environment: ["sky"],
+              image: ["shared"],
+              lut: ["warm.cube"],
+              model: [],
+              video: ["clip"],
+            };
       expect(
         Object.fromEntries(Object.entries(stored).map(([kind, ids]) => [kind, [...ids].sort()])),
       ).toEqual(expected);

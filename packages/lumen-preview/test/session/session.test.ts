@@ -772,6 +772,30 @@ describe("LumenPreviewSession", () => {
     expect(worker.ofType("load")).toHaveLength(2);
   });
 
+  it("reports the engine's code for a frame that failed to render", async () => {
+    const onError = vi.fn();
+    const { worker } = await playable({ onError });
+    const loadId = worker.ofType("load").at(-1)?.loadId as number;
+    const diagnostics = [
+      { code: "render.limit", message: "over the limit", path: "", severity: "error" as const },
+    ];
+
+    worker.emit({
+      diagnostics,
+      loadId,
+      media: null,
+      message: "over the limit",
+      type: "render-failed",
+    });
+
+    expect(onError).toHaveBeenLastCalledWith({
+      code: "render_failed",
+      diagnostics,
+      media: null,
+      message: "over the limit",
+    });
+  });
+
   it("reports the media source a load or a frame couldn't use", async () => {
     const onError = vi.fn();
     const { worker } = await playable({ onError });
@@ -786,6 +810,7 @@ describe("LumenPreviewSession", () => {
     };
 
     worker.emit({
+      diagnostics: [],
       loadId,
       media,
       message: "`asset:logo` is an image, not a model",
@@ -923,7 +948,13 @@ describe("LumenPreviewSession", () => {
     const { preview, worker } = await playable();
     const loadId = worker.ofType("load").at(-1)?.loadId as number;
     preview.play();
-    worker.emit({ loadId, media: null, message: "device lost", type: "render-failed" });
+    worker.emit({
+      diagnostics: [],
+      loadId,
+      media: null,
+      message: "device lost",
+      type: "render-failed",
+    });
     expect(preview.getSnapshot()).toMatchObject({
       error: "device lost",
       errorCode: "render_failed",
@@ -1609,6 +1640,7 @@ describe("LumenPreviewSession", () => {
         wanted: ["model" as const],
       };
       worker.emit({
+        diagnostics: [],
         loadId: currentLoad(worker),
         media: failure,
         message: "fox: not a model",

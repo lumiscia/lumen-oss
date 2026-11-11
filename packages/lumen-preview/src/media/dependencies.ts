@@ -96,7 +96,7 @@ export function previewDependencies(
   for (const { kinds, ...param } of inventory.dynamic) {
     const at: MediaLocation = { type: "node", ...param };
     for (const [source, entry] of media) {
-      const declared = entry.kind ?? blobKind(entry.source);
+      const declared = entry.kind ?? sourceKind(entry.source);
       if (declared !== undefined && !kinds.includes(declared)) {
         continue;
       }
@@ -145,12 +145,6 @@ function dependency(
     ...base,
     load: { failure: { source, wanted, ...(at && { at }), ...failure } },
   });
-  if (kind === "lut") {
-    return fail({
-      code: "media.unsupported",
-      details: "the browser preview does not load .cube LUT files; use the inline `lut`",
-    });
-  }
   const refused = refusedSource(source);
   if (refused !== null) {
     return fail({ code: "media.not_found", details: refused });
@@ -189,11 +183,15 @@ function entryKind(
   entry: PreviewMediaEntry | undefined,
   kinds: readonly MediaSourceKind[],
 ): MediaSourceKind | undefined {
-  const kind = entry?.kind ?? (entry && blobKind(entry.source));
+  const kind = entry?.kind ?? (entry && sourceKind(entry.source));
   return kind !== undefined && kinds.includes(kind) ? kind : undefined;
 }
 
-function blobKind(source: MediaSourceInput): MediaSourceKind | undefined {
+/** The kind a source says it holds: by its blob's type, or a `.cube` file name or URL path. */
+function sourceKind(source: MediaSourceInput): MediaSourceKind | undefined {
+  if (isCubeName(source)) {
+    return "lut";
+  }
   const blob =
     source instanceof Blob
       ? source
@@ -205,6 +203,35 @@ function blobKind(source: MediaSourceInput): MediaSourceKind | undefined {
   }
   const group = blob?.type.split("/")[0];
   return group === "audio" || group === "image" || group === "video" ? group : undefined;
+}
+
+function isCubeName(source: MediaSourceInput): boolean {
+  // A query or fragment that happens to end in `.cube` names nothing.
+  return /\.cube$/i.test(sourceName(source).split(/[?#]/, 1)[0] ?? "");
+}
+
+/** The file name or URL a source carries, or an empty string for bytes. */
+function sourceName(source: MediaSourceInput): string {
+  if (typeof source === "string") {
+    return source;
+  }
+  if (source instanceof URL) {
+    return source.pathname;
+  }
+  if (source instanceof Request) {
+    return source.url;
+  }
+  if (source instanceof File) {
+    return source.name;
+  }
+  if (typeof source === "object" && "kind" in source) {
+    return source.kind === "url"
+      ? sourceName(source.url)
+      : source.kind === "blob"
+        ? sourceName(source.blob)
+        : "";
+  }
+  return "";
 }
 
 function sameFormats(left: InputFormat[] | undefined, right: InputFormat[] | undefined): boolean {

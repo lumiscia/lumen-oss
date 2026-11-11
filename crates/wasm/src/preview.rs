@@ -267,6 +267,13 @@ impl LumenPreviewController {
         self.reset_renderer()
     }
 
+    /// Forgets the `.cube` LUT `source` names.
+    #[wasm_bindgen(js_name = "removeLutSource")]
+    pub fn remove_lut_source(&self, source: &str) -> Result<(), JsValue> {
+        self.change_media(|media| media.remove_lut(source))?;
+        self.reset_renderer()
+    }
+
     /// Forgets the environment map `source` names. The next render frees its GPU copy.
     #[wasm_bindgen(js_name = "removeEnvironmentSource")]
     pub fn remove_environment_source(&self, source: &str) -> Result<(), JsValue> {
@@ -294,6 +301,11 @@ impl LumenPreviewController {
     #[wasm_bindgen(js_name = "hasModel")]
     pub fn has_model(&self, source: &str) -> bool {
         self.media.has_model(source)
+    }
+
+    #[wasm_bindgen(js_name = "hasLut")]
+    pub fn has_lut(&self, source: &str) -> bool {
+        self.media.has_lut(source)
     }
 
     #[wasm_bindgen(js_name = "hasEnvironment")]
@@ -357,6 +369,17 @@ impl LumenPreviewController {
         lumen_engine::node::scene::check_environment(source, &data)
             .map_err(|error| crate::utils::render_failure(&error.into()))?;
         self.change_media(|media| media.set_environment(source.to_string(), data))?;
+        self.reset_renderer()
+    }
+
+    /// Stores a `.cube` 3D colour lookup table under the `lut_source` a `color_grade` names.
+    /// Throws, with the `media` failure a render would give, on a file that isn't a table it can
+    /// read.
+    #[wasm_bindgen(js_name = "setLut")]
+    pub fn set_lut(&self, source: &str, data: Vec<u8>) -> Result<(), JsValue> {
+        lumen_engine::node::processing::color_grade::check_lut(source, &data)
+            .map_err(|error| crate::utils::render_failure(&error.into()))?;
+        self.change_media(|media| media.set_lut(source.to_string(), data))?;
         self.reset_renderer()
     }
 

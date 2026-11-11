@@ -90,17 +90,21 @@ export interface LumenMediaTarget {
   removeEnvironmentSource?(sourceId: string): void;
   removeFontFamily?(fontFamily: string): void;
   removeImageSource?(imageId: string): void;
+  removeLutSource?(sourceId: string): void;
   removeModelSource?(modelId: string): void;
   removeVideoSource?(streamId: string): void;
   hasEnvironment?(sourceId: string): boolean;
   hasFont?(fontFamily: string): boolean;
   hasImage(imageId: string): boolean;
+  hasLut?(sourceId: string): boolean;
   hasModel?(modelId: string): boolean;
   hasVideoFrame(streamId: string, frame: number): boolean;
   /** Takes an `.hdr` or `.exr` file's bytes, which the engine reads when a scene first lights with it. */
   setEnvironment?(sourceId: string, bytes: Uint8Array): void;
   setFont?(fontFamily: string, bytes: Uint8Array): void;
   setImage(imageId: string, width: number, height: number, rgba: Uint8Array): void;
+  /** Takes a `.cube` file's bytes, which the engine reads when a `color_grade` first grades with it. */
+  setLut?(sourceId: string, bytes: Uint8Array): void;
   /** Takes a `.glb` file's bytes, which the engine reads when a render first draws the model. */
   setModel?(modelId: string, bytes: Uint8Array): void;
   setVideoFrameCacheBytes?(bytes: number): void;
