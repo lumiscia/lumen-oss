@@ -28,5 +28,5 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     var normalized = clamp((encoded - vec3<f32>(black)) / (white - black), vec3<f32>(0.0), vec3<f32>(1.0));
     normalized = pow(normalized, vec3<f32>(1.0 / gamma));
     let rgb = clamp(output_black + normalized * (output_white - output_black), vec3<f32>(0.0), vec3<f32>(1.0));
-    textureStore(output_tex, vec2<i32>(id.xy), premultiply(vec4<f32>(lumen_srgb_to_linear(rgb), color.a)));
+    textureStore(output_tex, vec2<i32>(id.xy), lumen_finite(premultiply(vec4<f32>(lumen_srgb_to_linear(rgb), color.a))));
 }

@@ -21,5 +21,5 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let exposed = lumen_linear_to_srgb(color.rgb * exp2(params.exposure));
     let encoded = (exposed + vec3<f32>(params.offset) - vec3<f32>(0.5)) * params.contrast + vec3<f32>(0.5);
     let rgb = max(lumen_srgb_to_linear(encoded), vec3<f32>(0.0));
-    textureStore(output_tex, vec2<i32>(id.xy), premultiply(vec4<f32>(rgb, color.a)));
+    textureStore(output_tex, vec2<i32>(id.xy), lumen_finite(premultiply(vec4<f32>(rgb, color.a))));
 }

@@ -590,3 +590,95 @@ fn a_float_output_is_the_working_space_without_an_output_pass() {
         "{float} passes to a float output, {bytes} to 8-bit"
     );
 }
+
+#[test]
+fn extreme_parameters_store_finite_light() {
+    // Every case checks the working space holds finite values, so these rows are the invariant at
+    // each node whose arithmetic can overflow a half float or make NaN from finite parameters.
+    let grey = json!({ "id": 1, "type": "background", "params": { "paint": [128, 128, 128, 255] } });
+    let exposure = |id: u32, from: u32, params: Value| {
+        json!({ "id": id, "type": "exposure", "params": params, "in": { "source": from } })
+    };
+    // Translucent light far brighter than its alpha.
+    let bright = || {
+        json!([
+            { "id": 1, "type": "background", "params": { "paint": [255, 255, 255, 128] } },
+            exposure(2, 1, json!({ "exposure": 17 })),
+        ])
+    };
+    let after_bright = |node: Value| {
+        let Value::Array(mut nodes) = bright() else { unreachable!() };
+        nodes.push(node);
+        Value::Array(nodes)
+    };
+    let rows: Vec<(&str, Value)> = vec![
+        ("exposure", json!([grey, exposure(2, 1, json!({ "exposure": 129 }))])),
+        (
+            "exposure, then opacity 0",
+            json!([
+                grey,
+                exposure(2, 1, json!({ "exposure": 129 })),
+                { "id": 3, "type": "opacity", "params": { "opacity": 0 }, "in": { "source": 2 } }
+            ]),
+        ),
+        (
+            "exposure contrast and offset",
+            json!([grey, exposure(2, 1, json!({ "contrast": 1e30, "offset": 1e30 }))]),
+        ),
+        (
+            "levels",
+            json!([grey, { "id": 2, "type": "levels", "in": { "source": 1 },
+                "params": { "gamma": 1e30, "black_point": 0.5, "white_point": 0.5 } }]),
+        ),
+        (
+            "levels past the f32 range",
+            json!([grey, { "id": 2, "type": "levels", "in": { "source": 1 },
+                "params": { "gamma": 1e39, "black_point": -1e39, "white_point": 1e39 } }]),
+        ),
+        (
+            "saturation past the f32 range, of grey",
+            json!([grey, { "id": 2, "type": "hue_saturation", "in": { "source": 1 },
+                "params": { "saturation": 1e39, "lightness": -1e39 } }]),
+        ),
+        (
+            "hue and saturation",
+            after_bright(json!({ "id": 3, "type": "hue_saturation", "in": { "source": 2 },
+                "params": { "hue_degrees": 1e30, "saturation": 1e30, "lightness": 1e30 } })),
+        ),
+        (
+            "normal merge",
+            json!([
+                grey,
+                exposure(2, 1, json!({ "exposure": 40 })),
+                { "id": 3, "type": "background", "params": { "paint": [255, 255, 255, 128] } },
+                exposure(4, 3, json!({ "exposure": 17 })),
+                { "id": 5, "type": "merge", "in": { "base": 2, "overlay": 4 } }
+            ]),
+        ),
+        (
+            "glow",
+            after_bright(json!({ "id": 3, "type": "glow", "in": { "source": 2 },
+                "params": { "threshold": 0, "radius": 0, "intensity": 1000 } })),
+        ),
+        (
+            "shadow",
+            after_bright(json!({ "id": 3, "type": "shadow", "in": { "source": 2 },
+                "params": { "radius": 0, "opacity": 1 } })),
+        ),
+    ];
+    let mut cases: Vec<Case> = rows
+        .into_iter()
+        .map(|(name, nodes)| Case::new(name, scene((8, 8), nodes), Expect::Custom(Box::new(|_| {}))))
+        .collect();
+    for tone_mapping in ["none", "aces", "agx"] {
+        cases.push(Case::new(
+            format!("3D emissive light, {tone_mapping}"),
+            crate::scene::render_3d_with(
+                json!({ "tone_mapping": tone_mapping }),
+                vec![json!({ "id": 1, "type": "shape_3d", "params": { "emissive": 1e30 } })],
+            ),
+            Expect::Custom(Box::new(|_| {})),
+        ));
+    }
+    check(cases);
+}

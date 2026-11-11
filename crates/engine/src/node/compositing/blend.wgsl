@@ -117,6 +117,6 @@ fn composite(base: vec4<f32>, source: vec4<f32>, mode: u32) -> vec4<f32> {
         let blended = lumen_srgb_to_linear(blend_rgb(blend_input(base), blend_input(source), mode));
         rgb = source.rgb * (1.0 - base.a) + base.rgb * (1.0 - source.a) + source.a * base.a * blended;
     }
-    return vec4<f32>(rgb, alpha);
+    return lumen_finite(vec4<f32>(rgb, alpha));
 }
 

@@ -40,5 +40,5 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         sample_lut(encoded.b, 2u)
     );
     let rgb = clamp(mix(encoded, graded, clamp(params.strength, 0.0, 1.0)), vec3<f32>(0.0), vec3<f32>(1.0));
-    textureStore(output_tex, vec2<i32>(id.xy), premultiply(vec4<f32>(lumen_srgb_to_linear(rgb), color.a)));
+    textureStore(output_tex, vec2<i32>(id.xy), lumen_finite(premultiply(vec4<f32>(lumen_srgb_to_linear(rgb), color.a))));
 }

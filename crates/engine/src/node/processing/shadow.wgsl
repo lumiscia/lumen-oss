@@ -34,5 +34,5 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let shadow = vec4<f32>(params.color.rgb * shadow_alpha, shadow_alpha);
     let out_alpha = source.a + shadow.a * (1.0 - source.a);
     let out_rgb = source.rgb + shadow.rgb * (1.0 - source.a);
-    textureStore(output_tex, vec2<i32>(id.xy), vec4<f32>(out_rgb, clamp(out_alpha, 0.0, 1.0)));
+    textureStore(output_tex, vec2<i32>(id.xy), lumen_finite(vec4<f32>(out_rgb, clamp(out_alpha, 0.0, 1.0))));
 }

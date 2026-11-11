@@ -52,7 +52,7 @@ fn bright_main(@builtin(global_invocation_id) id: vec3<u32>) {
         light = dot(light, GLOW_LUMA) * params.tint.rgb;
     }
     light = light * params.values.y;
-    textureStore(bright_tex, vec2<i32>(id.xy), vec4<f32>(light, max(light.r, max(light.g, light.b))));
+    textureStore(bright_tex, vec2<i32>(id.xy), lumen_finite(vec4<f32>(light, max(light.r, max(light.g, light.b)))));
 }
 
 // Adds the glow to the source, premultiplied. The light may take colour past white.
@@ -65,5 +65,5 @@ fn composite_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let pixel = vec2<i32>(id.xy) + params.origins.xy;
     let source = glow_read(source_tex, pixel, params.origins.zw);
     let glow = glow_read(glow_tex, pixel, params.glow_origin.xy);
-    textureStore(output_tex, vec2<i32>(id.xy), vec4<f32>(source.rgb + glow.rgb, min(source.a + glow.a, 1.0)));
+    textureStore(output_tex, vec2<i32>(id.xy), lumen_finite(vec4<f32>(source.rgb + glow.rgb, min(source.a + glow.a, 1.0))));
 }

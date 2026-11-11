@@ -17,8 +17,7 @@
 //!
 //! Every input holds linear light with premultiplied alpha, and the output is read the same way.
 //! Values above 1 are brighter than SDR white and are kept. The engine clamps the output's alpha
-//! to `0..=1` and its colour to the half-float range, and makes a texel with a NaN channel
-//! transparent black. A shader that works on sRGB-encoded
+//! to `0..=1` and its colour to the half-float range, and makes a NaN channel 0. A shader that works on sRGB-encoded
 //! colour converts with the prelude's `lumen_srgb_to_linear` and `lumen_linear_to_srgb`, which
 //! take and return `vec3<f32>`. A shader that declares `output` itself must declare it
 //! `rgba16float`.
@@ -64,7 +63,9 @@ pub const PRELUDE: &str = concat!(
 );
 
 /// Keeps a shader's output in the working space, as the module documentation describes.
-const SANITISE_SHADER: &str = "
+const SANITISE_SHADER: &str = concat!(
+    include_str!("../../gpu/shaders/color.wgsl"),
+    "
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var output: texture_storage_2d<rgba16float, write>;
 
@@ -74,17 +75,11 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= size.x || id.y >= size.y) {
         return;
     }
-    let texel = textureLoad(source, vec2<i32>(id.xy), 0);
-    // A comparison with NaN is unreliable once optimised, so the bits are tested instead.
-    let magnitude = bitcast<vec4<u32>>(texel) & vec4<u32>(0x7fffffffu);
-    if (any(magnitude > vec4<u32>(0x7f800000u))) {
-        textureStore(output, vec2<i32>(id.xy), vec4<f32>(0.0));
-        return;
-    }
-    let light = clamp(texel.rgb, vec3<f32>(-65504.0), vec3<f32>(65504.0));
-    textureStore(output, vec2<i32>(id.xy), vec4<f32>(light, clamp(texel.a, 0.0, 1.0)));
+    let texel = lumen_finite(textureLoad(source, vec2<i32>(id.xy), 0));
+    textureStore(output, vec2<i32>(id.xy), vec4<f32>(texel.rgb, clamp(texel.a, 0.0, 1.0)));
 }
-";
+"
+);
 
 const SANITISE_LAYOUT: &[lumen_gpu::LayoutEntry] = &[
     lumen_gpu::LayoutEntry::compute(0, lumen_gpu::LayoutKind::Texture),

@@ -78,5 +78,5 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     hsl.y = clamp(hsl.y * params.saturation, 0.0, 1.0);
     hsl.z = clamp(hsl.z + params.lightness, 0.0, 1.0);
     let rgb = clamp(hsl_to_rgb(hsl), vec3<f32>(0.0), vec3<f32>(1.0));
-    textureStore(output_tex, vec2<i32>(id.xy), premultiply(vec4<f32>(lumen_srgb_to_linear(rgb), color.a)));
+    textureStore(output_tex, vec2<i32>(id.xy), lumen_finite(premultiply(vec4<f32>(lumen_srgb_to_linear(rgb), color.a))));
 }
