@@ -1,4 +1,5 @@
 use super::ids::NodeId;
+use super::media_source::MediaParam;
 use super::ports::{InputPortDef, PortKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -48,6 +49,8 @@ pub struct PropertyDef {
     pub id: &'static str,
     pub expected: PropertyKind,
     pub enum_def: Option<&'static EnumDef>,
+    /// What `#[media(...)]` declares, for a param that names media.
+    pub media: Option<MediaParam>,
     #[cfg(feature = "metadata")]
     pub name: &'static str,
     #[cfg(feature = "metadata")]

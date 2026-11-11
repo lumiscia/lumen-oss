@@ -4,9 +4,12 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context, Result, anyhow, bail};
-use lumen_engine::node::{
-    EnumDef, InputPortDef, NodeCategory, NodeKind, NodeParams, NodeSchemaDef, PortKind,
-    PropertyDef, PropertyKind,
+use lumen_engine::{
+    audio::AudioClip,
+    node::{
+        EnumDef, InputPortDef, MediaParam, NodeCategory, NodeKind, NodeParams, NodeSchemaDef,
+        PortKind, PropertyDef, PropertyKind,
+    },
 };
 use serde_json::{Map, Value, json};
 
@@ -274,6 +277,10 @@ fn render_schema() -> Result<String> {
         .as_object_mut()
         .expect("`$defs` is an object")
         .extend(kind_defs_json()?);
+    for media in AudioClip::MEDIA_PARAMS {
+        schema["$defs"]["audioClip"]["properties"][media.param]["x-lumen-media"] =
+            media_json(media);
+    }
     Ok(format!("{}\n", serde_json::to_string_pretty(&schema)?))
 }
 
@@ -718,8 +725,22 @@ fn field_schema_json(property: &PropertyDef, default: Option<Value>, value_schem
         if let Some(constraints) = constraints_json(property) {
             object.insert("x-lumen-constraints".to_string(), constraints);
         }
+        if let Some(media) = &property.media {
+            object.insert("x-lumen-media".to_string(), media_json(media));
+        }
     }
     schema
+}
+
+/// The `x-lumen-media` of a param that names media: the kinds it accepts, and the param whose
+/// value picks among them.
+fn media_json(media: &MediaParam) -> Value {
+    let mut json =
+        json!({ "kinds": media.kinds.iter().map(|kind| kind.name()).collect::<Vec<_>>() });
+    if let Some(selector) = media.selector {
+        json["selectedBy"] = json!(selector);
+    }
+    json
 }
 
 /// The editor hints a property sets, or `None` when it sets none.

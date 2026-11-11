@@ -8,6 +8,7 @@ mod deferred;
 mod delegate;
 mod ids;
 mod kind;
+mod media_source;
 pub(crate) mod motion;
 mod param_type;
 mod ports;
@@ -32,6 +33,9 @@ pub use delegate::{
 };
 pub use ids::NodeId;
 pub use kind::NodeKind;
+pub use media_source::{
+    MediaParam, MediaSource, MediaSourceField, MediaValue, selected_media_kind,
+};
 pub use param_type::NodeParamType;
 pub(crate) use ports::required_input;
 pub use ports::{InputPortDef, PortKind};
@@ -52,6 +56,8 @@ pub trait Node: Send + Sync {
     fn input_ports(&self) -> Vec<Option<NodeId>>;
     /// Calls `f` with every expression in the node's params.
     fn for_each_expression(&self, f: &mut dyn FnMut(&Expression));
+    /// Calls `f` with every param the node declares with `#[media(...)]`.
+    fn for_each_media_source<'a>(&'a self, f: &mut dyn FnMut(MediaSource<'a>));
 
     /// Whether any of the node's params is an expression.
     fn has_expressions(&self) -> bool {

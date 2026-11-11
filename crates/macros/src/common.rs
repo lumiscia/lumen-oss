@@ -67,11 +67,99 @@ impl PropertyConstraintsAttr {
     }
 }
 
+/// What `#[media(image, video, by = kind)]` declares: the kinds of media a `String` param
+/// reads, and the enum param that picks one of them.
+pub(crate) struct MediaAttr {
+    kinds: Vec<Ident>,
+    pub(crate) by: Option<Ident>,
+}
+
+const MEDIA_KINDS: [(&str, &str); 5] = [
+    ("image", "Image"),
+    ("video", "Video"),
+    ("audio", "Audio"),
+    ("model", "Model"),
+    ("environment", "Environment"),
+];
+
+impl MediaAttr {
+    /// The `#[media(...)]` among `attrs`, if there is one.
+    pub(crate) fn parse(attrs: &[Attribute]) -> Result<Option<Self>> {
+        let Some(attr) = optional_attr(attrs, "media") else {
+            return Ok(None);
+        };
+        let mut kinds: Vec<Ident> = Vec::new();
+        let mut by = None;
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("by") {
+                by = Some(ident_value(&meta)?);
+                return Ok(());
+            }
+            let Some(kind) = meta
+                .path
+                .get_ident()
+                .filter(|ident| MEDIA_KINDS.iter().any(|(name, _)| ident == name))
+            else {
+                let names = MEDIA_KINDS.map(|(name, _)| name).join(", ");
+                return Err(meta.error(format!(
+                    "unknown media kind, expected one of {names}, or `by = <param>`"
+                )));
+            };
+            if kinds.contains(kind) {
+                return Err(meta.error("media kind listed twice"));
+            }
+            kinds.push(kind.clone());
+            Ok(())
+        })?;
+        if kinds.is_empty() {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "#[media(...)] needs at least one kind",
+            ));
+        }
+        if by.is_some() && kinds.len() < 2 {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "`by` picks among kinds, so #[media(...)] needs two or more",
+            ));
+        }
+        Ok(Some(Self { kinds, by }))
+    }
+
+    /// A `MediaParam` for the param `param`, whose selector's id is `selector`.
+    pub(crate) fn tokens(
+        &self,
+        param: &LitStr,
+        selector: Option<&LitStr>,
+    ) -> proc_macro2::TokenStream {
+        let kinds = self.kinds.iter().map(|kind| {
+            let variant = MEDIA_KINDS
+                .iter()
+                .find(|(name, _)| kind == name)
+                .map(|(_, variant)| Ident::new(variant, kind.span()))
+                .expect("kinds are checked when parsed");
+            quote!(::lumen_engine::media::AssetKind::#variant)
+        });
+        let selector = match selector {
+            Some(selector) => quote!(Some(#selector)),
+            None => quote!(None),
+        };
+        quote! {
+            ::lumen_engine::node::MediaParam {
+                param: #param,
+                kinds: &[#(#kinds),*],
+                selector: #selector,
+            }
+        }
+    }
+}
+
 pub(crate) struct PropertyDefTokens<'a> {
     pub id: &'a LitStr,
     pub name: &'a LitStr,
     pub kind: proc_macro2::TokenStream,
     pub enum_def: proc_macro2::TokenStream,
+    pub media: proc_macro2::TokenStream,
     pub docs: &'a [String],
     pub constraints: &'a PropertyConstraintsAttr,
     pub accepts_expressions: proc_macro2::TokenStream,
@@ -86,6 +174,7 @@ impl PropertyDefTokens<'_> {
             name,
             kind,
             enum_def,
+            media,
             accepts_expressions,
             nullable,
             required,
@@ -98,6 +187,7 @@ impl PropertyDefTokens<'_> {
                 id: #id,
                 expected: #kind,
                 enum_def: #enum_def,
+                media: #media,
                 #[cfg(feature = "metadata")]
                 name: #name,
                 #[cfg(feature = "metadata")]
@@ -244,5 +334,59 @@ fn option_lit_str_tokens(value: &Option<LitStr>) -> proc_macro2::TokenStream {
     match value {
         Some(value) => quote!(Some(#value)),
         None => quote!(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn media(attr: proc_macro2::TokenStream) -> Result<Option<MediaAttr>> {
+        let field: syn::Field =
+            syn::parse::Parser::parse2(syn::Field::parse_named, quote!(#attr pub source: String))?;
+        MediaAttr::parse(&field.attrs)
+    }
+
+    fn error(attr: proc_macro2::TokenStream) -> String {
+        media(attr)
+            .err()
+            .expect("the attribute is rejected")
+            .to_string()
+    }
+
+    #[test]
+    fn media_lists_kinds_and_a_selector() {
+        let attr = media(quote!(#[media(image, video, by = kind)]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(attr.kinds, ["image", "video"]);
+        assert_eq!(attr.by.unwrap(), "kind");
+        assert!(media(quote!(#[meta()])).unwrap().is_none());
+    }
+
+    #[test]
+    fn media_tokens_name_the_kinds_the_param_and_its_selector() {
+        let attr = media(quote!(#[media(model, environment)]))
+            .unwrap()
+            .unwrap();
+        let param = LitStr::new("source", proc_macro2::Span::call_site());
+        let selector = LitStr::new("kind", proc_macro2::Span::call_site());
+        let tokens = attr.tokens(&param, Some(&selector)).to_string();
+        assert!(
+            tokens.contains(
+                "AssetKind :: Model , :: lumen_engine :: media :: AssetKind :: Environment"
+            ),
+            "{tokens}"
+        );
+        assert!(tokens.contains("param : \"source\""), "{tokens}");
+        assert!(tokens.contains("selector : Some (\"kind\")"), "{tokens}");
+    }
+
+    #[test]
+    fn media_rejects_what_it_cannot_declare() {
+        assert!(error(quote!(#[media(font)])).contains("unknown media kind"));
+        assert!(error(quote!(#[media(image, image)])).contains("listed twice"));
+        assert!(error(quote!(#[media()])).contains("at least one kind"));
+        assert!(error(quote!(#[media(image, by = kind)])).contains("two or more"));
     }
 }

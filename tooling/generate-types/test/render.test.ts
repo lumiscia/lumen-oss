@@ -15,3 +15,16 @@ test("rejects a kind with a param named like one of its input ports", async () =
 
   expect(() => renderTypes(schema)).toThrow("`blur` has a param and an input port named `source`");
 });
+
+test("renders the media params each node kind declares, the same every time", async () => {
+  const schema = JSON.parse(await readFile(compositionSchemaPath, "utf8"));
+  const { meta } = renderTypes(schema);
+
+  expect(meta).toContain(
+    '"media_in": { "source": { kinds: ["image", "video"], selectedBy: "kind" } },',
+  );
+  expect(meta).toContain('"render_3d": { "environment_map": { kinds: ["environment"] } },');
+  expect(meta).toContain('"blur": {},');
+  expect(meta).toContain('export type MediaSourceKind = "audio" | "environment"');
+  expect(renderTypes(schema).meta).toBe(meta);
+});

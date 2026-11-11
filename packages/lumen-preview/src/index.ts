@@ -1,4 +1,4 @@
-import type { LumenDiagnostic, LumenModelInfo } from "@lumiscia/lumen-types";
+import type { LumenDiagnostic, LumenModelInfo, MediaInventory } from "@lumiscia/lumen-types";
 
 import { LumenMediaBridge } from "./media/index.js";
 export { defaultAudioWorkerUrl, defaultAudioWorkletUrl, LumenAudioEngine } from "./audio-engine.js";
@@ -96,6 +96,12 @@ export interface LumenPreviewBindings {
    * provides.
    */
   check(compositionJson: string, fonts?: string[] | null): LumenDiagnostic[];
+  /**
+   * What a composition needs before it renders: the media its nodes and audio clips name, with
+   * the kinds each reads and where it is used, and the font families its text uses. Throws, with
+   * `diagnostics`, on a composition the engine rejects.
+   */
+  mediaDependencies(compositionJson: string): MediaInventory;
   /**
    * The animation clips and materials of a binary glTF (`.glb`), which a `model_3d` selects with
    * `animation` and `texture_material`. Reads the file as a render would and throws on one it

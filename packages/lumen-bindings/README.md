@@ -54,6 +54,15 @@ const ok = diagnostics.every((diagnostic) => diagnostic.severity !== "error");
 
 Warnings never stop a composition from loading. Codes are public API, and new ones can appear in a patch release, so handle codes you don't know by their `severity`. The [engine README](https://github.com/lumiscia/lumen-oss/tree/main/crates/engine#diagnostics) lists them, along with the problems only rendering finds. A composition `loadComposition` rejects throws an `Error` with the same `diagnostics`.
 
+`mediaDependencies` lists what a composition needs before it renders, as the engine finds it: `{ media, dynamic, fonts }`. Each `media` entry is a source as written, the kinds it is read as, and where it is used, in a node of the root or of a template or in an audio clip. A source an expression computes is in `dynamic`, and the font families text names are in `fonts`. It throws, with `diagnostics`, on a composition the engine rejects. The result is typed as `MediaInventory` in `@lumiscia/lumen-types`:
+
+```ts
+const { mediaDependencies } = await createLumenBindings().preview();
+for (const { source, kinds, uses } of mediaDependencies(json).media) {
+  console.log(source, kinds, uses.length);
+}
+```
+
 `modelInfo` lists the animation clips and materials of a binary glTF (`.glb`), which a `model_3d` selects with `animation` and `texture_material`. It reads the file as a render would and throws on one it can't read. An unnamed clip or material has no `name`; a clip is then selected by its `index`, as text:
 
 ```ts

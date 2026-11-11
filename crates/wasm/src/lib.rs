@@ -31,6 +31,21 @@ pub fn check(composition_json: &str, fonts: Option<Vec<String>>) -> wasm_bindgen
     ))
 }
 
+/// What a composition needs before it renders: `{ media, dynamic, fonts }`, as
+/// `Composition::media_dependencies` lists them. Throws as `loadComposition` would on a
+/// composition the engine rejects, with its `diagnostics`.
+#[wasm_bindgen::prelude::wasm_bindgen(js_name = "mediaDependencies")]
+pub fn media_dependencies(
+    composition_json: &str,
+) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {
+    let composition = utils::composition_json_to_composition(composition_json)
+        .map_err(|error| utils::parse_failure(&error))?;
+    serde_json::to_string(&composition.media_dependencies())
+        .ok()
+        .and_then(|json| js_sys::JSON::parse(&json).ok())
+        .ok_or_else(|| js_sys::Error::new("the composition's media could not be returned").into())
+}
+
 /// The animation clips and materials of a binary glTF (`.glb`), which a `model_3d` selects with
 /// `animation` and `texture_material`: `{ animations: [{ index, name?, duration }], materials:
 /// [{ index, name?, hasBaseColorTexture }] }`, with `duration` in seconds. Throws as a render

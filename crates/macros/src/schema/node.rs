@@ -110,7 +110,7 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
         }
     });
 
-    let metas_fields = metas.iter().map(|(field, _)| field);
+    let metas_fields = metas.iter().map(|(field, _)| field).collect::<Vec<_>>();
     let kind = node.kind;
     let node_name = node.name;
     let description = doc_string(&node.docs);
@@ -214,6 +214,10 @@ pub(crate) fn expand_node(input: DeriveInput) -> Result<proc_macro2::TokenStream
 
             fn for_each_expression(&self, f: &mut dyn FnMut(&::lumen_engine::expr::Expression)) {
                 #(::lumen_engine::node::DelegateEvaluable::for_each_expression(&self.#metas_fields, f);)*
+            }
+
+            fn for_each_media_source<'a>(&'a self, f: &mut dyn FnMut(::lumen_engine::node::MediaSource<'a>)) {
+                #(::lumen_engine::node::NodeParams::for_each_media_source(&self.#metas_fields, f);)*
             }
         }
 

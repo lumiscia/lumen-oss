@@ -28,10 +28,10 @@ breaking, so there is no migration between lines. Absent means the engine's own 
 ## Asset references
 
 A source field can name a file in the host's asset store as `asset:<id>`: `media_in`'s `source`,
-an audio clip's `source_id`, and a text node's or span's `font_family`. The prefix is a scheme, so
-it can't be mistaken for a relative path. Each asset has a kind, image, video, audio or font, and
-a reference must name one of the kind its field reads. An id only resolves on the host that issued
-it.
+`model_3d`'s `source`, `render_3d`'s `environment_map`, an audio clip's `source_id`, and a text
+node's or span's `font_family`. The prefix is a scheme, so it can't be mistaken for a relative
+path. Each asset has a kind, image, video, audio, font, model or environment, and a reference
+must name one of the kind its field reads. An id only resolves on the host that issued it.
 
 A host gives the engine its store as an `AssetResolver`, and its `MediaStore` resolves references
 with `media::resolve_asset`:
@@ -96,6 +96,27 @@ the root or template, not the param.
   warning as a warning.
 - So a new warning is a patch release. A new error that rejects a composition which renders today
   is a breaking change.
+
+### What a composition needs
+
+`Composition::media_dependencies()` lists what a parsed composition needs from its host before it
+renders, without rendering it: every distinct source its nodes and audio clips name as written (a
+path, a URL, an alias or `asset:<id>`), the kinds of media each use reads, and where it is used,
+in the root or in a template. A source an expression computes is listed under `dynamic` instead,
+and the font families text nodes name as literals under `fonts`.
+
+```rust
+let composition = lumen_engine::json::parse(&json)?;
+for dependency in &composition.media_dependencies().media {
+    println!("{} ({:?}): {} uses", dependency.source, dependency.kinds, dependency.uses.len());
+}
+```
+
+A node param is a media source when its param struct declares it with `#[media(image, video)]`,
+`#[media(model)]` or `#[media(environment)]`; `by = kind` names the enum param whose options pick
+one of the kinds. The declaration also gives the param's schema an `x-lumen-media` and the
+TypeScript package its `nodeMediaSources` table. In the browser bindings it is
+`mediaDependencies(json)`.
 
 ### What only rendering finds
 

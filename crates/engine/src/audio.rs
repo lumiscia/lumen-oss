@@ -101,10 +101,11 @@ pub(crate) fn default_volume() -> f32 {
     1.0
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, lumen_macros::MediaSources)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioClip {
     pub id: String,
+    #[media(audio)]
     pub source_id: String,
     pub track_id: String,
     pub start_ms: u64,
