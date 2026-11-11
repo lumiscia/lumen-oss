@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import { Lumen } from "../src/client.js";
 import { LumenError } from "../src/errors.js";
+import { outputFile } from "../src/output.js";
 
 interface RecordedRequest {
   readonly init: RequestInit & { duplex?: string };
@@ -167,6 +168,61 @@ describe("Lumen render and download", () => {
     expect(bodies[0]).not.toHaveProperty("quality");
     expect(bodies[0]).not.toHaveProperty("codec");
     expect(bodies[1]).toMatchObject({ codec: "hevc", quality: "high" });
+  });
+
+  test("render sends the output description in the server's shape, and only when it is set", async () => {
+    const { requests, stub } = recordingFetch(() => ({
+      render: { id: "render-1", status: "queued" },
+    }));
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await lumen.render({} as never);
+    await lumen.render({} as never, {
+      output: { format: "jpeg_sequence", frames: { start: 30, end: 60 }, jpegQuality: 80 },
+    });
+    await lumen.render({} as never, { output: { frames: { end: 24 } } });
+
+    const bodies = requests.map((request) => JSON.parse(String(request.init.body)));
+    expect(bodies[0]).not.toHaveProperty("output");
+    expect(bodies[1].output).toEqual({
+      format: "jpeg_sequence",
+      frames: { start: 30, end: 60 },
+      jpeg_quality: 80,
+    });
+    expect(bodies[2].output).toEqual({ frames: { end: 24 } });
+  });
+
+  test("outputFile names the content type and extension of each format", () => {
+    const files = (["mp4", "png", "jpeg", "png_sequence", "jpeg_sequence"] as const).map((format) =>
+      Object.values(outputFile({ format })),
+    );
+    expect(files).toEqual([
+      ["video/mp4", "mp4"],
+      ["image/png", "png"],
+      ["image/jpeg", "jpg"],
+      ["application/zip", "zip"],
+      ["application/zip", "zip"],
+    ]);
+    expect(outputFile()).toEqual({ contentType: "video/mp4", extension: "mp4" });
+  });
+
+  test("download hands back the artifact's own content type and filename", async () => {
+    const stub = (async () =>
+      new Response("zip", {
+        headers: {
+          "content-type": "application/zip",
+          "content-disposition": 'attachment; filename="r.zip"',
+        },
+      })) as unknown as typeof fetch;
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    const response = await lumen.download({
+      id: "r",
+      url: "https://api.test/v1/renders/r/artifact",
+    });
+
+    expect(response.headers.get("content-type")).toBe("application/zip");
+    expect(response.headers.get("content-disposition")).toContain("r.zip");
   });
 
   test("cancelRender posts to the cancel route and returns the render", async () => {

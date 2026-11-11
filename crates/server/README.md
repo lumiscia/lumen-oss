@@ -19,7 +19,7 @@ Supported targets today are:
 
 `lumen-server` ships both:
 
-- a library target, `lumen_server`, whose `render` module renders a project payload to an MP4 for embedding in custom render platforms
+- a library target, `lumen_server`, whose `render` module renders a project payload to an MP4, a still or an image sequence for embedding in custom render platforms
 - a binary target, `lumen-server`, for local HTTP rendering
 
 ### Library
@@ -29,7 +29,7 @@ The library reads no environment variables. A `RenderConfig` holds what renders 
 Without `RenderOptions::encoder`, a render resolves the composition's settings against the built-in quality presets. The binaries also let `LUMEN_VIDEO_ENCODER` pin an encoder, through `QualityRequest::with_env_encoder()` in `lumen-ffmpeg`; embedders pin one by passing `RenderOptions::encoder` themselves.
 
 ```rust
-use lumen_server::render::{ErrorCode, RenderConfig, RenderOptions, render_project_mp4};
+use lumen_server::render::{ErrorCode, RenderConfig, RenderOptions, render_project};
 
 let options = RenderOptions {
     config: RenderConfig {
@@ -40,8 +40,8 @@ let options = RenderOptions {
     media_root: Some(job_dir),
     ..RenderOptions::default()
 };
-match render_project_mp4(&composition, &options, &mut |_| {}) {
-    Ok(mp4) => store(mp4),
+match render_project(&composition, &options, &mut |_| {}) {
+    Ok(output) => store(output.bytes, output.format.content_type()),
     Err(error) if error.code() == ErrorCode::Engine("media.not_found") => missing_media(error),
     Err(error) if error.retryable() => retry_later(),
     Err(error) => fail(error.code().as_str(), error),
@@ -61,6 +61,35 @@ let watcher = std::thread::spawn(move || {
 });
 ```
 
+#### Output
+
+`RenderOptions::output` is a `RenderOutput`: a `format` and the `frames` it covers. The default is an MP4 of the whole timeline, so options without one render as before. `render_project` returns a `RenderedOutput`: the file's `bytes` and its `format`, whose `content_type()` and `extension()` name the file.
+
+| `OutputFormat` | Artifact                                                                                                                                                  |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Mp4`          | `video/mp4`, `.mp4`: the frames with the composition's audio cut to the same span.                                                                        |
+| `Png`          | `image/png`, `.png`: one frame. Transparency is kept: the image is straight (not premultiplied) RGBA.                                                     |
+| `Jpeg`         | `image/jpeg`, `.jpg`: one frame, opaque. Transparent pixels are composited onto black, as they are in a video. `jpeg_quality` is 1 to 100, 90 when unset. |
+| `PngSequence`  | `application/zip`, `.zip`: a `frame_0000.png` per frame, stored (not deflated) in frame order.                                                            |
+| `JpegSequence` | `application/zip`, `.zip`: a `frame_0000.jpg` per frame, with `jpeg_quality`.                                                                             |
+
+`frames` is `start..end` with `end` not included, like the preview player's `range: { in, out }`. `start` defaults to 0 and `end` to the end of the timeline, except for a still, which is the frame at `start` (`end` defaults to `start + 1`). Frame numbers are the composition's: frames 30 to 60 of a ranged render are what a full render draws there, and a sequence names its files with those numbers, padded to at least four digits or as many as its last frame needs. An MP4 starts at time 0, and its audio is the mix from the first frame's time to the last frame's end, so it lasts as long as the video and there is no silence before it.
+
+```rust
+use lumen_server::render::{FrameRange, OutputFormat, RenderOptions, RenderOutput};
+
+let options = RenderOptions {
+    output: RenderOutput {
+        format: OutputFormat::PngSequence,
+        frames: FrameRange { start: Some(30), end: Some(60) },
+        ..RenderOutput::default()
+    },
+    ..RenderOptions::default()
+};
+```
+
+Quality presets and encoders (`RenderOptions::encoder`) apply to `Mp4` only. A sequence is bounded by `RenderOptions::sequence_limits`, a `SequenceLimits { max_frames, max_bytes }` whose default is what a ZIP holds (65535 frames, 3 GiB of images). A range that is empty or reaches past the timeline, a still of several frames, a JPEG quality outside 1 to 100 or on another format, and a sequence longer than `max_frames` all fail before any GPU work, with `invalid_output` or `output_too_large`. Frames are rendered, encoded and written to the archive one at a time, so memory holds one frame and then the archive. A sequence over `max_bytes`, or a cancelled one, ends with the temporary archive removed. `ImageRender` and `Mp4Render` take a `RenderOutput` too, for renders opened by hand: `ImageRender::run` hands each encoded frame to a callback, which is how `lumen-local` writes numbered files.
+
 On the CPU upload path, frames are read back through a ring of three buffers while the next ones render, so memory stays at three frames and frames reach the encoder in order.
 
 `LocalMediaStore::new(root, &config)` and `check_composition(payload, staged, assets, &config)` take the same config.
@@ -73,6 +102,8 @@ A failed render is a `ServerRenderError`. `code()` is an `ErrorCode` to match on
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `invalid_project_payload` | The payload is not a composition. The source is the engine's `ParseError` with its diagnostics.                                                                                  |
 | `invalid_quality`         | The quality preset or codec resolves to no encoder.                                                                                                                              |
+| `invalid_output`          | The output can't be rendered: an empty range, a range past the timeline, a still of several frames, or a JPEG quality outside 1 to 100 or on a format that isn't JPEG.           |
+| `output_too_large`        | An image sequence has more frames, or adds up to more bytes, than its limits allow.                                                                                              |
 | `invalid_render_profile`  | An encoder that doesn't exist, or a frame rate the encoder can't take.                                                                                                           |
 | `invalid_config`          | The config or options name something that isn't there: a media root or font directory.                                                                                           |
 | `render_failed`           | The GPU work around the engine failed, such as reading a frame back. Retryable.                                                                                                  |
@@ -120,7 +151,27 @@ The exposed Axum API is intentionally binary-owned. The HTTP binary accepts the 
 
 They're resolved when the render is requested, with the same resolver the render uses. A preset this host doesn't define, a codec none of the encoders it tries has settings for, or a codec other than the one `LUMEN_VIDEO_ENCODER`'s encoder writes returns `422` with the code `invalid_quality`.
 
-Inside the composition, media nodes and audio clips reference either a manifest alias (`"hero"`), whose URL the render downloads, or [uploaded media](#media-uploads) as `asset:<id>`. They never name a URL directly. The self-hosted server does not implement artifact staging, provider progress callbacks, billing, accounts, durable queueing, or durable artifact storage; it renders in a local background task, stores the MP4 artifact in memory, and exposes it at `GET /renders/:id/artifact`.
+`output` is optional and picks what is rendered. Without it the artifact is an MP4 of the whole timeline, as before:
+
+```json
+{ "composition": { "...": "..." }, "output": { "format": "mp4", "frames": { "start": 30, "end": 90 } } }
+{ "composition": { "...": "..." }, "output": { "format": "png", "frames": { "start": 45 } } }
+{ "composition": { "...": "..." }, "output": { "format": "jpeg", "jpeg_quality": 80 } }
+{ "composition": { "...": "..." }, "output": { "format": "png_sequence", "frames": { "start": 0, "end": 120 } } }
+```
+
+`format` is `mp4` (the default), `png`, `jpeg`, `png_sequence` or `jpeg_sequence`; `frames` is `start..end` of the timeline with `end` not included, either side optional; `jpeg_quality` is 1 to 100 for the JPEG formats. The artifact is what the format says, with its `Content-Type` and a `Content-Disposition` filename of `<render id>.<extension>`:
+
+| `format`                        | `Content-Type`    | Artifact                                                                                     |
+| ------------------------------- | ----------------- | -------------------------------------------------------------------------------------------- |
+| `mp4`                           | `video/mp4`       | The video of the frames, starting at time 0, with the audio cut to the same span.            |
+| `png`                           | `image/png`       | One frame, the one at `frames.start` (0 by default), with transparency.                      |
+| `jpeg`                          | `image/jpeg`      | One opaque frame, transparent pixels composited onto black.                                  |
+| `png_sequence`, `jpeg_sequence` | `application/zip` | A stored ZIP with `frame_0000.png` or `.jpg` per frame, numbered with the timeline's frames. |
+
+`quality` and `codec` apply to `mp4` only: sent with another format they return `422` with `invalid_output`, and an `output` can't carry encoder settings. The range and the format's options are checked when the render is requested: an empty range, one past the timeline, a still of more than one frame or a `jpeg_quality` outside 1 to 100 or on another format is `422` with `invalid_output`, and a sequence longer than `--max-sequence-frames` is `422` with `output_too_large`. A sequence whose images add up to more than `--max-sequence-bytes` ends as `failed` with `output_too_large`. Progress counts the frames of the range, and cancelling a sequence stops it before its next frame.
+
+Inside the composition, media nodes and audio clips reference either a manifest alias (`"hero"`), whose URL the render downloads, or [uploaded media](#media-uploads) as `asset:<id>`. They never name a URL directly. The self-hosted server does not implement artifact staging, provider progress callbacks, billing, accounts, durable queueing, or durable artifact storage; it renders in a local background task, stores the artifact (an MP4, an image or a ZIP of images) in memory, and exposes it at `GET /renders/:id/artifact`.
 
 `POST /renders` validates the request before accepting it. A composition that does not parse, an invalid manifest, an `asset:` reference to media this server doesn't have or of the wrong kind, or a `quality` or `codec` this host can't serve returns `422`. `webhookUrl` returns `400` with the code `webhooks_unsupported`, because this server does not deliver webhooks. A body over 2 MiB returns `413` with the code `request_too_large`, and a body that is not the expected JSON returns the matching `4xx` with the code `invalid_request_body`. Render IDs are always generated by the server.
 
@@ -361,6 +412,8 @@ baseline, not a hardware performance target.
 | `--media-ttl <duration>`          | `LUMEN_SERVER_MEDIA_TTL`              | `24h`                       | How long uploaded media is kept: seconds, or a number with `s`, `m`, `h` or `d`.                                        |
 | `--media-max-bytes <n>`           | `LUMEN_SERVER_MEDIA_MAX_BYTES`        | 2147483648                  | Largest uploaded or imported file.                                                                                      |
 | `--media-max-pending <n>`         | `LUMEN_SERVER_MEDIA_MAX_PENDING`      | 100                         | Most media waiting for its content at once. More are refused with `503`.                                                |
+| `--max-sequence-frames <n>`       | `LUMEN_SERVER_MAX_SEQUENCE_FRAMES`    | 3600                        | Most frames an image sequence may have, from 1 to 65535. A longer one is refused with `422` and `output_too_large`.     |
+| `--max-sequence-bytes <n>`        | `LUMEN_SERVER_MAX_SEQUENCE_BYTES`     | 536870912                   | Most bytes a sequence's images may add up to, up to 3 GiB. A sequence past it fails with `output_too_large`.            |
 | `--max-text-glyphs <n>`           | `LUMEN_SERVER_MAX_TEXT_GLYPHS`        | 16384                       | Most glyph, stroke and decoration instances one text node may draw, from 1 to 1048576. A text over it fails its render. |
 | `--verbose-debug`                 | `LUMEN_SERVER_VERBOSE_DEBUG`          | false                       | Per-frame renderer diagnostics.                                                                                         |
 | `--font-dir <path>`               | `LUMEN_FONT_DIR`                      | none                        | Directory of fonts, looked up before the system fonts. Must exist.                                                      |

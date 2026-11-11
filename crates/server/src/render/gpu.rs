@@ -1,5 +1,6 @@
 use std::{
     fs,
+    ops::Range,
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
@@ -10,21 +11,42 @@ use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, media:
 use lumen_ffmpeg::{QualityConfig, QualityRequest, VideoEncoderChoice};
 
 use super::{
-    CancelToken, ErrorCode, RenderOptions, RenderProgress, ServerRenderError,
+    CancelToken, ErrorCode, OutputFormat, RenderOptions, RenderOutput, RenderProgress,
+    SequenceLimits, ServerRenderError,
+    archive::{ArchiveError, StoredZip},
     device_budget::DeviceReservation,
     encode_target::{EncodeTarget, OpenedTarget},
+    image_render::ImageRender,
     media::{LocalMediaStore, media_root},
+    output::archive_frame_name,
     resolve_encoder,
 };
 
 pub(super) const MEDIA_PREFETCH_LOOKAHEAD_FRAMES: u32 = 30;
 
-/// Renders `composition` to MP4 bytes.
-pub fn render_project_mp4(
+/// What [`render_project`] produced: the bytes of a file in `format`, which for a sequence is the
+/// ZIP of its frames. [`OutputFormat::content_type`] and [`OutputFormat::extension`] describe it.
+#[derive(Debug, Clone)]
+pub struct RenderedOutput {
+    pub format: OutputFormat,
+    pub bytes: Vec<u8>,
+}
+
+/// Renders `composition` as `options.output` says: an MP4, a PNG or JPEG of one frame, or a ZIP of
+/// a PNG or JPEG per frame, named `frame_0000.png` and so on with the composition's frame numbers.
+/// An output that can't be rendered, or a sequence past `options.sequence_limits`, ends the render
+/// before any GPU work. Frames are encoded and written to the ZIP one at a time, so a sequence
+/// takes memory for one frame and, at the end, for the archive that holds them.
+pub fn render_project(
     composition: &Composition,
     options: &RenderOptions,
     on_progress: &mut dyn FnMut(RenderProgress),
-) -> Result<Vec<u8>, ServerRenderError> {
+) -> Result<RenderedOutput, ServerRenderError> {
+    let format = options.output.format;
+    options.output.validate(
+        composition.timeline().duration_frames,
+        &options.sequence_limits,
+    )?;
     if options.cancel.is_cancelled() {
         return Err(ServerRenderError::cancelled());
     }
@@ -42,38 +64,124 @@ pub fn render_project_mp4(
     if let Some(assets) = &options.assets {
         media_store = media_store.with_assets(Arc::clone(assets));
     }
-    let output_io = |context: &str, error: std::io::Error| {
-        ServerRenderError::new(ErrorCode::OutputIo, context, true).caused_by(error)
-    };
     let tmp = match &options.config.temp_dir {
         Some(dir) => tempfile::tempdir_in(dir),
         None => tempfile::tempdir(),
     }
     .map_err(|err| output_io("failed to create temp dir", err))?;
-    let output_path = tmp.path().join("output.mp4");
+    let output_path = tmp.path().join(format!("output.{}", format.extension()));
 
-    let choice = match &options.encoder {
-        Some(choice) => choice.clone(),
-        None => resolve_encoder(
-            &QualityConfig::built_in(),
+    if format.is_video() {
+        let choice = match &options.encoder {
+            Some(choice) => choice.clone(),
+            None => resolve_encoder(
+                &QualityConfig::built_in(),
+                composition,
+                QualityRequest::default(),
+            )
+            .map_err(|message| ServerRenderError::new(ErrorCode::InvalidQuality, message, false))?,
+        };
+        let mut render = Mp4Render::open(
             composition,
-            QualityRequest::default(),
-        )
-        .map_err(|message| ServerRenderError::new(ErrorCode::InvalidQuality, message, false))?,
-    };
-    let mut render = Mp4Render::open(
-        composition,
-        media_store,
-        choice,
-        &output_path,
-        options.cancel.clone(),
-    )?;
-    if let Some(glyphs) = options.max_text_glyphs {
-        render.set_max_text_glyphs(glyphs);
+            media_store,
+            choice,
+            &output_path,
+            &options.output,
+            options.cancel.clone(),
+        )?;
+        if let Some(glyphs) = options.max_text_glyphs {
+            render.set_max_text_glyphs(glyphs);
+        }
+        render.run(on_progress)?;
+    } else {
+        let mut render = ImageRender::open(
+            composition,
+            media_store,
+            &options.output,
+            options.cancel.clone(),
+        )?;
+        if let Some(glyphs) = options.max_text_glyphs {
+            render.set_max_text_glyphs(glyphs);
+        }
+        if format.is_still() {
+            let mut still = Vec::new();
+            render.run(
+                &mut |image| {
+                    still = image.bytes;
+                    Ok(())
+                },
+                on_progress,
+            )?;
+            return Ok(RenderedOutput {
+                format,
+                bytes: still,
+            });
+        }
+        write_archive(
+            render,
+            &output_path,
+            format,
+            &options.sequence_limits,
+            on_progress,
+        )?;
     }
-    render.run(on_progress)?;
 
-    fs::read(&output_path).map_err(|err| output_io("failed to read encoded output", err))
+    options.cancel.check()?;
+    let bytes =
+        fs::read(&output_path).map_err(|err| output_io("failed to read encoded output", err))?;
+    Ok(RenderedOutput { format, bytes })
+}
+
+fn output_io(context: &str, error: std::io::Error) -> ServerRenderError {
+    ServerRenderError::new(ErrorCode::OutputIo, context, true).caused_by(error)
+}
+
+/// Runs `render` and stores each of its frames in the ZIP at `path`.
+fn write_archive(
+    render: ImageRender<'_>,
+    path: &Path,
+    format: OutputFormat,
+    limits: &SequenceLimits,
+    on_progress: &mut dyn FnMut(RenderProgress),
+) -> Result<(), ServerRenderError> {
+    let extension = format.image_extension().expect("a sequence is images");
+    let last_frame = render.frames().end - 1;
+    let file =
+        fs::File::create(path).map_err(|err| output_io("failed to create the archive", err))?;
+    let mut zip = StoredZip::new(std::io::BufWriter::new(file));
+    let mut total_bytes = 0_u64;
+    let archive_failed = |error: ArchiveError| match error {
+        ArchiveError::Full => ServerRenderError::new(
+            ErrorCode::OutputTooLarge,
+            "the sequence is too large for one archive",
+            false,
+        ),
+        ArchiveError::Io(err) => output_io("failed to write the archive", err),
+    };
+    render.run(
+        &mut |image| {
+            total_bytes += image.bytes.len() as u64;
+            if total_bytes > limits.max_bytes {
+                return Err(ServerRenderError::new(
+                    ErrorCode::OutputTooLarge,
+                    format!(
+                        "the sequence is past {} bytes of images at frame {}",
+                        limits.max_bytes, image.frame
+                    ),
+                    false,
+                )
+                .into());
+            }
+            let name = archive_frame_name(image.frame, last_frame, extension);
+            Ok(zip.add(&name, &image.bytes).map_err(archive_failed)?)
+        },
+        on_progress,
+    )?;
+    zip.finish()
+        .map_err(archive_failed)?
+        .into_inner()
+        .map_err(|err| output_io("failed to write the archive", err.into_error()))?;
+    Ok(())
 }
 
 /// What a finished render did and where its time went.
@@ -105,6 +213,7 @@ pub struct RenderTiming {
 /// A render with its encoder open and its composition compiled, ready to write frames to `output`.
 pub struct Mp4Render<'a> {
     composition: &'a Composition,
+    frames: Range<u32>,
     target: EncodeTarget,
     encoder: String,
     path: &'static str,
@@ -116,16 +225,26 @@ pub struct Mp4Render<'a> {
 }
 
 impl<'a> Mp4Render<'a> {
-    /// Opens the first of `choice`'s encoders that starts, on the path that keeps frames on the
-    /// GPU when it has one. Cancelling `cancel` ends the wait for GPU device room, and stops
+    /// Checks that `render` is an MP4 of a range that fits the timeline, then opens the first of
+    /// `choice`'s encoders that starts, on the path that keeps frames on the GPU when it has one,
+    /// writing to `output`. Cancelling `cancel` ends the wait for GPU device room, and stops
     /// [`run`](Self::run) with [`ErrorCode::Cancelled`].
     pub fn open(
         composition: &'a Composition,
         mut media_store: LocalMediaStore,
         choice: VideoEncoderChoice,
         output: &Path,
+        render: &RenderOutput,
         cancel: CancelToken,
     ) -> Result<Self, ServerRenderError> {
+        if !render.format.is_video() {
+            return Err(ServerRenderError::new(
+                ErrorCode::InvalidOutput,
+                "a video render needs the mp4 format",
+                false,
+            ));
+        }
+        let frames = render.resolve(composition.timeline().duration_frames)?;
         let (choice, info) = choice
             .look_up(|warning| tracing::warn!("{warning}"))
             .map_err(invalid_render_profile)?;
@@ -153,6 +272,7 @@ impl<'a> Mp4Render<'a> {
         }
         let mut render = Self {
             composition,
+            frames,
             target,
             encoder,
             path,
@@ -184,27 +304,30 @@ impl<'a> Mp4Render<'a> {
         self.path
     }
 
-    /// Renders and encodes every frame, then the audio, and finishes the output. Cancelling stops
-    /// it at the next frame boundary, audio chunk or drained frame, and before the encoder
-    /// finishes; once the output is complete it is too late.
+    /// Renders and encodes the frames of the range, then the audio of the same span, and finishes
+    /// the output, which starts at time 0. Cancelling stops it at the next frame boundary, audio
+    /// chunk or drained frame, and before the encoder finishes; once the output is complete it is
+    /// too late.
     pub fn run(
         mut self,
         on_progress: &mut dyn FnMut(RenderProgress),
     ) -> Result<RenderReport, ServerRenderError> {
         let started = Instant::now();
-        let total_frames = self.composition.timeline().duration_frames;
+        let total_frames = self.frames.end - self.frames.start;
         let mut timing = RenderTiming::default();
-        for frame in 0..total_frames {
+        for frame in self.frames.clone() {
             self.cancel.check()?;
             prefetch_media_frames(self.composition, &self.media_store, frame);
+            let pts = frame - self.frames.start;
             self.target.write_frame(
                 &mut self.renderer,
                 self.composition,
                 &self.media_store,
                 frame,
+                pts,
                 &mut timing,
             )?;
-            let completed = frame.saturating_add(1);
+            let completed = pts + 1;
             let ratio = (completed as f32 / total_frames as f32).clamp(0.0, 1.0);
             on_progress(RenderProgress {
                 stage: "rendering",
@@ -217,6 +340,7 @@ impl<'a> Mp4Render<'a> {
             &self.renderer,
             self.composition,
             &self.media_store,
+            &self.frames,
             &self.cancel,
             &mut timing,
         )?;
@@ -236,7 +360,11 @@ fn invalid_render_profile(err: lumen_ffmpeg::FfmpegError) -> ServerRenderError {
     ServerRenderError::new(ErrorCode::InvalidRenderProfile, err.to_string(), false)
 }
 
-fn prefetch_media_frames(composition: &Composition, media_store: &LocalMediaStore, frame: u32) {
+pub(super) fn prefetch_media_frames(
+    composition: &Composition,
+    media_store: &LocalMediaStore,
+    frame: u32,
+) {
     let Ok(requirements) =
         lumen_engine::media::collect_frame_requirements(composition, media_store, frame)
     else {
@@ -336,6 +464,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn encoder_that_cannot_open_is_not_retryable() {
+        let _gpu = crate::render::gpu_test_guard();
         let options = RenderOptions {
             // libx264 only checks `tune` when it opens.
             encoder: Some(VideoEncoderChoice::single(
@@ -348,7 +477,7 @@ mod tests {
             ..RenderOptions::default()
         };
 
-        let error = render_project_mp4(&solid(), &options, &mut |_| {}).unwrap_err();
+        let error = render_project(&solid(), &options, &mut |_| {}).unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::EncodeFailed, "{error}");
         assert!(!error.retryable(), "{error}");
@@ -370,6 +499,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn cancelling_stops_at_the_next_frame_and_leaves_no_output() {
+        let _gpu = crate::render::gpu_test_guard();
         let temp = tempfile::tempdir().unwrap();
         let cancel = CancelToken::new();
         let options = RenderOptions {
@@ -383,7 +513,7 @@ mod tests {
         };
 
         let mut rendered = 0;
-        let error = render_project_mp4(&frames(50), &options, &mut |progress| {
+        let error = render_project(&frames(50), &options, &mut |progress| {
             rendered = progress.frame;
             if progress.frame == 3 {
                 cancel.cancel();
@@ -396,7 +526,7 @@ mod tests {
         assert_eq!(rendered, 3);
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
 
-        let error = render_project_mp4(&frames(50), &options, &mut |_| {
+        let error = render_project(&frames(50), &options, &mut |_| {
             panic!("a cancelled token renders nothing")
         })
         .unwrap_err();
@@ -406,6 +536,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn cancelling_after_the_last_frame_still_stops_the_render() {
+        let _gpu = crate::render::gpu_test_guard();
         let temp = tempfile::tempdir().unwrap();
         let cancel = CancelToken::new();
         let options = RenderOptions {
@@ -418,7 +549,7 @@ mod tests {
             ..RenderOptions::default()
         };
 
-        let error = render_project_mp4(&frames(4), &options, &mut |progress| {
+        let error = render_project(&frames(4), &options, &mut |progress| {
             if progress.frame == progress.total_frames {
                 cancel.cancel();
             }
@@ -431,6 +562,7 @@ mod tests {
 
     #[test]
     fn an_unknown_encoder_is_an_invalid_render_profile() {
+        let _gpu = crate::render::gpu_test_guard();
         let options = RenderOptions {
             encoder: Some(VideoEncoderChoice::single(
                 "definitely_not_an_encoder",
@@ -439,7 +571,7 @@ mod tests {
             ..RenderOptions::default()
         };
 
-        let error = render_project_mp4(&solid(), &options, &mut |_| {}).unwrap_err();
+        let error = render_project(&solid(), &options, &mut |_| {}).unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::InvalidRenderProfile, "{error}");
         assert!(
@@ -451,6 +583,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn media_resolves_in_the_root_the_options_name_with_the_engine_code_when_missing() {
+        let _gpu = crate::render::gpu_test_guard();
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("hero.png"), TINY_PNG).unwrap();
         let options = RenderOptions {
@@ -459,10 +592,10 @@ mod tests {
             ..RenderOptions::default()
         };
 
-        let bytes = render_project_mp4(&image("hero.png"), &options, &mut |_| {}).unwrap();
-        assert!(!bytes.is_empty());
+        let output = render_project(&image("hero.png"), &options, &mut |_| {}).unwrap();
+        assert!(!output.bytes.is_empty());
 
-        let error = render_project_mp4(&image("missing.png"), &options, &mut |_| {}).unwrap_err();
+        let error = render_project(&image("missing.png"), &options, &mut |_| {}).unwrap_err();
         assert_eq!(
             error.code(),
             ErrorCode::Engine("media.not_found"),
@@ -483,7 +616,7 @@ mod tests {
             ..RenderOptions::default()
         };
 
-        let error = render_project_mp4(&solid(), &options, &mut |_| {}).unwrap_err();
+        let error = render_project(&solid(), &options, &mut |_| {}).unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::InvalidConfig, "{error}");
         assert!(error.to_string().contains("no-such-fonts"), "{error}");

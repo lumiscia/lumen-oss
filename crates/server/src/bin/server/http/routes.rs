@@ -82,26 +82,47 @@ pub(super) async fn create_render(
             RenderJobError::invalid_quality(&message),
         )
     };
+    let output = input.output.unwrap_or_default();
+    output
+        .validate(
+            composition.timeline().duration_frames,
+            &state.sequence_limits,
+        )
+        .map_err(|error| {
+            ApiError::rejected(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                RenderJobError::refused(&error),
+            )
+        })?;
+    if !output.format.is_video() && (input.quality.is_some() || input.codec.is_some()) {
+        return Err(ApiError::rejected(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            RenderJobError::invalid_output("quality and codec only apply to the mp4 format"),
+        ));
+    }
     let codec = input
         .codec
         .as_deref()
         .map(str::parse)
         .transpose()
         .map_err(invalid_quality)?;
-    let request = QualityRequest {
-        preset: input.quality,
-        codec,
-        ..QualityRequest::default()
-    }
-    .with_env_encoder();
-    let encoder =
-        resolve_encoder(&state.quality, &composition, request).map_err(invalid_quality)?;
+    let encoder = if output.format.is_video() {
+        let request = QualityRequest {
+            preset: input.quality,
+            codec,
+            ..QualityRequest::default()
+        }
+        .with_env_encoder();
+        Some(resolve_encoder(&state.quality, &composition, request).map_err(invalid_quality)?)
+    } else {
+        None
+    };
 
     let id = new_render_id();
     let record = state.insert(RenderRecord::new(
         id.clone(),
         current_timestamp(),
-        input_hash(&input.composition, &input.media, &encoder),
+        input_hash(&input.composition, &input.media, encoder.as_ref(), &output),
     ));
     let render = ApiRenderJob::new(&record, &RenderStatus::Queued);
 
@@ -113,7 +134,7 @@ pub(super) async fn create_render(
             None
         }
     };
-    let max_text_glyphs = state.max_text_glyphs;
+    let (max_text_glyphs, sequence_limits) = (state.max_text_glyphs, state.sequence_limits);
     spawn_render_task(
         state,
         record,
@@ -123,6 +144,8 @@ pub(super) async fn create_render(
             composition,
             media: input.media,
             encoder,
+            output,
+            sequence_limits,
             max_text_glyphs,
             assets,
         },
@@ -250,11 +273,17 @@ pub(super) async fn get_render_artifact(
     match status {
         RenderStatus::Succeeded { artifact } => {
             let mut headers = HeaderMap::new();
-            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(artifact.content_type),
+            );
             headers.insert(
                 header::CONTENT_DISPOSITION,
-                HeaderValue::from_str(&format!("attachment; filename=\"{id}.mp4\""))
-                    .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+                HeaderValue::from_str(&format!(
+                    "attachment; filename=\"{id}.{}\"",
+                    artifact.extension
+                ))
+                .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
             );
             Ok((StatusCode::OK, headers, artifact.bytes).into_response())
         }
@@ -337,6 +366,8 @@ fn spawn_render_task(
                     artifact: Artifact {
                         url: format!("/renders/{}/artifact", record.id),
                         bytes: Bytes::from(completed.bytes),
+                        content_type: completed.format.content_type(),
+                        extension: completed.format.extension(),
                         render_ms: completed.render_ms,
                     },
                 },

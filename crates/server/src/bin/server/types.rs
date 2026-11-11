@@ -7,7 +7,7 @@ use std::{
 };
 
 use axum::body::Bytes;
-use lumen_server::render::{CancelToken, ErrorCode};
+use lumen_server::render::{CancelToken, ErrorCode, RenderOutput, ServerRenderError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Notify, watch};
@@ -28,6 +28,9 @@ pub struct RenderJobInput {
     /// `h264`, `hevc` or `av1`, which wins over the composition's.
     #[serde(default)]
     pub codec: Option<String>,
+    /// What to render: the format and the frames. Without it, an MP4 of the whole timeline.
+    #[serde(default)]
+    pub output: Option<RenderOutput>,
 }
 
 /// Why a render failed, kept with the render and returned by every read of it.
@@ -104,6 +107,23 @@ impl RenderJobError {
 
     pub fn is_cancelled(&self) -> bool {
         self.code == ErrorCode::Cancelled.as_str()
+    }
+
+    /// A render library error that refused the request, such as an output that can't be rendered.
+    pub fn refused(error: &ServerRenderError) -> Self {
+        Self {
+            code: error.code().to_string(),
+            message: sanitize_error_message(&error.to_string()),
+            retryable: false,
+        }
+    }
+
+    pub fn invalid_output(message: &str) -> Self {
+        Self {
+            code: ErrorCode::InvalidOutput.as_str().to_string(),
+            message: sanitize_error_message(message),
+            retryable: false,
+        }
     }
 
     pub fn invalid_quality(message: &str) -> Self {
@@ -199,6 +219,9 @@ pub struct Artifact {
     /// Where the client downloads it from, relative to the server.
     pub url: String,
     pub bytes: Bytes,
+    pub content_type: &'static str,
+    /// The file extension, without the dot, that the download is named with.
+    pub extension: &'static str,
     pub render_ms: u128,
 }
 
