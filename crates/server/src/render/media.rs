@@ -150,9 +150,77 @@ impl LocalMediaStore {
     }
 }
 
-/// Names the source of a failure as the composition wrote it, not as the store resolved it.
-fn written_as(source: &str) -> impl FnOnce(MediaError) -> MediaError + '_ {
-    move |error| error.with_source(source)
+/// A resolver of the file `resolved`, whose failures name `written`, the source as the composition
+/// wrote it, instead: a path in the media root or the asset store means nothing to a client, and
+/// is not theirs to learn.
+struct Written<T> {
+    written: String,
+    resolved: String,
+    inner: Arc<T>,
+}
+
+impl<T> Written<T> {
+    fn new(written: &str, resolved: &str, inner: Arc<T>) -> Box<Self> {
+        Box::new(Self {
+            written: written.to_string(),
+            resolved: resolved.to_string(),
+            inner,
+        })
+    }
+
+    fn named(&self, error: MediaError) -> MediaError {
+        error.written_as(&self.resolved, &self.written)
+    }
+}
+
+impl<T: ImageResolver> ImageResolver for Written<T> {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn metadata(&self) -> lumen_engine::media::ImageMetadata {
+        self.inner.metadata()
+    }
+
+    fn frame(&self) -> Result<lumen_engine::media::MediaFrame, MediaError> {
+        self.inner.frame().map_err(|error| self.named(error))
+    }
+}
+
+impl<T: VideoFrameResolver> VideoFrameResolver for Written<T> {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn metadata(&self) -> lumen_engine::media::VideoMetadata {
+        self.inner.metadata()
+    }
+
+    fn enqueue_frame(&self, frame: u32) -> Result<(), MediaError> {
+        self.inner
+            .enqueue_frame(frame)
+            .map_err(|error| self.named(error))
+    }
+
+    fn frame(&self, frame: u32) -> Result<lumen_engine::media::MediaFrame, MediaError> {
+        self.inner.frame(frame).map_err(|error| self.named(error))
+    }
+
+    fn retain_frames(&self, frames: &[u32]) {
+        self.inner.retain_frames(frames);
+    }
+}
+
+impl<T: AudioResolver> AudioResolver for Written<T> {
+    fn resolve_range(
+        &self,
+        start_sample: u64,
+        frames: usize,
+    ) -> Result<Arc<lumen_engine::audio::AudioBuffer>, MediaError> {
+        self.inner
+            .resolve_range(start_sample, frames)
+            .map_err(|error| self.named(error))
+    }
 }
 
 /// The resolver cached for `source`, opened with `open` if there is none. Concurrent first
@@ -197,8 +265,10 @@ pub fn is_enabled_flag(value: &str) -> bool {
 impl MediaStore for LocalMediaStore {
     fn get_image_resolver(&self, source: &str) -> Result<Box<dyn ImageResolver>, MediaError> {
         let resolved = self.stored_source(source, AssetKind::Image)?;
-        let resolver = self.image_resolver(&resolved).map_err(written_as(source))?;
-        Ok(Box::new(resolver))
+        let resolver = self
+            .image_resolver(&resolved)
+            .map_err(|error| error.written_as(&resolved, source))?;
+        Ok(Written::new(source, &resolved, resolver))
     }
 
     fn get_video_resolver(
@@ -208,16 +278,16 @@ impl MediaStore for LocalMediaStore {
         let resolved = self.stored_source(stream_id, AssetKind::Video)?;
         let resolver = self
             .video_resolver(&resolved)
-            .map_err(written_as(stream_id))?;
-        Ok(Box::new(resolver))
+            .map_err(|error| error.written_as(&resolved, stream_id))?;
+        Ok(Written::new(stream_id, &resolved, resolver))
     }
 
     fn get_audio_resolver(&self, source_id: &str) -> Result<Box<dyn AudioResolver>, MediaError> {
         let resolved = self.stored_source(source_id, AssetKind::Audio)?;
         let resolver = self
             .audio_resolver(&resolved)
-            .map_err(written_as(source_id))?;
-        Ok(Box::new(resolver))
+            .map_err(|error| error.written_as(&resolved, source_id))?;
+        Ok(Written::new(source_id, &resolved, resolver))
     }
 
     fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
@@ -664,6 +734,48 @@ mod tests {
     impl AssetResolver for Assets {
         fn resolve(&self, id: &str) -> Option<Asset> {
             self.0.get(id).cloned()
+        }
+    }
+
+    #[test]
+    fn a_failure_after_open_names_the_source_as_written_not_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let assets = tempfile::tempdir().unwrap();
+        let assets = assets.path().canonicalize().unwrap();
+        let tone = |path: &Path| {
+            let status = std::process::Command::new("ffmpeg")
+                .args(["-y", "-loglevel", "error", "-f", "lavfi"])
+                .args(["-i", "sine=frequency=440:duration=1", "-c:a", "pcm_s16le"])
+                .arg(path.with_extension("wav"))
+                .status();
+            let made = matches!(status, Ok(status) if status.success());
+            if made {
+                std::fs::rename(path.with_extension("wav"), path).unwrap();
+            }
+            made
+        };
+        let (plain, stored) = (root.join("tone.wav"), assets.join("voice"));
+        if !tone(&plain) || !tone(&stored) {
+            eprintln!("ffmpeg CLI unavailable; skipping");
+            return;
+        }
+        let store =
+            LocalMediaStore::new(root.clone(), &RenderConfig::default()).with_assets(Arc::new(
+                Assets(HashMap::from([("voice", Asset::Audio(stored.clone()))])),
+            ));
+        for (source, file) in [("tone.wav", &plain), ("asset:voice", &stored)] {
+            let resolver = store.get_audio_resolver(source).unwrap();
+            resolver.resolve_range(0, 1024).unwrap();
+            // The file goes away, as a truncated or replaced one would fail the next read.
+            std::fs::remove_file(file).unwrap();
+            let error = resolver.resolve_range(40_000, 1024).unwrap_err();
+            let failure = error.failure().expect("a media failure");
+            assert_eq!(failure.source, source);
+            for dir in [&root, &assets] {
+                let shown = dir.display().to_string();
+                assert!(!error.to_string().contains(&shown), "{error}");
+            }
         }
     }
 

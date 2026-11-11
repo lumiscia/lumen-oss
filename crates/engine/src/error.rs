@@ -358,6 +358,21 @@ pub enum MediaReason {
 }
 
 impl MediaReason {
+    /// The same reason with other details.
+    pub fn with_details(self, details: String) -> Self {
+        match self {
+            Self::NotFound { .. } => Self::NotFound { details },
+            Self::WrongKind { .. } => Self::WrongKind { details },
+            Self::Unsupported { .. } => Self::Unsupported { details },
+            Self::TooLarge { limit, actual, .. } => Self::TooLarge {
+                details,
+                limit,
+                actual,
+            },
+            Self::Decode { .. } => Self::Decode { details },
+        }
+    }
+
     pub fn details(&self) -> &str {
         match self {
             Self::NotFound { details }
@@ -639,14 +654,29 @@ impl MediaError {
         }
     }
 
-    /// The error with its source named `source`, as the composition wrote it, for hosts that
-    /// resolve a source to another string before opening it.
-    pub fn with_source(self, source: &str) -> Self {
+    /// The error with its source named `written`, as the composition wrote it, and `resolved`, the
+    /// file the host opened for it, replaced by that name in its details. For hosts that resolve
+    /// a source to a path before opening it, so that a failure after open does not name the path.
+    pub fn written_as(self, resolved: &str, written: &str) -> Self {
         match self {
-            Self::Failed(failure) => Self::from(MediaFailure {
-                source: source.to_string(),
-                ..*failure
-            }),
+            Self::Failed(failure) => {
+                let failure = *failure;
+                let details = failure.reason.details().replace(resolved, written);
+                Self::from(MediaFailure {
+                    source: written.to_string(),
+                    reason: failure.reason.with_details(details),
+                    ..failure
+                })
+            }
+            Self::FrameOutOfRange {
+                media_source,
+                frame,
+                frame_count,
+            } => Self::FrameOutOfRange {
+                media_source: media_source.replace(resolved, written),
+                frame,
+                frame_count,
+            },
             error => error,
         }
     }

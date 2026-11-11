@@ -4,7 +4,7 @@ use std::{fs, io::Read, path::Path};
 
 use lumen_3d::model::{AnimationInfo, MaterialInfo, ModelInfo};
 use lumen_engine::{
-    error::{MediaError, MediaFailure, MediaReason},
+    error::{MediaError, MediaFailure},
     media::{
         FfmpegAudioResolver, FfmpegVideoResolver, ImageFileResolver, ImageResolver,
         VideoFrameResolver,
@@ -108,7 +108,7 @@ fn probe_file(path: &Path) -> Result<(MediaKind, MediaMetadata), Rejection> {
             .reason
             .details()
             .replace(&*path.to_string_lossy(), FILE);
-        rejection.reason = with_details(rejection.reason, details);
+        rejection.reason = rejection.reason.clone().with_details(details);
         rejection
     };
 
@@ -178,21 +178,6 @@ fn is_image_magic(head: &[u8]) -> bool {
         || head.starts_with(b"II*\0")
         || head.starts_with(b"MM\0*")
         || head.starts_with(&[0, 0, 1, 0])
-}
-
-/// `reason` with other details.
-fn with_details(reason: MediaReason, details: String) -> MediaReason {
-    match reason {
-        MediaReason::NotFound { .. } => MediaReason::NotFound { details },
-        MediaReason::WrongKind { .. } => MediaReason::WrongKind { details },
-        MediaReason::Unsupported { .. } => MediaReason::Unsupported { details },
-        MediaReason::TooLarge { limit, actual, .. } => MediaReason::TooLarge {
-            details,
-            limit,
-            actual,
-        },
-        MediaReason::Decode { .. } => MediaReason::Decode { details },
-    }
 }
 
 fn probe_font(path: &Path, magic: FontMagic) -> Result<MediaMetadata, Rejection> {

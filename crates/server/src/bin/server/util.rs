@@ -68,6 +68,43 @@ pub(crate) fn input_hash(
 /// with, which are what a client needs to act on.
 pub(super) const MAX_ERROR_MESSAGE_CHARS: usize = 1024;
 
+/// `message` without the absolute file paths in it, each replaced by `<path>`: where the server
+/// keeps its files is not for a client to learn. A path is a word that starts with `/` after
+/// whitespace, a quote or a bracket and has more than one segment.
+pub(super) fn hide_server_paths(message: &str) -> String {
+    const OPENERS: &str = "`'\"([=";
+    const ENDERS: &str = "`'\")]<>,;";
+    let mut hidden = String::with_capacity(message.len());
+    let mut previous: Option<char> = None;
+    let mut chars = message.char_indices().peekable();
+    while let Some((start, c)) = chars.next() {
+        let at_word_start = previous.is_none_or(|p| p.is_whitespace() || OPENERS.contains(p));
+        if c == '/' && at_word_start {
+            let mut end = start + 1;
+            while let Some(&(at, next)) = chars.peek() {
+                if next.is_whitespace() || ENDERS.contains(next) {
+                    break;
+                }
+                end = at + next.len_utf8();
+                chars.next();
+            }
+            let word = &message[start..end];
+            let path = word.trim_end_matches([':', '.']);
+            if path.matches('/').count() >= 2 {
+                hidden.push_str("<path>");
+                hidden.push_str(&word[path.len()..]);
+            } else {
+                hidden.push_str(word);
+            }
+            previous = word.chars().last();
+        } else {
+            hidden.push(c);
+            previous = Some(c);
+        }
+    }
+    hidden
+}
+
 pub(super) fn sanitize_error_message(message: &str) -> String {
     let trimmed = message.trim();
     if trimmed.chars().count() <= MAX_ERROR_MESSAGE_CHARS {
@@ -79,6 +116,18 @@ pub(super) fn sanitize_error_message(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_paths_are_hidden_and_other_text_is_kept() {
+        assert_eq!(
+            hide_server_paths(
+                "audio `asset:a` failed: avformat_open_input: /var/lib/lumen/assets/ab12/file.wav: No such file (path `/srv/media/a b.wav`)"
+            ),
+            "audio `asset:a` failed: avformat_open_input: <path>: No such file (path `<path> b.wav`)"
+        );
+        let kept = "image `https://x.test/a/b.png` at /nodes/1 is 3/4 of a/b, see `/root`";
+        assert_eq!(hide_server_paths(kept), kept.replace("/nodes/1", "<path>"));
+    }
 
     #[test]
     fn timestamps_are_rfc3339_in_utc() {
