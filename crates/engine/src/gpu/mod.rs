@@ -42,5 +42,6 @@ pub use target::VulkanVideoTarget;
 pub use target::{CudaNvencTarget, CudaNvencTargetPool};
 #[cfg(all(target_os = "macos", feature = "ffmpeg", feature = "metal"))]
 pub use target::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
-pub use types::{BoundFrame, MediaTextureKey, RasterHandle};
+pub(crate) use types::MediaTextureKey;
+pub use types::{BoundFrame, RasterHandle, RenderTarget, RenderedFrame};
 pub use yuv::{YuvConverter, YuvFormat, YuvLayout};

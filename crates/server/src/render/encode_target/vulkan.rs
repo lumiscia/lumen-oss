@@ -4,7 +4,7 @@ use anyhow::{Context, anyhow};
 use lumen_engine::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE},
     composition::{BitDepth, Composition},
-    gpu::{GpuCompositionRenderer, VulkanVideoTarget},
+    gpu::{GpuCompositionRenderer, RenderedFrame, VulkanVideoTarget},
 };
 use lumen_ffmpeg::{
     AudioEncoderConfig, EncodeMode, EncoderQuality, GpuBackend, GpuVideoInput, MuxedEncoder,
@@ -91,7 +91,7 @@ impl VulkanTarget {
         pts: u32,
         timing: &mut RenderTiming,
     ) -> Result<(), ServerRenderError> {
-        let (raster, submission) =
+        let RenderedFrame { raster, submission } =
             render_raster(renderer, composition, media_store, frame, timing)?;
         checked_size(composition, &raster, frame)?;
         let video_frame = timed(&mut timing.render, || {

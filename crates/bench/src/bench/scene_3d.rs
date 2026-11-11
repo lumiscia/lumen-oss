@@ -11,7 +11,7 @@ use anyhow::{Context, anyhow, bail};
 use lumen_engine::{
     composition::Composition,
     error::MediaError,
-    gpu::GpuCompositionRenderer,
+    gpu::{GpuCompositionRenderer, RenderTarget},
     media::{
         AssetKind, CpuMediaFrame, EnvironmentResolver, ImageMetadata, ImageResolver, MediaFrame,
         MediaIdentity, MediaResolver, MediaStore, ModelResolver, ResolvedMedia,
@@ -323,11 +323,12 @@ async fn measure(case: &Case, args: &Args) -> anyhow::Result<String> {
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let frame = |renderer: &mut GpuCompositionRenderer, frame: u32| -> anyhow::Result<_> {
         let started = Instant::now();
-        let bound = renderer.bind_frame(&case.composition, frame, &case.media)?;
+        let bound =
+            renderer.bind_frame(&case.composition, frame, &case.media, RenderTarget::Owned)?;
         let bound_at = Instant::now();
-        renderer.upload_bound_frame(&bound)?;
+        renderer.upload_frame(&bound)?;
         let uploaded_at = Instant::now();
-        let (_raster, submission) = renderer.submit_render()?;
+        let submission = renderer.submit_frame(&bound)?.submission;
         let submitted_at = Instant::now();
         drop(bound);
         renderer

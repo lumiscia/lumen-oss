@@ -1,6 +1,6 @@
 use lumen_engine::{
     composition::Composition,
-    gpu::{GpuCompositionRenderer, OutputAlpha},
+    gpu::{GpuCompositionRenderer, OutputAlpha, RenderTarget},
 };
 use wasm_bindgen::prelude::*;
 
@@ -75,10 +75,11 @@ impl SurfaceCompositionRenderer {
                 .map_err(|e| render_error(frame, e))?;
             self.needs_compile = false;
         }
-        let (raster, _submission) = self
+        let raster = self
             .renderer
-            .render_frame_submitted(composition, frame, media)
-            .map_err(|e| render_error(frame, e))?;
+            .render(composition, frame, media, RenderTarget::Owned)
+            .map_err(|e| render_error(frame, e))?
+            .raster;
         let surface_texture = current_surface_texture(&self.gpu.surface)?;
         self.renderer
             .gpu_renderer()

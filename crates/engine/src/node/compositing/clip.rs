@@ -117,7 +117,7 @@ impl ClipWindow {
     /// window's start. The frame rates scale the numerator and denominator instead of
     /// dividing, so whole frames stay exact. Matching rates leave the denominator alone, which
     /// keeps a frame just below a whole one, as a looped `time_remap` target is.
-    pub fn local_time(&self, frame: FrameTime) -> Option<FrameTime> {
+    pub(crate) fn local_time(&self, frame: FrameTime) -> Option<FrameTime> {
         let den = frame.den();
         let elapsed = frame.num() - self.start * den;
         let duration = self.duration * den;
@@ -204,7 +204,7 @@ impl Clip {
     }
 
     /// When the clip shows in `scope`, evaluated at `ctx`'s frame.
-    pub fn window(
+    pub(crate) fn window(
         &self,
         scope: &Scope<'_>,
         ctx: &ExpressionContext<'_>,

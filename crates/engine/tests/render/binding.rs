@@ -1,6 +1,6 @@
 //! What a frame binds: the errors it reports, the bounds it records and the glyphs it places.
 
-use lumen_engine::{composition::Composition, node::NodeId};
+use lumen_engine::{composition::Composition, gpu::RenderTarget, node::NodeId};
 use lumen_gpu::{RectI, Size};
 use serde_json::{Value, json};
 
@@ -241,7 +241,7 @@ fn bind_errors() {
         let mut renderer = gpu.renderer();
         renderer.compile(&composition).unwrap();
         let error = renderer
-            .bind_frame(&composition, 0, &media)
+            .bind_frame(&composition, 0, &media, RenderTarget::Owned)
             .map(|_| ())
             .expect_err(&row.name)
             .to_string();
@@ -463,7 +463,7 @@ fn text_at_fractional_position_draws_glyphs_on_whole_pixels() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
     let bound = renderer
-        .bind_frame(&composition, 0, &TestMedia::default())
+        .bind_frame(&composition, 0, &TestMedia::default(), RenderTarget::Owned)
         .unwrap();
     let rects: Vec<[f32; 4]> = bound
         .glyph_instances()
@@ -491,7 +491,7 @@ fn glyph_scope_crosses_functions() {
     let composition: Composition = scene.into();
     gpu()
         .renderer()
-        .bind_frame(&composition, 0, &TestMedia::default())
+        .bind_frame(&composition, 0, &TestMedia::default(), RenderTarget::Owned)
         .unwrap();
 }
 
@@ -614,19 +614,25 @@ fn text_upload_repeats_until_it_is_uploaded() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
 
-    let first = renderer.bind_frame(&composition, 0, &media).unwrap();
+    let first = renderer
+        .bind_frame(&composition, 0, &media, RenderTarget::Owned)
+        .unwrap();
     let regions = first.atlas_region_count();
     assert!(regions > 0);
 
-    let rebound = renderer.bind_frame(&composition, 0, &media).unwrap();
+    let rebound = renderer
+        .bind_frame(&composition, 0, &media, RenderTarget::Owned)
+        .unwrap();
     assert_eq!(
         rebound.atlas_region_count(),
         regions,
         "text uploads that were never applied must be repeated"
     );
-    renderer.upload_bound_frame(&rebound).unwrap();
+    renderer.upload_frame(&rebound).unwrap();
 
-    let unchanged = renderer.bind_frame(&composition, 0, &media).unwrap();
+    let unchanged = renderer
+        .bind_frame(&composition, 0, &media, RenderTarget::Owned)
+        .unwrap();
     assert_eq!(unchanged.atlas_region_count(), 0);
     assert!(!unchanged.glyph_instances().is_empty());
 }
@@ -643,10 +649,16 @@ fn text_bind_ahead_restores_the_committed_frame() {
     let media = TestMedia::default();
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    let first = renderer.bind_frame(&composition, 0, &media).unwrap();
-    renderer.upload_bound_frame(&first).unwrap();
-    renderer.bind_frame(&composition, 1, &media).unwrap();
-    let restored = renderer.bind_frame(&composition, 0, &media).unwrap();
+    let first = renderer
+        .bind_frame(&composition, 0, &media, RenderTarget::Owned)
+        .unwrap();
+    renderer.upload_frame(&first).unwrap();
+    renderer
+        .bind_frame(&composition, 1, &media, RenderTarget::Owned)
+        .unwrap();
+    let restored = renderer
+        .bind_frame(&composition, 0, &media, RenderTarget::Owned)
+        .unwrap();
     assert!(!restored.glyph_instances().is_empty());
     assert_eq!(
         restored.atlas_region_count(),
@@ -654,9 +666,13 @@ fn text_bind_ahead_restores_the_committed_frame() {
         "a bind that was never applied must not undo the committed atlas"
     );
 
-    renderer.upload_bound_frame(&restored).unwrap();
-    let again = renderer.bind_frame(&composition, 0, &media).unwrap();
+    renderer.upload_frame(&restored).unwrap();
+    let again = renderer
+        .bind_frame(&composition, 0, &media, RenderTarget::Owned)
+        .unwrap();
     assert_eq!(again.atlas_region_count(), 0);
-    let ahead = renderer.bind_frame(&composition, 1, &media).unwrap();
+    let ahead = renderer
+        .bind_frame(&composition, 1, &media, RenderTarget::Owned)
+        .unwrap();
     assert!(!ahead.glyph_instances().is_empty());
 }

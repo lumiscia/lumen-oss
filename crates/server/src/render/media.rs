@@ -8,10 +8,9 @@ use anyhow::{Context, anyhow};
 use lumen_engine::{
     audio::AudioResolver,
     error::{MediaError, MediaFailure},
-    ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
-    image::ImageFileResolver,
     media::{
-        Asset, AssetKind, AssetResolver, EnvironmentResolver, ImageResolver, LutResolver,
+        Asset, AssetKind, AssetResolver, EnvironmentResolver, FfmpegAudioResolver,
+        FfmpegResolverOptions, FfmpegVideoResolver, ImageFileResolver, ImageResolver, LutResolver,
         MediaIdentity, MediaResolver, MediaStore, ModelResolver, NoAssets, ResolvedMedia,
         TextSession, VideoFrameResolver, asset_id, resolve_asset,
     },

@@ -1,7 +1,7 @@
 //! Images and video frames from a media store: their size, replacement, caching and release.
 
 use lumen_engine::error::MediaReason;
-use lumen_engine::gpu::GpuCompositionRenderer;
+use lumen_engine::gpu::{GpuCompositionRenderer, RenderTarget};
 use lumen_engine::media::{AssetKind, MediaLocation, NodeParamAt};
 use lumen_engine::node::NodeId;
 use lumen_gpu::wgpu;
@@ -61,7 +61,7 @@ fn a_missing_source_only_fails_the_frames_that_reach_it() {
         GREEN
     );
     let error = renderer
-        .render_frame_at(&composition, 0.0, &media)
+        .render(&composition, 0.0, &media, RenderTarget::Owned)
         .unwrap_err();
     assert!(error.to_string().contains("gone"), "{error}");
 }
@@ -73,7 +73,12 @@ fn a_missing_source_reports_where_it_is_used() {
         media_in(json!({ "kind": "image", "source": "gone.png" })).into();
     let error = gpu
         .renderer()
-        .render_frame_at(&composition, 0.0, &TestMedia::default())
+        .render(
+            &composition,
+            0.0,
+            &TestMedia::default(),
+            RenderTarget::Owned,
+        )
         .unwrap_err();
     let failure = error.media_failure().expect("a media failure");
     assert_eq!(failure.code(), "media.not_found");
@@ -105,7 +110,7 @@ fn an_image_wider_than_the_device_allows_is_too_large() {
     let width = limit as u32 + 1;
     let media = TestMedia::default().image("wide.png", width, 1, solid((width, 1), RED));
     let error = renderer
-        .render_frame_at(&composition, 0.0, &media)
+        .render(&composition, 0.0, &media, RenderTarget::Owned)
         .unwrap_err();
     let failure = error.media_failure().expect("a media failure");
     assert!(
@@ -241,7 +246,11 @@ fn images_a_failed_recording_bound_are_freed() {
     .into();
     for attempt in 0..5 {
         let media = plate(&format!("plate:{attempt}"), CANVAS, RED);
-        assert!(renderer.bind_frame(&composition, attempt, &media).is_err());
+        assert!(
+            renderer
+                .bind_frame(&composition, attempt, &media, RenderTarget::Owned)
+                .is_err()
+        );
         assert_eq!(renderer.cached_media_texture_count(), 0, "{attempt}");
         assert_eq!(renderer.frame_graph_stats().adopted_bytes, 0, "{attempt}");
     }
@@ -286,17 +295,17 @@ fn render_external(
         view_formats: &[],
     });
     let submitted = renderer
-        .render_frame_into_external(
+        .render(
             composition,
             0,
             media,
-            lumen_gpu::ExternalTexture::from_texture(texture),
+            RenderTarget::External(lumen_gpu::ExternalTexture::from_texture(texture)),
         )
         .unwrap();
     submitted.wait(&renderer.gpu_renderer().device).unwrap();
     read_rgba8(
         renderer.gpu_renderer(),
-        submitted.texture(),
+        &submitted.raster.texture,
         desc.domain.storage_size,
     )
 }

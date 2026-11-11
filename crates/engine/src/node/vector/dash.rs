@@ -7,7 +7,7 @@ use crate::node::{Deferred, DelegateEvalContext, DelegateEvaluable, Delegated, P
 pub const MAX_DASH_LENGTHS: usize = 16;
 /// Lengths the shader holds: an odd count is listed twice to make the pattern.
 pub(super) const GPU_DASH_LENGTHS: usize = 2 * MAX_DASH_LENGTHS;
-/// Longest a dash or gap may be, so that a pattern of [`GPU_DASH_LENGTHS`] still sums to a
+/// Longest a dash or gap may be, so that a pattern of `GPU_DASH_LENGTHS` still sums to a
 /// finite f32.
 pub const MAX_DASH_LENGTH: f64 = 1e37;
 

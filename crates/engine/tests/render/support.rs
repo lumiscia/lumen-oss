@@ -11,7 +11,7 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use lumen_engine::{
     composition::Composition,
     error::MediaError,
-    gpu::{BoundFrame, GpuCompositionRenderer, WORKING_COLOR_FORMAT},
+    gpu::{BoundFrame, GpuCompositionRenderer, RenderTarget, WORKING_COLOR_FORMAT},
     media::{
         AssetKind, CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver,
         LutResolver, MediaFrame, MediaIdentity, MediaResolver, MediaStore, ModelResolver,
@@ -647,8 +647,9 @@ pub fn render(
     media: &impl MediaStore,
 ) -> Frame {
     let raster = renderer
-        .render_frame_at(scene, at, media)
-        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
+        .render(scene, at, media, RenderTarget::Owned)
+        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"))
+        .raster;
     let size = raster.domain.storage_size;
     let gpu = renderer.gpu_renderer();
     Frame {
@@ -667,8 +668,9 @@ pub fn render_held(
     media: &impl MediaStore,
 ) -> (Frame, Arc<wgpu::Texture>) {
     let raster = renderer
-        .render_frame_at(scene, at, media)
-        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
+        .render(scene, at, media, RenderTarget::Owned)
+        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"))
+        .raster;
     let size = raster.domain.storage_size;
     let frame = Frame {
         at,
@@ -688,12 +690,14 @@ pub fn render_inspecting(
     inspect: impl FnOnce(&GpuCompositionRenderer, &BoundFrame),
 ) -> Frame {
     let bound = renderer
-        .bind_frame_at(scene, at, media)
+        .bind_frame(scene, at, media, RenderTarget::Owned)
         .unwrap_or_else(|error| panic!("frame {at} does not bind: {error}"));
     inspect(renderer, &bound);
-    let (raster, _) = renderer
-        .submit_bound_frame(&bound)
-        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
+    let raster = renderer
+        .upload_frame(&bound)
+        .and_then(|()| renderer.submit_frame(&bound))
+        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"))
+        .raster;
     let size = raster.domain.storage_size;
     let gpu = renderer.gpu_renderer();
     Frame {
@@ -730,8 +734,9 @@ pub fn render_working_space(
         .compile_with_output_format(scene, WORKING_COLOR_FORMAT)
         .unwrap_or_else(|error| panic!("the scene does not compile: {error}"));
     let raster = renderer
-        .render_frame_at(scene, at, media)
-        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"));
+        .render(scene, at, media, RenderTarget::Owned)
+        .unwrap_or_else(|error| panic!("frame {at} does not render: {error}"))
+        .raster;
     read_rgba16f(
         renderer.gpu_renderer(),
         &raster.texture,

@@ -6,7 +6,7 @@
 //!
 //! # Modules
 //!
-//! - [`property`] — the JSON forms params share: a leading `=`, whole numbers and colors
+//! - `property` — the JSON forms params share: a leading `=`, whole numbers and colors
 
 mod property;
 
