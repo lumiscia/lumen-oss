@@ -10,13 +10,14 @@ import {
 } from "@lumiscia/lumen-types";
 
 import { quote } from "./quote.js";
+import type { NodeReference } from "./types.js";
 
 declare const valueType: unique symbol;
 declare const easingType: unique symbol;
 declare const keyType: unique symbol;
 
-/** A type an expression can evaluate to. Params take all but `Easing` and `Key`. */
-export type Value = number | Vec2 | Color | string | Easing | Key;
+/** A type an expression can evaluate to. Params take all but `boolean`, `Easing` and `Key`. */
+export type Value = boolean | number | Vec2 | Color | string | Easing | Key;
 
 /** What `cubicBezier` evaluates to. `ease`, `tween`, `key` and `keyframes` take it; params don't. */
 export interface Easing {
@@ -36,6 +37,9 @@ export interface Key<T extends KeyValue = KeyValue> {
 
 export type Num = number | Expr<number>;
 
+/** What `when`, `and` and `or` test. The engine counts a number as true unless it is 0. */
+export type Condition = Expr<boolean> | Expr<number>;
+
 /** An expression, or a literal of the same type. Tuples lower to `vec2(..)`, `rgb(..)` or `rgba(..)`. */
 export type Arg<T extends Value> =
   | Expr<T>
@@ -54,7 +58,7 @@ export type AnyArg = Expr | Arg<number> | Arg<Vec2> | Arg<Color> | Arg<string>;
 /**
  * An expression that evaluates to `T`. Arithmetic follows the evaluator: numbers combine freely,
  * vec2 values add and subtract with each other and scale by numbers or vec2 values, and colours
- * have no arithmetic.
+ * have no arithmetic. Comparisons and logic evaluate to `boolean`, which `when` branches on.
  */
 export class Expr<T extends Value = Value> {
   declare readonly [valueType]: T;
@@ -96,6 +100,56 @@ export class Expr<T extends Value = Value> {
 
   clamp(this: Expr<number>, min: Num, max: Num): Expr<number> {
     return clamp(this, min, max);
+  }
+
+  gt(this: Expr<number>, other: Num): Expr<boolean> {
+    return binary(this, ">", other);
+  }
+
+  gte(this: Expr<number>, other: Num): Expr<boolean> {
+    return binary(this, ">=", other);
+  }
+
+  lt(this: Expr<number>, other: Num): Expr<boolean> {
+    return binary(this, "<", other);
+  }
+
+  lte(this: Expr<number>, other: Num): Expr<boolean> {
+    return binary(this, "<=", other);
+  }
+
+  /** Values of different types are never equal, so both sides must share a type. */
+  eq(this: Expr<number>, other: Num): Expr<boolean>;
+  eq(this: Expr<boolean>, other: Expr<boolean>): Expr<boolean>;
+  eq(this: Expr<Vec2>, other: Arg<Vec2>): Expr<boolean>;
+  eq(this: Expr<Color>, other: Arg<Color>): Expr<boolean>;
+  eq(this: Expr<string>, other: Arg<string>): Expr<boolean>;
+  eq(other: AnyArg): Expr<boolean> {
+    return binary(this, "==", other);
+  }
+
+  /** Values of different types are never equal, so both sides must share a type. */
+  neq(this: Expr<number>, other: Num): Expr<boolean>;
+  neq(this: Expr<boolean>, other: Expr<boolean>): Expr<boolean>;
+  neq(this: Expr<Vec2>, other: Arg<Vec2>): Expr<boolean>;
+  neq(this: Expr<Color>, other: Arg<Color>): Expr<boolean>;
+  neq(this: Expr<string>, other: Arg<string>): Expr<boolean>;
+  neq(other: AnyArg): Expr<boolean> {
+    return binary(this, "!=", other);
+  }
+
+  /** Skips evaluating `other` when this is false. */
+  and(this: Expr<boolean>, other: Condition): Expr<boolean> {
+    return binary(this, "&&", other);
+  }
+
+  /** Skips evaluating `other` when this is true. */
+  or(this: Expr<boolean>, other: Condition): Expr<boolean> {
+    return binary(this, "||", other);
+  }
+
+  not(this: Expr<boolean>): Expr<boolean> {
+    return new Expr(`(!${lower(this)})`);
   }
 
   toString(): ExpressionString {
@@ -380,6 +434,31 @@ export const ease = Object.assign(
     readonly [N in EasingName as CamelCase<N>]: N;
   },
 );
+
+/**
+ * `then` when `condition` is true, otherwise `otherwise`, which lower to `if(..)`. Only the chosen
+ * branch is evaluated. The branches share a type, as in `when(frame.gte(30), hex("#fff"), [0, 0, 0])`.
+ */
+export function when(condition: Condition, then: Num, otherwise: Num): Expr<number>;
+export function when(condition: Condition, then: Arg<Vec2>, otherwise: Arg<Vec2>): Expr<Vec2>;
+export function when(condition: Condition, then: Arg<Color>, otherwise: Arg<Color>): Expr<Color>;
+export function when(condition: Condition, then: Arg<string>, otherwise: Arg<string>): Expr<string>;
+export function when(condition: Condition, then: AnyArg, otherwise: AnyArg): Expr {
+  return new Expr(`if(${lower(condition)}, ${lower(then)}, ${lower(otherwise)})`);
+}
+
+/**
+ * The value of another node's param, as in `node(title, "font_size")`. The engine decides the
+ * type when it reads the param, so it takes the type of the param it is in, or the one you give,
+ * as in `node<number>(..)`, like `expr`.
+ */
+export function node<T extends Value = never>(id: NodeReference, property: string): Expr<T> {
+  const value = typeof id === "number" ? id : id.id;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`\`node\` expects an unsigned integer id, got ${value}.`);
+  }
+  return new Expr<T>(`node(${value}, ${quote(property)})`);
+}
 
 /** `seconds` as a `1.5s` literal, which the evaluator converts to frames. */
 export function sec(seconds: number): Expr<number> {
