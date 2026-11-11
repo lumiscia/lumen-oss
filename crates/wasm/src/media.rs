@@ -195,6 +195,8 @@ struct StoredVideo {
     metadata: VideoMetadata,
     frames: VideoFrameCache,
     identity: MediaIdentity,
+    /// What the source's colour tags ask for that its latest YUV frame is read without.
+    color_warning: Option<String>,
 }
 
 impl Default for StoredVideo {
@@ -203,6 +205,7 @@ impl Default for StoredVideo {
             metadata: VideoMetadata::default(),
             frames: VideoFrameCache::default(),
             identity: MediaIdentity::unique(),
+            color_warning: None,
         }
     }
 }
@@ -560,18 +563,30 @@ impl WasmMediaStore {
         self.set_video_frame_data(stream_id, frame, VideoFrameData::RawRgba(Arc::new(image)))
     }
 
+    /// Stores a YUV frame, and `color_warning`, what its source's colour tags ask for that it is
+    /// read without, which a render of the stream warns of.
     pub fn set_video_frame_yuv(
         &self,
         stream_id: String,
         frame: u32,
         yuv: YuvFrame,
         display_size: (u32, u32),
+        color_warning: Option<String>,
     ) -> Result<(), &'static str> {
-        self.set_video_frame_data(
-            stream_id,
+        let mut videos = self
+            .inner
+            .videos
+            .write()
+            .map_err(|_| "media store lock poisoned")?;
+        videos.insert_frame(
+            stream_id.clone(),
             frame,
             VideoFrameData::Yuv(Arc::new(yuv), display_size),
-        )
+        );
+        if let Some(video) = videos.streams.get_mut(&stream_id) {
+            video.color_warning = color_warning;
+        }
+        Ok(())
     }
 
     fn set_video_frame_data(
@@ -610,19 +625,21 @@ impl WasmMediaStore {
 
     /// A stream, which resolves before any of it is set, as its frames arrive one by one.
     fn video(&self, stream_id: &str) -> Result<ResolvedMedia, MediaError> {
-        let identity = self
+        let (identity, color_warning) = self
             .inner
             .videos
             .read()
             .map_err(|_| MediaError::source_not_found(stream_id, "media store lock poisoned"))?
             .streams
             .get(stream_id)
-            .map(|video| video.identity.clone());
+            .map(|video| (Some(video.identity.clone()), video.color_warning.clone()))
+            .unwrap_or_default();
         Ok(ResolvedMedia::new(
             identity.unwrap_or_else(|| unset("video", stream_id)),
             MediaResolver::Video(Box::new(WasmVideoResolver {
                 id: stream_id.to_string(),
                 store: Arc::clone(&self.inner),
+                color_warning,
             })),
         ))
     }
@@ -763,6 +780,7 @@ impl ImageResolver for WasmImageResolver {
 struct WasmVideoResolver {
     id: String,
     store: Arc<WasmMediaStoreInner>,
+    color_warning: Option<String>,
 }
 
 impl VideoFrameResolver for WasmVideoResolver {
@@ -808,6 +826,10 @@ impl VideoFrameResolver for WasmVideoResolver {
             .protected
             .insert(self.id.clone(), frames.iter().copied().collect());
         videos.evict_to_budget(None);
+    }
+
+    fn color_warning(&self) -> Option<&str> {
+        self.color_warning.as_deref()
     }
 }
 
@@ -964,7 +986,7 @@ mod tests {
             .expect("set budget");
         for frame in 0..3 {
             store
-                .set_video_frame_yuv("a".to_string(), frame, yuv(), (3, 4))
+                .set_video_frame_yuv("a".to_string(), frame, yuv(), (3, 4), None)
                 .expect("set frame");
         }
 
@@ -977,6 +999,15 @@ mod tests {
             (resolver.metadata().width, resolver.metadata().height),
             (3, 4)
         );
+        assert_eq!(resolver.color_warning(), None);
+
+        // A stream's warning is its latest frame's, which a render reads from its resolver.
+        let warning = "its `linear` transfer is read as SDR, which the renderer doesn't convert";
+        store
+            .set_video_frame_yuv("b".to_string(), 0, yuv(), (3, 4), Some(warning.to_string()))
+            .expect("set frame");
+        let tagged = self::resolver::<dyn VideoFrameResolver>(&store, "b");
+        assert_eq!(tagged.color_warning(), Some(warning));
     }
 
     #[test]

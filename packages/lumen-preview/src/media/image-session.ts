@@ -1,4 +1,4 @@
-import { decodeImageBitmapToRgba } from "./canvas.js";
+import { decodeImageBitmapToRgba, decodeImageBlob } from "./canvas.js";
 import { toMediaError } from "./errors.js";
 import { sourceInputToBlob } from "./source.js";
 import type { DecodedImageFrame, MediaSourceInput } from "./types.js";
@@ -23,7 +23,7 @@ export class ImageSession {
   private async decode(): Promise<DecodedImageFrame> {
     try {
       const blob = await sourceInputToBlob(this.source, this.signal);
-      return decodeImageBitmapToRgba(await createImageBitmap(blob));
+      return decodeImageBitmapToRgba(await decodeImageBlob(blob));
     } catch (error) {
       throw toMediaError(
         "decode_failed",

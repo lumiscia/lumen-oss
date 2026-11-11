@@ -288,7 +288,7 @@ describe("LumenMediaBridge", () => {
       await bridge.loadVideoFrame("clip", 0);
 
       expect(setVideoFrameYuv.mock.calls[0]?.slice(2, 5)).toEqual([4, 2, "NV12"]);
-      expect(setVideoFrameYuv.mock.calls[0]?.slice(10)).toEqual([90, 2, 4]);
+      expect(setVideoFrameYuv.mock.calls[0]?.slice(10, 13)).toEqual([90, 2, 4]);
     });
 
     it("asks the target which frames it still holds", async () => {

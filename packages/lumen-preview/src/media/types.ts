@@ -144,6 +144,8 @@ export interface NativeVideoFrameTarget extends LumenMediaTarget {
     rotation: number,
     displayWidth: number,
     displayHeight: number,
+    primaries?: string,
+    transfer?: string,
   ): void;
   setVideoFrameObject?(
     streamId: string,
