@@ -2169,14 +2169,36 @@ export interface RasterMultimergeNode extends CompositionNodeBase<"raster_multim
   };
 }
 
-/** Draws a 3D scene into a raster, with a transparent background. */
+/**
+ * Draws a 3D scene into a raster, with a transparent background unless it shows its environment
+ * map.
+ */
 export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
   readonly params?: {
     /**
-     * Brightness of the built-in studio of softboxes that surfaces reflect and are lit by from
-     * all around. 0 turns it off.
+     * Brightness of the light from all around that surfaces reflect and are lit by: the
+     * `environment_map` when one is set, and otherwise a built-in studio of softboxes. 0 turns it
+     * off.
      */
     readonly environment?: ExpressionValue<number>;
+    /**
+     * Shows the environment map behind the scene, through the exposure and tone mapping but not
+     * the fog, which makes the output opaque. Shadow catchers darken it.
+     */
+    readonly environment_background?: ExpressionValue<boolean>;
+    /** How blurred the background is, as a surface of this roughness reflects it: 0 is sharp. */
+    readonly environment_background_blur?: ExpressionValue<number>;
+    /**
+     * An equirectangular Radiance `.hdr` or OpenEXR `.exr` file that lights the scene from all
+     * around in place of the studio: a path or `media` alias, or `asset:<id>` for an environment
+     * map asset of the host's. Its centre is the view along -Z, with +X to its right and +Y at
+     * its top, and it is stretched over the whole sphere whatever its aspect. Non-finite and
+     * negative pixels are read as black. While a map lights a scene without lights, it gets no
+     * default ones. Empty uses the studio.
+     */
+    readonly environment_map?: ExpressionValue<string>;
+    /** Turn of the environment map about +Y in degrees, as a yaw turns an object. */
+    readonly environment_rotation?: ExpressionValue<number>;
     /** Exposure adjustment in stops before tone mapping. */
     readonly exposure?: ExpressionValue<number>;
     /** Colour surfaces fade to with distance. Must be a solid color. */

@@ -26,7 +26,7 @@ lto = true
 codegen-units = 1
 
 [workspace.dependencies]
-lumen-3d = { package = "lumen-engine-3d", path = "crates/3d", version = "0.5.1" }
+lumen-3d = { package = "lumen-engine-3d", path = "crates/3d", version = "0.5.1", default-features = false }
 lumen-engine = { path = "crates/engine", version = "0.5.1" }
 lumen-ffmpeg = { package = "lumen-engine-ffmpeg", path = "crates/ffmpeg", version = "0.5.1" }
 lumen-gpu = { package = "lumen-engine-gpu", path = "crates/gpu", version = "0.5.1" }

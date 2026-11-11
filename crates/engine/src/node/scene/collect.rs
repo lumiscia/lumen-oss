@@ -36,7 +36,7 @@ pub(crate) struct GpuMesh {
     pub(crate) skin: Option<BufRef>,
 }
 
-fn storage_buffer(rec: &mut Recorder, label: &str, contents: &[u8]) -> BufRef {
+pub(super) fn storage_buffer(rec: &mut Recorder, label: &str, contents: &[u8]) -> BufRef {
     let buffer = wgpu::util::DeviceExt::create_buffer_init(
         rec.device(),
         &wgpu::util::BufferInitDescriptor {
@@ -97,6 +97,7 @@ pub(crate) struct SceneCache {
     model_bytes: u64,
     /// A depth texture bound in place of a shadow atlas by scenes without shadows.
     no_shadows: Option<TexRef>,
+    pub(super) environments: super::environment::EnvironmentCache,
 }
 
 impl SceneCache {
@@ -113,6 +114,18 @@ impl SceneCache {
             forget_model(rec, &cached.model);
         }
         self.model_bytes = 0;
+        self.environments.release(rec);
+    }
+
+    /// Frees environment maps as [`Self::trim`] frees models.
+    pub(crate) fn trim_environments<'k>(
+        &mut self,
+        rec: &mut Recorder,
+        tick: u64,
+        kept: impl IntoIterator<Item = &'k String>,
+    ) {
+        self.environments
+            .trim(rec, tick, &kept.into_iter().collect());
     }
 
     /// Frees models, least recently drawn first, while the cache holds more than
@@ -230,7 +243,7 @@ impl From<MediaError> for ModelLoadError {
 /// Which of `models`, each with its bytes, the tick it was last drawn in and whether it must stay,
 /// to free so that the `total` bytes they hold come down to `budget`: least recently drawn first,
 /// then by key, and none that must stay.
-fn evictions<K: Ord + Copy>(
+pub(super) fn evictions<K: Ord + Copy>(
     models: impl Iterator<Item = (K, u64, u64, bool)>,
     total: u64,
     budget: u64,

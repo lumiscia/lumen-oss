@@ -12,8 +12,8 @@ use lumen_engine::{
     error::MediaError,
     gpu::{BoundFrame, GpuCompositionRenderer},
     media::{
-        CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame, MediaStore,
-        ModelResolver, TextSession, VideoFrameResolver, VideoMetadata, YuvFrame,
+        CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver, MediaFrame,
+        MediaStore, ModelResolver, TextSession, VideoFrameResolver, VideoMetadata, YuvFrame,
     },
     node::NodeKind,
 };
@@ -136,6 +136,10 @@ pub struct TestMedia {
     models: HashMap<String, Arc<Vec<u8>>>,
     /// How many times model bytes were read, shared with its clones.
     model_loads: Arc<AtomicUsize>,
+    /// Environment map files by source.
+    environments: HashMap<String, Arc<Vec<u8>>>,
+    /// How many times environment map bytes were read, shared with its clones.
+    environment_loads: Arc<AtomicUsize>,
 }
 
 impl TestMedia {
@@ -226,6 +230,70 @@ impl TestMedia {
     pub fn model_loads(&self) -> usize {
         self.model_loads.load(Ordering::Relaxed)
     }
+
+    #[cfg(feature = "3d")]
+    pub fn environment(mut self, source: &str, bytes: Vec<u8>) -> Self {
+        self.environments
+            .insert(source.to_string(), Arc::new(bytes));
+        self
+    }
+
+    #[cfg(feature = "3d")]
+    pub fn environment_loads(&self) -> usize {
+        self.environment_loads.load(Ordering::Relaxed)
+    }
+}
+
+/// A run-length encoded Radiance `.hdr` file of `width` by `height` linear RGB `texels`, rows
+/// from the top.
+#[cfg(feature = "3d")]
+pub fn hdr_file(width: u32, height: u32, texels: &[[f32; 3]]) -> Vec<u8> {
+    assert_eq!(texels.len(), (width * height) as usize);
+    assert!((8..0x8000).contains(&width), "run-length encoded rows");
+    let mut bytes =
+        format!("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y {height} +X {width}\n").into_bytes();
+    let rgbe = |texel: &[f32; 3]| {
+        let largest = texel[0].max(texel[1]).max(texel[2]);
+        if largest < 1e-32 {
+            return [0; 4];
+        }
+        let exponent = largest.log2().floor() as i32 + 1;
+        let scale = ((8 - exponent) as f32).exp2();
+        [
+            (texel[0] * scale) as u8,
+            (texel[1] * scale) as u8,
+            (texel[2] * scale) as u8,
+            (exponent + 128) as u8,
+        ]
+    };
+    for row in texels.chunks(width as usize) {
+        let pixels: Vec<[u8; 4]> = row.iter().map(rgbe).collect();
+        bytes.extend([2, 2, (width >> 8) as u8, width as u8]);
+        for channel in 0..4 {
+            for span in pixels.chunks(128) {
+                bytes.push(span.len() as u8);
+                bytes.extend(span.iter().map(|pixel| pixel[channel]));
+            }
+        }
+    }
+    bytes
+}
+
+struct TestEnvironment {
+    id: String,
+    data: Arc<Vec<u8>>,
+    loads: Arc<AtomicUsize>,
+}
+
+impl EnvironmentResolver for TestEnvironment {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> Result<Vec<u8>, MediaError> {
+        self.loads.fetch_add(1, Ordering::Relaxed);
+        Ok(self.data.to_vec())
+    }
 }
 
 fn still_frame(width: u32, height: u32, rgba: Vec<u8>) -> Arc<CpuMediaFrame> {
@@ -308,6 +376,21 @@ impl ModelResolver for TestModel {
 }
 
 impl MediaStore for TestMedia {
+    fn get_environment_resolver(
+        &self,
+        source: &str,
+    ) -> Result<Box<dyn EnvironmentResolver>, MediaError> {
+        let data = self
+            .environments
+            .get(source)
+            .ok_or_else(|| MediaError::source_not_found(source, "not registered"))?;
+        Ok(Box::new(TestEnvironment {
+            id: source.to_string(),
+            data: Arc::clone(data),
+            loads: Arc::clone(&self.environment_loads),
+        }))
+    }
+
     fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
         let data = self
             .models

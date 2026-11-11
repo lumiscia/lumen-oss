@@ -20,6 +20,8 @@ pub enum AssetKind {
     Font,
     /// A binary glTF (`.glb`) 3D model.
     Model,
+    /// An equirectangular Radiance `.hdr` or OpenEXR `.exr` environment map.
+    Environment,
 }
 
 impl fmt::Display for AssetKind {
@@ -30,6 +32,7 @@ impl fmt::Display for AssetKind {
             Self::Audio => "audio",
             Self::Font => "a font",
             Self::Model => "a model",
+            Self::Environment => "an environment map",
         })
     }
 }
@@ -43,6 +46,7 @@ pub enum Asset {
     /// One family: the files of its faces, among which weight and style choose.
     Font(Vec<PathBuf>),
     Model(PathBuf),
+    Environment(PathBuf),
 }
 
 impl Asset {
@@ -53,6 +57,7 @@ impl Asset {
             Self::Audio(_) => AssetKind::Audio,
             Self::Font(_) => AssetKind::Font,
             Self::Model(_) => AssetKind::Model,
+            Self::Environment(_) => AssetKind::Environment,
         }
     }
 }

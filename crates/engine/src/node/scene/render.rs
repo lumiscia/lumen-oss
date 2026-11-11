@@ -1,5 +1,6 @@
 //! Records `render_3d`: the scene's shadow maps, depth-tested draws of its objects into a
-//! supersampled float target, then a resolve into the node's raster.
+//! supersampled float target, the environment map behind them if it shows, then a resolve into
+//! the node's raster.
 
 use bytemuck::{Pod, Zeroable};
 use lumen_3d::{
@@ -51,6 +52,18 @@ const LAYOUT: &[LayoutEntry] = &[
         wgpu::ShaderStages::FRAGMENT,
         LayoutKind::ComparisonSampler,
     ),
+    LayoutEntry::staged(23, wgpu::ShaderStages::FRAGMENT, LayoutKind::Uniform),
+    LayoutEntry::staged(24, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(26, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
+    LayoutEntry::staged(27, wgpu::ShaderStages::FRAGMENT, LayoutKind::Storage),
+];
+/// What drawing the environment behind the scene binds.
+const BACKGROUND_LAYOUT: &[LayoutEntry] = &[
+    LayoutEntry::staged(0, wgpu::ShaderStages::FRAGMENT, LayoutKind::Uniform),
+    LayoutEntry::staged(23, wgpu::ShaderStages::FRAGMENT, LayoutKind::Uniform),
+    LayoutEntry::staged(24, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(25, wgpu::ShaderStages::FRAGMENT, LayoutKind::Texture),
+    LayoutEntry::staged(26, wgpu::ShaderStages::FRAGMENT, LayoutKind::Sampler),
 ];
 /// What drawing into the shadow atlas binds: the vertices, what cuts out masked and blended
 /// surfaces, and the views.
@@ -70,6 +83,7 @@ const SHADOW_LAYOUT: &[LayoutEntry] = &[
 
 const CLAMP_SAMPLER: u64 = 0x3d00_0001;
 const SHADOW_SAMPLER: u64 = 0x3d00_0002;
+const ENVIRONMENT_SAMPLER: u64 = 0x3d00_0003;
 /// Map samplers' keys are this with their settings in the low byte.
 const MAP_SAMPLERS: u64 = 0x3d01_0000;
 
@@ -109,6 +123,19 @@ pub(crate) struct GpuGlobals {
     pub(crate) exposure: f32,
     pub(crate) supersample: u32,
     _pad: u32,
+}
+
+/// Keep in sync with `Environment` in `scene.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(crate) struct GpuEnvironment {
+    pub(crate) irradiance: [[f32; 4]; 9],
+    pub(crate) clip_to_world: [[f32; 4]; 4],
+    pub(crate) turn: [f32; 2],
+    pub(crate) roughest: f32,
+    pub(crate) background_blur: f32,
+    pub(crate) map: u32,
+    _pad: [u32; 3],
 }
 
 /// Keep in sync with `Light` in `scene.wgsl`.
@@ -185,6 +212,23 @@ fn spec(depth: DepthTest, cull: Option<wgpu::Face>) -> RenderTargetSpec {
         depth: Some(depth),
         cull,
     }
+}
+
+/// The background goes under what the scene drew, showing through as much as it leaves
+/// uncovered.
+fn background_spec() -> RenderTargetSpec {
+    let under = wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    };
+    RenderTargetSpec::flat(
+        COLOR_FORMAT,
+        wgpu::BlendState {
+            color: under,
+            alpha: under,
+        },
+    )
 }
 
 /// Shadow catchers replace what is under them, so the nearest of overlapping ones shows alone.
@@ -431,9 +475,19 @@ pub(crate) fn catcher_programs(
     Ok(())
 }
 
+impl Render3d {
+    /// Whether some frame may draw the environment map behind the scene.
+    fn may_show_background(&self) -> bool {
+        let params = &self.params;
+        !matches!(params.environment_background, Deferred::Value(false))
+            && !matches!(&params.environment_map, Deferred::Value(map) if map.is_empty())
+    }
+}
+
 impl RecordNode for Render3d {
-    /// Builds the programs scenes draw with but for those drawing shadow maps and catchers, which
-    /// the lights and surfaces asking for them build.
+    /// Builds the programs scenes draw with, and the background's if the scene may show one, but
+    /// for those drawing shadow maps and catchers, which the lights and surfaces asking for them
+    /// build.
     fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
         for (depth, cull) in VARIANTS {
             programs.render(
@@ -443,6 +497,17 @@ impl RecordNode for Render3d {
                 "fs_main",
                 LAYOUT,
                 spec(depth, cull),
+                0,
+            )?;
+        }
+        if self.may_show_background() {
+            programs.render(
+                "scene-3d-background",
+                SHADER,
+                "vs_background",
+                "fs_background",
+                BACKGROUND_LAYOUT,
+                background_spec(),
                 0,
             )?;
         }
@@ -480,13 +545,16 @@ impl RecordNode for Render3d {
         {
             collected.place_bounds();
         }
+        let background = params.environment_background && !params.environment_map.is_empty();
+        let environment =
+            super::environment::environment(cx, self.id, &params.environment_map, background)?;
         let scene = &collected.scene;
         let fog = solid_linear(self.id, "Render3d", &params.fog_color)?;
         let camera = scene.camera.unwrap_or_default();
         let view = camera.view();
         let draws = Draws::new(&scene.objects, &view)
             .map_err(|error| render_error(self.id, error.to_string()))?;
-        if draws.runs.is_empty() {
+        if draws.runs.is_empty() && !background {
             return Ok(cx.transparent(size));
         }
 
@@ -504,7 +572,15 @@ impl RecordNode for Render3d {
         let target_size = Size::new(size.width * supersample, size.height * supersample);
         let aspect = size.width as f32 / size.height.max(1) as f32;
 
-        let lighting = Lighting::of(&scene.lights);
+        // An environment map lights a scene without lights in place of the default ones.
+        let lighting = if environment.is_some() && scene.lights.is_empty() {
+            Lighting {
+                direct: Vec::new(),
+                ambient: lumen_3d::glam::Vec3::ZERO,
+            }
+        } else {
+            Lighting::of(&scene.lights)
+        };
         let atlas = shadow_atlas(
             &scene.objects,
             &draws,
@@ -687,6 +763,35 @@ impl RecordNode for Render3d {
             ..wgpu::SamplerDescriptor::default()
         });
 
+        let environment_sampler = cx
+            .rec
+            .sampler(ENVIRONMENT_SAMPLER, || wgpu::SamplerDescriptor {
+                label: Some("lumen 3d environment sampler"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..wgpu::SamplerDescriptor::default()
+            });
+        let environment_uniform = cx.rec.uniform(&gpu_environment(
+            environment.as_ref(),
+            &camera,
+            aspect,
+            &params,
+        ));
+        // Without a map, the shader reads none of these.
+        let (environment_map, environment_brdf) = match &environment {
+            Some(loaded) => {
+                let (rec, cache) = cx.scene_cache();
+                (
+                    loaded.reflections,
+                    Res::Buffer(cache.environments.brdf(rec)),
+                )
+            }
+            None => (unread, lights),
+        };
+
         for (drawn, (run, &rows)) in draws.runs.iter().zip(&runs).enumerate() {
             let depth_test = if run.key.blend {
                 DepthTest::Read
@@ -731,6 +836,10 @@ impl RecordNode for Render3d {
                 (20, shadow_views),
                 (21, Res::Tex(shadow_map)),
                 (22, Res::Sampler(shadow_sampler)),
+                (23, environment_uniform),
+                (24, Res::Tex(environment_map)),
+                (26, Res::Sampler(environment_sampler)),
+                (27, environment_brdf),
             ];
             for (slot, map) in (0..).zip(maps) {
                 let (texture, sampler) = match map {
@@ -761,6 +870,34 @@ impl RecordNode for Render3d {
             );
         }
 
+        if let Some(loaded) = environment.filter(|_| background) {
+            let program = cx.render_program(
+                "scene-3d-background",
+                SHADER,
+                "vs_background",
+                "fs_background",
+                BACKGROUND_LAYOUT,
+                background_spec(),
+                0,
+            )?;
+            let bindings = [
+                (0, globals),
+                (23, environment_uniform),
+                (24, Res::Tex(loaded.reflections)),
+                (
+                    25,
+                    Res::Tex(loaded.background.unwrap_or(loaded.reflections)),
+                ),
+                (26, Res::Sampler(environment_sampler)),
+            ];
+            let load = if draws.runs.is_empty() {
+                TargetLoad::Clear
+            } else {
+                TargetLoad::Load
+            };
+            cx.rec.draw(program, &bindings, color, load, 3, 1, None);
+        }
+
         let output = cx.storage_target(size);
         cx.spatial_pass(
             "scene-3d-resolve",
@@ -778,6 +915,26 @@ impl RecordNode for Render3d {
             domain: TextureDomain::full_frame(size),
             bounds: None,
         })
+    }
+}
+
+/// The environment `loaded` lights the scene with, if any, seen from `camera`.
+fn gpu_environment(
+    loaded: Option<&super::environment::LoadedEnvironment>,
+    camera: &Camera,
+    aspect: f32,
+    params: &super::Render3dParams,
+) -> GpuEnvironment {
+    let view_proj = camera.projection_matrix(aspect) * camera.view();
+    let (sin, cos) = (params.environment_rotation as f32).to_radians().sin_cos();
+    GpuEnvironment {
+        irradiance: loaded.map_or([[0.0; 4]; 9], |loaded| loaded.irradiance),
+        clip_to_world: view_proj.inverse().to_cols_array_2d(),
+        turn: [cos, sin],
+        roughest: loaded.map_or(0.0, |loaded| loaded.levels.saturating_sub(1) as f32),
+        background_blur: params.environment_background_blur.clamp(0.0, 1.0) as f32,
+        map: u32::from(loaded.is_some()),
+        _pad: [0; 3],
     }
 }
 

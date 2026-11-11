@@ -263,8 +263,8 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
         FLAG_BASE_COLOR_MAP, FLAG_BLEND, FLAG_EMISSIVE_MAP, FLAG_FLAT_NORMALS, FLAG_MASK,
         FLAG_METALLIC_ROUGHNESS_MAP, FLAG_MIRRORED, FLAG_NORMAL_MAP, FLAG_OCCLUSION_MAP,
         FLAG_RASTER, FLAG_RECEIVE_SHADOWS, FLAG_SHADOW_CATCHER, FLAG_SKINNED, FLAG_UNLIT,
-        GpuGlobals, GpuLight, GpuObject, GpuRun, GpuShadowView, LIGHT_DIRECTIONAL, LIGHT_POINT,
-        LIGHT_SPOT, SHADER,
+        GpuEnvironment, GpuGlobals, GpuLight, GpuObject, GpuRun, GpuShadowView, LIGHT_DIRECTIONAL,
+        LIGHT_POINT, LIGHT_SPOT, SHADER,
     };
 
     let module = naga::front::wgsl::parse_str(SHADER).expect("the scene shader should parse");
@@ -330,6 +330,16 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
                 perspective,
             ),
             layout!("Run", GpuRun, first, count, base),
+            layout!(
+                "Environment",
+                GpuEnvironment,
+                irradiance,
+                clip_to_world,
+                turn,
+                roughest,
+                background_blur,
+                map,
+            ),
         ],
     );
     for (name, value) in [
@@ -356,5 +366,9 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
     assert_eq!(
         literal(&module, "MAX_SHADOW_RADIUS"),
         Literal::F32(lumen_3d::MAX_FILTER_TEXELS),
+    );
+    assert_eq!(
+        literal(&module, "BRDF_TABLE_SIZE"),
+        Literal::U32(lumen_3d::environment::BRDF_TABLE_SIZE as u32),
     );
 }

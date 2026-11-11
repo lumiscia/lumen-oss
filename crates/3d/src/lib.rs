@@ -1,5 +1,5 @@
 //! Scene maths and mesh data for Lumen's 3D nodes, with nothing tied to a GPU: primitive meshes,
-//! glTF models, transforms, cameras, lights and their shadow maps, and the order and batches a frame's objects draw in.
+//! glTF models, environment maps, transforms, cameras, lights and their shadow maps, and the order and batches a frame's objects draw in.
 //!
 //! World units are metres, Y is up and cameras look down -Z.
 
@@ -7,6 +7,7 @@ mod bounds;
 mod camera;
 mod color;
 mod draws;
+pub mod environment;
 mod light;
 mod mesh;
 pub mod model;

@@ -12,8 +12,9 @@ use lumen_engine::{
     ffmpeg::{FfmpegAudioResolver, FfmpegResolverOptions, FfmpegVideoResolver},
     image::ImageFileResolver,
     media::{
-        Asset, AssetKind, AssetResolver, FontResolver, ImageResolver, MediaStore, ModelResolver,
-        NoAssets, TextSession, VideoFrameResolver, asset_id, resolve_asset,
+        Asset, AssetKind, AssetResolver, EnvironmentResolver, FontResolver, ImageResolver,
+        MediaStore, ModelResolver, NoAssets, TextSession, VideoFrameResolver, asset_id,
+        resolve_asset,
     },
 };
 
@@ -84,7 +85,8 @@ impl LocalMediaStore {
                 Asset::Image(path)
                 | Asset::Video(path)
                 | Asset::Audio(path)
-                | Asset::Model(path) => Ok(path.to_string_lossy().to_string()),
+                | Asset::Model(path)
+                | Asset::Environment(path) => Ok(path.to_string_lossy().to_string()),
                 Asset::Font(_) => unreachable!("resolve_asset returns the kind it is asked for"),
             };
         }
@@ -215,7 +217,23 @@ impl MediaStore for LocalMediaStore {
 
     fn get_model_resolver(&self, source: &str) -> Result<Box<dyn ModelResolver>, MediaError> {
         let resolved = self.stored_source(source, AssetKind::Model)?;
-        Ok(Box::new(ModelFileResolver::open(resolved)?))
+        Ok(Box::new(SceneFile::open(
+            resolved,
+            "model",
+            lumen_3d::model::MAX_MODEL_BYTES,
+        )?))
+    }
+
+    fn get_environment_resolver(
+        &self,
+        source: &str,
+    ) -> Result<Box<dyn EnvironmentResolver>, MediaError> {
+        let resolved = self.stored_source(source, AssetKind::Environment)?;
+        Ok(Box::new(SceneFile::open(
+            resolved,
+            "environment map",
+            lumen_3d::environment::MAX_ENVIRONMENT_BYTES,
+        )?))
     }
 
     fn font_resolver_id(&self, font_family: &str) -> Option<String> {
@@ -243,41 +261,63 @@ impl MediaStore for LocalMediaStore {
     }
 }
 
-/// A model file, read only when a render hasn't loaded the model its ID names.
-struct ModelFileResolver {
+/// A model or environment map file, read only when a render hasn't loaded what its ID names.
+struct SceneFile {
     path: String,
     /// The path, length and modification time, so that a changed file reloads.
     id: String,
+    /// What the file holds, such as "model".
+    kind: &'static str,
+    limit: usize,
 }
 
-impl ModelFileResolver {
-    fn open(path: String) -> Result<Self, MediaError> {
+impl SceneFile {
+    fn open(path: String, kind: &'static str, limit: usize) -> Result<Self, MediaError> {
         let metadata = std::fs::metadata(&path)
             .map_err(|error| MediaError::source_not_found(&path, error.to_string()))?;
         let id = format!("{path}:{}:{:?}", metadata.len(), metadata.modified().ok());
-        Ok(Self { path, id })
+        Ok(Self {
+            path,
+            id,
+            kind,
+            limit,
+        })
+    }
+
+    fn read(&self) -> Result<Vec<u8>, MediaError> {
+        read_limited(Path::new(&self.path), self.kind, self.limit).map_err(|details| {
+            MediaError::Decode {
+                media_source: self.path.clone(),
+                details,
+            }
+        })
     }
 }
 
-impl ModelResolver for ModelFileResolver {
+impl ModelResolver for SceneFile {
     fn id(&self) -> &str {
         &self.id
     }
 
     fn data(&self) -> Result<Vec<u8>, MediaError> {
-        read_model(Path::new(&self.path)).map_err(|details| MediaError::Decode {
-            media_source: self.path.clone(),
-            details,
-        })
+        self.read()
     }
 }
 
-/// The bytes of the model file at `path`, refusing one larger than a model may be before reading
-/// it.
-fn read_model(path: &Path) -> Result<Vec<u8>, String> {
+impl EnvironmentResolver for SceneFile {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn data(&self) -> Result<Vec<u8>, MediaError> {
+        self.read()
+    }
+}
+
+/// The bytes of the `kind` file at `path`, refusing one larger than `limit` before reading it.
+fn read_limited(path: &Path, kind: &str, limit: usize) -> Result<Vec<u8>, String> {
     use std::io::Read;
 
-    let limit = lumen_3d::model::MAX_MODEL_BYTES;
     let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1)
@@ -285,7 +325,7 @@ fn read_model(path: &Path) -> Result<Vec<u8>, String> {
         .map_err(|error| error.to_string())?;
     if bytes.len() > limit {
         return Err(format!(
-            "the model is larger than the {} MiB a model may be",
+            "the {kind} is larger than the {} MiB it may be",
             limit >> 20
         ));
     }
@@ -529,6 +569,8 @@ mod tests {
         std::fs::write(&font, ROBOTO).unwrap();
         let fox = assets.path().join("fox");
         std::fs::write(&fox, b"glTF").unwrap();
+        let sky = assets.path().join("sky");
+        std::fs::write(&sky, b"#?RADIANCE").unwrap();
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let store = LocalMediaStore::new(root.clone(), None).with_assets(Arc::new(Assets(
@@ -536,6 +578,7 @@ mod tests {
                 ("logo", Asset::Image(image.clone())),
                 ("brand", Asset::Font(vec![font])),
                 ("fox", Asset::Model(fox.clone())),
+                ("sky", Asset::Environment(sky)),
             ]),
         )));
         let image_error = |source: &str| match store.get_image_resolver(source) {
@@ -561,6 +604,10 @@ mod tests {
             "a changed file has a new ID"
         );
         assert_eq!(model("asset:logo").unwrap_err().code(), "asset.wrong_kind");
+        let sky = store.get_environment_resolver("asset:sky").unwrap();
+        assert_eq!(sky.data().unwrap(), b"#?RADIANCE");
+        let wrong_sky = store.get_environment_resolver("asset:fox").err().unwrap();
+        assert_eq!(wrong_sky.code(), "asset.wrong_kind");
         let font = store.get_font_resolver("asset:brand").unwrap().unwrap();
         assert_eq!(font.data().unwrap(), vec![ROBOTO.to_vec()]);
         assert_eq!(
