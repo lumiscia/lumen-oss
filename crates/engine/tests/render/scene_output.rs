@@ -2,7 +2,7 @@
 //! shares what the colour render of the same scene loads.
 
 use lumen_3d::glam::Vec3;
-use lumen_engine::composition::Composition;
+use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::scene::{Quad, SIZE, fox, fox_media, light, merge, model, model_glb, ortho, texel_png};
@@ -139,7 +139,7 @@ fn depth_is_the_distance_along_the_view_between_depth_near_and_depth_far() {
     );
     let error = gpu()
         .renderer()
-        .render_frame_at(&backwards.into(), 0.0, &media)
+        .render(&backwards.into(), 0.0, &media, RenderTarget::Owned)
         .expect_err("a depth range that runs backwards fails");
     assert!(
         error
@@ -178,11 +178,16 @@ fn depth_is_the_distance_along_the_view_between_depth_near_and_depth_far() {
         let mut renderer = gpu().renderer();
         if frame > 0.0 {
             renderer
-                .render_frame_at(&Scene(composition.0.clone()).into(), 0.0, &media)
+                .render(
+                    &Scene(composition.0.clone()).into(),
+                    0.0,
+                    &media,
+                    RenderTarget::Owned,
+                )
                 .expect("the range is good on the first frame");
         }
         let error = renderer
-            .render_frame_at(&composition.into(), frame, &media)
+            .render(&composition.into(), frame, &media, RenderTarget::Owned)
             .expect_err("a distance that can't be one fails");
         assert!(error.to_string().contains(named), "{named}: {error}");
     }

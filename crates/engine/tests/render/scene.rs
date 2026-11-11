@@ -3,7 +3,7 @@
 use exr::prelude::WritableImage;
 use lumen_3d::environment::Equirect;
 use lumen_3d::glam::Vec3;
-use lumen_engine::composition::Composition;
+use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
@@ -464,7 +464,7 @@ fn a_render_3d_is_kept_across_frames_until_its_scene_animates() {
 fn render_error(composition: &Composition) -> String {
     gpu()
         .renderer()
-        .render_frame_at(composition, 0.0, &TestMedia::default())
+        .render(composition, 0.0, &TestMedia::default(), RenderTarget::Owned)
         .expect_err("the render fails")
         .to_string()
 }
@@ -1172,7 +1172,7 @@ fn a_clip_canvas_larger_than_the_device_allows_fails_naming_the_clip() {
     wide.0["compositions"]["wide"]["render_settings"]["width"] = json!(width);
     let error = gpu()
         .renderer()
-        .render_frame_at(&wide.into(), 0.0, &image(|_, _| RED))
+        .render(&wide.into(), 0.0, &image(|_, _| RED), RenderTarget::Owned)
         .expect_err("the render fails")
         .to_string();
     assert!(
@@ -1722,7 +1722,7 @@ fn a_clip_or_material_the_model_lacks_is_an_error_listing_those_it_has() {
         let composition: Composition = render_3d(vec![fox(1, params)]).into();
         gpu()
             .renderer()
-            .render_frame_at(&composition, 0.0, &fox_media())
+            .render(&composition, 0.0, &fox_media(), RenderTarget::Owned)
             .expect_err("the render fails")
             .to_string()
     };
@@ -2850,10 +2850,11 @@ fn malformed_and_oversized_environment_maps_are_errors_and_unusable_texels_dark(
         let media = TestMedia::default().environment("map.hdr", bytes.to_vec());
         gpu()
             .renderer()
-            .render_frame_at(
+            .render(
                 &render_3d_with(lit_by("map.hdr", json!({})), vec![sphere(json!({}))]).into(),
                 0.0,
                 &media,
+                RenderTarget::Owned,
             )
             .expect_err("the render fails")
             .to_string()

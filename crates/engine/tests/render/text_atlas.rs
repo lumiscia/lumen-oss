@@ -9,7 +9,7 @@ use lumen_engine::{
     composition::Composition,
     error::MediaError,
     expr::{Expression, ExpressionContext},
-    gpu::{DEFAULT_MAX_TEXT_GLYPHS, GpuCompositionRenderer, MAX_TEXT_GLYPHS_CEILING},
+    gpu::{DEFAULT_MAX_TEXT_GLYPHS, GpuCompositionRenderer, MAX_TEXT_GLYPHS_CEILING, RenderTarget},
     media::{
         AssetKind, FontResolver, MediaIdentity, MediaResolver, MediaStore, ResolvedMedia,
         TextSession,
@@ -64,7 +64,9 @@ fn the_shared_atlas_outlives_a_release_of_resources_until_its_own() {
     let atlas = atlas_texture(&renderer);
 
     renderer.release_resources();
-    let rebound = renderer.bind_frame(&small, 0, &media).unwrap();
+    let rebound = renderer
+        .bind_frame(&small, 0, &media, RenderTarget::Owned)
+        .unwrap();
     assert_eq!(
         rebound.atlas_region_count(),
         0,
@@ -79,8 +81,10 @@ fn the_shared_atlas_outlives_a_release_of_resources_until_its_own() {
     // A glyph far larger than the others is drawn from the same atlas texture.
     let huge = two_texts(json!({ "content": "W", "font_size": 3800, "position": [0, 100] }));
     renderer.release_resources();
-    let bound = renderer.bind_frame(&huge, 0, &media).unwrap();
-    renderer.upload_bound_frame(&bound).unwrap();
+    let bound = renderer
+        .bind_frame(&huge, 0, &media, RenderTarget::Owned)
+        .unwrap();
+    renderer.upload_frame(&bound).unwrap();
     assert!(Arc::ptr_eq(&atlas_texture(&renderer), &atlas));
     let has_huge_glyph = bound
         .glyph_instances()
@@ -99,12 +103,14 @@ fn the_shared_atlas_outlives_a_release_of_resources_until_its_own() {
     );
 
     renderer.release_text_atlas();
-    let rebound = renderer.bind_frame(&huge, 0, &media).unwrap();
+    let rebound = renderer
+        .bind_frame(&huge, 0, &media, RenderTarget::Owned)
+        .unwrap();
     assert!(
         rebound.atlas_region_count() > 0,
         "the glyphs are uploaded again"
     );
-    renderer.upload_bound_frame(&rebound).unwrap();
+    renderer.upload_frame(&rebound).unwrap();
     assert!(
         render(&mut renderer, &huge, 0.0, &media).rgba == enlarged.rgba,
         "released and rebuilt glyphs draw the frame they did"
@@ -122,38 +128,46 @@ fn glyphs_beyond_the_atlas_are_not_uploaded_again_on_every_bind() {
     };
 
     let overflowing = text(CONTENT, 1800);
-    let first = renderer.bind_frame(&overflowing, 0, &media).unwrap();
+    let first = renderer
+        .bind_frame(&overflowing, 0, &media, RenderTarget::Owned)
+        .unwrap();
     let placed = first.atlas_region_count();
     assert!(
         (1..CONTENT.len()).contains(&placed),
         "{placed} of {} glyphs fit, so the layout overflows",
         CONTENT.len()
     );
-    renderer.upload_bound_frame(&first).unwrap();
+    renderer.upload_frame(&first).unwrap();
     for frame in 1..4 {
-        let repeated = renderer.bind_frame(&overflowing, frame, &media).unwrap();
+        let repeated = renderer
+            .bind_frame(&overflowing, frame, &media, RenderTarget::Owned)
+            .unwrap();
         assert_eq!(repeated.atlas_region_count(), 0, "frame {frame}");
-        renderer.upload_bound_frame(&repeated).unwrap();
+        renderer.upload_frame(&repeated).unwrap();
     }
 
     // A glyph too big for the atlas is drawn from one distance field, uploaded once.
     let oversized = text("W", 20000);
     renderer.release_resources();
     for frame in 4..7 {
-        let bound = renderer.bind_frame(&oversized, frame, &media).unwrap();
+        let bound = renderer
+            .bind_frame(&oversized, frame, &media, RenderTarget::Owned)
+            .unwrap();
         assert_eq!(
             bound.atlas_region_count(),
             usize::from(frame == 4),
             "frame {frame}"
         );
-        renderer.upload_bound_frame(&bound).unwrap();
+        renderer.upload_frame(&bound).unwrap();
     }
 
     let recovered = text("W", 72);
     renderer.release_resources();
-    let bound = renderer.bind_frame(&recovered, 7, &media).unwrap();
+    let bound = renderer
+        .bind_frame(&recovered, 7, &media, RenderTarget::Owned)
+        .unwrap();
     assert!(bound.atlas_region_count() > 0);
-    renderer.upload_bound_frame(&bound).unwrap();
+    renderer.upload_frame(&bound).unwrap();
     let pixels = render(&mut renderer, &recovered, 7.0, &media).rgba;
     assert!(drawn(&pixels), "the atlas draws again once glyphs fit");
     assert!(
@@ -189,8 +203,12 @@ impl StaleUpload {
         assert!(fresh != frame_0, "the frames look alike");
 
         let mut renderer = gpu.renderer();
-        let older = renderer.bind_frame(&composition, 0, &media).unwrap();
-        let current = renderer.bind_frame(&composition, 1, &media).unwrap();
+        let older = renderer
+            .bind_frame(&composition, 0, &media, RenderTarget::Owned)
+            .unwrap();
+        let current = renderer
+            .bind_frame(&composition, 1, &media, RenderTarget::Owned)
+            .unwrap();
         assert!(older.atlas_region_count() > 0 && current.atlas_region_count() > 0);
         if self.shared_slot {
             let (older, current) = (older.atlas_region_rects(), current.atlas_region_rects());
@@ -200,13 +218,16 @@ impl StaleUpload {
             );
         }
 
-        renderer.upload_bound_frame(&current).unwrap();
-        let error = renderer.upload_bound_frame(&older).unwrap_err();
+        renderer.upload_frame(&current).unwrap();
+        let error = renderer.upload_frame(&older).unwrap_err();
         assert!(error.to_string().contains("stale"), "{error}");
 
-        let rebound = renderer.bind_frame(&composition, 1, &media).unwrap();
+        let rebound = renderer
+            .bind_frame(&composition, 1, &media, RenderTarget::Owned)
+            .unwrap();
         assert_eq!(rebound.atlas_region_count(), 0);
-        renderer.submit_bound_frame(&rebound).unwrap();
+        renderer.upload_frame(&rebound).unwrap();
+        renderer.submit_frame(&rebound).unwrap();
         assert!(
             render(&mut renderer, &composition, 1.0, &media).rgba == fresh,
             "the rejected upload left the atlas as frame 1 needs it"
@@ -522,7 +543,9 @@ fn measuring_text_through_a_time_remap_loads_the_family_it_names_once_per_id() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
     let mut first_rect = |media: &TestMedia| -> [f32; 4] {
-        let bound = renderer.bind_frame(&composition, 0, media).unwrap();
+        let bound = renderer
+            .bind_frame(&composition, 0, media, RenderTarget::Owned)
+            .unwrap();
         bound.glyph_instances()[0].rect
     };
     let rect = first_rect(&media);
@@ -921,7 +944,12 @@ fn a_font_that_never_settles_fails_the_render() {
     .into();
     let error = gpu
         .renderer()
-        .render_frame_at(&composition, 0.0, &ChurningFont::default())
+        .render(
+            &composition,
+            0.0,
+            &ChurningFont::default(),
+            RenderTarget::Owned,
+        )
         .expect_err("the font loads again on every bind")
         .to_string();
     assert!(error.contains("fonts kept loading"), "{error}");
@@ -951,7 +979,7 @@ fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
 
         let long = composition("a".repeat(2049));
         let error = renderer
-            .render_frame_at(&long, 0.0, &media)
+            .render(&long, 0.0, &media, RenderTarget::Owned)
             .expect_err("2049 glyphs exceed the limit")
             .to_string();
         assert!(
@@ -978,7 +1006,7 @@ fn text_whose_data_does_not_fit_the_device_is_a_limit_not_a_gpu_fault() {
     )
     .into();
     let error = renderer
-        .render_frame_at(&text, 0.0, &TestMedia::default())
+        .render(&text, 0.0, &TestMedia::default(), RenderTarget::Owned)
         .expect_err("400 glyphs over a 1 KiB binding");
     assert_eq!(error.code(), "render.limit", "{error}");
 }
@@ -1016,7 +1044,7 @@ fn a_raised_text_limit_lets_more_glyphs_through_and_the_default_is_documented() 
     ));
     let over = composition(DEFAULT_MAX_TEXT_GLYPHS + 1);
     let error = renderer
-        .render_frame_at(&over, 0.0, &media)
+        .render(&over, 0.0, &media, RenderTarget::Owned)
         .expect_err("one glyph over the default limit")
         .to_string();
     assert!(
@@ -1030,7 +1058,7 @@ fn a_raised_text_limit_lets_more_glyphs_through_and_the_default_is_documented() 
     renderer.set_max_text_glyphs(usize::MAX);
     let over_ceiling = composition(MAX_TEXT_GLYPHS_CEILING + 1);
     let error = renderer
-        .render_frame_at(&over_ceiling, 0.0, &media)
+        .render(&over_ceiling, 0.0, &media, RenderTarget::Owned)
         .expect_err("the ceiling holds whatever the host asks for")
         .to_string();
     assert!(
@@ -1111,7 +1139,12 @@ fn text_dropped_by_a_full_atlas_still_counts_toward_the_instance_limit() {
     let mut renderer = gpu.renderer();
     renderer.set_max_text_glyphs(2048);
     let error = renderer
-        .render_frame_at(&composition, 0.0, &TestMedia::default())
+        .render(
+            &composition,
+            0.0,
+            &TestMedia::default(),
+            RenderTarget::Owned,
+        )
         .expect_err("2080 glyphs exceed the limit")
         .to_string();
     assert!(

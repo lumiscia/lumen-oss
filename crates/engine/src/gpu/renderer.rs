@@ -7,9 +7,11 @@ use std::{
 use crate::{
     composition::Composition,
     error::RenderError,
-    gpu::{BoundFrame, MediaTextureKey, RasterHandle, frame_graph::FrameGraph},
+    gpu::{
+        BoundFrame, MediaTextureKey, RasterHandle, RenderTarget, RenderedFrame,
+        frame_graph::FrameGraph,
+    },
     media::{CpuMediaFrame, MediaStore},
-    node::NodeId,
 };
 
 #[cfg(feature = "ffmpeg")]
@@ -275,7 +277,7 @@ impl GpuCompositionRenderer {
     }
 
     /// Holds the bytes of storage a frame's data may bind and take in all below the device's.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn limit_frame_storage(&mut self, max_binding: u64, max_buffer: u64) {
         self.graph.recorder.limit_storage(max_binding, max_buffer);
     }
@@ -286,23 +288,23 @@ impl GpuCompositionRenderer {
     }
 
     /// The domain a node of the root graph had in the frame last recorded.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn recorded_domain(
         &self,
         composition: &Composition,
-        node: NodeId,
+        node: crate::node::NodeId,
     ) -> Option<lumen_gpu::TextureDomain> {
         self.graph.node_domain(composition, node)
     }
 
     /// The shared text atlas, once a frame has needed one.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn text_atlas_texture(&self) -> Option<Arc<lumen_gpu::wgpu::Texture>> {
         self.text_atlas_texture.clone()
     }
 
     /// The passes the frame last recorded.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn recorded_pass_count(&self) -> usize {
         self.graph.recorder.pass_count()
     }
@@ -373,7 +375,7 @@ impl GpuCompositionRenderer {
     /// Sets whether every source fills the canvas instead of being sized to its bounds, which
     /// gives tests a reference render for those bounds. Drops what frames recorded so far when it
     /// changes.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn set_full_frame_sources(&mut self, enabled: bool) {
         if self.full_frame_sources != enabled {
             self.full_frame_sources = enabled;
@@ -384,7 +386,7 @@ impl GpuCompositionRenderer {
     /// Sets whether repeated shapes and paths draw their copies from one tile covering their
     /// texture instead of from tiles that each list the copies reaching them, which gives tests
     /// an untiled reference. Drops what frames recorded so far when it changes.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn set_single_tile_repeats(&mut self, enabled: bool) {
         if self.single_tile_repeats != enabled {
             self.single_tile_repeats = enabled;
@@ -422,13 +424,13 @@ impl GpuCompositionRenderer {
     }
 
     /// Number of image textures kept in the media cache.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn cached_media_texture_count(&self) -> usize {
         self.media_texture_cache.textures.len()
     }
 
     /// Number of image textures created and uploaded, rather than reused from the cache.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn media_texture_upload_count(&self) -> u64 {
         self.media_texture_cache.upload_count
     }
@@ -466,79 +468,50 @@ impl GpuCompositionRenderer {
         self.media_texture_cache.evict();
     }
 
-    pub fn render_frame<M: MediaStore>(
+    /// Renders `frame` of `composition` into `target` and submits it. `frame` counts composition
+    /// frames, not seconds; a fractional one renders the instant between two, where expressions
+    /// see the fractional `frame`/`time` and video shows the source frame displayed then.
+    pub fn render<M: MediaStore>(
         &mut self,
         composition: &Composition,
-        frame: u32,
+        frame: impl Into<f64>,
         media: &M,
-    ) -> crate::Result<RasterHandle> {
-        self.render_frame_submitted(composition, frame, media)
-            .map(|(raster, _submission)| raster)
-    }
-
-    /// Renders at a fractional frame time; `frame` is in composition frames, not seconds.
-    pub fn render_frame_at<M: MediaStore>(
-        &mut self,
-        composition: &Composition,
-        frame: f64,
-        media: &M,
-    ) -> crate::Result<RasterHandle> {
-        let bound = self.bind_frame_at(composition, frame, media)?;
-        self.submit_bound_frame(&bound)
-            .map(|(raster, _submission)| raster)
-    }
-
-    pub fn render_frame_submitted<M: MediaStore>(
-        &mut self,
-        composition: &Composition,
-        frame: u32,
-        media: &M,
-    ) -> crate::Result<(RasterHandle, lumen_gpu::wgpu::SubmissionIndex)> {
+        target: RenderTarget,
+    ) -> crate::Result<RenderedFrame> {
+        let frame = frame.into();
         let span = tracing::trace_span!(target: "lumen_render", "render frame", frame);
         let _entered = span.enter();
-        let bound = self.bind_frame(composition, frame, media)?;
-        self.submit_bound_frame(&bound)
+        let bound = self.bind_frame(composition, frame, media, target)?;
+        self.upload_frame(&bound)?;
+        self.submit_frame(&bound)
     }
 
-    /// Renders a frame whose output is `external`, which then stays with the caller: the graph
-    /// holds no other claim on it once it is the only one left holding the texture.
-    pub fn render_frame_into_external<M: MediaStore>(
-        &mut self,
-        composition: &Composition,
-        frame: u32,
-        media: &M,
-        external: lumen_gpu::ExternalTexture,
-    ) -> crate::Result<lumen_gpu::SubmittedExternalTexture> {
-        let span = tracing::trace_span!(target: "lumen_render", "render frame into external texture", frame);
-        let _entered = span.enter();
-        let texture = external.texture_arc();
-        self.graph.set_external(external);
-        let bound = self.bind_frame(composition, frame, media);
-        self.graph.take_external();
-        self.upload_bound_frame(&bound?)?;
-        let submission = self
-            .graph
-            .recorder
-            .submit()
-            .map_err(super::frame_graph::gpu_error)?;
-        self.graph.finish_frame();
-        Ok(lumen_gpu::SubmittedExternalTexture::new(
-            submission, texture,
-        ))
-    }
-
+    /// Records `frame` for `target`: the first of [`Self::render`]'s stages, which
+    /// [`Self::upload_frame`] and [`Self::submit_frame`] finish, for hosts that time them apart.
+    /// Only the frame recorded last can be uploaded and submitted.
     pub fn bind_frame<M: MediaStore>(
         &mut self,
         composition: &Composition,
-        frame: u32,
+        frame: impl Into<f64>,
         media: &M,
+        target: RenderTarget,
     ) -> crate::Result<BoundFrame> {
-        self.bind_frame_at(composition, f64::from(frame), media)
+        let external = match target {
+            RenderTarget::Owned => None,
+            RenderTarget::External(external) => {
+                let texture = external.texture_arc();
+                self.graph.set_external(external);
+                Some(texture)
+            }
+        };
+        let bound = self.record(composition, frame.into(), media);
+        self.graph.take_external();
+        let mut bound = bound?;
+        bound.external = external;
+        Ok(bound)
     }
 
-    /// Records a frame at a fractional frame time. Expressions see the fractional `frame`/`time`;
-    /// video inputs show the source frame displayed at that instant.
-    pub fn bind_frame_at<M: MediaStore>(
+    fn record<M: MediaStore>(
         &mut self,
         composition: &Composition,
         frame: f64,
@@ -580,47 +553,47 @@ impl GpuCompositionRenderer {
         Ok(bound)
     }
 
-    pub fn submit_bound_frame(
-        &mut self,
-        bound: &BoundFrame,
-    ) -> crate::Result<(RasterHandle, lumen_gpu::wgpu::SubmissionIndex)> {
-        self.upload_bound_frame(bound)?;
-        self.submit_render()
-    }
-
-    /// Writes what `bound` recorded to the GPU, which only the frame recorded last can do.
-    pub fn upload_bound_frame(&mut self, bound: &BoundFrame) -> crate::Result<()> {
-        if bound.sequence != self.bind_sequence {
-            return Err(RenderError::Internal {
-                details: "stale recorded frame; record it again before uploading".to_string(),
-            }
-            .into());
-        }
+    /// Writes what `bound` recorded to the GPU.
+    pub fn upload_frame(&mut self, bound: &BoundFrame) -> crate::Result<()> {
+        self.check_latest(bound)?;
         let result = self.graph.upload(bound, self.text_atlas_texture.as_deref());
         self.media_texture_cache.evict();
         result
     }
 
-    pub fn submit_render(
-        &mut self,
-    ) -> crate::Result<(RasterHandle, lumen_gpu::wgpu::SubmissionIndex)> {
+    /// Submits the frame `bound` recorded, once [`Self::upload_frame`] has written it.
+    pub fn submit_frame(&mut self, bound: &BoundFrame) -> crate::Result<RenderedFrame> {
+        self.check_latest(bound)?;
         let output = self.graph.output().ok_or_else(|| RenderError::Internal {
             details: "no recorded frame".to_string(),
         })?;
-        let texture = Arc::clone(self.graph.recorder.texture(output.tex));
+        let texture = match &bound.external {
+            Some(external) => Arc::clone(external),
+            None => Arc::clone(self.graph.recorder.texture(output.tex)),
+        };
         let submission = self
             .graph
             .recorder
             .submit()
             .map_err(super::frame_graph::gpu_error)?;
         self.graph.finish_frame();
-        Ok((
-            RasterHandle {
+        Ok(RenderedFrame {
+            raster: RasterHandle {
                 texture,
                 domain: output.domain,
             },
             submission,
-        ))
+        })
+    }
+
+    fn check_latest(&self, bound: &BoundFrame) -> crate::Result<()> {
+        if bound.sequence != self.bind_sequence {
+            return Err(RenderError::Internal {
+                details: "stale recorded frame; record it again".to_string(),
+            }
+            .into());
+        }
+        Ok(())
     }
 
     pub fn gpu_renderer(&self) -> &lumen_gpu::Renderer {

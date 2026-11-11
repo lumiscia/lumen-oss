@@ -1,7 +1,10 @@
 //! Output kept between frames: what static layers keep, and how it survives switches between
 //! layers, edits, external targets and the shared text atlas.
 
-use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer};
+use lumen_engine::{
+    composition::Composition,
+    gpu::{GpuCompositionRenderer, RenderTarget},
+};
 use lumen_gpu::wgpu;
 use serde_json::{Value, json};
 
@@ -86,12 +89,15 @@ fn a_zero_budget_keeps_what_a_bound_frame_renders_with() {
     let media = TestMedia::default();
     let composition: Composition = static_under_animated().into();
     assert!(nonblank(&at(&mut renderer, &composition, 0.0)));
-    let bound = renderer.bind_frame_at(&composition, 1.0, &media).unwrap();
+    let bound = renderer
+        .bind_frame(&composition, 1.0, &media, RenderTarget::Owned)
+        .unwrap();
     renderer.set_cache_budgets(lumen_engine::gpu::CacheBudgets {
         pooled_textures: 0,
         ..renderer.cache_budgets()
     });
-    let (raster, _) = renderer.submit_bound_frame(&bound).unwrap();
+    renderer.upload_frame(&bound).unwrap();
+    let raster = renderer.submit_frame(&bound).unwrap().raster;
     let pixels = read_raster(&renderer, raster);
     assert!(pixels == uncached(&mut reference, &composition, 1.0));
     assert_eq!(pixel(&pixels, 20, 2), [200, 30, 30, 255]);
@@ -288,13 +294,16 @@ fn discarded_binds_keep_nothing_and_stale_uploads_are_still_rejected() {
     let composition: Composition = composition.into();
     let media = TestMedia::default();
     let submit = |renderer: &mut GpuCompositionRenderer, frame| {
-        let bound = renderer.bind_frame(&composition, frame, &media).unwrap();
-        let (raster, _) = renderer.submit_bound_frame(&bound).unwrap();
+        let bound = renderer
+            .bind_frame(&composition, frame, &media, RenderTarget::Owned)
+            .unwrap();
+        renderer.upload_frame(&bound).unwrap();
+        let raster = renderer.submit_frame(&bound).unwrap().raster;
         read_raster(renderer, raster)
     };
     for (discarded, submitted) in [(0, 1), (2, 3)] {
         renderer
-            .bind_frame(&composition, discarded, &media)
+            .bind_frame(&composition, discarded, &media, RenderTarget::Owned)
             .unwrap();
         let pixels = submit(&mut renderer, submitted);
         assert!(
@@ -305,12 +314,16 @@ fn discarded_binds_keep_nothing_and_stale_uploads_are_still_rejected() {
     }
     assert!(renderer.skipped_pass_count() > 0);
 
-    let older = renderer.bind_frame(&composition, 4, &media).unwrap();
-    let current = renderer.bind_frame(&composition, 5, &media).unwrap();
-    let stale = renderer.upload_bound_frame(&older).unwrap_err();
+    let older = renderer
+        .bind_frame(&composition, 4, &media, RenderTarget::Owned)
+        .unwrap();
+    let current = renderer
+        .bind_frame(&composition, 5, &media, RenderTarget::Owned)
+        .unwrap();
+    let stale = renderer.upload_frame(&older).unwrap_err();
     assert_eq!(stale.code(), "render.internal", "{stale}");
-    renderer.upload_bound_frame(&current).unwrap();
-    let (raster, _) = renderer.submit_render().unwrap();
+    renderer.upload_frame(&current).unwrap();
+    let raster = renderer.submit_frame(&current).unwrap().raster;
     assert!(read_raster(&renderer, raster) == uncached(&mut reference, &composition, 5.0));
 }
 
@@ -343,17 +356,17 @@ fn kept_output_reaches_external_output_textures() {
                 view_formats: &[],
             });
         let submitted = renderer
-            .render_frame_into_external(
+            .render(
                 &fully_static,
                 frame,
                 &TestMedia::default(),
-                lumen_gpu::ExternalTexture::from_texture(texture),
+                RenderTarget::External(lumen_gpu::ExternalTexture::from_texture(texture)),
             )
             .unwrap();
         submitted.wait(&renderer.gpu_renderer().device).unwrap();
         let pixels = read_rgba8(
             renderer.gpu_renderer(),
-            submitted.texture(),
+            &submitted.raster.texture,
             desc.domain.storage_size,
         );
         assert!(

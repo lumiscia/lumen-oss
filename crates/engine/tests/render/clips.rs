@@ -1,6 +1,8 @@
 //! When a `clip` shows its content, and what canvas it places the content on.
 
-use lumen_engine::{composition::Composition, media::collect_frame_requirements, node::NodeId};
+use lumen_engine::{
+    composition::Composition, gpu::RenderTarget, media::collect_frame_requirements, node::NodeId,
+};
 use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, Scene, TestMedia, check, gpu, render, scene};
@@ -290,13 +292,17 @@ fn a_hidden_clip_records_nothing_upstream() {
     let media = TestMedia::default().image("plate", 4, 4, vec![255; 4 * 4 * 4]);
     let gpu = gpu();
     let mut renderer = gpu.renderer();
-    renderer.bind_frame(&composition, 2, &media).unwrap();
+    renderer
+        .bind_frame(&composition, 2, &media, RenderTarget::Owned)
+        .unwrap();
     assert_eq!(
         media.image_requests(),
         0,
         "a hidden clip resolved its source"
     );
-    renderer.bind_frame(&composition, 6, &media).unwrap();
+    renderer
+        .bind_frame(&composition, 6, &media, RenderTarget::Owned)
+        .unwrap();
     assert!(media.image_requests() > 0);
 }
 
@@ -487,7 +493,12 @@ fn a_template_canvas_over_the_texture_limit_fails_a_full_frame_read() {
     let mut renderer = gpu.renderer();
 
     let error = renderer
-        .render_frame_at(&wide_template_scene(width, "resize"), 0.0, &media)
+        .render(
+            &wide_template_scene(width, "resize"),
+            0.0,
+            &media,
+            RenderTarget::Owned,
+        )
         .unwrap_err()
         .to_string();
     assert!(error.contains("resize"), "{error}");
@@ -525,7 +536,12 @@ fn a_root_canvas_over_the_texture_limit_fails_a_render() {
     .into();
     let error = gpu
         .renderer()
-        .render_frame_at(&composition, 0.0, &TestMedia::default())
+        .render(
+            &composition,
+            0.0,
+            &TestMedia::default(),
+            RenderTarget::Owned,
+        )
         .unwrap_err()
         .to_string();
     assert!(error.contains("media_output"), "{error}");
@@ -590,7 +606,12 @@ fn an_oversized_texture_is_blamed_on_the_node_that_acquires_it() {
     let composition: Composition = scene((width, 64), Value::Array(nodes)).into();
     let error = gpu
         .renderer()
-        .render_frame_at(&composition, 0.0, &TestMedia::default())
+        .render(
+            &composition,
+            0.0,
+            &TestMedia::default(),
+            RenderTarget::Owned,
+        )
         .unwrap_err()
         .to_string();
     assert!(error.contains("boolean node 3"), "{error}");

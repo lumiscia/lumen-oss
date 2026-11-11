@@ -9,7 +9,10 @@ use std::collections::VecDeque;
 #[cfg(all(target_os = "macos", feature = "metal"))]
 use anyhow::Context;
 use anyhow::anyhow;
-use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, gpu::RasterHandle};
+use lumen_engine::{
+    composition::Composition,
+    gpu::{GpuCompositionRenderer, RasterHandle, RenderTarget},
+};
 use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, Rational, VideoEncoderConfig};
 
 #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
@@ -213,11 +216,16 @@ fn render_frame(
     phases: &mut Option<&mut PhaseTimes>,
 ) -> anyhow::Result<RasterHandle> {
     let bound = timed(phases, "bind", || {
-        renderer.bind_frame(workload.composition, frame, workload.media)
+        renderer.bind_frame(
+            workload.composition,
+            frame,
+            workload.media,
+            RenderTarget::Owned,
+        )
     })?;
-    timed(phases, "upload", || renderer.upload_bound_frame(&bound))?;
-    let (raster, _) = timed(phases, "submit", || renderer.submit_render())?;
-    Ok(raster)
+    timed(phases, "upload", || renderer.upload_frame(&bound))?;
+    let rendered = timed(phases, "submit", || renderer.submit_frame(&bound))?;
+    Ok(rendered.raster)
 }
 
 /// Reads the frame `raster` back to the CPU.
@@ -328,11 +336,11 @@ async fn metal_videotoolbox(
     for frame in 0..workload.frames {
         let target = target_pool.acquire(renderer.gpu_renderer(), frame)?;
         let submitted = timed(phases, "render", || {
-            renderer.render_frame_into_external(
+            renderer.render(
                 workload.composition,
                 frame,
                 workload.media,
-                target.external_texture(),
+                RenderTarget::External(target.external_texture()),
             )
         })?;
         pending.push_back(PendingMetalEncodeFrame {
@@ -364,7 +372,7 @@ async fn metal_videotoolbox(
 struct PendingMetalEncodeFrame {
     frame: u32,
     target: MetalVideoToolboxTarget,
-    submitted: lumen_gpu::SubmittedExternalTexture,
+    submitted: lumen_engine::gpu::RenderedFrame,
 }
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
@@ -503,11 +511,11 @@ async fn vk_cuda_nvenc(
     let times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
         timed(phases, "render", || {
-            renderer.render_frame_into_external(
+            renderer.render(
                 workload.composition,
                 frame,
                 workload.media,
-                target.external_texture(),
+                RenderTarget::External(target.external_texture()),
             )
         })?;
         let converted = timed(phases, "convert", || {

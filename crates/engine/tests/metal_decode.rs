@@ -13,11 +13,10 @@ use std::{
 use lumen_engine::{
     composition::Composition,
     error::MediaError,
-    ffmpeg::{FfmpegResolverOptions, FfmpegVideoResolver},
-    gpu::GpuCompositionRenderer,
+    gpu::{GpuCompositionRenderer, RenderTarget},
     media::{
-        AssetKind, MediaFrame, MediaIdentity, MediaResolver, MediaStore, ResolvedMedia,
-        VideoFrameResolver,
+        AssetKind, FfmpegResolverOptions, FfmpegVideoResolver, MediaFrame, MediaIdentity,
+        MediaResolver, MediaStore, ResolvedMedia, VideoFrameResolver,
     },
 };
 use serde_json::json;
@@ -114,8 +113,9 @@ fn render(
     store: &Store,
 ) -> Vec<u8> {
     let raster = renderer
-        .render_frame(scene, frame, store)
-        .unwrap_or_else(|error| panic!("frame {frame} does not render: {error}"));
+        .render(scene, frame, store, RenderTarget::Owned)
+        .unwrap_or_else(|error| panic!("frame {frame} does not render: {error}"))
+        .raster;
     renderer
         .gpu_renderer()
         .read_texture_rgba8(&raster.texture, raster.domain.storage_size)

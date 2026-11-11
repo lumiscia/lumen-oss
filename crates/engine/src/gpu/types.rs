@@ -8,6 +8,44 @@ pub struct RasterHandle {
     pub domain: lumen_gpu::TextureDomain,
 }
 
+/// Where a frame renders to.
+#[derive(Debug, Clone, Default)]
+pub enum RenderTarget {
+    /// A texture of the renderer's, which a later frame writes again.
+    #[default]
+    Owned,
+    /// A texture of the caller's, of the output's size and format, which stays with the caller:
+    /// the renderer holds no claim on it once it is the only one left holding it.
+    External(lumen_gpu::ExternalTexture),
+}
+
+/// A frame submitted to the GPU.
+#[derive(Debug, Clone)]
+pub struct RenderedFrame {
+    /// The frame's output, in the target's texture.
+    pub raster: RasterHandle,
+    /// The submission that writes it.
+    pub submission: lumen_gpu::wgpu::SubmissionIndex,
+}
+
+impl RenderedFrame {
+    /// Blocks until the GPU has finished the frame.
+    pub fn wait(&self, device: &lumen_gpu::wgpu::Device) -> crate::Result<()> {
+        device
+            .poll(lumen_gpu::wgpu::PollType::Wait {
+                submission_index: Some(self.submission.clone()),
+                timeout: None,
+            })
+            .map(drop)
+            .map_err(|error| {
+                crate::error::RenderError::Gpu {
+                    details: format!("waiting for the frame failed: {error}"),
+                }
+                .into()
+            })
+    }
+}
+
 pub(super) const TEXT_ATLAS_SIZE: u32 = 4096;
 
 pub(super) fn create_text_atlas_texture(
@@ -38,6 +76,8 @@ pub struct BoundFrame {
     pub(crate) text_atlas_frame: u64,
     /// Whether text dropped glyphs that a later frame with more atlas room may draw.
     pub(crate) text_dropped_glyphs: bool,
+    /// The texture of the external target the frame was recorded for.
+    pub(crate) external: Option<Arc<lumen_gpu::wgpu::Texture>>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,13 +162,13 @@ impl BoundFrame {
     }
 
     /// How many regions text placed in the atlas this frame.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn atlas_region_count(&self) -> usize {
         self.atlas_regions.len()
     }
 
     /// Where each region text placed in the atlas this frame goes, and its size.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn atlas_region_rects(&self) -> Vec<([u32; 2], [u32; 2])> {
         self.atlas_regions
             .iter()
@@ -142,7 +182,7 @@ impl BoundFrame {
     }
 
     /// The glyph, stroke and decoration instances the frame draws, in draw order per text.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn glyph_instances(&self) -> &[lumen_text::GpuGlyphInstance] {
         &self.glyph_instances
     }

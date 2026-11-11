@@ -8,7 +8,7 @@ use lumen_engine::{
     composition::{CompositionBuilder, RenderSettings, TimelineSettings},
     error::MediaError,
     expr::{Expression, ExpressionContext},
-    gpu::GpuCompositionRenderer,
+    gpu::{GpuCompositionRenderer, RenderTarget},
     graph::Graph,
     media::{AssetKind, FontResolver, MediaIdentity, MediaResolver, MediaStore, ResolvedMedia},
     node::{
@@ -281,14 +281,9 @@ fn run_case(
     };
     let mut run = |frame| -> anyhow::Result<()> {
         if let Some(renderer) = &mut renderer {
-            let (_, submission) = renderer.render_frame_submitted(&composition, frame, media)?;
             renderer
-                .gpu_renderer()
-                .device
-                .poll(lumen_gpu::wgpu::PollType::Wait {
-                    submission_index: Some(submission),
-                    timeout: None,
-                })?;
+                .render(&composition, frame, media, RenderTarget::Owned)?
+                .wait(&renderer.gpu_renderer().device)?;
         } else {
             request.spans[0].font_size = 24.0 + (frame % 96) as f32;
             std::hint::black_box(system.shape(&request).place([0.0; 2]));

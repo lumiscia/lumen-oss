@@ -1,4 +1,18 @@
 //! Lumen compositing engine crate.
+//!
+//! A host parses a [`composition::Composition`] with [`json::parse`] (or builds one with
+//! [`composition::CompositionBuilder`]), gives its media through a [`media::MediaStore`], and
+//! renders its frames with [`gpu::GpuCompositionRenderer::render`]. Everything fallible returns
+//! [`error::LumenError`]; warnings are [`diagnostic::Diagnostic`]s.
+//!
+//! - [`composition`], [`graph`], [`node`]: the composition model, its node graph and node kinds.
+//! - [`json`]: parsing and checking composition JSON.
+//! - [`expr`]: the expression language params can be written in.
+//! - [`media`]: the resolver traits a host implements, and the resolvers the `ffmpeg` and `image`
+//!   features add.
+//! - [`gpu`]: the renderer and the targets frames render into.
+//! - [`audio`]: audio timelines and their mix.
+//! - [`diagnostic`], [`error`]: what checks and renders report.
 
 extern crate self as lumen_engine;
 
@@ -12,21 +26,16 @@ pub mod composition;
 pub mod diagnostic;
 pub mod error;
 pub mod expr;
+// The derive macros' output names this module, so it is public for them and not for hosts.
 #[doc(hidden)]
 pub mod fingerprint;
 pub mod gpu;
 pub mod graph;
+pub mod json;
 pub mod media;
 pub mod node;
-pub mod scope;
+pub(crate) mod scope;
 
-#[cfg(feature = "ffmpeg")]
-pub use media::ffmpeg;
-
-#[cfg(feature = "image")]
-pub use media::image;
-
-pub mod json;
 pub use json::SCHEMA_VERSION;
 
 pub(crate) type Result<T> = std::result::Result<T, LumenError>;

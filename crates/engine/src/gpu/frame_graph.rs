@@ -935,6 +935,7 @@ impl FrameGraph {
     }
 
     /// The domain `node` of the root graph had in the frame last recorded.
+    #[cfg(feature = "test-hooks")]
     pub(crate) fn node_domain(
         &self,
         composition: &Composition,

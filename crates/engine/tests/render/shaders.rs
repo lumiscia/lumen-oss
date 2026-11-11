@@ -1,6 +1,6 @@
 //! What a `wgsl_shader` node binds for its shader, and what it reports when the shader is wrong.
 
-use lumen_engine::composition::Composition;
+use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::color::{linear, opaque, srgb8};
@@ -213,7 +213,7 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     for (shader, uniforms, expected) in rows {
         let composition = Composition::from(shader_scene(shader, uniforms, &[BLACK]));
         let error = renderer
-            .render_frame_at(&composition, 0.0, &media)
+            .render(&composition, 0.0, &media, RenderTarget::Owned)
             .expect_err(expected);
         assert_ne!(error.code(), "render.gpu", "{expected}");
         let error = error.to_string();

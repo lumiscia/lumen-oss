@@ -1,6 +1,6 @@
 //! `text_3d`: extruded text drawn by a `render_3d`.
 
-use lumen_engine::composition::Composition;
+use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, Frame, TestMedia, check, gpu, render, scene};
@@ -117,7 +117,12 @@ fn text_past_the_glyph_limit_is_a_render_error() {
         &media,
     );
     let error = renderer
-        .render_frame_at(&text_3d(json!({ "content": "abcde" })), 0.0, &media)
+        .render(
+            &text_3d(json!({ "content": "abcde" })),
+            0.0,
+            &media,
+            RenderTarget::Owned,
+        )
         .expect_err("five glyphs are past the limit")
         .to_string();
     assert!(
@@ -139,7 +144,7 @@ fn numbers_no_text_can_have_are_render_errors_naming_the_param() {
     ] {
         let composition = text_3d(json!({ "content": "l", param: value }));
         let error = renderer
-            .render_frame_at(&composition, 1.0, &media)
+            .render(&composition, 1.0, &media, RenderTarget::Owned)
             .expect_err("the value is not a size any text has")
             .to_string();
         assert!(

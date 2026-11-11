@@ -144,7 +144,7 @@ fn saturate_frame(frame: i64) -> u32 {
 ///
 /// Frame rates are `f32`, so a rate with no exact binary form, like NTSC's 30000/1001, converts
 /// whole frames only to within `f64` rounding.
-pub fn map_to_source_frame(
+pub(crate) fn map_to_source_frame(
     frame: impl Into<FrameTime>,
     composition_fps: f32,
     source_fps: f32,

@@ -71,3 +71,14 @@ fn paint_delegate_evaluation_error_names_node_and_property_path() {
         "node 7 `paint`: expected a number, got string `not a number`"
     );
 }
+
+#[test]
+fn structural_hash_derives_outside_the_engine() {
+    #[derive(lumen_macros::StructuralHash)]
+    struct Pair {
+        a: u32,
+        b: bool,
+    }
+
+    let _ = Pair { a: 1, b: true };
+}

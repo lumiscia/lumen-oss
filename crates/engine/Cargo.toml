@@ -23,6 +23,8 @@ cuda = ["lumen-ffmpeg?/cuda"]
 "3d-meshopt" = ["3d", "lumen-3d/meshopt"]
 "3d-ktx2" = ["3d", "lumen-3d/ktx2"]
 "3d-webp" = ["3d", "lumen-3d/webp"]
+# Renderer and frame internals that tests read and set. Not a supported host API.
+test-hooks = []
 
 [dependencies]
 thiserror = "2.0.18"
@@ -55,6 +57,7 @@ half = { version = "2.7.1", features = ["bytemuck"] }
 objc2-metal = { version = "0.3.2", optional = true }
 
 [dev-dependencies]
+lumen-engine = { path = ".", features = ["test-hooks"] }
 exr = { version = "1.74.3", default-features = false }
 lumen-3d = { workspace = true, features = ["exr"] }
 tempfile = "3.23.0"

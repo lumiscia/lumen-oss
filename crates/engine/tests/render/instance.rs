@@ -1,7 +1,7 @@
 //! `instance_3d`: copies of a scene placed by per-instance expressions, drawn as the same objects
 //! placed by hand would be.
 
-use lumen_engine::composition::Composition;
+use lumen_engine::{composition::Composition, gpu::RenderTarget};
 use serde_json::{Value, json};
 
 use crate::support::{Case, Expect, TestMedia, check, gpu, render, scene};
@@ -325,7 +325,12 @@ fn render_error(nodes: Vec<Value>) -> String {
     let composition: Composition = render_3d(nodes).into();
     gpu()
         .renderer()
-        .render_frame_at(&composition, 0.0, &TestMedia::default())
+        .render(
+            &composition,
+            0.0,
+            &TestMedia::default(),
+            RenderTarget::Owned,
+        )
         .expect_err("the render fails")
         .to_string()
 }
@@ -386,7 +391,12 @@ fn an_empty_scene_is_not_placed() {
     .into();
     gpu()
         .renderer()
-        .render_frame_at(&composition, 0.0, &TestMedia::default())
+        .render(
+            &composition,
+            0.0,
+            &TestMedia::default(),
+            RenderTarget::Owned,
+        )
         .expect("the render succeeds");
 }
 
