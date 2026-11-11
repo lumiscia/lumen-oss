@@ -96,9 +96,9 @@ fn colr_has_glyph(colr: &[u8], glyph: u16) -> bool {
     };
     // Both lists are sorted by glyph, in records of 6 bytes that start with it.
     let listed = |start: usize, count: usize| {
-        let (mut low, mut high) = (0, count);
+        let (mut low, mut high) = (0, count.min(colr.len().saturating_sub(start) / 6));
         while low < high {
-            let middle = (low + high) / 2;
+            let middle = low + (high - low) / 2;
             match start.checked_add(middle * 6).and_then(u16_at) {
                 Some(found) if found < glyph => low = middle + 1,
                 Some(found) if found > glyph => high = middle,
@@ -178,6 +178,9 @@ mod tests {
         v1.extend([0, 0, 0, 1, 0, 7, 0, 0, 0, 0]);
         assert!(colr_has_glyph(&v1, 7) && !colr_has_glyph(&v1, 3));
         assert!(!colr_has_glyph(&[], 1) && !colr_has_glyph(&[0, 0, 0, 9], 1));
+        // A count of more records than the table holds finds only those it has.
+        v1[18..22].fill(0xFF);
+        assert!(colr_has_glyph(&v1, 7) && !colr_has_glyph(&v1, 9));
     }
 
     #[test]
