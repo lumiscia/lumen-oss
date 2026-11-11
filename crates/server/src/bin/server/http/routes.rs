@@ -10,6 +10,7 @@ use axum::{
 use lumen_engine::{composition::Composition, media::AssetResolver};
 use lumen_ffmpeg::QualityRequest;
 use lumen_server::render::{check_composition, resolve_encoder};
+use tokio::sync::OwnedSemaphorePermit;
 
 use crate::server::{
     ApiRenderJob, Artifact, CheckInput, CheckResponse, CreateRenderResponse, GetRenderResponse,
@@ -104,11 +105,19 @@ pub(super) async fn create_render(
     ));
     let render = ApiRenderJob::new(&record, &RenderStatus::Queued);
 
+    // A waiting render's place is held by its record, so cancelling it can give the place back.
+    let slot = match ticket {
+        RenderTicket::Running(permit) => Some(permit),
+        RenderTicket::Waiting(spot) => {
+            record.hold_queue_spot(spot);
+            None
+        }
+    };
     let max_text_glyphs = state.max_text_glyphs;
     spawn_render_task(
         state,
         record,
-        ticket,
+        slot,
         RenderJob {
             id,
             composition,
@@ -263,20 +272,20 @@ pub(super) async fn get_render_artifact(
 fn spawn_render_task(
     state: AppState,
     record: Arc<RenderRecord>,
-    ticket: RenderTicket,
+    slot: Option<OwnedSemaphorePermit>,
     job: RenderJob,
 ) {
     tokio::spawn(async move {
-        let _render_slot = match ticket {
-            RenderTicket::Running(permit) => permit,
-            RenderTicket::Waiting(spot) => {
+        let _render_slot = match slot {
+            Some(permit) => permit,
+            None => {
                 let permit = tokio::select! {
                     permit = Arc::clone(&state.render_slots).acquire_owned() => {
                         permit.expect("render slots are never closed")
                     }
                     () = record.cancellation.cancelled() => return,
                 };
-                drop(spot);
+                record.release_queue_spot();
                 permit
             }
         };

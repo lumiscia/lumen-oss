@@ -11,9 +11,9 @@ use lumen_ffmpeg::{EncoderCandidate, EncoderFamily, FfmpegError, VideoEncoderCho
 use lumen_gpu::wgpu::{PollType, SubmissionIndex};
 
 use super::{
-    ErrorCode, ServerRenderError,
+    CancelToken, ErrorCode, ServerRenderError,
     device_budget::{DeviceReservation, reserve_devices},
-    encoder::{EncoderSink, has_audio, write_composited_audio},
+    encoder::{AudioCancelled, EncoderSink, has_audio, write_composited_audio},
     gpu::{RenderTiming, create_gpu_renderer},
     media::LocalMediaStore,
     readback::ReadbackRing,
@@ -58,12 +58,14 @@ pub(super) struct OpenedTarget {
 }
 
 impl EncodeTarget {
-    /// Opens the choice's encoders in order until one starts, warning for each that won't.
+    /// Opens the choice's encoders in order until one starts, warning for each that won't. A
+    /// cancelled `cancel` ends the wait for GPU device room with the cancelled error.
     pub(super) fn open(
         choice: &VideoEncoderChoice,
         composition: &Composition,
         media_store: &mut LocalMediaStore,
         output: &Path,
+        cancel: &CancelToken,
     ) -> Result<OpenedTarget, ServerRenderError> {
         choice
             .open(
@@ -74,6 +76,7 @@ impl EncodeTarget {
                         composition,
                         media_store,
                         output,
+                        cancel,
                     )
                     .map_err(WithCauses)
                 },
@@ -91,13 +94,17 @@ impl EncodeTarget {
         composition: &Composition,
         media_store: &mut LocalMediaStore,
         output: &Path,
+        cancel: &CancelToken,
     ) -> Result<OpenedTarget, ServerRenderError> {
+        if cancel.is_cancelled() {
+            return Err(ServerRenderError::cancelled());
+        }
         let (name, quality) = (candidate.encoder.as_str(), &candidate.quality);
         let hardware_decode = media_store.video_options.prefer_hardware_decode;
         let unavailable: Option<anyhow::Error> = match family {
             #[cfg(all(target_os = "linux", feature = "vulkan"))]
             EncoderFamily::Vulkan => {
-                let devices = reserve_shared_video_device();
+                let devices = reserve_shared_video_device(cancel)?;
                 match vulkan::VulkanTarget::open(composition, media_store, output, name, quality) {
                     Ok((renderer, target)) => {
                         return Ok(OpenedTarget {
@@ -113,7 +120,7 @@ impl EncodeTarget {
             }
             #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
             EncoderFamily::Nvenc => {
-                let devices = reserve_devices(family, hardware_decode);
+                let devices = reserve_devices(family, hardware_decode, cancel)?;
                 match cuda::CudaTarget::open(composition, media_store, output, name, quality) {
                     Ok((renderer, target)) => {
                         return Ok(OpenedTarget {
@@ -136,7 +143,7 @@ impl EncodeTarget {
             }
             #[cfg(all(target_os = "macos", feature = "metal"))]
             EncoderFamily::VideoToolbox => {
-                let devices = reserve_devices(family, hardware_decode);
+                let devices = reserve_devices(family, hardware_decode, cancel)?;
                 match metal::MetalTarget::open(composition, &media_store.gpu, output, name, quality)
                 {
                     Ok((renderer, target)) => {
@@ -154,7 +161,7 @@ impl EncodeTarget {
             _ => None,
         };
 
-        let devices = reserve_devices(family, hardware_decode);
+        let devices = reserve_devices(family, hardware_decode, cancel)?;
         let renderer = create_gpu_renderer(media_store).map_err(gpu_renderer_failed)?;
         let settings = composition.render_settings();
         let sink = EncoderSink::create(
@@ -236,43 +243,60 @@ impl EncodeTarget {
         }
     }
 
-    /// Writes the audio after the last frame and finishes the output.
+    /// Writes the audio after the last frame and finishes the output. Checks `cancel` between the
+    /// frames it drains, between audio chunks and before it finishes the encoder.
     pub(super) fn finish(
         self,
         renderer: &GpuCompositionRenderer,
         composition: &Composition,
         media_store: &LocalMediaStore,
+        cancel: &CancelToken,
         timing: &mut RenderTiming,
     ) -> Result<(), ServerRenderError> {
         #[cfg(not(all(target_os = "macos", feature = "metal")))]
         let _ = renderer;
         match self {
             Self::Cpu { mut sink, mut ring } => {
-                while let Some(read) =
-                    timed(&mut timing.readback, || ring.pop(renderer.gpu_renderer()))
-                        .map_err(readback_failed)?
-                {
+                loop {
+                    cancel.check()?;
+                    let Some(read) =
+                        timed(&mut timing.readback, || ring.pop(renderer.gpu_renderer()))
+                            .map_err(readback_failed)?
+                    else {
+                        break;
+                    };
                     send_read(&mut sink, Some(read), timing)?;
                 }
                 timed(&mut timing.audio_mix, || {
-                    write_composited_audio(composition, media_store, |frame| sink.send_audio(frame))
+                    write_composited_audio(composition, media_store, cancel, |frame| {
+                        sink.send_audio(frame)
+                    })
                 })
                 .map_err(audio_render_failed)?;
+                cancel.check()?;
                 timed(&mut timing.encode_finish, || sink.finish())
                     .map_err(|err| encode_failed(format!("{err:#}")))
             }
             #[cfg(all(target_os = "linux", feature = "vulkan"))]
-            Self::Vulkan(target) => {
-                finish_muxed(target.into_encoder(), composition, media_store, timing)
-            }
+            Self::Vulkan(target) => finish_muxed(
+                target.into_encoder(),
+                composition,
+                media_store,
+                cancel,
+                timing,
+            ),
             #[cfg(all(target_os = "linux", feature = "cuda", feature = "vulkan"))]
-            Self::Cuda(target) => {
-                finish_muxed(target.into_encoder(), composition, media_store, timing)
-            }
+            Self::Cuda(target) => finish_muxed(
+                target.into_encoder(),
+                composition,
+                media_store,
+                cancel,
+                timing,
+            ),
             #[cfg(all(target_os = "macos", feature = "metal"))]
             Self::Metal(target) => {
-                let encoder = target.drain(renderer, timing)?;
-                finish_muxed(encoder, composition, media_store, timing)
+                let encoder = target.drain(renderer, cancel, timing)?;
+                finish_muxed(encoder, composition, media_store, cancel, timing)
             }
         }
     }
@@ -287,16 +311,18 @@ fn finish_muxed(
     mut encoder: lumen_ffmpeg::MuxedEncoder,
     composition: &Composition,
     media_store: &LocalMediaStore,
+    cancel: &CancelToken,
     timing: &mut RenderTiming,
 ) -> Result<(), ServerRenderError> {
     timed(&mut timing.audio_mix, || {
-        write_composited_audio(composition, media_store, |frame| {
+        write_composited_audio(composition, media_store, cancel, |frame| {
             encoder
                 .write_audio_frame(&frame)
                 .map_err(|err| anyhow::anyhow!("lumen-ffmpeg audio encode failed: {err}"))
         })
     })
     .map_err(audio_render_failed)?;
+    cancel.check()?;
     timed(&mut timing.encode_finish, || encoder.finish())
         .map_err(|err| encode_failed(err.to_string()))
 }
@@ -374,6 +400,9 @@ fn gpu_renderer_failed(err: anyhow::Error) -> ServerRenderError {
 
 /// A failure mixing the audio has the engine's code, and one encoding it is `encode_failed`.
 fn audio_render_failed(err: anyhow::Error) -> ServerRenderError {
+    if err.is::<AudioCancelled>() {
+        return ServerRenderError::cancelled();
+    }
     encode_failed("failed to write the audio".to_string()).caused_by(err)
 }
 
@@ -595,6 +624,7 @@ mod tests {
             &composition,
             &mut media_store,
             &output,
+            &CancelToken::new(),
         )
         .unwrap();
 
@@ -612,7 +642,13 @@ mod tests {
                 .unwrap();
         }
         target
-            .finish(&renderer, &composition, &media_store, &mut timing)
+            .finish(
+                &renderer,
+                &composition,
+                &media_store,
+                &CancelToken::new(),
+                &mut timing,
+            )
             .unwrap();
         let frames = decode_yuv(&output);
         assert_eq!(frames.len(), 3);

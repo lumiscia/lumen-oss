@@ -15,7 +15,7 @@ use lumen_ffmpeg::{
     PixelFormat, Rational, VideoEncoderConfig,
 };
 
-use super::media::LocalMediaStore;
+use super::{CancelToken, media::LocalMediaStore};
 
 const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
 
@@ -168,9 +168,24 @@ pub(super) fn warn_if_container_cropped(encoder: &MuxedEncoder) {
     }
 }
 
+/// Why the audio stopped before its last chunk: the render was cancelled.
+#[derive(Debug)]
+pub(super) struct AudioCancelled;
+
+impl std::fmt::Display for AudioCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the render was cancelled")
+    }
+}
+
+impl std::error::Error for AudioCancelled {}
+
+/// Mixes the audio a chunk at a time, stopping with [`AudioCancelled`] before the chunk that
+/// follows a cancellation.
 pub(super) fn write_composited_audio(
     composition: &Composition,
     media_store: &LocalMediaStore,
+    cancel: &CancelToken,
     mut write_frame: impl FnMut(AudioFrame) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let Some(audio) = composition.audio().filter(|_| has_audio(composition)) else {
@@ -186,6 +201,9 @@ pub(super) fn write_composited_audio(
     let chunk_frames = (AUDIO_SAMPLE_RATE as usize).saturating_mul(30);
 
     while start_sample < total_samples {
+        if cancel.is_cancelled() {
+            return Err(AudioCancelled.into());
+        }
         let frames = usize::try_from((total_samples - start_sample).min(chunk_frames as u64))
             .unwrap_or(chunk_frames);
         let mixed = mixer

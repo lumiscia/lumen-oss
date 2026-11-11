@@ -77,6 +77,14 @@ impl CancelToken {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
+
+    /// The cancelled error once the token is cancelled.
+    pub(crate) fn check(&self) -> Result<(), ServerRenderError> {
+        if self.is_cancelled() {
+            return Err(ServerRenderError::cancelled());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default)]

@@ -1,4 +1,10 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use axum::body::Bytes;
 use lumen_server::render::{CancelToken, ErrorCode};
@@ -139,6 +145,22 @@ impl Cancellation {
     }
 }
 
+/// One place in the queue for a render slot, given back when dropped.
+pub struct QueueSpot(Arc<AtomicUsize>);
+
+impl QueueSpot {
+    /// Takes a place the caller has already counted in `queued`.
+    pub fn new(queued: Arc<AtomicUsize>) -> Self {
+        Self(queued)
+    }
+}
+
+impl Drop for QueueSpot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// A render and its latest status. Sockets subscribe to the status and polling reads it, so every
 /// reader sees the same value.
 pub struct RenderRecord {
@@ -147,6 +169,7 @@ pub struct RenderRecord {
     pub input_hash: String,
     pub status: watch::Sender<RenderStatus>,
     pub cancellation: Cancellation,
+    queue_spot: Mutex<Option<QueueSpot>>,
 }
 
 #[derive(Debug, Clone)]
@@ -245,7 +268,27 @@ impl RenderRecord {
             input_hash,
             status: watch::Sender::new(RenderStatus::Queued),
             cancellation: Cancellation::default(),
+            queue_spot: Mutex::new(None),
         }
+    }
+
+    /// Keeps the render's place in the queue until [`release_queue_spot`](Self::release_queue_spot)
+    /// or the record is dropped.
+    pub fn hold_queue_spot(&self, spot: QueueSpot) {
+        *self
+            .queue_spot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(spot);
+    }
+
+    /// Gives the place back. Releasing again, or without a place, does nothing.
+    pub fn release_queue_spot(&self) {
+        drop(
+            self.queue_spot
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
     }
 
     /// Records a rendered frame. Subscribers are woken when the stage changes or the progress has

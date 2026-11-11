@@ -11,7 +11,9 @@ use lumen_ffmpeg::QualityConfig;
 use lumen_server::render::RenderConfig;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::server::{MediaClient, RenderJobError, RenderRecord, RenderStatus, assets::AssetStore};
+use crate::server::{
+    MediaClient, QueueSpot, RenderJobError, RenderRecord, RenderStatus, assets::AssetStore,
+};
 
 use super::Args;
 
@@ -79,7 +81,7 @@ impl AppState {
                 (queued < self.max_queued_renders).then_some(queued + 1)
             })
             .ok()?;
-        Some(RenderTicket::Waiting(QueueSpot(Arc::clone(
+        Some(RenderTicket::Waiting(QueueSpot::new(Arc::clone(
             &self.queued_renders,
         ))))
     }
@@ -120,8 +122,9 @@ impl AppState {
         self.finish(record, status);
     }
 
-    /// Asks a render that hasn't ended to stop. A queued render ends here and never starts; a
-    /// running one ends when its task sees the request, at its next frame boundary.
+    /// Asks a render that hasn't ended to stop. A queued render ends here and never starts, and
+    /// its place in the queue is free before it ends; a running one ends when its task sees the
+    /// request, at its next frame boundary.
     pub fn cancel(&self, record: &RenderRecord) {
         if record.status.borrow().is_terminal() {
             return;
@@ -131,6 +134,7 @@ impl AppState {
         let ended = record.status.send_if_modified(|status| {
             let queued = matches!(status, RenderStatus::Queued);
             if queued {
+                record.release_queue_spot();
                 *status = RenderStatus::Cancelled {
                     error: RenderJobError::cancelled(),
                     progress: 0.0,
@@ -152,15 +156,6 @@ impl AppState {
 pub(super) enum RenderTicket {
     Running(OwnedSemaphorePermit),
     Waiting(QueueSpot),
-}
-
-/// One place in the queue, given back when dropped.
-pub(super) struct QueueSpot(Arc<AtomicUsize>);
-
-impl Drop for QueueSpot {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
 }
 
 #[derive(Default)]
@@ -226,6 +221,27 @@ mod tests {
         assert!(state.get("first").is_none());
         socket.changed().await.unwrap();
         assert!(socket.borrow_and_update().is_terminal());
+    }
+
+    #[test]
+    fn cancelling_a_queued_render_frees_its_place_in_the_queue_at_once() {
+        let state = state(&["--max-concurrent-renders", "1", "--max-queued-renders", "1"]);
+        let _running = state.reserve_render().unwrap();
+        let Some(RenderTicket::Waiting(spot)) = state.reserve_render() else {
+            panic!("the slot is taken, so the render queues");
+        };
+        let queued = state.insert(record("queued"));
+        queued.hold_queue_spot(spot);
+        assert!(state.reserve_render().is_none(), "the queue is full");
+
+        state.cancel(&queued);
+        state.cancel(&queued);
+
+        assert!(matches!(
+            state.reserve_render(),
+            Some(RenderTicket::Waiting(_))
+        ));
+        assert!(queued.status.borrow().is_terminal());
     }
 
     #[test]

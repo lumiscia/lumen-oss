@@ -1,10 +1,16 @@
 import { LumenError, isRecord } from "./errors.js";
 import type { Render, RenderFailure, RenderStatus } from "./types.js";
 
-const statuses: readonly RenderStatus[] = ["queued", "processing", "succeeded", "failed"];
+const statuses: readonly RenderStatus[] = [
+  "queued",
+  "processing",
+  "succeeded",
+  "failed",
+  "cancelled",
+];
 
 export function isTerminal(status: RenderStatus): boolean {
-  return status === "succeeded" || status === "failed";
+  return status === "succeeded" || status === "failed" || status === "cancelled";
 }
 
 /**
@@ -58,14 +64,15 @@ export function parseRender(
  */
 export function parseProgress(body: Record<string, unknown>, baseUrl: URL): Render {
   const progress = isRecord(body.progress) ? body.progress : {};
-  const failed = isRecord(body.render) && body.render.status === "failed";
+  const status = isRecord(body.render) ? body.render.status : undefined;
+  const failed = status === "failed" || status === "cancelled";
   const code = progress.errorCode ?? progress.stage;
   return parseRender(body.render, baseUrl, {
     ...(typeof progress.progress === "number" ? { progress: progress.progress } : {}),
     ...(failed && typeof progress.error === "string"
       ? {
           error: {
-            code: typeof code === "string" ? code : "render_failed",
+            code: typeof code === "string" ? code : failureCode(status),
             message: progress.error,
             ...(typeof progress.retryable === "boolean" ? { retryable: progress.retryable } : {}),
           },
@@ -74,12 +81,13 @@ export function parseProgress(body: Record<string, unknown>, baseUrl: URL): Rend
   });
 }
 
-/** The error a failed render raises where a result was expected. */
+/** The error a failed or cancelled render raises where a result was expected. */
 export function renderError(render: Render): LumenError {
   const failure = render.error;
   return new LumenError(
-    failure?.code ?? "render_failed",
-    failure?.message ?? `Render ${render.id} failed.`,
+    failure?.code ?? failureCode(render.status),
+    failure?.message ??
+      `Render ${render.id} ${render.status === "cancelled" ? "was cancelled" : "failed"}.`,
     {
       renderId: render.id,
       ...(failure?.retryable !== undefined ? { retryable: failure.retryable } : {}),
@@ -96,6 +104,10 @@ export function parseFailure(error: unknown): RenderFailure | undefined {
     message: error.message,
     ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
   };
+}
+
+function failureCode(status: unknown): string {
+  return status === "cancelled" ? "render_cancelled" : "render_failed";
 }
 
 function isStatus(value: unknown): value is RenderStatus {
