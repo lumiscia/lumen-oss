@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [features]
 ffmpeg = ["dep:lumen-ffmpeg"]
-image = ["dep:image", "dep:tiff"]
+image = ["dep:image", "dep:tiff", "dep:moxcms"]
 metadata = []
 metal = ["dep:objc2-metal", "lumen-ffmpeg?/metal", "lumen-gpu/metal"]
 vulkan = ["lumen-ffmpeg?/vulkan", "lumen-gpu/vulkan"]
@@ -38,6 +38,7 @@ image = { version = "0.25.9", default-features = false, features = [
   "ico",
 ], optional = true }
 tiff = { version = "0.11.3", default-features = false, optional = true }
+moxcms = { version = "0.8.1", default-features = false, optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.145" }
 serde_path_to_error = "0.1.20"
@@ -50,7 +51,7 @@ lumen-gpu = { workspace = true }
 lumen-3d = { workspace = true, optional = true }
 lumen-text = { workspace = true }
 bytemuck = { version = "1.25.0", features = ["derive"] }
-half = "2.7.1"
+half = { version = "2.7.1", features = ["bytemuck"] }
 objc2-metal = { version = "0.3.2", optional = true }
 
 [dev-dependencies]

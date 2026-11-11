@@ -14,12 +14,35 @@ pub struct CpuMediaFrame {
     pub row_bytes: usize,
 }
 
+/// An image's straight colour in linear light with BT.709 primaries, as half floats: four per
+/// pixel, rows tightly packed from the top. Colour is never negative and may be above 1, where
+/// the source's gamut is wider than BT.709; alpha is within `0..=1`.
+#[derive(Debug, Clone)]
+pub struct LinearMediaFrame {
+    pub rgba: Vec<half::f16>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The matrix taking linear RGB in a source's primaries to linear BT.709 RGB, by rows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GamutMatrix(pub [[f32; 3]; 3]);
+
 #[derive(Debug, Clone)]
 pub enum MediaFrame {
     CpuRgba(Arc<CpuMediaFrame>),
     /// RGBA8 as decoded. An image's colour is straight; a video's is multiplied by alpha only if
     /// the node reading it says so.
     RawRgba(Arc<CpuMediaFrame>),
+    /// An image's straight RGBA8, sRGB-encoded like `RawRgba`'s but in other primaries, which
+    /// `gamut` takes to BT.709 once decoded. Colour outside BT.709 is clipped at zero.
+    WideRgba {
+        frame: Arc<CpuMediaFrame>,
+        gamut: GamutMatrix,
+    },
+    /// An image whose depth or transfer an 8-bit sRGB texture would lose, already in the working
+    /// space's light and primaries.
+    LinearRgba(Arc<LinearMediaFrame>),
     /// Planes the renderer converts to RGBA on the GPU.
     Yuv(Arc<YuvFrame>),
     #[cfg(feature = "ffmpeg")]
@@ -77,9 +100,11 @@ impl GpuVideoMediaFrame {
     /// returns is never a GPU frame.
     pub fn decode_on_cpu(&self, reason: &str) -> Result<MediaFrame, MediaError> {
         match (self.cpu_retry)(reason)? {
-            frame @ (MediaFrame::CpuRgba(_) | MediaFrame::RawRgba(_) | MediaFrame::Yuv(_)) => {
-                Ok(frame)
-            }
+            frame @ (MediaFrame::CpuRgba(_)
+            | MediaFrame::RawRgba(_)
+            | MediaFrame::WideRgba { .. }
+            | MediaFrame::LinearRgba(_)
+            | MediaFrame::Yuv(_)) => Ok(frame),
             MediaFrame::GpuVideo(_) => Err(MediaError::decode(
                 "",
                 "a source moved to the CPU returned a GPU frame",
@@ -106,6 +131,12 @@ pub trait ImageResolver: Send + Sync {
     fn metadata(&self) -> ImageMetadata;
 
     fn frame(&self) -> Result<MediaFrame, MediaError>;
+
+    /// Why the image's embedded colour profile is read as sRGB in its place, which a render warns
+    /// of.
+    fn color_warning(&self) -> Option<&str> {
+        None
+    }
 }
 
 pub trait VideoFrameResolver: Send + Sync {
@@ -132,6 +163,10 @@ impl<T: ImageResolver + ?Sized> ImageResolver for Arc<T> {
 
     fn frame(&self) -> Result<MediaFrame, MediaError> {
         (**self).frame()
+    }
+
+    fn color_warning(&self) -> Option<&str> {
+        (**self).color_warning()
     }
 }
 

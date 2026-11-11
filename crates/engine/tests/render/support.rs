@@ -187,6 +187,26 @@ impl TestMedia {
         self
     }
 
+    /// Serves the image file `encoded` as `source`, decoded by `ImageFileResolver` as a host
+    /// decodes it, with the colour warning that gives.
+    #[cfg(feature = "image")]
+    pub fn image_file(mut self, source: &str, encoded: &[u8]) -> Self {
+        use lumen_engine::media::ImageFileResolver;
+
+        let file = tempfile::NamedTempFile::new().expect("temp file");
+        std::fs::write(file.path(), encoded).expect("write image");
+        let resolver =
+            ImageFileResolver::open(file.path().to_string_lossy()).expect("decode image");
+        if let Some(details) = resolver.color_warning() {
+            self.color_warnings
+                .insert(source.to_string(), details.to_string());
+        }
+        let frame = resolver.frame().expect("image frame");
+        self.images
+            .insert(source.to_string(), (source.to_string(), frame));
+        self
+    }
+
     /// A 30 fps video of 256 frames, which all show `rgba`.
     pub fn still_video(mut self, source: &str, width: u32, height: u32, rgba: Vec<u8>) -> Self {
         let frame = MediaFrame::CpuRgba(still_frame(width, height, rgba));
@@ -211,7 +231,7 @@ impl TestMedia {
         self
     }
 
-    /// Has video `source` report `details` of its colour tags as read without.
+    /// Has video or image `source` report `details` of its colour as read without.
     pub fn color_warning(mut self, source: &str, details: &str) -> Self {
         self.color_warnings
             .insert(source.to_string(), details.to_string());
@@ -442,6 +462,7 @@ impl MediaStore for TestMedia {
                 let (id, frame) = self.images.get(source).ok_or_else(missing)?;
                 let image = TestImage {
                     frame: frame.clone(),
+                    color_warning: self.color_warnings.get(source).cloned(),
                 };
                 (
                     MediaIdentity::of_key(id),
@@ -516,21 +537,27 @@ impl MediaStore for TestMedia {
 
 struct TestImage {
     frame: MediaFrame,
+    color_warning: Option<String>,
 }
 
 impl ImageResolver for TestImage {
     fn metadata(&self) -> ImageMetadata {
-        let (MediaFrame::CpuRgba(frame) | MediaFrame::RawRgba(frame)) = &self.frame else {
-            unreachable!("test images are RGBA");
+        let (width, height) = match &self.frame {
+            MediaFrame::CpuRgba(frame)
+            | MediaFrame::RawRgba(frame)
+            | MediaFrame::WideRgba { frame, .. } => (frame.width, frame.height),
+            MediaFrame::LinearRgba(frame) => (frame.width, frame.height),
+            _ => unreachable!("test images are RGBA"),
         };
-        ImageMetadata {
-            width: frame.width,
-            height: frame.height,
-        }
+        ImageMetadata { width, height }
     }
 
     fn frame(&self) -> Result<MediaFrame, MediaError> {
         Ok(self.frame.clone())
+    }
+
+    fn color_warning(&self) -> Option<&str> {
+        self.color_warning.as_deref()
     }
 }
 

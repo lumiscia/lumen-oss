@@ -775,14 +775,17 @@ pub enum Warning {
         lights: Vec<NodeId>,
     },
     /// A video's colour tags name a transfer or primaries the renderer doesn't convert, so it reads
-    /// as SDR or BT.709 in their place.
+    /// as SDR or BT.709 in their place, or an image's embedded ICC profile can't be honoured, so it
+    /// reads as sRGB.
     #[code("media.color_unsupported")]
-    #[error("{}media_in node {node_id}: video `{video}`: {details}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default())]
-    UnsupportedVideoColor {
+    #[error("{}media_in node {node_id}: {} `{media}`: {details}", .template.as_ref().map(|name| format!("composition `{name}`: ")).unwrap_or_default(), .kind.name())]
+    UnsupportedColor {
         /// The template the node is in, or `None` at the root.
         template: Option<String>,
         node_id: NodeId,
-        video: String,
+        /// `Image` or `Video`.
+        kind: crate::media::AssetKind,
+        media: String,
         details: String,
     },
     /// A `model_3d`'s model has primitives that aren't triangle lists, which aren't drawn.
