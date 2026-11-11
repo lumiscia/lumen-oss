@@ -495,18 +495,58 @@ export function literal(text: string): string {
   return text.startsWith("=") ? `=${text}` : text;
 }
 
+/** What `expr` interpolates: expressions, `true` and `false`, and the literals builtins take. */
+export type ExprPart = AnyArg | boolean;
+
 /**
- * A raw expression, such as `expr("text_width(node(3))")`, for forms the helpers don't cover. `source` has no leading `=`. It takes the type of the param it
- * is in, or the one you give, as in `expr<number>(..)`. Given neither, as in
- * `const x = expr("frame")`, it fits any param, and only the engine checks its type.
+ * A raw expression, such as `expr("text_width(node(3))")`, for forms the helpers don't cover.
+ * `source` has no leading `=`. It takes the type of the param it is in, or the one you give, as
+ * in `expr<number>(..)`. Given neither, as in `const x = expr("frame")`, it fits any param, and
+ * only the engine checks its type.
+ *
+ * As a template tag, each interpolated value is lowered like a builtin argument, so built
+ * expressions need no `=` stripped: ``expr<Vec2>`vec2(0, ${lift})` ``. Numbers, strings and
+ * tuples are formatted and quoted, and a raw expression is bracketed where it meets an operator.
+ * The text between interpolations is taken as written, so a backslash reaches the engine as a
+ * backslash: ``expr`uppercase('it\'s')` `` keeps its `\'`. Only `` \` `` and `\${` lose theirs.
  */
-export function expr<T extends Value = never>(source: string): Expr<T> {
-  if (source.startsWith("=")) {
+export function expr<T extends Value = never>(source: string): Expr<T>;
+export function expr<T extends Value = never>(
+  strings: TemplateStringsArray,
+  ...parts: readonly ExprPart[]
+): Expr<T>;
+export function expr<T extends Value = never>(
+  source: string | TemplateStringsArray,
+  ...parts: readonly ExprPart[]
+): Expr<T> {
+  const chunks =
+    typeof source === "string"
+      ? [source]
+      : source.raw.map((chunk) => chunk.replace(/\\(`|\$\{)/g, "$1"));
+  if (chunks[0]?.startsWith("=")) {
     throw new TypeError("`expr` takes the expression without its leading `=`.");
   }
-  const expression = new Expr<T>(source);
+  const expression = new Expr<T>(
+    chunks.reduce((text, chunk, index) => `${text}${interpolated(parts[index - 1])}${chunk}`),
+  );
   rawExpressions.add(expression);
   return expression;
+}
+
+function interpolated(part: unknown): string {
+  if (typeof part === "boolean") {
+    return String(part);
+  }
+  if (part instanceof Expr || typeof part === "number" || typeof part === "string") {
+    return operand(part);
+  }
+  if (
+    Array.isArray(part) &&
+    part.every((member) => member instanceof Expr || typeof member === "number")
+  ) {
+    return lower(part as unknown as AnyArg);
+  }
+  throw new TypeError(`\`expr\` cannot interpolate ${part === null ? "null" : typeof part}.`);
 }
 
 export type FunctionSignature = `${string}(${string})`;
