@@ -5,6 +5,7 @@ use std::f64::consts::{PI, TAU};
 
 use serde_json::{Value, json};
 
+use crate::color::{light, srgb8};
 use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
@@ -166,10 +167,11 @@ fn shape_coverage() -> Vec<Case> {
             ]),
         ),
         Case::new("a shape 1 wide and 4 tall draws", zero_size(1, 4), {
-            // Half the pixel is stroke, over the fill.
+            // Half the pixel is stroke, over the fill: half the light of each.
+            let half = srgb8(0.5);
             Expect::Probes(vec![
-                (3, 1, [128, 128, 0, 255]),
-                (3, 2, [128, 128, 0, 255]),
+                (3, 1, [half, half, 0, 255]),
+                (3, 2, [half, half, 0, 255]),
                 (0, 1, CLEAR),
                 (6, 1, CLEAR),
             ])
@@ -567,8 +569,15 @@ fn shape_rotation_and_anchor_match_the_transform_node() {
         alpha(&via_node)
     );
     assert!(mean < 1.0, "mean difference {mean}");
-    // Only the resampled edges of the raster may differ noticeably.
-    assert!(*differences.iter().max().unwrap() < 128);
+    // Only the resampled edges of the raster may differ noticeably, by less than half the light.
+    let light =
+        |frame: &Frame| -> Vec<f64> { pixels(frame).flat_map(|pixel| light(*pixel)).collect() };
+    let worst = light(&own)
+        .iter()
+        .zip(light(&via_node))
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f64::max);
+    assert!(worst < 0.5, "worst difference {worst}");
 }
 
 /// Maps a canvas point to untransformed pixels with the drawable transform's conventions.

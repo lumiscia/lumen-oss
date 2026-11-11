@@ -1,4 +1,4 @@
-// Shared blend helpers for Merge and RasterMultiMerge. Requires the alpha chunk.
+// Shared blend helpers for Merge and RasterMultiMerge. Requires the alpha and colour chunks.
 
 fn lum(c: vec3<f32>) -> f32 {
     return dot(c, vec3<f32>(0.3, 0.59, 0.11));
@@ -101,15 +101,22 @@ fn blend_rgb(base: vec3<f32>, overlay: vec3<f32>, mode: u32) -> vec3<f32> {
     return overlay;
 }
 
-// Composites premultiplied `source` over premultiplied `base`. Opacity and
-// masks must already be folded into `source`.
+// Straight sRGB-encoded colour of a linear, premultiplied texel, in 0..1, which is what the blend
+// formulas are defined on.
+fn blend_input(texel: vec4<f32>) -> vec3<f32> {
+    return clamp(lumen_linear_to_srgb(unpremultiply(texel).rgb), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Composites linear, premultiplied `source` over `base`. Opacity and masks must already be folded
+// into `source`. A blend mode works out its colour on sRGB-encoded colour, which is decoded before
+// it is composited in linear light.
 fn composite(base: vec4<f32>, source: vec4<f32>, mode: u32) -> vec4<f32> {
-    let alpha = source.a + base.a * (1.0 - source.a);
+    let alpha = clamp(source.a + base.a * (1.0 - source.a), 0.0, 1.0);
     var rgb = source.rgb + base.rgb * (1.0 - source.a);
     if (mode != 0u) {
-        let blended = blend_rgb(unpremultiply(base).rgb, unpremultiply(source).rgb, mode);
+        let blended = lumen_srgb_to_linear(blend_rgb(blend_input(base), blend_input(source), mode));
         rgb = source.rgb * (1.0 - base.a) + base.rgb * (1.0 - source.a) + source.a * base.a * blended;
     }
-    return clamp(vec4<f32>(rgb, alpha), vec4<f32>(0.0), vec4<f32>(1.0));
+    return lumen_finite(vec4<f32>(rgb, alpha));
 }
 

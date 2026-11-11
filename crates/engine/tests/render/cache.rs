@@ -457,9 +457,9 @@ fn a_static_image_is_kept_until_its_image_is_replaced() {
                 "frame {frame}, transformed {transformed}"
             );
             assert_eq!(pixel(&pixels, x, 4), color, "frame {frame}");
-            // An image read as is has nothing to keep.
+            // An image is brought into the working space by a pass, which is kept with it.
             let skips = renderer.skipped_pass_count() > skipped;
-            assert_eq!(skips, kept && transformed, "frame {frame}");
+            assert_eq!(skips, kept, "frame {frame}");
         }
     }
 }

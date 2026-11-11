@@ -187,7 +187,7 @@ struct ShadowView {
 @group(0) @binding(3) var<storage, read> indices: array<u32>;
 @group(0) @binding(4) var<storage, read> lights: array<Light>;
 @group(0) @binding(5) var<uniform> run: Run;
-// A Lumen raster: premultiplied and sRGB-encoded.
+// A Lumen raster: premultiplied linear light.
 @group(0) @binding(6) var raster_tex: texture_2d<f32>;
 @group(0) @binding(7) var raster_sampler: sampler;
 @group(0) @binding(8) var<storage, read> joints: array<mat4x4<f32>>;
@@ -622,12 +622,6 @@ fn view_direction(world: vec3<f32>) -> vec3<f32> {
     return unit(globals.camera_position - world);
 }
 
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    let low = c / 12.92;
-    let high = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
-    return select(high, low, c <= vec3<f32>(0.04045));
-}
-
 // Where a sample of the raster belongs: at `uv`, moved to the centre of the output pixel the
 // sample is part of, so that the samples averaged into a pixel all read the same place and a
 // raster shown at its own size or larger isn't filtered twice. A raster shown smaller keeps each
@@ -648,8 +642,7 @@ fn pixel_centre_uv(position: vec2<f32>, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f
 // raster with mip levels is filtered to the footprint.
 fn raster_texel(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
     let texel = textureSampleGrad(raster_tex, raster_sampler, uv, dx, dy);
-    let straight = clamp(texel.rgb / max(texel.a, 1e-6), vec3<f32>(0.0), vec3<f32>(1.0));
-    return vec4<f32>(srgb_to_linear(straight), texel.a);
+    return vec4<f32>(max(texel.rgb, vec3<f32>(0.0)) / max(texel.a, 1e-6), texel.a);
 }
 
 // The normal map's normal at `uv`, tilting `n` in the tangent frame the derivatives of the

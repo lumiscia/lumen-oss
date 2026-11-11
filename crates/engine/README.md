@@ -25,6 +25,26 @@ is that value, and a full `major.minor.patch` of the same line is read too. A do
 another line fails with `document.schema_version`, naming both versions. 0.x minor releases are
 breaking, so there is no migration between lines. Absent means the engine's own version.
 
+## Colour
+
+Every raster is `Rgba16Float` (`gpu::WORKING_COLOR_FORMAT`): linear light with BT.709 primaries
+and premultiplied alpha, where 1.0 is SDR white and colour may go past it. JSON colours, images
+and video are sRGB-encoded, and decode to linear light on the way in; `media_output` encodes back
+to sRGB once, quantising 8-bit targets with an ordered dither that keeps the mean of flat areas
+(`GpuCompositionRenderer::set_output_dither`); a value within a tenth of a code of one keeps it.
+So an 8-bit image passed straight through comes out unchanged, and 50% white over black is code
+188, half the light, not 128. Float outputs take the working space unchanged.
+
+- Normal merges, opacity, masks, transform and resize sampling, blurs, glow, shadows, motion blur,
+  text and shape antialiasing work in linear light. A luma matte is the linear BT.709 luminance;
+  the glow threshold compares sRGB-encoded luminance, so 0.5 is half way up the visible range.
+- Every other blend mode, `levels`, `hue_saturation`, the `color_grade` LUT, `exposure`'s
+  contrast and offset, `displacement_map` (byte 128 is neutral) and `fractal_noise` work on
+  sRGB-encoded values, as design tools do.
+- Gradients blend their stops encoded (`srgb`, the default) or in linear light (`linear_srgb`).
+- `wgsl_shader` inputs are linear and premultiplied, its output is `rgba16float`, and its prelude
+  has `lumen_srgb_to_linear` and `lumen_linear_to_srgb`.
+
 ## Asset references
 
 A source field can name a file in the host's asset store as `asset:<id>`: `media_in`'s `source`,
@@ -159,16 +179,18 @@ environment and mipmaps.
   +Y up, +Z towards the camera. Each component `n` is stored as `n * 0.5 + 0.5`, opaque; where
   nothing is drawn it is transparent.
 
-Both are data rather than colour: values are stored as they are, with no transfer function, so a
-node reading the raster, such as `merge`'s luma mask or a `wgsl_shader`, reads the value itself.
+Both are data rather than colour: values go into the working space as they are, with no transfer
+function, so a node reading the raster, such as `merge`'s luma mask or a `wgsl_shader`, reads the
+value itself. An 8-bit output encodes them as it does light, so a depth of 0.5 is code 188.
 Opaque surfaces, `text_3d` and instances included, draw into them everywhere, masked ones where
 they reach their cutoff, and blended ones, such as image planes, where their alpha reaches half,
 the same rule that decides where they block shadows. Shadow catchers draw too, since they hide
 what is behind them. Each pixel holds the nearest surface at its centre: `supersample` is ignored,
 so an edge is never averaged into a value no surface has.
 
-Rasters hold 8 bits a channel, so depth has 256 steps between `depth_near` and `depth_far`. Set them
-around the part of the scene an effect needs, not to the camera's default 0.05 to 1000.
+Rasters hold half floats, so depth steps by 1/2048 between 0.5 and 1, and more finely below. Set
+`depth_near` and `depth_far` around the part of the scene an effect needs, not to the camera's
+default 0.05 to 1000.
 
 Fog, with existing nodes, fades the scene into a colour by its depth:
 

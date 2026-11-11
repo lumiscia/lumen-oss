@@ -12,23 +12,20 @@ struct DisplacementParams {
 @group(0) @binding(0) var source_tex: texture_2d<f32>;
 @group(0) @binding(1) var map_tex: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> params: DisplacementParams;
-@group(0) @binding(3) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(3) var output_tex: texture_storage_2d<rgba16float, write>;
 
 const DISPLACE_LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
-// A map byte's distance from 128, scaled by the map's alpha so that transparent areas, and
-// everything outside the map, displace nothing. Channels are unpremultiplied back to whole bytes
-// first. Premultiplying loses precision, so the byte 128 premultiplies to is read back as exactly
-// 128, which keeps a neutral grey neutral at any alpha; bytes next to it may read a step off.
-fn map_offset(bytes: vec4<f32>, channel: u32) -> f32 {
-    if (bytes.a <= 0.0) {
+// A map texel's sRGB code's distance from 128, scaled by the map's alpha so that transparent
+// areas, and everything outside the map, displace nothing. The straight colour is encoded and
+// rounded to whole codes, so a neutral grey of 128 stays exactly neutral at any alpha.
+fn map_offset(texel: vec4<f32>, channel: u32) -> f32 {
+    if (texel.a <= 0.0) {
         return 0.0;
     }
-    let neutral = round(128.0 * bytes.a / 255.0);
-    // Whole bytes times 255 over a whole byte, which f32 divides exactly enough for `round`.
-    let unpremultiplied = min(round(bytes.rgb * 255.0 / bytes.a), vec3<f32>(255.0));
-    let rgb = select(unpremultiplied, vec3<f32>(128.0), bytes.rgb == vec3<f32>(neutral));
-    let alpha = bytes.a / 255.0;
+    let encoded = clamp(lumen_linear_to_srgb(unpremultiply(texel).rgb), vec3<f32>(0.0), vec3<f32>(1.0));
+    let rgb = round(encoded * 255.0);
+    let alpha = min(texel.a, 1.0);
     var value: f32;
     switch (channel) {
         case 0u: { value = rgb.r; }
@@ -65,9 +62,8 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let pixel = vec2<i32>(id.xy) + params.origins.xy;
-    // Whole bytes, so that a map byte of 128 is exactly neutral on every GPU.
-    let bytes = round(sample_or_transparent(map_tex, pixel, params.origins.zw) * 255.0);
-    let offset = vec2<f32>(map_offset(bytes, params.modes.x), map_offset(bytes, params.modes.y));
+    let texel = sample_or_transparent(map_tex, pixel, params.origins.zw);
+    let offset = vec2<f32>(map_offset(texel, params.modes.x), map_offset(texel, params.modes.y));
     var coord = vec2<f32>(pixel) + vec2<f32>(0.5) - offset * params.amount.xy;
     if (params.modes.z == 0u) {
         coord = clamp(coord, vec2<f32>(0.5), vec2<f32>(params.source.zw) - vec2<f32>(0.5));

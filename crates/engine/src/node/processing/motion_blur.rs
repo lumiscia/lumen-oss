@@ -2,60 +2,35 @@
 //! averaged.
 
 use bytemuck::{Pod, Zeroable};
-use lumen_gpu::{LayoutEntry, LayoutKind, wgpu};
+use lumen_gpu::{LayoutEntry, LayoutKind};
 
 use crate::error::RenderError;
 use crate::expr::ExpressionContext;
 use crate::node::{DelegateEvalContext, DelegateEvaluable, JsonNode, NodeId, NodeParams, motion};
 
-/// Most sub-frames a `motion_blur` node renders. Their 8-bit channels are summed in 16 bits.
+/// Most sub-frames a `motion_blur` node renders.
 pub(crate) const MAX_MOTION_BLUR_SAMPLES: i64 = 64;
 
-/// Adds a sample to the running sum.
-pub(crate) const ACCUMULATE_SHADER: &str = concat!(
-    include_str!("motion_blur.wgsl"),
-    "
-@group(0) @binding(3) var output_tex: texture_storage_2d<rgba16uint, write>;
+/// Adds a sample to the running sum, which the last sample divides by the number of samples. The
+/// sum is kept in 32-bit float, read with `textureLoad`, so a still source comes out unchanged.
+pub(crate) const SHADER: &str = include_str!("motion_blur.wgsl");
 
-@compute @workgroup_size(8, 8, 1)
-fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    if (any(id.xy >= textureDimensions(output_tex))) {
-        return;
-    }
-    textureStore(output_tex, id.xy, total(id.xy));
-}
-"
-);
-/// Adds the last sample and writes the mean, rounded to the nearest 8-bit level.
-pub(crate) const RESOLVE_SHADER: &str = concat!(
-    include_str!("motion_blur.wgsl"),
-    "
-@group(0) @binding(3) var output_tex: texture_storage_2d<rgba8unorm, write>;
+/// The running sum's format.
+pub(crate) const SUM_FORMAT: lumen_gpu::wgpu::TextureFormat =
+    lumen_gpu::wgpu::TextureFormat::Rgba32Float;
 
-@compute @workgroup_size(8, 8, 1)
-fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
-    if (any(id.xy >= textureDimensions(output_tex))) {
-        return;
-    }
-    let n = params.samples;
-    let mean = (total(id.xy) * 2u + vec4<u32>(n)) / (2u * n);
-    textureStore(output_tex, id.xy, vec4<f32>(mean) / 255.0);
-}
-"
-);
-
-pub(crate) const SUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Uint;
 pub(crate) const ACCUMULATE_LAYOUT: &[LayoutEntry] = &[
-    LayoutEntry::compute(0, LayoutKind::UintTexture),
+    LayoutEntry::compute(0, LayoutKind::UnfilterableTexture),
     LayoutEntry::compute(1, LayoutKind::Texture),
     LayoutEntry::compute(2, LayoutKind::Uniform),
     LayoutEntry::compute(3, LayoutKind::StorageTexture(SUM_FORMAT)),
 ];
+
 pub(crate) const RESOLVE_LAYOUT: &[LayoutEntry] = &[
-    LayoutEntry::compute(0, LayoutKind::UintTexture),
+    LayoutEntry::compute(0, LayoutKind::UnfilterableTexture),
     LayoutEntry::compute(1, LayoutKind::Texture),
     LayoutEntry::compute(2, LayoutKind::Uniform),
-    LayoutEntry::compute(3, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
+    LayoutEntry::compute(4, crate::gpu::frame_graph::RECORD_STORAGE_TEXTURE),
 ];
 
 #[repr(C)]
@@ -154,18 +129,8 @@ impl MotionBlur {
 
 impl crate::gpu::frame_graph::RecordNode for MotionBlur {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
-        programs.compute(
-            "motion-blur-accumulate",
-            ACCUMULATE_SHADER,
-            "cs_main",
-            ACCUMULATE_LAYOUT,
-        )?;
-        programs.compute(
-            "motion-blur-resolve",
-            RESOLVE_SHADER,
-            "cs_main",
-            RESOLVE_LAYOUT,
-        )
+        programs.compute("motion-blur", SHADER, "accumulate_main", ACCUMULATE_LAYOUT)?;
+        programs.compute("motion-blur", SHADER, "resolve_main", RESOLVE_LAYOUT)
     }
 
     fn record(

@@ -4,6 +4,7 @@
 
 use serde_json::{Value, json};
 
+use crate::color::{decode, encode, linear};
 use crate::support::{Case, Expect, Frame, Scene, TestMedia, check, gpu, render, scene};
 
 const CANVAS: (u32, u32) = (96, 64);
@@ -26,17 +27,25 @@ fn square(position: Value, size: u32, color: [u8; 4]) -> Value {
         "position": position, "width": size, "height": size, "fill_paint": color } })
 }
 
-/// The light an opaque `color` casts at `threshold`, in bytes, before it is blurred.
+/// The light an opaque `color` casts at `threshold`, in linear light, before it is blurred: its
+/// luminance, sRGB-encoded, is remapped from the threshold up, and the colour scaled to it.
 fn light(color: [u8; 3], threshold: f64) -> [f64; 3] {
-    let rgb = color.map(|channel| f64::from(channel) / 255.0);
+    let rgb = color.map(linear);
     let luma: f64 = rgb.iter().zip(LUMA).map(|(c, w)| c * w).sum();
-    let ramp = ((luma - threshold) / (1.0 - threshold).max(1.0 / 255.0)).clamp(0.0, 1.0);
-    rgb.map(|channel| channel * ramp / luma * 255.0)
+    let ramp = ((encode(luma) - threshold) / (1.0 - threshold).max(1.0 / 255.0)).clamp(0.0, 1.0);
+    rgb.map(|channel| channel * ramp / luma)
 }
 
+/// Premultiplied linear `rgb` with `alpha`, as the output encodes it.
 fn bytes(rgb: [f64; 3], alpha: f64) -> [u8; 4] {
-    let byte = |value: f64| value.clamp(0.0, 255.0).round() as u8;
-    [byte(rgb[0]), byte(rgb[1]), byte(rgb[2]), byte(alpha)]
+    let alpha = alpha.clamp(0.0, 1.0);
+    let channel = |value: f64| (encode(value / alpha) * alpha * 255.0).round() as u8;
+    [
+        channel(rgb[0]),
+        channel(rgb[1]),
+        channel(rgb[2]),
+        (alpha * 255.0).round() as u8,
+    ]
 }
 
 /// A uniform source blurs to itself, so its glow is its light everywhere.
@@ -46,10 +55,10 @@ fn glow_of_a_uniform_source() {
     let opaque = [200, 100, 50, 255];
     let lit = light(color, 0.2);
     let peak = lit.into_iter().fold(0.0, f64::max);
-    let added = [0, 1, 2].map(|i| f64::from(color[i]) + lit[i] * 0.5);
+    let added = [0, 1, 2].map(|i| linear(color[i]) + lit[i] * 0.5);
     // White's light is white, of luminance 1, so it takes the premultiplied tint.
     let alpha = 128.0 / 255.0;
-    let tinted = [0.0, 128.0 * alpha, 255.0 * alpha];
+    let tinted = [0.0, decode(128.0 / 255.0) * alpha, alpha];
     check(vec![
         Case::new(
             "glow only is the light, with its brightest channel as alpha",
@@ -67,7 +76,7 @@ fn glow_of_a_uniform_source() {
                 fill(opaque),
                 json!({ "threshold": 0.2, "radius": 30, "intensity": 0.5 }),
             ),
-            Expect::Uniform(bytes(added, 255.0)),
+            Expect::Uniform(bytes(added, 1.0)),
         ),
         Case::new(
             "a half-transparent tint takes the light's luminance",
@@ -269,5 +278,31 @@ fn glow_bounds_match_reference() {
         )
         .bounded(false),
     );
+    check(cases);
+}
+
+#[test]
+fn glow_only_light_keeps_its_headroom_with_alpha_at_most_one() {
+    // White at threshold 0 and radius 0 is `intensity` times white. Its alpha is 1, so taking
+    // the stops back off with `exposure` gives white again.
+    let cases = [2.0f64, 10.0]
+        .map(|intensity| {
+            Case::new(
+                format!("intensity {intensity}"),
+                scene(
+                    (8, 8),
+                    json!([
+                        fill([255, 255, 255, 255]),
+                        glow(json!({
+                            "threshold": 0, "radius": 0, "intensity": intensity, "glow_only": true
+                        })),
+                        { "id": 3, "type": "exposure", "in": { "source": 2 },
+                          "params": { "exposure": -intensity.log2() } },
+                    ]),
+                ),
+                Expect::Uniform([255, 255, 255, 255]),
+            )
+        })
+        .into();
     check(cases);
 }

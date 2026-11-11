@@ -26,7 +26,7 @@ use crate::{
     expr::ExpressionContext,
     media::{
         AssetKind, CpuMediaFrame, MediaFrame, MediaIdentity, MediaStore, PlaneShape, YuvChroma,
-        YuvFormat, YuvFrame, YuvPlanes, YuvUniform, premultiply_rgba_in_place_if_needed,
+        YuvFormat, YuvFrame, YuvPlanes, YuvUniform,
     },
     node::{
         Deferred, MediaValue, Node, NodeId, NodeKind,
@@ -44,11 +44,45 @@ use crate::{
 use super::media::{GpuMediaFrameImporter, GpuMediaImports};
 use super::{
     BoundFrame,
+    color::WORKING_COLOR_FORMAT as WORKING,
     params::{CropParams, copyable_texture_desc, dispatch_for},
-    renderer::{MediaTextureCache, fit_frame_to_rgba8},
+    renderer::{MediaTextureCache, OutputEncoding, fit_frame_to_rgba8},
 };
 
-const RGBA8: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// The format CPU RGBA frames are uploaded in, before `INGEST_SHADER` brings them into the working
+/// space.
+const UPLOAD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// Brings an sRGB-encoded 8-bit texture into the working space: linear light, premultiplied after
+/// decoding. Colour already premultiplied is divided back out first.
+const INGEST_SHADER: &str = concat!(
+    include_str!("shaders/alpha.wgsl"),
+    include_str!("shaders/color.wgsl"),
+    "
+struct Params {
+    premultiplied: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+@group(0) @binding(0) var input_tex: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> params: Params;
+@group(0) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = textureDimensions(output_tex);
+    if (id.x >= size.x || id.y >= size.y) {
+        return;
+    }
+    var color = textureLoad(input_tex, vec2<i32>(id.xy), 0);
+    if (params.premultiplied != 0u) {
+        color = unpremultiply(color);
+    }
+    textureStore(output_tex, vec2<i32>(id.xy), premultiply(vec4<f32>(lumen_srgb_to_linear(color.rgb), color.a)));
+}
+"
+);
 /// Copies the visible part of a clip's raster into a texture of the parent canvas.
 const CLIP_CROP_SHADER: &str = "
 struct Params {
@@ -58,7 +92,7 @@ struct Params {
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> params: Params;
-@group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;
 
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -70,14 +104,17 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(output_tex, vec2<i32>(id.xy), texel);
 }
 ";
-const YUV_TO_RGBA_SHADER: &str = include_str!("shaders/yuv_to_rgba.wgsl");
+const YUV_TO_RGBA_SHADER: &str = concat!(
+    include_str!("shaders/color.wgsl"),
+    include_str!("shaders/yuv_to_rgba.wgsl")
+);
 const YUV_TO_RGBA_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::compute(0, LayoutKind::UintTexture),
     LayoutEntry::compute(1, LayoutKind::UintTexture),
     LayoutEntry::compute(2, LayoutKind::UintTexture),
     LayoutEntry::compute(3, LayoutKind::UintTexture),
     LayoutEntry::compute(4, LayoutKind::Uniform),
-    LayoutEntry::compute(5, LayoutKind::StorageTexture(RGBA8)),
+    LayoutEntry::compute(5, LayoutKind::StorageTexture(WORKING)),
 ];
 /// Frames a retained output stays without being read.
 const RETAINED_IDLE_FRAMES: u64 = 600;
@@ -89,11 +126,11 @@ const MAX_SHADERS: usize = 64;
 #[cfg(feature = "ffmpeg")]
 const VIDEO_IMPORT_IDLE_FRAMES: u64 = 600;
 
-pub(crate) const RECORD_STORAGE_TEXTURE: LayoutKind = LayoutKind::StorageTexture(RGBA8);
+pub(crate) const RECORD_STORAGE_TEXTURE: LayoutKind = LayoutKind::StorageTexture(WORKING);
 pub(crate) const SPATIAL_LAYOUT: &[LayoutEntry] = &[
     LayoutEntry::compute(0, LayoutKind::Texture),
     LayoutEntry::compute(1, LayoutKind::Uniform),
-    LayoutEntry::compute(2, LayoutKind::StorageTexture(RGBA8)),
+    LayoutEntry::compute(2, LayoutKind::StorageTexture(WORKING)),
 ];
 
 /// A recorded node's output.
@@ -150,6 +187,11 @@ impl Programs<'_> {
 
     pub(crate) fn spatial(&mut self, label: &str, shader: &'static str) -> crate::Result<()> {
         self.compute(label, shader, "cs_main", SPATIAL_LAYOUT)
+    }
+
+    /// The program that brings CPU images and video frames into the working space.
+    pub(crate) fn ingest(&mut self) -> crate::Result<()> {
+        self.spatial("ingest", INGEST_SHADER)
     }
 
     /// The program `FrameCx::yuv_to_rgba` records with.
@@ -324,8 +366,6 @@ struct VideoUpload {
     tex: TexRef,
     frame: Arc<CpuMediaFrame>,
     size: Size,
-    /// The pixels' colour isn't multiplied by alpha yet.
-    premultiply: bool,
 }
 
 /// A plane of a CPU YUV frame, written to its texture before the frame's passes run.
@@ -359,7 +399,6 @@ struct RecordState {
     next_shader: u64,
     transparent: Option<TexRef>,
     dummy_float: Option<TexRef>,
-    dummy_uint: Option<TexRef>,
     atlas: Option<TexRef>,
     /// Adopted images and video planes by their texture, the tick that last bound each, and the
     /// key of an image's pixels.
@@ -426,6 +465,7 @@ pub(crate) struct RecordInput<'a> {
     pub(crate) frame: f64,
     pub(crate) media: Option<&'a dyn MediaStore>,
     pub(crate) output_format: wgpu::TextureFormat,
+    pub(crate) output_encoding: OutputEncoding,
     pub(crate) full_frame_sources: bool,
     pub(crate) single_tile_repeats: bool,
     pub(crate) retain_static: bool,
@@ -505,6 +545,7 @@ impl FrameGraph {
             frame,
             media,
             output_format,
+            output_encoding,
             full_frame_sources,
             single_tile_repeats,
             retain_static,
@@ -555,6 +596,7 @@ impl FrameGraph {
                 sampling: false,
                 media,
                 output_format,
+                output_encoding,
                 full_frame_sources,
                 single_tile_repeats,
                 retain_static,
@@ -741,17 +783,8 @@ impl FrameGraph {
         bound: &BoundFrame,
         atlas_texture: Option<&wgpu::Texture>,
     ) -> crate::Result<()> {
-        for VideoUpload {
-            tex,
-            frame,
-            size,
-            premultiply,
-        } in self.state.video_uploads.drain(..)
-        {
-            let mut rgba = fit_frame_to_rgba8(&frame, size.width, size.height);
-            if premultiply {
-                premultiply_rgba_in_place_if_needed(rgba.to_mut());
-            }
+        for VideoUpload { tex, frame, size } in self.state.video_uploads.drain(..) {
+            let rgba = fit_frame_to_rgba8(&frame, size.width, size.height);
             self.recorder.queue().write_texture(
                 self.recorder.texture(tex).as_image_copy(),
                 &rgba,
@@ -909,7 +942,6 @@ impl FrameGraph {
         self.drop_pending();
         self.state.transparent = None;
         self.state.dummy_float = None;
-        self.state.dummy_uint = None;
         #[cfg(feature = "3d")]
         self.state.scene.release(&mut self.recorder);
         self.recorder.release_all();
@@ -1072,6 +1104,7 @@ pub(crate) struct FrameCx<'a> {
     sampling: bool,
     media: Option<&'a dyn MediaStore>,
     output_format: wgpu::TextureFormat,
+    output_encoding: OutputEncoding,
     full_frame_sources: bool,
     /// Whether repeats draw from one tile, as `set_single_tile_repeats` sets.
     pub(crate) single_tile_repeats: bool,
@@ -1229,6 +1262,10 @@ impl<'a> FrameCx<'a> {
 
     pub(crate) fn output_format(&self) -> wgpu::TextureFormat {
         self.output_format
+    }
+
+    pub(crate) fn output_encoding(&self) -> OutputEncoding {
+        self.output_encoding
     }
 
     pub(crate) fn frame_number(&self) -> u32 {
@@ -1419,10 +1456,6 @@ impl<'a> FrameCx<'a> {
         frames: (f64, f64),
         models: Vec<String>,
     ) {
-        // An image's own texture is let go of by frames that don't bind it, so it isn't kept.
-        if self.st.media.values().any(|(tex, ..)| *tex == raster.tex) {
-            return;
-        }
         // A slot kept for other frames makes way.
         if let Some(old) = self.st.slots.remove(&(graph, node)) {
             self.rec.release(old.raster.tex);
@@ -1560,7 +1593,7 @@ impl<'a> FrameCx<'a> {
         }
         let tex = self
             .rec
-            .acquire(size, RGBA8, copyable_texture_desc(size).usage);
+            .acquire(size, WORKING, copyable_texture_desc(size).usage);
         // A reused texture still holds an earlier frame, and the copy only writes the data.
         self.rec.clear(tex);
         let data = raster.domain.data_rect;
@@ -1606,14 +1639,14 @@ impl<'a> FrameCx<'a> {
     pub(crate) fn cleared_storage_target(&mut self, size: Size) -> TexRef {
         let tex = self
             .rec
-            .acquire(size, RGBA8, copyable_texture_desc(size).usage);
+            .acquire(size, WORKING, copyable_texture_desc(size).usage);
         self.rec.clear(tex);
         tex
     }
 
     pub(crate) fn storage_target(&mut self, size: Size) -> TexRef {
         self.rec
-            .acquire(size, RGBA8, TextureDesc::storage(size, RGBA8).usage)
+            .acquire(size, WORKING, TextureDesc::storage(size, WORKING).usage)
     }
 
     pub(crate) fn float_target(&mut self, size: Size) -> TexRef {
@@ -1623,18 +1656,20 @@ impl<'a> FrameCx<'a> {
     }
 
     pub(crate) fn render_target(&mut self, size: Size) -> TexRef {
-        self.rec
-            .acquire(size, RGBA8, TextureDesc::render_target(size, RGBA8).usage)
+        self.rec.acquire(
+            size,
+            WORKING,
+            TextureDesc::render_target(size, WORKING).usage,
+        )
     }
 
+    /// The frame's output. An output kept from an earlier frame is copied into an external target,
+    /// so targets made from its usage take copies.
     pub(crate) fn output_target(&mut self, size: Size, format: wgpu::TextureFormat) -> TexRef {
-        let usage = if format == RGBA8 {
-            copyable_texture_desc(size).usage
-        } else {
-            wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT
-        };
+        let usage = wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT;
         self.rec.acquire(size, format, usage)
     }
 
@@ -1720,7 +1755,7 @@ impl<'a> FrameCx<'a> {
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
-                    format: RGBA8,
+                    format: WORKING,
                     usage: copyable_texture_desc(Size::new(1, 1)).usage,
                     view_formats: &[],
                 });
@@ -1736,7 +1771,8 @@ impl<'a> FrameCx<'a> {
         }
     }
 
-    /// A one-texel float texture for gaussian levels a pass binds but does not read.
+    /// A one-texel float texture for gaussian levels, or a running sum, a pass binds but does not
+    /// read.
     pub(crate) fn unused_float(&mut self) -> TexRef {
         match self.st.dummy_float {
             Some(tex) => tex,
@@ -1896,16 +1932,18 @@ impl<'a> FrameCx<'a> {
         .into())
     }
 
-    /// An image's texture, uploaded once and kept in the renderer's media cache.
+    /// An image in the working space. Its 8-bit texture is uploaded once and kept in the
+    /// renderer's media cache, and each frame that shows it brings it into the working space.
     pub(crate) fn image_texture(
         &mut self,
         key: super::MediaTextureKey,
         frame: &MediaFrame,
         size: Size,
     ) -> crate::Result<TexRef> {
-        let cpu = match frame {
-            MediaFrame::CpuRgba(cpu) => cpu,
-            MediaFrame::RawRgba(_) | MediaFrame::Yuv(_) => {
+        let (cpu, premultiplied) = match frame {
+            MediaFrame::CpuRgba(cpu) => (cpu, true),
+            MediaFrame::RawRgba(cpu) => (cpu, false),
+            MediaFrame::Yuv(_) => {
                 return Err(RenderError::Gpu {
                     details: "an image resolver returned a video frame".to_string(),
                 }
@@ -1938,7 +1976,17 @@ impl<'a> FrameCx<'a> {
                 texture
             }
         };
-        Ok(self.adopted_media(texture, Some(key)))
+        let tex = self.adopted_media(texture, Some(key));
+        self.ingest(tex, size, premultiplied)
+    }
+
+    /// The 8-bit sRGB-encoded `tex` of `size` in the working space, its colour divided by alpha
+    /// first when it is `premultiplied`.
+    fn ingest(&mut self, tex: TexRef, size: Size, premultiplied: bool) -> crate::Result<TexRef> {
+        let target = self.storage_target(size);
+        let params = [u32::from(premultiplied), 0, 0, 0];
+        self.spatial_pass("ingest", INGEST_SHADER, tex, &params, target, size)?;
+        Ok(target)
     }
 
     /// The texture of an image, which holds the pixels `image` names, or of a video plane.
@@ -1958,23 +2006,18 @@ impl<'a> FrameCx<'a> {
         *tex
     }
 
-    /// A pooled texture a CPU video frame is written to before the frame's passes run.
+    /// A CPU video frame in the working space, from a pooled 8-bit texture it is written to before
+    /// the frame's passes run.
     fn cpu_video_texture(
         &mut self,
         frame: Arc<CpuMediaFrame>,
         size: Size,
-        premultiply: bool,
-    ) -> TexRef {
-        let tex =
-            self.rec
-                .acquire_written_early(size, RGBA8, TextureDesc::sampled(size, RGBA8).usage);
-        self.st.video_uploads.push(VideoUpload {
-            tex,
-            frame,
-            size,
-            premultiply,
-        });
-        tex
+        premultiplied: bool,
+    ) -> crate::Result<TexRef> {
+        let usage = TextureDesc::sampled(size, UPLOAD_FORMAT).usage;
+        let tex = self.rec.acquire_written_early(size, UPLOAD_FORMAT, usage);
+        self.st.video_uploads.push(VideoUpload { tex, frame, size });
+        self.ingest(tex, size, premultiplied)
     }
 
     /// The texture of a frame decoded on the CPU, either as RGBA or as YUV planes.
@@ -1985,9 +2028,9 @@ impl<'a> FrameCx<'a> {
         alpha: AlphaMode,
     ) -> crate::Result<TexRef> {
         match frame {
-            MediaFrame::CpuRgba(frame) => Ok(self.cpu_video_texture(frame, size, false)),
+            MediaFrame::CpuRgba(frame) => self.cpu_video_texture(frame, size, true),
             MediaFrame::RawRgba(frame) => {
-                Ok(self.cpu_video_texture(frame, size, alpha == AlphaMode::Straight))
+                self.cpu_video_texture(frame, size, alpha == AlphaMode::Premultiplied)
             }
             MediaFrame::Yuv(frame) => self.yuv_video_texture(frame, size, alpha),
             #[cfg(feature = "ffmpeg")]
@@ -2048,9 +2091,9 @@ impl<'a> FrameCx<'a> {
         self.yuv_to_rgba(&planes, &frame.format, size, alpha)
     }
 
-    /// Converts YUV planes into a premultiplied RGBA8 texture of `size`, showing the frame
+    /// Converts YUV planes into a texture of `size` in the working space, showing the frame
     /// `format` describes upright and stretched to it by nearest neighbour. Colour that `alpha`
-    /// says is already premultiplied is left as it is. Plane textures hold
+    /// says is already premultiplied is divided by alpha before decoding. Plane textures hold
     /// unsigned-integer samples (`R8Uint`, `Rg8Uint` for interleaved chroma, or their 16-bit forms)
     /// with the frame at their top left, and any texture this frame's passes can read will do:
     /// pooled ones written before the passes, or adopted ones a decoder filled on the GPU.
@@ -2191,7 +2234,7 @@ impl<'a> FrameCx<'a> {
     }
 
     /// Records `source` at each of `offsets` frames from this one and averages the samples in
-    /// premultiplied space. Each sample is summed into a running target as soon as it is recorded,
+    /// linear, premultiplied colour. Each sample is summed into a running target as soon as it is recorded,
     /// so its textures go back to the pool for the next. The samples share a path of their own,
     /// keeping their text and video state apart from the source's outside the blur.
     pub(crate) fn record_motion_blur(
@@ -2252,7 +2295,8 @@ impl<'a> FrameCx<'a> {
     }
 
     /// `sample` added to `sum`, over the union of their domains or over the sum's alone when the
-    /// sample is `blank`: a running sum, or the average of `samples` once `last`.
+    /// sample is `blank`. The sum is `motion_blur::SUM_FORMAT` until the `last` sample, which
+    /// writes the average of all `samples` to the working space.
     fn add_sample(
         &mut self,
         sum: Option<Raster>,
@@ -2289,30 +2333,22 @@ impl<'a> FrameCx<'a> {
         };
         let sum_tex = match sum {
             Some(sum) => sum.tex,
-            None => self.unused_uint(),
+            None => self.unused_float(),
         };
         let size = domain.storage_size;
-        let (program, tex) = if last {
-            let program = self.program(
-                "motion-blur-resolve",
-                blur::RESOLVE_SHADER,
-                "cs_main",
+        let (entry, layout, binding, tex) = if last {
+            (
+                "resolve_main",
                 blur::RESOLVE_LAYOUT,
-            )?;
-            (program, self.storage_target(size))
+                4,
+                self.storage_target(size),
+            )
         } else {
-            let program = self.program(
-                "motion-blur-accumulate",
-                blur::ACCUMULATE_SHADER,
-                "cs_main",
-                blur::ACCUMULATE_LAYOUT,
-            )?;
-            let format = blur::SUM_FORMAT;
-            let tex = self
-                .rec
-                .acquire(size, format, TextureDesc::storage(size, format).usage);
-            (program, tex)
+            let usage = TextureDesc::storage(size, blur::SUM_FORMAT).usage;
+            let tex = self.rec.acquire(size, blur::SUM_FORMAT, usage);
+            ("accumulate_main", blur::ACCUMULATE_LAYOUT, 3, tex)
         };
+        let program = self.program("motion-blur", blur::SHADER, entry, layout)?;
         let uniform = self.rec.uniform(&params);
         self.rec.compute(
             program,
@@ -2320,7 +2356,7 @@ impl<'a> FrameCx<'a> {
                 (0, Res::Tex(sum_tex)),
                 (1, Res::Tex(sample.tex)),
                 (2, uniform),
-                (3, Res::Tex(tex)),
+                (binding, Res::Tex(tex)),
             ],
             dispatch_for(size),
         );
@@ -2329,26 +2365,6 @@ impl<'a> FrameCx<'a> {
             domain,
             bounds: None,
         })
-    }
-
-    /// A one-texel unsigned-integer texture for a running sum a pass binds but does not read.
-    fn unused_uint(&mut self) -> TexRef {
-        if let Some(tex) = self.st.dummy_uint {
-            return tex;
-        }
-        let texture = self.rec.device().create_texture(&wgpu::TextureDescriptor {
-            label: Some("lumen frame graph unused sum"),
-            size: Size::new(1, 1).as_extent(),
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: crate::node::processing::motion_blur::SUM_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let tex = self.rec.adopt(Arc::new(texture));
-        self.st.dummy_uint = Some(tex);
-        tex
     }
 
     /// How far `node` and everything it reads are static candidates. Walks its inputs depth first
@@ -2505,9 +2521,8 @@ fn static_candidate(node: &NodeKind) -> Staticness {
             matches!(media.params.kind, MediaInSourceKindDelegate::Image)
                 && !node.has_expressions(),
         ),
-        // Video changes with the frame, shaders see the built-in time, and the output is written
-        // into external textures that replace its own.
-        NodeKind::WgslShader(_) | NodeKind::MediaOutput(_) => Staticness::Never,
+        // Video changes with the frame, and shaders see the built-in time.
+        NodeKind::WgslShader(_) => Staticness::Never,
         // A model playing a clip poses differently with the frame, until its clip is over or
         // before it starts, which `add_model` finds out from the clip.
         NodeKind::Model3d(model) if model.animates() => {

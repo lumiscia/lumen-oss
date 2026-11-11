@@ -389,7 +389,7 @@
         "interpolation": {
           "$ref": "#/$defs/gradientInterpolation",
           "default": "srgb",
-          "description": "Color space the stops blend in.",
+          "description": "Color space the stops blend in: `srgb` blends the sRGB-encoded stops, `linear_srgb` blends\nthem in linear light.",
           "title": "Interpolation",
           "x-lumen-enumOptions": [
             {
@@ -2008,7 +2008,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Applies a LUT-driven color transform to a raster.",
+            "description": "Applies a LUT-driven color transform to a raster, looking up its sRGB-encoded colour.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -2318,7 +2318,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. Map bytes are\npremultiplied by alpha, so transparent areas of the map, and everything outside it, leave\nthe source in place.",
+            "description": "Moves each pixel of `source` by the `map` pixel over it, in canvas pixels. A channel byte is\nthe sRGB code of the map's colour, and its move is scaled by the map's alpha, so transparent\nareas of the map, and everything outside it, leave the source in place.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -2546,7 +2546,7 @@
                       }
                     ],
                     "default": 1.0,
-                    "description": "Contrast multiplier.",
+                    "description": "Contrast multiplier around sRGB-encoded mid grey, after the exposure.",
                     "title": "Contrast",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -2564,7 +2564,7 @@
                       }
                     ],
                     "default": 0.0,
-                    "description": "Exposure offset in stops.",
+                    "description": "Exposure in stops, multiplying linear light by 2 to the power of this.",
                     "title": "Exposure",
                     "x-lumen-constraints": {
                       "step": 0.01
@@ -2581,7 +2581,7 @@
                       }
                     ],
                     "default": 0.0,
-                    "description": "Linear color offset.",
+                    "description": "Offset added to the sRGB-encoded colour, after the exposure and before the contrast.",
                     "title": "Offset",
                     "x-lumen-constraints": {
                       "step": 0.01
@@ -2938,7 +2938,7 @@
                       }
                     ],
                     "default": 0.6,
-                    "description": "Luminance from 0 to 1 where the glow starts. Brighter pixels glow more, white at full\nstrength, and 1 lets nothing glow. Past 254/255 white dims too, so the glow fades out\ncontinuously as the threshold reaches 1.",
+                    "description": "Luminance from 0 to 1 where the glow starts, on the sRGB-encoded scale, so 0.5 is half way\nup from black to white as they look. Brighter pixels glow more, white at full strength,\nand 1 lets nothing glow. Past 254/255 white dims too, so the glow fades out\ncontinuously as the threshold reaches 1.",
                     "title": "Threshold",
                     "x-lumen-constraints": {
                       "max": 1.0,
@@ -3006,7 +3006,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Adjusts raster hue, saturation, and lightness.",
+            "description": "Adjusts raster hue, saturation, and lightness of the sRGB-encoded colour.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -3484,7 +3484,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Remaps raster black, white, gamma, and output range.",
+            "description": "Remaps raster black, white, gamma, and output range of the sRGB-encoded colour.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -4043,7 +4043,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Copies its source into the final composition output.",
+            "description": "Converts its source into the final composition output: sRGB-encoded and quantised once to the\noutput's format.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -4118,7 +4118,7 @@
                       }
                     ],
                     "default": "normal",
-                    "description": "Blend mode used when combining the overlay with the base raster.",
+                    "description": "Blend mode used when combining the overlay with the base raster. `normal` composites in\nlinear light; every other mode applies its formula to the sRGB-encoded colours and\ncomposites the result in linear light.",
                     "title": "Blend Mode",
                     "x-lumen-enumOptions": [
                       {
@@ -5253,7 +5253,7 @@
                       }
                     ],
                     "default": "normal",
-                    "description": "Blend mode used for each layer in the stack.",
+                    "description": "Blend mode used for each layer in the stack. `normal` composites in linear light; every\nother mode applies its formula to the sRGB-encoded colours and composites the result in\nlinear light.",
                     "title": "Blend Mode",
                     "x-lumen-enumOptions": [
                       {

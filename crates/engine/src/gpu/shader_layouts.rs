@@ -34,6 +34,7 @@ macro_rules! layout {
 fn text_module() -> Module {
     let source = [
         include_str!("shaders/alpha.wgsl"),
+        include_str!("shaders/color.wgsl"),
         include_str!("../node/vector/paint/paint.wgsl"),
         DRAWABLE_SHADER,
         lumen_text::TEXT_SHADER,

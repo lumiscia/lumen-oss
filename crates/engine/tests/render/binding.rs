@@ -4,6 +4,7 @@ use lumen_engine::{composition::Composition, node::NodeId};
 use lumen_gpu::{RectI, Size};
 use serde_json::{Value, json};
 
+use crate::color::{linear, opaque};
 use crate::support::{Case, Expect, TestMedia, check, gpu, render, scene};
 
 const RED: [u8; 4] = [255, 0, 0, 255];
@@ -259,9 +260,10 @@ fn animated_values_update_each_frame() {
                 { "id": 2, "type": "exposure", "in": { "source": 1 },
                   "params": { "exposure": "=frame / 5 - 1" } },
             ]),
+            // One stop up doubles the light.
             [
                 Expect::Uniform([50, 25, 10, 255]),
-                Expect::Uniform([100, 50, 20, 255]),
+                Expect::Uniform(opaque([50, 25, 10].map(|code| 2.0 * linear(code)))),
             ],
         ),
         row(
@@ -334,7 +336,8 @@ fn expressions_on_path_data_draw_like_their_values() {
     ]);
 }
 
-/// Only the selected branch is drawn, so a frame records one pass for its one solid.
+/// Only the selected branch is drawn, so a frame records one pass for its one solid and one for
+/// the output.
 #[test]
 fn routing_records_one_branch() {
     let layers = |selected: Value| {
@@ -383,7 +386,7 @@ fn routing_records_one_branch() {
         let mut renderer = gpu.renderer();
         let drawn = render(&mut renderer, &composition((8, 4), nodes), frame, &media);
         assert_eq!(drawn.pixel(0, 0), color, "{name}");
-        assert_eq!(renderer.recorded_pass_count(), 1, "{name}");
+        assert_eq!(renderer.recorded_pass_count(), 2, "{name}");
     }
 }
 

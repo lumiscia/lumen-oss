@@ -202,12 +202,12 @@ fn tap_frames(frame: f64, angle: f64, taps: usize) -> Vec<f64> {
 
 fn average(frames: &[Frame]) -> Frame {
     let first = &frames[0];
-    let rgba = (0..first.rgba.len())
-        .map(|index| {
-            let sum: f64 = frames.iter().map(|f| f64::from(f.rgba[index])).sum();
-            (sum / frames.len() as f64).round() as u8
-        })
-        .collect();
+    let rgba = crate::color::linear_average(
+        &frames
+            .iter()
+            .map(|frame| frame.rgba.as_slice())
+            .collect::<Vec<_>>(),
+    );
     Frame {
         at: first.at,
         width: first.width,

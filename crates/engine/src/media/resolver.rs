@@ -17,7 +17,8 @@ pub struct CpuMediaFrame {
 #[derive(Debug, Clone)]
 pub enum MediaFrame {
     CpuRgba(Arc<CpuMediaFrame>),
-    /// RGBA8 as decoded, whose colour is multiplied by alpha only if the node reading it says so.
+    /// RGBA8 as decoded. An image's colour is straight; a video's is multiplied by alpha only if
+    /// the node reading it says so.
     RawRgba(Arc<CpuMediaFrame>),
     /// Planes the renderer converts to RGBA on the GPU.
     Yuv(Arc<YuvFrame>),

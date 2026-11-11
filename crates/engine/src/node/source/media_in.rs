@@ -227,6 +227,7 @@ impl MediaIn {
 
 impl crate::gpu::frame_graph::RecordNode for MediaIn {
     fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        programs.ingest()?;
         programs.yuv_to_rgba()
     }
 

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use lumen_engine::{composition::Composition, node::NodeId};
 use serde_json::{Value, json};
 
+use crate::color::srgb8;
 use crate::shaders::{fill_shader, shader_scene};
 use crate::support::{
     Scene, TestMedia, gpu, read_rgba8, render, render_held, scene, within_rounding,
@@ -39,14 +40,15 @@ fn switch_scene(layers: u32) -> Scene {
     scene((8, 4), json!(nodes)).frames(120)
 }
 
-/// An 8 × 4 scene of `bits` shaders in a row, shader `bit` adding 2^bit to red on alternating runs
-/// of 2^bit frames, so it has 2^bits distinct combinations of shaders.
+/// An 8 × 4 scene of `bits` shaders in a row, shader `bit` adding 2^bit / 256 to the light in red
+/// on alternating runs of 2^bit frames, so it has 2^bits distinct combinations of shaders. Sums of
+/// those steps are exact in half floats.
 fn animated_shader_scene(bits: u32) -> Scene {
     let add_red = |red: u32| {
         format!(
             "@compute @workgroup_size(8, 8, 1) fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) \
              {{ let color = textureLoad(input0, vec2<i32>(id.xy), 0); \
-             textureStore(output, vec2<i32>(id.xy), color + vec4<f32>({red}.0 / 255.0, 0.0, 0.0, 0.0)); }}"
+             textureStore(output, vec2<i32>(id.xy), color + vec4<f32>({red}.0 / 256.0, 0.0, 0.0, 0.0)); }}"
         )
     };
     let mut nodes = vec![
@@ -284,8 +286,10 @@ fn a_radius_edit_reuses_the_blur_programs() {
     assert_eq!(renderer.created_program_count(), created);
 }
 
+/// A shader filling with the sRGB red code `red`.
 fn red_shader(red: u8) -> Composition {
-    let color = format!("vec4<f32>({red}.0 / 255.0, 0.0, 0.0, 1.0)");
+    let color =
+        format!("vec4<f32>(lumen_srgb_to_linear(vec3<f32>({red}.0 / 255.0, 0.0, 0.0)), 1.0)");
     Composition::from(shader_scene(&fill_shader(&color), json!({}), &[[0; 4]]))
 }
 
@@ -360,7 +364,7 @@ fn with_no_budget_only_a_frames_textures_are_held() {
         let rendered = render(&mut renderer, &composition, f64::from(frame), &media);
         assert_uniform(
             &rendered.rgba,
-            [frame.min(255) as u8, 0, 0, 255],
+            [srgb8(f64::from(frame) / 256.0), 0, 0, 255],
             &format!("frame {frame}"),
         );
         assert!(renderer.held_bytes() <= bytes, "frame {frame}");

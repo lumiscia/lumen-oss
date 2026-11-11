@@ -1,4 +1,7 @@
-use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer};
+use lumen_engine::{
+    composition::Composition,
+    gpu::{GpuCompositionRenderer, OutputAlpha},
+};
 use wasm_bindgen::prelude::*;
 
 use crate::{debug_error, utils::render_failure};
@@ -56,6 +59,14 @@ impl SurfaceCompositionRenderer {
             composition.render_settings().width,
             composition.render_settings().height,
         )?;
+        // An opaque canvas ignores alpha, and a premultiplied one composites it.
+        self.renderer.set_output_alpha(
+            if self.gpu.config.alpha_mode == lumen_gpu::wgpu::CompositeAlphaMode::Opaque {
+                OutputAlpha::Opaque
+            } else {
+                OutputAlpha::Premultiplied
+            },
+        );
         if self.needs_compile || self.gpu.config.format != format {
             tracing::debug!(target: "lumen_wasm", frame, "recompile on existing GPU device");
             self.renderer.release_resources();

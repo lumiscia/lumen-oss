@@ -26,7 +26,7 @@ struct TransformParams {
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> params: TransformParams;
-@group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var output_tex: texture_storage_2d<rgba16float, write>;
 
 // A pixel of the source, so that filtering weights colour by coverage.
 fn read_pixel(pixel: vec2<i32>) -> vec4<f32> {

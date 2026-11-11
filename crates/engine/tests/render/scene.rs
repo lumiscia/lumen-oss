@@ -2140,8 +2140,9 @@ fn a_shadow_catcher_darkens_what_is_under_it_by_the_light_its_shadows_take_away(
     over_backdrop
         .push(json!({ "id": 201, "type": "merge", "in": { "base": 200, "overlay": 100 } }));
     let half = [0, 0, 0, 128];
-    // Half the backdrop shows through half-transparent black.
-    let darkened = [100, 50, 25, 255];
+    // Half the backdrop's light shows through half-transparent black.
+    let [r, g, b, _] = BACKDROP;
+    let darkened = crate::color::opaque([r, g, b].map(|code| 0.5 * crate::color::linear(code)));
     check(vec![
         Case::new(
             "transparent where unshadowed, half-transparent black in the shadow",

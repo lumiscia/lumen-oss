@@ -45,8 +45,11 @@ impl VulkanTarget {
             GpuCompositionRenderer::new_vulkan_video_with_settings(&media_store.gpu),
         )?;
         renderer.check_output_size(composition)?;
-        let target =
-            VulkanVideoTarget::nv12(renderer.gpu_renderer(), lumen_gpu::Size::new(width, height));
+        let target = VulkanVideoTarget::nv12(
+            renderer.gpu_renderer(),
+            lumen_gpu::Size::new(width, height),
+            true,
+        );
         let mut config = VideoEncoderConfig::cpu_rgba(
             width,
             height,

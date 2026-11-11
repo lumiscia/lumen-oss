@@ -464,9 +464,21 @@ mod tests {
         assert_eq!(levels_for(Size::new(256, 256), f32::INFINITY), 9);
     }
 
-    /// A texture's levels, `levels` of them, as the GPU fills them from `texels`, premultiplied
-    /// and encoded as rasters are stored, `size` across.
+    /// A texture's levels, `levels` of them, as the GPU fills them from `texels`, `size` across.
+    /// The textures are `Rgba8UnormSrgb`, so the shader reads and writes premultiplied linear
+    /// light, as rasters hold it, and each byte is that light encoded.
     fn gpu_levels(texels: &[u8], size: Size, levels: u32) -> Vec<Vec<u8>> {
+        gpu_levels_as(wgpu::TextureFormat::Rgba8UnormSrgb, texels, size, levels)
+    }
+
+    /// `gpu_levels` for textures of `format`, whose texels `texels` holds as their bytes.
+    fn gpu_levels_as(
+        format: wgpu::TextureFormat,
+        texels: &[u8],
+        size: Size,
+        levels: u32,
+    ) -> Vec<Vec<u8>> {
+        let texel_bytes = format.block_copy_size(None).expect("a colour format");
         let gpu = pollster::block_on(lumen_gpu::Renderer::new()).expect("mip tests need a GPU");
         let (device, queue) = (gpu.device.clone(), gpu.queue.clone());
         let make = |size: Size, mips: u32, usage| {
@@ -476,7 +488,7 @@ mod tests {
                 mip_level_count: mips,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format,
                 usage,
                 view_formats: &[],
             }))
@@ -491,7 +503,7 @@ mod tests {
             texels,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(size.width * 4),
+                bytes_per_row: Some(size.width * texel_bytes),
                 rows_per_image: Some(size.height),
             },
             size.as_extent(),
@@ -514,17 +526,43 @@ mod tests {
         (0..levels)
             .map(|level| {
                 let side = Size::new((size.width >> level).max(1), (size.height >> level).max(1));
-                let copy = make(
-                    side,
-                    1,
-                    wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
-                );
+                let row = (side.width * texel_bytes) as usize;
+                let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+                let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: (padded * side.height as usize) as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
                 let mut encoder = device.create_command_encoder(&Default::default());
                 let mut from = chain_texture.as_image_copy();
                 from.mip_level = level;
-                encoder.copy_texture_to_texture(from, copy.as_image_copy(), side.as_extent());
+                encoder.copy_texture_to_buffer(
+                    from,
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(padded as u32),
+                            rows_per_image: None,
+                        },
+                    },
+                    side.as_extent(),
+                );
                 queue.submit([encoder.finish()]);
-                gpu.read_texture_rgba8(&copy, side).expect("read")
+                buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+                device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .expect("read");
+                let bytes = buffer
+                    .slice(..)
+                    .get_mapped_range()
+                    .expect("mapped")
+                    .to_vec();
+                bytes
+                    .chunks(padded)
+                    .flat_map(|line| line[..row].to_vec())
+                    .collect()
             })
             .collect()
     }
@@ -570,22 +608,15 @@ mod tests {
                             continue;
                         }
                         let texel = &texels[(sy * from.0 + sx) * 4..][..4];
-                        let a = f64::from(texel[3]) / 255.0;
-                        if a > 0.0 {
-                            for (sum, &value) in light.iter_mut().zip(texel) {
-                                // Premultiplied linear light of the straight colour.
-                                *sum += decode((f64::from(value) / a).round().min(255.0) as u8)
-                                    * a
-                                    * weight;
-                            }
+                        for (sum, &value) in light.iter_mut().zip(texel) {
+                            *sum += decode(value) * weight;
                         }
-                        alpha += a * weight;
+                        alpha += f64::from(texel[3]) / 255.0 * weight;
                         total += weight;
                     }
                 }
                 for sum in light {
-                    let straight = if alpha > 0.0 { sum / alpha } else { 0.0 };
-                    out.push((encode(straight) * alpha / total).round() as u8);
+                    out.push(encode(sum / total).round() as u8);
                 }
                 out.push((alpha / total * 255.0).round() as u8);
             }
@@ -680,5 +711,44 @@ mod tests {
                 2,
             );
         }
+    }
+
+    #[test]
+    fn a_working_space_level_keeps_light_above_one() {
+        // Rasters are `Rgba16Float`, linear light that may pass 1: the level averages it as is.
+        let half = |value: f32| -> [u8; 2] {
+            let bits: u16 = match value {
+                0.0 => 0,
+                0.5 => 0x3800,
+                1.0 => 0x3c00,
+                2.0 => 0x4000,
+                8.0 => 0x4800,
+                _ => unreachable!("only exact halves"),
+            };
+            bits.to_le_bytes()
+        };
+        let texels: Vec<u8> = [
+            [8.0, 8.0, 8.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [2.0, 2.0, 2.0, 0.5],
+            [0.0, 0.0, 0.0, 0.0],
+        ]
+        .iter()
+        .flatten()
+        .flat_map(|&value| half(value))
+        .collect();
+        let levels = gpu_levels_as(
+            wgpu::TextureFormat::Rgba16Float,
+            &texels,
+            Size::new(2, 2),
+            2,
+        );
+        assert_eq!(levels[0], texels);
+        // (2.5, 2.5, 2.5, 0.625) as halves.
+        let mean: Vec<u8> = [0x4100u16, 0x4100, 0x4100, 0x3900]
+            .iter()
+            .flat_map(|bits| bits.to_le_bytes())
+            .collect();
+        assert_eq!(levels[1], mean);
     }
 }
