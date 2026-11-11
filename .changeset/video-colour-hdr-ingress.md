@@ -17,7 +17,7 @@ Video follows its primaries and transfer tags, and HDR video is tone-mapped to S
 - **New warning `media.color_unsupported`:** a video tagged with another transfer (such as `log100` or `gamma22`) or primaries (such as `film`) renders as SDR BT.709 and says so once per composition, `media_in` node and source.
 - 10-bit and 12-bit samples keep their precision into the working space on every decode path.
 
-These conversions apply to CPU decode and both hardware decode paths, Vulkan Video and VideoToolbox, which share one shader. The browser preview still reads video as SDR BT.709 past its YUV matrix; matching it to renders comes with ICC support.
+These conversions apply to CPU decode and both hardware decode paths, Vulkan Video and VideoToolbox, which share one shader.
 
 **Rust API:** `lumen_ffmpeg::ColorTags` gains `primaries`, `transfer` and `chroma_location`, with `ColorPrimaries`, `ColorTransfer` and `ChromaLocation`, and `ColorTags::new(matrix, full_range)`; `VideoStreamInfo` has the stream's `color`. `lumen_engine::media::YuvColor` gains `primaries: ColorPrimaries` and `transfer: TransferFunction`, and `YuvColor::sdr(matrix, full_range)` builds the SDR BT.709 case. `VideoFrameResolver::color_warning` (default `None`) reports tags a resolver reads without. Code that builds these structs by their fields needs the new fields.
 

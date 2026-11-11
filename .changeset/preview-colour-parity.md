@@ -7,4 +7,4 @@ The preview converts colour as a render does. Images are decoded with their embe
 
 The preview is still not pixel-identical to a render. 16-bit images arrive in the browser at 8 bits, and colour outside sRGB is clipped there. Images pass through an 8-bit canvas that stores colour premultiplied, so straight colour at very low alpha is coarsely rounded, as before. Browsers' decoders and colour management differ, by a code or so.
 
-`LumenPreviewController.setVideoFrameYuv` takes two more optional arguments at the end, `primaries` and `transfer`, the source's WebCodecs tags; a host calling it directly that leaves them out gets BT.709 SDR as before.
+`setVideoFrameYuv` on the preview's wasm controller takes two more optional arguments at the end, `primaries` and `transfer`, the source's WebCodecs tags; a host calling it directly that leaves them out gets BT.709 SDR as before.

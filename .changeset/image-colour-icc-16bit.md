@@ -13,5 +13,5 @@ Images follow their embedded ICC profile, and 16-bit images keep their depth. Un
 **Breaking, for Rust hosts:**
 
 - `MediaFrame` has two more variants, `WideRgba { frame, gamut }` and `LinearRgba(Arc<LinearMediaFrame>)`, which `ImageFileResolver` returns for wide-gamut and deep images. A `match` on `MediaFrame` needs arms for them.
-- `Warning::UnsupportedVideoColor { video, .. }` is now `Warning::UnsupportedColor { kind, media, .. }`, with `kind` `AssetKind::Video` or `AssetKind::Image`. Its code and message for video are unchanged.
+- The warning for colour that can't be honoured is `Warning::UnsupportedColor { kind, media, .. }`, with `kind` `AssetKind::Video` or `AssetKind::Image`, and one code, `media.color_unsupported`, for both.
 - `ImageResolver` has `color_warning()`, `None` by default. A resolver that wraps another should forward it, or the wrapped image's warning is lost.
