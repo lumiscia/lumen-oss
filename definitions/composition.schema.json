@@ -3057,7 +3057,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by\ndefault, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,\nordered by its centre among blended objects, so its transparent parts show what is behind it.\nPlanes that intersect, or overlap while crossing in depth, can show in the wrong order; layers\nseparated in depth, and opaque shapes in front of or behind planes, are ordered correctly.\nA source keeps its detail when it is shown at its own size or larger; shown smaller, it is\nfiltered by `render_3d`'s `supersample`.",
+            "description": "Shows a raster, such as text or video, on a flat rectangle facing +Z. Unlit and double-sided by\ndefault, so it looks as it does in 2D while it faces the camera. A plane is drawn blended,\nordered by its centre among blended objects, so its transparent parts show what is behind it.\nPlanes that intersect, or overlap while crossing in depth, can show in the wrong order; layers\nseparated in depth, and opaque shapes in front of or behind planes, are ordered correctly.\n`opaque` draws a plane that has no transparent pixels with the opaque objects instead.\nA source keeps its detail when it is shown at its own size or larger; shown smaller, it is\nfiltered by `render_3d`'s `supersample`.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -3083,19 +3083,19 @@
                   "color": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/paint"
+                        "$ref": "#/$defs/color"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Base colour, which an image plane's raster is multiplied by. Must be a solid color.",
+                    "description": "Base colour, which an image plane's raster is multiplied by. Must be a solid color; a\ngradient fails `check`.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
                     },
-                    "x-lumen-kind": "paint"
+                    "x-lumen-kind": "color"
                   },
                   "double_sided": {
                     "anyOf": [
@@ -3166,6 +3166,20 @@
                       "step": 0.01
                     },
                     "x-lumen-kind": "float"
+                  },
+                  "opaque": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": false,
+                    "description": "Draws the plane with the opaque objects, writing depth, rather than blended. For a source\nwith no transparent pixels, this orders the plane correctly against any geometry it\nintersects or crosses in depth. Alpha is then ignored: the colour's alpha, `opacity` and the\nsource's alpha. A source pixel that is transparent shows its colour at full opacity, which\nis black for a fully transparent one, and a half-transparent one shows its colour\nundimmed. It casts a shadow over its whole rectangle. A shadow catcher is always drawn as\none, so this has no effect on it.",
+                    "title": "Opaque",
+                    "x-lumen-kind": "bool"
                   },
                   "position": {
                     "anyOf": [
@@ -3288,8 +3302,8 @@
                         "$ref": "#/$defs/expression"
                       }
                     ],
-                    "default": 1.6,
-                    "description": "Width in world units; the height follows the aspect ratio of the source's full display\nsize.",
+                    "default": 1.0,
+                    "description": "Width in world units, 1 being as wide as a default `shape_3d` box; the height follows the\naspect ratio of the source's full display size.",
                     "title": "Width",
                     "x-lumen-constraints": {
                       "min": 0.0,
@@ -3482,19 +3496,19 @@
                   "color": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/paint"
+                        "$ref": "#/$defs/color"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Light colour. Must be a solid color.",
+                    "description": "Light colour. Must be a solid color; a gradient fails `check`.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
                     },
-                    "x-lumen-kind": "paint"
+                    "x-lumen-kind": "color"
                   },
                   "intensity": {
                     "anyOf": [
@@ -5311,19 +5325,19 @@
                   "fog_color": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/paint"
+                        "$ref": "#/$defs/color"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Colour surfaces fade to with distance. Must be a solid color.",
+                    "description": "Colour surfaces fade to with distance. Must be a solid color; a gradient fails `check`.",
                     "title": "Fog Color",
                     "x-lumen-constraints": {
                       "role": "color"
                     },
-                    "x-lumen-kind": "paint"
+                    "x-lumen-kind": "color"
                   },
                   "fog_density": {
                     "anyOf": [
@@ -6049,19 +6063,19 @@
                   "color": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/paint"
+                        "$ref": "#/$defs/color"
                       },
                       {
                         "$ref": "#/$defs/expression"
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Base colour, which an image plane's raster is multiplied by. Must be a solid color.",
+                    "description": "Base colour, which an image plane's raster is multiplied by. Must be a solid color; a\ngradient fails `check`.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
                     },
-                    "x-lumen-kind": "paint"
+                    "x-lumen-kind": "color"
                   },
                   "double_sided": {
                     "anyOf": [

@@ -9,6 +9,17 @@ pub use types::{
     GradientStopDelegate, GradientUnits, MAX_GRADIENT_STOPS, Paint, PaintDelegate, PaintKind,
 };
 
+/// `paint` if it is a solid color, or an error naming `path` if it is a gradient. Backs the
+/// `solid` param key.
+pub fn require_solid(paint: PaintDelegate, path: &str) -> Result<PaintDelegate, String> {
+    match paint {
+        PaintDelegate::Gradient(_) => Err(format!(
+            "`{path}` expected a solid color, got a gradient: a gradient can't light a surface"
+        )),
+        paint => Ok(paint),
+    }
+}
+
 impl Paint {
     pub fn solid(color: [u8; 4]) -> Self {
         Self::SolidColor(color[0], color[1], color[2], color[3])

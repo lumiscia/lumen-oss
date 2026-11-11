@@ -147,6 +147,11 @@ pub(crate) fn expand_struct_delegate(
         } else {
             quote!(::lumen_engine::node::DelegateEvaluable::from_json_value(value, &path))
         };
+        let parsed = if meta.property.solid {
+            quote!(#parsed.and_then(|value| ::lumen_engine::node::vector::paint::require_solid(value, &path)))
+        } else {
+            parsed
+        };
         quote! {
             if let Some(value) = fields.get(#name) {
                 let path = ::lumen_engine::node::field_path(path, #name);

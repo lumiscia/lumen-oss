@@ -915,6 +915,93 @@ fn a_planes_transparent_texels_show_what_is_behind_without_hiding_it() {
     ]);
 }
 
+/// A blue plane turned 45° about Y, so that it passes through a half-transparent green box
+/// centred nearer the camera than the plane's centre: right of centre the plane is behind the box,
+/// left of centre in front of it.
+fn plane_through_a_box(plane_params: Value) -> Scene {
+    let mut params = json!({ "width": 4, "rotation": [0, 45, 0] });
+    for (name, value) in plane_params.as_object().expect("params") {
+        params[name] = value.clone();
+    }
+    render_3d(vec![
+        plate(10),
+        plane(1, 10, params),
+        ortho(2, json!({})),
+        flat(
+            3,
+            json!({ "size": [3, 1, 0.1], "position": [0, 0, 0.5], "opacity": 0.5 }),
+            GREEN,
+        ),
+        merge(4, &[1, 2, 3], json!({})),
+    ])
+}
+
+#[test]
+fn an_opaque_plane_is_ordered_by_depth_against_the_blended_objects_it_crosses() {
+    // Half green over blue in linear light is sRGB 188 in both channels.
+    let box_over_plane = [0, 188, 188, 255];
+    check(vec![
+        // A blended plane is ordered by its centre, which is behind the box's, so the box
+        // blends over it wherever they overlap, including left of centre where the plane is in
+        // front.
+        Case::new(
+            "a blended plane is overdrawn by the box on both sides",
+            plane_through_a_box(json!({})),
+            Expect::Probes(vec![
+                (16, CENTER, box_over_plane),
+                (48, CENTER, box_over_plane),
+            ]),
+        )
+        .media(image(|_, _| BLUE))
+        .tolerance(2),
+        Case::new(
+            "an opaque plane hides the box where it is in front and shows through it where behind",
+            plane_through_a_box(json!({ "opaque": true })),
+            Expect::Probes(vec![(16, CENTER, BLUE), (48, CENTER, box_over_plane)]),
+        )
+        .media(image(|_, _| BLUE))
+        .tolerance(2),
+        Case::new(
+            "opaque false is the default",
+            plane_through_a_box(json!({ "opaque": false })),
+            Expect::Probes(vec![
+                (16, CENTER, box_over_plane),
+                (48, CENTER, box_over_plane),
+            ]),
+        )
+        .media(image(|_, _| BLUE))
+        .tolerance(2),
+    ]);
+}
+
+#[test]
+fn an_opaque_plane_shows_transparent_texels_in_their_colour_at_full_opacity() {
+    let framed_plane = |params: Value| {
+        let mut params = params;
+        params["width"] = json!(4);
+        render_3d(vec![
+            plate(10),
+            plane(1, 10, params),
+            ortho(2, json!({})),
+            merge(3, &[1, 2], json!({})),
+        ])
+    };
+    check(vec![
+        Case::new(
+            "blended, the transparent half shows nothing",
+            framed_plane(json!({})),
+            Expect::Probes(vec![(16, CENTER, BLUE), (48, CENTER, CLEAR)]),
+        )
+        .media(half_blue()),
+        Case::new(
+            "opaque, the transparent half is opaque black and opacity is ignored",
+            framed_plane(json!({ "opaque": true, "opacity": 0.2 })),
+            Expect::Probes(vec![(16, CENTER, BLUE), (48, CENTER, [0, 0, 0, 255])]),
+        )
+        .media(half_blue()),
+    ]);
+}
+
 #[test]
 fn a_lit_plane_is_coloured_by_its_source_and_responds_to_light() {
     // Red on the left and white on the right, lit head-on or from behind.

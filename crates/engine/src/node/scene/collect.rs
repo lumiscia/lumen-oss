@@ -660,8 +660,13 @@ impl Collected {
                 let world =
                     parent * placement(&params.placement).matrix() * Mat4::from_scale(scale);
                 let mut surface = surface(node_id, "ImagePlane3d", &params.material)?;
-                // A raster has transparent texels whatever its opacity, so a plane always blends.
-                surface.blending = Blending::Blend;
+                // A raster has transparent texels whatever its opacity, so a plane blends unless
+                // told it has none. A shadow catcher keeps its alpha, which sets its coverage.
+                surface.blending = if params.opaque && !params.material.shadow_catcher {
+                    Blending::Opaque
+                } else {
+                    Blending::Blend
+                };
                 surface.texture = Some(source.tex);
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.quad(rec);
