@@ -5391,7 +5391,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Draws a 3D scene into a raster, with a transparent background unless it shows its environment\nmap.",
+            "description": "Draws a 3D scene into a raster, with a transparent background unless it shows its environment\nmap; or, by `output`, its depth or normals, for 2D effects such as fog.",
             "properties": {
               "id": {
                 "minimum": 0,
@@ -5400,6 +5400,42 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "depth_far": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Distance from the camera, in world units, that `depth` output maps to 1, and past which it\nstays 1. 0 uses the camera's `far`, which spreads the 0 to 1 range thin over a scene much\nnearer than it.",
+                    "title": "Depth Far",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 1.0
+                    },
+                    "x-lumen-kind": "float"
+                  },
+                  "depth_near": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "$ref": "#/$defs/expression"
+                      }
+                    ],
+                    "default": 0.0,
+                    "description": "Distance from the camera, in world units, that `depth` output maps to 0. 0 uses the\ncamera's `near`.",
+                    "title": "Depth Near",
+                    "x-lumen-constraints": {
+                      "min": 0.0,
+                      "step": 0.1
+                    },
+                    "x-lumen-kind": "float"
+                  },
                   "environment": {
                     "anyOf": [
                       {
@@ -5551,6 +5587,32 @@
                       "step": 1.0
                     },
                     "x-lumen-kind": "int"
+                  },
+                  "output": {
+                    "default": "color",
+                    "description": "What the raster holds: the lit scene, its depth or its normals. A composition that needs\nmore than one draws the same scene with a `render_3d` for each.",
+                    "enum": ["color", "depth", "normal"],
+                    "title": "Output",
+                    "type": "string",
+                    "x-lumen-enumOptions": [
+                      {
+                        "label": "Color",
+                        "name": "color",
+                        "value": 0
+                      },
+                      {
+                        "label": "Depth",
+                        "name": "depth",
+                        "value": 1
+                      },
+                      {
+                        "label": "Normal",
+                        "name": "normal",
+                        "value": 2
+                      }
+                    ],
+                    "x-lumen-kind": "enum",
+                    "x-lumen-type": "Render3dOutput"
                   },
                   "supersample": {
                     "anyOf": [

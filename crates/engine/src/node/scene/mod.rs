@@ -554,8 +554,44 @@ pub enum ToneMapping {
     Agx = 2,
 }
 
+/// What `render_3d` draws into its raster. Depth and normals hold data, with no transfer function
+/// applied, drawn from opaque surfaces and shadow catchers, masked surfaces where they reach their
+/// cutoff, and blended ones, such as image planes, where their alpha reaches half. They skip
+/// lighting, shadows and the environment, and ignore `supersample`: each pixel holds the nearest
+/// surface at its centre, never an average across an edge.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, lumen_macros::NodeEnum, lumen_macros::Delegate,
+)]
+#[repr(i64)]
+#[delegate(kind = "enum")]
+pub enum Render3dOutput {
+    /// The lit scene.
+    #[default]
+    Color = 0,
+    /// Distance from the camera along its view, from 0 at `depth_near` to 1 at `depth_far`, as
+    /// opaque grey; 1 where nothing is drawn.
+    Depth = 1,
+    /// The surface's normal as it is shaded, in the camera's space with +X right, +Y up and +Z
+    /// towards the camera, each of its components `n` stored as `n * 0.5 + 0.5` in red, green and
+    /// blue; transparent where nothing is drawn.
+    Normal = 2,
+}
+
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Render3dParams {
+    /// What the raster holds: the lit scene, its depth or its normals. A composition that needs
+    /// more than one draws the same scene with a `render_3d` for each.
+    #[meta(kind = "enum", enum_type = Render3dOutput, constant)]
+    pub output: Render3dOutput,
+    /// Distance from the camera, in world units, that `depth` output maps to 0. 0 uses the
+    /// camera's `near`.
+    #[meta(min = 0, step = 0.1)]
+    pub depth_near: f64,
+    /// Distance from the camera, in world units, that `depth` output maps to 1, and past which it
+    /// stays 1. 0 uses the camera's `far`, which spreads the 0 to 1 range thin over a scene much
+    /// nearer than it.
+    #[meta(min = 0, step = 1)]
+    pub depth_far: f64,
     /// Output width in pixels. Use 0 to match the composition width.
     #[meta(min = 0, enforced_min, step = 1, constant)]
     pub width: u32,
@@ -607,6 +643,9 @@ pub struct Render3dParams {
 impl Default for Render3dParams {
     fn default() -> Self {
         Self {
+            output: Render3dOutput::Color,
+            depth_near: 0.0,
+            depth_far: 0.0,
             width: 0,
             height: 0,
             supersample: 2,
@@ -624,7 +663,7 @@ impl Default for Render3dParams {
 }
 
 /// Draws a 3D scene into a raster, with a transparent background unless it shows its environment
-/// map.
+/// map; or, by `output`, its depth or normals, for 2D effects such as fog.
 #[derive(Debug, Clone, Default, lumen_macros::Node)]
 #[node(kind = "render_3d", name = "Render 3D", category = "scene")]
 pub struct Render3d {

@@ -43,6 +43,14 @@ composition.connect(box, output, { toPort: "source" });
 composition.addNode({ type: "opacity", inputs: { source: group } });
 // @ts-expect-error background outputs a raster, not a scene
 composition.addNode({ type: "render_3d", inputs: { scene: background } });
+const depth = composition.addNode({
+  type: "render_3d",
+  params: { output: "depth", depth_near: 4, depth_far: 12 },
+  inputs: { scene: group },
+});
+composition.addNode({ type: "merge", inputs: { base: render, overlay: background, mask: depth } });
+// @ts-expect-error `output` is color, depth or normal
+composition.addNode({ type: "render_3d", params: { output: "zbuffer" }, inputs: { scene: group } });
 
 const plane = composition.addNode({
   type: "image_plane_3d",
