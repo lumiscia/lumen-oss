@@ -86,6 +86,7 @@ impl Graph {
                 );
             }
 
+            check_supported(node, cfg!(feature = "3d"), &mut errors);
             check_inputs(
                 node,
                 |source| self.nodes.get(&source).map(Node::output_kind),
@@ -112,6 +113,25 @@ impl Graph {
         } else {
             Err(errors)
         }
+    }
+}
+
+/// Reports `node` when it is a 3D node, one that outputs or takes a scene, and the engine was
+/// built without 3D.
+fn check_supported(node: &NodeKind, supports_3d: bool, errors: &mut Vec<LumenError>) {
+    let scene = node.output_kind() == PortKind::Scene
+        || node
+            .input_port_defs()
+            .iter()
+            .any(|input| input.kind == PortKind::Scene);
+    if scene && !supports_3d {
+        errors.push(
+            GraphValidationError::No3dSupport {
+                node_id: node.id(),
+                kind: node.kind_name(),
+            }
+            .into(),
+        );
     }
 }
 
@@ -298,8 +318,41 @@ mod tests {
         assert_eq!(
             errors(&scene),
             [
-                "connection.wrong_kind: node 2 outputs a scene, but input `texture` of node 4 takes a raster: render the scene to a raster first, and wire that in"
+                "connection.wrong_kind: node 2 outputs a scene, but input `texture` of node 4 takes a raster: draw the scene into a raster through a render_3d, and wire that in"
             ]
+        );
+    }
+
+    #[test]
+    fn nodes_that_output_or_take_a_scene_need_3d() {
+        use crate::node::{
+            processing::opacity::Opacity,
+            scene::{Merge3d, Render3d},
+        };
+
+        let unsupported = |node: NodeKind, supports_3d| {
+            let mut errors = Vec::new();
+            check_supported(&node, supports_3d, &mut errors);
+            errors
+                .iter()
+                .map(|error| format!("{}: {error}", error.code()))
+                .collect::<Vec<_>>()
+        };
+        let merge = || NodeKind::Merge3d(Merge3d::default());
+        assert_eq!(
+            unsupported(merge(), false),
+            [
+                "node.unsupported: node 0 (`merge_3d`): this build of the engine has no 3D support, as it was built without the `3d` feature"
+            ]
+        );
+        assert_eq!(
+            unsupported(NodeKind::Render3d(Render3d::default()), false).len(),
+            1
+        );
+        assert_eq!(unsupported(merge(), true), Vec::<String>::new());
+        assert_eq!(
+            unsupported(NodeKind::Opacity(Opacity::default()), false),
+            Vec::<String>::new()
         );
     }
 

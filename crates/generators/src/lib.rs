@@ -752,6 +752,7 @@ fn category_name(category: NodeCategory) -> &'static str {
         NodeCategory::Source => "source",
         NodeCategory::Output => "output",
         NodeCategory::Vector => "vector",
+        NodeCategory::Scene => "scene",
     }
 }
 

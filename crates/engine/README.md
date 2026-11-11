@@ -116,6 +116,7 @@ literal: one the store doesn't have is `asset.not_found`, and one of another kin
 | `node.invalid_params`                | error    | check         | A node's `params` is not an object.                                                                                                                                                                       |
 | `node.unknown_param`                 | error    | check         | A node has a param its type doesn't.                                                                                                                                                                      |
 | `node.invalid_param`                 | error    | check         | A param's value is wrong for it, including expressions that don't parse.                                                                                                                                  |
+| `node.unsupported`                   | error    | check         | A node needs what this build of the engine was built without: any 3D node, without the `3d` feature.                                                                                                      |
 | `graph.duplicate_node_id`            | error    | check         | Two nodes of one graph share an id.                                                                                                                                                                       |
 | `connection.invalid_from_port`       | error    | check         | A connection's `from_port` is not `output`.                                                                                                                                                               |
 | `connection.missing_source_node`     | error    | check         | A connection or input reads a node that doesn't exist.                                                                                                                                                    |
@@ -157,6 +158,8 @@ literal: one the store doesn't have is `asset.not_found`, and one of another kin
 - `metal`: enable Metal support through `lumen-engine-gpu` and optional FFmpeg interop.
 - `vulkan`: enable Vulkan support through `lumen-engine-gpu` and optional FFmpeg interop.
 - `cuda`: enable CUDA support through optional FFmpeg interop.
+- `3d`: render the 3D scene nodes through `lumen-engine-3d`. Without it, a composition with any of
+  them fails `check` with `node.unsupported`.
 
 ## Development
 

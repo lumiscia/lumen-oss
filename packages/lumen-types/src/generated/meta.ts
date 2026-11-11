@@ -3,10 +3,10 @@
 
 import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js";
 
-export type NodeCategory = "compositing" | "output" | "processing" | "source" | "vector";
+export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "raster" | "scene";
-export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2";
-export type NodeKind = "background" | "blur" | "boolean" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "levels" | "media_in" | "media_output" | "merge" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "resize" | "shadow" | "shape" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+export type NodeParamKind = "bool" | "clip_props" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
+export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 
 export const schemaVersion = 1 as const;
 
@@ -1318,6 +1318,7 @@ export type AudioTrack = {
 };
 export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten" | "add" | "difference" | "exclusion" | "color_dodge" | "color_burn" | "hard_light" | "soft_light" | "hue" | "saturation" | "color" | "luminosity";
 export type BooleanOperation = "union" | "intersect" | "subtract" | "xor";
+export type Camera3dProjection = Projection3d;
 export type ClipEnd = "hide" | "hold" | "loop";
 /** A value for a template prop: a literal of the prop's type, or an expression in the clip's time. */
 export type ClipPropValue = number | string | Vec2 | Vec3 | Color;
@@ -1408,6 +1409,8 @@ export type GradientStop = {
   readonly offset: number;
 } | readonly [number, Color];
 export type GradientUnits = "object_bounding_box" | "user_space" | "userSpaceOnUse";
+export type Light3dKind = "directional" | "point" | "spot" | "ambient";
+export type Light3dLight = Light3dKind;
 export type LoopMode = "clamp" | "repeat" | "ping_pong";
 export type MaskMode = "alpha" | "luma";
 export type MediaInAlpha = AlphaMode;
@@ -1420,9 +1423,11 @@ export type NoiseMode = "smooth" | "turbulent";
 /** A solid color or a gradient. */
 export type Paint = Color | GradientPaint;
 export type PaintKind = "linear_gradient" | "radial_gradient" | "conic_gradient" | "linear" | "radial" | "conic";
+export type Projection3d = "perspective" | "orthographic";
 export type RadialBlurEdge = EdgeMode;
 export type RasterMultimergeBlendMode = BlendMode;
 export type RasterSampling = "nearest" | "linear";
+export type Render3dToneMapping = ToneMapping;
 /** The canvas, and how the host that renders the video encodes it. Previews ignore `codec` and `quality`. */
 export type RenderSettings = {
   /** Video codec of the rendered file. A render request's `codec` wins over it. */
@@ -1458,6 +1463,8 @@ export type ShaderUniformComponent = ExpressionValue<number>;
 export type ShaderUniformValue = ExpressionValue<number | readonly [ShaderUniformComponent, ShaderUniformComponent] | readonly [ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent] | readonly [ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent, ShaderUniformComponent] | HexColor>;
 /** Shader uniform values by field name, checked against the shader's uniform struct when the node compiles. */
 export type ShaderUniforms = Readonly<Record<string, ShaderUniformValue>>;
+export type Shape3dKind = "box" | "sphere" | "plane" | "cylinder" | "torus" | "cone";
+export type Shape3dShape = Shape3dKind;
 export type ShapeGeometryKind = "rectangle" | "ellipse";
 export type TemplateRenderSettings = {
   readonly height: number;
@@ -1577,6 +1584,7 @@ export type Timeline = {
   readonly duration_frames: number;
   readonly fps?: number;
 };
+export type ToneMapping = "none" | "aces" | "agx";
 export type TransformSampling = RasterSampling;
 export type VideoCodec = "h264" | "hevc" | "av1";
 export type ZoomBlurEdge = EdgeMode;
@@ -1615,6 +1623,36 @@ export interface BooleanNode extends CompositionNodeBase<"boolean"> {
     readonly operation?: ExpressionValue<BooleanOperation>;
     /** Alpha above this cutoff counts as opaque; 0 applies no cutoff and keeps antialiased edges. */
     readonly threshold?: ExpressionValue<number>;
+  };
+}
+
+/**
+ * The viewpoint `render_3d` draws from, looking down its -Z. The first camera in a scene wins;
+ * without one, `render_3d` views from 5 units along +Z with a 40° field of view.
+ */
+export interface Camera3dNode extends CompositionNodeBase<"camera_3d"> {
+  readonly params?: {
+    /** Farthest distance drawn, in world units. */
+    readonly far?: ExpressionValue<number>;
+    /** Vertical field of view in degrees, with a perspective projection. */
+    readonly fov?: ExpressionValue<number>;
+    /** Aims the camera at `target`, ignoring its rotation. */
+    readonly look_at?: ExpressionValue<boolean>;
+    /** Nearest distance drawn, in world units. */
+    readonly near?: ExpressionValue<number>;
+    /** Height of the view in world units, with an orthographic projection. */
+    readonly ortho_height?: ExpressionValue<number>;
+    /** Position in world units along X, Y and Z, in the parent's space. */
+    readonly position?: ExpressionValue<Vec3>;
+    /** How the scene is projected onto the image. */
+    readonly projection?: Projection3d;
+    /**
+     * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
+     * X, then roll about the turned Z.
+     */
+    readonly rotation?: ExpressionValue<Vec3>;
+    /** Point along X, Y and Z the camera aims at while `look_at` is on, in its parent's space. */
+    readonly target?: ExpressionValue<Vec3>;
   };
 }
 
@@ -1808,6 +1846,31 @@ export interface LevelsNode extends CompositionNodeBase<"levels"> {
   };
 }
 
+/** A light. A scene without any is lit by a default key light and ambient fill. */
+export interface Light3dNode extends CompositionNodeBase<"light_3d"> {
+  readonly params?: {
+    /** Light colour. Must be a solid color. */
+    readonly color?: ExpressionValue<Paint>;
+    /** Unitless brightness multiplier; point and spot lights fall off with the square of distance. */
+    readonly intensity?: ExpressionValue<number>;
+    /** Kind of light. */
+    readonly light?: Light3dKind;
+    /** Position in world units along X, Y and Z, in the parent's space. */
+    readonly position?: ExpressionValue<Vec3>;
+    /** Distance past which a point or spot light has no effect; 0 is unlimited. */
+    readonly range?: ExpressionValue<number>;
+    /**
+     * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
+     * X, then roll about the turned Z.
+     */
+    readonly rotation?: ExpressionValue<Vec3>;
+    /** Full angle of a spot light's cone in degrees. */
+    readonly spot_angle?: ExpressionValue<number>;
+    /** Fraction of a spot light's cone, from its edge, that fades out. */
+    readonly spot_softness?: ExpressionValue<number>;
+  };
+}
+
 /** Binds an external image or video frame as a GPU texture. */
 export interface MediaInNode extends CompositionNodeBase<"media_in"> {
   readonly params?: {
@@ -1846,6 +1909,21 @@ export interface MergeNode extends CompositionNodeBase<"merge"> {
     readonly mask_mode?: MaskMode;
     /** Overlay opacity applied before compositing. */
     readonly opacity?: ExpressionValue<number>;
+  };
+}
+
+/** Groups scenes into one, placed together by its transform. */
+export interface Merge3dNode extends CompositionNodeBase<"merge_3d"> {
+  readonly params?: {
+    /** Position in world units along X, Y and Z, in the parent's space. */
+    readonly position?: ExpressionValue<Vec3>;
+    /**
+     * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
+     * X, then roll about the turned Z.
+     */
+    readonly rotation?: ExpressionValue<Vec3>;
+    /** Scale multiplier along X, Y and Z, applied before the rotation. */
+    readonly scale?: ExpressionValue<Vec3>;
   };
 }
 
@@ -1972,6 +2050,34 @@ export interface RasterMultimergeNode extends CompositionNodeBase<"raster_multim
   };
 }
 
+/** Draws a 3D scene into a raster, with a transparent background. */
+export interface Render3dNode extends CompositionNodeBase<"render_3d"> {
+  readonly params?: {
+    /**
+     * Brightness of the built-in studio of softboxes that surfaces reflect and are lit by from
+     * all around. 0 turns it off.
+     */
+    readonly environment?: ExpressionValue<number>;
+    /** Exposure adjustment in stops before tone mapping. */
+    readonly exposure?: ExpressionValue<number>;
+    /** Colour surfaces fade to with distance. Must be a solid color. */
+    readonly fog_color?: ExpressionValue<Paint>;
+    /**
+     * How quickly surfaces fade into the fog: the fraction of their colour left after `d` world
+     * units is e^(-density * d). 0 turns fog off.
+     */
+    readonly fog_density?: ExpressionValue<number>;
+    /** Output height in pixels. Use 0 to match the composition height. */
+    readonly height?: number;
+    /** Renders this many times wider and taller, then averages down, to antialias edges. */
+    readonly supersample?: ExpressionValue<number>;
+    /** How light brighter than white is brought into range. */
+    readonly tone_mapping?: ToneMapping;
+    /** Output width in pixels. Use 0 to match the composition width. */
+    readonly width?: number;
+  };
+}
+
 /** Resamples a raster into a rectangle placed on the composition canvas. */
 export interface ResizeNode extends CompositionNodeBase<"resize"> {
   readonly params?: {
@@ -2055,6 +2161,39 @@ export interface ShapeNode extends CompositionNodeBase<"shape"> {
      * wide.
      */
     readonly width?: ExpressionValue<number>;
+  };
+}
+
+/** A primitive solid: box, sphere, plane, cylinder, torus or cone, centred on its position. */
+export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
+  readonly params?: {
+    /** Base colour. Must be a solid color. */
+    readonly color?: ExpressionValue<Paint>;
+    /** Draws the back of each face too. */
+    readonly double_sided?: ExpressionValue<boolean>;
+    /** Light the surface gives off on its own, as a multiple of its base colour. */
+    readonly emissive?: ExpressionValue<number>;
+    /** 0 is a dielectric such as plastic, 1 a bare metal. */
+    readonly metallic?: ExpressionValue<number>;
+    /** Opacity multiplier. Anything below 1 is drawn blended, after opaque objects. */
+    readonly opacity?: ExpressionValue<number>;
+    /** Position in world units along X, Y and Z, in the parent's space. */
+    readonly position?: ExpressionValue<Vec3>;
+    /**
+     * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
+     * X, then roll about the turned Z.
+     */
+    readonly rotation?: ExpressionValue<Vec3>;
+    /** 0 is a mirror finish, 1 fully diffuse. */
+    readonly roughness?: ExpressionValue<number>;
+    /** Scale multiplier along X, Y and Z, applied before the rotation. */
+    readonly scale?: ExpressionValue<Vec3>;
+    /** Primitive to build. */
+    readonly shape?: Shape3dKind;
+    /** Width, height and depth in world units, along X, Y and Z before the rotation. */
+    readonly size?: ExpressionValue<Vec3>;
+    /** Shows the base colour as is, ignoring lights. */
+    readonly unlit?: ExpressionValue<boolean>;
   };
 }
 
@@ -2267,6 +2406,7 @@ export interface CompositionNodeByKind {
   readonly "background": BackgroundNode;
   readonly "blur": BlurNode;
   readonly "boolean": BooleanNode;
+  readonly "camera_3d": Camera3dNode;
   readonly "clip": ClipNode;
   readonly "color_grade": ColorGradeNode;
   readonly "crop": CropNode;
@@ -2277,17 +2417,21 @@ export interface CompositionNodeByKind {
   readonly "glow": GlowNode;
   readonly "hue_saturation": HueSaturationNode;
   readonly "levels": LevelsNode;
+  readonly "light_3d": Light3dNode;
   readonly "media_in": MediaInNode;
   readonly "media_output": MediaOutputNode;
   readonly "merge": MergeNode;
+  readonly "merge_3d": Merge3dNode;
   readonly "motion_blur": MotionBlurNode;
   readonly "opacity": OpacityNode;
   readonly "path": PathNode;
   readonly "radial_blur": RadialBlurNode;
   readonly "raster_multimerge": RasterMultimergeNode;
+  readonly "render_3d": Render3dNode;
   readonly "resize": ResizeNode;
   readonly "shadow": ShadowNode;
   readonly "shape": ShapeNode;
+  readonly "shape_3d": Shape3dNode;
   readonly "switch": SwitchNode;
   readonly "text": TextNode;
   readonly "time_remap": TimeRemapNode;
@@ -2304,6 +2448,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "boolean": Omit<BooleanNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "camera_3d": Omit<Camera3dNode, "id"> & {
     readonly id?: number;
   };
   readonly "clip": Omit<ClipNode, "id"> & {
@@ -2336,6 +2483,9 @@ export interface CompositionNodeInputByKind {
   readonly "levels": Omit<LevelsNode, "id"> & {
     readonly id?: number;
   };
+  readonly "light_3d": Omit<Light3dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "media_in": Omit<MediaInNode, "id"> & {
     readonly id?: number;
   };
@@ -2343,6 +2493,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "merge": Omit<MergeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "merge_3d": Omit<Merge3dNode, "id"> & {
     readonly id?: number;
   };
   readonly "motion_blur": Omit<MotionBlurNode, "id"> & {
@@ -2360,6 +2513,9 @@ export interface CompositionNodeInputByKind {
   readonly "raster_multimerge": Omit<RasterMultimergeNode, "id"> & {
     readonly id?: number;
   };
+  readonly "render_3d": Omit<Render3dNode, "id"> & {
+    readonly id?: number;
+  };
   readonly "resize": Omit<ResizeNode, "id"> & {
     readonly id?: number;
   };
@@ -2367,6 +2523,9 @@ export interface CompositionNodeInputByKind {
     readonly id?: number;
   };
   readonly "shape": Omit<ShapeNode, "id"> & {
+    readonly id?: number;
+  };
+  readonly "shape_3d": Omit<Shape3dNode, "id"> & {
     readonly id?: number;
   };
   readonly "switch": Omit<SwitchNode, "id"> & {
@@ -2393,6 +2552,7 @@ export interface NodeInputPortNameByKind {
   readonly "background": never;
   readonly "blur": "source";
   readonly "boolean": "a" | "b";
+  readonly "camera_3d": never;
   readonly "clip": "source";
   readonly "color_grade": "source";
   readonly "crop": "source";
@@ -2403,17 +2563,21 @@ export interface NodeInputPortNameByKind {
   readonly "glow": "source";
   readonly "hue_saturation": "source";
   readonly "levels": "source";
+  readonly "light_3d": never;
   readonly "media_in": never;
   readonly "media_output": "source";
   readonly "merge": "base" | "mask" | "overlay";
+  readonly "merge_3d": "objects";
   readonly "motion_blur": "source";
   readonly "opacity": "source";
   readonly "path": never;
   readonly "radial_blur": "source";
   readonly "raster_multimerge": "layers";
+  readonly "render_3d": "scene";
   readonly "resize": "source";
   readonly "shadow": "source";
   readonly "shape": never;
+  readonly "shape_3d": never;
   readonly "switch": "layers";
   readonly "text": never;
   readonly "time_remap": "source";
@@ -2426,6 +2590,7 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "background": never;
   readonly "blur": never;
   readonly "boolean": never;
+  readonly "camera_3d": never;
   readonly "clip": never;
   readonly "color_grade": never;
   readonly "crop": never;
@@ -2436,17 +2601,21 @@ export interface NodeVariadicInputPortNameByKind {
   readonly "glow": never;
   readonly "hue_saturation": never;
   readonly "levels": never;
+  readonly "light_3d": never;
   readonly "media_in": never;
   readonly "media_output": never;
   readonly "merge": never;
+  readonly "merge_3d": "objects";
   readonly "motion_blur": never;
   readonly "opacity": never;
   readonly "path": never;
   readonly "radial_blur": never;
   readonly "raster_multimerge": "layers";
+  readonly "render_3d": never;
   readonly "resize": never;
   readonly "shadow": never;
   readonly "shape": never;
+  readonly "shape_3d": never;
   readonly "switch": "layers";
   readonly "text": never;
   readonly "time_remap": never;
@@ -2459,6 +2628,7 @@ export interface NodeOutputKindByKind {
   readonly "background": "raster";
   readonly "blur": "raster";
   readonly "boolean": "raster";
+  readonly "camera_3d": "scene";
   readonly "clip": "raster";
   readonly "color_grade": "raster";
   readonly "crop": "raster";
@@ -2469,17 +2639,21 @@ export interface NodeOutputKindByKind {
   readonly "glow": "raster";
   readonly "hue_saturation": "raster";
   readonly "levels": "raster";
+  readonly "light_3d": "scene";
   readonly "media_in": "raster";
   readonly "media_output": "raster";
   readonly "merge": "raster";
+  readonly "merge_3d": "scene";
   readonly "motion_blur": "raster";
   readonly "opacity": "raster";
   readonly "path": "raster";
   readonly "radial_blur": "raster";
   readonly "raster_multimerge": "raster";
+  readonly "render_3d": "raster";
   readonly "resize": "raster";
   readonly "shadow": "raster";
   readonly "shape": "raster";
+  readonly "shape_3d": "scene";
   readonly "switch": "raster";
   readonly "text": "raster";
   readonly "time_remap": "raster";
@@ -2492,6 +2666,7 @@ export interface NodeInputPortKindByKind {
   readonly "background": {};
   readonly "blur": { readonly "source": "raster" };
   readonly "boolean": { readonly "a": "raster"; readonly "b": "raster" };
+  readonly "camera_3d": {};
   readonly "clip": { readonly "source": "raster" };
   readonly "color_grade": { readonly "source": "raster" };
   readonly "crop": { readonly "source": "raster" };
@@ -2502,17 +2677,21 @@ export interface NodeInputPortKindByKind {
   readonly "glow": { readonly "source": "raster" };
   readonly "hue_saturation": { readonly "source": "raster" };
   readonly "levels": { readonly "source": "raster" };
+  readonly "light_3d": {};
   readonly "media_in": {};
   readonly "media_output": { readonly "source": "raster" };
   readonly "merge": { readonly "base": "raster"; readonly "overlay": "raster"; readonly "mask": "raster" };
+  readonly "merge_3d": { readonly "objects": "scene" };
   readonly "motion_blur": { readonly "source": "raster" };
   readonly "opacity": { readonly "source": "raster" };
   readonly "path": {};
   readonly "radial_blur": { readonly "source": "raster" };
   readonly "raster_multimerge": { readonly "layers": "raster" };
+  readonly "render_3d": { readonly "scene": "scene" };
   readonly "resize": { readonly "source": "raster" };
   readonly "shadow": { readonly "source": "raster" };
   readonly "shape": {};
+  readonly "shape_3d": {};
   readonly "switch": { readonly "layers": "raster" };
   readonly "text": {};
   readonly "time_remap": { readonly "source": "raster" };

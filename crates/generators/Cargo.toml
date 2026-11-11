@@ -17,3 +17,7 @@ anyhow = "1.0.101"
 jsonschema = { version = "0.60.1", default-features = false }
 lumen-engine = { workspace = true, features = ["metadata"] }
 serde_json = "1.0.145"
+
+[dev-dependencies]
+# The parity tests parse compositions holding every node kind, 3D ones included.
+lumen-engine = { workspace = true, features = ["3d"] }

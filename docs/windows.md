@@ -7,7 +7,7 @@ Windows is a basic development target for the TypeScript workspace and pure Rust
 The Windows CI job runs on `windows-latest` and checks:
 
 - TypeScript package builds, excluding generated WASM bindings.
-- Pure Rust crates: `lumen-engine`, `lumen-engine-gpu`, `lumen-generators`, `lumen-engine-macros`, and `lumen-engine-text`.
+- Pure Rust crates: `lumen-engine`, `lumen-engine-gpu`, `lumen-generators`, `lumen-engine-macros`, `lumen-engine-text`, and `lumen-engine-3d`.
 
 This coverage is intended to catch path separator issues, shell portability problems in package scripts, and cross-platform compile regressions in the core schema/model crates.
 
@@ -25,7 +25,7 @@ Then run:
 ```powershell
 pnpm install
 pnpm -r --filter './packages/*' --filter '!@lumiscia/lumen-bindings' build
-cargo check -p lumen-engine -p lumen-engine-gpu -p lumen-generators -p lumen-engine-macros -p lumen-engine-text
+cargo check -p lumen-engine -p lumen-engine-gpu -p lumen-generators -p lumen-engine-macros -p lumen-engine-text -p lumen-engine-3d
 ```
 
 ## Known Gaps

@@ -127,6 +127,7 @@ Lumen needs a GPU for its main render paths. [docs/support-matrix.md](docs/suppo
 | `crates/server`     | Render library and local HTTP server                  |
 | `crates/local`      | `lumen-local` render and debug CLI                    |
 | `crates/text`       | Text layout and glyph data                            |
+| `crates/3d`         | Meshes, transforms, cameras and draw order for 3D     |
 | `crates/wasm`       | The preview renderer for WebAssembly                  |
 | `crates/bench`      | Composition and decode benchmarks                     |
 | `crates/generators` | Schema and metadata generators                        |

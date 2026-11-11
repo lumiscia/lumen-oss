@@ -1,8 +1,10 @@
-use lumen_engine::node::{NodeKind, NodeSchemaDef};
+use lumen_engine::node::{NodeKind, NodeSchemaDef, PortKind};
 use serde_json::{Value, json};
 
 const SOURCE_ID: i64 = 100;
 const OUTPUT_ID: i64 = 101;
+const SCENE_SOURCE_ID: i64 = 102;
+const RENDER_ID: i64 = 103;
 
 fn schema() -> Value {
     let schema_json = lumen_generators::render_composition_schema_json().unwrap();
@@ -30,33 +32,49 @@ fn default_param<'a>(schema: &'a Value, kind: &str, id: &str) -> Option<&'a Valu
         .pointer(&format!("/properties/params/properties/{id}/default"))
 }
 
-fn composition(node: Value, connections: Vec<Value>) -> Value {
+fn composition(nodes: Vec<Value>, connections: Vec<Value>) -> Value {
+    let mut all = vec![
+        json!({ "id": SOURCE_ID, "type": "background" }),
+        json!({ "id": OUTPUT_ID, "type": "media_output" }),
+    ];
+    all.extend(nodes);
     json!({
         "timeline": { "fps": 30, "duration_frames": 10 },
         "render_settings": { "width": 16, "height": 16 },
-        "nodes": [
-            node,
-            { "id": SOURCE_ID, "type": "background" },
-            { "id": OUTPUT_ID, "type": "media_output" }
-        ],
+        "nodes": all,
         "connections": connections
     })
 }
 
 /// A renderable composition containing `node` with `params`, its required inputs fed by a
-/// background node, and its output wired to the media output.
+/// background node or, for scene inputs, a shape, and its output wired to the media output,
+/// through a `render_3d` when it is a scene.
 fn composition_with_node(node: &NodeSchemaDef, params: Value) -> Value {
-    let mut connections = node
-        .inputs
+    let mut nodes = vec![json!({ "id": 1, "type": node.kind, "params": params })];
+    let mut connections = Vec::new();
+    for input in node.inputs.iter().filter(|input| !input.optional) {
+        let source = match input.kind {
+            PortKind::Raster => SOURCE_ID,
+            PortKind::Scene => SCENE_SOURCE_ID,
+        };
+        connections.push(json!({ "from_node": source, "to_node": 1, "to_port": input.name }));
+    }
+    if connections
         .iter()
-        .filter(|input| !input.optional)
-        .map(|input| json!({ "from_node": SOURCE_ID, "to_node": 1, "to_port": input.name }))
-        .collect::<Vec<_>>();
-    connections.push(json!({ "from_node": 1, "to_node": OUTPUT_ID, "to_port": "source" }));
-    composition(
-        json!({ "id": 1, "type": node.kind, "params": params }),
-        connections,
-    )
+        .any(|c| c["from_node"] == SCENE_SOURCE_ID)
+    {
+        nodes.push(json!({ "id": SCENE_SOURCE_ID, "type": "shape_3d" }));
+    }
+    let output = match node.output {
+        PortKind::Raster => 1,
+        PortKind::Scene => {
+            nodes.push(json!({ "id": RENDER_ID, "type": "render_3d" }));
+            connections.push(json!({ "from_node": 1, "to_node": RENDER_ID, "to_port": "scene" }));
+            RENDER_ID
+        }
+    };
+    connections.push(json!({ "from_node": output, "to_node": OUTPUT_ID, "to_port": "source" }));
+    composition(nodes, connections)
 }
 
 #[test]
