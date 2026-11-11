@@ -544,3 +544,31 @@ fn quantised_colour_never_exceeds_its_quantised_alpha() {
         assert!(bad.is_empty(), "opacity {opacity}: {} pixels like {:?}", bad.len(), bad[0]);
     }
 }
+
+#[test]
+fn a_float_output_is_the_working_space_without_an_output_pass() {
+    // A Vulkan Video or NVENC target converts the working space itself, so `media_output` hands
+    // it the merged frame rather than writing a copy.
+    let gpu = gpu();
+    let scene: Composition = scene(
+        (16, 16),
+        json!([
+            { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255] } },
+            { "id": 2, "type": "background", "params": { "paint": [0, 0, 255, 128] } },
+            { "id": 3, "type": "merge", "in": { "base": 1, "overlay": 2 } }
+        ]),
+    )
+    .into();
+    let passes = |format| {
+        let mut renderer = gpu.renderer();
+        renderer.set_static_output_reuse(false);
+        renderer.compile_with_output_format(&scene, format).unwrap();
+        renderer
+            .render_frame_at(&scene, 0.0, &TestMedia::default())
+            .unwrap();
+        renderer.submitted_pass_count()
+    };
+    let float = passes(lumen_gpu::wgpu::TextureFormat::Rgba16Float);
+    let bytes = passes(lumen_gpu::wgpu::TextureFormat::Rgba8Unorm);
+    assert_eq!(float + 1, bytes, "{float} passes to a float output, {bytes} to 8-bit");
+}
