@@ -1,4 +1,5 @@
 use std::{
+    ops::Range,
     path::Path,
     sync::mpsc,
     thread::{self, JoinHandle},
@@ -179,11 +180,14 @@ impl std::fmt::Display for AudioCancelled {
 
 impl std::error::Error for AudioCancelled {}
 
-/// Mixes the audio a chunk at a time, stopping with [`AudioCancelled`] before the chunk that
-/// follows a cancellation.
+/// Mixes the audio of `frames`, a range of the timeline's frames, a chunk at a time. The output
+/// starts at the sample the first frame starts at and ends where the last one does, so it lasts as
+/// long as the frames do. Stops with [`AudioCancelled`] before the chunk that follows a
+/// cancellation.
 pub(super) fn write_composited_audio(
     composition: &Composition,
     media_store: &LocalMediaStore,
+    frames: &Range<u32>,
     cancel: &CancelToken,
     mut write_frame: impl FnMut(AudioFrame) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
@@ -191,19 +195,17 @@ pub(super) fn write_composited_audio(
         return Ok(());
     }
 
-    let total_samples = duration_samples(
-        composition.timeline().duration_frames,
-        composition.timeline().fps,
-    );
+    let fps = composition.timeline().fps;
+    let end_sample = duration_samples(frames.end, fps);
     let mut mixer = AudioMixer::new(composition, media_store);
-    let mut start_sample = 0_u64;
+    let mut start_sample = duration_samples(frames.start, fps);
     let chunk_frames = (AUDIO_SAMPLE_RATE as usize).saturating_mul(30);
 
-    while start_sample < total_samples {
+    while start_sample < end_sample {
         if cancel.is_cancelled() {
             return Err(AudioCancelled.into());
         }
-        let frames = usize::try_from((total_samples - start_sample).min(chunk_frames as u64))
+        let frames = usize::try_from((end_sample - start_sample).min(chunk_frames as u64))
             .unwrap_or(chunk_frames);
         let mixed = mixer
             .mix_range(start_sample, frames)

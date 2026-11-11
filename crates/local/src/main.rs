@@ -6,7 +6,6 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgGroup, Parser, ValueEnum};
-use image::{ImageEncoder, codecs::png::PngEncoder};
 use lumen_engine::{
     composition::Composition,
     diagnostic::{Diagnostic, Severity},
@@ -18,13 +17,14 @@ use lumen_ffmpeg::{
     VideoEncoderChoice, parse_bitrate,
 };
 use lumen_server::render::{
-    CancelToken, FONT_DIR_ENV, GpuSettings, HARDWARE_DECODE_ENV, LocalMediaStore, Mp4Render,
-    RenderConfig, RenderReport, create_gpu_renderer, existing_font_dir, is_enabled_flag,
-    resolve_encoder,
+    CancelToken, FONT_DIR_ENV, FrameRange, GpuSettings, HARDWARE_DECODE_ENV, ImageRender,
+    LocalMediaStore, Mp4Render, OutputFormat, RenderConfig, RenderOutput, RenderProgress,
+    RenderReport, existing_font_dir, frame_number_width, is_enabled_flag, resolve_encoder,
 };
 use tracing_subscriber::EnvFilter;
 
-/// Renders a Lumen composition to an .mp4 video, or one frame to a .png image.
+/// Renders a Lumen composition to an .mp4 video, one frame to a .png or .jpg image, or a range of
+/// frames to numbered images.
 #[derive(Debug, Parser)]
 #[command(
     name = "lumen-local",
@@ -50,6 +50,14 @@ and can't be combined with --quality. --preset alone, with no rate control, targ
 doesn't support it (--crf: libx264, libx265, libsvtav1, NVENC; --qp: those and Vulkan; --preset: \
 libx264 and libx265 ultrafast..placebo, NVENC p1..p7, libsvtav1 0..13), which moves on to the next.
 
+--output picks what is written. .mp4 is a video of the frames, with the audio cut to the same span. \
+.png and .jpg (or .jpeg) are one image, frame 0 unless --frame says another; a PNG keeps \
+transparency and a JPEG is opaque. A file name with %d or %0Nd, such as frames/shot_%d.png, writes \
+one image per frame instead, numbered with the composition's frame numbers and padded to at least \
+four digits (%d) or N digits (%0Nd), wider if the last frame needs it. --frames START..END renders \
+those frames of the composition, END not included; either side can be left out, and an mp4 or \
+sequence starts at time 0.
+
 --check reads the composition without rendering it and prints what is wrong with it, with fonts \
 resolved as a render would resolve them. It exits 1 when there are errors; warnings alone exit 0.
 
@@ -64,8 +72,13 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     composition: PathBuf,
 
-    /// Where to write the render: .mp4 renders every frame, .png renders one
-    #[arg(long, value_name = "PATH.[png|mp4]", required_unless_present = "check")]
+    /// Where to write the render: .mp4 is a video, .png or .jpg one image, and a name with %d
+    /// (frame_%04d.png) an image per frame
+    #[arg(
+        long,
+        value_name = "PATH.[mp4|png|jpg]",
+        required_unless_present = "check"
+    )]
     output: Option<PathBuf>,
 
     /// Check the composition without rendering it, exiting 1 if it has errors
@@ -116,9 +129,22 @@ struct Cli {
     #[arg(long, value_name = "NAME")]
     preset: Option<String>,
 
-    /// Frame to render [default: 0]. .png only
-    #[arg(long, value_name = "N")]
+    /// Frame to render [default: 0]. One image only
+    #[arg(long, value_name = "N", conflicts_with = "frames")]
     frame: Option<u32>,
+
+    /// Frames to render as START..END, END not included, either side optional [default: all].
+    /// A video or sequence starts at time 0
+    #[arg(long, value_name = "START..END", value_parser = parse_frames)]
+    frames: Option<FrameRange>,
+
+    /// JPEG quality from 1 to 100 [default: 90]. .jpg only
+    #[arg(
+        long,
+        value_name = "N",
+        value_parser = clap::value_parser!(u8).range(1..=100)
+    )]
+    jpeg_quality: Option<u8>,
 
     /// Most glyph, stroke and decoration instances one text node may draw. A text over it fails
     /// the render
@@ -132,9 +158,81 @@ struct Cli {
     max_text_glyphs: u32,
 }
 
-enum OutputKind {
-    Png,
-    Mp4,
+/// What to write, and where each frame goes.
+struct OutputPlan {
+    output: RenderOutput,
+    files: Files,
+}
+
+enum Files {
+    /// The output path, written whole.
+    One,
+    /// A name per frame.
+    Sequence(SequencePattern),
+}
+
+/// A file name with one `%d` or `%0Nd` that a sequence replaces with each frame's number.
+#[derive(Debug, PartialEq, Eq)]
+struct SequencePattern {
+    before: String,
+    /// The `N` of `%0Nd`. Without one, the numbers are as wide as [`frame_number_width`] says.
+    width: Option<usize>,
+    after: String,
+}
+
+impl SequencePattern {
+    /// The pattern in `file_name`, or `None` for a name without a `%`.
+    fn parse(file_name: &str) -> Result<Option<Self>> {
+        let Some(at) = file_name.find('%') else {
+            return Ok(None);
+        };
+        let (before, rest) = (&file_name[..at], &file_name[at + 1..]);
+        let spec_len = rest.find('d').unwrap_or(rest.len());
+        let (spec, after) = (
+            &rest[..spec_len],
+            rest.get(spec_len + 1..).unwrap_or_default(),
+        );
+        let width = match spec {
+            "" => None,
+            digits
+                if digits.starts_with('0') && digits.bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                Some(digits.parse::<usize>().unwrap_or(0))
+            }
+            _ => bail!(
+                "unsupported frame number pattern in `{file_name}`; use %d or %0Nd, such as %05d"
+            ),
+        };
+        if !rest.contains('d') || after.contains('%') {
+            bail!("a sequence file name has one %d or %0Nd pattern (got `{file_name}`)");
+        }
+        Ok(Some(Self {
+            before: before.to_string(),
+            width,
+            after: after.to_string(),
+        }))
+    }
+
+    fn file_name(&self, frame: u32, last_frame: u32) -> String {
+        let width = match self.width {
+            Some(width) => width.max(last_frame.to_string().len()),
+            None => frame_number_width(last_frame),
+        };
+        format!("{}{frame:0width$}{}", self.before, self.after)
+    }
+}
+
+fn parse_frames(raw: &str) -> Result<FrameRange, String> {
+    let invalid = || format!("expected START..END, such as 30..60, 30.. or ..60, got `{raw}`");
+    let (start, end) = raw.split_once("..").ok_or_else(invalid)?;
+    let frame = |text: &str| match text {
+        "" => Ok(None),
+        text => text.parse::<u32>().map(Some).map_err(|_| invalid()),
+    };
+    Ok(FrameRange {
+        start: frame(start)?,
+        end: frame(end)?,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -194,39 +292,68 @@ impl Cli {
         resolve_encoder(&config, composition, request).map_err(|error| anyhow!(error))
     }
 
-    /// The kind of output asked for, after checking that no flag only the other kind supports was
-    /// given. `LUMEN_VIDEO_ENCODER` is a default, so only `--encoder` conflicts with .png.
-    fn output_kind(&self) -> Result<OutputKind> {
+    /// What the command line asks to write, after checking that no flag only another kind of
+    /// output supports was given. `LUMEN_VIDEO_ENCODER` is a default, so only `--encoder`
+    /// conflicts with an image.
+    fn plan(&self) -> Result<OutputPlan> {
         let output = self.output();
         let extension = output
             .extension()
             .and_then(|value| value.to_str())
             .map(|value| value.to_ascii_lowercase())
             .unwrap_or_default();
-        match extension.as_str() {
-            "png" => {
-                if self.encoder.is_some()
-                    || self.quality.is_some()
-                    || self.codec.is_some()
-                    || self.quality().is_some()
-                {
-                    bail!(
-                        "--encoder, --quality, --codec, --bitrate, --crf, --qp and --preset are only supported when output is .mp4"
-                    );
-                }
-                Ok(OutputKind::Png)
-            }
-            "mp4" => {
-                if self.frame.is_some() {
-                    bail!("--frame is only supported when output is .png");
-                }
-                Ok(OutputKind::Mp4)
-            }
+        let file_name = output
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let pattern = SequencePattern::parse(file_name)?;
+        let format = match (extension.as_str(), pattern.is_some()) {
+            ("mp4", false) => OutputFormat::Mp4,
+            ("mp4", true) => bail!("a %d pattern writes images, so use .png or .jpg, not .mp4"),
+            ("png", false) => OutputFormat::Png,
+            ("png", true) => OutputFormat::PngSequence,
+            ("jpg" | "jpeg", false) => OutputFormat::Jpeg,
+            ("jpg" | "jpeg", true) => OutputFormat::JpegSequence,
             _ => bail!(
-                "unsupported output extension; use .png or .mp4 (got `{}`)",
+                "unsupported output extension; use .mp4, .png, .jpg or .jpeg (got `{}`)",
                 output.display()
             ),
+        };
+        if !format.is_video()
+            && (self.encoder.is_some()
+                || self.quality.is_some()
+                || self.codec.is_some()
+                || self.quality().is_some())
+        {
+            bail!(
+                "--encoder, --quality, --codec, --bitrate, --crf, --qp and --preset are only supported when output is .mp4"
+            );
         }
+        if format.is_video() && self.frame.is_some() {
+            bail!("--frame is only supported when output is an image; use --frames for a video");
+        }
+        if format.is_sequence() && self.frame.is_some() {
+            bail!("--frame renders one image; use --frames START..END for a sequence");
+        }
+        if self.jpeg_quality.is_some() && !format.is_jpeg() {
+            bail!("--jpeg-quality is only supported when output is .jpg");
+        }
+        let frames = match (self.frames, self.frame) {
+            (Some(frames), _) => frames,
+            (None, Some(frame)) => FrameRange {
+                start: Some(frame),
+                end: None,
+            },
+            (None, None) => FrameRange::default(),
+        };
+        Ok(OutputPlan {
+            output: RenderOutput {
+                format,
+                frames,
+                jpeg_quality: self.jpeg_quality,
+            },
+            files: pattern.map_or(Files::One, Files::Sequence),
+        })
     }
 }
 
@@ -315,33 +442,32 @@ fn print_warnings(diagnostics: &[Diagnostic]) {
 }
 
 fn run(cli: &Cli) -> Result<()> {
-    let kind = cli.output_kind()?;
+    let plan = cli.plan()?;
     let composition = load_composition(&cli.composition)?;
     let media_root = media_root(cli.media_root.as_deref())?;
-    let mut media_store =
+    let media_store =
         LocalMediaStore::new(media_root, &cli.render_config()).explaining_missing_sources();
 
-    match kind {
-        OutputKind::Png => render_single_png(
-            &composition,
-            &mut media_store,
-            cli.output(),
-            cli.frame,
-            cli.max_text_glyphs,
-        ),
-        OutputKind::Mp4 => {
-            let choice = cli.encoder_choice(&composition)?;
-            render_to_partial(cli.output(), |partial| {
-                render_mp4(
-                    &composition,
-                    media_store,
-                    partial,
-                    choice,
-                    cli.max_text_glyphs,
-                )
-            })
-        }
+    if plan.output.format.is_video() {
+        let choice = cli.encoder_choice(&composition)?;
+        return render_to_partial(cli.output(), |partial| {
+            render_mp4(
+                &composition,
+                media_store,
+                partial,
+                choice,
+                &plan.output,
+                cli.max_text_glyphs,
+            )
+        });
     }
+    render_images(
+        &composition,
+        media_store,
+        cli.output(),
+        &plan,
+        cli.max_text_glyphs,
+    )
 }
 
 /// Renders to a new file beside `output` and moves it into place only on success, so a failed render
@@ -414,41 +540,64 @@ fn load_composition(path: &Path) -> Result<Composition> {
         .with_context(|| format!("failed to parse composition {}", path.display()))
 }
 
-fn render_single_png(
+/// Writes each frame of the render as a file: the output path for a still, and for a sequence the
+/// output's name with the frame's number in the pattern.
+fn render_images(
     composition: &Composition,
-    media_store: &mut LocalMediaStore,
+    media_store: LocalMediaStore,
     output: &Path,
-    frame_override: Option<u32>,
+    plan: &OutputPlan,
     max_text_glyphs: u32,
 ) -> Result<()> {
-    let frame = frame_override.unwrap_or(0);
-    if frame >= composition.timeline().duration_frames {
-        return Err(anyhow!(
-            "requested frame {frame} is out of range for duration {}",
-            composition.timeline().duration_frames
-        ));
+    let mut render = ImageRender::open(composition, media_store, &plan.output, CancelToken::new())?;
+    render.set_max_text_glyphs(max_text_glyphs as usize);
+    let last_frame = render.frames().end - 1;
+    let directory = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    if let Some(directory) = directory {
+        fs::create_dir_all(directory)
+            .with_context(|| format!("failed to create output dir {}", directory.display()))?;
     }
-
-    let mut renderer = create_gpu_renderer(media_store).context("failed to create GPU renderer")?;
-    renderer.set_max_text_glyphs(max_text_glyphs as usize);
-    renderer
-        .compile(composition)
-        .context("failed to compile composition")?;
-    let rendered = renderer
-        .render_frame(composition, frame, &*media_store)
-        .with_context(|| format!("render failed at frame {frame}"))?;
-    print_warnings(&renderer.take_diagnostics());
-    let size = rendered.domain.storage_size;
-    let mut pixels = renderer
-        .gpu_renderer()
-        .read_texture_rgba8(&rendered.texture, size)
-        .with_context(|| format!("failed reading rendered pixels for frame {frame}"))?;
-    unpremultiply_rgba8(&mut pixels);
-
-    write_png(output, size.width, size.height, pixels.as_slice())?;
-
-    println!("render complete output={} frame={frame}", output.display());
+    let report = render.run(
+        &mut |image| {
+            let path = match &plan.files {
+                Files::One => output.to_path_buf(),
+                Files::Sequence(pattern) => {
+                    output.with_file_name(pattern.file_name(image.frame, last_frame))
+                }
+            };
+            fs::write(&path, &image.bytes)
+                .with_context(|| format!("failed to write {}", path.display()))
+        },
+        &mut print_progress,
+    )?;
+    print_warnings(&report.diagnostics);
+    match plan.files {
+        Files::One => println!(
+            "render complete output={} frame={}",
+            output.display(),
+            last_frame
+        ),
+        Files::Sequence(_) => println!(
+            "render complete output={} frames={}",
+            output.display(),
+            report.frames
+        ),
+    }
     Ok(())
+}
+
+fn print_progress(progress: RenderProgress) {
+    if progress.frame == 1
+        || progress.frame == progress.total_frames
+        || (progress.frame - 1).is_multiple_of(60)
+    {
+        println!(
+            "progress frame={}/{}",
+            progress.frame, progress.total_frames
+        );
+    }
 }
 
 fn render_mp4(
@@ -456,26 +605,24 @@ fn render_mp4(
     media_store: LocalMediaStore,
     output: &Path,
     choice: VideoEncoderChoice,
+    render_output: &RenderOutput,
     max_text_glyphs: u32,
 ) -> Result<()> {
-    let mut render = Mp4Render::open(composition, media_store, choice, output, CancelToken::new())?;
+    let mut render = Mp4Render::open(
+        composition,
+        media_store,
+        choice,
+        output,
+        render_output,
+        CancelToken::new(),
+    )?;
     render.set_max_text_glyphs(max_text_glyphs as usize);
     println!(
         "video_encoder name={} path={}",
         render.encoder(),
         render.path()
     );
-    let report = render.run(&mut |progress| {
-        if progress.frame == 1
-            || progress.frame == progress.total_frames
-            || (progress.frame - 1).is_multiple_of(60)
-        {
-            println!(
-                "progress frame={}/{}",
-                progress.frame, progress.total_frames
-            );
-        }
-    })?;
+    let report = render.run(&mut print_progress)?;
     print_warnings(&report.diagnostics);
     println!("{}", render_summary(&report));
     Ok(())
@@ -505,35 +652,6 @@ fn render_summary(report: &RenderReport) -> String {
     )
 }
 
-/// PNG holds straight alpha, so colour is divided back out of premultiplied pixels. Fully
-/// transparent pixels stay zero.
-fn unpremultiply_rgba8(pixels: &mut [u8]) {
-    for pixel in pixels.as_chunks_mut::<4>().0 {
-        let alpha = u32::from(pixel[3]);
-        if alpha == 0 || alpha == 255 {
-            continue;
-        }
-        for channel in &mut pixel[..3] {
-            *channel = ((u32::from(*channel) * 255 + alpha / 2) / alpha).min(255) as u8;
-        }
-    }
-}
-
-fn write_png(output: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
-    if let Some(parent) = output.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create output dir {}", parent.display()))?;
-    }
-
-    let mut png = Vec::new();
-    let encoder = PngEncoder::new(&mut png);
-    encoder
-        .write_image(rgba, width, height, image::ExtendedColorType::Rgba8)
-        .with_context(|| format!("failed to encode PNG {}", output.display()))?;
-
-    fs::write(output, png).with_context(|| format!("failed to write PNG {}", output.display()))
-}
-
 fn media_root(override_root: Option<&Path>) -> Result<PathBuf> {
     let root = match override_root {
         Some(path) => path.to_path_buf(),
@@ -553,7 +671,9 @@ mod tests {
 
     use lumen_ffmpeg::RateControl;
 
-    use super::{Cli, EncoderQuality, render_to_partial};
+    use lumen_server::render::{FrameRange, OutputFormat, RenderOutput};
+
+    use super::{Cli, EncoderQuality, SequencePattern, parse_frames, render_to_partial};
 
     #[test]
     fn failed_renders_leave_no_partial_file_and_keep_earlier_output() {
@@ -698,17 +818,6 @@ mod tests {
         assert_eq!(fs::read(&target).expect("target"), b"new");
     }
 
-    #[test]
-    fn unpremultiply_restores_straight_colour() {
-        let mut pixels = [
-            64, 32, 0, 128, // half-covered colour
-            0, 0, 0, 0, // transparent stays zero
-            10, 20, 30, 255, // opaque is unchanged
-        ];
-        super::unpremultiply_rgba8(&mut pixels);
-        assert_eq!(pixels, [128, 64, 0, 128, 0, 0, 0, 0, 10, 20, 30, 255]);
-    }
-
     fn parse(flags: &[&str]) -> Result<Cli, clap::Error> {
         let base = ["lumen-local", "--composition", "in.json"];
         Cli::try_parse_from(base.into_iter().chain(flags.iter().copied()))
@@ -789,17 +898,14 @@ mod tests {
     }
 
     #[test]
-    fn output_kind_rejects_flags_the_output_cannot_use() {
-        let kind = |flags: &[&str]| parse(flags).unwrap().output_kind();
-        assert!(kind(&["--output", "o.mp4", "--crf", "23"]).is_ok());
-        assert!(kind(&["--output", "o.png", "--frame", "3"]).is_ok());
+    fn plan_rejects_flags_the_output_cannot_use() {
+        let plan = |flags: &[&str]| parse(flags).unwrap().plan();
+        let message = |flags: &[&str]| plan(flags).err().unwrap().to_string();
+        assert!(plan(&["--output", "o.mp4", "--crf", "23"]).is_ok());
+        assert!(plan(&["--output", "o.png", "--frame", "3"]).is_ok());
 
-        let error = kind(&["--output", "o.png", "--encoder", "libx264"])
-            .err()
-            .unwrap();
         assert!(
-            error
-                .to_string()
+            message(&["--output", "o.png", "--encoder", "libx264"])
                 .contains("only supported when output is .mp4")
         );
         for quality in [
@@ -809,24 +915,115 @@ mod tests {
             ["--quality", "high"],
             ["--codec", "hevc"],
         ] {
-            let error = kind(&["--output", "o.png", quality[0], quality[1]])
-                .err()
-                .unwrap();
-            assert!(
-                error
-                    .to_string()
-                    .contains("only supported when output is .mp4"),
-                "{quality:?}"
-            );
+            for output in ["o.png", "o.jpg", "o_%d.png"] {
+                assert!(
+                    message(&["--output", output, quality[0], quality[1]])
+                        .contains("only supported when output is .mp4"),
+                    "{output} {quality:?}"
+                );
+            }
         }
-        let error = kind(&["--output", "o.mp4", "--frame", "3"]).err().unwrap();
         assert!(
-            error
-                .to_string()
-                .contains("only supported when output is .png")
+            message(&["--output", "o.mp4", "--frame", "3"])
+                .contains("--frame is only supported when output is an image")
         );
-        let error = kind(&["--output", "o.gif"]).err().unwrap();
-        assert!(error.to_string().contains("unsupported output extension"));
+        assert!(message(&["--output", "o_%d.png", "--frame", "3"]).contains("use --frames"));
+        assert!(
+            message(&["--output", "o.png", "--jpeg-quality", "80"])
+                .contains("only supported when output is .jpg")
+        );
+        assert!(message(&["--output", "o.gif"]).contains("unsupported output extension"));
+        assert!(message(&["--output", "o_%d.mp4"]).contains("use .png or .jpg"));
+        assert_eq!(
+            parse(&["--output", "o.png", "--frame", "3", "--frames", "1..2"])
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::ArgumentConflict
+        );
+        assert!(parse(&["--output", "o.jpg", "--jpeg-quality", "0"]).is_err());
+        assert!(parse(&["--output", "o.jpg", "--jpeg-quality", "101"]).is_err());
+    }
+
+    #[test]
+    fn the_output_names_the_format_and_the_frames() {
+        let output = |flags: &[&str]| parse(flags).unwrap().plan().unwrap().output;
+        let still = output(&["--output", "o.png"]);
+        assert_eq!(still, RenderOutput::of(OutputFormat::Png));
+        assert_eq!(still.resolve(10).unwrap(), 0..1);
+        assert_eq!(
+            output(&["--output", "o.PNG", "--frame", "3"])
+                .resolve(10)
+                .unwrap(),
+            3..4
+        );
+        let jpeg = output(&["--output", "o.jpeg", "--jpeg-quality", "70"]);
+        assert_eq!(
+            (jpeg.format, jpeg.jpeg_quality),
+            (OutputFormat::Jpeg, Some(70))
+        );
+        assert_eq!(
+            output(&["--output", "frames/f_%d.jpg", "--frames", "2.."]).format,
+            OutputFormat::JpegSequence
+        );
+        let video = output(&["--output", "o.mp4", "--frames", "..4"]);
+        assert_eq!(video.format, OutputFormat::Mp4);
+        assert_eq!(video.resolve(10).unwrap(), 0..4);
+        assert_eq!(output(&["--output", "o.mp4"]).resolve(10).unwrap(), 0..10);
+    }
+
+    #[test]
+    fn frame_ranges_parse_with_either_side_open() {
+        let range = |raw: &str| parse_frames(raw);
+        assert_eq!(
+            range("30..60"),
+            Ok(FrameRange {
+                start: Some(30),
+                end: Some(60)
+            })
+        );
+        assert_eq!(
+            range("30.."),
+            Ok(FrameRange {
+                start: Some(30),
+                end: None
+            })
+        );
+        assert_eq!(
+            range("..60"),
+            Ok(FrameRange {
+                start: None,
+                end: Some(60)
+            })
+        );
+        assert_eq!(range(".."), Ok(FrameRange::default()));
+        for invalid in ["30", "a..b", "-1..4", "1...4", "1..2..3", ""] {
+            assert!(range(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn sequence_patterns_number_frames_and_pad_to_the_range() {
+        let name = |pattern: &str, frame: u32, last: u32| {
+            SequencePattern::parse(pattern)
+                .unwrap()
+                .unwrap()
+                .file_name(frame, last)
+        };
+        assert_eq!(name("shot_%d.png", 7, 59), "shot_0007.png");
+        assert_eq!(name("shot_%d.png", 7, 12_000), "shot_00007.png");
+        assert_eq!(name("%06d.jpg", 30, 59), "000030.jpg");
+        assert_eq!(name("%02d.jpg", 30, 100_000), "000030.jpg");
+        assert_eq!(name("a_%d_b.png", 3, 5), "a_0003_b.png");
+        assert_eq!(SequencePattern::parse("still.png").unwrap(), None);
+        for invalid in [
+            "a_%s.png",
+            "a_%.png",
+            "a_%5d.png",
+            "a_%d_%d.png",
+            "a_%d%%.png",
+        ] {
+            assert!(SequencePattern::parse(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]

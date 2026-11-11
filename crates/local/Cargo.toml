@@ -16,7 +16,6 @@ metal = ["lumen-server/metal"]
 [dependencies]
 anyhow = "1.0.101"
 clap = { version = "4.6.1", features = ["derive", "env"] }
-image = { version = "0.25.9", default-features = false, features = ["png"] }
 tempfile = "3.23.0"
 lumen-engine = { workspace = true, features = [
   "3d",

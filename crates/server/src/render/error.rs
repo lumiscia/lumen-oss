@@ -30,6 +30,13 @@ pub enum ErrorCode {
     /// `invalid_config`: the [`RenderConfig`](super::RenderConfig) or options name something that
     /// isn't there, such as a media root or font directory.
     InvalidConfig,
+    /// `invalid_output`: the [`RenderOutput`](super::RenderOutput) can't be rendered: an empty
+    /// frame range, one past the end of the timeline, a still of several frames, or a JPEG quality
+    /// that isn't 1 to 100 or goes with another format.
+    InvalidOutput,
+    /// `output_too_large`: an image sequence has more frames, or adds up to more bytes, than its
+    /// [`SequenceLimits`](super::SequenceLimits) allow.
+    OutputTooLarge,
     /// `render_failed`: the GPU work around the engine failed, such as reading a frame back.
     RenderFailed,
     /// `encode_failed`: the encoder failed to open, encode or finish.
@@ -49,6 +56,8 @@ impl ErrorCode {
             Self::InvalidQuality => "invalid_quality",
             Self::InvalidRenderProfile => "invalid_render_profile",
             Self::InvalidConfig => "invalid_config",
+            Self::InvalidOutput => "invalid_output",
+            Self::OutputTooLarge => "output_too_large",
             Self::RenderFailed => "render_failed",
             Self::EncodeFailed => "encode_failed",
             Self::OutputIo => "output_io",
@@ -144,6 +153,8 @@ mod tests {
             (ErrorCode::InvalidQuality, "invalid_quality"),
             (ErrorCode::InvalidRenderProfile, "invalid_render_profile"),
             (ErrorCode::InvalidConfig, "invalid_config"),
+            (ErrorCode::InvalidOutput, "invalid_output"),
+            (ErrorCode::OutputTooLarge, "output_too_large"),
             (ErrorCode::RenderFailed, "render_failed"),
             (ErrorCode::EncodeFailed, "encode_failed"),
             (ErrorCode::OutputIo, "output_io"),

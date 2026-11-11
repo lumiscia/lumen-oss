@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use lumen_ffmpeg::QualityConfig;
-use lumen_server::render::RenderConfig;
+use lumen_server::render::{RenderConfig, SequenceLimits};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::server::{
@@ -25,6 +25,7 @@ pub(super) struct AppState {
     pub progress_min_delta: f32,
     pub max_text_glyphs: usize,
     pub quality: Arc<QualityConfig>,
+    pub sequence_limits: SequenceLimits,
     pub render_config: RenderConfig,
     pub render_slots: Arc<Semaphore>,
     queued_renders: Arc<AtomicUsize>,
@@ -61,6 +62,10 @@ impl AppState {
             progress_min_delta: args.progress_min_delta,
             max_text_glyphs: args.max_text_glyphs as usize,
             quality: Arc::new(quality),
+            sequence_limits: SequenceLimits {
+                max_frames: args.max_sequence_frames,
+                max_bytes: args.max_sequence_bytes,
+            },
             render_config,
             render_slots: Arc::new(Semaphore::new(args.max_concurrent_renders.get())),
             queued_renders: Arc::new(AtomicUsize::new(0)),

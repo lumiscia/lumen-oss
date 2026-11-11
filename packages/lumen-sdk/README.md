@@ -43,6 +43,20 @@ const composition = new Composition({ renderSettings: { codec: "hevc", quality: 
 await lumen.render(composition, { quality: "lossless", codec: "h264" });
 ```
 
+`output` picks what is rendered: an `mp4` (the default), a `png` or `jpeg` still, or a `png_sequence` or `jpeg_sequence`. `frames` is `start..end` of the timeline with `end` not included, like the player's `range: { in, out }`; an MP4 or sequence starts at time 0 and an MP4's audio is cut to the same span. A still is the frame at `start` (0 by default). A PNG keeps transparency, a JPEG is opaque and takes `jpegQuality` from 1 to 100 (default 90), and a sequence downloads as one ZIP of `frame_0000.png`-style files named with the timeline's frame numbers. `quality` and `codec` apply to `mp4` only. The downloaded response carries the right `Content-Type` and filename, and `outputFile(output)` gives the same content type and extension up front:
+
+```ts
+const clip = await lumen.render(composition, { output: { frames: { start: 30, end: 90 } } });
+const poster = await lumen.render(composition, { output: { format: "png", frames: { start: 45 } } });
+const frames = await lumen.render(composition, {
+  output: { format: "jpeg_sequence", frames: { end: 24 }, jpegQuality: 85 },
+});
+// import { outputFile } from "@lumiscia/lumen-sdk"
+const { contentType, extension } = outputFile({ format: "jpeg_sequence" }); // "application/zip", "zip"
+```
+
+A range that is empty or past the timeline, or a sequence past the host's limits, is rejected with `invalid_output` or `output_too_large`.
+
 A render on `lumen-server` can be stopped with `cancelRender`, which returns the render: `cancelled` if it was still queued, otherwise still `processing` until it stops at its next frame. `waitForRender` and `download` then throw a `LumenError` with the code `render_cancelled`, which is not retryable. A render whose output is already complete may still end `succeeded`. `cancelRender` is for `lumen-server`.
 
 ```ts

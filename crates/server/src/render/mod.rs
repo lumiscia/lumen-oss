@@ -1,10 +1,13 @@
+mod archive;
 mod device_budget;
 mod encode_target;
 mod encoder;
 mod error;
 mod fonts;
 mod gpu;
+mod image_render;
 mod media;
+mod output;
 mod readback;
 
 use std::{
@@ -23,9 +26,16 @@ use lumen_ffmpeg::{EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoic
 
 pub use error::{ErrorCode, ServerRenderError};
 pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir};
-pub use gpu::{Mp4Render, RenderReport, RenderTiming, create_gpu_renderer, render_project_mp4};
+pub use gpu::{
+    Mp4Render, RenderReport, RenderTiming, RenderedOutput, create_gpu_renderer, render_project,
+};
+pub use image_render::{EncodedImage, ImageRender};
 pub use lumen_gpu::GpuSettings;
 pub use media::{HARDWARE_DECODE_ENV, LocalMediaStore, is_enabled_flag};
+pub use output::{
+    DEFAULT_JPEG_QUALITY, FrameRange, MAX_ARCHIVE_FRAMES, OutputFormat, RenderOutput,
+    SequenceLimits, frame_number_width,
+};
 
 /// What renders take from their host. The library reads no environment variables: a binary reads
 /// [`FONT_DIR_ENV`], [`HARDWARE_DECODE_ENV`] and [`GpuSettings::from_env`], or its flags, and builds
@@ -92,14 +102,18 @@ pub struct RenderOptions {
     pub config: RenderConfig,
     /// The directory media sources must stay inside. Without one, the current directory.
     pub media_root: Option<PathBuf>,
-    /// The encoders to try. `None` resolves the composition's settings against the built-in
-    /// presets.
+    /// The encoders to try, for an MP4 output only. `None` resolves the composition's settings
+    /// against the built-in presets.
     pub encoder: Option<VideoEncoderChoice>,
     /// Where `asset:` sources resolve. Without one, they don't.
     pub assets: Option<Arc<dyn AssetResolver>>,
     /// The most glyph, stroke and decoration instances one text node may draw. `None` keeps
     /// [`lumen_engine::gpu::DEFAULT_MAX_TEXT_GLYPHS`].
     pub max_text_glyphs: Option<usize>,
+    /// What to render: the format and the frames. The default is an MP4 of the whole timeline.
+    pub output: RenderOutput,
+    /// What an image sequence may add up to, which [`render_project`] enforces.
+    pub sequence_limits: SequenceLimits,
     /// Cancels the render when [`CancelToken::cancel`] is called on a clone of it.
     pub cancel: CancelToken,
 }
@@ -148,6 +162,9 @@ pub fn parse_composition(payload: &serde_json::Value) -> Result<Composition, Ser
         .caused_by(err)
     })
 }
+
+#[cfg(test)]
+mod output_tests;
 
 #[cfg(test)]
 mod tests {

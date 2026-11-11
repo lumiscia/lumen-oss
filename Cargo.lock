@@ -1709,7 +1709,6 @@ version = "0.5.1"
 dependencies = [
  "anyhow",
  "clap",
- "image",
  "lumen-engine",
  "lumen-engine-ffmpeg",
  "lumen-server",
@@ -1725,8 +1724,10 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "crc32fast",
  "fontdb",
  "futures-util",
+ "image",
  "libc",
  "lumen-engine",
  "lumen-engine-3d",

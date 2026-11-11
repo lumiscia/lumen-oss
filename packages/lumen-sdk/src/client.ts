@@ -1,6 +1,7 @@
 import { Composition, type LumenComposition } from "@lumiscia/lumen-shared";
 
 import { LumenError, errorFromResponse, isRecord, readBody } from "./errors.js";
+import { outputBody } from "./output.js";
 import { parseMedia, parsePart, parseUploadId, parseUploadTarget } from "./media.js";
 import { isTerminal, parseProgress, parseRender, renderError, resolveUrl } from "./render.js";
 import { watchRender, type SocketUpdate } from "./socket.js";
@@ -77,6 +78,7 @@ export class Lumen {
         ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
         ...(options.quality !== undefined ? { quality: options.quality } : {}),
         ...(options.codec !== undefined ? { codec: options.codec } : {}),
+        ...(options.output !== undefined ? { output: outputBody(options.output) } : {}),
       },
       idempotencyKey: options.idempotencyKey,
       signal: options.signal,
@@ -183,7 +185,9 @@ export class Lumen {
   }
 
   /**
-   * Fetches a succeeded render's output. The API key is only sent when the output is on the API's
+   * Fetches a succeeded render's output: the response's `Content-Type` and `Content-Disposition`
+   * filename say what it is (`outputFile` gives the same for the `output` a render was requested
+   * with). The API key is only sent when the output is on the API's
    * own origin. Rejects with a `LumenError` when the render has no output.
    */
   async download(

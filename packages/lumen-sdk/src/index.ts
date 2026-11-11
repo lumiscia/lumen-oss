@@ -2,6 +2,8 @@ export * from "@lumiscia/lumen-shared";
 export { Lumen, mediaReference } from "./client.js";
 export { LumenError } from "./errors.js";
 export type { LumenErrorFields } from "./errors.js";
+export { outputFile } from "./output.js";
+export type { FrameRange, OutputFormat, RenderOutput } from "./output.js";
 export { LumenWebhookError, verifyWebhook } from "./webhooks.js";
 export type {
   LumenWebhookErrorCode,
