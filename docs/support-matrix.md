@@ -66,7 +66,7 @@ Software Vulkan through lavapipe is the deterministic CI baseline. It is useful 
 
 ## Encoding
 
-A render asks for a codec (`h264`, `hevc` or `av1`, default `h264`) and a quality preset (`draft`, `standard`, `high` or `lossless`, default `standard`). Each codec tries its encoders in order, and the first that opens wins, with one warning and the reason for each that didn't:
+A render asks for a codec (`h264`, `hevc` or `av1` in `.mp4`, default `h264`; `prores` in `.mov`; `vp9` in `.webm`) and a quality preset (`draft`, `standard`, `high` or `lossless`, default `standard`). Each codec tries its encoders in order, and the first that opens wins, with one warning and the reason for each that didn't:
 
 | Platform | `h264`                              | `hevc`                              | `av1`                          |
 | -------- | ----------------------------------- | ----------------------------------- | ------------------------------ |
@@ -76,9 +76,11 @@ A render asks for a codec (`h264`, `hevc` or `av1`, default `h264`) and a qualit
 
 A render can also ask for 10 bits per sample with `hevc` or `av1` (`bit_depth`, `--bit-depth`); the default is 8. The renderer quantises its float colour straight to 10-bit BT.709 limited range. `libx265` and `libsvtav1` encode `yuv420p10le`, and `hevc_vulkan`, `av1_vulkan` and NVENC take P010 where the device can; an AMD 780M with Mesa 25.2 encoded 10-bit `av1_vulkan`. H.264 and VideoToolbox are always 8-bit, so asking them for 10 bits is an error. An encoder that can't write 10 bits is skipped like one that won't open, never used at 8.
 
-An operator's quality config can change the order and the presets' settings; see the [server README](../crates/server/README.md#quality-config). A preset only tries the encoders it has settings for, so `lossless` uses `libx264`, `libx265` or NVENC. `--encoder` (`lumen-local`) or `LUMEN_VIDEO_ENCODER` pins one encoder, which either opens or fails the render.
+Video with an alpha channel is `prores` in a `.mov` (`prores_ks`, ProRes 4444, `yuva444p10le`) or `vp9` in a `.webm` (`libvpx-vp9`, `yuva420p`, with Opus audio from `libopus`), asked for with `alpha` (`--alpha`). Both are software encoders on every platform: no hardware encoder writes alpha, so asking one for it is an error, as is alpha in an `.mp4` or with `h264`, `hevc` or `av1`. The colour is straight (not premultiplied), as a PNG holds it, and alpha is full range. ProRes and VP9 also encode opaque video in those containers.
 
-Encoder names are FFmpeg's own, such as `libx264` or `hevc_nvenc`, and are checked against your FFmpeg build before rendering starts. `*_vaapi` encoders aren't supported, and `av1_vulkan` needs FFmpeg 8.0 or newer. Falling through covers everything that stops an encoder opening: FFmpeg built without it, no Vulkan driver, a device without `VK_KHR_video_encode_queue` or without the codec, a canvas size the hardware rejects, and settings the encoder doesn't support. A failure after the encoder has opened stays an error. The output container must hold the codec; `.mp4` holds all three.
+An operator's quality config can change the order and the presets' settings; see the [server README](../crates/server/README.md#quality-config). A preset only tries the encoders it has settings for, so `lossless` uses `libx264`, `libx265`, `libvpx-vp9` or NVENC; ProRes has no `lossless` settings. `--encoder` (`lumen-local`) or `LUMEN_VIDEO_ENCODER` pins one encoder, which either opens or fails the render.
+
+Encoder names are FFmpeg's own, such as `libx264` or `hevc_nvenc`, and are checked against your FFmpeg build before rendering starts. `*_vaapi` encoders aren't supported, and `av1_vulkan` needs FFmpeg 8.0 or newer. Falling through covers everything that stops an encoder opening: FFmpeg built without it, no Vulkan driver, a device without `VK_KHR_video_encode_queue` or without the codec, a canvas size the hardware rejects, and settings the encoder doesn't support. A failure after the encoder has opened stays an error. The output container must hold the codec: `.mp4` holds `h264`, `hevc` and `av1`, `.mov` holds `prores` and `.webm` holds `vp9`.
 
 `lumen-local` and `lumen-server` render and encode `h264_vulkan` on one Vulkan device, so frames never leave the GPU. If that device can't open they warn and upload frames to the encoder instead. Each logs the encoder it opened and how frames reach it.
 

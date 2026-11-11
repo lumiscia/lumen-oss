@@ -1,4 +1,5 @@
-//! Conversion of rendered frames to the YUV 4:2:0 an encoder takes, at 8 or 10 bits.
+//! Conversion of rendered frames to the YUV an encoder takes: 4:2:0 at 8 or 10 bits, 10-bit 4:4:4,
+//! and either with an alpha plane.
 
 use std::sync::Arc;
 
@@ -6,7 +7,7 @@ use lumen_gpu::wgpu;
 
 use crate::composition::BitDepth;
 
-/// A YUV 4:2:0 format [`YuvConverter`] writes. Samples above 8 bits are two little-endian bytes.
+/// A YUV format [`YuvConverter`] writes. Samples above 8 bits are two little-endian bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum YuvFormat {
     /// 8-bit luma, then interleaved Cb, Cr pairs.
@@ -17,6 +18,12 @@ pub enum YuvFormat {
     Yuv420p,
     /// [`Self::Yuv420p`] at 10 bits, each value in the low bits of its two bytes.
     Yuv420p10,
+    /// [`Self::Yuv420p`], then a full-size alpha plane.
+    Yuva420p,
+    /// 10-bit luma, then full-size Cb and Cr planes, each value in the low bits of its two bytes.
+    Yuv444p10,
+    /// [`Self::Yuv444p10`], then a full-size alpha plane.
+    Yuva444p10,
 }
 
 impl YuvFormat {
@@ -30,13 +37,23 @@ impl YuvFormat {
 
     pub fn depth(self) -> BitDepth {
         match self {
-            Self::Nv12 | Self::Yuv420p => BitDepth::Eight,
-            Self::P010 | Self::Yuv420p10 => BitDepth::Ten,
+            Self::Nv12 | Self::Yuv420p | Self::Yuva420p => BitDepth::Eight,
+            Self::P010 | Self::Yuv420p10 | Self::Yuv444p10 | Self::Yuva444p10 => BitDepth::Ten,
         }
     }
 
     pub fn is_planar(self) -> bool {
-        matches!(self, Self::Yuv420p | Self::Yuv420p10)
+        !matches!(self, Self::Nv12 | Self::P010)
+    }
+
+    /// Whether chroma is full size, 4:4:4, rather than 4:2:0.
+    pub fn is_full_chroma(self) -> bool {
+        matches!(self, Self::Yuv444p10 | Self::Yuva444p10)
+    }
+
+    /// Whether an alpha plane follows the chroma. Its colour is then straight, not over black.
+    pub fn has_alpha(self) -> bool {
+        matches!(self, Self::Yuva420p | Self::Yuva444p10)
     }
 
     pub fn bytes_per_sample(self) -> u32 {
@@ -55,9 +72,11 @@ impl YuvFormat {
 }
 
 /// Where a frame's planes sit in a [`YuvConverter`]'s buffer: `height` luma rows
-/// [`pitch`](Self::pitch) bytes apart, then `height.div_ceil(2)` chroma rows. Interleaved chroma
-/// rows are `pitch` apart; planar ones are `pitch / 2` apart, the Cb plane and then the Cr plane.
-/// The two-plane layouts match `lumen_ffmpeg::VulkanFrameLayout`'s for even sizes.
+/// [`pitch`](Self::pitch) bytes apart, then the chroma, then for a format with alpha `height`
+/// alpha rows `pitch` apart. Interleaved 4:2:0 chroma is `height.div_ceil(2)` rows `pitch` apart;
+/// planar 4:2:0 chroma is the Cb plane and then the Cr plane, each that many rows `pitch / 2`
+/// apart; 4:4:4 chroma is a Cb and a Cr plane laid out as luma is. The two-plane layouts match
+/// `lumen_ffmpeg::VulkanFrameLayout`'s for even sizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct YuvLayout {
     pub width: u32,
@@ -83,15 +102,47 @@ impl YuvLayout {
         u64::from(self.pitch()) * u64::from(self.height)
     }
 
+    /// Bytes between the rows of one chroma plane.
+    pub fn chroma_pitch(&self) -> u32 {
+        if self.format.is_planar() && !self.format.is_full_chroma() {
+            self.pitch() / 2
+        } else {
+            self.pitch()
+        }
+    }
+
+    pub fn chroma_rows(&self) -> u32 {
+        if self.format.is_full_chroma() {
+            self.height
+        } else {
+            self.height.div_ceil(2)
+        }
+    }
+
+    /// Where the alpha plane starts, which is where the chroma ends.
+    pub fn alpha_offset(&self) -> u64 {
+        let planes = if self.format.is_planar() { 2 } else { 1 };
+        self.chroma_offset()
+            + planes * u64::from(self.chroma_pitch()) * u64::from(self.chroma_rows())
+    }
+
     pub fn size(&self) -> u64 {
-        self.chroma_offset() + u64::from(self.pitch()) * u64::from(self.height.div_ceil(2))
+        let alpha = if self.format.has_alpha() {
+            self.chroma_offset()
+        } else {
+            0
+        };
+        self.alpha_offset() + alpha
     }
 }
 
-/// Converts the working space, linear and premultiplied, to BT.709 limited-range YUV of its
-/// sRGB-encoded colour over black, in a buffer laid out as its [`YuvLayout`] says. Each code is
-/// quantised once, straight from float colour, after chroma averaging, with the ordered dither when
-/// it is on.
+/// Converts the working space, linear and premultiplied, to BT.709 limited-range YUV in a buffer
+/// laid out as its [`YuvLayout`] says. Without alpha the colour is the frame over black; with it,
+/// the colour is straight, unpremultiplied in linear light and black where alpha is 0, and alpha
+/// is stored full range. sRGB-encoded colour is converted to Y'CbCr. 4:2:0 chroma is the average
+/// of each 2x2 block, weighted by alpha when there is any. Each code is quantised once, straight
+/// from float colour, after chroma averaging, with the ordered dither when it is on; alpha is
+/// rounded without dither.
 pub struct YuvConverter {
     pipeline: wgpu::ComputePipeline,
     params: wgpu::Buffer,
@@ -141,7 +192,7 @@ impl YuvConverter {
         });
         let params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("lumen YUV params"),
-            size: 32,
+            size: 48,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -156,6 +207,10 @@ impl YuvConverter {
                 u32::from(dither),
                 layout.format.bits(),
                 u32::from(layout.format.is_planar()),
+                u32::from(layout.format.is_full_chroma()),
+                u32::from(layout.format.has_alpha()),
+                layout.alpha_offset() as u32,
+                0,
                 0,
             ]),
         );
@@ -377,6 +432,172 @@ mod tests {
             samples(&bytes, layout, 0, layout.pitch(), 0, 6),
             [16, 16, 126, 126, 235, 235]
         );
+    }
+
+    /// A working-space texture of linear premultiplied `pixels`, row by row.
+    fn premultiplied(gpu: &lumen_gpu::Renderer, width: u32, pixels: &[[f32; 4]]) -> wgpu::Texture {
+        let height = pixels.len() as u32 / width;
+        let size = lumen_gpu::Size::new(width, height);
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: size.as_extent(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let bytes: Vec<u8> = pixels
+            .iter()
+            .flatten()
+            .map(|&value| half(value))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        gpu.queue.write_texture(
+            texture.as_image_copy(),
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 8),
+                rows_per_image: None,
+            },
+            size.as_extent(),
+        );
+        texture
+    }
+
+    fn encode_srgb(linear: f64) -> f64 {
+        if linear <= 0.0031308 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    /// The straight sRGB-encoded colour of a linear premultiplied pixel, black where its alpha
+    /// rounds to code 0 at `bits`.
+    fn straight(pixel: [f32; 4], bits: u32) -> [f64; 3] {
+        let alpha = f64::from(pixel[3]);
+        if (alpha * f64::from((1 << bits) - 1)).round() == 0.0 {
+            return [0.0; 3];
+        }
+        [0, 1, 2].map(|channel| encode_srgb(f64::from(pixel[channel]) / alpha).clamp(0.0, 1.0))
+    }
+
+    /// BT.709 limited-range Y', Cb, Cr codes of encoded colour at `bits`, rounded.
+    fn ycbcr(color: [f64; 3], bits: u32) -> [u16; 3] {
+        let (kr, kb) = (0.2126, 0.0722);
+        let y = kr * color[0] + (1.0 - kr - kb) * color[1] + kb * color[2];
+        let scale = f64::from(1 << (bits - 8));
+        [
+            16.0 + 219.0 * y,
+            128.0 + 224.0 * (color[2] - y) / (2.0 * (1.0 - kb)),
+            128.0 + 224.0 * (color[0] - y) / (2.0 * (1.0 - kr)),
+        ]
+        .map(|code| (code * scale).round() as u16)
+    }
+
+    fn alpha_code(pixel: [f32; 4], bits: u32) -> u16 {
+        (f64::from(pixel[3]) * f64::from((1 << bits) - 1)).round() as u16
+    }
+
+    const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+    const HALF_WHITE: [f32; 4] = [0.5, 0.5, 0.5, 0.5];
+    const QUARTER_BLUE: [f32; 4] = [0.0, 0.0, 0.25, 0.25];
+    /// Transparent, with colour a premultiplied pixel can't have, which must not show.
+    const CLEAR_GARBAGE: [f32; 4] = [0.7, 0.2, 0.9, 0.0];
+
+    #[test]
+    fn alpha_formats_store_straight_colour_and_full_range_alpha() {
+        let Some(gpu) = gpu() else { return };
+        let pixels = [RED, HALF_WHITE, QUARTER_BLUE, CLEAR_GARBAGE];
+
+        // 10-bit 4:4:4: every pixel keeps its own chroma.
+        let texture = premultiplied(&gpu, 4, &pixels);
+        let (layout, bytes) = convert(&gpu, &texture, YuvFormat::Yuva444p10);
+        let plane = |offset: u64| samples(&bytes, layout, offset, layout.pitch(), 0, 4);
+        let (luma, cb, cr, alpha) = (
+            plane(0),
+            plane(layout.chroma_offset()),
+            plane(layout.chroma_offset() + u64::from(layout.pitch())),
+            plane(layout.alpha_offset()),
+        );
+        for (index, pixel) in pixels.into_iter().enumerate() {
+            let [y, b, r] = ycbcr(straight(pixel, 10), 10);
+            assert_eq!(
+                [luma[index], cb[index], cr[index], alpha[index]],
+                [y, b, r, alpha_code(pixel, 10)],
+                "pixel {index}: {pixel:?}"
+            );
+        }
+        // Spelled out: red, white at half alpha, blue at a quarter, and transparent black.
+        assert_eq!(luma, [250, 940, 127, 64]);
+        assert_eq!(alpha, [1023, 512, 256, 0]);
+        assert_eq!((cb[3], cr[3]), (512, 512));
+
+        // The opaque 4:4:4 format is the same colour over black, with no alpha plane.
+        let (opaque_layout, opaque) = convert(&gpu, &texture, YuvFormat::Yuv444p10);
+        assert_eq!(opaque_layout.size(), opaque_layout.alpha_offset());
+        assert_eq!(
+            samples(&opaque, opaque_layout, 0, layout.pitch(), 0, 1),
+            [luma[0]]
+        );
+    }
+
+    #[test]
+    fn alpha_weights_four_two_zero_chroma_so_clear_texels_do_not_darken_edges() {
+        let Some(gpu) = gpu() else { return };
+        // Two 2x2 blocks: the four kinds of pixel, then red beside three clear ones.
+        let rows = [
+            [RED, HALF_WHITE, RED, CLEAR_GARBAGE],
+            [QUARTER_BLUE, CLEAR_GARBAGE, CLEAR_GARBAGE, CLEAR_GARBAGE],
+        ];
+        let texture = premultiplied(&gpu, 4, rows.as_flattened());
+        let (layout, bytes) = convert(&gpu, &texture, YuvFormat::Yuva420p);
+        let half = layout.chroma_pitch();
+        let chroma_size = u64::from(half) * u64::from(layout.chroma_rows());
+        let cb = samples(&bytes, layout, layout.chroma_offset(), half, 0, 2);
+        let cr = samples(
+            &bytes,
+            layout,
+            layout.chroma_offset() + chroma_size,
+            half,
+            0,
+            2,
+        );
+        for row in 0..2 {
+            let luma = samples(&bytes, layout, 0, layout.pitch(), row, 4);
+            let alpha = samples(
+                &bytes,
+                layout,
+                layout.alpha_offset(),
+                layout.pitch(),
+                row,
+                4,
+            );
+            for (x, pixel) in rows[row as usize].into_iter().enumerate() {
+                assert_eq!(luma[x], ycbcr(straight(pixel, 8), 8)[0], "Y at {x}, {row}");
+                assert_eq!(alpha[x], alpha_code(pixel, 8), "A at {x}, {row}");
+            }
+        }
+        for block in 0..2 {
+            let texels = [0, 1].map(|row| [0, 1].map(|x| rows[row][block * 2 + x]));
+            let texels = texels.as_flattened();
+            // sum(alpha * straight colour) / sum(alpha).
+            let weight: f64 = texels.iter().map(|pixel| f64::from(pixel[3])).sum();
+            let average = [0, 1, 2].map(|channel| {
+                texels
+                    .iter()
+                    .map(|&pixel| f64::from(pixel[3]) * straight(pixel, 8)[channel])
+                    .sum::<f64>()
+                    / weight
+            });
+            let [_, b, r] = ycbcr(average, 8);
+            assert_eq!([cb[block], cr[block]], [b, r], "block {block}");
+        }
+        // Red beside clear texels keeps red's chroma; an unweighted average would pull it to grey.
+        assert_eq!([cb[1], cr[1]], [102, 240]);
     }
 
     #[test]

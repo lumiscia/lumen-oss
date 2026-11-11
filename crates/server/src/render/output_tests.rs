@@ -42,15 +42,20 @@ fn ramp(audio: bool) -> Composition {
         "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
     });
     if audio {
-        composition["audio"] = json!({
-            "tracks": [{ "id": "t", "name": "t", "muted": false, "solo": false, "volume": 1.0 }],
-            "clips": [{
-                "id": "c", "source_id": "voice.wav", "track_id": "t", "name": "voice.wav",
-                "start_ms": 0, "duration_ms": 3000, "source_start_ms": 0, "volume": 1.0
-            }]
-        });
+        composition["audio"] = voice();
     }
     parse_composition(&composition).unwrap()
+}
+
+/// Three seconds of the voice from time 0.
+fn voice() -> serde_json::Value {
+    json!({
+        "tracks": [{ "id": "t", "name": "t", "muted": false, "solo": false, "volume": 1.0 }],
+        "clips": [{
+            "id": "c", "source_id": "voice.wav", "track_id": "t", "name": "voice.wav",
+            "start_ms": 0, "duration_ms": 3000, "source_start_ms": 0, "volume": 1.0
+        }]
+    })
 }
 
 fn transparent() -> Composition {
@@ -664,4 +669,306 @@ fn a_ten_bit_render_fails_where_the_encoder_cannot_rather_than_writing_eight_bit
     assert_eq!(error.code(), ErrorCode::EncodeFailed);
     assert!(error.to_string().contains("always 8-bit"), "{error}");
     assert!(setup.nothing_left_behind());
+}
+
+/// A 64 x 64 composition of nothing but an anti-aliased disc of orange at 70% opacity, with the
+/// voice under it.
+fn translucent_disc() -> Composition {
+    let mut composition = json!({
+        "timeline": { "fps": FPS, "duration_frames": 3 },
+        "render_settings": { "width": 64, "height": 64 },
+        "nodes": [
+            { "id": 1, "type": "shape", "params": {
+                "position": [32, 32], "width": 41, "height": 41, "border_radius": 20.5,
+                "fill_paint": [255, 160, 32, 179]
+            } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+    });
+    composition["audio"] = voice();
+    parse_composition(&composition).unwrap()
+}
+
+/// Straight sRGB-encoded colour and alpha, 0 to 1, of a decoded BT.709 limited-range frame with
+/// alpha at `(x, y)`, using the chroma sample that covers it.
+fn straight_rgba(frame: &YuvVideoFrame, x: u32, y: u32) -> [f64; 4] {
+    let scale = f64::from(1u32 << (frame.depth - 8));
+    let [luma, cb, cr] = frame.sample(x, y).map(|code| f64::from(code) / scale);
+    let (kr, kb) = (0.2126, 0.0722);
+    let y_ = (luma - 16.0) / 219.0;
+    let (pb, pr) = ((cb - 128.0) / 224.0, (cr - 128.0) / 224.0);
+    let r = y_ + 2.0 * (1.0 - kr) * pr;
+    let b = y_ + 2.0 * (1.0 - kb) * pb;
+    let g = (y_ - kr * r - kb * b) / (1.0 - kr - kb);
+    let (width, height) = (frame.width as usize, frame.height as usize);
+    let bytes = if frame.depth > 8 { 2 } else { 1 };
+    let chroma = match frame.subsampling {
+        lumen_ffmpeg::YuvSubsampling::Yuv444 => width * height,
+        _ => width.div_ceil(2) * height.div_ceil(2),
+    };
+    let at = (width * height + 2 * chroma + y as usize * width + x as usize) * bytes;
+    let alpha = match bytes {
+        1 => u16::from(frame.data[at]),
+        _ => u16::from_le_bytes([frame.data[at], frame.data[at + 1]]),
+    };
+    let top = f64::from((1u32 << frame.depth) - 1);
+    [r, g, b, f64::from(alpha) / top]
+}
+
+#[test]
+fn alpha_videos_match_the_png_in_straight_colour_with_no_dark_fringe() {
+    let setup = Setup::new();
+    let scratch = tempfile::tempdir().unwrap();
+    let composition = translucent_disc();
+    let png = setup.render(&composition, RenderOutput::of(OutputFormat::Png));
+    let png = image::load_from_memory(&png).unwrap().to_rgba8();
+    let edges = png
+        .pixels()
+        .filter(|pixel| (1..179).contains(&pixel.0[3]))
+        .count();
+    assert!(edges > 40, "the disc has {edges} anti-aliased pixels");
+
+    let lossless_vp9 = EncoderQuality {
+        options: vec![("lossless".to_string(), "1".to_string())],
+        ..EncoderQuality::default()
+    };
+    // ProRes is near-lossless 4:4:4 with lossless alpha; lossless VP9 leaves the 4:2:0 chroma,
+    // which on a disc of one colour is that colour wherever alpha weights it.
+    for (encoder, quality, format, depth, colour_tolerance, alpha_tolerance) in [
+        (
+            "prores_ks",
+            EncoderQuality::default(),
+            OutputFormat::Mov,
+            lumen_ffmpeg::BitDepth::Ten,
+            3.0,
+            1.0,
+        ),
+        (
+            "libvpx-vp9",
+            lossless_vp9,
+            OutputFormat::Webm,
+            lumen_ffmpeg::BitDepth::Eight,
+            3.0,
+            1.0,
+        ),
+    ] {
+        if lumen_ffmpeg::encoder_info(encoder).is_err() {
+            eprintln!("{encoder} isn't in this FFmpeg build; skipping its alpha round trip");
+            continue;
+        }
+        let mut options = setup.options(RenderOutput::of(format));
+        options.encoder = Some(
+            VideoEncoderChoice::single(encoder, quality)
+                .with_bit_depth(depth)
+                .with_alpha(true),
+        );
+        let rendered = match render_project(&composition, &options, &mut |_| {}) {
+            Ok(rendered) => rendered,
+            Err(error) => {
+                let message = format!("{:#}", anyhow::Error::new(error));
+                // WebM audio is Opus, which needs libopus.
+                if message.contains("libopus") {
+                    eprintln!("skipping {encoder}: {message}");
+                    continue;
+                }
+                panic!("{encoder}: {message}");
+            }
+        };
+        assert_eq!(rendered.format, format);
+        let path = scratch.path().join(format!("alpha.{}", format.extension()));
+        fs::write(&path, &rendered.bytes).unwrap();
+        let input = InputContext::open(path.to_string_lossy().to_string()).unwrap();
+        let stream = input.best_video_stream().unwrap();
+        let codec = match format {
+            OutputFormat::Mov => lumen_ffmpeg::VideoCodec::ProRes,
+            _ => lumen_ffmpeg::VideoCodec::Vp9,
+        };
+        // WebM signals VP9's alpha layer in the container.
+        assert_eq!((stream.codec, stream.has_alpha), (codec, true), "{encoder}");
+        let mut audio = AudioRangeReader::open(path.to_string_lossy().to_string()).unwrap();
+        assert!(
+            audio.read(0, SAMPLE_RATE / 10).unwrap().samples > 0,
+            "{encoder} audio"
+        );
+
+        let (frames, _) = decode(&rendered.bytes, scratch.path());
+        assert_eq!(frames.len(), 3);
+        let frame = &frames[0];
+        assert!(frame.has_alpha, "{encoder} decoded without alpha");
+        let mut worst = [0.0f64; 2];
+        for (x, y, pixel) in png.enumerate_pixels() {
+            let decoded = straight_rgba(frame, x, y);
+            let [r, g, b, a] = pixel.0.map(f64::from);
+            let alpha_error = (decoded[3] * 255.0 - a).abs();
+            worst[1] = worst[1].max(alpha_error);
+            assert!(
+                alpha_error <= alpha_tolerance,
+                "{encoder} alpha at ({x}, {y}): {} vs {a}",
+                decoded[3] * 255.0
+            );
+            // Colour is undefined where alpha is 0, and too faint to measure below an eighth.
+            if a < 32.0 {
+                continue;
+            }
+            for (channel, expected) in [r, g, b].into_iter().enumerate() {
+                let error = (decoded[channel] * 255.0 - expected).abs();
+                worst[0] = worst[0].max(error);
+                assert!(
+                    error <= colour_tolerance,
+                    "{encoder} channel {channel} at ({x}, {y}), alpha {a}: {} vs {expected}",
+                    decoded[channel] * 255.0
+                );
+            }
+        }
+        eprintln!(
+            "{encoder}: worst colour error {:.2}, alpha error {:.2} of 255",
+            worst[0], worst[1]
+        );
+    }
+}
+
+#[test]
+fn alpha_in_a_format_or_encoder_that_cannot_hold_it_is_refused() {
+    let setup = Setup::new();
+    let composition = transparent();
+    for (encoder, format, expected) in [
+        ("libx264", OutputFormat::Mp4, "can't hold alpha"),
+        ("libx264", OutputFormat::Mov, "holds prores, not h264"),
+        ("h264_vulkan", OutputFormat::Mov, "holds prores, not h264"),
+        ("prores_ks", OutputFormat::Png, "can't hold alpha"),
+    ] {
+        let mut options = setup.options(RenderOutput::of(format));
+        options.encoder =
+            Some(VideoEncoderChoice::single(encoder, EncoderQuality::default()).with_alpha(true));
+        if format == OutputFormat::Png {
+            // An image keeps alpha whatever the encoder settings say.
+            assert!(render_project(&composition, &options, &mut |_| {}).is_ok());
+            continue;
+        }
+        if lumen_ffmpeg::encoder_info(encoder).is_err() {
+            continue;
+        }
+        let Err(error) = render_project(&composition, &options, &mut |_| {}) else {
+            panic!("{encoder} in {format:?} can't write alpha");
+        };
+        assert_eq!(error.code(), ErrorCode::InvalidOutput, "{encoder}");
+        assert!(error.to_string().contains(expected), "{encoder}: {error}");
+    }
+    assert!(setup.nothing_left_behind());
+}
+
+#[test]
+fn resolving_alpha_names_what_can_hold_it() {
+    let quality = lumen_ffmpeg::QualityConfig::built_in();
+    let alpha = |format, codec| {
+        super::resolve_encoder(
+            &quality,
+            &transparent(),
+            format,
+            lumen_ffmpeg::QualityRequest {
+                codec,
+                alpha: Some(true),
+                ..lumen_ffmpeg::QualityRequest::default()
+            },
+        )
+    };
+    let mp4 = alpha(OutputFormat::Mp4, None).unwrap_err();
+    assert_eq!(mp4.code(), ErrorCode::InvalidOutput);
+    assert!(
+        mp4.to_string().contains("mov (prores) or webm (vp9)"),
+        "{mp4}"
+    );
+    let h264 = alpha(OutputFormat::Mov, Some(lumen_ffmpeg::EncodeCodec::H264)).unwrap_err();
+    assert!(h264.to_string().contains("a .mov holds prores"), "{h264}");
+    if lumen_ffmpeg::encoder_info("prores_ks").is_err() {
+        eprintln!("prores_ks not in this FFmpeg build; skipping the ProRes selections");
+        return;
+    }
+    let prores = alpha(OutputFormat::Mov, None).unwrap();
+    assert_eq!(prores.first().encoder, "prores_ks");
+    assert!(prores.alpha());
+    assert_eq!(prores.bit_depth(), lumen_ffmpeg::BitDepth::Ten);
+    // The composition's render_settings ask for alpha when the request doesn't.
+    let asks = parse_composition(&json!({
+        "timeline": { "fps": FPS, "duration_frames": 1 },
+        "render_settings": { "width": 16, "height": 16, "alpha": true, "codec": "prores" },
+        "nodes": [
+            { "id": 1, "type": "background", "params": { "paint": [0, 0, 0, 0] } },
+            { "id": 2, "type": "media_output" }
+        ],
+        "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+    }))
+    .unwrap();
+    let from_settings = super::resolve_encoder(
+        &quality,
+        &asks,
+        OutputFormat::Mov,
+        lumen_ffmpeg::QualityRequest::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            from_settings.first().encoder.as_str(),
+            from_settings.alpha()
+        ),
+        ("prores_ks", true)
+    );
+    let opaque = super::resolve_encoder(
+        &quality,
+        &asks,
+        OutputFormat::Mov,
+        lumen_ffmpeg::QualityRequest {
+            alpha: Some(false),
+            ..lumen_ffmpeg::QualityRequest::default()
+        },
+    )
+    .unwrap();
+    assert!(!opaque.alpha());
+}
+
+/// A composition with audio is refused while resolving, before any render is queued or GPU work
+/// starts, when this FFmpeg can't encode its container's audio: Opus for WebM, AAC for the rest.
+#[test]
+fn a_missing_audio_encoder_refuses_the_render_while_resolving() {
+    use std::cell::RefCell;
+
+    let quality = lumen_ffmpeg::QualityConfig::built_in();
+    let asked = RefCell::new(Vec::new());
+    let no_audio_encoders = |config: &lumen_ffmpeg::AudioEncoderConfig| {
+        let name = config.encoder_name.clone().unwrap_or_else(|| "aac".into());
+        asked.borrow_mut().push(name.clone());
+        Err(format!("no `{name}` here"))
+    };
+    let resolve = |composition: &Composition, format| {
+        super::resolve_encoder_with(
+            &quality,
+            composition,
+            format,
+            lumen_ffmpeg::QualityRequest::default(),
+            &no_audio_encoders,
+        )
+    };
+
+    for (format, encoder) in [
+        (OutputFormat::Webm, "libopus"),
+        (OutputFormat::Mov, "aac"),
+        (OutputFormat::Mp4, "aac"),
+    ] {
+        let error = resolve(&translucent_disc(), format).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InvalidOutput, "{format:?}");
+        assert!(error.to_string().contains(encoder), "{format:?}: {error}");
+        assert_eq!(asked.take(), [encoder], "{format:?}");
+    }
+    // Without audio no audio encoder is needed, so the stand-in is never asked.
+    let _ = resolve(&transparent(), OutputFormat::Webm);
+    assert!(asked.take().is_empty());
+
+    let opus = lumen_ffmpeg::AudioEncoderConfig::opus(48_000, 2);
+    if let Err(message) = lumen_ffmpeg::check_audio_encoder(&opus) {
+        assert!(
+            message.contains("render without audio or to .mov"),
+            "{message}"
+        );
+    }
 }

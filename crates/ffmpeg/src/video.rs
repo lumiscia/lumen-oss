@@ -54,6 +54,13 @@ pub enum PixelFormat {
     /// Planar 10-bit YUV 4:2:0, each sample two little-endian bytes holding its value in the low
     /// bits.
     Yuv420p10,
+    /// [`Self::Yuv420p`] followed by a full-size alpha plane, rows `stride` bytes apart.
+    Yuva420p,
+    /// Planar 10-bit YUV 4:4:4 laid out as [`Self::Yuv420p10`], with full-size Cb and Cr planes
+    /// whose rows are `stride` bytes apart.
+    Yuv444p10,
+    /// [`Self::Yuv444p10`] followed by a full-size alpha plane.
+    Yuva444p10,
     Vulkan,
     Metal,
     Unknown,
@@ -408,6 +415,9 @@ impl PixelFormat {
             AV_PIX_FMT_P010LE | AV_PIX_FMT_P010BE => Self::P010,
             AV_PIX_FMT_YUV420P => Self::Yuv420p,
             AV_PIX_FMT_YUV420P10LE => Self::Yuv420p10,
+            sys::AVPixelFormat::AV_PIX_FMT_YUVA420P => Self::Yuva420p,
+            sys::AVPixelFormat::AV_PIX_FMT_YUV444P10LE => Self::Yuv444p10,
+            sys::AVPixelFormat::AV_PIX_FMT_YUVA444P10LE => Self::Yuva444p10,
             AV_PIX_FMT_VULKAN => Self::Vulkan,
             AV_PIX_FMT_VIDEOTOOLBOX => Self::Metal,
             _ => Self::Unknown,
@@ -422,6 +432,9 @@ impl PixelFormat {
             Self::P010 => AV_PIX_FMT_P010LE,
             Self::Yuv420p => AV_PIX_FMT_YUV420P,
             Self::Yuv420p10 => AV_PIX_FMT_YUV420P10LE,
+            Self::Yuva420p => sys::AVPixelFormat::AV_PIX_FMT_YUVA420P,
+            Self::Yuv444p10 => sys::AVPixelFormat::AV_PIX_FMT_YUV444P10LE,
+            Self::Yuva444p10 => sys::AVPixelFormat::AV_PIX_FMT_YUVA444P10LE,
             Self::Vulkan => AV_PIX_FMT_VULKAN,
             Self::Metal => AV_PIX_FMT_VIDEOTOOLBOX,
             Self::Unknown => AV_PIX_FMT_NONE,

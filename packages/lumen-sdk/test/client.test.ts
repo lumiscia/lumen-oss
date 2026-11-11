@@ -155,7 +155,7 @@ describe("Lumen render and download", () => {
     expect(new Headers(requests[0]?.init.headers).get("idempotency-key")).toBe("key-1");
   });
 
-  test("render sends quality, codec and bit depth only when they are set", async () => {
+  test("render sends quality, codec, bit depth and alpha only when they are set", async () => {
     const { requests, stub } = recordingFetch(() => ({
       render: { id: "render-1", status: "queued" },
     }));
@@ -163,12 +163,15 @@ describe("Lumen render and download", () => {
 
     await lumen.render({} as never);
     await lumen.render({} as never, { codec: "hevc", quality: "high", bitDepth: 10 });
+    await lumen.render({} as never, { alpha: true, output: { format: "webm" } });
 
     const bodies = requests.map((request) => JSON.parse(String(request.init.body)));
     expect(bodies[0]).not.toHaveProperty("quality");
     expect(bodies[0]).not.toHaveProperty("codec");
     expect(bodies[0]).not.toHaveProperty("bit_depth");
+    expect(bodies[0]).not.toHaveProperty("alpha");
     expect(bodies[1]).toMatchObject({ codec: "hevc", quality: "high", bit_depth: 10 });
+    expect(bodies[2]).toMatchObject({ alpha: true, output: { format: "webm" } });
   });
 
   test("render sends the output description in the server's shape, and only when it is set", async () => {
@@ -194,11 +197,13 @@ describe("Lumen render and download", () => {
   });
 
   test("outputFile names the content type and extension of each format", () => {
-    const files = (["mp4", "png", "jpeg", "png_sequence", "jpeg_sequence"] as const).map((format) =>
-      Object.values(outputFile({ format })),
-    );
+    const files = (
+      ["mp4", "mov", "webm", "png", "jpeg", "png_sequence", "jpeg_sequence"] as const
+    ).map((format) => Object.values(outputFile({ format })));
     expect(files).toEqual([
       ["video/mp4", "mp4"],
+      ["video/quicktime", "mov"],
+      ["video/webm", "webm"],
       ["image/png", "png"],
       ["image/jpeg", "jpg"],
       ["application/zip", "zip"],

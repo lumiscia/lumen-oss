@@ -10,7 +10,7 @@ use lumen_engine::{
 };
 use lumen_ffmpeg::{
     BitDepth, CpuVideoFrame, EncoderCandidate, EncoderFamily, FfmpegError, PixelFormat,
-    VideoEncoderChoice, check_bit_depth,
+    VideoEncoderChoice, check_alpha, check_bit_depth,
 };
 use lumen_gpu::wgpu::{PollType, SubmissionIndex};
 
@@ -65,9 +65,9 @@ pub(super) struct OpenedTarget {
 }
 
 impl EncodeTarget {
-    /// Opens the choice's encoders in order until one starts at the choice's bit depth, warning
-    /// for each that won't. A cancelled `cancel` ends the wait for GPU device room with the
-    /// cancelled error.
+    /// Opens the choice's encoders in order until one starts at the choice's bit depth and alpha,
+    /// warning for each that won't. A cancelled `cancel` ends the wait for GPU device room with
+    /// the cancelled error.
     pub(super) fn open(
         choice: &VideoEncoderChoice,
         composition: &Composition,
@@ -82,6 +82,7 @@ impl EncodeTarget {
                         candidate,
                         EncoderFamily::of(&candidate.encoder),
                         choice.bit_depth(),
+                        choice.alpha(),
                         composition,
                         media_store,
                         output,
@@ -95,13 +96,16 @@ impl EncodeTarget {
             .map_err(|WithCauses(error)| error)
     }
 
-    /// Opens one encoder on the target its family has, and CPU upload for the rest. A hardware
-    /// target that won't open moves to CPU upload with the same encoder. An encoder that can't
-    /// write `bit_depth` fails to open.
+    /// Opens one encoder on the target its family has, and CPU upload for the rest and for any
+    /// render with alpha, which only software encoders write. A hardware target that won't open
+    /// moves to CPU upload with the same encoder. An encoder that can't write `bit_depth`, or
+    /// alpha when asked for, fails to open.
+    #[allow(clippy::too_many_arguments)]
     fn open_encoder(
         candidate: &EncoderCandidate,
         family: EncoderFamily,
         bit_depth: BitDepth,
+        alpha: bool,
         composition: &Composition,
         media_store: &mut LocalMediaStore,
         output: &Path,
@@ -112,9 +116,17 @@ impl EncodeTarget {
         }
         let (name, quality) = (candidate.encoder.as_str(), &candidate.quality);
         check_bit_depth(name, bit_depth)
+            .and_then(|()| {
+                if alpha {
+                    check_alpha(name, bit_depth)
+                } else {
+                    Ok(())
+                }
+            })
             .map_err(|message| ServerRenderError::new(ErrorCode::EncodeFailed, message, false))?;
         let hardware_decode = media_store.video_options.prefer_hardware_decode;
-        let unavailable: Option<anyhow::Error> = match family {
+        let target_family = if alpha { EncoderFamily::Other } else { family };
+        let unavailable: Option<anyhow::Error> = match target_family {
             #[cfg(all(target_os = "linux", feature = "vulkan"))]
             EncoderFamily::Vulkan => {
                 let devices = reserve_shared_video_device(cancel)?;
@@ -199,6 +211,7 @@ impl EncodeTarget {
             name,
             quality,
             bit_depth,
+            alpha,
             has_audio(composition),
         )
         .map_err(|err| {
@@ -427,6 +440,9 @@ fn yuv_format(format: PixelFormat) -> Option<YuvFormat> {
         PixelFormat::P010 => Some(YuvFormat::P010),
         PixelFormat::Yuv420p => Some(YuvFormat::Yuv420p),
         PixelFormat::Yuv420p10 => Some(YuvFormat::Yuv420p10),
+        PixelFormat::Yuva420p => Some(YuvFormat::Yuva420p),
+        PixelFormat::Yuv444p10 => Some(YuvFormat::Yuv444p10),
+        PixelFormat::Yuva444p10 => Some(YuvFormat::Yuva444p10),
         _ => None,
     }
 }
@@ -631,6 +647,7 @@ mod start_failure_tests {
             &EncoderQuality::default(),
             BitDepth::Eight,
             false,
+            false,
         ) else {
             panic!("the output can't be created");
         };
@@ -717,6 +734,7 @@ mod tests {
             &candidate,
             EncoderFamily::Nvenc,
             BitDepth::Eight,
+            false,
             &composition,
             &mut media_store,
             &output,

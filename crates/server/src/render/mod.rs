@@ -22,7 +22,10 @@ use lumen_engine::{
     composition::{BitDepth, Composition, OutputCodec},
     media::AssetResolver,
 };
-use lumen_ffmpeg::{EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoice};
+use lumen_ffmpeg::{
+    AudioEncoderConfig, EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoice,
+    check_audio_encoder,
+};
 
 pub use error::{ErrorCode, ServerRenderError};
 pub use fonts::{FONT_DIR_ENV, FontCatalog, ResolvedFont, existing_font_dir};
@@ -102,8 +105,8 @@ pub struct RenderOptions {
     pub config: RenderConfig,
     /// The directory media sources must stay inside. Without one, the current directory.
     pub media_root: Option<PathBuf>,
-    /// The encoders to try, for an MP4 output only. `None` resolves the composition's settings
-    /// against the built-in presets.
+    /// The encoders to try, for a video output only. `None` resolves the composition's settings
+    /// against the built-in presets with [`resolve_encoder`].
     pub encoder: Option<VideoEncoderChoice>,
     /// Where `asset:` sources resolve. Without one, they don't.
     pub assets: Option<Arc<dyn AssetResolver>>,
@@ -118,27 +121,59 @@ pub struct RenderOptions {
     pub cancel: CancelToken,
 }
 
-/// The encoders a render of `composition` tries: `request`'s preset, codec and bit depth where it
-/// names them, then the composition's `render_settings`, then `config`'s defaults.
+/// The encoders a render of `composition` to `format` tries: `request`'s preset, codec, bit depth
+/// and alpha where it names them, then the composition's `render_settings`, then the codec a MOV or
+/// WebM holds, then `config`'s defaults. A codec or alpha `format` can't hold, or audio in a
+/// composition with audio when this FFmpeg has no encoder for `format`'s audio (Opus in WebM, AAC
+/// otherwise), is [`ErrorCode::InvalidOutput`], and anything else no encoder here can write is
+/// [`ErrorCode::InvalidQuality`].
 pub fn resolve_encoder(
     config: &QualityConfig,
     composition: &Composition,
+    format: OutputFormat,
+    request: QualityRequest,
+) -> Result<VideoEncoderChoice, ServerRenderError> {
+    resolve_encoder_with(config, composition, format, request, &check_audio_encoder)
+}
+
+/// [`resolve_encoder`], with `audio_encoder` saying whether this FFmpeg can encode an audio
+/// config.
+fn resolve_encoder_with(
+    config: &QualityConfig,
+    composition: &Composition,
+    format: OutputFormat,
     mut request: QualityRequest,
-) -> Result<VideoEncoderChoice, String> {
+    audio_encoder: &dyn Fn(&AudioEncoderConfig) -> Result<(), String>,
+) -> Result<VideoEncoderChoice, ServerRenderError> {
     let output = composition.output_settings();
     request.preset = request.preset.or_else(|| output.quality.clone());
     request.codec = request.codec.or(output.codec.map(|codec| match codec {
         OutputCodec::H264 => EncodeCodec::H264,
         OutputCodec::Hevc => EncodeCodec::Hevc,
         OutputCodec::Av1 => EncodeCodec::Av1,
+        OutputCodec::ProRes => EncodeCodec::ProRes,
+        OutputCodec::Vp9 => EncodeCodec::Vp9,
     }));
+    if format != OutputFormat::Mp4 {
+        request.codec = request.codec.or(format.video_codecs().first().copied());
+    }
     request.bit_depth = request
         .bit_depth
         .or(output.bit_depth.map(|depth| match depth {
             BitDepth::Eight => lumen_ffmpeg::BitDepth::Eight,
             BitDepth::Ten => lumen_ffmpeg::BitDepth::Ten,
         }));
-    config.resolve(&request)
+    request.alpha = request.alpha.or(output.alpha);
+    format
+        .check_video(request.codec, request.alpha.unwrap_or(false))
+        .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
+    if encoder::has_audio(composition) {
+        audio_encoder(&encoder::audio_config(format == OutputFormat::Webm))
+            .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
+    }
+    config
+        .resolve(&request)
+        .map_err(|message| ServerRenderError::new(ErrorCode::InvalidQuality, message, false))
 }
 
 /// What [`lumen_engine::json::check`] finds in `payload`, with fonts resolved as a render with

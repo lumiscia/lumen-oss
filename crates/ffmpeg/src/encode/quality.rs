@@ -12,11 +12,12 @@ const FLAG_DEFAULT_BIT_RATE: u64 = 14_000_000;
 pub enum RateControl {
     /// Target average bitrate in bits per second.
     Bitrate(u64),
-    /// Constant rate factor; lower is higher quality. Supported by libx264, libx265, libsvtav1 and
-    /// NVENC.
+    /// Constant rate factor; lower is higher quality. Supported by libx264, libx265, libsvtav1,
+    /// libvpx-vp9 and NVENC.
     Crf(u8),
-    /// Constant quantizer for every frame. Supported by libx264, libx265, libsvtav1, NVENC and
-    /// Vulkan; `av1_vulkan` takes an AV1 qindex, 0-255.
+    /// Constant quantizer for every frame. Supported by libx264, libx265, libsvtav1, NVENC, Vulkan
+    /// and prores_ks; `av1_vulkan` takes an AV1 qindex, 0-255, and `prores_ks` its quantiser, 1-64,
+    /// as FFmpeg's `-q:v`.
     Qp(u8),
 }
 
@@ -25,7 +26,7 @@ pub enum RateControl {
 pub struct EncoderQuality {
     pub rate_control: Option<RateControl>,
     /// Encoder preset: `ultrafast`..`placebo` for libx264 and libx265, `p1`..`p7` for NVENC,
-    /// `0`..`13` for libsvtav1.
+    /// `0`..`13` for libsvtav1, and libvpx-vp9's `cpu-used`, `0`..`5`.
     pub preset: Option<String>,
     /// FFmpeg AVOptions set after `rate_control` and `preset`, on the codec context or the
     /// encoder's private options.
@@ -115,14 +116,27 @@ const NVENC_PRESETS: [&str; 7] = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 const SVT_AV1_PRESETS: [&str; 14] = [
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13",
 ];
+/// libvpx's `good` deadline, which FFmpeg uses by default, treats every `cpu-used` above 5 as 5.
+const VPX_SPEEDS: [&str; 6] = ["0", "1", "2", "3", "4", "5"];
 
-/// Settings an encoder needs for an [`EncoderQuality`]: the context bitrate, the private
-/// AVOptions `rate_control` and `preset` map to, then the raw `options`.
+/// Settings an encoder needs for an [`EncoderQuality`]: the context bitrate and global quality,
+/// the private AVOptions `rate_control` and `preset` map to, then the raw `options`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QualityOptions {
     pub bit_rate: i64,
+    /// `AVCodecContext::global_quality`, in lambda units; 0 leaves it unset.
+    pub global_quality: i32,
     pub private: Vec<(&'static str, String)>,
     pub options: Vec<(String, String)>,
+}
+
+/// The codec context settings and private AVOptions an [`EncoderQuality`] maps to on one encoder,
+/// and those lumen always sets on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PortableOptions {
+    pub bit_rate: i64,
+    pub global_quality: i32,
+    pub private: Vec<(&'static str, String)>,
 }
 
 pub(crate) fn quality_options(
@@ -130,7 +144,11 @@ pub(crate) fn quality_options(
     quality: &EncoderQuality,
     mode: EncodeMode,
 ) -> Result<QualityOptions> {
-    let (bit_rate, mut private) = portable_options(encoder, quality)?;
+    let PortableOptions {
+        bit_rate,
+        global_quality,
+        mut private,
+    } = portable_options(encoder, quality)?;
     // NVIDIA's Vulkan H.264 encode can stall forever at a GOP boundary with more than one frame in
     // flight on more than one queue, with or without B-frames. Zero-copy encodes use the one
     // encode queue lumen lists on the shared device. CPU-upload encodes create their own device
@@ -138,19 +156,21 @@ pub(crate) fn quality_options(
     if encoder == "h264_vulkan" && mode == EncodeMode::CpuUpload {
         private.push(("async_depth", "1".to_string()));
     }
+    if EncoderFamily::of(encoder) == EncoderFamily::Vpx {
+        private.push(("row-mt", "1".to_string()));
+    }
     Ok(QualityOptions {
         bit_rate,
+        global_quality,
         private,
         options: quality.options.clone(),
     })
 }
 
-/// The context bitrate and private AVOptions `rate_control` and `preset` map to on `encoder`.
+/// The context settings and private AVOptions `rate_control` and `preset` map to on `encoder`.
 /// A quantizer or rate factor sets the bitrate to 0, so the encoder doesn't also target one.
-pub(crate) fn portable_options(
-    encoder: &str,
-    quality: &EncoderQuality,
-) -> Result<(i64, Vec<(&'static str, String)>)> {
+/// `prores_ks` always encodes the 4444 profile, the one that holds alpha.
+pub(crate) fn portable_options(encoder: &str, quality: &EncoderQuality) -> Result<PortableOptions> {
     let family = EncoderFamily::of(encoder);
     let error = |message: String| FfmpegError::new("VideoEncoder::create", message);
     let unsupported = |what: &str, supported: &str| {
@@ -169,15 +189,19 @@ pub(crate) fn portable_options(
     };
 
     let mut options = Vec::new();
+    if family == EncoderFamily::ProRes {
+        options.push(("profile", "4444".to_string()));
+    }
     if let Some(preset) = quality.preset.as_deref() {
-        let presets: &[&str] = match family {
-            EncoderFamily::X264 | EncoderFamily::X265 => &X26X_PRESETS,
-            EncoderFamily::Nvenc => &NVENC_PRESETS,
-            EncoderFamily::SvtAv1 => &SVT_AV1_PRESETS,
+        let (presets, key): (&[&str], _) = match family {
+            EncoderFamily::X264 | EncoderFamily::X265 => (&X26X_PRESETS, "preset"),
+            EncoderFamily::Nvenc => (&NVENC_PRESETS, "preset"),
+            EncoderFamily::SvtAv1 => (&SVT_AV1_PRESETS, "preset"),
+            EncoderFamily::Vpx => (&VPX_SPEEDS, "cpu-used"),
             _ => {
                 return Err(unsupported(
                     "encoder presets",
-                    "libx264, libx265, libsvtav1, NVENC encoders",
+                    "libx264, libx265, libsvtav1, libvpx-vp9, NVENC encoders",
                 ));
             }
         };
@@ -187,11 +211,18 @@ pub(crate) fn portable_options(
                 presets.join(", ")
             )));
         }
-        options.push(("preset", preset.to_string()));
+        options.push((key, preset.to_string()));
     }
 
+    let mut global_quality = 0;
     let bit_rate = match (quality.rate_control, family) {
         (None, _) => 0,
+        (Some(RateControl::Bitrate(_)), EncoderFamily::ProRes) => {
+            return Err(unsupported(
+                "bitrate rate control",
+                "a quantizer (qp 1-64), or no rate control for the profile's own data rate",
+            ));
+        }
         (Some(RateControl::Bitrate(bits_per_second)), _) => {
             i64::try_from(bits_per_second).map_err(|_| error("bitrate is too large".to_string()))?
         }
@@ -204,7 +235,7 @@ pub(crate) fn portable_options(
             options.push(("crf", crf.to_string()));
             0
         }
-        (Some(RateControl::Crf(crf)), EncoderFamily::SvtAv1) => {
+        (Some(RateControl::Crf(crf)), EncoderFamily::SvtAv1 | EncoderFamily::Vpx) => {
             check_range("CRF", crf, 0, 63)?;
             options.push(("crf", crf.to_string()));
             0
@@ -228,7 +259,7 @@ pub(crate) fn portable_options(
         (Some(RateControl::Crf(_)), _) => {
             return Err(unsupported(
                 "CRF rate control",
-                "libx264, libx265, libsvtav1, NVENC encoders (use a quantizer or bitrate instead)",
+                "libx264, libx265, libsvtav1, libvpx-vp9, NVENC encoders (use a quantizer or bitrate instead)",
             ));
         }
         (Some(RateControl::Qp(qp)), EncoderFamily::X264) => {
@@ -258,15 +289,27 @@ pub(crate) fn portable_options(
             options.push(("qp", qp.to_string()));
             0
         }
-        (Some(RateControl::Qp(_)), EncoderFamily::VideoToolbox | EncoderFamily::Other) => {
+        (Some(RateControl::Qp(qp)), EncoderFamily::ProRes) => {
+            check_range("QP", qp, 1, 64)?;
+            global_quality = i32::from(qp) * sys::FF_QP2LAMBDA;
+            0
+        }
+        (
+            Some(RateControl::Qp(_)),
+            EncoderFamily::VideoToolbox | EncoderFamily::Vpx | EncoderFamily::Other,
+        ) => {
             return Err(unsupported(
                 "constant quantizer rate control",
-                "libx264, libx265, libsvtav1, NVENC and Vulkan encoders",
+                "libx264, libx265, libsvtav1, NVENC, Vulkan and prores_ks encoders",
             ));
         }
     };
 
-    Ok((bit_rate, options))
+    Ok(PortableOptions {
+        bit_rate,
+        global_quality,
+        private: options,
+    })
 }
 
 /// Sets the private AVOptions, then the raw ones, which may name a codec context option such as
@@ -445,6 +488,18 @@ mod tests {
                 None,
                 &[("rc_mode", "cqp"), ("qp", "100")],
             ),
+            (
+                "libvpx-vp9",
+                RateControl::Crf(32),
+                Some("3"),
+                &[("cpu-used", "3"), ("crf", "32"), ("row-mt", "1")],
+            ),
+            (
+                "prores_ks",
+                RateControl::Qp(8),
+                None,
+                &[("profile", "4444")],
+            ),
         ] {
             let quality = options(encoder, rate_control, preset).unwrap();
             assert_eq!(quality.bit_rate, 0, "{encoder}");
@@ -455,6 +510,24 @@ mod tests {
                 .collect();
             assert_eq!(actual, expected, "{encoder}");
         }
+    }
+
+    #[test]
+    fn prores_takes_its_quantiser_as_global_quality_and_always_encodes_4444() {
+        let quantised = options("prores_ks", RateControl::Qp(8), None).unwrap();
+        assert_eq!(quantised.global_quality, 8 * sys::FF_QP2LAMBDA);
+        let profile_rate = quality_options(
+            "prores_ks",
+            &EncoderQuality::default(),
+            EncodeMode::CpuUpload,
+        )
+        .unwrap();
+        assert_eq!(profile_rate.global_quality, 0);
+        assert_eq!(profile_rate.private, [("profile", "4444".to_string())]);
+        assert!(options("prores_ks", RateControl::Qp(64), None).is_ok());
+        assert!(options("prores_ks", RateControl::Qp(0), None).is_err());
+        assert!(options("prores_ks", RateControl::Qp(65), None).is_err());
+        assert!(options("libvpx-vp9", RateControl::Crf(64), None).is_err());
     }
 
     #[test]
@@ -522,6 +595,16 @@ mod tests {
                 RateControl::Bitrate(1),
                 Some("fast"),
                 "presets",
+            ),
+            ("prores_ks", RateControl::Bitrate(1), None, "bitrate"),
+            ("prores_ks", RateControl::Crf(20), None, "CRF"),
+            ("prores_ks", RateControl::Qp(8), Some("fast"), "presets"),
+            ("libvpx-vp9", RateControl::Qp(20), None, "quantizer"),
+            (
+                "libvpx-vp9",
+                RateControl::Crf(30),
+                Some("9"),
+                "invalid preset",
             ),
         ] {
             let error = options(encoder, rate_control, preset).unwrap_err();
