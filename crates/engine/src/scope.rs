@@ -8,6 +8,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     composition::{Composition, CompositionTemplate, Scene},
+    error::{LumenError, RenderError},
     expr::{ExpressionContext, ExpressionValue},
     media::MediaStore,
     node::{
@@ -72,6 +73,12 @@ impl From<f64> for FrameTime {
     }
 }
 
+/// Most nodes a walk of the graph may be inside at once, counting from the output through clips
+/// and the compositions they play. Recording and media prediction recurse once per node, so this
+/// bounds their stack, with room on a 2 MiB thread in a debug build for the costliest expression
+/// the evaluator allows at the bottom of the heaviest chain.
+pub(crate) const MAX_GRAPH_DEPTH: u32 = 48;
+
 /// The props a template instance was given, by name.
 pub type PropValues = BTreeMap<String, ExpressionValue>;
 
@@ -113,6 +120,25 @@ impl<'a> Scope<'a> {
 
     pub fn node(&self, id: NodeId) -> Option<&'a NodeKind> {
         self.scene.graph.nodes.get(&id)
+    }
+
+    /// The name of the template this scope instances, or `None` at the root.
+    pub(crate) fn template_name(&self) -> Option<&'a str> {
+        self.root
+            .compositions()
+            .iter()
+            .find(|(_, template)| std::ptr::eq(&template.scene, self.scene))
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// The error for a walk reaching node `node_id` of this scope inside [`MAX_GRAPH_DEPTH`] nodes.
+    pub(crate) fn too_deep(&self, node_id: NodeId) -> LumenError {
+        RenderError::TooDeeplyNested {
+            template: self.template_name().map(str::to_string),
+            node_id,
+            limit: MAX_GRAPH_DEPTH,
+        }
+        .into()
     }
 
     /// The context expressions of this scope are evaluated in at `frame`.

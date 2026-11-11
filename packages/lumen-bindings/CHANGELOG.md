@@ -1,5 +1,24 @@
 # @lumiscia/lumen-bindings
 
+## 0.5.1
+
+### Patch Changes
+
+- bbab23f: Renders request the GPU's real device limits instead of wgpu's conservative defaults, so canvases and images larger than 8192 pixels work on GPUs that support them.
+- d14deff: Color grade, crop and the composition output read a small layer at its own size instead of first copying it into a full-canvas texture, which saves a full-frame pass per use.
+- 14af846: Videos cut with `ffmpeg -c copy` no longer count their hidden preroll frames, so renders near the end of the clip work.
+- 6f5b681: The wasm build no longer includes wgpu's WebGL backend, making the preview's wasm smaller. The preview already required WebGPU, so behavior is unchanged.
+- 6285ab0: Expressions gain the `sine`, `quart`, `quint`, `circ`, `elastic` and `bounce` easing families (`in_`, `out_` and `in_out_` each, e.g. `out_bounce(t)` or `tween(0, 1, 0, 30, 'in_out_elastic')`), and the functions `sign`, `atan2`, `hypot` and `remap`. `@lumiscia/lumen-shared` exports a helper for each.
+- 6a6ee44: Load fonts faster: each font file is parsed once instead of on every later font load.
+- 10b9793: Fix clippy lints in the FFmpeg video resolver that only show up when `lumen-server` is built without the `vulkan` feature.
+- 87164d8: Render errors name the node by its JSON `type`, like `media_in node 3 evaluation failed`, instead of a Rust-style `MediaIn`. `motion_blur` now says in its description that it blurs content that already has motion blur a second time, and `lumen-local --help` no longer reads as if a quality preset targeted 14 Mb/s.
+- 5406425: Rendering a canvas larger than the device's texture limit, including a clip's template that declares one, now returns a render error naming the node and the limit instead of panicking.
+- 7fcff92: A composition nested more than 48 nodes deep now fails with a `render.too_deeply_nested` error that names the node, instead of crashing the process with a stack overflow.
+- ee8b9bf: A renderer reused for another composition no longer keeps the previous one's path and font caches, and video frames that already match the canvas size are uploaded without an extra copy.
+- f9952fa: Keep static subtrees that read an image between frames instead of drawing them again every frame, and draw them again when the image under their source is replaced.
+- 9cd9f55: `lumen-server` no longer parses and checks a composition on the async runtime when a render is created, and concurrent renders of the same media now share one resolver instead of each keeping its own.
+- @lumiscia/lumen-preview@0.5.1
+
 ## 0.5.0
 
 ### Minor Changes

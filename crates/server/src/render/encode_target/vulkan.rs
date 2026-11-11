@@ -42,6 +42,7 @@ impl VulkanTarget {
             ));
         }
         let (renderer, device) = pollster::block_on(GpuCompositionRenderer::new_vulkan_video())?;
+        renderer.check_output_size(composition)?;
         let target =
             VulkanVideoTarget::nv12(renderer.gpu_renderer(), lumen_gpu::Size::new(width, height));
         let mut config = VideoEncoderConfig::cpu_rgba(

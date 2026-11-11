@@ -53,7 +53,7 @@ impl crate::gpu::frame_graph::RecordNode for Crop {
         &self,
         cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
     ) -> crate::Result<crate::gpu::frame_graph::Raster> {
-        let source = cx.required_full(self.id, "source", self.source)?;
+        let source = cx.required(self.id, "source", self.source)?;
         let params = self.params.eval(&DelegateEvalContext {
             node_id: self.id,
             expr: &cx.expr(),
@@ -62,7 +62,7 @@ impl crate::gpu::frame_graph::RecordNode for Crop {
         let y = params::pixel_origin(self.id, "y", params.y)?;
         let width = params::pixel_extent(self.id, "width", params.width, 0)?;
         let height = params::pixel_extent(self.id, "height", params.height, 0)?;
-        let size = source.domain.storage_size;
+        let size = source.domain.display_size();
         let left = i64::from(x).clamp(0, i64::from(size.width));
         let top = i64::from(y).clamp(0, i64::from(size.height));
         let right = (i64::from(x) + i64::from(width)).clamp(left, i64::from(size.width));
@@ -71,8 +71,13 @@ impl crate::gpu::frame_graph::RecordNode for Crop {
             origin: [left as i32, top as i32],
             size: [(right - left) as u32, (bottom - top) as u32],
         };
+        let pass_params = params::CropPassParams {
+            origin: gpu_params.origin,
+            size: gpu_params.size,
+            source_origin: source.origin(),
+        };
         let tex = cx.storage_target(size);
-        cx.spatial_pass("crop", SHADER, source.tex, &gpu_params, tex, size)?;
+        cx.spatial_pass("crop", SHADER, source.tex, &pass_params, tex, size)?;
         Ok(crate::gpu::frame_graph::Raster {
             tex,
             domain: lumen_gpu::TextureDomain::full_frame(size),

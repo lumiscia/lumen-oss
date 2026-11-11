@@ -381,17 +381,25 @@ pub fn check_value(
     assets: Option<&dyn AssetResolver>,
 ) -> Vec<Diagnostic> {
     match load(root) {
-        Ok(composition) => {
-            let mut diagnostics =
-                assets.map_or_else(Vec::new, |assets| asset_errors(&composition, root, assets));
-            if let Some(known_font) = known_font {
-                diagnostics.extend(font_fallbacks(&composition, root, known_font));
-            }
-            diagnostics.truncate(MAX_DIAGNOSTICS);
-            diagnostics
-        }
+        Ok(composition) => check_composition(&composition, root, known_font, assets),
         Err(errors) => ParseError::new(root, errors).into_diagnostics(),
     }
+}
+
+/// [`check_value`] for a composition already parsed from `root`.
+pub fn check_composition(
+    composition: &Composition,
+    root: &Value,
+    known_font: Option<&dyn Fn(&str) -> bool>,
+    assets: Option<&dyn AssetResolver>,
+) -> Vec<Diagnostic> {
+    let mut diagnostics =
+        assets.map_or_else(Vec::new, |assets| asset_errors(composition, root, assets));
+    if let Some(known_font) = known_font {
+        diagnostics.extend(font_fallbacks(composition, root, known_font));
+    }
+    diagnostics.truncate(MAX_DIAGNOSTICS);
+    diagnostics
 }
 
 fn read_json(json: &str) -> Result<Value, LumenError> {
