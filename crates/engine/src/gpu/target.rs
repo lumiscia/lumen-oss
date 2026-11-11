@@ -31,15 +31,31 @@ struct Nv12Pass {
 #[cfg(all(target_os = "linux", feature = "vulkan"))]
 impl GpuCompositionRenderer {
     /// Creates a renderer on a Vulkan device that FFmpeg's Vulkan Video encoders can share, and its
-    /// decoders too where the hardware has them.
+    /// decoders too where the hardware has them. Uses [`lumen_gpu::GpuSettings::from_env`].
     pub async fn new_vulkan_video() -> crate::Result<(Self, VulkanDevice)> {
         Self::from_vulkan_video(lumen_gpu::Renderer::new_vulkan_video().await)
     }
 
+    /// [`Self::new_vulkan_video`] reading no environment variables.
+    pub async fn new_vulkan_video_with_settings(
+        settings: &lumen_gpu::GpuSettings,
+    ) -> crate::Result<(Self, VulkanDevice)> {
+        Self::from_vulkan_video(lumen_gpu::Renderer::new_vulkan_video_with_settings(settings).await)
+    }
+
     /// Creates a renderer on a Vulkan device that FFmpeg's Vulkan Video decoders can share, and its
-    /// encoders too where the hardware has them.
+    /// encoders too where the hardware has them. Uses [`lumen_gpu::GpuSettings::from_env`].
     pub async fn new_vulkan_decode() -> crate::Result<(Self, VulkanDevice)> {
         Self::from_vulkan_video(lumen_gpu::Renderer::new_vulkan_decode().await)
+    }
+
+    /// [`Self::new_vulkan_decode`] reading no environment variables.
+    pub async fn new_vulkan_decode_with_settings(
+        settings: &lumen_gpu::GpuSettings,
+    ) -> crate::Result<(Self, VulkanDevice)> {
+        Self::from_vulkan_video(
+            lumen_gpu::Renderer::new_vulkan_decode_with_settings(settings).await,
+        )
     }
 
     fn from_vulkan_video(

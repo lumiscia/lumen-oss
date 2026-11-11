@@ -1,14 +1,13 @@
 use std::{
     collections::{HashMap, hash_map::Entry},
-    env,
     path::{Path, PathBuf},
     sync::{LazyLock, RwLock},
 };
 
-use anyhow::bail;
 use fontdb::Source;
 use lumen_engine::{error::MediaError, media::FontResolver};
 
+/// The variable the binaries read [`RenderConfig::font_dir`](super::RenderConfig::font_dir) from.
 pub const FONT_DIR_ENV: &str = "LUMEN_FONT_DIR";
 
 /// The installed fonts, scanned the first time a family needs them and shared by every catalog.
@@ -26,21 +25,6 @@ pub fn existing_font_dir(value: &str) -> Result<PathBuf, String> {
         Ok(path)
     } else {
         Err(format!("`{value}` is not a directory"))
-    }
-}
-
-/// The directory `LUMEN_FONT_DIR` names, or `None` if it is unset or empty. A directory that
-/// doesn't exist is an error.
-pub fn font_dir_from_env() -> anyhow::Result<Option<PathBuf>> {
-    let Some(value) = env::var_os(FONT_DIR_ENV).filter(|value| !value.is_empty()) else {
-        return Ok(None);
-    };
-    let Some(value) = value.to_str() else {
-        bail!("{FONT_DIR_ENV} is not valid UTF-8");
-    };
-    match existing_font_dir(value) {
-        Ok(dir) => Ok(Some(dir)),
-        Err(error) => bail!("{FONT_DIR_ENV}: {error}"),
     }
 }
 

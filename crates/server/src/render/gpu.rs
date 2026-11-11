@@ -10,10 +10,9 @@ use lumen_engine::{composition::Composition, gpu::GpuCompositionRenderer, media:
 use lumen_ffmpeg::{QualityConfig, QualityRequest, VideoEncoderChoice};
 
 use super::{
-    RenderError, RenderOptions, RenderProgress,
+    ErrorCode, RenderOptions, RenderProgress, ServerRenderError,
     device_budget::DeviceReservation,
     encode_target::{EncodeTarget, OpenedTarget},
-    fonts::font_dir_from_env,
     media::{LocalMediaStore, media_root},
     resolve_encoder,
 };
@@ -25,26 +24,29 @@ pub fn render_project_mp4(
     composition: &Composition,
     options: &RenderOptions,
     on_progress: &mut dyn FnMut(RenderProgress),
-) -> Result<Vec<u8>, RenderError> {
-    let media_root = media_root(options.media_root.as_deref()).map_err(|err| RenderError {
-        code: "media_root_error",
-        message: err.to_string(),
-        retryable: false,
-    })?;
-    let font_dir = font_dir_from_env().map_err(|err| RenderError {
-        code: "font_dir_error",
-        message: err.to_string(),
-        retryable: false,
-    })?;
-    let mut media_store = LocalMediaStore::new(media_root, font_dir.as_deref());
+) -> Result<Vec<u8>, ServerRenderError> {
+    let media_root = media_root(options.media_root.as_deref())?;
+    if let Some(dir) = options.config.font_dir()
+        && !dir.is_dir()
+    {
+        return Err(ServerRenderError::new(
+            ErrorCode::InvalidConfig,
+            format!("font directory `{}` is not a directory", dir.display()),
+            false,
+        ));
+    }
+    let mut media_store = LocalMediaStore::new(media_root, &options.config);
     if let Some(assets) = &options.assets {
         media_store = media_store.with_assets(Arc::clone(assets));
     }
-    let tmp = tempfile::tempdir().map_err(|err| RenderError {
-        code: "encode_failed",
-        message: format!("failed to create temp dir: {err}"),
-        retryable: true,
-    })?;
+    let output_io = |context: &str, error: std::io::Error| {
+        ServerRenderError::new(ErrorCode::OutputIo, context, true).caused_by(error)
+    };
+    let tmp = match &options.config.temp_dir {
+        Some(dir) => tempfile::tempdir_in(dir),
+        None => tempfile::tempdir(),
+    }
+    .map_err(|err| output_io("failed to create temp dir", err))?;
     let output_path = tmp.path().join("output.mp4");
 
     let choice = match &options.encoder {
@@ -54,11 +56,7 @@ pub fn render_project_mp4(
             composition,
             QualityRequest::default(),
         )
-        .map_err(|message| RenderError {
-            code: "invalid_quality",
-            message,
-            retryable: false,
-        })?,
+        .map_err(|message| ServerRenderError::new(ErrorCode::InvalidQuality, message, false))?,
     };
     let mut render = Mp4Render::open(composition, media_store, choice, &output_path)?;
     if let Some(glyphs) = options.max_text_glyphs {
@@ -66,11 +64,7 @@ pub fn render_project_mp4(
     }
     render.run(on_progress)?;
 
-    fs::read(&output_path).map_err(|err| RenderError {
-        code: "encode_failed",
-        message: format!("failed to read encoded output: {err}"),
-        retryable: true,
-    })
+    fs::read(&output_path).map_err(|err| output_io("failed to read encoded output", err))
 }
 
 /// What a finished render did and where its time went.
@@ -119,7 +113,7 @@ impl<'a> Mp4Render<'a> {
         mut media_store: LocalMediaStore,
         choice: VideoEncoderChoice,
         output: &Path,
-    ) -> Result<Self, RenderError> {
+    ) -> Result<Self, ServerRenderError> {
         let (choice, info) = choice
             .look_up(|warning| tracing::warn!("{warning}"))
             .map_err(invalid_render_profile)?;
@@ -157,11 +151,7 @@ impl<'a> Mp4Render<'a> {
         render
             .renderer
             .compile_with_output_format(composition, render.target.output_format())
-            .map_err(|err| RenderError {
-                code: "render_failed",
-                message: format!("failed to compile composition: {err}"),
-                retryable: false,
-            })?;
+            .map_err(|err| ServerRenderError::engine("failed to compile composition", err))?;
         Ok(render)
     }
 
@@ -185,7 +175,7 @@ impl<'a> Mp4Render<'a> {
     pub fn run(
         mut self,
         on_progress: &mut dyn FnMut(RenderProgress),
-    ) -> Result<RenderReport, RenderError> {
+    ) -> Result<RenderReport, ServerRenderError> {
         let started = Instant::now();
         let total_frames = self.composition.timeline().duration_frames;
         let mut timing = RenderTiming::default();
@@ -225,12 +215,8 @@ impl<'a> Mp4Render<'a> {
     }
 }
 
-fn invalid_render_profile(err: lumen_ffmpeg::FfmpegError) -> RenderError {
-    RenderError {
-        code: "invalid_render_profile",
-        message: err.to_string(),
-        retryable: false,
-    }
+fn invalid_render_profile(err: lumen_ffmpeg::FfmpegError) -> ServerRenderError {
+    ServerRenderError::new(ErrorCode::InvalidRenderProfile, err.to_string(), false)
 }
 
 fn prefetch_media_frames(composition: &Composition, media_store: &LocalMediaStore, frame: u32) {
@@ -265,7 +251,9 @@ pub fn create_gpu_renderer(
 ) -> anyhow::Result<GpuCompositionRenderer> {
     #[cfg(all(target_os = "linux", feature = "vulkan"))]
     if media_store.video_options.prefer_hardware_decode {
-        match pollster::block_on(GpuCompositionRenderer::new_vulkan_decode()) {
+        match pollster::block_on(GpuCompositionRenderer::new_vulkan_decode_with_settings(
+            &media_store.gpu,
+        )) {
             Ok((renderer, device)) => {
                 media_store.video_options.vulkan_device = Some(device);
                 return Ok(renderer);
@@ -275,7 +263,8 @@ pub fn create_gpu_renderer(
     }
     #[cfg(not(all(target_os = "linux", feature = "vulkan")))]
     let _ = media_store;
-    pollster::block_on(GpuCompositionRenderer::new()).context("failed to initialize wgpu renderer")
+    pollster::block_on(GpuCompositionRenderer::new_with_settings(&media_store.gpu))
+        .context("failed to initialize wgpu renderer")
 }
 
 #[cfg(test)]
@@ -283,11 +272,10 @@ mod tests {
     use lumen_ffmpeg::EncoderQuality;
 
     use super::*;
+    use crate::render::RenderConfig;
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn encoder_that_cannot_open_is_not_retryable() {
-        let composition = super::super::parse_composition(&serde_json::json!({
+    fn solid() -> Composition {
+        super::super::parse_composition(&serde_json::json!({
             "timeline": { "fps": 24, "duration_frames": 1 },
             "render_settings": { "width": 16, "height": 16 },
             "nodes": [
@@ -296,7 +284,41 @@ mod tests {
             ],
             "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
         }))
-        .unwrap();
+        .unwrap()
+    }
+
+    fn image(source: &str) -> Composition {
+        super::super::parse_composition(&serde_json::json!({
+            "timeline": { "fps": 24, "duration_frames": 1 },
+            "render_settings": { "width": 16, "height": 16 },
+            "nodes": [
+                { "id": 1, "type": "media_in", "params": { "kind": "image", "source": source } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
+        }))
+        .unwrap()
+    }
+
+    /// One transparent pixel.
+    const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8,
+        0xef, 0xa0, 0xf0, 0x1f, 0x00, 0x06, 0x00, 0x02, 0x5f, 0x34, 0xcd, 0x40, 0xc0, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    fn libx264() -> Option<VideoEncoderChoice> {
+        Some(VideoEncoderChoice::single(
+            "libx264",
+            EncoderQuality::default(),
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn encoder_that_cannot_open_is_not_retryable() {
         let options = RenderOptions {
             // libx264 only checks `tune` when it opens.
             encoder: Some(VideoEncoderChoice::single(
@@ -309,24 +331,14 @@ mod tests {
             ..RenderOptions::default()
         };
 
-        let error = render_project_mp4(&composition, &options, &mut |_| {}).unwrap_err();
+        let error = render_project_mp4(&solid(), &options, &mut |_| {}).unwrap_err();
 
-        assert_eq!(error.code, "encode_failed", "{error}");
-        assert!(!error.retryable, "{error}");
+        assert_eq!(error.code(), ErrorCode::EncodeFailed, "{error}");
+        assert!(!error.retryable(), "{error}");
     }
 
     #[test]
     fn an_unknown_encoder_is_an_invalid_render_profile() {
-        let composition = super::super::parse_composition(&serde_json::json!({
-            "timeline": { "fps": 24, "duration_frames": 1 },
-            "render_settings": { "width": 16, "height": 16 },
-            "nodes": [
-                { "id": 1, "type": "background", "params": { "paint": [255, 0, 0, 255], "width": 16, "height": 16 } },
-                { "id": 2, "type": "media_output" }
-            ],
-            "connections": [{ "from_node": 1, "from_port": "output", "to_node": 2, "to_port": "source" }]
-        }))
-        .unwrap();
         let options = RenderOptions {
             encoder: Some(VideoEncoderChoice::single(
                 "definitely_not_an_encoder",
@@ -335,12 +347,53 @@ mod tests {
             ..RenderOptions::default()
         };
 
-        let error = render_project_mp4(&composition, &options, &mut |_| {}).unwrap_err();
+        let error = render_project_mp4(&solid(), &options, &mut |_| {}).unwrap_err();
 
-        assert_eq!(error.code, "invalid_render_profile", "{error}");
+        assert_eq!(error.code(), ErrorCode::InvalidRenderProfile, "{error}");
         assert!(
-            error.message.contains("definitely_not_an_encoder"),
+            error.to_string().contains("definitely_not_an_encoder"),
             "{error}"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn media_resolves_in_the_root_the_options_name_with_the_engine_code_when_missing() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("hero.png"), TINY_PNG).unwrap();
+        let options = RenderOptions {
+            media_root: Some(root.path().to_path_buf()),
+            encoder: libx264(),
+            ..RenderOptions::default()
+        };
+
+        let bytes = render_project_mp4(&image("hero.png"), &options, &mut |_| {}).unwrap();
+        assert!(!bytes.is_empty());
+
+        let error = render_project_mp4(&image("missing.png"), &options, &mut |_| {}).unwrap_err();
+        assert_eq!(
+            error.code(),
+            ErrorCode::Engine("media.not_found"),
+            "{error}"
+        );
+        assert!(!error.retryable(), "{error}");
+        assert!(error.engine_error().is_some());
+    }
+
+    #[test]
+    fn a_font_directory_that_does_not_exist_is_invalid_config() {
+        let options = RenderOptions {
+            config: RenderConfig {
+                font_dir: Some("no-such-fonts".into()),
+                ..RenderConfig::default()
+            },
+            encoder: libx264(),
+            ..RenderOptions::default()
+        };
+
+        let error = render_project_mp4(&solid(), &options, &mut |_| {}).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidConfig, "{error}");
+        assert!(error.to_string().contains("no-such-fonts"), "{error}");
     }
 }

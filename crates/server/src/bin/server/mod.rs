@@ -15,7 +15,7 @@ pub use types::{
 use lumen_engine::composition::Composition;
 use lumen_ffmpeg::VideoEncoderChoice;
 use lumen_server::render::{
-    RenderError as RenderPipelineError, RenderOptions, RenderProgress, render_project_mp4,
+    RenderConfig, RenderOptions, RenderProgress, ServerRenderError, render_project_mp4,
 };
 
 pub(super) use media_staging::{MediaClient, validate_media_manifest};
@@ -42,6 +42,7 @@ pub struct CompletedRender {
 pub async fn execute_render_job<F>(
     job: RenderJob,
     media_client: &MediaClient,
+    config: &RenderConfig,
     mut on_progress: F,
 ) -> Result<CompletedRender, RenderJobError>
 where
@@ -63,6 +64,7 @@ where
 
     let staged_path = staged_media.path().to_path_buf();
     let options = RenderOptions {
+        config: config.clone(),
         media_root: Some(staged_path.clone()),
         encoder: Some(encoder),
         assets: Some(assets),
@@ -110,10 +112,14 @@ where
         message: format!("render worker join failed: {err}"),
         retryable: true,
     })?
-    .map_err(|mut error| {
-        tracing::warn!(job_id, code = error.code, error = %error.message, "render failed");
-        error.message = without_staging_path(&error.message, &staged_path);
-        map_execution_error(error)
+    .map_err(|error| {
+        let message = error_chain(&error);
+        tracing::warn!(job_id, code = %error.code(), error = %message, "render failed");
+        RenderJobError {
+            code: error.code().to_string(),
+            message: sanitize_error_message(&without_staging_path(&message, &staged_path)),
+            retryable: error.retryable(),
+        }
     })?;
     let render_ms = render_started.elapsed().as_millis();
     tracing::info!(
@@ -148,10 +154,14 @@ fn without_staging_path(message: &str, staged_path: &Path) -> String {
         })
 }
 
-pub(super) fn map_execution_error(error: RenderPipelineError) -> RenderJobError {
-    RenderJobError {
-        code: error.code.to_string(),
-        message: sanitize_error_message(&error.message),
-        retryable: error.retryable,
+/// `error` and each error that caused it, as `outer: inner`.
+fn error_chain(error: &ServerRenderError) -> String {
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
     }
+    message
 }

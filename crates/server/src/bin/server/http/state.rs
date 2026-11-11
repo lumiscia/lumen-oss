@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use lumen_ffmpeg::QualityConfig;
+use lumen_server::render::RenderConfig;
 use tokio::sync::Semaphore;
 
 use crate::server::{MediaClient, RenderJobError, RenderRecord, RenderStatus, assets::AssetStore};
@@ -19,6 +20,7 @@ pub(super) struct AppState {
     pub progress_min_delta: f32,
     pub max_text_glyphs: usize,
     pub quality: Arc<QualityConfig>,
+    pub render_config: RenderConfig,
     pub render_slots: Arc<Semaphore>,
     renders: Arc<Mutex<RenderRegistry>>,
     retained_renders: usize,
@@ -26,7 +28,7 @@ pub(super) struct AppState {
 
 impl AppState {
     /// Fails when the quality config doesn't load or the media directory can't be opened.
-    pub fn new(args: Args) -> anyhow::Result<Self> {
+    pub fn new(args: Args, render_config: RenderConfig) -> anyhow::Result<Self> {
         let assets = AssetStore::open(
             &args.media_dir,
             args.media_ttl,
@@ -52,6 +54,7 @@ impl AppState {
             progress_min_delta: args.progress_min_delta,
             max_text_glyphs: args.max_text_glyphs as usize,
             quality: Arc::new(quality),
+            render_config,
             render_slots: Arc::new(Semaphore::new(args.max_concurrent_renders.get())),
             renders: Arc::new(Mutex::new(RenderRegistry::default())),
             retained_renders: args.retained_renders.get(),
@@ -115,11 +118,14 @@ mod tests {
     fn state(args: &[&str]) -> AppState {
         let media = tempfile::tempdir().unwrap();
         let media = media.path().to_str().unwrap();
-        AppState::new(Args::parse_from(
-            ["lumen-server", "--media-dir", media]
-                .into_iter()
-                .chain(args.iter().copied()),
-        ))
+        AppState::new(
+            Args::parse_from(
+                ["lumen-server", "--media-dir", media]
+                    .into_iter()
+                    .chain(args.iter().copied()),
+            ),
+            RenderConfig::default(),
+        )
         .unwrap()
     }
 

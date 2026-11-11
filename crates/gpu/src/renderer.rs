@@ -62,32 +62,84 @@ impl SubmittedExternalTexture {
     }
 }
 
-/// Builds the instance options from the build config and environment. HAL labels are discarded
-/// unless `WGPU_DISCARD_HAL_LABELS` says otherwise: concurrent devices from separate instances
-/// crash inside the Vulkan loader in `vkSetDebugUtilsObjectNameEXT` more often with them
-/// (https://github.com/gfx-rs/wgpu/issues/5270). Set `WGPU_DISCARD_HAL_LABELS=0` to keep
-/// resource names in GPU captures.
-pub(crate) fn instance_descriptor() -> wgpu::InstanceDescriptor {
-    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-    if std::env::var_os("WGPU_DISCARD_HAL_LABELS").is_none() {
-        descriptor.flags |= wgpu::InstanceFlags::DISCARD_HAL_LABELS;
+/// How a [`Renderer`] picks its wgpu instance and adapter.
+///
+/// [`GpuSettings::default`] reads no environment variables, so a library embedding Lumen chooses
+/// these itself. [`GpuSettings::from_env`] is for binaries.
+#[derive(Debug, Clone)]
+pub struct GpuSettings {
+    pub backends: wgpu::Backends,
+    pub flags: wgpu::InstanceFlags,
+    pub backend_options: wgpu::BackendOptions,
+    pub power_preference: wgpu::PowerPreference,
+    pub force_fallback_adapter: bool,
+}
+
+impl Default for GpuSettings {
+    /// Every backend, the high-performance adapter and no fallback adapter. HAL labels are
+    /// discarded: concurrent devices from separate instances crash inside the Vulkan loader in
+    /// `vkSetDebugUtilsObjectNameEXT` more often with them
+    /// (https://github.com/gfx-rs/wgpu/issues/5270).
+    fn default() -> Self {
+        Self {
+            backends: wgpu::Backends::default(),
+            flags: wgpu::InstanceFlags::default() | wgpu::InstanceFlags::DISCARD_HAL_LABELS,
+            backend_options: wgpu::BackendOptions::default(),
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+        }
     }
-    descriptor
+}
+
+impl GpuSettings {
+    /// The defaults, overridden by wgpu's environment variables (`WGPU_BACKEND`,
+    /// `WGPU_POWER_PREF`, ...) and `LUMEN_GPU_FORCE_FALLBACK_ADAPTER`. Set `WGPU_DISCARD_HAL_LABELS=0`
+    /// to keep resource names in GPU captures.
+    pub fn from_env() -> Self {
+        let descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        let mut flags = descriptor.flags;
+        if std::env::var_os("WGPU_DISCARD_HAL_LABELS").is_none() {
+            flags |= wgpu::InstanceFlags::DISCARD_HAL_LABELS;
+        }
+        Self {
+            backends: descriptor.backends,
+            flags,
+            backend_options: descriptor.backend_options,
+            power_preference: wgpu::PowerPreference::from_env()
+                .unwrap_or(wgpu::PowerPreference::HighPerformance),
+            force_fallback_adapter: env_flag("LUMEN_GPU_FORCE_FALLBACK_ADAPTER"),
+        }
+    }
+
+    pub(crate) fn instance_descriptor(&self) -> wgpu::InstanceDescriptor {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = self.backends;
+        descriptor.flags = self.flags;
+        descriptor.backend_options = self.backend_options.clone();
+        descriptor
+    }
+
+    pub(crate) fn adapter_options(&self) -> wgpu::RequestAdapterOptions<'static, 'static> {
+        wgpu::RequestAdapterOptions {
+            power_preference: self.power_preference,
+            compatible_surface: None,
+            force_fallback_adapter: self.force_fallback_adapter,
+            apply_limit_buckets: false,
+        }
+    }
 }
 
 impl Renderer {
+    /// Creates a renderer with [`GpuSettings::from_env`].
     pub async fn new() -> Result<Self> {
-        let instance = wgpu::Instance::new(instance_descriptor());
-        let power_preference =
-            wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
-        let force_fallback_adapter = env_flag("LUMEN_GPU_FORCE_FALLBACK_ADAPTER");
+        Self::new_with_settings(&GpuSettings::from_env()).await
+    }
+
+    /// Creates a renderer that reads no environment variables.
+    pub async fn new_with_settings(settings: &GpuSettings) -> Result<Self> {
+        let instance = wgpu::Instance::new(settings.instance_descriptor());
         let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference,
-                compatible_surface: None,
-                force_fallback_adapter,
-                apply_limit_buckets: false,
-            })
+            .request_adapter(&settings.adapter_options())
             .await
             .context("no compatible wgpu adapter")?;
         let adapter_info = adapter.get_info();
@@ -258,4 +310,25 @@ pub(crate) fn env_flag(name: &str) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_settings_pick_the_high_performance_adapter_and_discard_hal_labels() {
+        let settings = GpuSettings::default();
+        assert_eq!(
+            settings.power_preference,
+            wgpu::PowerPreference::HighPerformance
+        );
+        assert!(!settings.force_fallback_adapter);
+        assert!(
+            settings
+                .instance_descriptor()
+                .flags
+                .contains(wgpu::InstanceFlags::DISCARD_HAL_LABELS)
+        );
+    }
 }
