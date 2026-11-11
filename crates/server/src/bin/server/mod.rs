@@ -168,20 +168,21 @@ where
 
 /// What a client is told of `error`: the whole chain, without where the server keeps its files.
 fn client_message(error: &ServerRenderError, staged_path: &Path) -> String {
-    let from_media = error
+    let written = error
         .engine_error()
-        .is_some_and(|engine| engine.media_failure().is_some());
-    client_text(&error_chain(error), from_media, staged_path)
+        .and_then(|engine| engine.media_failure())
+        .map(|failure| failure.source.as_str());
+    client_text(&error_chain(error), written, staged_path)
 }
 
-/// `message`, a render's error chain, as a client sees it. A media failure is shown without any
-/// path of the server, wherever it keeps the file.
-fn client_text(message: &str, from_media: bool, staged_path: &Path) -> String {
+/// `message`, a render's error chain, as a client sees it. A media failure, which names `written`
+/// as the composition wrote it, is shown without any path of the server, wherever it keeps the
+/// file.
+fn client_text(message: &str, written: Option<&str>, staged_path: &Path) -> String {
     let message = without_staging_path(message, staged_path);
-    sanitize_error_message(&if from_media {
-        hide_server_paths(&message)
-    } else {
-        message
+    sanitize_error_message(&match written {
+        Some(written) => hide_server_paths(&message, written),
+        None => message,
     })
 }
 
@@ -231,11 +232,11 @@ mod tests {
             ),
             (own, "failed to render: video `clip.mp4` failed"),
         ] {
-            assert_eq!(client_text(message, true, staged), shown);
+            assert_eq!(client_text(message, Some(""), staged), shown);
         }
         // Text that is not a media failure is kept, as a diagnostic pointer is not a path.
         assert_eq!(
-            client_text("bad value at /nodes/1/params", false, staged),
+            client_text("bad value at /nodes/1/params", None, staged),
             "bad value at /nodes/1/params"
         );
     }

@@ -68,10 +68,23 @@ pub(crate) fn input_hash(
 /// with, which are what a client needs to act on.
 pub(super) const MAX_ERROR_MESSAGE_CHARS: usize = 1024;
 
-/// `message` without the absolute file paths in it, each replaced by `<path>`: where the server
-/// keeps its files is not for a client to learn. A path is a word that starts with `/` after
-/// whitespace, a quote or a bracket and has more than one segment.
-pub(super) fn hide_server_paths(message: &str) -> String {
+/// `message` without the absolute file paths in it, each replaced by `<path>`, except `written`,
+/// a source as the composition wrote it, which the client knows: where the server keeps its files
+/// is not for a client to learn.
+pub(super) fn hide_server_paths(message: &str, written: &str) -> String {
+    if written.is_empty() {
+        return hide_paths(message);
+    }
+    message
+        .split(written)
+        .map(hide_paths)
+        .collect::<Vec<_>>()
+        .join(written)
+}
+
+/// A path is a word that starts with `/` after whitespace, a quote or a bracket and has more than
+/// one segment.
+fn hide_paths(message: &str) -> String {
     const OPENERS: &str = "`'\"([=";
     const ENDERS: &str = "`'\")]<>,;";
     let mut hidden = String::with_capacity(message.len());
@@ -121,12 +134,24 @@ mod tests {
     fn server_paths_are_hidden_and_other_text_is_kept() {
         assert_eq!(
             hide_server_paths(
-                "audio `asset:a` failed: avformat_open_input: /var/lib/lumen/assets/ab12/file.wav: No such file (path `/srv/media/a b.wav`)"
+                "audio `asset:a` failed: avformat_open_input: /var/lib/lumen/assets/ab12/file.wav: No such file (path `/srv/media/a b.wav`)",
+                "asset:a"
             ),
             "audio `asset:a` failed: avformat_open_input: <path>: No such file (path `<path> b.wav`)"
         );
         let kept = "image `https://x.test/a/b.png` at /nodes/1 is 3/4 of a/b, see `/root`";
-        assert_eq!(hide_server_paths(kept), kept.replace("/nodes/1", "<path>"));
+        assert_eq!(
+            hide_server_paths(kept, ""),
+            kept.replace("/nodes/1", "<path>")
+        );
+        // The path the composition wrote is its own to read back.
+        assert_eq!(
+            hide_server_paths(
+                "image `/tmp/a/x.png` not found at /srv/m/x.png",
+                "/tmp/a/x.png"
+            ),
+            "image `/tmp/a/x.png` not found at <path>"
+        );
     }
 
     #[test]

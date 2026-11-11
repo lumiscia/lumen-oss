@@ -82,7 +82,10 @@ export interface MediaFailure {
   readonly source: string;
   /** The kinds the place using the source reads; empty when the host that failed doesn't know. */
   readonly wanted: readonly MediaFailureKind[];
-  /** The kind the source is, when it is known to be another than `wanted`. */
+  /**
+   * The kind the source is, when that is established. It is absent when it can't be told, such
+   * as an MP4 that is not video-only or audio-only until opened.
+   */
   readonly found?: MediaFailureKind;
   /** Where the composition uses the source, when known. */
   readonly at?: MediaLocation;

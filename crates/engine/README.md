@@ -187,7 +187,7 @@ match error.media_failure() {
 ```
 
 A failure has the `source` as the composition wrote it, the kinds the place using it `wanted`, the
-kind it `found` when known, where it is used (`at`: a node param, or an audio clip, in the root or
+kind it `found` only when that is established, where it is used (`at`: a node param, or an audio clip, in the root or
 a template), and a `reason` with its public code. Diagnostics from `check` carry the JSON pointer
 of that place.
 
@@ -200,10 +200,21 @@ of that place.
 | `media.decode`      | can't be read as what it should be                               |
 
 `media.decode` and `media.unsupported` differ by what the engine knows: it says `unsupported` when
-it identified the data (a container, a codec, a glTF extension, a font format) and doesn't read
-it, and `decode` when the data is corrupt, truncated, contradicts itself, or is in no format it can
-identify. A failure that is a shortage which can pass, such as running out of memory while reading
-a file, is a `media.decode` with `transient` set, which hosts may retry.
+it identified the data (a container, a codec, a glTF extension, a font format, a `.gltf` JSON
+document) and doesn't read it, and `decode` when the data is corrupt, truncated, contradicts itself,
+or is in no format it can identify. A file that only starts like JSON is `decode`; a glTF JSON
+document is recognised by a top-level `asset` object with a `version` within the first 64 KiB, and
+is `unsupported`.
+
+`found` is set only when it is established: by a format that holds one kind of media only (PNG,
+glTF, a font, WAV), or by opening a container and finding which streams it has. A header can't tell
+audio from video in MP4, Matroska/WebM or Ogg, so a file of one of these used where an image, model
+or font is wanted is `media.wrong_kind` without a `found`; a container opened as video or audio has
+`found` set from its streams. An unknown `found` is correct; a wrong one is not.
+
+A failure that is a shortage which can pass (out of memory, file descriptors or a device in use, in
+the engine's own reads and in FFmpeg's, while opening and while decoding) is a `media.decode` with
+`transient` set, which hosts may retry.
 
 ### Codes
 

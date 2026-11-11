@@ -96,7 +96,7 @@ On the CPU upload path, frames are read back through a ring of three buffers whi
 
 #### Error codes
 
-A failed render is a `ServerRenderError`. `code()` is an `ErrorCode` to match on, `as_str()` gives the string the HTTP binary returns, `Display` is a message, and `source()` is the error that caused it. A failure in the engine has the engine's diagnostic code, such as `media.not_found`, `media.decode` or `render.gpu`, from the [engine's table](../engine/README.md), and `engine_error()` returns the engine error itself. Only `render.gpu` is retryable among them. The other codes are failures of this library:
+A failed render is a `ServerRenderError`. `code()` is an `ErrorCode` to match on, `as_str()` gives the string the HTTP binary returns, `Display` is a message, and `source()` is the error that caused it. A failure in the engine has the engine's diagnostic code, such as `media.not_found`, `media.decode` or `render.gpu`, from the [engine's table](../engine/README.md), and `engine_error()` returns the engine error itself. Of them, `render.gpu` is retryable, and so is a media failure that was a shortage that can pass (out of memory or file descriptors), which is a `media.decode`. The other codes are failures of this library:
 
 | Code                      | Meaning                                                                                                                                                                          |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
