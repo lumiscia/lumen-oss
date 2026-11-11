@@ -35,6 +35,13 @@ impl CudaTarget {
             message: format!("failed to create GPU renderer: {err:#}"),
             retryable: true,
         })?;
+        renderer
+            .check_output_size(composition)
+            .map_err(|err| RenderError {
+                code: "render_failed",
+                message: err.to_string(),
+                retryable: false,
+            })?;
         let settings = composition.render_settings();
         let (width, height) = (settings.width, settings.height);
         let pool = CudaNvencTargetPool::rgba8(

@@ -33,11 +33,11 @@ use crate::{
         compositing::clip::Clip,
         required_input,
         source::{
-            media_in::AlphaMode,
+            media_in::{AlphaMode, MediaInSourceKindDelegate},
             text::{TextDraw, TextInstance},
         },
     },
-    scope::{FrameTime, Routed, Scope},
+    scope::{FrameTime, MAX_GRAPH_DEPTH, Routed, Scope},
 };
 
 #[cfg(feature = "ffmpeg")]
@@ -129,6 +129,10 @@ pub(crate) struct Programs<'a> {
 impl Programs<'_> {
     pub(crate) fn output_format(&self) -> wgpu::TextureFormat {
         self.output_format
+    }
+
+    pub(crate) fn limits(&self) -> wgpu::Limits {
+        self.rec.device().limits()
     }
 
     pub(crate) fn compute(
@@ -309,6 +313,8 @@ struct RecordState {
     output: Option<Raster>,
     /// The font resolver of each family text names, which retained text was drawn with.
     fonts: HashMap<String, Option<String>>,
+    /// The texture of each image source that retained output was drawn from.
+    images: HashMap<String, Option<super::MediaTextureKey>>,
     /// The template, node and family of each font fallback reported for this composition.
     font_fallbacks: HashSet<(Option<String>, NodeId, String)>,
     /// Warnings not yet taken.
@@ -432,7 +438,11 @@ impl FrameGraph {
         loop {
             self.drop_pending();
             let generation = font_generation(media);
-            if self.state.font_generation != generation || self.fonts_changed(media) {
+            let images_changed = self.images_changed(media);
+            if self.state.font_generation != generation
+                || self.fonts_changed(media)
+                || images_changed
+            {
                 self.drop_slots();
                 self.state.font_generation = generation;
             }
@@ -461,6 +471,7 @@ impl FrameGraph {
                 single_tile_repeats,
                 retain_static,
                 static_depth: 0,
+                depth: 0,
                 bound: BoundFrame::new(),
                 text_atlas,
                 atlas_texture: &mut *atlas_texture,
@@ -632,7 +643,7 @@ impl FrameGraph {
         {
             let mut rgba = fit_frame_to_rgba8(&frame, size.width, size.height);
             if premultiply {
-                premultiply_rgba_in_place_if_needed(&mut rgba);
+                premultiply_rgba_in_place_if_needed(rgba.to_mut());
             }
             self.recorder.queue().write_texture(
                 self.recorder.texture(tex).as_image_copy(),
@@ -764,6 +775,8 @@ impl FrameGraph {
         }
         state.statics.clear();
         state.texts.clear();
+        state.paths.clear();
+        state.fonts.clear();
         state.font_fallbacks.clear();
         state.shaders.clear();
         state.memo.clear();
@@ -793,6 +806,22 @@ impl FrameGraph {
             let current = media.and_then(|media| media.font_resolver_id(family));
             if *resolver != current {
                 *resolver = current;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Whether an image source retained output was drawn from now resolves to another texture, as
+    /// when a host replaces the image under the same source or with one of another size.
+    fn images_changed(&mut self, media: Option<&dyn MediaStore>) -> bool {
+        let mut changed = false;
+        for (source, key) in &mut self.state.images {
+            let current = media
+                .and_then(|media| media.get_image_resolver(source).ok())
+                .map(|resolver| super::MediaTextureKey::of_image(&*resolver));
+            if *key != current {
+                *key = current;
                 changed = true;
             }
         }
@@ -830,6 +859,7 @@ impl FrameGraph {
 
     fn drop_slots(&mut self) {
         self.state.pending.clear();
+        self.state.images.clear();
         let keys: Vec<_> = self.state.slots.keys().copied().collect();
         for key in keys {
             Self::release_slot(&mut self.recorder, &mut self.state, key);
@@ -918,6 +948,8 @@ pub(crate) struct FrameCx<'a> {
     retain_static: bool,
     /// How many static nodes the walk is inside, whose readers retain them rather than this.
     static_depth: u32,
+    /// How many nodes the walk is recording inside.
+    depth: u32,
     pub(crate) bound: BoundFrame,
     text_atlas: &'a Arc<Mutex<lumen_text::GlyphAtlas>>,
     atlas_texture: &'a mut Option<Arc<wgpu::Texture>>,
@@ -955,13 +987,11 @@ impl<'a> FrameCx<'a> {
 
     /// Warns once per composition that `family` fell back for text node `node_id`.
     fn note_font_fallback(&mut self, node_id: NodeId, family: String) {
-        let template = self
-            .composition
-            .compositions()
-            .iter()
-            .find(|(_, template)| std::ptr::eq(&template.scene, self.scope.scene))
-            .map(|(name, _)| name.clone());
-        let key = (template, node_id, family);
+        let key = (
+            self.scope.template_name().map(str::to_string),
+            node_id,
+            family,
+        );
         if self.st.font_fallbacks.contains(&key) {
             return;
         }
@@ -1044,9 +1074,14 @@ impl<'a> FrameCx<'a> {
         let raster = match self.st.memo.get(&key) {
             Some(raster) => *raster,
             None => {
+                if self.depth == MAX_GRAPH_DEPTH {
+                    return Err(self.scope.too_deep(node_id));
+                }
                 let passes = self.rec.pass_count();
                 self.static_depth += u32::from(is_static);
+                self.depth += 1;
                 let raster = record_node(node, self);
+                self.depth -= 1;
                 self.static_depth -= u32::from(is_static);
                 let raster = raster?;
                 self.st.memo.insert(key, raster);
@@ -1061,6 +1096,10 @@ impl<'a> FrameCx<'a> {
     }
 
     fn retain(&mut self, graph: usize, node: NodeId, raster: Raster, passes: u64) {
+        // An image's own texture is let go of by frames that don't bind it, so it isn't kept.
+        if self.st.media.values().any(|(tex, _)| *tex == raster.tex) {
+            return;
+        }
         self.rec.retain(raster.tex);
         let bytes = self.rec.texture_bytes(raster.tex);
         self.st.retained_bytes += bytes;
@@ -1357,6 +1396,13 @@ impl<'a> FrameCx<'a> {
         let atlas = self.rec.adopt(texture);
         self.st.atlas = Some(atlas);
         Ok(atlas)
+    }
+
+    /// Remembers the texture of an image source when what reads it is retained.
+    pub(crate) fn note_image(&mut self, source: &str, key: &super::MediaTextureKey) {
+        if self.static_depth > 0 && !self.st.images.contains_key(source) {
+            self.st.images.insert(source.to_string(), Some(key.clone()));
+        }
     }
 
     /// Remembers the resolver of a family text names.
@@ -1850,21 +1896,46 @@ impl<'a> FrameCx<'a> {
         tex
     }
 
+    /// Whether `node` and everything it reads are static candidates. Walks its inputs depth first
+    /// with a stack of its own, so a long chain of nodes can't run out of call stack.
     fn is_static(&mut self, node: &NodeKind) -> bool {
-        let key = (self.graph_key(), node.id());
-        if let Some(known) = self.st.statics.get(&key) {
-            return *known;
-        }
-        self.st.statics.insert(key, false);
-        let result = is_static_candidate(node)
-            && !matches!(node, NodeKind::Clip(_) | NodeKind::TimeRemap(_))
-            && node.input_ports().into_iter().flatten().all(|input| {
-                self.scope
-                    .node(input)
-                    .is_some_and(|input| self.is_static(input))
+        let graph = self.graph_key();
+        let mut pending = vec![node.id()];
+        // Nodes whose inputs have been put on `pending`, which are decided when next reached.
+        let mut entered = HashSet::default();
+        while let Some(&id) = pending.last() {
+            if self.st.statics.contains_key(&(graph, id)) {
+                pending.pop();
+                continue;
+            }
+            let candidate = self.scope.node(id).filter(|node| {
+                is_static_candidate(node)
+                    && !matches!(node, NodeKind::Clip(_) | NodeKind::TimeRemap(_))
             });
-        self.st.statics.insert(key, result);
-        result
+            let Some(node) = candidate else {
+                self.st.statics.insert((graph, id), false);
+                pending.pop();
+                continue;
+            };
+            let inputs = node.input_ports().into_iter().flatten();
+            if entered.insert(id) {
+                let undecided = inputs
+                    .clone()
+                    .filter(|input| !self.st.statics.contains_key(&(graph, *input)));
+                let before = pending.len();
+                pending.extend(undecided);
+                if pending.len() > before {
+                    continue;
+                }
+            }
+            // An input still undecided here is part of a cycle, which validation rejects.
+            let result = inputs
+                .into_iter()
+                .all(|input| self.st.statics.get(&(graph, input)) == Some(&true));
+            self.st.statics.insert((graph, id), result);
+            pending.pop();
+        }
+        self.st.statics.get(&(graph, node.id())) == Some(&true)
     }
 
     fn record_routed(&mut self, routed: Routed<'a>) -> crate::Result<Raster> {
@@ -1951,9 +2022,13 @@ impl<'a> FrameCx<'a> {
 /// Whether the node renders the same output on every frame as long as its inputs do.
 fn is_static_candidate(node: &NodeKind) -> bool {
     match node {
-        // Media changes with the frame and the media store, shaders see the built-in time, and
-        // the output is written into external textures that replace its own.
-        NodeKind::MediaIn(_) | NodeKind::WgslShader(_) | NodeKind::MediaOutput(_) => false,
+        // An image changes only with the media store, which `images_changed` watches.
+        NodeKind::MediaIn(media) => {
+            matches!(media.params.kind, MediaInSourceKindDelegate::Image) && !node.has_expressions()
+        }
+        // Video changes with the frame, shaders see the built-in time, and the output is written
+        // into external textures that replace its own.
+        NodeKind::WgslShader(_) | NodeKind::MediaOutput(_) => false,
         _ => !node.has_expressions(),
     }
 }
@@ -1993,7 +2068,41 @@ fn node_programs(node: &NodeKind, programs: &mut Programs<'_>) -> crate::Result<
     }
 }
 
+/// Fails, blaming `node`, when `size` is larger than the device's `max` texture dimension.
+pub(crate) fn ensure_texture_fits(
+    node: &NodeKind,
+    size: Size,
+    canvas: Size,
+    max: u32,
+) -> crate::Result<()> {
+    if size.width <= max && size.height <= max {
+        return Ok(());
+    }
+    let what = if size == canvas { "canvas" } else { "texture" };
+    Err(RenderError::NodeEvaluation {
+        node_id: node.id(),
+        node_kind: node.kind_name(),
+        details: format!(
+            "a {}x{} {what} is larger than this device's {max}-pixel texture limit",
+            size.width, size.height
+        ),
+    }
+    .into())
+}
+
+/// Records `node`, or fails when the textures it acquires itself are larger than the device
+/// allows. The textures its inputs acquire are theirs to check.
 fn record_node(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
+    let outer = cx.rec.replace_largest_acquired_texture(Size::new(0, 0));
+    let raster = record_kind(node, cx);
+    let largest = cx.rec.replace_largest_acquired_texture(outer);
+    let raster = raster?;
+    let max = cx.rec.device().limits().max_texture_dimension_2d;
+    ensure_texture_fits(node, largest, cx.canvas_size(), max)?;
+    Ok(raster)
+}
+
+fn record_kind(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
     match node {
         NodeKind::MediaIn(node) => node.record(cx),
         NodeKind::Background(node) => node.record(cx),

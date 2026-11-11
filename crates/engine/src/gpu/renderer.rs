@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     sync::{Arc, Mutex},
 };
@@ -519,6 +520,16 @@ impl GpuCompositionRenderer {
     pub fn gpu_renderer(&self) -> &lumen_gpu::Renderer {
         &self.renderer
     }
+
+    /// Fails with the error a render of `composition` gives when its canvas is larger than the
+    /// device's texture limit, for callers that create the output texture themselves.
+    pub fn check_output_size(&self, composition: &Composition) -> crate::Result<()> {
+        let settings = composition.render_settings();
+        let canvas = lumen_gpu::Size::new(settings.width.max(1), settings.height.max(1));
+        let output = &composition.graph().nodes[&composition.output()];
+        let max = self.renderer.device.limits().max_texture_dimension_2d;
+        super::frame_graph::ensure_texture_fits(output, canvas, canvas, max)
+    }
 }
 
 /// Times a frame is bound again after fonts load during binding, before binding fails rather
@@ -535,9 +546,9 @@ fn max_font_rebinds(composition: &Composition) -> usize {
     composition.graph().nodes.len() + templates + 3
 }
 
-pub(super) fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32) -> Vec<u8> {
+pub(super) fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32) -> Cow<'_, [u8]> {
     if frame.width == width && frame.height == height && frame.row_bytes == width as usize * 4 {
-        return frame.rgba.as_ref().clone();
+        return Cow::Borrowed(frame.rgba.as_slice());
     }
 
     let mut out = vec![0; width as usize * height as usize * 4];
@@ -554,5 +565,5 @@ pub(super) fn fit_frame_to_rgba8(frame: &CpuMediaFrame, width: u32, height: u32)
             out[dst..dst + 4].copy_from_slice(&frame.rgba[src..src + 4]);
         }
     }
-    out
+    Cow::Owned(out)
 }
