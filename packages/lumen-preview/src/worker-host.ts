@@ -5,9 +5,8 @@ import {
   type LumenLogLevel,
   type LumenPreviewBindings,
   type LumenPreviewController,
-  type MediaRegistration,
-  type MediaSourceInput,
-} from "./index.js";
+} from "./runtime.js";
+import type { MediaRegistration, MediaSourceInput } from "./media/index.js";
 import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
 import type { LumenPreviewErrorCode } from "./preview.js";
 import { resolvePlaybackRange, type LumenPreviewRange } from "./playback-range.js";
@@ -16,10 +15,8 @@ import { assetHint } from "./asset-hint.js";
 import { describeError, errorDiagnostics, errorMediaFailure } from "./session/errors.js";
 import { PlaybackFpsMeter } from "./session/stats.js";
 
-type InitPreview = (options: { module_or_path: string }) => Promise<object>;
-
 export interface LumenPreviewWorkerHostOptions {
-  initPreview: InitPreview;
+  initPreview: (options: { module_or_path: string }) => Promise<object>;
   previewBindings: LumenPreviewBindings;
 }
 
