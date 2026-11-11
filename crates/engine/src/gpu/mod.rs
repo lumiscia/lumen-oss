@@ -18,6 +18,7 @@ mod shader_layouts;
 ))]
 mod target;
 mod types;
+mod yuv;
 
 pub use color::WORKING_COLOR_FORMAT;
 pub use renderer::{
@@ -36,3 +37,4 @@ pub use target::{CudaNvencTarget, CudaNvencTargetPool};
 #[cfg(all(target_os = "macos", feature = "ffmpeg", feature = "metal"))]
 pub use target::{MetalVideoToolboxTarget, MetalVideoToolboxTargetPool};
 pub use types::{BoundFrame, MediaTextureKey, RasterHandle};
+pub use yuv::{YuvConverter, YuvFormat, YuvLayout};

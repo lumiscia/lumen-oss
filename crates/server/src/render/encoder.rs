@@ -11,8 +11,8 @@ use lumen_engine::{
     composition::Composition,
 };
 use lumen_ffmpeg::{
-    AudioEncoderConfig, AudioFrame, CpuVideoFrame, EncoderQuality, FfmpegError, MuxedEncoder,
-    PixelFormat, Rational, VideoEncoderConfig,
+    AudioEncoderConfig, AudioFrame, BitDepth, CpuVideoFrame, EncoderQuality, FfmpegError,
+    MuxedEncoder, PixelFormat, Rational, VideoEncoderConfig,
 };
 
 use super::{CancelToken, media::LocalMediaStore};
@@ -20,7 +20,7 @@ use super::{CancelToken, media::LocalMediaStore};
 const ENCODER_FRAME_QUEUE_CAPACITY: usize = 2;
 
 enum EncoderMessage {
-    Video { frame: u32, pixels: Vec<u8> },
+    Video(CpuVideoFrame),
     Audio(AudioFrame),
     Finish,
 }
@@ -30,9 +30,11 @@ enum EncoderMessage {
 pub(super) struct EncoderSink {
     message_tx: Option<mpsc::SyncSender<EncoderMessage>>,
     writer_handle: Option<JoinHandle<anyhow::Result<()>>>,
+    input_format: PixelFormat,
 }
 
 impl EncoderSink {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn create(
         output: &Path,
         width: u32,
@@ -40,6 +42,7 @@ impl EncoderSink {
         fps: f32,
         encoder: &str,
         quality: &EncoderQuality,
+        bit_depth: BitDepth,
         include_audio: bool,
     ) -> anyhow::Result<Self> {
         let mut config = VideoEncoderConfig::cpu_rgba(
@@ -49,18 +52,22 @@ impl EncoderSink {
             encoder,
         );
         config.quality = quality.clone();
+        config.bit_depth = bit_depth;
         let audio = include_audio
             .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
 
         let (message_tx, message_rx) =
             mpsc::sync_channel::<EncoderMessage>(ENCODER_FRAME_QUEUE_CAPACITY);
-        let (startup_tx, startup_rx) = mpsc::sync_channel::<Result<(), FfmpegError>>(1);
+        let (startup_tx, startup_rx) = mpsc::sync_channel::<Result<PixelFormat, FfmpegError>>(1);
         let output = output.to_string_lossy().to_string();
         let writer_handle = thread::spawn(move || {
             let mut encoder = match MuxedEncoder::create_with_audio(output, config, audio) {
                 Ok(encoder) => {
                     warn_if_container_cropped(&encoder);
-                    let _ = startup_tx.send(Ok(()));
+                    let format = encoder
+                        .cpu_input_format()
+                        .expect("a CPU upload encoder takes CPU frames");
+                    let _ = startup_tx.send(Ok(format));
                     encoder
                 }
                 Err(error) => {
@@ -72,17 +79,12 @@ impl EncoderSink {
             // nothing will read.
             while let Ok(message) = message_rx.recv() {
                 match message {
-                    EncoderMessage::Video { frame, pixels } => {
-                        let cpu_frame = CpuVideoFrame {
-                            width,
-                            height,
-                            stride: (width as usize) * 4,
-                            pixel_format: PixelFormat::Rgba8,
-                            pts: Some(i64::from(frame)),
-                            data: pixels,
-                        };
+                    EncoderMessage::Video(cpu_frame) => {
                         encoder.write_video_frame(&cpu_frame).map_err(|error| {
-                            anyhow!("lumen-ffmpeg encode failed at frame {frame}: {error}")
+                            anyhow!(
+                                "lumen-ffmpeg encode failed at frame {}: {error}",
+                                cpu_frame.pts.unwrap_or_default()
+                            )
                         })?;
                     }
                     EncoderMessage::Audio(frame) => {
@@ -99,18 +101,24 @@ impl EncoderSink {
             }
             Ok(())
         });
-        startup_rx
+        let input_format = startup_rx
             .recv()
             .map_err(|_| anyhow!("lumen-ffmpeg encoder startup thread stopped"))?
             .map_err(anyhow::Error::new)?;
         Ok(Self {
             message_tx: Some(message_tx),
             writer_handle: Some(writer_handle),
+            input_format,
         })
     }
 
-    pub(super) fn send_frame(&mut self, frame: u32, pixels: Vec<u8>) -> anyhow::Result<()> {
-        self.send(EncoderMessage::Video { frame, pixels })
+    /// The YUV format the encoder takes frames in.
+    pub(super) fn input_format(&self) -> PixelFormat {
+        self.input_format
+    }
+
+    pub(super) fn send_frame(&mut self, frame: CpuVideoFrame) -> anyhow::Result<()> {
+        self.send(EncoderMessage::Video(frame))
     }
 
     pub(super) fn send_audio(&mut self, frame: AudioFrame) -> anyhow::Result<()> {
@@ -264,6 +272,7 @@ mod tests {
         drop(EncoderSink {
             message_tx: Some(message_tx),
             writer_handle: Some(writer_handle),
+            input_format: PixelFormat::Yuv420p,
         });
         assert!(closed.load(Ordering::SeqCst));
     }
@@ -288,13 +297,25 @@ mod tests {
             30.0,
             "libx264",
             &EncoderQuality::default(),
+            BitDepth::Eight,
             false,
         )
         .unwrap();
+        assert_eq!(sink.input_format(), PixelFormat::Yuv420p);
 
         // The writer rejects a frame of the wrong size, then stops reading.
         let error = (0..16)
-            .find_map(|frame| sink.send_frame(frame, Vec::new()).err())
+            .find_map(|frame| {
+                sink.send_frame(CpuVideoFrame {
+                    width: 64,
+                    height: 64,
+                    stride: 256,
+                    pixel_format: PixelFormat::Yuv420p,
+                    pts: Some(i64::from(frame)),
+                    data: Vec::new(),
+                })
+                .err()
+            })
             .expect("the writer should fail")
             .to_string();
 

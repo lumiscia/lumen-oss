@@ -51,7 +51,19 @@ impl VideoEncoder {
 fn prepare_gpu_frame(transport: &Transport, frame: &GpuVideoInput<'_>) -> Result<AvFrame> {
     match (transport, frame) {
         #[cfg(feature = "cuda")]
-        (Transport::Cuda { frames }, GpuVideoInput::Cuda(frame)) => cuda_frame(frames, frame),
+        (Transport::Cuda { frames, bit_depth }, GpuVideoInput::Cuda(frame)) => {
+            if frame.depth() != bit_depth.bits() {
+                return Err(FfmpegError::new(
+                    "VideoEncoder::send_gpu_frame",
+                    format!(
+                        "a {}-bit CUDA frame can't go to a {bit_depth} encoder",
+                        frame.depth()
+                    ),
+                )
+                .with_backend(GpuBackend::Cuda));
+            }
+            cuda_frame(frames, frame)
+        }
         #[cfg(feature = "vulkan")]
         (Transport::Vulkan { frames, device }, GpuVideoInput::Vulkan(frame)) => {
             vulkan_frame(frames, device, frame)
@@ -111,6 +123,22 @@ fn vulkan_frame(
                 "Vulkan frame is on device {:?}, but the encoder uses device {:?}",
                 frame.device(),
                 device.handle(),
+            ),
+        )
+        .with_backend(GpuBackend::Vulkan));
+    }
+
+    let encoder_depth =
+        match unsafe { (*(*frames.ptr).data.cast::<sys::AVHWFramesContext>()).sw_format } {
+            sys::AVPixelFormat::AV_PIX_FMT_P010LE => 10,
+            _ => 8,
+        };
+    if frame.layout().depth != encoder_depth {
+        return Err(FfmpegError::new(
+            "VideoEncoder::send_gpu_frame",
+            format!(
+                "a {}-bit Vulkan frame can't go to a {encoder_depth}-bit encoder",
+                frame.layout().depth
             ),
         )
         .with_backend(GpuBackend::Vulkan));

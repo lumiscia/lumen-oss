@@ -78,6 +78,7 @@ export class Lumen {
         ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
         ...(options.quality !== undefined ? { quality: options.quality } : {}),
         ...(options.codec !== undefined ? { codec: options.codec } : {}),
+        ...(options.bitDepth !== undefined ? { bit_depth: options.bitDepth } : {}),
         ...(options.output !== undefined ? { output: outputBody(options.output) } : {}),
       },
       idempotencyKey: options.idempotencyKey,

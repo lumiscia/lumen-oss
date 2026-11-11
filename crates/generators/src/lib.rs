@@ -114,7 +114,7 @@ fn render_schema() -> Result<String> {
             },
             "renderSettings": {
                 "x-lumen-type": "RenderSettings",
-                "description": "The canvas, and how the host that renders the video encodes it. Previews ignore `codec` and `quality`.",
+                "description": "The canvas, and how the host that renders the video encodes it. Previews ignore `codec`, `quality` and `bit_depth`.",
                 "type": "object",
                 "required": ["width", "height"],
                 "properties": {
@@ -129,6 +129,12 @@ fn render_schema() -> Result<String> {
                     "quality": {
                         "description": "Quality preset name. Every host defines `draft`, `standard`, `high` and `lossless`; operators can add others. A render request's `quality` wins over it.",
                         "type": "string"
+                    },
+                    "bit_depth": {
+                        "x-lumen-type": "VideoBitDepth",
+                        "description": "Bits per sample of the rendered video: 8, the default, or 10 for `hevc` and `av1`. H.264 is always 8-bit, and a host whose encoders can't write 10 bits rejects the render rather than writing 8. A render request's `bit_depth` wins over it.",
+                        "type": "integer",
+                        "enum": [8, 10]
                     }
                 },
                 "additionalProperties": false

@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use super::codec::{EncoderInfo, encoder_info};
+use super::codec::{BitDepth, EncoderInfo, encoder_info};
 use super::quality::EncoderQuality;
 
 /// An encoder a render may use, with the settings it runs with.
@@ -10,27 +10,43 @@ pub struct EncoderCandidate {
     pub quality: EncoderQuality,
 }
 
-/// The encoders a render tries, in order, until one opens. Never empty. A pinned encoder is a
-/// single candidate, so it either opens or fails the render.
+/// The encoders a render tries, in order, until one opens, and the bit depth every one of them
+/// encodes at. Never empty. A pinned encoder is a single candidate, so it either opens or fails
+/// the render.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VideoEncoderChoice {
     candidates: Vec<EncoderCandidate>,
+    bit_depth: BitDepth,
 }
 
 impl VideoEncoderChoice {
-    /// `None` when `candidates` is empty.
+    /// 8-bit, or `None` when `candidates` is empty.
     pub fn new(candidates: Vec<EncoderCandidate>) -> Option<Self> {
-        (!candidates.is_empty()).then_some(Self { candidates })
+        (!candidates.is_empty()).then_some(Self {
+            candidates,
+            bit_depth: BitDepth::Eight,
+        })
     }
 
-    /// Exactly `encoder`, with no fallback.
+    /// Exactly `encoder`, with no fallback, at 8 bits.
     pub fn single(encoder: impl Into<String>, quality: EncoderQuality) -> Self {
         Self {
             candidates: vec![EncoderCandidate {
                 encoder: encoder.into(),
                 quality,
             }],
+            bit_depth: BitDepth::Eight,
         }
+    }
+
+    /// This choice at `bit_depth`. An encoder that can't write it fails to open.
+    pub fn with_bit_depth(mut self, bit_depth: BitDepth) -> Self {
+        self.bit_depth = bit_depth;
+        self
+    }
+
+    pub fn bit_depth(&self) -> BitDepth {
+        self.bit_depth
     }
 
     pub fn candidates(&self) -> &[EncoderCandidate] {

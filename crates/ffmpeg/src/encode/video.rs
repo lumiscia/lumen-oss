@@ -10,10 +10,10 @@ use sys::{
     AVColorRange::AVCOL_RANGE_MPEG,
     AVColorSpace::AVCOL_SPC_BT709,
     AVColorTransferCharacteristic::AVCOL_TRC_BT709,
-    AVPixelFormat::{AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P},
+    AVPixelFormat::{AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P10LE},
 };
 
-use super::codec::{EncoderFamily, video_encoder_by_name};
+use super::codec::{BitDepth, EncoderFamily, check_bit_depth, video_encoder_by_name};
 use super::common::{refresh_stream_time_base, send_frame_and_write_packets};
 use super::hw::{AvBufferRef, EncoderHwContexts, create_encoder_hw_contexts};
 use super::output::OutputContext;
@@ -33,6 +33,8 @@ pub struct VideoEncoderConfig {
     pub encoder: String,
     pub mode: EncodeMode,
     pub quality: EncoderQuality,
+    /// The stream's bits per sample. A 10-bit encoder takes YUV frames of that depth, never RGBA.
+    pub bit_depth: BitDepth,
     /// CUDA device the frames sent in `EncodeMode::GpuTexture(GpuBackend::Cuda)` live on; `None`
     /// uses the default device.
     pub cuda_ordinal: Option<i32>,
@@ -55,6 +57,7 @@ impl VideoEncoderConfig {
             encoder: encoder.into(),
             mode: EncodeMode::CpuUpload,
             quality: EncoderQuality::default(),
+            bit_depth: BitDepth::Eight,
             cuda_ordinal: None,
             #[cfg(feature = "vulkan")]
             vulkan_device: None,
@@ -74,14 +77,19 @@ pub struct ContainerCrop {
 
 /// How frames reach the encoder.
 pub(in crate::encode) enum Transport {
-    /// RGBA converted into `frame`, then uploaded to `hw_frames` when the encoder takes those.
+    /// YUV frames of `format` copied into `frame`, or at 8 bits RGBA converted into it, then
+    /// uploaded to `hw_frames` when the encoder takes those.
     Cpu {
-        scaler: Scaler,
+        format: PixelFormat,
+        scaler: Option<Scaler>,
         frame: AvFrame,
         hw_frames: Option<AvBufferRef>,
     },
     #[cfg(feature = "cuda")]
-    Cuda { frames: AvBufferRef },
+    Cuda {
+        frames: AvBufferRef,
+        bit_depth: BitDepth,
+    },
     #[cfg(feature = "vulkan")]
     Vulkan {
         frames: AvBufferRef,
@@ -179,6 +187,8 @@ impl VideoEncoder {
         }
         let codec = video_encoder_by_name(&config.encoder)?;
         let encoder_name = config.encoder.as_str();
+        check_bit_depth(encoder_name, config.bit_depth)
+            .map_err(|message| FfmpegError::new("VideoEncoder::create", message))?;
         let quality = quality_options(encoder_name, &config.quality, config.mode)?;
         check_container_holds(output, codec, encoder_name)?;
         let stream = unsafe { sys::avformat_new_stream(output.ptr, ptr::null()) };
@@ -212,7 +222,7 @@ impl VideoEncoder {
             (*context).pix_fmt = match (&hw_contexts, config.mode) {
                 (Some(contexts), _) => contexts.hw_format,
                 (None, EncodeMode::GpuTexture(GpuBackend::Metal)) => AV_PIX_FMT_VIDEOTOOLBOX,
-                (None, _) => AV_PIX_FMT_YUV420P,
+                (None, _) => yuv420p(config.bit_depth),
             };
             (*context).color_primaries = AVCOL_PRI_BT709;
             (*context).color_trc = AVCOL_TRC_BT709;
@@ -245,7 +255,8 @@ impl VideoEncoder {
                     && error.code == Some(sys::AVERROR(libc::ENOSYS))
                 {
                     format!(
-                        "the Vulkan device can't run `{encoder_name}`: it has no video encode queue or doesn't support encoding this codec"
+                        "the Vulkan device can't run `{encoder_name}`: it has no video encode queue or doesn't support encoding this codec at {}",
+                        config.bit_depth
                     )
                 } else {
                     format!("encoder `{encoder_name}`: {}", error.message)
@@ -280,6 +291,16 @@ impl VideoEncoder {
         self.container_crop
     }
 
+    /// The YUV format CPU frames are sent in, which needs no conversion, or `None` for an encoder
+    /// that takes GPU frames.
+    pub fn cpu_input_format(&self) -> Option<PixelFormat> {
+        match &self.transport {
+            Transport::Cpu { format, .. } => Some(*format),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
+
     pub(in crate::encode) fn refresh_stream_time_base(
         &mut self,
         output: &OutputContext,
@@ -299,6 +320,7 @@ impl VideoEncoder {
     ) -> Result<()> {
         #[allow(irrefutable_let_patterns)]
         let Transport::Cpu {
+            format,
             scaler,
             frame,
             hw_frames,
@@ -309,28 +331,33 @@ impl VideoEncoder {
                 "hardware texture encoders consume GPU inputs; create a CPU upload encoder to send CPU bytes",
             ));
         };
-        let layout = validate_cpu_frame(input, self.width, self.height)?;
+        let layout = validate_cpu_frame(input, self.width, self.height, *format)?;
         unsafe {
             ffi::check(
                 sys::av_frame_make_writable(frame.as_mut_ptr()),
                 "av_frame_make_writable",
             )?;
         }
-        let src_data = [input.data.as_ptr(), ptr::null(), ptr::null(), ptr::null()];
-        let src_stride = [layout.stride, 0, 0, 0];
-        unsafe {
-            ffi::check(
-                sys::sws_scale(
-                    scaler.0,
-                    src_data.as_ptr(),
-                    src_stride.as_ptr(),
-                    0,
-                    layout.height,
-                    (*frame.as_mut_ptr()).data.as_mut_ptr(),
-                    (*frame.as_mut_ptr()).linesize.as_mut_ptr(),
-                ),
-                "sws_scale",
-            )?;
+        match scaler {
+            Some(scaler) if input.pixel_format == PixelFormat::Rgba8 => {
+                let src_data = [input.data.as_ptr(), ptr::null(), ptr::null(), ptr::null()];
+                let src_stride = [layout.stride, 0, 0, 0];
+                unsafe {
+                    ffi::check(
+                        sys::sws_scale(
+                            scaler.0,
+                            src_data.as_ptr(),
+                            src_stride.as_ptr(),
+                            0,
+                            layout.height,
+                            (*frame.as_mut_ptr()).data.as_mut_ptr(),
+                            (*frame.as_mut_ptr()).linesize.as_mut_ptr(),
+                        ),
+                        "sws_scale",
+                    )?;
+                }
+            }
+            _ => copy_yuv_planes(input, *format, frame),
         }
         let mut uploaded = hw_frames
             .as_ref()
@@ -388,7 +415,7 @@ fn create_transport(
             // CPU frames are converted to this format, then uploaded when the encoder takes hardware frames.
             let format = hw_contexts
                 .as_ref()
-                .map_or(AV_PIX_FMT_YUV420P, |contexts| contexts.sw_format);
+                .map_or(yuv420p(config.bit_depth), |contexts| contexts.sw_format);
             let (width, height) = (config.width as i32, config.height as i32);
             let mut frame = AvFrame::new()?;
             unsafe {
@@ -400,8 +427,14 @@ fn create_transport(
                     "av_frame_get_buffer",
                 )?;
             }
+            // 10-bit frames come only from a float YUV conversion, never from RGBA8.
+            let scaler = match config.bit_depth {
+                BitDepth::Eight => Some(rgba_scaler(width, height, format)?),
+                BitDepth::Ten => None,
+            };
             Ok(Transport::Cpu {
-                scaler: rgba_scaler(width, height, format)?,
+                format: PixelFormat::from_av_pixel_format(format),
+                scaler,
                 frame,
                 hw_frames: hw_contexts.map(|contexts| contexts.frames),
             })
@@ -409,6 +442,7 @@ fn create_transport(
         #[cfg(feature = "cuda")]
         (EncodeMode::GpuTexture(GpuBackend::Cuda), Some(contexts)) => Ok(Transport::Cuda {
             frames: contexts.frames,
+            bit_depth: config.bit_depth,
         }),
         #[cfg(feature = "vulkan")]
         (EncodeMode::GpuTexture(GpuBackend::Vulkan), Some(contexts)) => Ok(Transport::Vulkan {
@@ -425,6 +459,72 @@ fn create_transport(
             format!("{backend:?} texture encode has no frames context"),
         )
         .with_backend(backend)),
+    }
+}
+
+/// The planar YUV 4:2:0 format a software encoder of `depth` takes.
+fn yuv420p(depth: BitDepth) -> sys::AVPixelFormat {
+    match depth {
+        BitDepth::Eight => AV_PIX_FMT_YUV420P,
+        BitDepth::Ten => AV_PIX_FMT_YUV420P10LE,
+    }
+}
+
+/// Bytes per sample of a YUV 4:2:0 format, and whether its chroma is planar.
+fn yuv_layout(format: PixelFormat) -> Option<(usize, bool)> {
+    match format {
+        PixelFormat::Nv12 => Some((1, false)),
+        PixelFormat::P010 => Some((2, false)),
+        PixelFormat::Yuv420p => Some((1, true)),
+        PixelFormat::Yuv420p10 => Some((2, true)),
+        _ => None,
+    }
+}
+
+/// Copies a YUV frame laid out as [`CpuVideoFrame`] describes into `frame`'s planes, which have
+/// its format.
+fn copy_yuv_planes(input: &CpuVideoFrame, format: PixelFormat, frame: &mut AvFrame) {
+    let (sample, planar) = yuv_layout(format).expect("validated as a YUV frame");
+    let (width, height) = (input.width as usize, input.height as usize);
+    let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+    let chroma = input.stride * height;
+    let half = input.stride / 2;
+    let luma = (0, input.stride, width * sample, height);
+    let planes = if planar {
+        vec![
+            luma,
+            (chroma, half, chroma_width * sample, chroma_height),
+            (
+                chroma + half * chroma_height,
+                half,
+                chroma_width * sample,
+                chroma_height,
+            ),
+        ]
+    } else {
+        vec![
+            luma,
+            (
+                chroma,
+                input.stride,
+                chroma_width * 2 * sample,
+                chroma_height,
+            ),
+        ]
+    };
+    for (index, (offset, stride, row_bytes, rows)) in planes.into_iter().enumerate() {
+        // SAFETY: `validate_cpu_frame` checked that the input holds every plane, and the frame's
+        // buffers are of the encoder's size and format.
+        unsafe {
+            sys::av_image_copy_plane(
+                (*frame.as_mut_ptr()).data[index],
+                (*frame.as_ptr()).linesize[index],
+                input.data.as_ptr().add(offset),
+                stride as i32,
+                row_bytes as i32,
+                rows as i32,
+            );
+        }
     }
 }
 
@@ -566,17 +666,26 @@ struct ValidatedCpuFrameLayout {
     height: i32,
 }
 
+/// Checks `frame` against an encoder of this size whose frames are `format`, which takes that
+/// format or, at 8 bits, RGBA8.
 fn validate_cpu_frame(
     frame: &CpuVideoFrame,
     expected_width: u32,
     expected_height: u32,
+    format: PixelFormat,
 ) -> Result<ValidatedCpuFrameLayout> {
     const OPERATION: &str = "VideoEncoder::send_cpu_frame";
 
-    if frame.pixel_format != PixelFormat::Rgba8 {
+    let yuv = yuv_layout(format).filter(|_| frame.pixel_format == format);
+    let ten_bit = matches!(format, PixelFormat::P010 | PixelFormat::Yuv420p10);
+    if yuv.is_none() && (frame.pixel_format != PixelFormat::Rgba8 || ten_bit) {
         return Err(FfmpegError::new(
             OPERATION,
-            "CPU upload encoders require RGBA8 input frames",
+            if ten_bit {
+                format!("this 10-bit encoder takes {format:?} frames")
+            } else {
+                format!("CPU upload encoders take RGBA8 or {format:?} frames")
+            },
         ));
     }
     if frame.width != expected_width || frame.height != expected_height {
@@ -592,7 +701,8 @@ fn validate_cpu_frame(
     let width = usize::try_from(frame.width).map_err(|_| {
         FfmpegError::new(OPERATION, "frame width exceeds the platform integer range")
     })?;
-    let row_bytes = width.checked_mul(4).ok_or_else(|| {
+    let (sample, planar) = yuv.unwrap_or((4, false));
+    let row_bytes = width.checked_mul(sample).ok_or_else(|| {
         FfmpegError::new(
             OPERATION,
             "frame row byte length exceeds the platform integer range",
@@ -602,11 +712,22 @@ fn validate_cpu_frame(
         return Err(FfmpegError::new(
             OPERATION,
             format!(
-                "frame stride {} is smaller than the required RGBA8 row length {row_bytes}",
+                "frame stride {} is smaller than the required row length {row_bytes}",
                 frame.stride
             ),
         ));
     }
+    if planar && !frame.stride.is_multiple_of(2) {
+        return Err(FfmpegError::new(
+            OPERATION,
+            "a planar YUV frame's stride must be even, since its chroma rows are half of it",
+        ));
+    }
+    let rows = if yuv.is_some() {
+        frame.height as usize + frame.height.div_ceil(2) as usize
+    } else {
+        frame.height as usize
+    };
 
     let stride = i32::try_from(frame.stride).map_err(|_| {
         FfmpegError::new(
@@ -620,15 +741,12 @@ fn validate_cpu_frame(
             "frame height exceeds FFmpeg's supported integer range",
         )
     })?;
-    let required_len = frame
-        .stride
-        .checked_mul(frame.height as usize)
-        .ok_or_else(|| {
-            FfmpegError::new(
-                OPERATION,
-                "frame buffer length exceeds the platform integer range",
-            )
-        })?;
+    let required_len = frame.stride.checked_mul(rows).ok_or_else(|| {
+        FfmpegError::new(
+            OPERATION,
+            "frame buffer length exceeds the platform integer range",
+        )
+    })?;
     if frame.data.len() < required_len {
         return Err(FfmpegError::new(
             OPERATION,
@@ -672,7 +790,7 @@ mod tests {
                 "non-RGBA pixel format",
                 |frame| frame.pixel_format = PixelFormat::Bgra8,
                 16,
-                "require RGBA8",
+                "take RGBA8 or Yuv420p",
             ),
             (
                 "mismatched dimensions",
@@ -705,8 +823,36 @@ mod tests {
             let mut frame = rgba_frame(16, 9);
             corrupt(&mut frame);
 
-            let error = validate_cpu_frame(&frame, expected_width, 9).unwrap_err();
+            let error =
+                validate_cpu_frame(&frame, expected_width, 9, PixelFormat::Yuv420p).unwrap_err();
             assert!(error.message.contains(expected_message), "{name}: {error}");
         }
+    }
+
+    #[test]
+    fn yuv_frames_hold_both_chroma_rows_and_ten_bit_takes_no_rgba() {
+        let yuv = |pixel_format, stride: usize, len| CpuVideoFrame {
+            width: 6,
+            height: 5,
+            stride,
+            pixel_format,
+            pts: None,
+            data: vec![0; len],
+        };
+        // Five luma rows and three chroma rows.
+        let fits = |format, stride| {
+            validate_cpu_frame(&yuv(format, stride, stride * 8), 6, 5, format).is_ok()
+        };
+        assert!(fits(PixelFormat::Yuv420p10, 12));
+        assert!(fits(PixelFormat::P010, 12));
+        assert!(fits(PixelFormat::Nv12, 6));
+        assert!(!fits(PixelFormat::Yuv420p10, 11));
+        let short = yuv(PixelFormat::Yuv420p, 6, 6 * 8 - 1);
+        assert!(validate_cpu_frame(&short, 6, 5, PixelFormat::Yuv420p).is_err());
+        let error =
+            validate_cpu_frame(&rgba_frame(6, 5), 6, 5, PixelFormat::Yuv420p10).unwrap_err();
+        assert!(error.message.contains("10-bit"), "{error}");
+        let other = yuv(PixelFormat::Nv12, 6, 48);
+        assert!(validate_cpu_frame(&other, 6, 5, PixelFormat::Yuv420p).is_err());
     }
 }

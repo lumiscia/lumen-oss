@@ -41,8 +41,7 @@ fn cpu_upload_encoder_rejects_gpu_input() {
         VulkanVideoFrame::new(
             ash::vk::Device::from_raw(1),
             ash::vk::Buffer::from_raw(1),
-            16,
-            16,
+            crate::gpu::VulkanFrameLayout::nv12(16, 16),
             None,
             std::sync::Arc::new(()),
         )

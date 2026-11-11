@@ -155,19 +155,20 @@ describe("Lumen render and download", () => {
     expect(new Headers(requests[0]?.init.headers).get("idempotency-key")).toBe("key-1");
   });
 
-  test("render sends quality and codec only when they are set", async () => {
+  test("render sends quality, codec and bit depth only when they are set", async () => {
     const { requests, stub } = recordingFetch(() => ({
       render: { id: "render-1", status: "queued" },
     }));
     const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
 
     await lumen.render({} as never);
-    await lumen.render({} as never, { codec: "hevc", quality: "high" });
+    await lumen.render({} as never, { codec: "hevc", quality: "high", bitDepth: 10 });
 
     const bodies = requests.map((request) => JSON.parse(String(request.init.body)));
     expect(bodies[0]).not.toHaveProperty("quality");
     expect(bodies[0]).not.toHaveProperty("codec");
-    expect(bodies[1]).toMatchObject({ codec: "hevc", quality: "high" });
+    expect(bodies[0]).not.toHaveProperty("bit_depth");
+    expect(bodies[1]).toMatchObject({ codec: "hevc", quality: "high", bit_depth: 10 });
   });
 
   test("render sends the output description in the server's shape, and only when it is set", async () => {

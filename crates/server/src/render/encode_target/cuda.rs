@@ -2,7 +2,7 @@ use std::path::Path;
 
 use lumen_engine::{
     audio::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE},
-    composition::Composition,
+    composition::{BitDepth, Composition},
     gpu::{CudaNvencTarget, CudaNvencTargetPool, GpuCompositionRenderer},
 };
 use lumen_ffmpeg::{
@@ -29,6 +29,7 @@ impl CudaTarget {
         output: &Path,
         encoder: &str,
         quality: &EncoderQuality,
+        depth: BitDepth,
     ) -> Result<(GpuCompositionRenderer, Self), ServerRenderError> {
         let renderer = create_gpu_renderer(media_store).map_err(gpu_renderer_failed)?;
         renderer
@@ -39,6 +40,7 @@ impl CudaTarget {
         let pool = CudaNvencTargetPool::new(
             renderer.gpu_renderer(),
             lumen_gpu::Size::new(width, height),
+            depth,
             true,
         )
         .map_err(|err| {
@@ -69,6 +71,10 @@ impl CudaTarget {
         config.mode = EncodeMode::GpuTexture(GpuBackend::Cuda);
         config.cuda_ordinal = Some(pool.cuda_ordinal());
         config.quality = quality.clone();
+        config.bit_depth = match depth {
+            BitDepth::Eight => lumen_ffmpeg::BitDepth::Eight,
+            BitDepth::Ten => lumen_ffmpeg::BitDepth::Ten,
+        };
         let audio = has_audio(composition)
             .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
         let encoder =

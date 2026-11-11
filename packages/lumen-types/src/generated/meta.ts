@@ -1500,8 +1500,10 @@ export type RasterMultimergeBlendMode = BlendMode;
 export type RasterSampling = "nearest" | "linear";
 export type Render3dOutput = "color" | "depth" | "normal";
 export type Render3dToneMapping = ToneMapping;
-/** The canvas, and how the host that renders the video encodes it. Previews ignore `codec` and `quality`. */
+/** The canvas, and how the host that renders the video encodes it. Previews ignore `codec`, `quality` and `bit_depth`. */
 export type RenderSettings = {
+  /** Bits per sample of the rendered video: 8, the default, or 10 for `hevc` and `av1`. H.264 is always 8-bit, and a host whose encoders can't write 10 bits rejects the render rather than writing 8. A render request's `bit_depth` wins over it. */
+  readonly bit_depth?: VideoBitDepth;
   /** Video codec of the rendered file. A render request's `codec` wins over it. */
   readonly codec?: VideoCodec;
   readonly height: number;
@@ -1662,6 +1664,7 @@ export type Timeline = {
 };
 export type ToneMapping = "none" | "aces" | "agx";
 export type TransformSampling = RasterSampling;
+export type VideoBitDepth = 8 | 10;
 export type VideoCodec = "h264" | "hevc" | "av1";
 export type ZoomBlurEdge = EdgeMode;
 

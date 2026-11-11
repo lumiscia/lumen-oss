@@ -140,6 +140,7 @@ impl CudaDeviceAllocation {
             self.memory.width,
             self.memory.height,
             self.memory.pitch as u64,
+            8,
             pts,
             self.memory.clone(),
         )
