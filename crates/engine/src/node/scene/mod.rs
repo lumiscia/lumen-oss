@@ -245,6 +245,7 @@ pub struct Model3dParams {
     /// A binary glTF (`.glb`) file with its buffers and images inside it: a path or `media`
     /// alias, or `asset:<id>` for a model asset of the host's.
     #[meta(role = "source_id")]
+    #[media(model)]
     pub source: String,
     /// The animation clip to play, by its name or else its index; empty plays none. A model's
     /// clips are listed in the `animations` of its upload's `metadata` on a host that takes
@@ -554,6 +555,7 @@ pub struct Render3dParams {
     /// negative pixels are read as black. While a map lights a scene without lights, it gets no
     /// default ones. Empty uses the studio.
     #[meta(role = "source_id")]
+    #[media(environment)]
     pub environment_map: String,
     /// Turn of the environment map about +Y in degrees, as a yaw turns an object.
     #[meta(step = 1)]

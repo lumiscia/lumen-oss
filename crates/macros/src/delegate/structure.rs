@@ -19,6 +19,28 @@ fn group_tokens(meta: &DelegateField) -> Option<proc_macro2::TokenStream> {
         .then(|| quote!(<#ty as ::lumen_engine::node::Delegated>::Delegate))
 }
 
+/// The `MediaParam` of the field `meta` if it declares `#[media(...)]`, with its selector resolved
+/// to that field's param id.
+fn media_param_tokens(
+    metas: &[DelegateField],
+    meta: &DelegateField,
+) -> Result<Option<proc_macro2::TokenStream>> {
+    let Some(media) = &meta.property.media else {
+        return Ok(None);
+    };
+    let selector = match &media.by {
+        Some(by) => {
+            let selector = metas
+                .iter()
+                .find(|other| other.ident == *by && !other.property.flatten)
+                .ok_or_else(|| syn::Error::new(by.span(), "`by` names no param of this struct"))?;
+            Some(&selector.property.id)
+        }
+        None => None,
+    };
+    Ok(Some(media.tokens(&meta.property.id, selector)))
+}
+
 pub(crate) fn expand_struct_delegate(
     input: &DeriveInput,
     fields: &Fields,
@@ -41,6 +63,11 @@ pub(crate) fn expand_struct_delegate(
                 property,
             })
         })
+        .collect::<Result<Vec<_>>>()?;
+
+    let media_params = metas
+        .iter()
+        .map(|meta| media_param_tokens(&metas, meta))
         .collect::<Result<Vec<_>>>()?;
 
     let delegate_fields = metas.iter().map(|meta| {
@@ -67,35 +94,40 @@ pub(crate) fn expand_struct_delegate(
             }
         })
         .collect::<Vec<_>>();
-    let property_defs = metas.iter().map(|meta| match group_tokens(meta) {
-        Some(group) => {
-            let (ids, docs): (Vec<_>, Vec<_>) = meta
-                .property
-                .doc_overrides
-                .iter()
-                .map(|(id, doc)| (id, doc))
-                .unzip();
-            quote! {
-                #[allow(unused_mut)]
-                let mut group = <#group as ::lumen_engine::node::NodeParams>::property_defs();
-                #(assert!(
-                    <#group as ::lumen_engine::node::NodeParams>::is_property(#ids),
-                    "`doc` names `{}`, which is not a param of the group",
-                    #ids,
-                );)*
-                #[cfg(feature = "metadata")]
-                for def in &mut group {
-                    match def.id {
-                        #(#ids => def.description = #docs,)*
-                        _ => {}
+    let property_defs = metas.iter().zip(&media_params).map(|(meta, media)| {
+        match group_tokens(meta) {
+            Some(group) => {
+                let (ids, docs): (Vec<_>, Vec<_>) = meta
+                    .property
+                    .doc_overrides
+                    .iter()
+                    .map(|(id, doc)| (id, doc))
+                    .unzip();
+                quote! {
+                    #[allow(unused_mut)]
+                    let mut group = <#group as ::lumen_engine::node::NodeParams>::property_defs();
+                    #(assert!(
+                        <#group as ::lumen_engine::node::NodeParams>::is_property(#ids),
+                        "`doc` names `{}`, which is not a param of the group",
+                        #ids,
+                    );)*
+                    #[cfg(feature = "metadata")]
+                    for def in &mut group {
+                        match def.id {
+                            #(#ids => def.description = #docs,)*
+                            _ => {}
+                        }
                     }
+                    defs.extend(group);
                 }
-                defs.extend(group);
             }
-        }
-        None => {
-            let def = property_def_tokens(&meta.property, &meta.ty);
-            quote!(defs.push(#def);)
+            None => {
+                let media = media
+                    .as_ref()
+                    .map_or_else(|| quote!(None), |media| quote!(Some(#media)));
+                let def = property_def_tokens(&meta.property, &meta.ty, media);
+                quote!(defs.push(#def);)
+            }
         }
     });
     let is_property_checks = metas.iter().map(|meta| match group_tokens(meta) {
@@ -160,6 +192,23 @@ pub(crate) fn expand_struct_delegate(
                     Err(error) => errors.push((#name, error)),
                 }
             }
+        }
+    });
+    let media_sources = metas.iter().zip(&media_params).map(|(meta, media)| {
+        let ident = &meta.ident;
+        if meta.property.flatten {
+            return quote!(::lumen_engine::node::NodeParams::for_each_media_source(&self.#ident, f););
+        }
+        let Some(media) = media else {
+            return quote!();
+        };
+        let selected = match meta.property.media.as_ref().and_then(|media| media.by.as_ref()) {
+            Some(by) => quote!(::lumen_engine::node::selected_media_kind(&self.#by, param.kinds)),
+            None => quote!(None),
+        };
+        quote! {
+            let param = #media;
+            f(::lumen_engine::node::MediaSource::new(&param, &self.#ident, #selected));
         }
     });
     let field_ids = metas.iter().map(|meta| match group_tokens(meta) {
@@ -239,6 +288,10 @@ pub(crate) fn expand_struct_delegate(
                     #(#property_matches,)*
                     _ => None #(#group_property_reads)*,
                 }
+            }
+
+            fn for_each_media_source<'a>(&'a self, f: &mut dyn FnMut(::lumen_engine::node::MediaSource<'a>)) {
+                #(#media_sources)*
             }
 
             fn field_ids() -> ::std::vec::Vec<&'static str> {

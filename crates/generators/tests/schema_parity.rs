@@ -908,3 +908,54 @@ fn ids_and_audio_clips_match_engine_parsing() {
         );
     }
 }
+
+/// Each param a node declares with `#[media(...)]` carries `x-lumen-media` in the schema, and no
+/// other param does, apart from the source of an audio clip.
+#[test]
+fn media_params_carry_the_kinds_they_accept() {
+    let schema = schema();
+    let mut declared = Vec::new();
+    for node in schema["properties"]["nodes"]["items"]["oneOf"]
+        .as_array()
+        .unwrap()
+    {
+        let kind = node["properties"]["type"]["const"].as_str().unwrap();
+        for (id, param) in node["properties"]["params"]["properties"]
+            .as_object()
+            .unwrap()
+        {
+            if let Some(media) = param.get("x-lumen-media") {
+                declared.push((kind, id.as_str(), media.clone()));
+            }
+        }
+    }
+    assert_eq!(
+        declared,
+        [
+            (
+                "media_in",
+                "source",
+                json!({ "kinds": ["image", "video"], "selectedBy": "kind" })
+            ),
+            ("model_3d", "source", json!({ "kinds": ["model"] })),
+            (
+                "render_3d",
+                "environment_map",
+                json!({ "kinds": ["environment"] })
+            ),
+        ]
+    );
+    assert_eq!(
+        schema["$defs"]["audioClip"]["properties"]["source_id"]["x-lumen-media"],
+        json!({ "kinds": ["audio"] })
+    );
+
+    for kind in ["media_in", "model_3d", "render_3d"] {
+        let media: Vec<_> = node_schema(kind)
+            .properties
+            .iter()
+            .filter_map(|property| property.media)
+            .collect();
+        assert_eq!(media.len(), 1, "{kind}");
+    }
+}

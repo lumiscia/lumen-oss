@@ -5,7 +5,7 @@ use syn::{
 };
 
 use crate::common::{
-    PropertyConstraintsAttr, PropertyDefTokens, doc_lines, ident_value, optional_attr,
+    MediaAttr, PropertyConstraintsAttr, PropertyDefTokens, doc_lines, ident_value, optional_attr,
     optional_bool, property_kind_tokens, title_from_ident,
 };
 
@@ -47,6 +47,8 @@ struct PropertyAttr {
     flatten: bool,
     /// Docs that a flattened group's params have in this struct, by param id.
     doc_overrides: Vec<(LitStr, LitStr)>,
+    /// What `#[media(...)]` declares about the param.
+    media: Option<MediaAttr>,
 }
 
 struct DelegateAttr {
@@ -145,6 +147,14 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
         ));
     }
 
+    let media = MediaAttr::parse(attrs)?;
+    if flatten && media.is_some() {
+        return Err(syn::Error::new_spanned(
+            attr,
+            "`flatten` fields have no media of their own: declare #[media(...)] on the group's fields",
+        ));
+    }
+
     Ok(PropertyAttr {
         id: id.unwrap_or_else(|| LitStr::new(&field.to_string(), field.span())),
         name: name
@@ -158,10 +168,16 @@ fn parse_meta_attr(attrs: &[Attribute], field: &Ident) -> Result<PropertyAttr> {
         docs: doc_lines(attrs),
         flatten,
         doc_overrides,
+        media,
     })
 }
 
-fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::TokenStream {
+/// The `PropertyDef` of a param. `media` is its `MediaParam`, if it declares one.
+fn property_def_tokens(
+    property: &PropertyAttr,
+    ty: &Type,
+    media: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
     let kind = match &property.kind {
         Some(kind) => property_kind_tokens(kind),
         None => quote!(<#ty as ::lumen_engine::node::NodeParamType>::property_kind()),
@@ -183,6 +199,7 @@ fn property_def_tokens(property: &PropertyAttr, ty: &Type) -> proc_macro2::Token
         name: &property.name,
         kind,
         enum_def,
+        media,
         docs: &property.docs,
         constraints: &property.constraints,
         accepts_expressions,

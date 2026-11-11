@@ -7,7 +7,7 @@ use crate::{
     expr::{Expression, ExpressionValue},
 };
 
-use super::{ids::NodeId, schema::PropertyDef};
+use super::{ids::NodeId, media_source::MediaSource, schema::PropertyDef};
 
 /// What `node(id, 'param')` finds in a param.
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +82,8 @@ pub trait NodeParams: DelegateEvaluable + Default {
     /// documents.
     fn json_properties(&self) -> Vec<(&'static str, Value)>;
     fn get_property(&self, id: &str) -> Option<PropertyRead<'_>>;
+    /// Calls `f` with every param declared with `#[media(...)]`, groups included.
+    fn for_each_media_source<'a>(&'a self, f: &mut dyn FnMut(MediaSource<'a>));
     /// The id of each param, in declaration order.
     fn field_ids() -> Vec<&'static str>;
     /// The ids of the params a nested object must set.

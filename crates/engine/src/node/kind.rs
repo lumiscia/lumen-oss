@@ -89,6 +89,12 @@ macro_rules! node_kinds {
                     $(Self::$variant(node) => node.for_each_expression(f),)+
                 }
             }
+
+            fn for_each_media_source<'a>(&'a self, f: &mut dyn FnMut(super::MediaSource<'a>)) {
+                match self {
+                    $(Self::$variant(node) => node.for_each_media_source(f),)+
+                }
+            }
         }
 
         impl PropertyEval for NodeKind {

@@ -1,4 +1,8 @@
-import type { LumenComposition } from "@lumiscia/lumen-types";
+import {
+  nodeMediaSources,
+  type LumenComposition,
+  type MediaSourceParam,
+} from "@lumiscia/lumen-types";
 
 import type { AudioSourceRegistration } from "../audio-engine.js";
 import type { MediaRegistration, MediaSourceInput } from "../media/index.js";
@@ -93,25 +97,32 @@ function mediaEntry(value: LumenPreviewMedia[string]): LumenPreviewMediaEntry {
 }
 
 /**
- * What each literal `source` in the composition or its templates reads: a model for `model_3d`, and
- * for `media_in` its `kind`, an image without one, as the engine does.
+ * What each literal source the composition or its templates name reads, by the media params the
+ * generated `nodeMediaSources` lists for each node kind. Environment maps are left out, since a
+ * preview has none.
  */
 function literalSourceKinds(document: LumenComposition | null): Map<string, LumenPreviewMediaKind> {
   const kinds = new Map<string, LumenPreviewMediaKind>();
   const templates = Object.values(document?.compositions ?? {});
   for (const node of [document?.nodes ?? [], ...templates.map(({ nodes }) => nodes)].flat()) {
-    if (node.type !== "media_in" && node.type !== "model_3d") {
-      continue;
-    }
-    const params = (node.params ?? {}) as { kind?: unknown; source?: unknown };
-    if (typeof params.source === "string") {
-      kinds.set(
-        params.source,
-        node.type === "model_3d" ? "model" : params.kind === "video" ? "video" : "image",
-      );
+    const params = (node.params ?? {}) as Readonly<Record<string, unknown>>;
+    const mediaParams: Readonly<Record<string, MediaSourceParam | undefined>> =
+      nodeMediaSources[node.type];
+    for (const [param, media] of Object.entries(mediaParams)) {
+      const source = params[param];
+      const kind = media && selectedKind(media, params);
+      if (typeof source === "string" && kind && kind !== "environment") {
+        kinds.set(source, kind);
+      }
     }
   }
   return kinds;
+}
+
+/** The kind a param reads: the one its selector names, else its first, as the engine does. */
+function selectedKind(media: MediaSourceParam, params: Readonly<Record<string, unknown>>) {
+  const selected = media.selectedBy === undefined ? undefined : params[media.selectedBy];
+  return media.kinds.find((kind) => kind === selected) ?? media.kinds[0];
 }
 
 function blobKind(source: MediaSourceInput): LumenPreviewMediaKind | undefined {

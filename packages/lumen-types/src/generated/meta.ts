@@ -7,6 +7,8 @@ export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "
 export type NodePortKind = "raster" | "scene";
 export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
 export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "model_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
+/** A kind of media a source can hold. */
+export type MediaSourceKind = "audio" | "environment" | "image" | "model" | "video";
 
 export const schemaVersion = 1 as const;
 
@@ -3164,3 +3166,62 @@ export const nodeInputPorts = {
 } as const satisfies [NodeParamPortNameClash] extends [never]
   ? NodeInputPortTable
   : `a param and an input port share the name ${NodeParamPortNameClash}`;
+
+/** How a param that names media reads it. */
+export interface MediaSourceParam {
+  /** The kinds the param accepts, the first being the one it reads while nothing picks another. */
+  readonly kinds: readonly [MediaSourceKind, ...MediaSourceKind[]];
+  /** The param whose value, an option named after one of `kinds`, picks the kind it reads. */
+  readonly selectedBy?: string;
+}
+
+type NodeMediaSourceTable = {
+  readonly [TKind in NodeKind]: {
+    readonly [TParam in Extract<
+      keyof NonNullable<CompositionNodeByKind[TKind]["params"]>,
+      string
+    >]?: MediaSourceParam;
+  };
+};
+
+/** The params of each node kind that name media, by param, in the schema's order. */
+export const nodeMediaSources = {
+  "background": {},
+  "blur": {},
+  "boolean": {},
+  "camera_3d": {},
+  "clip": {},
+  "color_grade": {},
+  "crop": {},
+  "directional_blur": {},
+  "displacement_map": {},
+  "exposure": {},
+  "fractal_noise": {},
+  "glow": {},
+  "hue_saturation": {},
+  "image_plane_3d": {},
+  "instance_3d": {},
+  "levels": {},
+  "light_3d": {},
+  "media_in": { "source": { kinds: ["image", "video"], selectedBy: "kind" } },
+  "media_output": {},
+  "merge": {},
+  "merge_3d": {},
+  "model_3d": { "source": { kinds: ["model"] } },
+  "motion_blur": {},
+  "opacity": {},
+  "path": {},
+  "radial_blur": {},
+  "raster_multimerge": {},
+  "render_3d": { "environment_map": { kinds: ["environment"] } },
+  "resize": {},
+  "shadow": {},
+  "shape": {},
+  "shape_3d": {},
+  "switch": {},
+  "text": {},
+  "time_remap": {},
+  "transform": {},
+  "wgsl_shader": {},
+  "zoom_blur": {},
+} as const satisfies NodeMediaSourceTable;

@@ -34,6 +34,11 @@ interface PortSchema {
   readonly variadic: boolean;
 }
 
+interface MediaSourceSchema {
+  readonly kinds: readonly string[];
+  readonly selectedBy?: string;
+}
+
 interface NodeVariant {
   readonly kind: string;
   readonly description: string;
@@ -42,6 +47,7 @@ interface NodeVariant {
   readonly outputs: readonly PortSchema[];
   readonly params: JsonSchema;
   readonly paramKinds: readonly (readonly [id: string, kind: string, schema: JsonSchema])[];
+  readonly mediaSources: readonly (readonly [id: string, media: MediaSourceSchema])[];
 }
 
 const quote = (value: string): string => JSON.stringify(value);
@@ -79,6 +85,37 @@ const portSchemas = (value: unknown, what: string): PortSchema[] =>
     variadic: object(port).variadic === true,
   }));
 
+/** The params of a node that `#[media(...)]` declares, by id. */
+function mediaSources(kind: string, params: JsonSchema): NodeVariant["mediaSources"] {
+  return Object.entries(object(params.properties)).flatMap(([id, param]) => {
+    const media = object(param)["x-lumen-media"];
+    if (media === undefined) return [];
+    const what = `${kind}.${id} \`x-lumen-media\``;
+    const { kinds, selectedBy } = object(media);
+    if (selectedBy !== undefined) requireString(selectedBy, `${what} \`selectedBy\``);
+    return [
+      [
+        id,
+        {
+          kinds: array(kinds).map((value) => requireString(value, `${what} kind`)),
+          ...(selectedBy === undefined ? {} : { selectedBy: selectedBy as string }),
+        },
+      ] as const,
+    ];
+  });
+}
+
+/** Every kind any `x-lumen-media` in `value` accepts: the nodes' params and the audio clips'. */
+function declaredMediaKinds(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(declaredMediaKinds);
+  if (typeof value !== "object" || value === null) return [];
+  return Object.entries(value).flatMap(([key, child]) =>
+    key === "x-lumen-media"
+      ? array(object(child).kinds).map((kind) => requireString(kind, "a media kind"))
+      : declaredMediaKinds(child),
+  );
+}
+
 function nodeVariants(schema: JsonSchema): NodeVariant[] {
   const variants = array(object(object(object(schema.properties).nodes).items).oneOf);
   return variants.map((value) => {
@@ -98,6 +135,7 @@ function nodeVariants(schema: JsonSchema): NodeVariant[] {
         requireString(object(param)["x-lumen-kind"], `${kind}.${id} \`x-lumen-kind\``),
         object(param),
       ]),
+      mediaSources: mediaSources(kind, params),
     };
   });
 }
@@ -158,6 +196,15 @@ const renderNodeInputPortTableMember = (node: NodeVariant): string => {
   return `${docComment(node.description, "  ")}  ${quote(node.kind)}: ${ports.length === 0 ? "{}" : `{ ${ports.join(", ")} }`},`;
 };
 
+const renderNodeMediaSourceTableMember = (node: NodeVariant): string => {
+  const params = node.mediaSources.map(([id, media]) => {
+    const selectedBy =
+      media.selectedBy === undefined ? "" : `, selectedBy: ${quote(media.selectedBy)}`;
+    return `${quote(id)}: { kinds: [${media.kinds.map(quote).join(", ")}]${selectedBy} }`;
+  });
+  return `  ${quote(node.kind)}: ${params.length === 0 ? "{}" : `{ ${params.join(", ")} }`},`;
+};
+
 /** `nodes` tells a node's params from its input ports by name, so no kind may share one. */
 function assertDistinctParamAndPortNames(node: NodeVariant): void {
   const ports = new Set(node.inputs.map((port) => port.name));
@@ -216,6 +263,7 @@ function renderMetaTypes(schema: JsonSchema, context: TypeContext): string {
     array(schema["x-lumen-portKinds"]).map((kind) => requireString(kind, "a port kind")),
   );
   const paramKinds = uniqueSorted(nodes.flatMap((node) => node.paramKinds.map(([, kind]) => kind)));
+  const mediaKinds = uniqueSorted(declaredMediaKinds(schema));
   const namedTypes = [...context.declarations.entries()]
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([, declaration]) => declaration)
@@ -226,6 +274,8 @@ export type NodeCategory = ${union(categories)};
 export type NodePortKind = ${union(portKinds)};
 export type NodeParamKind = ${union(paramKinds)};
 export type NodeKind = ${union(uniqueSorted(nodes.map((node) => node.kind)))};
+/** A kind of media a source can hold. */
+export type MediaSourceKind = ${union(mediaKinds)};
 
 export const schemaVersion = ${JSON.stringify(schema["x-lumen-schemaVersion"])} as const;
 
@@ -314,6 +364,28 @@ ${nodes.map(renderNodeInputPortTableMember).join("\n")}
 } as const satisfies [NodeParamPortNameClash] extends [never]
   ? NodeInputPortTable
   : \`a param and an input port share the name \${NodeParamPortNameClash}\`;
+
+/** How a param that names media reads it. */
+export interface MediaSourceParam {
+  /** The kinds the param accepts, the first being the one it reads while nothing picks another. */
+  readonly kinds: readonly [MediaSourceKind, ...MediaSourceKind[]];
+  /** The param whose value, an option named after one of \`kinds\`, picks the kind it reads. */
+  readonly selectedBy?: string;
+}
+
+type NodeMediaSourceTable = {
+  readonly [TKind in NodeKind]: {
+    readonly [TParam in Extract<
+      keyof NonNullable<CompositionNodeByKind[TKind]["params"]>,
+      string
+    >]?: MediaSourceParam;
+  };
+};
+
+/** The params of each node kind that name media, by param, in the schema's order. */
+export const nodeMediaSources = {
+${nodes.map(renderNodeMediaSourceTableMember).join("\n")}
+} as const satisfies NodeMediaSourceTable;
 `;
 }
 

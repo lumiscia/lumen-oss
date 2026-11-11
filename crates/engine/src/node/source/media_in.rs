@@ -66,6 +66,7 @@ pub struct MediaInParams {
     pub kind: MediaInSourceKind,
     /// External media source: a path or `media` alias, or `asset:<id>` for an asset of the host's.
     #[meta(role = "source_id")]
+    #[media(image, video, by = kind)]
     pub source: String,
     /// First source frame to include.
     #[meta(min = 0, step = 1)]

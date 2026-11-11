@@ -28,7 +28,10 @@
           "type": "string"
         },
         "source_id": {
-          "type": "string"
+          "type": "string",
+          "x-lumen-media": {
+            "kinds": ["audio"]
+          }
         },
         "source_start_ms": {
           "minimum": 0,
@@ -3962,7 +3965,11 @@
                     "x-lumen-constraints": {
                       "role": "source_id"
                     },
-                    "x-lumen-kind": "string"
+                    "x-lumen-kind": "string",
+                    "x-lumen-media": {
+                      "kinds": ["image", "video"],
+                      "selectedBy": "kind"
+                    }
                   },
                   "speed": {
                     "anyOf": [
@@ -4533,7 +4540,10 @@
                     "x-lumen-constraints": {
                       "role": "source_id"
                     },
-                    "x-lumen-kind": "string"
+                    "x-lumen-kind": "string",
+                    "x-lumen-media": {
+                      "kinds": ["model"]
+                    }
                   },
                   "texture_material": {
                     "anyOf": [
@@ -5394,7 +5404,10 @@
                     "x-lumen-constraints": {
                       "role": "source_id"
                     },
-                    "x-lumen-kind": "string"
+                    "x-lumen-kind": "string",
+                    "x-lumen-media": {
+                      "kinds": ["environment"]
+                    }
                   },
                   "environment_rotation": {
                     "anyOf": [
