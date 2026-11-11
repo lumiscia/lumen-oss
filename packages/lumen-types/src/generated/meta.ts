@@ -2416,8 +2416,9 @@ export interface TextNode extends CompositionNodeBase<"text"> {
     readonly color?: ExpressionValue<Paint>;
     /**
      * Text to render: a string, or spans that each override the style these params give. A
-     * node draws at most 2048 glyphs, counting a stroked glyph twice and each decoration rect
-     * once; whitespace is not drawn, and more is a render error.
+     * node draws at most 16384 glyphs unless the host sets another limit, counting a stroked
+     * glyph twice and each decoration rect once; whitespace is not drawn, and more is a render
+     * error.
      */
     readonly content?: ExpressionValue<TextContent>;
     /**

@@ -9,7 +9,7 @@ use lumen_engine::{
     composition::Composition,
     error::MediaError,
     expr::{Expression, ExpressionContext},
-    gpu::GpuCompositionRenderer,
+    gpu::{DEFAULT_MAX_TEXT_GLYPHS, GpuCompositionRenderer, MAX_TEXT_GLYPHS_CEILING},
     media::{FontResolver, MediaStore, TextSession},
     node::NodeId,
 };
@@ -931,6 +931,7 @@ fn a_font_that_never_settles_fails_the_render() {
 fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
     let gpu = gpu();
     let mut renderer = gpu.renderer();
+    renderer.set_max_text_glyphs(2048);
     let media = TestMedia::default();
     // The animated size gives the text the full limit, and the constant one a limit of its own.
     for font_size in [json!(8), json!("=8 + frame * 0")] {
@@ -954,10 +955,123 @@ fn text_past_the_instance_limit_is_a_render_error_that_counts_drawn_glyphs() {
             .expect_err("2049 glyphs exceed the limit")
             .to_string();
         assert!(
-            error.contains("text node 1") && error.contains("2049") && error.contains("2048"),
+            error.contains("text node 1")
+                && error.contains("2049")
+                && error.contains("limit of 2048")
+                && error.contains("--max-text-glyphs"),
             "{font_size}: {error}"
         );
     }
+}
+
+#[test]
+fn a_raised_text_limit_lets_more_glyphs_through_and_the_default_is_documented() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let media = TestMedia::default();
+    let composition = |glyphs: usize| -> Composition {
+        scene(
+            (64, 64),
+            json!([text_node(
+                1,
+                json!({ "content": "a".repeat(glyphs), "font_size": 8 })
+            )]),
+        )
+        .into()
+    };
+    assert_eq!(DEFAULT_MAX_TEXT_GLYPHS, 16_384);
+    assert!(
+        include_str!("../../../../definitions/composition.schema.json")
+            .contains(&format!("at most {DEFAULT_MAX_TEXT_GLYPHS} glyphs")),
+        "the text node's docs state the default limit"
+    );
+
+    assert!(drawn(
+        &render(
+            &mut renderer,
+            &composition(DEFAULT_MAX_TEXT_GLYPHS),
+            0.0,
+            &media
+        )
+        .rgba
+    ));
+    let over = composition(DEFAULT_MAX_TEXT_GLYPHS + 1);
+    let error = renderer
+        .render_frame_at(&over, 0.0, &media)
+        .expect_err("one glyph over the default limit")
+        .to_string();
+    assert!(
+        error.contains("16385") && error.contains("limit of 16384"),
+        "{error}"
+    );
+
+    renderer.set_max_text_glyphs(DEFAULT_MAX_TEXT_GLYPHS + 1);
+    assert!(drawn(&render(&mut renderer, &over, 0.0, &media).rgba));
+
+    renderer.set_max_text_glyphs(usize::MAX);
+    let over_ceiling = composition(MAX_TEXT_GLYPHS_CEILING + 1);
+    let error = renderer
+        .render_frame_at(&over_ceiling, 0.0, &media)
+        .expect_err("the ceiling holds whatever the host asks for")
+        .to_string();
+    assert!(
+        error.contains(&format!("limit of {MAX_TEXT_GLYPHS_CEILING}")),
+        "{error}"
+    );
+}
+
+/// 68 rows of 200 glyphs, a full 1920 × 1080 frame of 16 px type.
+fn code_wall() -> Vec<String> {
+    let alphabet = "abcdefghijklmnopqrstuvwxyz0123456789(){};=+-".as_bytes();
+    (0..68)
+        .map(|row| {
+            (0..200)
+                .map(|column| alphabet[(row * 7 + column * 3) % alphabet.len()] as char)
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn a_frame_of_small_type_is_one_text_node() {
+    let gpu = gpu();
+    let mut renderer = gpu.renderer();
+    let media = TestMedia::default();
+    let lines = code_wall();
+    let style = |content: String, row: usize| {
+        json!({
+            "content": content, "font_size": 16, "line_height": 16,
+            "color": [255, 255, 255, 255], "position": [0, row * 16]
+        })
+    };
+    let one: Composition = scene(
+        (1920, 1080),
+        json!([text_node(1, style(lines.join("\n"), 0))]),
+    )
+    .into();
+
+    // The workaround of splitting the text into nodes that each stay under the old limit.
+    let rows_per_node = 2048 / 200;
+    let mut nodes = Vec::new();
+    for (index, chunk) in lines.chunks(rows_per_node).enumerate() {
+        let id = nodes.len() as u32 + 1;
+        nodes.push(text_node(
+            id,
+            style(chunk.join("\n"), index * rows_per_node),
+        ));
+        if index > 0 {
+            nodes.push(json!({
+                "id": 100 + index, "type": "merge",
+                "in": { "base": if index == 1 { 1 } else { 99 + index }, "overlay": id }
+            }));
+        }
+    }
+    let split: Composition = scene((1920, 1080), nodes.into()).into();
+
+    let whole = render(&mut renderer, &one, 0.0, &media);
+    let pieces = render(&mut renderer, &split, 0.0, &media);
+    assert!(drawn(&whole.rgba));
+    within_rounding(&whole.rgba, &pieces.rgba).expect("one node matches the split text");
 }
 
 #[test]
@@ -975,8 +1089,9 @@ fn text_dropped_by_a_full_atlas_still_counts_toward_the_instance_limit() {
         )]),
     )
     .into();
-    let error = gpu
-        .renderer()
+    let mut renderer = gpu.renderer();
+    renderer.set_max_text_glyphs(2048);
+    let error = renderer
         .render_frame_at(&composition, 0.0, &TestMedia::default())
         .expect_err("2080 glyphs exceed the limit")
         .to_string();

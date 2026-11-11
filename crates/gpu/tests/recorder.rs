@@ -40,7 +40,7 @@ fn submit_and_read(
     size: Size,
 ) -> Vec<u8> {
     let output = recorder.resolve(target, None).expect("resolve");
-    recorder.upload();
+    recorder.upload().expect("upload");
     recorder.submit().expect("submit");
     let rgba = renderer
         .read_texture_rgba8(recorder.texture(output), size)
@@ -381,4 +381,26 @@ fn a_depth_only_draw_writes_depth_a_later_draw_compares_against() {
     };
     assert_eq!(lit(&mut recorder, 0.25), [255]);
     assert_eq!(lit(&mut recorder, 0.75), [0]);
+}
+
+#[test]
+fn a_frame_with_more_storage_than_the_device_takes_fails_to_upload() {
+    let (_renderer, mut recorder) = setup();
+    recorder.limit_storage(1 << 16, 1 << 17);
+
+    recorder.begin_frame();
+    recorder.storage_parts(&[&[0u8; (1 << 16) + 1]]);
+    let error = recorder.upload().expect_err("one binding over the limit");
+    assert!(error.to_string().contains("doesn't fit the GPU"), "{error}");
+
+    recorder.begin_frame();
+    for _ in 0..3 {
+        recorder.storage_parts(&[&[0u8; 1 << 16]]);
+    }
+    recorder.upload().expect_err("the buffer over its limit");
+
+    recorder.begin_frame();
+    recorder.storage_parts(&[&[0u8; 1 << 16]]);
+    recorder.storage_parts(&[&[0u8; 1 << 16]]);
+    recorder.upload().expect("a frame within both limits");
 }
