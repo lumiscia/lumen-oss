@@ -7,10 +7,12 @@ use super::{
 use crate::{
     error::{DocumentError, GraphValidationError},
     expr::Expression,
+    gpu::frame_graph::{FrameCx, Programs, Raster, RecordNode},
 };
 
 /// Declares the node kinds. Each line names a variant and its type, which derives
-/// `lumen_macros::Node`. The generated definitions list the kinds in this order.
+/// `lumen_macros::Node` and implements `RecordNode`. The generated definitions list the kinds in
+/// this order.
 macro_rules! node_kinds {
     ($($variant:ident($node:ty),)+) => {
         #[derive(Debug, lumen_macros::StructuralHash)]
@@ -101,6 +103,20 @@ macro_rules! node_kinds {
             fn get_property(&self, id: &str) -> Option<PropertyRead<'_>> {
                 match self {
                     $(Self::$variant(node) => node.get_property(id),)+
+                }
+            }
+        }
+
+        impl RecordNode for NodeKind {
+            fn record(&self, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
+                match self {
+                    $(Self::$variant(node) => node.record(cx),)+
+                }
+            }
+
+            fn programs(&self, programs: &mut Programs<'_>) -> crate::Result<()> {
+                match self {
+                    $(Self::$variant(node) => node.programs(programs),)+
                 }
             }
         }

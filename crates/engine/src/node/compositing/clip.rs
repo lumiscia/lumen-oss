@@ -322,6 +322,19 @@ impl Clip {
     }
 }
 
+impl crate::gpu::frame_graph::RecordNode for Clip {
+    fn programs(&self, programs: &mut crate::gpu::frame_graph::Programs<'_>) -> crate::Result<()> {
+        programs.clip_crop()
+    }
+
+    fn record(
+        &self,
+        cx: &mut crate::gpu::frame_graph::FrameCx<'_>,
+    ) -> crate::Result<crate::gpu::frame_graph::Raster> {
+        cx.record_clip(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ClipEnd, ClipWindow};

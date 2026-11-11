@@ -11,6 +11,7 @@ mod environment;
 mod instance;
 #[cfg(feature = "3d")]
 pub(crate) mod mips;
+mod record;
 #[cfg(feature = "3d")]
 pub(crate) mod render;
 mod text_3d;
