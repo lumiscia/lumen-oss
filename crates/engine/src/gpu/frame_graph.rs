@@ -921,7 +921,7 @@ impl FrameGraph {
         self.state
             .kept_sources
             .iter()
-            .any(|((kind, source), identity)| source_identity(media, *kind, source) != *identity)
+            .any(|((kind, source), seen)| source_changed(media, *kind, source, seen.as_ref()))
     }
 
     /// The warnings recording has raised since the last call.
@@ -999,6 +999,29 @@ fn source_identity(
     source: &str,
 ) -> Option<MediaIdentity> {
     Some(media?.resolve(source, kind).ok()?.identity)
+}
+
+/// Whether what `media` serves for `source` as `kind` is no longer what was `seen`: another
+/// identity, or there where it was missing or the other way round. A source that fails for any
+/// other reason than being missing counts as changed, so that reading it again reports why.
+fn source_changed(
+    media: Option<&dyn MediaStore>,
+    kind: AssetKind,
+    source: &str,
+    seen: Option<&MediaIdentity>,
+) -> bool {
+    let Some(media) = media else {
+        return seen.is_some();
+    };
+    match media.resolve(source, kind) {
+        Ok(resolved) => Some(&resolved.identity) != seen,
+        Err(error) => {
+            let missing = error.failure().is_some_and(|failure| {
+                matches!(failure.reason, crate::error::MediaReason::NotFound { .. })
+            });
+            !missing || seen.is_some()
+        }
+    }
 }
 
 fn font_generation(media: Option<&dyn MediaStore>) -> Option<u64> {
@@ -2696,5 +2719,36 @@ fn record_kind(node: &NodeKind, cx: &mut FrameCx<'_>) -> crate::Result<Raster> {
                 .to_string(),
         }
         .into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::MediaError;
+    use crate::media::ResolvedMedia;
+
+    /// Fails every source the way `failure` says.
+    #[derive(Debug)]
+    struct Failing(fn(&str) -> MediaError);
+
+    impl MediaStore for Failing {
+        fn resolve(&self, source: &str, _kind: AssetKind) -> Result<ResolvedMedia, MediaError> {
+            Err(self.0(source))
+        }
+    }
+
+    #[test]
+    fn a_missing_source_that_starts_failing_another_way_counts_as_changed() {
+        let changed = |store: &Failing, seen: Option<&MediaIdentity>| {
+            source_changed(Some(store), AssetKind::Font, "Brand", seen)
+        };
+        let missing = Failing(|source| MediaError::source_not_found(source, "not served"));
+        let unreadable = Failing(|source| MediaError::decode(source, "permission denied"));
+        assert!(!changed(&missing, None));
+        assert!(changed(&unreadable, None));
+        let seen = MediaIdentity::of_key("brand");
+        assert!(changed(&missing, Some(&seen)) && changed(&unreadable, Some(&seen)));
+        assert!(!source_changed(None, AssetKind::Font, "Brand", None));
     }
 }
