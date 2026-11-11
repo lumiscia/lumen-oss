@@ -466,7 +466,7 @@ impl TextInstance {
         let mut text_system = text_system(media)?;
         load_font_families(&mut text_system, media, &layout)?;
         let mut state = self.state.lock().map_err(|_| {
-            LumenError::Render(RenderError::Gpu {
+            LumenError::Render(RenderError::Internal {
                 details: format!("text node {} state lock was poisoned", self.node_id.0),
             })
         })?;
@@ -582,7 +582,7 @@ impl TextInstance {
             .as_ref()
             .expect("frame atlas")
             .lock()
-            .map_err(|_| RenderError::Gpu {
+            .map_err(|_| RenderError::Internal {
                 details: "text atlas lock was poisoned".to_string(),
             })?;
         let mut prepared = text_system.prepare_glyphs(
@@ -1539,7 +1539,7 @@ fn font_files(
     static FILES: LazyLock<Mutex<Files>> = LazyLock::new(Mutex::default);
     let lock = || {
         FILES.lock().map_err(|_| {
-            LumenError::Render(RenderError::Gpu {
+            LumenError::Render(RenderError::Internal {
                 details: "font file cache lock was poisoned".to_string(),
             })
         })

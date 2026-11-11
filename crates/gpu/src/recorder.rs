@@ -13,7 +13,7 @@
 
 use std::{hash::Hash, sync::Arc};
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
 use crate::{Size, renderer::ValidationScope};
 
@@ -24,6 +24,25 @@ pub struct Dispatch {
     pub y: u32,
     pub z: u32,
 }
+
+/// Why the recorder refused a frame for a reason other than the device failing. Errors the
+/// recorder returns that are neither of these come from the device.
+#[derive(Debug)]
+pub enum FrameError {
+    /// The frame recorded more data than the device's buffers hold.
+    TooLarge(String),
+    /// The recorder was used against its contract, or has broken one of its own.
+    Misuse(String),
+}
+
+impl std::fmt::Display for FrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::TooLarge(details) | Self::Misuse(details)) = self;
+        f.write_str(details)
+    }
+}
+
+impl std::error::Error for FrameError {}
 
 /// Bytes of pooled textures kept before unused ones are dropped regardless of age.
 pub const DEFAULT_POOL_BUDGET_BYTES: u64 = 384 << 20;
@@ -707,20 +726,18 @@ impl Recorder {
                 None => self.entry(output).key,
             };
             if (target_key.width, target_key.height) != (output_key.width, output_key.height) {
-                return Err(anyhow!(
+                return Err(FrameError::Misuse(format!(
                     "the external texture has size {}x{}, expected {}x{}",
-                    target_key.width,
-                    target_key.height,
-                    output_key.width,
-                    output_key.height
-                ));
+                    target_key.width, target_key.height, output_key.width, output_key.height
+                ))
+                .into());
             }
             if target_key.format != output_key.format {
-                return Err(anyhow!(
+                return Err(FrameError::Misuse(format!(
                     "the external texture has format {:?}, expected {:?}",
-                    target_key.format,
-                    output_key.format
-                ));
+                    target_key.format, output_key.format
+                ))
+                .into());
             }
             let stands_in = output_frame.is_some_and(|index| {
                 let texture = &self.frame_textures[index];
@@ -735,9 +752,10 @@ impl Recorder {
                 Some(index) if stands_in => self.frame_textures[index].physical = Some(external),
                 _ => {
                     if !target_usage.contains(wgpu::TextureUsages::COPY_DST) {
-                        return Err(anyhow!(
+                        return Err(FrameError::Misuse(format!(
                             "the external texture can't take a kept output: it has usage {target_usage:?}, without COPY_DST"
-                        ));
+                        ))
+                        .into());
                     }
                     let size = Size::new(target_key.width, target_key.height);
                     self.copy(output, external, [0, 0], size);
@@ -1187,7 +1205,10 @@ impl Recorder {
             .iter()
             .any(|entry| matches!(entry.kind, LayoutKind::StorageTexture(_)))
         {
-            return Err(anyhow!("render program `{label}` binds a storage texture"));
+            return Err(FrameError::Misuse(format!(
+                "render program `{label}` binds a storage texture"
+            ))
+            .into());
         }
         let contents = format!(
             "{vertex}{fragment}{variant}{:?}{:?}{:?}{:?}{layout:?}{shader}",
@@ -1572,13 +1593,12 @@ impl Recorder {
     pub fn upload(&mut self) -> Result<()> {
         for arena in [&self.uniforms, &self.storage] {
             if arena.overflowed {
-                return Err(anyhow!(
+                return Err(FrameError::TooLarge(format!(
                     "the frame's data doesn't fit the GPU: {} can bind at most {} bytes at once \
                      and hold {} bytes in all",
-                    arena.label,
-                    arena.max_binding,
-                    arena.max_buffer
-                ));
+                    arena.label, arena.max_binding, arena.max_buffer
+                ))
+                .into());
             }
         }
         let uniforms_grew = self.uniforms.upload(&self.device, &self.queue);
@@ -1621,7 +1641,10 @@ impl Recorder {
                         .expect("program")
                         .program
                     else {
-                        return Err(anyhow!("recorded a render program in a compute pass"));
+                        return Err(FrameError::Misuse(
+                            "recorded a render program in a compute pass".to_string(),
+                        )
+                        .into());
                     };
                     let pass = compute.get_or_insert_with(|| {
                         encoder
@@ -1653,7 +1676,10 @@ impl Recorder {
                         .expect("program")
                         .program
                     else {
-                        return Err(anyhow!("recorded a compute program in a render pass"));
+                        return Err(FrameError::Misuse(
+                            "recorded a compute program in a render pass".to_string(),
+                        )
+                        .into());
                     };
                     let depth_tex = depth.map(|(texture, _)| texture);
                     let continues = matches!(load, TargetLoad::Load)
@@ -1820,7 +1846,7 @@ impl Recorder {
         self.stats.bind_group_misses += 1;
         let layout = match &self.programs[program.0 as usize]
             .as_ref()
-            .ok_or_else(|| anyhow!("bind group for an evicted program"))?
+            .ok_or_else(|| FrameError::Misuse("bind group for an evicted program".to_string()))?
             .program
         {
             RuntimeProgram::Compute(_, layout) | RuntimeProgram::Render(_, layout) => layout,

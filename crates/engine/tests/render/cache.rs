@@ -298,7 +298,8 @@ fn discarded_binds_keep_nothing_and_stale_uploads_are_still_rejected() {
 
     let older = renderer.bind_frame(&composition, 4, &media).unwrap();
     let current = renderer.bind_frame(&composition, 5, &media).unwrap();
-    assert!(renderer.upload_bound_frame(&older).is_err());
+    let stale = renderer.upload_bound_frame(&older).unwrap_err();
+    assert_eq!(stale.code(), "render.internal", "{stale}");
     renderer.upload_bound_frame(&current).unwrap();
     let (raster, _) = renderer.submit_render().unwrap();
     assert!(read_raster(&renderer, raster) == uncached(&mut reference, &composition, 5.0));
