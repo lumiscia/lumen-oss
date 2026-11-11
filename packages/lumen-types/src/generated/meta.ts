@@ -1927,8 +1927,8 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
     /**
-     * Base colour, which an image plane's raster is multiplied by. Must be a solid color; a
-     * gradient fails `check`.
+     * Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient
+     * fails `check`.
      */
     readonly color?: ExpressionValue<Color>;
     /** Draws the back of each face too. */
@@ -1965,9 +1965,9 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
     /**
      * Shows nothing but the shadows falling on it, as transparent black that darkens what the
      * render is composited over by as much light as the shadows take away, times the colour's
-     * alpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows
-     * none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no
-     * shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
+     * alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It
+     * shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts
+     * no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
      * footage behind it.
      */
     readonly shadow_catcher?: ExpressionValue<boolean>;
@@ -2495,8 +2495,8 @@ export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
     /**
-     * Base colour, which an image plane's raster is multiplied by. Must be a solid color; a
-     * gradient fails `check`.
+     * Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient
+     * fails `check`.
      */
     readonly color?: ExpressionValue<Color>;
     /** Draws the back of each face too. */
@@ -2523,9 +2523,9 @@ export interface Shape3dNode extends CompositionNodeBase<"shape_3d"> {
     /**
      * Shows nothing but the shadows falling on it, as transparent black that darkens what the
      * render is composited over by as much light as the shadows take away, times the colour's
-     * alpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows
-     * none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no
-     * shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
+     * alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It
+     * shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts
+     * no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
      * footage behind it.
      */
     readonly shadow_catcher?: ExpressionValue<boolean>;
@@ -2714,8 +2714,8 @@ export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
      */
     readonly cast_shadows?: ExpressionValue<boolean>;
     /**
-     * Base colour, which an image plane's raster is multiplied by. Must be a solid color; a
-     * gradient fails `check`.
+     * Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient
+     * fails `check`.
      */
     readonly color?: ExpressionValue<Color>;
     /**
@@ -2788,9 +2788,9 @@ export interface Text3dNode extends CompositionNodeBase<"text_3d"> {
     /**
      * Shows nothing but the shadows falling on it, as transparent black that darkens what the
      * render is composited over by as much light as the shadows take away, times the colour's
-     * alpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows
-     * none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no
-     * shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
+     * alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It
+     * shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts
+     * no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
      * footage behind it.
      */
     readonly shadow_catcher?: ExpressionValue<boolean>;

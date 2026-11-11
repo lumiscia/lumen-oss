@@ -18,6 +18,7 @@
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
   "ignore": [
+    "@lumiscia/example-3d",
     "@lumiscia/example-node",
     "@lumiscia/example-vite-react",
     "@lumiscia/example-vite-svelte",

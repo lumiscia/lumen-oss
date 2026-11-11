@@ -3127,7 +3127,7 @@
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Base colour, which an image plane's raster is multiplied by. Must be a solid color; a\ngradient fails `check`.",
+                    "description": "Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient\nfails `check`.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
@@ -3312,7 +3312,7 @@
                       }
                     ],
                     "default": false,
-                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows\nnone of its colours, hides what is behind it wherever that alpha isn't 0, and casts no\nshadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
+                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It\nshows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts\nno shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
                     "title": "Shadow Catcher",
                     "x-lumen-kind": "bool"
                   },
@@ -6315,7 +6315,7 @@
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Base colour, which an image plane's raster is multiplied by. Must be a solid color; a\ngradient fails `check`.",
+                    "description": "Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient\nfails `check`.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
@@ -6486,7 +6486,7 @@
                       }
                     ],
                     "default": false,
-                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows\nnone of its colours, hides what is behind it wherever that alpha isn't 0, and casts no\nshadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
+                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It\nshows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts\nno shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
                     "title": "Shadow Catcher",
                     "x-lumen-kind": "bool"
                   },
@@ -7430,7 +7430,7 @@
                       }
                     ],
                     "default": [255, 255, 255, 255],
-                    "description": "Base colour, which an image plane's raster is multiplied by. Must be a solid color; a\ngradient fails `check`.",
+                    "description": "Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient\nfails `check`.",
                     "title": "Color",
                     "x-lumen-constraints": {
                       "role": "color"
@@ -7787,7 +7787,7 @@
                       }
                     ],
                     "default": false,
-                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows\nnone of its colours, hides what is behind it wherever that alpha isn't 0, and casts no\nshadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
+                    "description": "Shows nothing but the shadows falling on it, as transparent black that darkens what the\nrender is composited over by as much light as the shadows take away, times the colour's\nalpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It\nshows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts\nno shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D\nfootage behind it.",
                     "title": "Shadow Catcher",
                     "x-lumen-kind": "bool"
                   },

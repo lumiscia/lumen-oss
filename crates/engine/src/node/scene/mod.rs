@@ -67,8 +67,8 @@ impl Default for Placement3d {
 /// How a surface responds to light.
 #[derive(Debug, Clone, lumen_macros::Delegate)]
 pub struct Material3d {
-    /// Base colour, which an image plane's raster is multiplied by. Must be a solid color; a
-    /// gradient fails `check`.
+    /// Base colour. An image plane multiplies its raster by it. Must be a solid color; a gradient
+    /// fails `check`.
     #[meta(role = "color", solid)]
     pub color: Paint,
     /// 0 is a dielectric such as plastic, 1 a bare metal.
@@ -99,9 +99,9 @@ pub struct Material3d {
     pub receive_shadows: bool,
     /// Shows nothing but the shadows falling on it, as transparent black that darkens what the
     /// render is composited over by as much light as the shadows take away, times the colour's
-    /// alpha, the opacity and an image plane's raster's alpha, whatever `unlit` says. It shows
-    /// none of its colours, hides what is behind it wherever that alpha isn't 0, and casts no
-    /// shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
+    /// alpha, the opacity and, on an image plane, its raster's alpha, whatever `unlit` says. It
+    /// shows none of its colours, hides what is behind it wherever that alpha isn't 0, and casts
+    /// no shadows, so a ground plane catching a model's shadow can stand in for the floor of 2D
     /// footage behind it.
     #[meta()]
     pub shadow_catcher: bool,

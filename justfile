@@ -1,6 +1,7 @@
 definitions_out := justfile_directory() / "definitions"
 wasm_bindings_out := justfile_directory() / "packages/lumen-bindings/wasm"
 generated_types_out := justfile_directory() / "packages/lumen-types/src/generated"
+node_reference := justfile_directory() / "docs/node-reference.md"
 
 # The TypeScript half of CI's Check job. CI also runs Rust formatting, checks and tests, and the
 # lavapipe-backed SDK integration test.
@@ -15,8 +16,14 @@ wasm-bindings-debug:
 wasm-bindings-release:
     pnpm --filter @lumiscia/generate-bindings generate -- release --out-dir {{ wasm_bindings_out }}
 
+# Also writes docs/node-reference.md from the definitions.
 generate-types: generate-definitions
     pnpm --filter @lumiscia/generate-types generate
+
+# Rewrites the JSON blocks of docs/3d.md from the TypeScript blocks after them.
+update-3d-guide:
+    UPDATE_GUIDE=1 pnpm exec vitest run packages/lumen-sdk/test/guide.test.ts
+    pnpm exec oxfmt --write docs/3d.md
 
 # Sets the Lumen major.minor compositions declare as `lumenSchemaVersion`: the engine constant
 # and every tracked fixture, example and doc, then the generated output. Run it with a release
@@ -29,7 +36,7 @@ set-schema-version version:
 verify-typescript-artifacts: generate-types wasm-bindings-debug
     #!/usr/bin/env bash
     set -euo pipefail
-    paths=({{ definitions_out }}/composition.schema.json {{ generated_types_out }})
+    paths=({{ definitions_out }}/composition.schema.json {{ node_reference }} {{ generated_types_out }})
     # `generated/` is gitignored, so new type files only show up with --ignored.
     changes="$(git status --porcelain -- "${paths[@]}")$(git status --porcelain --ignored -- {{ generated_types_out }})"
     if [ -n "$changes" ]; then

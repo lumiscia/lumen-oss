@@ -17,6 +17,7 @@
 <p>
 <a href="#quickstart">Quickstart</a> ·
 <a href="https://github.com/lumiscia/docs">Docs</a> ·
+<a href="docs/3d.md">3D</a> ·
 <a href="examples/README.md">Examples</a> ·
 <a href="crates/server/README.md">Self-hosting</a> ·
 <a href="https://lumiscia.com">Lumiscia (soon)</a>
@@ -107,7 +108,7 @@ export const App = () => (
 );
 ```
 
-The [documentation](https://github.com/lumiscia/docs) covers every node, media, audio and fonts. [`examples/`](examples/README.md) has complete apps.
+The [documentation](https://github.com/lumiscia/docs) covers every node, media, audio and fonts. The [3D guide](docs/3d.md) covers scenes, cameras, lights and glTF models, and the [node reference](docs/node-reference.md) lists every node and param. [`examples/`](examples/README.md) has complete apps and 3D compositions.
 
 ## Where it runs
 

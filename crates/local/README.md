@@ -14,6 +14,8 @@ cargo run -p lumen-local -- --composition crates/local/demo/gradient-paints.json
 cargo run -p lumen-local -- --composition crates/local/demo/gradient-paints.json --check
 ```
 
+`examples/README.md` has [3D compositions](../../examples/README.md#3d) to render this way.
+
 `.mp4` renders every frame, `.png` and `.jpg` (or `.jpeg`) render one, and an output name with `%d` renders an image per frame. `--help` lists every flag.
 
 `--frames START..END` renders those frames of the composition: `END` is not included, either side can be left out (`30..`, `..60`), and frame numbers are the composition's. An `.mp4` starts at time 0 and holds exactly those frames, with its audio cut to the same span. A single image is the frame at `--frame` (0 by default) or at `START`. A PNG keeps transparency; a JPEG is opaque, with transparent pixels over black, and takes `--jpeg-quality` from 1 to 100 (default 90). A sequence is written as one file per frame, replacing `%d` with the frame number padded to at least four digits (`%0Nd` pads to at least `N`; both are wider when the last frame needs it), so `frames/shot_%d.png` with `--frames 28..33` writes `shot_0028.png` to `shot_0032.png`. Directories are created. A render that fails keeps the frames it had written. A range that is empty or past the timeline fails before rendering.
