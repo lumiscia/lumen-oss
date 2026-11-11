@@ -33,7 +33,11 @@ function controllerFailingWith(error: unknown) {
   } as unknown as LumenPreviewBindings);
   const controller = new LumenPreviewController();
   const canvas = {} as HTMLCanvasElement;
-  return { render: () => controller.renderNowAsync(canvas), renders };
+  const render = async () => {
+    await controller.prepareFrame();
+    await controller.renderPrepared(canvas);
+  };
+  return { render, renders };
 }
 
 describe("preview errors", () => {

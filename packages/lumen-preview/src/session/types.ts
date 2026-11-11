@@ -1,8 +1,9 @@
 import type { LumenComposition } from "@lumiscia/lumen-types";
+import type { InputFormat } from "mediabunny";
 
 import type { LumenAudioEngineOptions } from "../audio-engine.js";
 import type { LumenLogLevel } from "../runtime.js";
-import type { MediaSourceInput, VideoSourceRegistration } from "../media/index.js";
+import type { MediaSourceInput } from "../media/index.js";
 import type { LumenPreviewRange } from "../playback-range.js";
 import type { LumenPreviewContext, LumenPreviewError } from "../preview.js";
 import type { LumenPreviewStatsCallback, LumenPreviewTimeUpdateCallback } from "./stats.js";
@@ -12,10 +13,16 @@ export type LumenPreviewComposition = LumenComposition | { toJSON(): LumenCompos
 /** `model` is a binary glTF (`.glb`) file, which a `model_3d` reads. */
 export type LumenPreviewMediaKind = "audio" | "image" | "model" | "video";
 
-export interface LumenPreviewMediaEntry extends Omit<VideoSourceRegistration, "source"> {
+export interface LumenPreviewMediaEntry {
+  /** The rate source frames are numbered at, for a video. Defaults to the stream's own rate. */
+  fps?: number | null;
+  /** The input formats to try for a video, instead of all of them. */
+  formats?: InputFormat[];
   /** Needed only when the blob's type or the composition doesn't already say. */
   kind?: LumenPreviewMediaKind;
   source: MediaSourceInput;
+  /** Which track of a video to read. */
+  track?: number | "primary";
 }
 
 /**

@@ -15,10 +15,8 @@ import { assetHint } from "./asset-hint.js";
 import { describeError, errorDiagnostics, errorMediaFailure } from "./session/errors.js";
 import { PlaybackFpsMeter } from "./session/stats.js";
 
-type InitPreview = (options: { module_or_path: string }) => Promise<object>;
-
 export interface LumenPreviewWorkerHostOptions {
-  initPreview: InitPreview;
+  initPreview: (options: { module_or_path: string }) => Promise<object>;
   previewBindings: LumenPreviewBindings;
 }
 

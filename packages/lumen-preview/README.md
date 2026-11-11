@@ -111,8 +111,8 @@ session.rate; // 1.5: the options in effect are readable as loop, rate, volume, 
 
 ## Entry points
 
-`@lumiscia/lumen-preview` exports `createLumenPreview`, `mountPreview`, `LumenPreviewContext`, `LumenPreviewSession` and the types of their state, errors, options and callbacks. Nothing else is public: media decoding and audio are internal.
+`@lumiscia/lumen-preview` exports `createLumenPreview`, `mountPreview`, `LumenPreviewContext`, `LumenPreviewSession` and the types of their state, errors, options and callbacks, including `MediaFailure`. Nothing else is public: media decoding and audio are internal.
 
-`@lumiscia/lumen-preview/advanced` exports the types of the bindings a custom host passes to `@lumiscia/lumen-preview/worker-host` (`LumenBindings`, `LumenPreviewBindings`, `LumenPreviewControllerBinding`). `@lumiscia/lumen-bindings` implements them, so an application doesn't need this entry.
+`@lumiscia/lumen-preview/advanced` exports only types: the bindings a custom host passes to `@lumiscia/lumen-preview/worker-host` (`LumenBindings`, `LumenPreviewBindings`, `LumenPreviewControllerBinding`, `LumenMediaTarget`) and the types its messages carry (`MediaRegistration`, `RegisteredImageSource`, `RegisteredModelSource`, `RegisteredVideoSource`, `VideoSourceRegistration`, `PreviewClock`). `@lumiscia/lumen-bindings` implements them, so an application doesn't need this entry.
 
 See the [Lumen repository](https://github.com/lumiscia/lumen-oss#readme) for the full quickstart and `examples/`.

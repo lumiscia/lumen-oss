@@ -1,13 +1,7 @@
 import type { LumenDiagnostic, LumenModelInfo, MediaInventory } from "@lumiscia/lumen-types";
 
 import { LumenMediaBridge, toUint8Array } from "./media/index.js";
-import type {
-  LumenMediaTarget,
-  MediaRegistration,
-  MediaSourceInput,
-  VideoFrameMetadata,
-  VideoSourceRegistration,
-} from "./media/index.js";
+import type { LumenMediaTarget, MediaRegistration } from "./media/index.js";
 import type { PlaybackRange } from "./playback-range.js";
 import { FrameRequirementLoader } from "./requirements-loader.js";
 
@@ -66,48 +60,15 @@ export interface LumenBindings {
   preview: () => Promise<LumenPreviewBindings>;
 }
 
-export type LumenPreviewBindingSource = LumenPreviewBindings | LumenBindings;
-
-export async function resolveLumenPreviewBindings(
-  bindings: LumenPreviewBindingSource,
-): Promise<LumenPreviewBindings> {
-  if (isLumenBindings(bindings)) {
-    return bindings.preview();
-  }
-
-  return bindings;
-}
-
-function isLumenBindings(bindings: LumenPreviewBindingSource): bindings is LumenBindings {
-  return typeof (bindings as LumenBindings).preview === "function";
-}
-
 export interface LumenPreviewController extends LumenPreviewControllerBinding {
   registerFontFamily(fontFamily: string, bytes: BufferSource): void;
-  registerImageSource(imageId: string, source: MediaSourceInput): Promise<void>;
-  /** Reads a binary glTF (`.glb`) file for the `model_3d` nodes whose `source` is `modelId`. */
-  registerModelSource(modelId: string, source: MediaSourceInput): Promise<void>;
-  registerVideoSource(
-    streamId: string,
-    source: MediaSourceInput,
-    optionsOrFps?: number | Omit<VideoSourceRegistration, "source">,
-  ): Promise<VideoFrameMetadata>;
-  registerVideoSourceBytes(
-    streamId: string,
-    bytes: BufferSource,
-    options?: Omit<VideoSourceRegistration, "source">,
-  ): Promise<VideoFrameMetadata>;
   syncMediaSources(registrations: Iterable<MediaRegistration>): Promise<void>;
-  loadVideoFrame(streamId: string, frame: number): Promise<void>;
-  loadFrameRequirements(requirementsJson: string): Promise<void>;
   /** Limits lookahead to the range being played. It wraps round the range only if it loops. */
   setPlaybackRange(range: PlaybackRange | null): void;
   /** Loads what the playhead's frame needs, then starts decoding the frames after it. */
   prepareFrame(): Promise<void>;
   /** Renders a frame `prepareFrame` loaded. */
   renderPrepared(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
-  /** `prepareFrame`, then `renderPrepared`. */
-  renderNowAsync(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void>;
   setLookaheadCount(lookaheadCount: number): void;
   setLogLevel(level: LumenLogLevel): void;
 }
@@ -184,44 +145,9 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
       super.setFont(fontFamily, toUint8Array(bytes));
     }
 
-    async registerImageSource(imageId: string, source: MediaSourceInput): Promise<void> {
-      this.requirements.reset();
-      await this.bridge.registerImageSource(imageId, source);
-    }
-
-    async registerModelSource(modelId: string, source: MediaSourceInput): Promise<void> {
-      await this.bridge.registerModelSource(modelId, source);
-    }
-
-    async registerVideoSource(
-      streamId: string,
-      source: MediaSourceInput,
-      optionsOrFps: number | Omit<VideoSourceRegistration, "source"> = {},
-    ): Promise<VideoFrameMetadata> {
-      this.requirements.reset();
-      return this.bridge.registerVideoSource(streamId, source, optionsOrFps);
-    }
-
-    async registerVideoSourceBytes(
-      streamId: string,
-      bytes: BufferSource,
-      options: Omit<VideoSourceRegistration, "source"> = {},
-    ): Promise<VideoFrameMetadata> {
-      this.requirements.reset();
-      return this.bridge.registerVideoSourceBytes(streamId, bytes, options);
-    }
-
     async syncMediaSources(registrations: Iterable<MediaRegistration>): Promise<void> {
       this.requirements.reset();
       await this.bridge.syncMediaSources(registrations);
-    }
-
-    async loadVideoFrame(streamId: string, frame: number): Promise<void> {
-      await this.bridge.loadVideoFrame(streamId, frame);
-    }
-
-    async loadFrameRequirements(requirementsJson: string): Promise<void> {
-      await this.bridge.loadFrameRequirements(requirementsJson);
     }
 
     setLookaheadCount(lookaheadCount: number): void {
@@ -248,11 +174,6 @@ export function createLumenPreviewRuntime(bindings: LumenPreviewBindings): Lumen
         await this.requirements.loadFrame(super.currentFrame());
         await super.renderNow(canvas);
       }
-    }
-
-    async renderNowAsync(canvas: HTMLCanvasElement | OffscreenCanvas): Promise<void> {
-      await this.prepareFrame();
-      await this.renderPrepared(canvas);
     }
 
     private isRecoverableFrameMiss(error: unknown): boolean {

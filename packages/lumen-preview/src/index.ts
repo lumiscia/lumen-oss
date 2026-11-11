@@ -1,3 +1,4 @@
+export type { MediaFailure } from "@lumiscia/lumen-types";
 export {
   LumenPreviewContext,
   createLumenPreview,
