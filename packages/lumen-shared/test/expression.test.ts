@@ -1,4 +1,9 @@
-import { expressionBuiltins, expressionGlobals, type Vec2 } from "@lumiscia/lumen-types";
+import {
+  expressionBuiltins,
+  expressionGlobals,
+  type Color,
+  type Vec2,
+} from "@lumiscia/lumen-types";
 import { format } from "oxfmt";
 import { describe, expect, test } from "vitest";
 
@@ -53,6 +58,7 @@ import {
   mod,
   moves,
   ms,
+  node,
   noise,
   outBack,
   outBounce,
@@ -86,6 +92,7 @@ import {
   tween,
   uppercase,
   vec2,
+  when,
   width,
   type Arg,
   type Expr,
@@ -217,6 +224,48 @@ const cases: Readonly<Record<string, Case>> = {
     expression: vec2(0.0000001, 1e21).add([-0, 0.1 + 0.2]),
     expected: [0.0000001, 1e21 + 0.30000000000000004],
   },
+  when_number: {
+    expression: when(frame.gte(30).and(frame.lt(60)), 1, 0.35),
+    expected: 1,
+  },
+  when_colour: {
+    expression: when(frame.gt(60), hex("#ff0000"), [0, 0, 255]),
+    expected: "#0000ffff",
+  },
+  when_vec2: { expression: when(frame.lte(44), [1, 2], vec2(3, frame)), expected: [3, 45] },
+  when_string: { expression: when(vec2(1, 2).eq([1, 2]), "yes", "no"), expected: "yes" },
+  when_number_condition: { expression: when(mod(frame, 2), 7, 8), expected: 7 },
+  when_logic: {
+    expression: when(frame.lt(10).or(frame.eq(45)).and(frame.neq(3)).and(frame.gt(60).not()), 2, 3),
+    expected: 2,
+  },
+  tag_escapes: { expression: expr<string>`uppercase('it\'s a\\b')`, expected: "IT'S A\\B" },
+  raw_operand_not: { expression: when(expr<boolean>("frame > 100").not(), 1, 0), expected: 1 },
+  raw_operand_and: {
+    expression: when(expr<boolean>("frame > 0 || frame < -10").and(frame.lt(5)), 1, 0),
+    expected: 0,
+  },
+  raw_operand_mul: { expression: expr<number>("frame + 5").mul(2), expected: 100 },
+  when_boolean_eq: { expression: when(frame.gt(1).eq(frame.gt(2)), 1, 0), expected: 1 },
+  when_colour_neq: {
+    expression: when(hex("#ff0000").neq([255, 0, 0]), 1, 0),
+    expected: 0,
+  },
+  tag_raw_operand: {
+    expression: expr<number>`${expr<number>("frame + 5")} * 2`,
+    expected: 100,
+  },
+  tag_builder_operand: { expression: expr<number>`${frame.sub(5)} * 2`, expected: 80 },
+  tag_negative_numbers: { expression: expr<number>`${-1} - ${-2} + 2 - ${-1}`, expected: 4 },
+  tag_tween_in_vec2: {
+    expression: expr<Vec2>`vec2(0, ${tween(0, 30, 30, 30)})`,
+    expected: [0, 15],
+  },
+  tag_conditional: {
+    expression: expr<number>`if(frame >= ${sec(1)}, ${expr<number>("frame - 5")} / 2, 0)`,
+    expected: 20,
+  },
+  tag_string: { expression: expr<string>`uppercase(${"it's"})`, expected: "IT'S" },
   colour_tuple: { expression: lerp([255, 0, 0], hex("#0000ff80"), 0), expected: "#ff0000ff" },
 };
 
@@ -256,7 +305,10 @@ function fixture() {
     composition: composition.toJSON(),
     frame: 45,
     cases: Object.fromEntries(
-      Object.entries(cases).map(([name, { expected, expression }]) => [
+      Object.entries({
+        ...cases,
+        node: { expression: node(title, "font_size").sub(54), expected: 0.5 },
+      }).map(([name, { expected, expression }]) => [
         name,
         { expression: expression.toString(), ...(expected === undefined ? {} : { expected }) },
       ]),
@@ -281,6 +333,45 @@ describe("expression helpers", () => {
     expect(String(frame.sub(12).div(fps).mul(2).oneMinus())).toBe(
       "=(1 - (((frame - 12) / fps) * 2))",
     );
+  });
+
+  test("emit comparisons, logic and conditions", () => {
+    expect(String(frame.gte(10).and(frame.lt(20)))).toBe("=((frame >= 10) && (frame < 20))");
+    expect(String(frame.gt(1).or(frame.lte(0)).not())).toBe("=(!((frame > 1) || (frame <= 0)))");
+    expect(String(frame.eq(3).neq(frame.eq(4)))).toBe("=((frame == 3) != (frame == 4))");
+    expect(String(vec2(1, 2).eq([1, 2]))).toBe("=(vec2(1, 2) == vec2(1, 2))");
+    expect(String(hex("#ff0000").neq([255, 0, 0]))).toBe("=(#ff0000 != rgb(255, 0, 0))");
+    expect(String(uppercase("a").eq("A"))).toBe("=(uppercase('a') == 'A')");
+    expect(String(frame.gt(1).and(mod(frame, 2)))).toBe("=((frame > 1) && mod(frame, 2))");
+  });
+
+  test("bracket raw expressions under an operator", () => {
+    expect(String(expr<boolean>("frame > 1").not())).toBe("=(!(frame > 1))");
+    expect(String(expr<number>("frame + 5").mul(2))).toBe("=((frame + 5) * 2)");
+    expect(String(frame.sub(expr<number>("fps - 1")))).toBe("=(frame - (fps - 1))");
+    expect(String(max(expr<number>("frame + 5"), 2))).toBe("=max(frame + 5, 2)");
+  });
+
+  test("when lowers to if with the branch type", () => {
+    expect(String(when(frame.gte(30).and(frame.lt(60)), 1, 0))).toBe(
+      "=if(((frame >= 30) && (frame < 60)), 1, 0)",
+    );
+    expect(String(when(mod(frame, 2), "a", "b"))).toBe("=if(mod(frame, 2), 'a', 'b')");
+    const tint: Expr<Color> = when(frame.gt(30), hex("#ff0000"), [0, 0, 255]);
+    expect(String(tint)).toBe("=if((frame > 30), #ff0000, rgb(0, 0, 255))");
+    const nested: Expr<Vec2> = when(frame.lt(10), [0, 0], when(frame.lt(20), [1, 1], vec2(2, 2)));
+    expect(String(nested)).toBe(
+      "=if((frame < 10), vec2(0, 0), if((frame < 20), vec2(1, 1), vec2(2, 2)))",
+    );
+    expect(String(when(frame.gt(1), 1, 0).add(1))).toBe("=(if((frame > 1), 1, 0) + 1)");
+  });
+
+  test("node reads a param of another node", () => {
+    expect(String(node(3, "opacity"))).toBe("=node(3, 'opacity')");
+    expect(String(node({ id: 7 }, "it's").add(1))).toBe("=(node(7, 'it\\'s') + 1)");
+    expect(String(node<number>(2, "font_size").gt(20))).toBe("=(node(2, 'font_size') > 20)");
+    expect(() => node(-1, "opacity")).toThrow("unsigned integer id");
+    expect(() => node(1.5, "opacity")).toThrow("unsigned integer id");
   });
 
   test("format numbers deterministically", () => {
@@ -340,6 +431,47 @@ describe("expression helpers", () => {
     expect(literal("x=")).toBe("x=");
     expect(String(expr("if(frame > 30, 1, 0)"))).toBe("=if(frame > 30, 1, 0)");
     expect(() => expr("=frame")).toThrow("without its leading `=`");
+  });
+
+  test("expr as a template tag lowers each interpolated value", () => {
+    expect(String(expr<number>`${1.5} + ${frame}`)).toBe("=1.5 + frame");
+    expect(String(expr<Vec2>`vec2(0, ${tween(0, 30, 104, 18, ease.outExpo)})`)).toBe(
+      "=vec2(0, tween(0, 30, 104, 18, 'out_expo'))",
+    );
+    expect(String(expr<string>`uppercase(${"it's\n"})`)).toBe("=uppercase('it\\'s\\n')");
+    expect(String(expr<Vec2>`${[1, frame]} * 2`)).toBe("=vec2(1, frame) * 2");
+    expect(String(expr<Color>`mix(${[1, 2, 3]}, ${[1, 2, 3, 4]})`)).toBe(
+      "=mix(rgb(1, 2, 3), rgba(1, 2, 3, 4))",
+    );
+    expect(String(expr<boolean>`${true} && ${frame.gt(3)}`)).toBe("=true && (frame > 3)");
+    expect(String(expr<number>`${1}${2}`)).toBe("=12");
+    expect(String(expr<number>`frame`)).toBe("=frame");
+  });
+
+  test("expr as a template tag brackets raw expressions only", () => {
+    const raw = expr<number>("frame + 5");
+    expect(String(expr<number>`${raw} * 2`)).toBe("=(frame + 5) * 2");
+    expect(String(expr<number>`${frame.sub(5)} * 2`)).toBe("=(frame - 5) * 2");
+    expect(String(expr<number>`${frame} * 2`)).toBe("=frame * 2");
+    expect(String(expr<number>`${expr<number>`frame + 5`} * 2`)).toBe("=(frame + 5) * 2");
+    expect(String(raw.mul(expr<number>`${raw} * 2`))).toBe("=((frame + 5) * ((frame + 5) * 2))");
+  });
+
+  test("expr as a template tag rejects what it cannot lower", () => {
+    expect(() => expr`=frame`).toThrow("without its leading `=`");
+    expect(String(expr`uppercase('it\'s')`)).toBe("=uppercase('it\\'s')");
+    expect(String(expr`'a\\n' + '\${x} \`'`)).toBe("='a\\\\n' + '${x} `'");
+    expect(() => expr`${["a", "b"] as never}`).toThrow("cannot interpolate");
+    expect(() => expr`${[[1, 2], 3] as never}`).toThrow("cannot interpolate");
+    expect(() => expr`=${frame}`).toThrow("without its leading `=`");
+    expect(String(expr`frame = ${frame}`)).toBe("=frame = frame");
+    expect(() => expr`${Number.NaN}`).toThrow("cannot contain");
+    expect(() => expr`${Infinity}`).toThrow("cannot contain");
+    const untyped = expr as (strings: TemplateStringsArray, value: unknown) => unknown;
+    const forced = (value: unknown) => () => untyped`${value}`;
+    expect(forced(undefined)).toThrow("cannot interpolate undefined");
+    expect(forced(null)).toThrow("cannot interpolate null");
+    expect(forced({})).toThrow("cannot interpolate object");
   });
 
   test("cover every builtin and global", () => {

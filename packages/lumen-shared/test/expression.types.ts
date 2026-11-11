@@ -11,12 +11,14 @@ import {
   keyframes,
   lerp,
   moves,
+  node,
   rgb,
   spring,
   textWidth,
   lowercase,
   tween,
   vec2,
+  when,
   type Expr,
   type Num,
 } from "../src/index.js";
@@ -121,3 +123,40 @@ void [
   spring(0, stiffness),
   tween(0, 1, 0, 12, undefined),
 ];
+
+// Conditions.
+const visible: Expr<boolean> = frame.gte(10).and(frame.lt(20)).or(frame.eq(30)).not();
+const shown: Expr<number> = when(visible, 1, 0);
+const flash: Expr<Color> = when(frame.gt(1), color, [0, 0, 0]);
+const moved: Expr<Vec2> = when(visible, point, [0, 0]);
+const read: Expr<number> = node<number>(3, "opacity");
+const cooked: Expr<boolean> = point.eq([1, 2]);
+void [shown, flash, moved, read, cooked, when(frame, "a", "b")];
+composition.addNode({ type: "opacity", params: { opacity: node(3, "opacity") } });
+
+// @ts-expect-error a boolean is not a number
+frame.add(visible);
+
+// @ts-expect-error a boolean is not a number param
+composition.addNode({ type: "opacity", params: { opacity: visible } });
+
+// @ts-expect-error comparisons take numbers
+point.gt(1);
+
+// @ts-expect-error a number is not a boolean
+frame.and(visible);
+
+// @ts-expect-error a number is never equal to a colour
+number.eq(color);
+
+// @ts-expect-error a number is never equal to a boolean
+number.eq(visible);
+
+// @ts-expect-error the branches of `when` share a type
+when(visible, 1, color);
+
+// @ts-expect-error a colour is not a condition
+when(color, 1, 0);
+
+// @ts-expect-error only booleans can be negated
+number.not();
