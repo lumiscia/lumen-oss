@@ -1497,11 +1497,23 @@ mod tests {
     #[test]
     fn other_schema_versions_name_both_versions() {
         let own = SCHEMA_VERSION;
-        for version in [
-            "0.1.0", "0.5", "0.7", "1.6", "", "0.6.x", "v0.6", " 0.6 ", "0.60", "0.6.", "0.6.1.2",
-            "0.6.-1",
-        ] {
-            let error = parse_with_schema_version(Value::from(version)).unwrap_err();
+        let (major, minor) = own.split_once('.').unwrap();
+        let minor: u64 = minor.parse().unwrap();
+        let versions = [
+            "0.1.0".to_string(),
+            format!("{major}.{}", minor + 1),
+            format!("1{own}"),
+            String::new(),
+            format!("{own}.x"),
+            format!("v{own}"),
+            format!(" {own} "),
+            format!("{own}0"),
+            format!("{own}."),
+            format!("{own}.1.2"),
+            format!("{own}.-1"),
+        ];
+        for version in &versions {
+            let error = parse_with_schema_version(Value::from(version.as_str())).unwrap_err();
             assert_eq!(
                 error,
                 format!(

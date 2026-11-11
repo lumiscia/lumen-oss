@@ -12,7 +12,8 @@ const textExtensions = /\.(json|md|ts|tsx|svelte|rs|toml|html|js|mjs)$/;
 const skipped = /(^|\/)(generated|CHANGELOG\.md$|\.changeset\/|node_modules\/|pnpm-lock\.yaml$)/;
 
 const next = process.argv[2];
-if (next === undefined || !/^\d+\.\d+$/.test(next)) {
+// No leading zeros, and short enough to compare as numbers.
+if (next === undefined || !/^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(next)) {
   throw new Error(`Expected a Lumen major.minor such as 0.6, got ${next}`);
 }
 
