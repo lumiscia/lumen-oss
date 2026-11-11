@@ -79,6 +79,7 @@ export class Lumen {
         ...(options.quality !== undefined ? { quality: options.quality } : {}),
         ...(options.codec !== undefined ? { codec: options.codec } : {}),
         ...(options.bitDepth !== undefined ? { bit_depth: options.bitDepth } : {}),
+        ...(options.alpha !== undefined ? { alpha: options.alpha } : {}),
         ...(options.output !== undefined ? { output: outputBody(options.output) } : {}),
       },
       idempotencyKey: options.idempotencyKey,

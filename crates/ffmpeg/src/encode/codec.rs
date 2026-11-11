@@ -22,6 +22,10 @@ pub enum EncoderFamily {
     X264,
     X265,
     SvtAv1,
+    /// `libvpx-vp9`.
+    Vpx,
+    /// `prores_ks`.
+    ProRes,
     Nvenc,
     Vulkan,
     VideoToolbox,
@@ -37,6 +41,10 @@ impl EncoderFamily {
             Self::X265
         } else if encoder == "libsvtav1" {
             Self::SvtAv1
+        } else if encoder == "libvpx-vp9" {
+            Self::Vpx
+        } else if encoder == "prores_ks" {
+            Self::ProRes
         } else if encoder.ends_with("_nvenc") {
             Self::Nvenc
         } else if encoder.ends_with("_vulkan") {
@@ -46,6 +54,11 @@ impl EncoderFamily {
         } else {
             Self::Other
         }
+    }
+
+    /// Whether the encoder runs on a GPU or media engine, which none can write alpha on.
+    pub fn is_hardware(self) -> bool {
+        matches!(self, Self::Nvenc | Self::Vulkan | Self::VideoToolbox)
     }
 
     pub(crate) fn takes_textures_from(self, backend: GpuBackend) -> bool {
@@ -105,14 +118,28 @@ impl fmt::Display for BitDepth {
 }
 
 /// Errors with why `encoder` can't write `depth`, without opening it. H.264 output is always
-/// 8-bit, VideoToolbox has no 10-bit path, and a software encoder must take 10-bit YUV 4:2:0.
-/// Vulkan and NVENC encoders find out whether their device can when they open.
+/// 8-bit, ProRes always 10-bit, VideoToolbox has no 10-bit path, and a software encoder must take
+/// 10-bit YUV 4:2:0. Vulkan and NVENC encoders find out whether their device can when they open.
 pub fn check_bit_depth(encoder: &str, depth: BitDepth) -> std::result::Result<(), String> {
+    let codec = match video_encoder_by_name(encoder) {
+        Ok(codec) => codec,
+        // An encoder this build lacks is skipped or refused where it is looked up.
+        Err(_) if depth == BitDepth::Eight => return Ok(()),
+        Err(error) => return Err(error.message),
+    };
+    let encodes = VideoCodec::from_av_codec_id(unsafe { (*codec).id });
+    if encodes == VideoCodec::ProRes {
+        return match depth {
+            BitDepth::Ten => Ok(()),
+            BitDepth::Eight => Err(format!(
+                "ProRes 4444 is always 10-bit, so `{encoder}` can't encode {depth}"
+            )),
+        };
+    }
     if depth == BitDepth::Eight {
         return Ok(());
     }
-    let codec = video_encoder_by_name(encoder).map_err(|error| error.message)?;
-    if VideoCodec::from_av_codec_id(unsafe { (*codec).id }) == VideoCodec::H264 {
+    if encodes == VideoCodec::H264 {
         return Err(format!(
             "H.264 output is always 8-bit, so `{encoder}` can't encode {depth}; use hevc or av1"
         ));
@@ -131,6 +158,57 @@ pub fn check_bit_depth(encoder: &str, depth: BitDepth) -> std::result::Result<()
         _ => Err(format!(
             "`{encoder}` doesn't take the {depth} YUV 4:2:0 frames lumen encodes from"
         )),
+    }
+}
+
+/// Errors with why `encoder` can't write video with an alpha channel at `depth`, without opening
+/// it. Only software encoders do: `prores_ks` as 10-bit 4:4:4 with alpha, and `libvpx-vp9` as
+/// 8-bit 4:2:0 with alpha.
+pub fn check_alpha(encoder: &str, depth: BitDepth) -> std::result::Result<(), String> {
+    if EncoderFamily::of(encoder).is_hardware() {
+        return Err(format!(
+            "`{encoder}` is a hardware encoder, and none can write alpha; use prores_ks or libvpx-vp9"
+        ));
+    }
+    let codec = video_encoder_by_name(encoder).map_err(|error| error.message)?;
+    let encodes = VideoCodec::from_av_codec_id(unsafe { (*codec).id });
+    let format = match encodes {
+        VideoCodec::ProRes => sys::AVPixelFormat::AV_PIX_FMT_YUVA444P10LE,
+        VideoCodec::Vp9 if depth == BitDepth::Ten => {
+            return Err(format!(
+                "VP9 with alpha is 8-bit, so `{encoder}` can't encode it at {depth}"
+            ));
+        }
+        VideoCodec::Vp9 => sys::AVPixelFormat::AV_PIX_FMT_YUVA420P,
+        _ => {
+            return Err(format!(
+                "`{encoder}` encodes {encodes:?}, which lumen can't write alpha in; use prores (.mov) or vp9 (.webm)"
+            ));
+        }
+    };
+    if pixel_formats(codec).is_none_or(|formats| formats.contains(&format)) {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{encoder}` doesn't take the frames with alpha lumen encodes from"
+        ))
+    }
+}
+
+/// The format a software encoder of `codec` takes frames in: 10-bit YUV 4:4:4 for ProRes and YUV
+/// 4:2:0 for the rest, with an alpha plane when `alpha` is set.
+pub(crate) fn cpu_input_format(
+    codec: VideoCodec,
+    depth: BitDepth,
+    alpha: bool,
+) -> sys::AVPixelFormat {
+    use sys::AVPixelFormat::*;
+    match (codec, depth, alpha) {
+        (VideoCodec::ProRes, _, false) => AV_PIX_FMT_YUV444P10LE,
+        (VideoCodec::ProRes, _, true) => AV_PIX_FMT_YUVA444P10LE,
+        (_, _, true) => AV_PIX_FMT_YUVA420P,
+        (_, BitDepth::Eight, false) => AV_PIX_FMT_YUV420P,
+        (_, BitDepth::Ten, false) => AV_PIX_FMT_YUV420P10LE,
     }
 }
 
@@ -159,19 +237,23 @@ pub(crate) fn video_encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
         ));
     }
     // Vulkan encoders take frames from their own hardware frames context.
-    if EncoderFamily::of(name) != EncoderFamily::Vulkan && !takes_yuv420p(codec) {
-        return Err(FfmpegError::new(
-            "encoder_info",
-            format!("`{name}` doesn't take the YUV 4:2:0 frames lumen encodes from"),
-        ));
+    if EncoderFamily::of(name) != EncoderFamily::Vulkan {
+        let (format, described) = match VideoCodec::from_av_codec_id(unsafe { (*codec).id }) {
+            VideoCodec::ProRes => (
+                sys::AVPixelFormat::AV_PIX_FMT_YUV444P10LE,
+                "10-bit YUV 4:4:4",
+            ),
+            _ => (sys::AVPixelFormat::AV_PIX_FMT_YUV420P, "YUV 4:2:0"),
+        };
+        // An encoder that lists no formats takes any.
+        if pixel_formats(codec).is_some_and(|formats| !formats.contains(&format)) {
+            return Err(FfmpegError::new(
+                "encoder_info",
+                format!("`{name}` doesn't take the {described} frames lumen encodes from"),
+            ));
+        }
     }
     Ok(codec)
-}
-
-/// Whether `codec` lists `yuv420p` among its input formats. One that lists none takes any.
-fn takes_yuv420p(codec: *const sys::AVCodec) -> bool {
-    pixel_formats(codec)
-        .is_none_or(|formats| formats.contains(&sys::AVPixelFormat::AV_PIX_FMT_YUV420P))
 }
 
 #[cfg(ffmpeg_supported_config)]
@@ -245,9 +327,26 @@ fn missing_encoder_message(name: &str, avcodec_major: u32) -> String {
     }
 }
 
+/// Why an audio encoder this build lacks can't be used.
+fn missing_audio_encoder_message(name: &str) -> String {
+    if name == OPUS_ENCODER {
+        format!(
+            "WebM audio is Opus, and this FFmpeg build has no `{name}` encoder; render without audio or to .mov"
+        )
+    } else {
+        format!("requested audio encoder `{name}` is unavailable")
+    }
+}
+
+/// The Opus encoder WebM audio uses.
+pub(crate) const OPUS_ENCODER: &str = "libopus";
+
 pub(crate) fn find_audio_encoder(config: &AudioEncoderConfig) -> Result<*const sys::AVCodec> {
     if let Some(name) = config.encoder_name.as_deref() {
-        return encoder_by_name(name);
+        return encoder_by_name(name).map_err(|mut error| {
+            error.message = missing_audio_encoder_message(name);
+            error
+        });
     }
     let codec = unsafe { sys::avcodec_find_encoder(sys::AVCodecID::AV_CODEC_ID_AAC) };
     if codec.is_null() {
@@ -290,7 +389,7 @@ pub(crate) fn select_audio_sample_format(
         } else {
             Err(FfmpegError::new(
                 "AudioEncoder::create",
-                "AAC encoder does not support f32 input",
+                "the audio encoder doesn't take f32 samples",
             ))
         }
     }

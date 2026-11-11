@@ -10,25 +10,27 @@ pub struct EncoderCandidate {
     pub quality: EncoderQuality,
 }
 
-/// The encoders a render tries, in order, until one opens, and the bit depth every one of them
-/// encodes at. Never empty. A pinned encoder is a single candidate, so it either opens or fails
-/// the render.
+/// The encoders a render tries, in order, until one opens, and the bit depth and alpha every one
+/// of them encodes with. Never empty. A pinned encoder is a single candidate, so it either opens
+/// or fails the render.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VideoEncoderChoice {
     candidates: Vec<EncoderCandidate>,
     bit_depth: BitDepth,
+    alpha: bool,
 }
 
 impl VideoEncoderChoice {
-    /// 8-bit, or `None` when `candidates` is empty.
+    /// 8-bit and opaque, or `None` when `candidates` is empty.
     pub fn new(candidates: Vec<EncoderCandidate>) -> Option<Self> {
         (!candidates.is_empty()).then_some(Self {
             candidates,
             bit_depth: BitDepth::Eight,
+            alpha: false,
         })
     }
 
-    /// Exactly `encoder`, with no fallback, at 8 bits.
+    /// Exactly `encoder`, with no fallback, at 8 bits and opaque.
     pub fn single(encoder: impl Into<String>, quality: EncoderQuality) -> Self {
         Self {
             candidates: vec![EncoderCandidate {
@@ -36,6 +38,7 @@ impl VideoEncoderChoice {
                 quality,
             }],
             bit_depth: BitDepth::Eight,
+            alpha: false,
         }
     }
 
@@ -47,6 +50,17 @@ impl VideoEncoderChoice {
 
     pub fn bit_depth(&self) -> BitDepth {
         self.bit_depth
+    }
+
+    /// This choice with an alpha channel, or opaque. An encoder that can't write alpha fails to
+    /// open.
+    pub fn with_alpha(mut self, alpha: bool) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
+    pub fn alpha(&self) -> bool {
+        self.alpha
     }
 
     pub fn candidates(&self) -> &[EncoderCandidate] {

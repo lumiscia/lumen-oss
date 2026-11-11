@@ -43,6 +43,7 @@ impl EncoderSink {
         encoder: &str,
         quality: &EncoderQuality,
         bit_depth: BitDepth,
+        alpha: bool,
         include_audio: bool,
     ) -> anyhow::Result<Self> {
         let mut config = VideoEncoderConfig::cpu_rgba(
@@ -53,8 +54,8 @@ impl EncoderSink {
         );
         config.quality = quality.clone();
         config.bit_depth = bit_depth;
-        let audio = include_audio
-            .then(|| AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, AUDIO_CHANNELS as u16));
+        config.alpha = alpha;
+        let audio = include_audio.then(|| audio_config(output));
 
         let (message_tx, message_rx) =
             mpsc::sync_channel::<EncoderMessage>(ENCODER_FRAME_QUEUE_CAPACITY);
@@ -160,6 +161,20 @@ impl Drop for EncoderSink {
     fn drop(&mut self) {
         self.message_tx.take();
         let _ = self.join();
+    }
+}
+
+/// The audio a video at `output` holds: Opus in a WebM, which takes nothing else, and AAC in the
+/// rest.
+fn audio_config(output: &Path) -> AudioEncoderConfig {
+    let channels = AUDIO_CHANNELS as u16;
+    if output
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("webm"))
+    {
+        AudioEncoderConfig::opus(AUDIO_SAMPLE_RATE, channels)
+    } else {
+        AudioEncoderConfig::aac(AUDIO_SAMPLE_RATE, channels)
     }
 }
 
@@ -298,6 +313,7 @@ mod tests {
             "libx264",
             &EncoderQuality::default(),
             BitDepth::Eight,
+            false,
             false,
         )
         .unwrap();

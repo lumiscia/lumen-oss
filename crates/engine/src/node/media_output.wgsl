@@ -59,7 +59,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     } else {
         let a = clamp(texel.a, 0.0, 1.0);
         let coverage = floor(a * output.levels + 0.5) / output.levels;
-        let straight = clamp(lumen_linear_to_srgb(light / max(a, 1e-6)), vec3<f32>(0.0), vec3<f32>(1.0));
+        let straight = lumen_straight_srgb(light, a);
         if (coverage == 0.0) {
             color = vec4<f32>(0.0);
         } else if (output.alpha == 1u) {

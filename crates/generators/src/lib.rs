@@ -114,7 +114,7 @@ fn render_schema() -> Result<String> {
             },
             "renderSettings": {
                 "x-lumen-type": "RenderSettings",
-                "description": "The canvas, and how the host that renders the video encodes it. Previews ignore `codec`, `quality` and `bit_depth`.",
+                "description": "The canvas, and how the host that renders the video encodes it. Previews ignore `codec`, `quality`, `bit_depth` and `alpha`.",
                 "type": "object",
                 "required": ["width", "height"],
                 "properties": {
@@ -122,9 +122,9 @@ fn render_schema() -> Result<String> {
                     "height": { "type": "integer", "minimum": 1, "maximum": 4294967295u32 },
                     "codec": {
                         "x-lumen-type": "VideoCodec",
-                        "description": "Video codec of the rendered file. A render request's `codec` wins over it.",
+                        "description": "Video codec of the rendered file: `h264`, `hevc` or `av1` in an MP4, `prores` (ProRes 4444) in a MOV, or `vp9` in a WebM. A render request's `codec` wins over it.",
                         "type": "string",
-                        "enum": ["h264", "hevc", "av1"]
+                        "enum": ["h264", "hevc", "av1", "prores", "vp9"]
                     },
                     "quality": {
                         "description": "Quality preset name. Every host defines `draft`, `standard`, `high` and `lossless`; operators can add others. A render request's `quality` wins over it.",
@@ -132,9 +132,13 @@ fn render_schema() -> Result<String> {
                     },
                     "bit_depth": {
                         "x-lumen-type": "VideoBitDepth",
-                        "description": "Bits per sample of the rendered video: 8, the default, or 10 for `hevc` and `av1`. H.264 is always 8-bit, and a host whose encoders can't write 10 bits rejects the render rather than writing 8. A render request's `bit_depth` wins over it.",
+                        "description": "Bits per sample of the rendered video: 8, the default, or 10 for `hevc` and `av1`. H.264 and VP9 with alpha are always 8-bit and ProRes always 10, and a host whose encoders can't write the depth asked for rejects the render rather than writing another. A render request's `bit_depth` wins over it.",
                         "type": "integer",
                         "enum": [8, 10]
+                    },
+                    "alpha": {
+                        "description": "Keeps the frame's transparency in the video as an alpha channel, which `prores` in a MOV and `vp9` in a WebM hold; the default renders over black. Asking for alpha in a format that can't hold it is an error, never an opaque render. A render request's `alpha` wins over it.",
+                        "type": "boolean"
                     }
                 },
                 "additionalProperties": false

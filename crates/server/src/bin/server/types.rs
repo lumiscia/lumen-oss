@@ -25,12 +25,16 @@ pub struct RenderJobInput {
     /// A quality preset name, which wins over the composition's.
     #[serde(default)]
     pub quality: Option<String>,
-    /// `h264`, `hevc` or `av1`, which wins over the composition's.
+    /// `h264`, `hevc` or `av1` for an MP4, `prores` for a MOV or `vp9` for a WebM, which wins over
+    /// the composition's.
     #[serde(default)]
     pub codec: Option<String>,
     /// 8 or 10, which wins over the composition's.
     #[serde(default)]
     pub bit_depth: Option<u8>,
+    /// Keeps transparency as an alpha channel, in a MOV or WebM only. Wins over the composition's.
+    #[serde(default)]
+    pub alpha: Option<bool>,
     /// What to render: the format and the frames. Without it, an MP4 of the whole timeline.
     #[serde(default)]
     pub output: Option<RenderOutput>,

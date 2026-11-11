@@ -27,6 +27,16 @@ impl AudioEncoderConfig {
             encoder_name: None,
         }
     }
+
+    /// Opus from `libopus`, the audio WebM holds. Opus encodes 48 kHz.
+    pub fn opus(sample_rate: u32, channels: u16) -> Self {
+        Self {
+            sample_rate,
+            channels,
+            bit_rate: 160_000,
+            encoder_name: Some(super::codec::OPUS_ENCODER.to_string()),
+        }
+    }
 }
 
 pub(crate) struct AudioEncoder {
@@ -73,7 +83,7 @@ impl AudioEncoder {
             den: config.sample_rate as i32,
         };
         unsafe {
-            (*context).codec_id = sys::AVCodecID::AV_CODEC_ID_AAC;
+            (*context).codec_id = (*codec).id;
             (*context).codec_type = AVMEDIA_TYPE_AUDIO;
             (*context).sample_rate = config.sample_rate as i32;
             (*context).sample_fmt = sample_format;

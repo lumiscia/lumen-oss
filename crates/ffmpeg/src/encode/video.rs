@@ -11,10 +11,12 @@ use sys::{
     AVColorRange::AVCOL_RANGE_MPEG,
     AVColorSpace::AVCOL_SPC_BT709,
     AVColorTransferCharacteristic::AVCOL_TRC_BT709,
-    AVPixelFormat::{AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P10LE},
+    AVPixelFormat::{AV_PIX_FMT_NV12, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_YUV420P},
 };
 
-use super::codec::{BitDepth, EncoderFamily, check_bit_depth, video_encoder_by_name};
+use super::codec::{
+    BitDepth, EncoderFamily, check_alpha, check_bit_depth, cpu_input_format, video_encoder_by_name,
+};
 use super::common::{refresh_stream_time_base, send_frame_and_write_packets};
 use super::hw::{AvBufferRef, EncoderHwContexts, create_encoder_hw_contexts};
 use super::output::OutputContext;
@@ -36,6 +38,9 @@ pub struct VideoEncoderConfig {
     pub quality: EncoderQuality,
     /// The stream's bits per sample. A 10-bit encoder takes YUV frames of that depth, never RGBA.
     pub bit_depth: BitDepth,
+    /// Writes an alpha channel, which only `prores_ks` and `libvpx-vp9` can. Their frames come
+    /// with an alpha plane, as [`PixelFormat::Yuva444p10`] and [`PixelFormat::Yuva420p`].
+    pub alpha: bool,
     /// CUDA device the frames sent in `EncodeMode::GpuTexture(GpuBackend::Cuda)` live on; `None`
     /// uses the default device.
     pub cuda_ordinal: Option<i32>,
@@ -59,6 +64,7 @@ impl VideoEncoderConfig {
             mode: EncodeMode::CpuUpload,
             quality: EncoderQuality::default(),
             bit_depth: BitDepth::Eight,
+            alpha: false,
             cuda_ordinal: None,
             #[cfg(feature = "vulkan")]
             vulkan_device: None,
@@ -190,6 +196,11 @@ impl VideoEncoder {
         let encoder_name = config.encoder.as_str();
         check_bit_depth(encoder_name, config.bit_depth)
             .map_err(|message| FfmpegError::new("VideoEncoder::create", message))?;
+        if config.alpha {
+            check_alpha(encoder_name, config.bit_depth)
+                .map_err(|message| FfmpegError::new("VideoEncoder::create", message))?;
+        }
+        let codec_id = crate::video::VideoCodec::from_av_codec_id(unsafe { (*codec).id });
         let quality = quality_options(encoder_name, &config.quality, config.mode)?;
         check_container_holds(output, codec, encoder_name)?;
         let stream = unsafe { sys::avformat_new_stream(output.ptr, ptr::null()) };
@@ -223,17 +234,23 @@ impl VideoEncoder {
             let pixel_format = match (&hw_contexts, config.mode) {
                 (Some(contexts), _) => contexts.hw_format,
                 (None, EncodeMode::GpuTexture(GpuBackend::Metal)) => AV_PIX_FMT_VIDEOTOOLBOX,
-                (None, _) => yuv420p(config.bit_depth),
+                (None, _) => cpu_input_format(codec_id, config.bit_depth, config.alpha),
             };
             let sw_pixel_format = hw_contexts.as_ref().map(|contexts| contexts.sw_format);
             (*context).pix_fmt = pixel_format;
-            // The frames' chroma is the average of each 2x2 block, which sits at its centre.
-            (*context).chroma_sample_location = AVCHROMA_LOC_CENTER;
+            // 4:2:0 chroma is the average of each 2x2 block, which sits at its centre.
+            if codec_id != crate::video::VideoCodec::ProRes {
+                (*context).chroma_sample_location = AVCHROMA_LOC_CENTER;
+            }
             (*context).color_primaries = AVCOL_PRI_BT709;
             (*context).color_trc = AVCOL_TRC_BT709;
             (*context).colorspace = AVCOL_SPC_BT709;
             (*context).color_range = AVCOL_RANGE_MPEG;
             (*context).bit_rate = quality.bit_rate;
+            if quality.global_quality != 0 {
+                (*context).global_quality = quality.global_quality;
+                (*context).flags |= sys::AV_CODEC_FLAG_QSCALE as i32;
+            }
             (*context).gop_size = gop_size;
             if let Some(contexts) = &hw_contexts {
                 (*context).sw_pix_fmt = contexts.sw_format;
@@ -287,10 +304,22 @@ impl VideoEncoder {
             if encoder_name == "av1_vulkan" {
                 container_crop = crop_coded_padding(context, (*stream).codecpar)?;
             }
+            // WebM signals the VP9 alpha layer, which libvpx sends as block additions, with this.
+            if config.alpha && codec_id == crate::video::VideoCodec::Vp9 {
+                ffi::check(
+                    sys::av_dict_set(
+                        &mut (*stream).metadata,
+                        c"alpha_mode".as_ptr(),
+                        c"1".as_ptr(),
+                        0,
+                    ),
+                    "av_dict_set",
+                )?;
+            }
             (*stream).time_base = time_base;
         }
 
-        let transport = create_transport(&config, hw_contexts)?;
+        let transport = create_transport(&config, codec_id, hw_contexts)?;
 
         Ok(Self {
             width: config.width,
@@ -425,14 +454,16 @@ impl VideoEncoder {
 
 fn create_transport(
     config: &VideoEncoderConfig,
+    codec: crate::video::VideoCodec,
     hw_contexts: Option<EncoderHwContexts>,
 ) -> Result<Transport> {
     match (config.mode, hw_contexts) {
         (EncodeMode::CpuUpload, hw_contexts) => {
             // CPU frames are converted to this format, then uploaded when the encoder takes hardware frames.
-            let format = hw_contexts
-                .as_ref()
-                .map_or(yuv420p(config.bit_depth), |contexts| contexts.sw_format);
+            let format = hw_contexts.as_ref().map_or(
+                cpu_input_format(codec, config.bit_depth, config.alpha),
+                |contexts| contexts.sw_format,
+            );
             let (width, height) = (config.width as i32, config.height as i32);
             let mut frame = AvFrame::new()?;
             unsafe {
@@ -444,10 +475,12 @@ fn create_transport(
                     "av_frame_get_buffer",
                 )?;
             }
-            // 10-bit frames come only from a float YUV conversion, never from RGBA8.
-            let scaler = match config.bit_depth {
-                BitDepth::Eight => Some(rgba_scaler(width, height, format)?),
-                BitDepth::Ten => None,
+            // Only 8-bit opaque 4:2:0 frames can come from RGBA8; the rest come only from a float
+            // YUV conversion.
+            let scaler = if matches!(format, AV_PIX_FMT_YUV420P | AV_PIX_FMT_NV12) {
+                Some(rgba_scaler(width, height, format)?)
+            } else {
+                None
             };
             Ok(Transport::Cpu {
                 format: PixelFormat::from_av_pixel_format(format),
@@ -479,67 +512,108 @@ fn create_transport(
     }
 }
 
-/// The planar YUV 4:2:0 format a software encoder of `depth` takes.
-fn yuv420p(depth: BitDepth) -> sys::AVPixelFormat {
-    match depth {
-        BitDepth::Eight => AV_PIX_FMT_YUV420P,
-        BitDepth::Ten => AV_PIX_FMT_YUV420P10LE,
+/// Bytes per sample of a YUV format, how its chroma is held, and whether an alpha plane follows.
+fn yuv_shape(format: PixelFormat) -> Option<(usize, Chroma, bool)> {
+    match format {
+        PixelFormat::Nv12 => Some((1, Chroma::Interleaved, false)),
+        PixelFormat::P010 => Some((2, Chroma::Interleaved, false)),
+        PixelFormat::Yuv420p => Some((1, Chroma::Planar420, false)),
+        PixelFormat::Yuv420p10 => Some((2, Chroma::Planar420, false)),
+        PixelFormat::Yuva420p => Some((1, Chroma::Planar420, true)),
+        PixelFormat::Yuv444p10 => Some((2, Chroma::Planar444, false)),
+        PixelFormat::Yuva444p10 => Some((2, Chroma::Planar444, true)),
+        _ => None,
     }
 }
 
-/// Bytes per sample of a YUV 4:2:0 format, and whether its chroma is planar.
-fn yuv_layout(format: PixelFormat) -> Option<(usize, bool)> {
-    match format {
-        PixelFormat::Nv12 => Some((1, false)),
-        PixelFormat::P010 => Some((2, false)),
-        PixelFormat::Yuv420p => Some((1, true)),
-        PixelFormat::Yuv420p10 => Some((2, true)),
-        _ => None,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Chroma {
+    /// One half-height plane of Cb, Cr pairs, rows a luma row apart.
+    Interleaved,
+    /// Half-size Cb and Cr planes, rows half a luma row apart.
+    Planar420,
+    /// Full-size Cb and Cr planes, rows a luma row apart.
+    Planar444,
+}
+
+/// One plane of a [`CpuVideoFrame`]: where it starts, its row pitch, the bytes of a row it holds
+/// and its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Plane {
+    offset: usize,
+    stride: usize,
+    row_bytes: usize,
+    rows: usize,
+}
+
+/// The planes of a YUV frame of `format` laid out as [`CpuVideoFrame`] describes, in FFmpeg's
+/// plane order, or `None` past the platform's integer range.
+fn yuv_planes(
+    format: PixelFormat,
+    width: usize,
+    height: usize,
+    stride: usize,
+) -> Option<Vec<Plane>> {
+    let (sample, chroma, alpha) = yuv_shape(format)?;
+    let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+    let luma = Plane {
+        offset: 0,
+        stride,
+        row_bytes: width.checked_mul(sample)?,
+        rows: height,
+    };
+    let mut planes = vec![luma];
+    let mut offset = stride.checked_mul(height)?;
+    let mut push = |stride: usize, row_bytes: usize, rows: usize| -> Option<()> {
+        planes.push(Plane {
+            offset,
+            stride,
+            row_bytes,
+            rows,
+        });
+        offset = offset.checked_add(stride.checked_mul(rows)?)?;
+        Some(())
+    };
+    match chroma {
+        Chroma::Interleaved => push(stride, chroma_width.checked_mul(2 * sample)?, chroma_height)?,
+        Chroma::Planar420 => {
+            for _ in 0..2 {
+                push(stride / 2, chroma_width.checked_mul(sample)?, chroma_height)?;
+            }
+        }
+        Chroma::Planar444 => {
+            for _ in 0..2 {
+                push(stride, luma.row_bytes, height)?;
+            }
+        }
     }
+    if alpha {
+        push(stride, luma.row_bytes, height)?;
+    }
+    Some(planes)
 }
 
 /// Copies a YUV frame laid out as [`CpuVideoFrame`] describes into `frame`'s planes, which have
 /// its format.
 fn copy_yuv_planes(input: &CpuVideoFrame, format: PixelFormat, frame: &mut AvFrame) {
-    let (sample, planar) = yuv_layout(format).expect("validated as a YUV frame");
-    let (width, height) = (input.width as usize, input.height as usize);
-    let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
-    let chroma = input.stride * height;
-    let half = input.stride / 2;
-    let luma = (0, input.stride, width * sample, height);
-    let planes = if planar {
-        vec![
-            luma,
-            (chroma, half, chroma_width * sample, chroma_height),
-            (
-                chroma + half * chroma_height,
-                half,
-                chroma_width * sample,
-                chroma_height,
-            ),
-        ]
-    } else {
-        vec![
-            luma,
-            (
-                chroma,
-                input.stride,
-                chroma_width * 2 * sample,
-                chroma_height,
-            ),
-        ]
-    };
-    for (index, (offset, stride, row_bytes, rows)) in planes.into_iter().enumerate() {
+    let planes = yuv_planes(
+        format,
+        input.width as usize,
+        input.height as usize,
+        input.stride,
+    )
+    .expect("validated as a YUV frame");
+    for (index, plane) in planes.into_iter().enumerate() {
         // SAFETY: `validate_cpu_frame` checked that the input holds every plane, and the frame's
         // buffers are of the encoder's size and format.
         unsafe {
             sys::av_image_copy_plane(
                 (*frame.as_mut_ptr()).data[index],
                 (*frame.as_ptr()).linesize[index],
-                input.data.as_ptr().add(offset),
-                stride as i32,
-                row_bytes as i32,
-                rows as i32,
+                input.data.as_ptr().add(plane.offset),
+                plane.stride as i32,
+                plane.row_bytes as i32,
+                plane.rows as i32,
             );
         }
     }
@@ -684,7 +758,7 @@ struct ValidatedCpuFrameLayout {
 }
 
 /// Checks `frame` against an encoder of this size whose frames are `format`, which takes that
-/// format or, at 8 bits, RGBA8.
+/// format or, for 8-bit opaque 4:2:0, RGBA8.
 fn validate_cpu_frame(
     frame: &CpuVideoFrame,
     expected_width: u32,
@@ -693,15 +767,18 @@ fn validate_cpu_frame(
 ) -> Result<ValidatedCpuFrameLayout> {
     const OPERATION: &str = "VideoEncoder::send_cpu_frame";
 
-    let yuv = yuv_layout(format).filter(|_| frame.pixel_format == format);
-    let ten_bit = matches!(format, PixelFormat::P010 | PixelFormat::Yuv420p10);
-    if yuv.is_none() && (frame.pixel_format != PixelFormat::Rgba8 || ten_bit) {
+    let yuv = frame.pixel_format == format && yuv_shape(format).is_some();
+    let takes_rgba = matches!(format, PixelFormat::Nv12 | PixelFormat::Yuv420p);
+    if !yuv && (frame.pixel_format != PixelFormat::Rgba8 || !takes_rgba) {
+        let ten_bit = matches!(format, PixelFormat::P010 | PixelFormat::Yuv420p10);
         return Err(FfmpegError::new(
             OPERATION,
-            if ten_bit {
+            if takes_rgba {
+                format!("CPU upload encoders take RGBA8 or {format:?} frames")
+            } else if ten_bit {
                 format!("this 10-bit encoder takes {format:?} frames")
             } else {
-                format!("CPU upload encoders take RGBA8 or {format:?} frames")
+                format!("this encoder takes {format:?} frames")
             },
         ));
     }
@@ -718,41 +795,46 @@ fn validate_cpu_frame(
     let width = usize::try_from(frame.width).map_err(|_| {
         FfmpegError::new(OPERATION, "frame width exceeds the platform integer range")
     })?;
-    let (sample, planar) = yuv.unwrap_or((4, false));
-    // A chroma row holds a sample pair for every two columns, so an odd width takes a column more.
-    let columns = if yuv.is_some() {
-        width.checked_next_multiple_of(2)
-    } else {
-        Some(width)
+    let too_large = || {
+        FfmpegError::new(
+            OPERATION,
+            "frame buffer length exceeds the platform integer range",
+        )
     };
-    let row_bytes = columns
-        .and_then(|columns| columns.checked_mul(sample))
-        .ok_or_else(|| {
-            FfmpegError::new(
-                OPERATION,
-                "frame row byte length exceeds the platform integer range",
-            )
-        })?;
-    if frame.stride < row_bytes {
+    let planes = if yuv {
+        yuv_planes(format, width, frame.height as usize, frame.stride).ok_or_else(too_large)?
+    } else {
+        vec![Plane {
+            offset: 0,
+            stride: frame.stride,
+            row_bytes: width.checked_mul(4).ok_or_else(too_large)?,
+            rows: frame.height as usize,
+        }]
+    };
+    if let Some(plane) = planes.iter().find(|plane| plane.stride < plane.row_bytes) {
+        // A planar chroma row is half a luma row, so the luma row needs twice its bytes.
+        let required = if plane.stride < frame.stride {
+            plane.row_bytes * 2
+        } else {
+            plane.row_bytes
+        };
         return Err(FfmpegError::new(
             OPERATION,
             format!(
-                "frame stride {} is smaller than the required row length {row_bytes}",
+                "frame stride {} is smaller than the required row length {required}",
                 frame.stride
             ),
         ));
     }
-    if planar && !frame.stride.is_multiple_of(2) {
+    if yuv
+        && planes.iter().any(|plane| plane.stride < frame.stride)
+        && !frame.stride.is_multiple_of(2)
+    {
         return Err(FfmpegError::new(
             OPERATION,
             "a planar YUV frame's stride must be even, since its chroma rows are half of it",
         ));
     }
-    let rows = if yuv.is_some() {
-        frame.height as usize + frame.height.div_ceil(2) as usize
-    } else {
-        frame.height as usize
-    };
 
     let stride = i32::try_from(frame.stride).map_err(|_| {
         FfmpegError::new(
@@ -766,12 +848,12 @@ fn validate_cpu_frame(
             "frame height exceeds FFmpeg's supported integer range",
         )
     })?;
-    let required_len = frame.stride.checked_mul(rows).ok_or_else(|| {
-        FfmpegError::new(
-            OPERATION,
-            "frame buffer length exceeds the platform integer range",
-        )
-    })?;
+    let last = planes.last().expect("a frame has a plane");
+    let required_len = last
+        .stride
+        .checked_mul(last.rows)
+        .and_then(|bytes| bytes.checked_add(last.offset))
+        .ok_or_else(too_large)?;
     if frame.data.len() < required_len {
         return Err(FfmpegError::new(
             OPERATION,

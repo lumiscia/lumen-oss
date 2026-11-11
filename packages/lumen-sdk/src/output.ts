@@ -1,5 +1,15 @@
-/** What a render writes. A sequence is one ZIP of its frames. */
-export type OutputFormat = "mp4" | "png" | "jpeg" | "png_sequence" | "jpeg_sequence";
+/**
+ * What a render writes: a video (`mp4` holds `h264`, `hevc` or `av1`, `mov` ProRes 4444 and
+ * `webm` VP9), a still, or a sequence, which is one ZIP of its frames.
+ */
+export type OutputFormat =
+  | "mp4"
+  | "mov"
+  | "webm"
+  | "png"
+  | "jpeg"
+  | "png_sequence"
+  | "jpeg_sequence";
 
 /**
  * The frames of the timeline to render, as `start..end` with `end` not included, like the
@@ -13,7 +23,7 @@ export interface FrameRange {
 
 /**
  * What to render: the format and which frames. Without it a render is an MP4 of the whole
- * timeline. `quality`, `codec` and `bitDepth` on `RenderOptions` apply to `mp4` only.
+ * timeline. `quality`, `codec`, `bitDepth` and `alpha` on `RenderOptions` apply to videos only.
  */
 export interface RenderOutput {
   /** Defaults to `mp4`. */
@@ -31,6 +41,10 @@ export function outputFile(output: RenderOutput = {}): {
   switch (output.format ?? "mp4") {
     case "mp4":
       return { contentType: "video/mp4", extension: "mp4" };
+    case "mov":
+      return { contentType: "video/quicktime", extension: "mov" };
+    case "webm":
+      return { contentType: "video/webm", extension: "webm" };
     case "png":
       return { contentType: "image/png", extension: "png" };
     case "jpeg":

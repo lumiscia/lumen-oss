@@ -802,8 +802,14 @@ fn rejects_quality_this_host_cannot_resolve() {
         json!({ "width": 16, "height": 16, "codec": "av1" }),
     ));
     assert!(composition_codec.contains("av1"), "{composition_codec}");
-    let bad_codec = invalid_quality_message(post(json!("high"), json!("vp9"), canvas.clone()));
-    assert!(bad_codec.contains("vp9"), "{bad_codec}");
+    let bad_codec = invalid_quality_message(post(json!("high"), json!("vp8"), canvas.clone()));
+    assert!(bad_codec.contains("vp8"), "{bad_codec}");
+    let wrong_container = post(json!("high"), json!("vp9"), canvas.clone());
+    assert_eq!(wrong_container.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(error_code(wrong_container), "invalid_output");
+    let alpha_mp4 = server.post(&json!({ "composition": solid_composition(), "alpha": true }));
+    assert_eq!(alpha_mp4.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(error_code(alpha_mp4), "invalid_output");
 
     assert_eq!(
         post(json!("archive"), json!("h264"), canvas.clone()).status(),

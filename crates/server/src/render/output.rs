@@ -2,6 +2,8 @@ use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
+use lumen_ffmpeg::EncodeCodec;
+
 use super::{ErrorCode, ServerRenderError};
 
 /// The JPEG quality used when [`RenderOutput::jpeg_quality`] is unset.
@@ -14,8 +16,8 @@ pub const MAX_ARCHIVE_FRAMES: u32 = u16::MAX as u32;
 /// What a render produces: a [`format`](Self::format) and the [`frames`](Self::frames) of the
 /// timeline it covers. The default is an MP4 of the whole timeline.
 ///
-/// Video quality and encoder settings are not part of it: they stay in
-/// [`RenderOptions::encoder`](super::RenderOptions::encoder) and apply to [`OutputFormat::Mp4`]
+/// Video quality and encoder settings, alpha among them, are not part of it: they stay in
+/// [`RenderOptions::encoder`](super::RenderOptions::encoder) and apply to the video formats
 /// only. Build one with `..RenderOutput::default()` so that fields added later don't break it.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,9 +36,14 @@ pub struct RenderOutput {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum OutputFormat {
-    /// A video of the frames, with the composition's audio cut to the same span.
+    /// A video of the frames, with the composition's audio cut to the same span: H.264, HEVC or
+    /// AV1, and AAC.
     #[default]
     Mp4,
+    /// A QuickTime video of the frames in ProRes 4444, with alpha when asked for, and AAC.
+    Mov,
+    /// A WebM video of the frames in VP9, with alpha when asked for, and Opus.
+    Webm,
     /// One frame as a PNG. Transparency is kept: the pixels are straight (not premultiplied)
     /// RGBA, as the renderer's final image has it.
     Png,
@@ -54,6 +61,8 @@ impl OutputFormat {
     pub fn content_type(self) -> &'static str {
         match self {
             Self::Mp4 => "video/mp4",
+            Self::Mov => "video/quicktime",
+            Self::Webm => "video/webm",
             Self::Png => "image/png",
             Self::Jpeg => "image/jpeg",
             Self::PngSequence | Self::JpegSequence => "application/zip",
@@ -64,6 +73,8 @@ impl OutputFormat {
     pub fn extension(self) -> &'static str {
         match self {
             Self::Mp4 => "mp4",
+            Self::Mov => "mov",
+            Self::Webm => "webm",
             Self::Png => "png",
             Self::Jpeg => "jpg",
             Self::PngSequence | Self::JpegSequence => "zip",
@@ -71,7 +82,46 @@ impl OutputFormat {
     }
 
     pub fn is_video(self) -> bool {
-        matches!(self, Self::Mp4)
+        matches!(self, Self::Mp4 | Self::Mov | Self::Webm)
+    }
+
+    /// The codecs a video of this format holds, the first being the one it takes when nothing
+    /// asks for another; empty for images. An MP4's default is the quality config's.
+    pub fn video_codecs(self) -> &'static [EncodeCodec] {
+        match self {
+            Self::Mp4 => &[EncodeCodec::H264, EncodeCodec::Hevc, EncodeCodec::Av1],
+            Self::Mov => &[EncodeCodec::ProRes],
+            Self::Webm => &[EncodeCodec::Vp9],
+            _ => &[],
+        }
+    }
+
+    /// Errors with what this format holds when a video of `codec`, with or without alpha, can't go
+    /// in it. `None` is the quality config's default codec, which only an MP4 takes.
+    pub fn check_video(self, codec: Option<EncodeCodec>, alpha: bool) -> Result<(), String> {
+        let name = self.extension();
+        if alpha && !matches!(self, Self::Mov | Self::Webm) {
+            return Err(format!(
+                "a .{name} can't hold alpha; render alpha to mov (prores) or webm (vp9)"
+            ));
+        }
+        let codecs = self.video_codecs();
+        let Some(codec) = codec else {
+            return Ok(());
+        };
+        if codecs.contains(&codec) {
+            return Ok(());
+        }
+        let holds: Vec<_> = codecs.iter().map(|codec| codec.name()).collect();
+        let usual = match codec {
+            EncodeCodec::ProRes => " (prores goes in mov)",
+            EncodeCodec::Vp9 => " (vp9 goes in webm)",
+            _ => " (h264, hevc and av1 go in mp4)",
+        };
+        Err(format!(
+            "a .{name} holds {}, not {codec}{usual}",
+            holds.join(", ")
+        ))
     }
 
     /// One frame as one image.
@@ -92,7 +142,7 @@ impl OutputFormat {
         match self {
             Self::Png | Self::PngSequence => Some("png"),
             Self::Jpeg | Self::JpegSequence => Some("jpg"),
-            Self::Mp4 => None,
+            Self::Mp4 | Self::Mov | Self::Webm => None,
         }
     }
 }
@@ -349,6 +399,8 @@ mod tests {
     fn formats_know_their_files() {
         let files: Vec<_> = [
             OutputFormat::Mp4,
+            OutputFormat::Mov,
+            OutputFormat::Webm,
             OutputFormat::Png,
             OutputFormat::Jpeg,
             OutputFormat::PngSequence,
@@ -360,12 +412,42 @@ mod tests {
             files,
             [
                 ("video/mp4", "mp4"),
+                ("video/quicktime", "mov"),
+                ("video/webm", "webm"),
                 ("image/png", "png"),
                 ("image/jpeg", "jpg"),
                 ("application/zip", "zip"),
                 ("application/zip", "zip"),
             ]
         );
+    }
+
+    #[test]
+    fn each_video_format_holds_its_codecs_and_only_mov_and_webm_hold_alpha() {
+        use EncodeCodec::*;
+        let check = |format: &str, codec, alpha| {
+            output(json!({ "format": format }))
+                .format
+                .check_video(Some(codec), alpha)
+        };
+        assert_eq!(check("mp4", Hevc, false), Ok(()));
+        assert_eq!(check("mov", ProRes, true), Ok(()));
+        assert_eq!(check("webm", Vp9, true), Ok(()));
+        assert_eq!(check("webm", Vp9, false), Ok(()));
+        for (format, codec, alpha, expected) in [
+            ("mp4", H264, true, "can't hold alpha"),
+            ("mp4", ProRes, false, "prores goes in mov"),
+            ("mov", H264, true, "a .mov holds prores, not h264"),
+            ("webm", Av1, false, "a .webm holds vp9, not av1"),
+            ("png", ProRes, true, "can't hold alpha"),
+        ] {
+            let error = check(format, codec, alpha).unwrap_err();
+            assert!(error.contains(expected), "{format} {codec}: {error}");
+        }
+        assert_eq!(OutputFormat::Mp4.check_video(None, false), Ok(()));
+        assert!(OutputFormat::Mp4.check_video(None, true).is_err());
+        assert_eq!(OutputFormat::Mov.video_codecs()[0], ProRes);
+        assert!(OutputFormat::Png.video_codecs().is_empty());
     }
 
     #[test]

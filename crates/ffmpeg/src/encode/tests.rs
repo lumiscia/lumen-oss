@@ -288,3 +288,174 @@ fn a_container_that_cannot_hold_the_codec_errors_at_create() {
     );
     let _ = fs::remove_file(path);
 }
+
+/// A flat frame of `format` with luma `y`, neutral chroma, and alpha `left` on the left half and
+/// `right` on the right, laid out as [`CpuVideoFrame`] describes with unpadded rows.
+fn yuva_frame(format: PixelFormat, size: u32, y: u16, left: u16, right: u16) -> CpuVideoFrame {
+    let (sample, full_chroma, depth) = match format {
+        PixelFormat::Yuva420p => (1, false, 8),
+        PixelFormat::Yuva444p10 => (2, true, 10),
+        _ => unreachable!("an alpha format"),
+    };
+    let side = size as usize;
+    let chroma_side = if full_chroma { side } else { side / 2 };
+    let neutral = 1u16 << (depth - 1);
+    let bytes = |value: u16| -> Vec<u8> {
+        match sample {
+            1 => vec![value as u8],
+            _ => value.to_le_bytes().to_vec(),
+        }
+    };
+    let mut data = Vec::new();
+    for _ in 0..side * side {
+        data.extend(bytes(y));
+    }
+    for _ in 0..2 * chroma_side * chroma_side {
+        data.extend(bytes(neutral));
+    }
+    for _ in 0..side {
+        for x in 0..side {
+            data.extend(bytes(if x < side / 2 { left } else { right }));
+        }
+    }
+    CpuVideoFrame {
+        width: size,
+        height: size,
+        stride: side * sample,
+        pixel_format: format,
+        pts: Some(0),
+        data,
+    }
+}
+
+/// The first decoded frame of `path`'s video, with whether the container signals an alpha layer.
+fn decode_first_yuv(path: &std::path::Path) -> (crate::video::YuvVideoFrame, bool) {
+    use crate::video::{DecodeMode, DecodedVideoFrame, VideoDecoder, VideoDecoderConfig};
+
+    let mut input = crate::format::InputContext::open(path.to_string_lossy().to_string())
+        .expect("open encoded file");
+    let stream_index = input
+        .best_video_stream()
+        .expect("video stream")
+        .stream_index;
+    let alpha_layer = input.has_alpha_layer(stream_index);
+    let mut decoder = VideoDecoder::open(
+        &input,
+        VideoDecoderConfig {
+            stream_index,
+            mode: DecodeMode::Cpu,
+        },
+    )
+    .expect("open decoder");
+    loop {
+        match input.read_packet().expect("read packet") {
+            Some(packet) => decoder.send_packet(&packet).expect("send packet"),
+            None => decoder.send_eof().expect("send eof"),
+        }
+        if let Some(frame) = decoder.receive_video_frame().expect("receive frame") {
+            match frame {
+                DecodedVideoFrame::Yuv(frame) => return (frame, alpha_layer),
+                DecodedVideoFrame::Rgba { .. } => panic!("the stream decodes as YUV"),
+            }
+        }
+    }
+}
+
+/// The alpha sample at `(x, y)` of a decoded planar frame with alpha.
+fn alpha_sample(frame: &crate::video::YuvVideoFrame, x: u32, y: u32) -> u16 {
+    let (width, height) = (frame.width as usize, frame.height as usize);
+    let bytes = if frame.depth > 8 { 2 } else { 1 };
+    let chroma = match frame.subsampling {
+        crate::video::YuvSubsampling::Yuv444 => width * height,
+        _ => width.div_ceil(2) * height.div_ceil(2),
+    };
+    let at = (width * height + 2 * chroma + y as usize * width + x as usize) * bytes;
+    match bytes {
+        1 => u16::from(frame.data[at]),
+        _ => u16::from_le_bytes([frame.data[at], frame.data[at + 1]]),
+    }
+}
+
+#[test]
+fn alpha_planes_reach_prores_in_mov_and_vp9_in_webm() {
+    use super::codec::BitDepth;
+
+    for (encoder, extension, format, depth, (y, left, right), tolerance) in [
+        (
+            "prores_ks",
+            "mov",
+            PixelFormat::Yuva444p10,
+            BitDepth::Ten,
+            (500, 1023, 300),
+            [4, 0],
+        ),
+        (
+            "libvpx-vp9",
+            "webm",
+            PixelFormat::Yuva420p,
+            BitDepth::Eight,
+            (120, 255, 77),
+            [3, 3],
+        ),
+    ] {
+        if super::codec::encoder_info(encoder).is_err() {
+            eprintln!("{encoder} not in this FFmpeg build; skipping its alpha round trip");
+            continue;
+        }
+        let path = temp_path(encoder, extension);
+        let mut config = VideoEncoderConfig::cpu_rgba(64, 64, 30, encoder);
+        config.bit_depth = depth;
+        config.alpha = true;
+        let mut muxed =
+            MuxedEncoder::create(path.to_string_lossy().to_string(), config).expect(encoder);
+        assert_eq!(muxed.cpu_input_format(), Some(format));
+        let rgba = noisy_frame(64, 64, 0);
+        assert!(
+            muxed.write_video_frame(&rgba).is_err(),
+            "{encoder} takes no RGBA"
+        );
+        for pts in 0..3 {
+            let frame = CpuVideoFrame {
+                pts: Some(pts),
+                ..yuva_frame(format, 64, y, left, right)
+            };
+            muxed.write_video_frame(&frame).expect("write frame");
+        }
+        muxed.finish().expect("finish encode");
+
+        let (decoded, alpha_layer) = decode_first_yuv(&path);
+        assert!(decoded.has_alpha, "{encoder} lost its alpha plane");
+        assert_eq!(alpha_layer, encoder == "libvpx-vp9", "{encoder} alpha_mode");
+        // FFmpeg decodes ProRes 4444 at 12 bits.
+        let shift = decoded.depth - depth.bits();
+        for (x, expected_alpha) in [(8, left), (56, right)] {
+            let luma = decoded.sample(x, 32)[0] >> shift;
+            assert!(
+                luma.abs_diff(y) <= tolerance[0],
+                "{encoder} Y {luma} at {x}"
+            );
+            let alpha = alpha_sample(&decoded, x, 32) >> shift;
+            assert!(
+                alpha.abs_diff(expected_alpha) <= tolerance[1],
+                "{encoder} alpha {alpha} at {x}, wrote {expected_alpha}"
+            );
+        }
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
+fn alpha_needs_an_encoder_that_writes_it() {
+    let path = temp_path("alpha_h264", "mp4");
+    let mut config = VideoEncoderConfig::cpu_rgba(16, 16, 30, "libx264");
+    config.alpha = true;
+    let error = match MuxedEncoder::create(path.to_string_lossy().to_string(), config) {
+        Ok(_) => panic!("libx264 can't write alpha"),
+        Err(error) => error,
+    };
+    assert!(
+        error.message.contains("prores (.mov) or vp9 (.webm)"),
+        "{error}"
+    );
+    let _ = fs::remove_file(path);
+}

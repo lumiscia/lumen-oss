@@ -10,7 +10,7 @@ use anyhow::Context;
 use lumen_engine::{
     composition::Composition, gpu::GpuCompositionRenderer, media::VideoFrameResolver,
 };
-use lumen_ffmpeg::{QualityConfig, QualityRequest, VideoEncoderChoice};
+use lumen_ffmpeg::{EncodeCodec, QualityConfig, QualityRequest, VideoEncoderChoice};
 
 use super::{
     CancelToken, ErrorCode, OutputFormat, RenderOptions, RenderOutput, RenderProgress,
@@ -34,7 +34,7 @@ pub struct RenderedOutput {
     pub bytes: Vec<u8>,
 }
 
-/// Renders `composition` as `options.output` says: an MP4, a PNG or JPEG of one frame, or a ZIP of
+/// Renders `composition` as `options.output` says: an MP4, MOV or WebM, a PNG or JPEG of one frame, or a ZIP of
 /// a PNG or JPEG per frame, named `frame_0000.png` and so on with the composition's frame numbers.
 /// An output that can't be rendered, or a sequence past `options.sequence_limits`, ends the render
 /// before any GPU work. Frames are encoded and written to the ZIP one at a time, so a sequence
@@ -79,9 +79,9 @@ pub fn render_project(
             None => resolve_encoder(
                 &QualityConfig::built_in(),
                 composition,
+                format,
                 QualityRequest::default(),
-            )
-            .map_err(|message| ServerRenderError::new(ErrorCode::InvalidQuality, message, false))?,
+            )?,
         };
         let mut render = Mp4Render::open(
             composition,
@@ -227,10 +227,11 @@ pub struct Mp4Render<'a> {
 }
 
 impl<'a> Mp4Render<'a> {
-    /// Checks that `render` is an MP4 of a range that fits the timeline, then opens the first of
-    /// `choice`'s encoders that starts, on the path that keeps frames on the GPU when it has one,
-    /// writing to `output`. Cancelling `cancel` ends the wait for GPU device room, and stops
-    /// [`run`](Self::run) with [`ErrorCode::Cancelled`].
+    /// Checks that `render` is a video of a range that fits the timeline, in a format that holds
+    /// the codec and alpha `choice` encodes, then opens the first of `choice`'s encoders that
+    /// starts, on the path that keeps frames on the GPU when it has one and the render is opaque,
+    /// writing to `output`, whose extension names the container. Cancelling `cancel` ends the wait
+    /// for GPU device room, and stops [`run`](Self::run) with [`ErrorCode::Cancelled`].
     pub fn open(
         composition: &'a Composition,
         mut media_store: LocalMediaStore,
@@ -242,7 +243,7 @@ impl<'a> Mp4Render<'a> {
         if !render.format.is_video() {
             return Err(ServerRenderError::new(
                 ErrorCode::InvalidOutput,
-                "a video render needs the mp4 format",
+                "a video render needs the mp4, mov or webm format",
                 false,
             ));
         }
@@ -250,6 +251,23 @@ impl<'a> Mp4Render<'a> {
         let (choice, info) = choice
             .look_up(|warning| tracing::warn!("{warning}"))
             .map_err(invalid_render_profile)?;
+        render
+            .format
+            .check_video(
+                Some(EncodeCodec::of(info.codec).ok_or_else(|| {
+                    ServerRenderError::new(
+                        ErrorCode::InvalidOutput,
+                        format!(
+                            "`{}` encodes {:?}, which lumen doesn't write",
+                            choice.first().encoder,
+                            info.codec
+                        ),
+                        false,
+                    )
+                })?),
+                choice.alpha(),
+            )
+            .map_err(|message| ServerRenderError::new(ErrorCode::InvalidOutput, message, false))?;
         tracing::info!(encoder = choice.first().encoder, codec = ?info.codec, "selected video encoder");
 
         let OpenedTarget {
