@@ -29,7 +29,68 @@ document.querySelector("button")?.addEventListener("click", () => {
 });
 ```
 
-Pass `media` and `fonts` (name to URL) when the composition uses them. `media` also takes the binary glTF (`.glb`) files `model_3d` nodes read, under the name in their `source`; they load with the composition, as images do. The preview renders in a worker; `@lumiscia/lumen-bindings/urls` names that worker and the wasm it loads, and a page that serves copies of them elsewhere passes those URLs instead. Either can be on another origin that sends CORS headers. A worker on another origin starts from a `blob:` URL that imports it, so a Content Security Policy must allow `blob:` and that origin in `worker-src`. With Vite 6 or 7, the `@lumiscia/lumen-bindings` README has the dev server setting these URLs need.
+## Media
+
+Pass `media` and `fonts` when the composition uses them. `media` maps each source the composition writes (in `media_in.source`, `model_3d.source`, `render_3d.environment_map` or an audio clip's `source_id`) to a URL, a `Blob` or bytes: images, videos, audio, binary glTF (`.glb`) models and Radiance `.hdr` or OpenEXR `.exr` environment maps. `fonts` maps each font family to its file.
+
+```ts
+mountPreview(document.body, {
+  preview,
+  composition,
+  runtimeUrl: "/lumen-runtime/",
+  media: {
+    "clips/intro.mp4": "/media/intro.mp4",
+    logo: { source: logoBlob, kind: "image" },
+    fox: "/models/Fox.glb",
+    "studio.hdr": "/env/studio.hdr",
+  },
+  fonts: { Inter: "/fonts/Inter.ttf" },
+});
+```
+
+Every kind, fonts included, loads the same way. The engine lists what the composition reads, and only those entries are fetched; the rest of `media` is left alone. When an expression computes a source, any entry could be read, so the ones no node names load too, and each says its kind with `kind` or its blob's type unless only one kind is read that way. Each source is `pending` until it is fetched, decoded and handed to the renderer, then `ready` or `failed`. The state's `media` counts them, and `whenReady()` resolves once the current composition is shown and nothing it needs is pending:
+
+```ts
+const error = await preview.whenReady(); // or session.whenReady()
+if (error) console.warn(error.code, error.media?.source, error.message);
+const { pending, ready, failed } = preview.getSnapshot().media;
+```
+
+`whenReady()` never rejects. It resolves with the error that stopped the composition loading, with the `audio_failed` error of an audio source that failed while the picture plays on, or with `null`. Changing the composition, `media` or `fonts` starts again, and a call made before then resolves for the newest composition.
+
+While anything the composition needs is pending, the preview holds the last frame it showed. A new composition appears only once its images, videos, models, environment maps and fonts are ready, and fails to load with the media error of the first that failed. Playback holds too: while any source, audio included, is pending, the playhead stops where it is and the audio pauses, and both start again together once nothing is pending, so the sound can't run ahead of the picture.
+
+A source the composition stops naming is released: the renderer unregisters it and its decoded frames, bitmaps and audio are freed. A source the old and new compositions share stays loaded, and a source whose entry changes loads again.
+
+### Source names
+
+A source is found by its exact name in `media`. These rules match `lumen-server`, which reads sources as paths under its media root, so a composition that loads in one fails the same way in the other:
+
+| Source                                     | Preview                                    | `lumen-server`                     |
+| ------------------------------------------ | ------------------------------------------ | ---------------------------------- |
+| A name or path, such as `clips/a.mp4`      | the entry under that name                  | that path under the media root     |
+| `file://clips/a.mp4`                       | the entry under `file://clips/a.mp4`       | `clips/a.mp4` under the media root |
+| `asset:<id>`                               | the entry under `asset:<id>`               | the uploaded asset with that id    |
+| `https://…`, `http://…`, other `scheme://` | `media.not_found`, even with such an entry | `media.not_found`                  |
+| an empty path, or one with a `..` part     | `media.not_found`, even with such an entry | `media.not_found`                  |
+| a name with no entry, or no asset          | `media.not_found`                          | `media.not_found`                  |
+
+The one difference is that the preview has no asset store: an `asset:<id>` resolves only when the page passes that asset's URL in `media` under the same `asset:<id>` name. An entry whose `kind` the composition doesn't read the source as fails as `media.wrong_kind`.
+
+## Runtime files
+
+The preview renders in a worker that loads a wasm module, and plays audio through its own worker and an audio worklet. Pass `runtimeUrl`, a directory that serves all four files under their own names, as the reliable way to host them with any bundler or CDN, with no dev server setting:
+
+| File                 | Copy of                                            |
+| -------------------- | -------------------------------------------------- |
+| `worker.js`          | `@lumiscia/lumen-bindings/dist/browser/worker.js`  |
+| `lumen_wasm_bg.wasm` | `@lumiscia/lumen-bindings/wasm/lumen_wasm_bg.wasm` |
+| `audio-worker.js`    | `@lumiscia/lumen-preview/dist/audio-worker.js`     |
+| `audio-worklet.js`   | `@lumiscia/lumen-preview/dist/audio-worklet.js`    |
+
+`workerUrl`, `wasmUrl` and `audio.workerModuleUrl` / `audio.workletModuleUrl` still name one file each and win over `runtimeUrl`. Without `runtimeUrl`, pass `workerUrl` and `wasmUrl` from `@lumiscia/lumen-bindings/urls`, and the audio files are found next to this package, which works where the bundler emits them as assets; with Vite 6 or 7, the `@lumiscia/lumen-bindings` README has the dev server setting this needs. The files can be on another origin that sends CORS headers. A worker on another origin starts from a `blob:` URL that imports it, so a Content Security Policy must allow `blob:` and that origin in `worker-src`.
+
+## Errors
 
 `onError` is called with each failure the state's `error` shows. When the engine rejects the composition, its `diagnostics` say what is wrong and where:
 
@@ -111,9 +172,9 @@ session.rate; // 1.5: the options in effect are readable as loop, rate, volume, 
 
 ## Entry points
 
-`@lumiscia/lumen-preview` exports `createLumenPreview`, `mountPreview`, `LumenPreviewContext`, `LumenPreviewSession` and the types of their state, errors, options and callbacks, including `MediaFailure`. Nothing else is public: media decoding and audio are internal.
+`@lumiscia/lumen-preview` exports `createLumenPreview`, `mountPreview`, `LumenPreviewContext`, `LumenPreviewSession` and the types of their state, errors, options and callbacks, including `MediaFailure` and `LumenPreviewMediaState`. Nothing else is public: media decoding and audio are internal.
 
-`@lumiscia/lumen-preview/advanced` exports only types: the bindings a custom host passes to `@lumiscia/lumen-preview/worker-host` (`LumenBindings`, `LumenPreviewBindings`, `LumenPreviewControllerBinding`, `LumenMediaTarget`) and the types its messages carry (`MediaRegistration`, `RegisteredImageSource`, `RegisteredModelSource`, `RegisteredVideoSource`, `VideoSourceRegistration`, `PreviewClock`). `@lumiscia/lumen-bindings` implements them, so an application doesn't need this entry.
+`@lumiscia/lumen-preview/advanced` exports only types: the bindings a custom host passes to `@lumiscia/lumen-preview/worker-host` (`LumenBindings`, `LumenPreviewBindings`, `LumenPreviewControllerBinding`, `LumenMediaTarget`) and the types its messages carry (`VideoSourceRegistration`, `PreviewClock`). `@lumiscia/lumen-bindings` implements them, so an application doesn't need this entry.
 
 The preview draws the 3D scene nodes too. The [3D guide](https://github.com/lumiscia/lumen-oss/blob/main/docs/3d.md) covers them.
 

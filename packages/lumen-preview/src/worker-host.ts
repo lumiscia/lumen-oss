@@ -1,13 +1,21 @@
 import type { LumenDiagnostic, MediaFailure } from "@lumiscia/lumen-types";
 import { epochNow, type PreviewClock } from "./clock.js";
 import {
+  previewDependencies,
+  samePreviewMediaInput,
+  type PreviewMediaEntry,
+  type PreviewMediaInput,
+} from "./media/dependencies.js";
+import { toMediaError } from "./media/errors.js";
+import { MediaLifecycle, type MediaEntryState, type MediaLoader } from "./media/lifecycle.js";
+import {
   createLumenPreviewRuntime,
   type LumenLogLevel,
   type LumenPreviewBindings,
   type LumenPreviewController,
 } from "./runtime.js";
-import type { MediaRegistration, MediaSourceInput } from "./media/index.js";
-import { sameMediaInput, sourceInputToBlob } from "./media/source.js";
+import type { MediaSourceInput } from "./media/index.js";
+import { sourceInputToBlob } from "./media/source.js";
 import type { LumenPreviewErrorCode } from "./preview.js";
 import { resolvePlaybackRange, type LumenPreviewRange } from "./playback-range.js";
 import { PreviewRunner } from "./runner.js";
@@ -42,8 +50,14 @@ export type LumenPreviewWorkerCommand =
       keepMedia: readonly string[];
       loadId: number;
       /** New or changed media, as with `fonts`. */
-      media: readonly MediaRegistration[];
+      media: readonly (readonly [source: string, entry: PreviewMediaEntry])[];
       type: "load";
+    }
+  | {
+      /** Null once the page has the audio, or why it couldn't decode it. */
+      failure: MediaFailure | null;
+      requestId: number;
+      type: "audio-source-settled";
     }
   | {
       loadId: number;
@@ -120,6 +134,23 @@ export type LumenPreviewWorkerEvent =
     }
   | {
       loadId: number;
+      /** Each dependency of the composition being loaded or shown, and how far it has got. */
+      media: MediaEntryState[];
+      type: "media";
+    }
+  | {
+      /** The audio of `source`, which the page decodes, and answers with `audio-source-settled`. */
+      input: MediaSourceInput;
+      requestId: number;
+      source: string;
+      type: "audio-source";
+    }
+  | {
+      source: string;
+      type: "audio-source-released";
+    }
+  | {
+      loadId: number;
       /** The playback revision the playback ended under. */
       playbackRevision: number;
       /** The newest seek the worker had heard, so a late answer can't end a playback begun since. */
@@ -143,14 +174,16 @@ export function createLumenPreviewWorkerHost({
   previewBindings,
 }: LumenPreviewWorkerHostOptions): void {
   const scope = globalThis as PreviewWorkerScope;
+  const audioRequests = new Map<number, (failure: MediaFailure | null) => void>();
   const fonts = new Map<string, MediaSourceInput>();
-  const loadedFonts = new Map<string, MediaSourceInput>();
-  const media = new Map<string, MediaRegistration>();
+  const media = new Map<string, PreviewMediaEntry>();
   const playbackFps = new PlaybackFpsMeter();
   // The newest clock the page sent, which a load starts on.
   let clock: PreviewClock = { atEpochMs: 0, originMs: 0, rate: 0 };
+  let audioRequestId = 0;
   let canvas: OffscreenCanvas | null = null;
   let controller: LumenPreviewController | null = null;
+  let lifecycle: MediaLifecycle<PreviewMediaInput> | null = null;
   let durationFrames = 0;
   let lastRenderMs = 0;
   let loadId = 0;
@@ -217,8 +250,12 @@ export function createLumenPreviewWorkerHost({
         loadId = message.loadId;
         durationFrames = 0;
         runner.unload();
-        loadedFonts.clear();
+        requireLifecycle().clear();
         requireController().clear();
+        break;
+      case "audio-source-settled":
+        audioRequests.get(message.requestId)?.(message.failure);
+        audioRequests.delete(message.requestId);
         break;
       case "clock":
         followClock(message.clock);
@@ -252,6 +289,78 @@ export function createLumenPreviewWorkerHost({
     return controller;
   }
 
+  function requireLifecycle(): MediaLifecycle<PreviewMediaInput> {
+    if (!lifecycle) {
+      throw new Error("the preview worker has not started");
+    }
+    return lifecycle;
+  }
+
+  /** Each kind's way into the renderer. Audio is decoded by the page, which plays it. */
+  function mediaLoader(target: LumenPreviewController): MediaLoader<PreviewMediaInput> {
+    return {
+      load: async ({ kind, source }, { source: input, ...video }, signal) => {
+        switch (kind) {
+          case "image":
+            return target.registerImageSource(source, input);
+          case "video":
+            return target.registerVideoSource(source, input, video);
+          case "model":
+            return target.registerModelSource(source, input);
+          case "environment":
+            return target.registerEnvironmentSource(source, input);
+          case "font": {
+            const bytes = await readFont(source, input, signal);
+            if (!signal.aborted) {
+              target.registerFontFamily(source, bytes);
+            }
+            return;
+          }
+          case "audio":
+            return requestAudio(source, input, signal);
+        }
+      },
+      release: ({ kind, source }) => {
+        switch (kind) {
+          case "image":
+            return target.removeImageSource(source);
+          case "video":
+            return target.removeVideoSource(source);
+          case "model":
+            return target.removeModelSource(source);
+          case "environment":
+            return target.removeEnvironmentSource(source);
+          case "font":
+            return target.removeFontFamily(source);
+          case "audio":
+            return scope.postMessage({ source, type: "audio-source-released" });
+        }
+      },
+      same: samePreviewMediaInput,
+    };
+  }
+
+  function requestAudio(source: string, input: MediaSourceInput, signal: AbortSignal) {
+    const requestId = ++audioRequestId;
+    return new Promise<void>((resolve, reject) => {
+      const settle = (failure: MediaFailure | null) => {
+        audioRequests.delete(requestId);
+        if (failure) {
+          reject(failedMedia(failure));
+        } else {
+          resolve();
+        }
+      };
+      audioRequests.set(requestId, settle);
+      signal.addEventListener("abort", () => settle(null), { once: true });
+      scope.postMessage({ input, requestId, source, type: "audio-source" });
+    });
+  }
+
+  function postMedia(): void {
+    scope.postMessage({ loadId, media: requireLifecycle().entries(), type: "media" });
+  }
+
   async function start(
     message: Extract<LumenPreviewWorkerCommand, { type: "start" }>,
   ): Promise<void> {
@@ -271,6 +380,7 @@ export function createLumenPreviewWorkerHost({
       const { LumenPreviewController: PreviewController } =
         createLumenPreviewRuntime(previewBindings);
       controller = new PreviewController();
+      lifecycle = new MediaLifecycle(mediaLoader(controller), postMedia);
       controller.setLogLevel(message.logLevel);
       controller.setLookaheadCount(message.lookaheadCount);
     } catch (error) {
@@ -288,6 +398,7 @@ export function createLumenPreviewWorkerHost({
     message: Extract<LumenPreviewWorkerCommand, { type: "load" }>,
   ): Promise<void> {
     const activeController = requireController();
+    const activeLifecycle = requireLifecycle();
     const isCurrent = () => message.loadId === loadId;
     loadId = message.loadId;
     runner.unload();
@@ -295,20 +406,20 @@ export function createLumenPreviewWorkerHost({
     lastRenderMs = 0;
     playbackFps.reset();
     replaceEntries(fonts, message.keepFonts, message.fonts);
-    replaceEntries(
-      media,
-      message.keepMedia,
-      message.media.map((registration) => [registration.id, registration]),
-    );
+    replaceEntries(media, message.keepMedia, message.media);
 
     try {
       // A composition the engine rejects fails before any media is fetched. It becomes the one
-      // renders draw only once its media is in, as a render still in flight draws whichever is.
-      activeController.validateComposition(message.compositionJson);
-      await syncFonts(activeController, isCurrent);
-      await activeController.syncMediaSources([...media.values()]);
+      // renders draw only once everything but its audio is in, as a render still in flight draws
+      // whichever is loaded.
+      const inventory = previewBindings.mediaDependencies(message.compositionJson);
+      activeLifecycle.sync(previewDependencies(inventory, media, fonts));
+      const failure = await activeLifecycle.settled(({ kind }) => kind !== "audio");
       if (!isCurrent()) {
         return;
+      }
+      if (failure) {
+        throw failedMedia(failure);
       }
       activeController.loadComposition(message.compositionJson);
       if (canvas) {
@@ -350,31 +461,6 @@ export function createLumenPreviewWorkerHost({
     return resolved;
   }
 
-  async function syncFonts(
-    activeController: LumenPreviewController,
-    isCurrent: () => boolean,
-  ): Promise<void> {
-    for (const family of loadedFonts.keys()) {
-      if (!fonts.has(family)) {
-        loadedFonts.delete(family);
-        activeController.removeFontFamily(family);
-      }
-    }
-    await Promise.all(
-      [...fonts].map(async ([family, source]) => {
-        const loaded = loadedFonts.get(family);
-        if (loaded && sameMediaInput(loaded, source)) {
-          return;
-        }
-        const bytes = await readFont(family, source);
-        if (isCurrent()) {
-          activeController.registerFontFamily(family, bytes);
-          loadedFonts.set(family, source);
-        }
-      }),
-    );
-  }
-
   function followClock(next: PreviewClock): void {
     if (next.rate > 0 && clock.rate <= 0) {
       playbackFps.reset();
@@ -399,13 +485,22 @@ function replaceEntries<T>(
   }
 }
 
-async function readFont(family: string, source: MediaSourceInput): Promise<ArrayBuffer> {
+async function readFont(
+  family: string,
+  source: MediaSourceInput,
+  signal: AbortSignal,
+): Promise<ArrayBuffer> {
   try {
-    const blob = await sourceInputToBlob(source);
+    const blob = await sourceInputToBlob(source, signal);
     return await blob.arrayBuffer();
   } catch (error) {
-    throw new Error(`font "${family}" could not be loaded: ${describeError(error)}`, {
-      cause: error,
+    throw toMediaError("invalid_source", family, `font "${family}" could not be loaded`, error, {
+      wanted: ["font"],
     });
   }
+}
+
+/** An error carrying `failure`, as the wasm bindings throw for a source the engine can't use. */
+function failedMedia(failure: MediaFailure): Error {
+  return Object.assign(new Error(`${failure.source}: ${failure.details}`), { media: failure });
 }

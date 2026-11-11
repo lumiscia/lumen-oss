@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LumenMediaBridge } from "../../src/media/bridge.js";
-import type { MediaSourceInput, NativeVideoFrameTarget } from "../../src/media/types.js";
+import type { NativeVideoFrameTarget } from "../../src/media/types.js";
 
 type FakeSample = {
   clone(): FakeSample;
@@ -390,12 +390,12 @@ describe("LumenMediaBridge", () => {
     });
   });
 
-  describe("whole syncs", () => {
-    function stubImages(decodes: Map<string, Promise<void>>) {
-      vi.stubGlobal("createImageBitmap", async (blob: Blob) => {
-        const name = await blob.text();
-        await decodes.get(name);
-        return { close: () => {}, height: 1, width: Number(name) };
+  describe("clear", () => {
+    it("uploads nothing that was loading", async () => {
+      const slow = deferred();
+      vi.stubGlobal("createImageBitmap", async () => {
+        await slow.promise;
+        return { close: () => {}, height: 1, width: 1 };
       });
       vi.stubGlobal(
         "OffscreenCanvas",
@@ -408,91 +408,16 @@ describe("LumenMediaBridge", () => {
           }
         },
       );
-    }
-    const image = (id: string, name: string) => ({
-      id,
-      kind: "image" as const,
-      source: new Blob([name]),
-    });
-    const video = (id: string, url: string) => ({
-      id,
-      kind: "video" as const,
-      source: url,
-      ...FPS,
-    });
-    const uploads = (target: ReturnType<typeof fakeTarget>["target"]) =>
-      vi.mocked(target.setImage).mock.calls.map(([id, width]) => [id, width]);
-
-    it("stops an older sync from overwriting a newer image", async () => {
-      const slow = deferred();
-      stubImages(new Map([["1", slow.promise]]));
       const { target } = fakeTarget();
       const bridge = new LumenMediaBridge(target);
 
-      const older = bridge.syncMediaSources([image("slow", "1"), image("logo", "2")]);
-      await new Promise((resolve) => setTimeout(resolve));
-      await bridge.syncMediaSources([image("logo", "3")]);
-      slow.resolve();
-      await older;
-
-      expect(uploads(target)).toEqual([["logo", 3]]);
-    });
-
-    it("stops an older sync from overwriting a newer video", async () => {
-      const slow = deferred();
-      stubImages(new Map([["1", slow.promise]]));
-      const bridge = new LumenMediaBridge(fakeTarget().target);
-
-      const older = bridge.syncMediaSources([image("slow", "1"), video("clip", "old.mp4")]);
-      await new Promise((resolve) => setTimeout(resolve));
-      await bridge.syncMediaSources([video("clip", "new.mp4")]);
-      slow.resolve();
-      await older;
-
-      expect(mock.inputs).toHaveLength(1);
-      expect(mock.inputs[0]?.disposed).toBe(false);
-    });
-
-    it("registers and uploads nothing after clear", async () => {
-      const slow = deferred();
-      stubImages(new Map([["1", slow.promise]]));
-      const { target } = fakeTarget();
-      const bridge = new LumenMediaBridge(target);
-
-      const older = bridge.syncMediaSources([
-        image("slow", "1"),
-        image("logo", "2"),
-        video("clip", "clip.mp4"),
-      ]);
+      const image = bridge.registerImageSource("logo", new Blob(["1"]));
       await new Promise((resolve) => setTimeout(resolve));
       bridge.clear();
       slow.resolve();
-      await older;
+      await image;
 
-      expect(uploads(target)).toEqual([]);
-      expect(mock.inputs).toEqual([]);
-    });
-
-    it("doesn't report a registration it abandoned", async () => {
-      const failing = deferred();
-      stubImages(
-        new Map([["1", failing.promise.then(() => Promise.reject(new Error("offline")))]]),
-      );
-      const bridge = new LumenMediaBridge(fakeTarget().target);
-
-      const older = bridge.syncMediaSources([image("slow", "1")]);
-      await new Promise((resolve) => setTimeout(resolve));
-      bridge.clear();
-      failing.resolve();
-
-      await expect(older).resolves.toBeUndefined();
-    });
-
-    it("still reports a failure from the latest sync", async () => {
-      stubImages(new Map([["1", Promise.reject(new Error("offline"))]]));
-      const bridge = new LumenMediaBridge(fakeTarget().target);
-
-      await expect(bridge.syncMediaSources([image("slow", "1")])).rejects.toThrow("offline");
+      expect(target.setImage).not.toHaveBeenCalled();
     });
   });
 
@@ -553,20 +478,18 @@ describe("LumenMediaBridge", () => {
     });
   });
 
-  describe("models", () => {
-    const model = (source: MediaSourceInput) => ({ id: "fox", kind: "model" as const, source });
-
-    it("hands over a model's bytes once, and removes it when a sync leaves it out", async () => {
+  describe("models and environment maps", () => {
+    it("hands over a model's bytes once, and removes it", async () => {
       const { target } = fakeTarget();
       const bridge = new LumenMediaBridge(target);
       const source = new Uint8Array([0x67, 0x6c, 0x54, 0x46]);
 
-      await bridge.syncMediaSources([model(source)]);
-      await bridge.syncMediaSources([model(source)]);
+      await bridge.registerModelSource("fox", source);
+      await bridge.registerModelSource("fox", source);
       expect(target.setModel).toHaveBeenCalledOnce();
       expect(vi.mocked(target.setModel).mock.calls[0]).toEqual(["fox", source]);
 
-      await bridge.syncMediaSources([]);
+      bridge.removeModelSource("fox");
       expect(target.removeModelSource).toHaveBeenCalledWith("fox");
     });
 
@@ -582,6 +505,25 @@ describe("LumenMediaBridge", () => {
       expect(target.setModel).toHaveBeenCalledOnce();
     });
 
+    it("hands an environment map to the target as one, apart from models", async () => {
+      const environments = new Map<string, Uint8Array>();
+      const { target } = fakeTarget({
+        hasEnvironment: (id) => environments.has(id),
+        removeEnvironmentSource: vi.fn((id: string) => environments.delete(id)),
+        setEnvironment: vi.fn((id: string, bytes: Uint8Array) => environments.set(id, bytes)),
+      });
+      const bridge = new LumenMediaBridge(target);
+      const bytes = new Uint8Array([0x23, 0x3f]);
+
+      await bridge.registerEnvironmentSource("sky.hdr", bytes);
+      await bridge.registerEnvironmentSource("sky.hdr", bytes);
+      expect(target.setEnvironment).toHaveBeenCalledOnce();
+      expect(target.setModel).not.toHaveBeenCalled();
+
+      bridge.removeEnvironmentSource("sky.hdr");
+      expect(environments.size).toBe(0);
+    });
+
     it("names the model in a failed fetch", async () => {
       vi.stubGlobal(
         "fetch",
@@ -590,7 +532,7 @@ describe("LumenMediaBridge", () => {
       const bridge = new LumenMediaBridge(fakeTarget().target);
 
       await expect(
-        bridge.syncMediaSources([model("https://a.test/fox.glb")]),
+        bridge.registerModelSource("fox", "https://a.test/fox.glb"),
       ).rejects.toMatchObject({
         code: "invalid_source",
         message: 'model source "fox" failed to load: failed to load media source: 404 Not Found',

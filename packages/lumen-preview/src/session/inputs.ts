@@ -1,26 +1,19 @@
-import {
-  nodeMediaSources,
-  type LumenComposition,
-  type MediaSourceParam,
-} from "@lumiscia/lumen-types";
+import type { LumenComposition } from "@lumiscia/lumen-types";
 
-import type { AudioSourceRegistration } from "../audio-engine.js";
-import type { MediaRegistration, MediaSourceInput } from "../media/index.js";
-import { sameMediaInput } from "../media/source.js";
+import { samePreviewMediaInput, type PreviewMediaEntry } from "../media/dependencies.js";
+import type { MediaSourceInput } from "../media/index.js";
 import type {
   LumenPreviewComposition,
   LumenPreviewFonts,
   LumenPreviewMedia,
   LumenPreviewMediaEntry,
-  LumenPreviewMediaKind,
 } from "./types.js";
 
 /** Everything a load needs, ready to compare against the last one and send to the worker. */
 export interface ResolvedPreviewInputs {
-  audio: readonly AudioSourceRegistration[];
   compositionJson: string | null;
   fonts: ReadonlyMap<string, MediaSourceInput>;
-  media: ReadonlyMap<string, MediaRegistration>;
+  media: ReadonlyMap<string, PreviewMediaEntry>;
 }
 
 export function resolvePreviewInputs(
@@ -29,65 +22,22 @@ export function resolvePreviewInputs(
   fonts: LumenPreviewFonts = {},
 ): ResolvedPreviewInputs {
   const document = composition ? compositionDocument(composition) : null;
-  const audioAliases = new Set(
-    [document?.audio, ...Object.values(document?.compositions ?? {}).map(({ audio }) => audio)]
-      .flatMap((audio) => audio?.clips ?? [])
-      .map((clip) => clip.source_id),
-  );
-  const sourceKinds = literalSourceKinds(document);
-  const audio: AudioSourceRegistration[] = [];
-  const visual = new Map<string, MediaRegistration>();
-
-  for (const [id, value] of Object.entries(media)) {
-    const { kind: declaredKind, source: rawSource, ...options } = mediaEntry(value);
-    const source = absoluteSource(rawSource);
-    const kind = declaredKind ?? blobKind(source) ?? sourceKinds.get(id);
-    if (audioAliases.has(id)) {
-      audio.push({ id, kind: "audio", source });
-    }
-    if (kind === "image" || kind === "model") {
-      visual.set(id, { id, kind, source });
-    } else if (kind === "video") {
-      visual.set(id, { id, kind, source, ...options });
-    } else if (kind === undefined && !audioAliases.has(id)) {
-      throw new Error(
-        `media "${id}" needs a kind: no media_in node or audio clip names it, and its source doesn't say what it holds`,
-      );
-    }
-  }
-
   return {
-    audio,
     compositionJson: document && JSON.stringify(document),
     fonts: new Map(
       Object.entries(fonts).map(([family, source]) => [family, absoluteSource(source)]),
     ),
-    media: visual,
+    media: new Map(
+      Object.entries(media).map(([source, value]) => {
+        const entry = mediaEntry(value);
+        return [source, { ...entry, source: absoluteSource(entry.source) }];
+      }),
+    ),
   };
 }
 
-export function sameRegistration(left: MediaRegistration, right: MediaRegistration): boolean {
-  if (left.kind !== right.kind || !sameMediaInput(left.source, right.source)) {
-    return false;
-  }
-  return (
-    left.kind !== "video" ||
-    right.kind !== "video" ||
-    (left.fps === right.fps && left.track === right.track && left.formats === right.formats)
-  );
-}
-
-export function sameAudioSources(
-  left: readonly AudioSourceRegistration[],
-  right: readonly AudioSourceRegistration[],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every(
-      (source, index) =>
-        source.id === right[index]?.id && sameMediaInput(source.source, right[index].source),
-    )
-  );
+export function sameMediaEntry(left: PreviewMediaEntry, right: PreviewMediaEntry): boolean {
+  return left.kind === right.kind && samePreviewMediaInput(left, right);
 }
 
 function compositionDocument(composition: LumenPreviewComposition): LumenComposition {
@@ -98,49 +48,6 @@ function compositionDocument(composition: LumenPreviewComposition): LumenComposi
 
 function mediaEntry(value: LumenPreviewMedia[string]): LumenPreviewMediaEntry {
   return typeof value === "object" && "source" in value ? value : { source: value };
-}
-
-/**
- * What each literal source the composition or its templates name reads, by the media params the
- * generated `nodeMediaSources` lists for each node kind. Environment maps are left out, since a
- * preview has none.
- */
-function literalSourceKinds(document: LumenComposition | null): Map<string, LumenPreviewMediaKind> {
-  const kinds = new Map<string, LumenPreviewMediaKind>();
-  const templates = Object.values(document?.compositions ?? {});
-  for (const node of [document?.nodes ?? [], ...templates.map(({ nodes }) => nodes)].flat()) {
-    const params = (node.params ?? {}) as Readonly<Record<string, unknown>>;
-    const mediaParams: Readonly<Record<string, MediaSourceParam | undefined>> =
-      nodeMediaSources[node.type];
-    for (const [param, media] of Object.entries(mediaParams)) {
-      const source = params[param];
-      const kind = media && selectedKind(media, params);
-      if (typeof source === "string" && kind && kind !== "environment") {
-        kinds.set(source, kind);
-      }
-    }
-  }
-  return kinds;
-}
-
-/** The kind a param reads: the one its selector names, else its first, as the engine does. */
-function selectedKind(media: MediaSourceParam, params: Readonly<Record<string, unknown>>) {
-  const selected = media.selectedBy === undefined ? undefined : params[media.selectedBy];
-  return media.kinds.find((kind) => kind === selected) ?? media.kinds[0];
-}
-
-function blobKind(source: MediaSourceInput): LumenPreviewMediaKind | undefined {
-  const blob =
-    source instanceof Blob
-      ? source
-      : typeof source === "object" && "kind" in source && source.kind === "blob"
-        ? source.blob
-        : null;
-  if (blob?.type === "model/gltf-binary") {
-    return "model";
-  }
-  const group = blob?.type.split("/")[0];
-  return group === "audio" || group === "image" || group === "video" ? group : undefined;
 }
 
 /** A worker resolves relative URLs against its own script, which is rarely where the page meant. */

@@ -1,4 +1,4 @@
-import type { LumenComposition } from "@lumiscia/lumen-types";
+import type { LumenComposition, MediaSourceKind } from "@lumiscia/lumen-types";
 import type { InputFormat } from "mediabunny";
 
 import type { LumenAudioEngineOptions } from "../audio-engine.js";
@@ -10,15 +10,21 @@ import type { LumenPreviewStatsCallback, LumenPreviewTimeUpdateCallback } from "
 
 export type LumenPreviewComposition = LumenComposition | { toJSON(): LumenComposition };
 
-/** `model` is a binary glTF (`.glb`) file, which a `model_3d` reads. */
-export type LumenPreviewMediaKind = "audio" | "image" | "model" | "video";
+/**
+ * `model` is a binary glTF (`.glb`) file, which a `model_3d` reads, and `environment` a Radiance
+ * `.hdr` or OpenEXR `.exr` file, which a `render_3d` lights with.
+ */
+export type LumenPreviewMediaKind = MediaSourceKind;
 
 export interface LumenPreviewMediaEntry {
   /** The rate source frames are numbered at, for a video. Defaults to the stream's own rate. */
   fps?: number | null;
   /** The input formats to try for a video, instead of all of them. */
   formats?: InputFormat[];
-  /** Needed only when the blob's type or the composition doesn't already say. */
+  /**
+   * Needed only for a source that only an expression names, when its blob's type doesn't say. A
+   * kind the composition doesn't read the source as fails as `media.wrong_kind`.
+   */
   kind?: LumenPreviewMediaKind;
   source: MediaSourceInput;
   /** Which track of a video to read. */
@@ -26,8 +32,10 @@ export interface LumenPreviewMediaEntry {
 }
 
 /**
- * What each alias in the composition reads, as `media_in.source`, `model_3d.source` and audio
- * `source_id` name it.
+ * The media of each source the composition names, under the source as written: a name or path such
+ * as `media_in.source`, `model_3d.source`, `render_3d.environment_map` or an audio clip's
+ * `source_id` holds, or an `asset:<id>`. Entries the composition doesn't name aren't loaded,
+ * unless an expression computes a source.
  */
 export type LumenPreviewMedia = Readonly<Record<string, MediaSourceInput | LumenPreviewMediaEntry>>;
 
@@ -80,8 +88,21 @@ export interface LumenPreviewSessionInputs {
 export interface LumenPreviewSessionOptions extends LumenPreviewSessionInputs {
   audio?: LumenAudioEngineOptions;
   preview: LumenPreviewContext;
-  /** The wasm the worker loads: `wasmUrl` from `@lumiscia/lumen-bindings/urls`, or a copy of it. */
-  wasmUrl: string | URL;
-  /** The worker script: `workerUrl` from `@lumiscia/lumen-bindings/urls`, or a copy of it. */
-  workerUrl: string | URL;
+  /**
+   * A directory holding the preview's runtime files under their own names: `worker.js` and
+   * `lumen_wasm_bg.wasm` from `@lumiscia/lumen-bindings`, and `audio-worker.js` and
+   * `audio-worklet.js` from `@lumiscia/lumen-preview`. Each URL not passed on its own is that
+   * file in it.
+   */
+  runtimeUrl?: string | URL | undefined;
+  /**
+   * The wasm the worker loads: `wasmUrl` from `@lumiscia/lumen-bindings/urls`, or a copy of it.
+   * Needed unless `runtimeUrl` is passed.
+   */
+  wasmUrl?: string | URL | undefined;
+  /**
+   * The worker script: `workerUrl` from `@lumiscia/lumen-bindings/urls`, or a copy of it. Needed
+   * unless `runtimeUrl` is passed.
+   */
+  workerUrl?: string | URL | undefined;
 }

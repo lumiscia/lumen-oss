@@ -5,8 +5,8 @@ import {
   LUMEN_AUDIO_SAMPLE_RATE,
   LumenAudioEngine,
   type AudioEngineTimeline,
-  type AudioSourceRegistration,
 } from "../src/audio-engine.js";
+import { errorMediaFailure } from "../src/media/errors.js";
 
 type Posted = {
   generation?: number;
@@ -173,10 +173,6 @@ function timelineJson(...sourceIds: string[]): string {
   return JSON.stringify(timeline);
 }
 
-function source(id: string, input: AudioSourceRegistration["source"]): AudioSourceRegistration {
-  return { id, kind: "audio", source: input };
-}
-
 function postedOfType(posted: readonly Posted[] | undefined, type: string): Posted[] {
   return (posted ?? []).filter((message) => message.type === type);
 }
@@ -205,14 +201,12 @@ describe("LumenAudioEngine", () => {
 
     for (const json of [null, timelineJson()]) {
       engine.loadAudioTimeline(json);
-      await engine.syncAudioSources([source("unused", new Uint8Array([1]))]);
       engine.play(0);
     }
 
     expect(engine.isPlaying()).toBe(false);
     expect(fakes.contexts).toEqual([]);
     expect(fakes.workers).toEqual([]);
-    expect(fakes.decoded).toEqual([]);
   });
 
   it("never starts when paused while the worklet is loading", async () => {
@@ -249,7 +243,7 @@ describe("LumenAudioEngine", () => {
     expect(fakes.workers).toEqual([]);
 
     engine.play(0);
-    await engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+    await engine.loadSource("a", new Uint8Array([1]));
     expect(engine.isPlaying()).toBe(false);
     expect(fakes.contexts).toHaveLength(1);
     expect(fakes.decoded).toEqual([]);
@@ -271,25 +265,19 @@ describe("LumenAudioEngine", () => {
     expect(engine.isPlaying()).toBe(true);
   });
 
-  it("decodes a source once, and again when its input changes", async () => {
+  it("replaces a source's samples with each load, and drops them when it is removed", async () => {
     vi.stubGlobal("fetch", async () => new Response(new Uint8Array([3])));
     const engine = createEngine();
     engine.loadAudioTimeline(timelineJson("a"));
-    const first = new Uint8Array([1]);
 
-    await engine.syncAudioSources([source("a", first)]);
-    await engine.syncAudioSources([source("a", first)]);
-    expect(fakes.decoded).toEqual([1]);
-
-    await engine.syncAudioSources([source("a", new Uint8Array([2]))]);
-    expect(fakes.decoded).toEqual([1, 2]);
-    expect(postedOfType(fakes.workers[0]?.posted, "set-source")).toHaveLength(2);
-
-    await engine.syncAudioSources([source("a", { kind: "url", url: "https://a.test/song.wav" })]);
-    await engine.syncAudioSources([source("a", { kind: "url", url: "https://a.test/song.wav" })]);
+    await engine.loadSource("a", new Uint8Array([1]));
+    await engine.loadSource("a", new Uint8Array([2]));
+    await engine.loadSource("a", { kind: "url", url: "https://a.test/song.wav" });
     expect(fakes.decoded).toEqual([1, 2, 3]);
+    expect(postedOfType(fakes.workers[0]?.posted, "set-source")).toHaveLength(3);
 
-    await engine.syncAudioSources([]);
+    engine.removeSource("a");
+    engine.removeSource("a");
     expect(postedOfType(fakes.workers[0]?.posted, "remove-source")).toEqual([
       { id: "a", type: "remove-source" },
     ]);
@@ -302,7 +290,7 @@ describe("LumenAudioEngine", () => {
     await settled(fakes);
     const requests = postedOfType(fakes.workers[0]?.posted, "request-chunk").length;
 
-    await engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+    await engine.loadSource("a", new Uint8Array([1]));
     await vi.waitFor(() => expect(postedOfType(fakes.nodes[0]?.posted, "play")).toHaveLength(2));
 
     expect(postedOfType(fakes.nodes[0]?.posted, "play")[1]?.startSample).toBe(24_000);
@@ -311,35 +299,40 @@ describe("LumenAudioEngine", () => {
     );
   });
 
-  it("reports fetch and decode failures by source, keeps the rest, and retries them", async () => {
+  it("fails a source it can't fetch or decode as media, and loads it when tried again", async () => {
     vi.stubGlobal("fetch", async () => new Response(null, { status: 503 }));
     const engine = createEngine();
     engine.loadAudioTimeline(timelineJson("offline", "corrupt", "music"));
-    const sources = [
-      source("offline", { kind: "url", url: "https://a.test/offline.wav" }),
-      source("corrupt", new Uint8Array([0])),
-      source("music", new Uint8Array([1])),
-    ];
+    const offline = { kind: "url", url: "https://a.test/offline.wav" } as const;
+    const failure = (load: Promise<void>) =>
+      load.then(
+        () => null,
+        (error: unknown) => errorMediaFailure(error),
+      );
 
-    const failure = String(await engine.syncAudioSources(sources).catch((error: unknown) => error));
-    expect(failure).toContain('audio source "offline"');
-    expect(failure).toContain('audio source "corrupt"');
-    expect(failure).not.toContain("music");
+    expect(await failure(engine.loadSource("offline", offline))).toMatchObject({
+      code: "media.not_found",
+      source: "offline",
+      wanted: ["audio"],
+    });
+    expect(await failure(engine.loadSource("corrupt", new Uint8Array([0])))).toMatchObject({
+      code: "media.decode",
+      source: "corrupt",
+    });
+    await engine.loadSource("music", new Uint8Array([1]));
     expect(fakes.decoded).toEqual([1]);
 
     vi.stubGlobal("fetch", async () => new Response(new Uint8Array([2])));
-    await expect(engine.syncAudioSources(sources)).rejects.toThrow('audio source "corrupt"');
+    await engine.loadSource("offline", offline);
     expect(fakes.decoded).toEqual([1, 2]);
   });
 
   it("stops mixing the old audio when a replacement fails to load", async () => {
     const engine = createEngine();
     engine.loadAudioTimeline(timelineJson("a"));
-    await engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+    await engine.loadSource("a", new Uint8Array([1]));
 
-    await expect(engine.syncAudioSources([source("a", new Uint8Array([0]))])).rejects.toThrow(
-      'audio source "a"',
-    );
+    await expect(engine.loadSource("a", new Uint8Array([0]))).rejects.toThrow('audio source "a"');
 
     expect(postedOfType(fakes.workers[0]?.posted, "remove-source")).toHaveLength(1);
   });
@@ -361,8 +354,8 @@ describe("LumenAudioEngine", () => {
       const releaseOld = gate(1);
       const releaseNew = gate(2);
 
-      const obsolete = engine.syncAudioSources([source("a", new Uint8Array([1]))]);
-      const current = engine.syncAudioSources([source("a", new Uint8Array([2]))]);
+      const obsolete = engine.loadSource("a", new Uint8Array([1]));
+      const current = engine.loadSource("a", new Uint8Array([2]));
       await vi.waitFor(() => expect(fakes.decodeGates.size).toBe(2));
       const playsBefore = plays().length;
 
@@ -387,11 +380,11 @@ describe("LumenAudioEngine", () => {
       const engine = createEngine();
       engine.loadAudioTimeline(timelineJson("a"));
 
-      void engine.syncAudioSources([source("a", "https://a.test/hung.wav")]);
+      void engine.loadSource("a", "https://a.test/hung.wav");
       await vi.waitFor(() => expect(signal).toBeDefined());
       expect(signal?.aborted).toBe(false);
 
-      await engine.syncAudioSources([source("a", new Uint8Array([2]))]);
+      await engine.loadSource("a", new Uint8Array([2]));
 
       expect(signal?.aborted).toBe(true);
       expect(fakes.decoded).toEqual([2]);
@@ -408,9 +401,7 @@ describe("LumenAudioEngine", () => {
       const engine = createEngine();
       engine.loadAudioTimeline(timelineJson("a"));
 
-      void engine.syncAudioSources([
-        source("a", new Request("https://a.test/hung.wav", { signal: own.signal })),
-      ]);
+      void engine.loadSource("a", new Request("https://a.test/hung.wav", { signal: own.signal }));
       await vi.waitFor(() => expect(signal).toBeDefined());
       own.abort();
 
@@ -422,8 +413,8 @@ describe("LumenAudioEngine", () => {
       engine.loadAudioTimeline(timelineJson("a"));
       const releaseBad = gate(0);
 
-      const obsolete = engine.syncAudioSources([source("a", new Uint8Array([0]))]);
-      await engine.syncAudioSources([source("a", new Uint8Array([2]))]);
+      const obsolete = engine.loadSource("a", new Uint8Array([0]));
+      await engine.loadSource("a", new Uint8Array([2]));
       releaseBad();
 
       await expect(obsolete).resolves.toBeUndefined();
@@ -431,58 +422,24 @@ describe("LumenAudioEngine", () => {
       expect(setSources()).toHaveLength(1);
     });
 
-    describe("a sync that fails and is then superseded", () => {
-      const urlSource = (id: string) =>
-        source(id, { kind: "url", url: `https://a.test/${id}.wav` });
+    it("resolves a load still fetching once the engine is disposed", async () => {
+      vi.stubGlobal(
+        "fetch",
+        (_url: string, init: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () =>
+              reject(new DOMException("Aborted", "AbortError")),
+            );
+          }),
+      );
+      const engine = createEngine();
+      engine.loadAudioTimeline(timelineJson("stalled"));
+      const stalled = engine.loadSource("stalled", "https://a.test/stalled.wav");
+      await new Promise((resolve) => setTimeout(resolve));
 
-      beforeEach(() => {
-        vi.stubGlobal("fetch", (url: string, init: RequestInit) =>
-          url.includes("offline")
-            ? Promise.resolve(new Response(null, { status: 503 }))
-            : new Promise((_resolve, reject) => {
-                init.signal?.addEventListener("abort", () =>
-                  reject(new DOMException("Aborted", "AbortError")),
-                );
-              }),
-        );
-      });
+      engine.dispose();
 
-      function startFailingSync(engine: LumenAudioEngine) {
-        engine.loadAudioTimeline(timelineJson("offline", "stalled"));
-        return engine.syncAudioSources([urlSource("offline"), urlSource("stalled")]);
-      }
-
-      it("doesn't report its failure once a newer sync has replaced the source", async () => {
-        const engine = createEngine();
-        const obsolete = startFailingSync(engine);
-        await new Promise((resolve) => setTimeout(resolve));
-
-        await engine.syncAudioSources([source("offline", new Uint8Array([1]))]);
-
-        await expect(obsolete).resolves.toBeUndefined();
-        expect(setSources()).toHaveLength(1);
-      });
-
-      it("doesn't report its failure after dispose", async () => {
-        const engine = createEngine();
-        const obsolete = startFailingSync(engine);
-        await new Promise((resolve) => setTimeout(resolve));
-
-        engine.dispose();
-
-        await expect(obsolete).resolves.toBeUndefined();
-      });
-
-      it("still reports the failure from the latest sync", async () => {
-        const engine = createEngine();
-        const failing = startFailingSync(engine);
-        await new Promise((resolve) => setTimeout(resolve));
-
-        const latest = engine.syncAudioSources([urlSource("offline")]);
-
-        await expect(latest).rejects.toThrow('audio source "offline"');
-        await expect(failing).resolves.toBeUndefined();
-      });
+      await expect(stalled).resolves.toBeUndefined();
     });
 
     it("publishes nothing for a source removed before its decode finished", async () => {
@@ -490,28 +447,13 @@ describe("LumenAudioEngine", () => {
       engine.loadAudioTimeline(timelineJson("a"));
       const release = gate(1);
 
-      const obsolete = engine.syncAudioSources([source("a", new Uint8Array([1]))]);
-      await engine.syncAudioSources([]);
+      const obsolete = engine.loadSource("a", new Uint8Array([1]));
+      engine.removeSource("a");
       release();
       await obsolete;
 
       expect(setSources()).toEqual([]);
       expect(postedOfType(fakes.workers[0]?.posted, "remove-source")).toEqual([]);
-    });
-
-    it("shares one decode between overlapping syncs of the same source", async () => {
-      const engine = createEngine();
-      engine.loadAudioTimeline(timelineJson("a"));
-      const input = new Uint8Array([1]);
-      const release = gate(1);
-
-      const first = engine.syncAudioSources([source("a", input)]);
-      const second = engine.syncAudioSources([source("a", input)]);
-      release();
-      await Promise.all([first, second]);
-
-      expect(fakes.decoded).toEqual([1]);
-      expect(setSources()).toHaveLength(1);
     });
   });
 
@@ -718,7 +660,7 @@ describe("LumenAudioEngine", () => {
       vi.advanceTimersByTime(AUDIO_STALL_TIMEOUT_MS);
       expect(plays()).toHaveLength(1);
 
-      await engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+      await engine.loadSource("a", new Uint8Array([1]));
       expect(plays()).toHaveLength(1);
 
       engine.pause();
@@ -751,14 +693,14 @@ describe("LumenAudioEngine", () => {
       workletModuleUrl: "worklet.js",
     });
     engine.loadAudioTimeline(timelineJson("a"));
-    await engine.syncAudioSources([source("a", new Uint8Array([1]))]);
+    await engine.loadSource("a", new Uint8Array([1]));
     engine.play(0);
     await settled(fakes);
     const plays = () => postedOfType(fakes.nodes[0]?.posted, "play");
     expect(plays()[0]?.holdFrames).toBe(LUMEN_AUDIO_SAMPLE_RATE);
 
     now.mockReturnValue(5_000);
-    await engine.syncAudioSources([source("a", new Uint8Array([2]))]);
+    await engine.loadSource("a", new Uint8Array([2]));
     await vi.waitFor(() => expect(plays()).toHaveLength(2));
     expect(plays()[1]?.holdFrames).toBe(0);
     expect(engine.isClockRunning()).toBe(true);

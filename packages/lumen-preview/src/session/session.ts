@@ -13,18 +13,24 @@ import {
   type PlaybackRange,
   type PlaybackSettings,
 } from "../playback-range.js";
-import type { MediaRegistration, MediaSourceInput } from "../media/index.js";
+import type { PreviewMediaEntry } from "../media/dependencies.js";
+import type { MediaSourceInput } from "../media/index.js";
+import type { MediaEntryState } from "../media/lifecycle.js";
 import { sameMediaInput } from "../media/source.js";
 import { assetHint } from "../asset-hint.js";
 import { createModuleWorker } from "../module-worker.js";
-import type { LumenPreviewContext, LumenPreviewErrorCode } from "../preview.js";
+import type {
+  LumenPreviewContext,
+  LumenPreviewError,
+  LumenPreviewErrorCode,
+  LumenPreviewMediaState,
+} from "../preview.js";
 import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../worker-host.js";
 import { describeError, errorMediaFailure, reportConsoleError } from "./errors.js";
 import {
   absoluteUrl,
   resolvePreviewInputs,
-  sameAudioSources,
-  sameRegistration,
+  sameMediaEntry,
   type ResolvedPreviewInputs,
 } from "./inputs.js";
 import { EMPTY_PREVIEW_STATS } from "./stats.js";
@@ -32,6 +38,7 @@ import type { LumenPreviewSessionInputs, LumenPreviewSessionOptions } from "./ty
 
 const CLOCK_CORRECTION_INTERVAL_MS = 250;
 const DEFAULT_LOOKAHEAD_COUNT = 8;
+const NO_MEDIA: LumenPreviewMediaState = { failed: 0, pending: 0, ready: 0 };
 const PARKED_CLOCK: PreviewClock = { atEpochMs: 0, originMs: 0, rate: 0 };
 const WORKER_STARTUP_TIMEOUT_MS = 30_000;
 
@@ -59,6 +66,9 @@ class PreviewStartupError extends Error {
  *
  * The render loop lives in a worker that owns the canvas, and this side owns playback: it holds the
  * audio and tells the worker where the clock is. Every failure ends up in the preview's state.
+ *
+ * The worker loads the media the composition needs, and swaps to it once everything but its audio
+ * is in. Playing holds its clock, at its position, while anything the composition needs is pending.
  */
 export class LumenPreviewSession {
   readonly preview: LumenPreviewContext;
@@ -69,8 +79,13 @@ export class LumenPreviewSession {
   #canvas: HTMLCanvasElement | null = null;
   #clock = PARKED_CLOCK;
   #correctionTimer: ReturnType<typeof setInterval> | null = null;
+  // Whether playing is waiting, with its clock parked, for media to load.
+  #held = false;
   #inputs: LumenPreviewSessionInputs;
   #loadId = 0;
+  // The newest load the worker has shown, and what it last said of that load's media.
+  #loadedId = 0;
+  #media: readonly MediaEntryState[] | null = null;
   // Whether a load is in flight. A seek waits for it, to be clamped to the new length.
   #loading = false;
   // What was last asked for, whether or not it worked: only a change is worth trying again.
@@ -84,6 +99,9 @@ export class LumenPreviewSession {
   // The last options that were valid, which are the ones in effect.
   #playback: PlaybackSettings = DEFAULT_PLAYBACK;
   #playing = false;
+  // How the current composition's load ended, or null while it is pending.
+  #ready: { error: LumenPreviewError | null } | null = null;
+  #readyWaiters: ((error: LumenPreviewError | null) => void)[] = [];
   // The part of the loaded timeline being played.
   #range: PlaybackRange | null = null;
   // Why the options last failed validation, and what was last said about a range that didn't fit.
@@ -98,21 +116,35 @@ export class LumenPreviewSession {
   #reportedFrame: number | null = null;
   #startup: AbortController | null = null;
   #sentFonts: ReadonlyMap<string, MediaSourceInput> = new Map();
-  #sentMedia: ReadonlyMap<string, MediaRegistration> = new Map();
+  #sentMedia: ReadonlyMap<string, PreviewMediaEntry> = new Map();
   #timeline: { fps: number; totalFrames: number } | null = null;
-  readonly #wasmUrl: string | URL;
+  readonly #wasmUrl: string | URL | null;
   #worker: Worker | null = null;
-  readonly #workerUrl: string | URL;
+  readonly #workerUrl: string | URL | null;
   #workerOptions: PreviewWorkerOptions = {
     logLevel: "off",
     lookaheadCount: DEFAULT_LOOKAHEAD_COUNT,
   };
 
-  constructor({ audio, preview, wasmUrl, workerUrl, ...inputs }: LumenPreviewSessionOptions) {
-    this.#audioOptions = audio;
+  constructor({
+    audio,
+    preview,
+    runtimeUrl,
+    wasmUrl,
+    workerUrl,
+    ...inputs
+  }: LumenPreviewSessionOptions) {
+    const runtimeFile = (name: string) => (runtimeUrl ? runtimeAsset(runtimeUrl, name) : null);
+    const workerModuleUrl = audio?.workerModuleUrl ?? runtimeFile("audio-worker.js");
+    const workletModuleUrl = audio?.workletModuleUrl ?? runtimeFile("audio-worklet.js");
+    this.#audioOptions = {
+      ...audio,
+      ...(workerModuleUrl && { workerModuleUrl }),
+      ...(workletModuleUrl && { workletModuleUrl }),
+    };
     this.preview = preview;
-    this.#wasmUrl = wasmUrl;
-    this.#workerUrl = workerUrl;
+    this.#wasmUrl = wasmUrl ?? runtimeFile("lumen_wasm_bg.wasm");
+    this.#workerUrl = workerUrl ?? runtimeFile("worker.js");
     this.#inputs = inputs;
   }
 
@@ -138,6 +170,20 @@ export class LumenPreviewSession {
     return this.#playback.volume;
   }
 
+  /**
+   * Resolves with null once the current composition has loaded with everything it needs, or with
+   * the failure `onError` reported when it, or a source or font it needs, didn't load: an audio
+   * source that can't be decoded is an `audio_failed` with its `media`, and the composition plays
+   * without it. A change of composition, media or fonts before then waits for the new ones
+   * instead. Without a composition it resolves at once. It never rejects.
+   */
+  whenReady(): Promise<LumenPreviewError | null> {
+    if (this.#ready) {
+      return Promise.resolve(this.#ready.error);
+    }
+    return new Promise((resolve) => this.#readyWaiters.push(resolve));
+  }
+
   /** Replaces whatever this session was showing. Resolves when started or failed; never rejects. */
   async attach(host: HTMLElement): Promise<void> {
     this.#teardown();
@@ -148,13 +194,27 @@ export class LumenPreviewSession {
       frame: 0,
       isLoaded: false,
       isPlaying: false,
+      media: NO_MEDIA,
+    });
+    this.preview.attach({
+      pause: () => this.#pause(),
+      play: () => this.#play(),
+      seek: (frame) => this.#seek(frame),
+      whenReady: () => this.whenReady(),
     });
 
     let worker: Worker | null = null;
     this.#startup = new AbortController();
     try {
       assertBrowserSupport();
-      worker = createModuleWorker(this.#workerUrl);
+      if (this.#workerUrl === null || this.#wasmUrl === null) {
+        throw new PreviewStartupError(
+          "worker_failed",
+          "The Lumen preview needs `runtimeUrl`, or both `workerUrl` and `wasmUrl`.",
+        );
+      }
+      const workerUrl = absoluteUrl(this.#workerUrl);
+      worker = createModuleWorker(workerUrl);
       this.#workerOptions = this.#desiredOptions();
       await startWorker(
         worker,
@@ -163,14 +223,14 @@ export class LumenPreviewSession {
           type: "start",
           wasmUrl: absoluteUrl(this.#wasmUrl),
         },
-        absoluteUrl(this.#workerUrl),
+        workerUrl,
         this.#startup.signal,
       );
     } catch (error) {
       worker?.terminate();
       if (attachment === this.#attachment) {
         const code = error instanceof PreviewStartupError ? error.code : "worker_failed";
-        this.#reportError(code, "start", error);
+        this.#settleReady(this.#reportError(code, "start", error));
       }
       return;
     }
@@ -196,11 +256,6 @@ export class LumenPreviewSession {
     worker.onmessageerror = () => this.#workerCrashed("a message could not be read");
     this.#post({ canvas: offscreen, type: "attach-canvas" }, [offscreen]);
     this.#syncOptions();
-    this.preview.attach({
-      pause: () => this.#pause(),
-      play: () => this.#play(),
-      seek: (frame) => this.#seek(frame),
-    });
     this.#applyPlayback(this.#readPlayback(this.#inputs));
     this.#syncInputs();
   }
@@ -228,6 +283,7 @@ export class LumenPreviewSession {
   dispose(): void {
     this.#attachment += 1;
     this.#teardown();
+    this.#settleReady(stoppedError());
     this.preview.detach();
   }
 
@@ -243,8 +299,11 @@ export class LumenPreviewSession {
     this.#canvas?.remove();
     this.#canvas = null;
     this.#clock = PARKED_CLOCK;
+    this.#held = false;
     this.#loaded = null;
+    this.#loadedId = 0;
     this.#loading = false;
+    this.#media = null;
     this.#optionFailure = null;
     this.#pendingSeek = null;
     this.#playback = DEFAULT_PLAYBACK;
@@ -323,7 +382,7 @@ export class LumenPreviewSession {
   #changeRate(rate: number): void {
     const positionMs = this.#positionMs();
     this.#audio?.setRate(rate);
-    if (!this.#playing) {
+    if (!this.#running()) {
       return;
     }
     this.#playbackRevision += 1;
@@ -391,7 +450,7 @@ export class LumenPreviewSession {
       const message = describeError(error);
       if (message !== this.#resolveFailure) {
         this.#resolveFailure = message;
-        this.#reportError("load_failed", "load", error);
+        this.#settleReady(this.#reportError("load_failed", "load", error));
       }
       return;
     }
@@ -404,13 +463,10 @@ export class LumenPreviewSession {
       !recovering &&
       previous &&
       previous.compositionJson === next.compositionJson &&
-      sameEntries(previous.media, next.media, sameRegistration) &&
+      sameEntries(previous.media, next.media, sameMediaEntry) &&
       sameEntries(previous.fonts, next.fonts, sameMediaInput)
     ) {
       this.#loaded = next;
-      if (this.#timeline && !sameAudioSources(previous.audio, next.audio)) {
-        this.#syncAudioSources();
-      }
       return;
     }
     this.#load(next);
@@ -421,8 +477,11 @@ export class LumenPreviewSession {
     this.#loaded = next;
     this.#settleSeeks(false);
     this.#reportedFrame = null;
+    this.#media = null;
+    this.#ready = null;
 
     if (next.compositionJson === null) {
+      this.#held = false;
       this.#loading = false;
       this.#pendingSeek = null;
       this.#playing = false;
@@ -437,16 +496,18 @@ export class LumenPreviewSession {
         height: 0,
         isLoaded: false,
         isPlaying: false,
+        media: NO_MEDIA,
         totalFrames: 0,
         width: 0,
       });
       this.#inputs.onStats?.(EMPTY_PREVIEW_STATS);
+      this.#settleReady(null);
       return;
     }
 
-    const media = [...next.media.values()].filter((registration) => {
-      const sent = this.#sentMedia.get(registration.id);
-      return !sent || !sameRegistration(sent, registration);
+    const media = [...next.media].filter(([source, entry]) => {
+      const sent = this.#sentMedia.get(source);
+      return !sent || !sameMediaEntry(sent, entry);
     });
     const fonts = [...next.fonts].filter(([family, source]) => {
       const sent = this.#sentFonts.get(family);
@@ -483,7 +544,7 @@ export class LumenPreviewSession {
     this.#timeline = null;
     this.#inputs.onStats?.(EMPTY_PREVIEW_STATS);
     this.preview.update({ isLoaded: false });
-    this.#reportError("load_failed", "load", error, diagnostics, media);
+    this.#settleReady(this.#reportError("load_failed", "load", error, diagnostics, media));
   }
 
   #receive(event: LumenPreviewWorkerEvent): void {
@@ -515,9 +576,107 @@ export class LumenPreviewSession {
           this.#onEnded();
         }
         break;
+      case "media":
+        if (event.loadId === this.#loadId) {
+          this.#onMedia(event.media);
+        }
+        break;
+      case "audio-source":
+        this.#loadAudioSource(event);
+        break;
+      case "audio-source-released":
+        this.#audio?.removeSource(event.source);
+        break;
       case "ready":
       case "startup-failed":
         break;
+    }
+  }
+
+  #onMedia(media: readonly MediaEntryState[]): void {
+    this.#media = media;
+    const count = (status: MediaEntryState["status"]) =>
+      media.filter((entry) => entry.status === status).length;
+    this.preview.update({
+      media: { failed: count("failed"), pending: count("pending"), ready: count("ready") },
+    });
+    this.#updateHold();
+    this.#checkReady();
+  }
+
+  /** Settles `whenReady` once the composition is shown and nothing it needs is pending. */
+  #checkReady(): void {
+    const media = this.#media;
+    if (
+      this.#ready ||
+      this.#loadedId !== this.#loadId ||
+      !media ||
+      media.some(({ status }) => status === "pending")
+    ) {
+      return;
+    }
+    const failure = media.find((entry) => entry.failure)?.failure ?? null;
+    this.#settleReady(
+      failure && {
+        code: "audio_failed",
+        diagnostics: [],
+        media: failure,
+        message: `${failure.source}: ${failure.details}`,
+      },
+    );
+  }
+
+  #settleReady(error: LumenPreviewError | null): void {
+    this.#ready = { error };
+    const waiters = this.#readyWaiters;
+    this.#readyWaiters = [];
+    for (const resolve of waiters) {
+      resolve(error);
+    }
+  }
+
+  #loadAudioSource({ input, requestId, source }: WorkerEvent<"audio-source">): void {
+    const settled = (failure: MediaFailure | null) =>
+      this.#post({ failure, requestId, type: "audio-source-settled" });
+    const audio = this.#audio;
+    if (!audio) {
+      return;
+    }
+    audio.loadSource(source, input).then(
+      () => settled(null),
+      (error: unknown) => {
+        const failure = errorMediaFailure(error) ?? {
+          code: "media.decode",
+          details: describeError(error),
+          source,
+          wanted: ["audio"],
+        };
+        settled(failure);
+        this.#reportError("audio_failed", "audio", error, [], failure);
+      },
+    );
+  }
+
+  /** Playing waits, with its clock parked, while media the composition needs is pending. */
+  #updateHold(): void {
+    const hold =
+      this.#playing && (this.#media?.some(({ status }) => status === "pending") ?? false);
+    if (hold === this.#held) {
+      return;
+    }
+    this.#held = hold;
+    this.#playbackRevision += 1;
+    if (hold) {
+      const originMs = this.#positionMs();
+      this.#audio?.pause();
+      this.#stopCorrections();
+      this.#clock = { atEpochMs: epochNow(), originMs, rate: 0 };
+      if (this.#range && this.#timeline) {
+        this.#clock = fitClock(this.#clock, this.#range, this.#timeline.fps);
+      }
+      this.#postClock(this.#clock);
+    } else {
+      this.#startClock();
     }
   }
 
@@ -534,16 +693,16 @@ export class LumenPreviewSession {
     // Read against the previous timeline, before the audio can be told about the new one.
     const positionMs = this.#positionMs();
     const pending = this.#pendingSeek;
+    this.#loadedId = event.loadId;
     this.#loading = false;
     this.#pendingSeek = null;
     this.#timeline = { fps, totalFrames };
     const audioChanged = this.#audio?.loadAudioTimeline(event.audioTimelineJson) ?? false;
-    this.#syncAudioSources();
 
     const range = this.#applyRange(this.#timeline);
     const lastFrame = range.outFrame - 1;
     const lastFrameMs = (lastFrame * 1_000) / fps;
-    const restartAudio = audioChanged && this.#playing;
+    const restartAudio = audioChanged && this.#running();
     let frame = this.preview.getSnapshot().frame;
     if (pending !== null || restartAudio) {
       // Playback carries on round the new range, as the worker would.
@@ -559,7 +718,7 @@ export class LumenPreviewSession {
       this.#placeClock(originMs);
       this.#postSeek();
       frame = clampFrame(frameAt(originMs, fps), range);
-    } else if (this.#playing) {
+    } else if (this.#running()) {
       this.#correctClock();
       // The frame on screen stands until the worker shows the next, unless it's outside the range.
       if (frame < range.inFrame || frame > lastFrame) {
@@ -590,6 +749,7 @@ export class LumenPreviewSession {
       totalFrames,
       width: event.width,
     });
+    this.#checkReady();
   }
 
   #onFrame(event: WorkerEvent<"frame">): void {
@@ -639,10 +799,22 @@ export class LumenPreviewSession {
     }
     this.#playing = true;
     this.#playbackRevision += 1;
+    this.preview.update({ isPlaying: true });
+    this.#updateHold();
+    if (!this.#held) {
+      this.#startClock();
+    }
+  }
+
+  #startClock(): void {
     this.#audio?.play(this.#positionMs());
     this.#correctClock();
     this.#correctionTimer = setInterval(() => this.#correctClock(), CLOCK_CORRECTION_INTERVAL_MS);
-    this.preview.update({ isPlaying: true });
+  }
+
+  /** Playing, and not held for media. */
+  #running(): boolean {
+    return this.#playing && !this.#held;
   }
 
   #pause(): void {
@@ -651,6 +823,7 @@ export class LumenPreviewSession {
     }
     const originMs = this.#positionMs();
     this.#playing = false;
+    this.#held = false;
     this.#playbackRevision += 1;
     this.#audio?.pause();
     this.#stopCorrections();
@@ -705,7 +878,7 @@ export class LumenPreviewSession {
     this.#clock = {
       atEpochMs: epochNow(),
       originMs,
-      rate: this.#playing && !this.#audio?.isPlaying() ? this.#playback.rate : 0,
+      rate: this.#running() && !this.#audio?.isPlaying() ? this.#playback.rate : 0,
     };
   }
 
@@ -717,7 +890,7 @@ export class LumenPreviewSession {
 
   /** Audio leads whenever it's playing. Without it the worker's clock simply keeps running. */
   #correctClock(): void {
-    if (!this.#playing) {
+    if (!this.#running()) {
       return;
     }
     const audio = this.#audio;
@@ -761,16 +934,12 @@ export class LumenPreviewSession {
     this.#pendingSeeks.clear();
   }
 
-  #syncAudioSources(): void {
-    void this.#audio?.syncAudioSources(this.#loaded?.audio ?? []).catch((error: unknown) => {
-      this.#reportError("audio_failed", "audio", error);
-    });
-  }
-
   #workerCrashed(message: string): void {
     this.#teardown();
-    this.preview.update({ isLoaded: false, isPlaying: false });
-    this.#reportError("worker_failed", "worker", `the preview worker stopped: ${message}`);
+    this.preview.update({ isLoaded: false, isPlaying: false, media: NO_MEDIA });
+    this.#settleReady(
+      this.#reportError("worker_failed", "worker", `the preview worker stopped: ${message}`),
+    );
   }
 
   #reportError(
@@ -779,11 +948,13 @@ export class LumenPreviewSession {
     error: unknown,
     diagnostics: readonly LumenDiagnostic[] = [],
     media: MediaFailure | null = errorMediaFailure(error),
-  ): void {
+  ): LumenPreviewError {
     reportConsoleError(scope, error);
     const message = describeError(error);
+    const reported = { code, diagnostics, media, message };
     this.preview.update({ error: message, errorCode: code });
-    this.#inputs.onError?.({ code, message, diagnostics, media });
+    this.#inputs.onError?.(reported);
+    return reported;
   }
 
   #post(message: LumenPreviewWorkerCommand, transfer: Transferable[] = []): void {
@@ -798,6 +969,21 @@ export function mountPreview(
   const session = new LumenPreviewSession(options);
   void session.attach(host);
   return session;
+}
+
+/** `name` in the directory `runtimeUrl` names, which it is whether or not it ends with a slash. */
+function runtimeAsset(runtimeUrl: string | URL, name: string): string {
+  const base = absoluteUrl(runtimeUrl);
+  return new URL(name, base.endsWith("/") ? base : `${base}/`).href;
+}
+
+function stoppedError(): LumenPreviewError {
+  return {
+    code: "load_failed",
+    diagnostics: [],
+    media: null,
+    message: "the preview stopped before its composition loaded",
+  };
 }
 
 function assertBrowserSupport(): void {

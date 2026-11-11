@@ -13,9 +13,11 @@ const audio = vi.hoisted(() => ({
   clockRunning: false,
   instances: [] as {
     loadAudioTimeline: ReturnType<typeof vi.fn>;
-    options: { onClockChange: () => void };
+    loadSource: ReturnType<typeof vi.fn>;
+    options: { onClockChange: () => void; workerModuleUrl?: unknown; workletModuleUrl?: unknown };
     pause: ReturnType<typeof vi.fn>;
     play: ReturnType<typeof vi.fn>;
+    removeSource: ReturnType<typeof vi.fn>;
     seekMs: ReturnType<typeof vi.fn>;
     setRange: ReturnType<typeof vi.fn>;
     setRate: ReturnType<typeof vi.fn>;
@@ -64,7 +66,8 @@ vi.mock("../../src/audio-engine.js", () => ({
     });
     setRate = vi.fn();
     setVolume = vi.fn();
-    syncAudioSources = async () => {};
+    loadSource = vi.fn(async (_id: string, _input: unknown) => {});
+    removeSource = vi.fn();
     wrap(ms: number) {
       const durationMs = this.timeline
         ? (this.timeline.durationFrames * 1_000) / this.timeline.fps
@@ -90,7 +93,7 @@ class FakeWorker {
   posted: LumenPreviewWorkerCommand[] = [];
   terminated = false;
 
-  constructor() {
+  constructor(readonly url: string) {
     FakeWorker.instances.push(this);
   }
   postMessage(message: LumenPreviewWorkerCommand) {
@@ -133,6 +136,15 @@ function audioTimeline(totalFrames: number, clip: string | null = "music", fps =
 
 function composition(name: string): LumenComposition {
   return { metadata: { name } } as unknown as LumenComposition;
+}
+
+/** A composition that can't be read, which fails before anything is sent. */
+function unreadable() {
+  return {
+    toJSON(): LumenComposition {
+      throw new Error("the composition could not be read");
+    },
+  };
 }
 
 function createSession(inputs: ConstructorParameters<typeof LumenPreviewSession>[0] | object = {}) {
@@ -691,7 +703,7 @@ describe("LumenPreviewSession", () => {
       worker
         .ofType("load")
         .at(-1)
-        ?.media.map(({ id }) => id),
+        ?.media.map(([source]) => source),
     ).toEqual(["clip", "logo"]);
 
     session.update({
@@ -708,49 +720,21 @@ describe("LumenPreviewSession", () => {
     });
     const load = worker.ofType("load").at(-1);
     expect(worker.ofType("load")).toHaveLength(2);
-    expect(load?.media.map(({ id }) => id)).toEqual(["logo"]);
+    expect(load?.media.map(([source]) => source)).toEqual(["logo"]);
     expect(load?.keepMedia).toEqual(["clip", "logo"]);
     expect(load?.fonts).toEqual([]);
     expect(load?.keepFonts).toEqual(["Inter"]);
   });
 
-  it("sends what a model_3d reads, or a glTF blob, as a model", async () => {
+  it("sends each media entry as given, with its URL made absolute, for the worker to match", async () => {
     const fox = new Blob(["glTF"]);
-    const ship = new Blob(["glTF"], { type: "model/gltf-binary" });
     const { worker } = await playable({
-      composition: {
-        nodes: [{ id: 1, type: "model_3d", params: { source: "fox" } }],
-      } as unknown as LumenComposition,
-      media: { fox, ship },
+      media: { clip: { fps: 24, source: "clip.mp4" }, fox },
     });
 
     expect(worker.ofType("load").at(-1)?.media).toEqual([
-      { id: "fox", kind: "model", source: fox },
-      { id: "ship", kind: "model", source: ship },
-    ]);
-  });
-
-  it("reads what a source in a template is, as at the root", async () => {
-    const fox = new Blob(["glTF"]);
-    const logo = new Blob(["png"]);
-    const { worker } = await playable({
-      composition: {
-        nodes: [],
-        compositions: {
-          card: {
-            nodes: [
-              { id: 1, type: "model_3d", params: { source: "fox" } },
-              { id: 2, type: "media_in", params: { source: "logo" } },
-            ],
-          },
-        },
-      } as unknown as LumenComposition,
-      media: { fox, logo },
-    });
-
-    expect(worker.ofType("load").at(-1)?.media).toEqual([
-      { id: "fox", kind: "model", source: fox },
-      { id: "logo", kind: "image", source: logo },
+      ["clip", { fps: 24, source: "https://a.test/clip.mp4" }],
+      ["fox", { source: fox }],
     ]);
   });
 
@@ -819,7 +803,7 @@ describe("LumenPreviewSession", () => {
   it("reports inputs that don't resolve once, until they change", async () => {
     const onError = vi.fn();
     const { session } = await started({ onError });
-    const unresolved = { composition: composition("first"), media: { unused: "/image.png" } };
+    const unresolved = { composition: unreadable() };
     session.update({ ...unresolved, onError });
     expect(onError).toHaveBeenCalledOnce();
     expect(onError.mock.calls[0]?.[0]).toMatchObject({ code: "load_failed", diagnostics: [] });
@@ -827,7 +811,7 @@ describe("LumenPreviewSession", () => {
     // A callback that re-renders with the same inputs doesn't hear the same failure again.
     const replaced = vi.fn();
     session.update({ ...unresolved, onError: replaced });
-    session.update({ ...unresolved, media: { unused: "/image.png" }, onError: replaced });
+    session.update({ composition: unreadable(), onError: replaced });
     expect(onError).toHaveBeenCalledOnce();
     expect(replaced).not.toHaveBeenCalled();
 
@@ -840,7 +824,7 @@ describe("LumenPreviewSession", () => {
     const { preview, session, worker } = await started({});
     session.update({ composition: composition("first") });
     const first = worker.ofType("load").at(-1)?.loadId as number;
-    const unresolved = { composition: composition("second"), media: { unused: "/image.png" } };
+    const unresolved = { composition: unreadable() };
     session.update(unresolved);
     expect(preview.getSnapshot().errorCode).toBe("load_failed");
 
@@ -887,7 +871,7 @@ describe("LumenPreviewSession", () => {
       worker
         .ofType("load")
         .at(-1)
-        ?.media.map(({ id }) => id),
+        ?.media.map(([source]) => source),
     ).toEqual(["logo"]);
   });
 
@@ -1513,6 +1497,163 @@ describe("LumenPreviewSession", () => {
         showFrame(worker, 10);
         expect(onTimeUpdate).toHaveBeenCalledTimes(2);
       });
+    });
+  });
+  describe("media loading", () => {
+    type Entry = Extract<LumenPreviewWorkerEvent, { type: "media" }>["media"][number];
+    const entry = (source: string, kind: Entry["kind"], status: Entry["status"]): Entry => ({
+      failure: null,
+      kind,
+      source,
+      status,
+    });
+    const currentLoad = (worker: FakeWorker) => worker.ofType("load").at(-1)?.loadId as number;
+    const loaded = (worker: FakeWorker) =>
+      worker.emit({
+        audioTimelineJson: null,
+        fps: 10,
+        height: 720,
+        loadId: currentLoad(worker),
+        totalFrames: 100,
+        type: "loaded",
+        width: 1280,
+      });
+    const media = (worker: FakeWorker, entries: Entry[]) =>
+      worker.emit({ loadId: currentLoad(worker), media: entries, type: "media" });
+
+    it("counts what the composition needs in the state, and is ready once all of it is", async () => {
+      const { preview, session, worker } = await started();
+      let ready: unknown = "waiting";
+      void preview.whenReady().then((error) => (ready = error));
+
+      media(worker, [entry("logo", "image", "pending"), entry("song", "audio", "pending")]);
+      expect(preview.getSnapshot().media).toEqual({ failed: 0, pending: 2, ready: 0 });
+      media(worker, [entry("logo", "image", "ready"), entry("song", "audio", "pending")]);
+      loaded(worker);
+      await Promise.resolve();
+      expect(ready).toBe("waiting");
+
+      media(worker, [entry("logo", "image", "ready"), entry("song", "audio", "ready")]);
+      await Promise.resolve();
+      expect(ready).toBeNull();
+      expect(preview.getSnapshot().media).toEqual({ failed: 0, pending: 0, ready: 2 });
+      await expect(session.whenReady()).resolves.toBeNull();
+    });
+
+    it("waits for the newest composition, and reports why one failed", async () => {
+      const { session, worker } = await started();
+      const waiting = session.whenReady();
+      session.update({ composition: composition("second") });
+      const failure = {
+        code: "media.not_found" as const,
+        details: "`media` has no entry by this name",
+        source: "sky.hdr",
+        wanted: ["environment" as const],
+      };
+      worker.emit({
+        diagnostics: [],
+        loadId: currentLoad(worker),
+        media: failure,
+        message: "sky.hdr: `media` has no entry by this name",
+        type: "load-failed",
+      });
+
+      await expect(waiting).resolves.toMatchObject({ code: "load_failed", media: failure });
+      session.update({ composition: null });
+      await expect(session.whenReady()).resolves.toBeNull();
+    });
+
+    it("is ready with an audio failure, which plays silent", async () => {
+      const { session, worker } = await started();
+      const failure = {
+        code: "media.decode" as const,
+        details: "corrupt",
+        source: "song",
+        wanted: ["audio" as const],
+      };
+      loaded(worker);
+      media(worker, [{ ...entry("song", "audio", "failed"), failure }]);
+
+      await expect(session.whenReady()).resolves.toEqual({
+        code: "audio_failed",
+        diagnostics: [],
+        media: failure,
+        message: "song: corrupt",
+      });
+    });
+
+    it("decodes the audio the worker asks for, answers it, and drops it when released", async () => {
+      const { worker } = await started();
+      const engine = audio.instances.at(-1);
+      engine?.loadSource.mockImplementation(async (id: string) => {
+        if (id === "bad") {
+          throw Object.assign(new Error("corrupt"), {
+            media: { code: "media.decode", details: "corrupt", source: "bad", wanted: ["audio"] },
+          });
+        }
+      });
+
+      worker.emit({
+        input: "https://a.test/song.wav",
+        requestId: 1,
+        source: "song",
+        type: "audio-source",
+      });
+      worker.emit({
+        input: "https://a.test/bad.wav",
+        requestId: 2,
+        source: "bad",
+        type: "audio-source",
+      });
+      worker.emit({ source: "song", type: "audio-source-released" });
+      await new Promise((resolve) => setTimeout(resolve));
+
+      expect(engine?.loadSource).toHaveBeenCalledWith("song", "https://a.test/song.wav");
+      expect(engine?.removeSource).toHaveBeenCalledWith("song");
+      expect(worker.ofType("audio-source-settled")).toEqual([
+        { failure: null, requestId: 1, type: "audio-source-settled" },
+        {
+          failure: { code: "media.decode", details: "corrupt", source: "bad", wanted: ["audio"] },
+          requestId: 2,
+          type: "audio-source-settled",
+        },
+      ]);
+    });
+
+    it("holds playback at its position while media is pending, then plays on from there", async () => {
+      const { preview, worker } = await playable();
+      const engine = audio.instances.at(-1);
+      media(worker, [entry("song", "audio", "pending")]);
+
+      preview.play();
+      expect(preview.getSnapshot().isPlaying).toBe(true);
+      expect(engine?.play).not.toHaveBeenCalled();
+      expect(worker.ofType("clock").at(-1)?.clock.rate ?? 0).toBe(0);
+
+      media(worker, [entry("song", "audio", "ready")]);
+      expect(engine?.play).toHaveBeenCalledOnce();
+
+      // A composition change that needs more media parks playing again, where it is.
+      media(worker, [entry("song", "audio", "ready"), entry("clip", "video", "pending")]);
+      expect(engine?.pause).toHaveBeenCalled();
+      expect(worker.ofType("clock").at(-1)?.clock.rate).toBe(0);
+      expect(preview.getSnapshot().isPlaying).toBe(true);
+    });
+  });
+
+  it("finds every runtime file in runtimeUrl, unless one is passed on its own", async () => {
+    const { worker } = await started({
+      audio: { workletModuleUrl: "https://b.test/worklet.js" },
+      runtimeUrl: "/lumen",
+      wasmUrl: undefined,
+      workerUrl: undefined,
+    });
+
+    expect(worker.url).toBe("https://a.test/lumen/worker.js");
+    expect(worker.ofType("start")[0]?.wasmUrl).toBe("https://a.test/lumen/lumen_wasm_bg.wasm");
+    expect(audio.instances.at(-1)?.options).toMatchObject({
+      workerModuleUrl: "https://a.test/lumen/audio-worker.js",
+      workletModuleUrl: "https://b.test/worklet.js",
     });
   });
 });

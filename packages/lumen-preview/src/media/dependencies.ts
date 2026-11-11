@@ -1,0 +1,195 @@
+import type {
+  MediaFailure,
+  MediaInventory,
+  MediaLocation,
+  MediaSourceKind,
+} from "@lumiscia/lumen-types";
+import type { InputFormat } from "mediabunny";
+
+import type { MediaDependency } from "./lifecycle.js";
+import { sameMediaInput } from "./source.js";
+import type { MediaSourceInput } from "./types.js";
+
+/** What the host passes for a source in `media`, with its source made absolute. */
+export interface PreviewMediaEntry {
+  fps?: number | null;
+  formats?: InputFormat[];
+  kind?: MediaSourceKind;
+  source: MediaSourceInput;
+  track?: number | "primary";
+}
+
+/** What a dependency loads: the host's source, with how to read it for a video. */
+export interface PreviewMediaInput {
+  fps?: number | null;
+  formats?: InputFormat[];
+  source: MediaSourceInput;
+  track?: number | "primary";
+}
+
+export type PreviewMediaDependency = MediaDependency<PreviewMediaInput>;
+
+/**
+ * Why a source is refused whatever the host passes, as `lumen-server` refuses it before looking in
+ * its media root: a remote URL, a URI scheme other than `file://`, an empty path or one that goes
+ * up with `..`. Null for a source that is looked up, by its name in `media` or as an `asset:` id.
+ */
+export function refusedSource(source: string): string | null {
+  if (source.startsWith("asset:")) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(source)) {
+    return "remote media sources aren't read: name the source, and pass its URL in `media` under that name";
+  }
+  if (source.includes("://") && !source.startsWith("file://")) {
+    return "this URI scheme isn't a media source";
+  }
+  const path = source.startsWith("file://") ? source.slice("file://".length) : source;
+  if (path === "") {
+    return "the path is empty";
+  }
+  if (path.split("/").includes("..")) {
+    return "a source may not go up a directory with `..`";
+  }
+  return null;
+}
+
+/**
+ * The dependencies of a composition, from what the engine lists it needing and what the host
+ * passes: each source the composition names, read as each kind it is used as, and each font. A
+ * source an expression computes can be any entry of `media`, so with one, the entries no literal
+ * source names are dependencies too, of the kind they say or their blob's type says.
+ */
+export function previewDependencies(
+  inventory: MediaInventory,
+  media: ReadonlyMap<string, PreviewMediaEntry>,
+  fonts: ReadonlyMap<string, MediaSourceInput>,
+): PreviewMediaDependency[] {
+  const dependencies: PreviewMediaDependency[] = [];
+  for (const { source, kinds, uses } of inventory.media) {
+    const at = uses[0]?.at;
+    const entry = media.get(source);
+    if (kinds.includes("audio")) {
+      dependencies.push(dependency(source, "audio", at, ["audio"], entry));
+    }
+    const visual = kinds.filter((kind) => kind !== "audio");
+    const kind = entryKind(entry, visual) ?? visual[0];
+    if (kind) {
+      dependencies.push(dependency(source, kind, at, visual, entry));
+    }
+  }
+
+  const dynamicKinds = [...new Set(inventory.dynamic.flatMap(({ kinds }) => kinds))];
+  if (dynamicKinds.length > 0) {
+    const named = new Set(inventory.media.map(({ source }) => source));
+    for (const [source, entry] of media) {
+      if (named.has(source)) {
+        continue;
+      }
+      const kind = entryKind(entry, dynamicKinds) ?? (dynamicKinds.length === 1 && dynamicKinds[0]);
+      if (!kind) {
+        throw new Error(
+          `media "${source}" needs a kind: only an expression can name it, and its entry and source don't say what it holds`,
+        );
+      }
+      dependencies.push(dependency(source, kind, undefined, dynamicKinds, entry));
+    }
+  }
+
+  for (const [family, source] of fonts) {
+    dependencies.push({
+      key: `font:${family}`,
+      kind: "font",
+      load: { input: { source } },
+      source: family,
+    });
+  }
+  return dependencies;
+}
+
+export function samePreviewMediaInput(left: PreviewMediaInput, right: PreviewMediaInput): boolean {
+  return (
+    sameMediaInput(left.source, right.source) &&
+    left.fps === right.fps &&
+    left.track === right.track &&
+    sameFormats(left.formats, right.formats)
+  );
+}
+
+function dependency(
+  source: string,
+  kind: MediaSourceKind,
+  at: MediaLocation | undefined,
+  wanted: readonly MediaSourceKind[],
+  entry: PreviewMediaEntry | undefined,
+): PreviewMediaDependency {
+  const base = { key: `${kind}:${source}`, kind, source, ...(at && { at }) };
+  const fail = (failure: Omit<MediaFailure, "source" | "wanted">) => ({
+    ...base,
+    load: { failure: { source, wanted, ...(at && { at }), ...failure } },
+  });
+  const refused = refusedSource(source);
+  if (refused !== null) {
+    return fail({ code: "media.not_found", details: refused });
+  }
+  if (!entry) {
+    return fail({
+      code: "media.not_found",
+      details: source.startsWith("asset:")
+        ? "the preview has no asset store: pass this asset's URL in `media` under its `asset:` id"
+        : "`media` has no entry by this name",
+    });
+  }
+  if (entry.kind !== undefined && !wanted.includes(entry.kind) && kind !== "audio") {
+    return fail({
+      code: "media.wrong_kind",
+      details: `its \`media\` entry says it is ${entry.kind}`,
+      found: entry.kind,
+    });
+  }
+  const { fps, formats, source: input, track } = entry;
+  return {
+    ...base,
+    load: {
+      input: {
+        source: input,
+        ...(fps !== undefined && { fps }),
+        ...(formats !== undefined && { formats }),
+        ...(track !== undefined && { track }),
+      },
+    },
+  };
+}
+
+/** The kind an entry says it holds, by its `kind` or its blob's type, if `kinds` reads it. */
+function entryKind(
+  entry: PreviewMediaEntry | undefined,
+  kinds: readonly MediaSourceKind[],
+): MediaSourceKind | undefined {
+  const kind = entry?.kind ?? (entry && blobKind(entry.source));
+  return kind !== undefined && kinds.includes(kind) ? kind : undefined;
+}
+
+function blobKind(source: MediaSourceInput): MediaSourceKind | undefined {
+  const blob =
+    source instanceof Blob
+      ? source
+      : typeof source === "object" && "kind" in source && source.kind === "blob"
+        ? source.blob
+        : null;
+  if (blob?.type === "model/gltf-binary") {
+    return "model";
+  }
+  const group = blob?.type.split("/")[0];
+  return group === "audio" || group === "image" || group === "video" ? group : undefined;
+}
+
+function sameFormats(left: InputFormat[] | undefined, right: InputFormat[] | undefined): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right || left.length !== right.length) {
+    return false;
+  }
+  return left.every((format, index) => format === right[index]);
+}

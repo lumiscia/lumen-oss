@@ -6,6 +6,7 @@
 
     let {
         preview,
+        runtimeUrl,
         wasmUrl,
         workerUrl,
         composition,
@@ -43,8 +44,22 @@
         volume,
     });
 
-    const wasm = $derived(String(wasmUrl ?? defaults.wasmUrl));
-    const worker = $derived(String(workerUrl ?? defaults.workerUrl));
+    // A URL passed wins, then the file in `runtimeUrl`, then the package's own copy.
+    const runtime = $derived(runtimeUrl === undefined ? undefined : String(runtimeUrl));
+    const wasm = $derived(
+        wasmUrl !== undefined
+            ? String(wasmUrl)
+            : runtime === undefined
+              ? String(defaults.wasmUrl)
+              : undefined,
+    );
+    const worker = $derived(
+        workerUrl !== undefined
+            ? String(workerUrl)
+            : runtime === undefined
+              ? String(defaults.workerUrl)
+              : undefined,
+    );
 
     let host = $state<HTMLDivElement>();
     let session = $state.raw<LumenPreviewSession>();
@@ -56,6 +71,7 @@
         const mounted = mountPreview(host, {
             ...untrack(inputs),
             preview,
+            runtimeUrl: runtime,
             wasmUrl: wasm,
             workerUrl: worker,
         });
