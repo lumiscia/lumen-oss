@@ -10,14 +10,15 @@ import {
 } from "@lumiscia/lumen-types";
 
 import { quote } from "./quote.js";
+import type { NodeReference } from "./types.js";
 
 declare const valueType: unique symbol;
 declare const easingType: unique symbol;
 declare const keyType: unique symbol;
 declare const vec3Type: unique symbol;
 
-/** A type an expression can evaluate to. Params take all but `Easing` and `Key`. */
-export type Value = number | Vec2 | Vec3Value | Color | string | Easing | Key;
+/** A type an expression can evaluate to. Params take all but `boolean`, `Easing` and `Key`. */
+export type Value = boolean | number | Vec2 | Vec3Value | Color | string | Easing | Key;
 
 /**
  * What `vec3(..)` evaluates to. It is its own type rather than the `Vec3` tuple, which is also an
@@ -45,6 +46,9 @@ export interface Key<T extends KeyValue = KeyValue> {
 
 export type Num = number | Expr<number>;
 
+/** What `when`, `and` and `or` test. The engine counts a number as true unless it is 0. */
+export type Condition = Expr<boolean> | Expr<number>;
+
 /**
  * An expression, or a literal of the same type. Tuples lower to `vec2(..)`, `rgb(..)` or
  * `rgba(..)`, so a vec3 has no tuple form; write `vec3(x, y, z)`.
@@ -66,7 +70,8 @@ export type AnyArg = Expr | Arg<number> | Arg<Vec2> | Arg<Color> | Arg<string>;
 /**
  * An expression that evaluates to `T`. Arithmetic follows the evaluator: numbers combine freely,
  * vec2 and vec3 values add and subtract with their own kind and scale by numbers or their own
- * kind, and colours have no arithmetic.
+ * kind, and colours have no arithmetic. Comparisons and logic evaluate to `boolean`, which `when`
+ * branches on.
  */
 export class Expr<T extends Value = Value> {
   declare readonly [valueType]: T;
@@ -116,6 +121,58 @@ export class Expr<T extends Value = Value> {
     return clamp(this, min, max);
   }
 
+  gt(this: Expr<number>, other: Num): Expr<boolean> {
+    return binary(this, ">", other);
+  }
+
+  gte(this: Expr<number>, other: Num): Expr<boolean> {
+    return binary(this, ">=", other);
+  }
+
+  lt(this: Expr<number>, other: Num): Expr<boolean> {
+    return binary(this, "<", other);
+  }
+
+  lte(this: Expr<number>, other: Num): Expr<boolean> {
+    return binary(this, "<=", other);
+  }
+
+  /** Values of different types are never equal, so both sides must share a type. */
+  eq(this: Expr<number>, other: Num): Expr<boolean>;
+  eq(this: Expr<boolean>, other: Expr<boolean>): Expr<boolean>;
+  eq(this: Expr<Vec2>, other: Arg<Vec2>): Expr<boolean>;
+  eq(this: Expr<Vec3Value>, other: Arg<Vec3Value>): Expr<boolean>;
+  eq(this: Expr<Color>, other: Arg<Color>): Expr<boolean>;
+  eq(this: Expr<string>, other: Arg<string>): Expr<boolean>;
+  eq(other: AnyArg): Expr<boolean> {
+    return binary(this, "==", other);
+  }
+
+  /** Values of different types are never equal, so both sides must share a type. */
+  neq(this: Expr<number>, other: Num): Expr<boolean>;
+  neq(this: Expr<boolean>, other: Expr<boolean>): Expr<boolean>;
+  neq(this: Expr<Vec2>, other: Arg<Vec2>): Expr<boolean>;
+  neq(this: Expr<Vec3Value>, other: Arg<Vec3Value>): Expr<boolean>;
+  neq(this: Expr<Color>, other: Arg<Color>): Expr<boolean>;
+  neq(this: Expr<string>, other: Arg<string>): Expr<boolean>;
+  neq(other: AnyArg): Expr<boolean> {
+    return binary(this, "!=", other);
+  }
+
+  /** Skips evaluating `other` when this is false. */
+  and(this: Expr<boolean>, other: Condition): Expr<boolean> {
+    return binary(this, "&&", other);
+  }
+
+  /** Skips evaluating `other` when this is true. */
+  or(this: Expr<boolean>, other: Condition): Expr<boolean> {
+    return binary(this, "||", other);
+  }
+
+  not(this: Expr<boolean>): Expr<boolean> {
+    return new Expr(`(!${operand(this)})`);
+  }
+
   toString(): ExpressionString {
     return `=${this.#source}`;
   }
@@ -126,7 +183,16 @@ export class Expr<T extends Value = Value> {
 }
 
 function binary<T extends Value>(lhs: AnyArg, operator: string, rhs: AnyArg): Expr<T> {
-  return new Expr<T>(`(${lower(lhs)} ${operator} ${lower(rhs)})`);
+  return new Expr<T>(`(${operand(lhs)} ${operator} ${operand(rhs)})`);
+}
+
+/** Expressions made by `expr`, whose source may have operators outside any brackets. */
+const rawExpressions = new WeakSet<Expr>();
+
+/** `value` as one side of an operator, bracketed where its own operators could regroup. */
+function operand(value: AnyArg): string {
+  const source = lower(value);
+  return value instanceof Expr && rawExpressions.has(value) ? `(${source})` : source;
 }
 
 const tupleBuiltins: Readonly<Record<number, string>> = { 2: "vec2", 3: "rgb", 4: "rgba" };
@@ -413,6 +479,36 @@ export const ease = Object.assign(
   },
 );
 
+/**
+ * `then` when `condition` is true, otherwise `otherwise`, which lower to `if(..)`. Only the chosen
+ * branch is evaluated. The branches share a type, as in `when(frame.gte(30), hex("#ffffff"), [0, 0, 0])`.
+ */
+export function when(condition: Condition, then: Num, otherwise: Num): Expr<number>;
+export function when(condition: Condition, then: Arg<Vec2>, otherwise: Arg<Vec2>): Expr<Vec2>;
+export function when(
+  condition: Condition,
+  then: Arg<Vec3Value>,
+  otherwise: Arg<Vec3Value>,
+): Expr<Vec3Value>;
+export function when(condition: Condition, then: Arg<Color>, otherwise: Arg<Color>): Expr<Color>;
+export function when(condition: Condition, then: Arg<string>, otherwise: Arg<string>): Expr<string>;
+export function when(condition: Condition, then: AnyArg, otherwise: AnyArg): Expr {
+  return new Expr(`if(${lower(condition)}, ${lower(then)}, ${lower(otherwise)})`);
+}
+
+/**
+ * The value of another node's param, as in `node(title, "font_size")`. The engine decides the
+ * type when it reads the param, so it takes the type of the param it is in, or the one you give,
+ * as in `node<number>(..)`, like `expr`.
+ */
+export function node<T extends Value = never>(id: NodeReference, property: string): Expr<T> {
+  const value = typeof id === "number" ? id : id.id;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`\`node\` expects an unsigned integer id, got ${value}.`);
+  }
+  return new Expr<T>(`node(${value}, ${quote(property)})`);
+}
+
 /** `seconds` as a `1.5s` literal, which the evaluator converts to frames. */
 export function sec(seconds: number): Expr<number> {
   return new Expr(`${formatNumber(seconds)}s`);
@@ -439,17 +535,58 @@ export function literal(text: string): string {
   return text.startsWith("=") ? `=${text}` : text;
 }
 
+/** What `expr` interpolates: expressions, `true` and `false`, and the literals builtins take. */
+export type ExprPart = AnyArg | boolean;
+
 /**
- * A raw expression, such as `expr("if(frame > 30, 1, 0)")` or `expr("node(3, 'opacity')")`, for
- * forms the helpers don't cover. `source` has no leading `=`. It takes the type of the param it
- * is in, or the one you give, as in `expr<number>(..)`. Given neither, as in
- * `const x = expr("frame")`, it fits any param, and only the engine checks its type.
+ * A raw expression, such as `expr("text_width(node(3))")`, for forms the helpers don't cover.
+ * `source` has no leading `=`. It takes the type of the param it is in, or the one you give, as
+ * in `expr<number>(..)`. Given neither, as in `const x = expr("frame")`, it fits any param, and
+ * only the engine checks its type.
+ *
+ * As a template tag, each interpolated value is lowered like a builtin argument, so built
+ * expressions need no `=` stripped: ``expr<Vec2>`vec2(0, ${lift})` ``. Numbers, strings and
+ * tuples are formatted and quoted, and a raw expression is bracketed where it meets an operator.
+ * The text between interpolations is taken as written, so a backslash reaches the engine as a
+ * backslash: ``expr`uppercase('it\'s')` `` keeps its `\'`. Only `` \` `` and `\${` lose theirs.
  */
-export function expr<T extends Value = never>(source: string): Expr<T> {
-  if (source.startsWith("=")) {
+export function expr<T extends Value = never>(source: string): Expr<T>;
+export function expr<T extends Value = never>(
+  strings: TemplateStringsArray,
+  ...parts: readonly ExprPart[]
+): Expr<T>;
+export function expr<T extends Value = never>(
+  source: string | TemplateStringsArray,
+  ...parts: readonly ExprPart[]
+): Expr<T> {
+  const chunks =
+    typeof source === "string"
+      ? [source]
+      : source.raw.map((chunk) => chunk.replace(/\\(`|\$\{)/g, "$1"));
+  if (chunks[0]?.startsWith("=")) {
     throw new TypeError("`expr` takes the expression without its leading `=`.");
   }
-  return new Expr<T>(source);
+  const expression = new Expr<T>(
+    chunks.reduce((text, chunk, index) => `${text}${interpolated(parts[index - 1])}${chunk}`),
+  );
+  rawExpressions.add(expression);
+  return expression;
+}
+
+function interpolated(part: unknown): string {
+  if (typeof part === "boolean") {
+    return String(part);
+  }
+  if (part instanceof Expr || typeof part === "number" || typeof part === "string") {
+    return operand(part);
+  }
+  if (
+    Array.isArray(part) &&
+    part.every((member) => member instanceof Expr || typeof member === "number")
+  ) {
+    return lower(part as unknown as AnyArg);
+  }
+  throw new TypeError(`\`expr\` cannot interpolate ${part === null ? "null" : typeof part}.`);
 }
 
 export type FunctionSignature = `${string}(${string})`;
