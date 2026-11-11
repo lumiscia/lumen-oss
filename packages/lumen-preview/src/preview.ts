@@ -31,6 +31,16 @@ export interface LumenPreviewError {
   media: MediaFailure | null;
 }
 
+/**
+ * How many of the sources and fonts the current composition needs are still loading, have loaded
+ * and failed, every kind counted alike.
+ */
+export interface LumenPreviewMediaState {
+  pending: number;
+  ready: number;
+  failed: number;
+}
+
 export interface LumenPreviewState {
   frame: number;
   totalFrames: number;
@@ -40,6 +50,7 @@ export interface LumenPreviewState {
   isPlaying: boolean;
   error: string | null;
   errorCode: LumenPreviewErrorCode | null;
+  media: LumenPreviewMediaState;
 }
 
 export type LumenPreviewPatch = Partial<LumenPreviewState>;
@@ -49,6 +60,7 @@ export interface LumenPreviewTransport {
   pause(): void;
   play(): void;
   seek(frame: number): Promise<boolean>;
+  whenReady(): Promise<LumenPreviewError | null>;
 }
 
 const INITIAL_STATE: LumenPreviewState = {
@@ -60,6 +72,7 @@ const INITIAL_STATE: LumenPreviewState = {
   isPlaying: false,
   error: null,
   errorCode: null,
+  media: { failed: 0, pending: 0, ready: 0 },
 };
 
 export class LumenPreviewContext {
@@ -112,6 +125,15 @@ export class LumenPreviewContext {
     }
     this.update({ frame });
     return Promise.resolve(false);
+  }
+
+  /**
+   * Resolves with null once the composition the attached session shows has loaded with everything
+   * it needs, or with the failure `onError` was called with. A change of composition before then
+   * waits for the new one. Resolves with null at once when no session is attached.
+   */
+  whenReady(): Promise<LumenPreviewError | null> {
+    return this.#transport?.whenReady() ?? Promise.resolve(null);
   }
 
   #setState(nextState: LumenPreviewState): void {

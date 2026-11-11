@@ -9,7 +9,13 @@ import { createLumenPreview } from "@lumiscia/lumen-preview/preview";
 
 interface MockSession {
   host: HTMLElement;
-  options: { composition?: unknown; preview: unknown; wasmUrl: unknown; workerUrl: unknown };
+  options: {
+    composition?: unknown;
+    preview: unknown;
+    runtimeUrl?: unknown;
+    wasmUrl: unknown;
+    workerUrl: unknown;
+  };
   dispose: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
 }
@@ -168,6 +174,15 @@ describe("Player", () => {
     });
     expect(sessions[0]?.dispose).toHaveBeenCalledOnce();
     expect(sessions[1]?.options).toMatchObject({ wasmUrl: "/lumen.wasm", workerUrl: "/worker.js" });
+
+    await act(async () => {
+      root.render(<Player preview={preview} runtimeUrl="/lumen/" workerUrl="/worker.js" />);
+    });
+    expect(sessions[2]?.options).toMatchObject({
+      runtimeUrl: "/lumen/",
+      wasmUrl: undefined,
+      workerUrl: "/worker.js",
+    });
 
     await act(async () => root.unmount());
   });

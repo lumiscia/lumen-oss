@@ -9,6 +9,7 @@ export class ImageSession {
   constructor(
     readonly imageId: string,
     private readonly source: MediaSourceInput,
+    private readonly signal?: AbortSignal,
   ) {}
 
   /** Joins a decode in flight. Nothing is kept after it, so a failed load can be retried. */
@@ -21,7 +22,7 @@ export class ImageSession {
 
   private async decode(): Promise<DecodedImageFrame> {
     try {
-      const blob = await sourceInputToBlob(this.source);
+      const blob = await sourceInputToBlob(this.source, this.signal);
       return decodeImageBitmapToRgba(await createImageBitmap(blob));
     } catch (error) {
       throw toMediaError(

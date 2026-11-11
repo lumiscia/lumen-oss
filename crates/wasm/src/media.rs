@@ -6,9 +6,9 @@ use std::{
 use lumen_engine::{
     error::{MediaError, MediaFailure},
     media::{
-        AssetKind, CpuMediaFrame, FontResolver, ImageMetadata, ImageResolver, MediaFrame,
-        MediaIdentity, MediaResolver, MediaStore, ModelResolver, ResolvedMedia, TextSession,
-        VideoFrameRequirement, VideoFrameResolver, VideoMetadata, YuvFrame,
+        AssetKind, CpuMediaFrame, EnvironmentResolver, FontResolver, ImageMetadata, ImageResolver,
+        MediaFrame, MediaIdentity, MediaResolver, MediaStore, ModelResolver, ResolvedMedia,
+        TextSession, VideoFrameRequirement, VideoFrameResolver, VideoMetadata, YuvFrame,
     },
 };
 /// Total bytes of decoded video frames kept across all streams of one media store.
@@ -206,8 +206,9 @@ impl Default for StoredVideo {
     }
 }
 
+/// The bytes of a model or environment map file, which the engine reads when it draws it.
 #[derive(Debug, Clone)]
-struct StoredModel {
+struct StoredFile {
     data: Arc<Vec<u8>>,
     identity: MediaIdentity,
 }
@@ -228,8 +229,9 @@ pub(crate) struct WasmMediaStore {
 #[derive(Debug, Default)]
 struct WasmMediaStoreInner {
     fonts: RwLock<HashMap<String, StoredFont>>,
+    environments: RwLock<HashMap<String, StoredFile>>,
     images: RwLock<HashMap<String, StoredImage>>,
-    models: RwLock<HashMap<String, StoredModel>>,
+    models: RwLock<HashMap<String, StoredFile>>,
     videos: RwLock<VideoStore>,
     text: TextSession,
 }
@@ -243,6 +245,11 @@ impl WasmMediaStore {
             .clear();
         self.inner
             .models
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .clear();
+        self.inner
+            .environments
             .write()
             .map_err(|_| "media store lock poisoned")?
             .clear();
@@ -305,6 +312,15 @@ impl WasmMediaStore {
         Ok(())
     }
 
+    pub fn remove_environment(&self, source: &str) -> Result<(), &'static str> {
+        self.inner
+            .environments
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .remove(source);
+        Ok(())
+    }
+
     pub fn remove_video(&self, stream_id: &str) -> Result<(), &'static str> {
         self.inner
             .videos
@@ -341,6 +357,14 @@ impl WasmMediaStore {
             .read()
             .ok()
             .is_some_and(|models| models.contains_key(source))
+    }
+
+    pub fn has_environment(&self, source: &str) -> bool {
+        self.inner
+            .environments
+            .read()
+            .ok()
+            .is_some_and(|environments| environments.contains_key(source))
     }
 
     pub fn has_font(&self, font_family: &str) -> bool {
@@ -422,7 +446,24 @@ impl WasmMediaStore {
             .map_err(|_| "media store lock poisoned")?
             .insert(
                 source,
-                StoredModel {
+                StoredFile {
+                    data: Arc::new(data),
+                    identity: MediaIdentity::unique(),
+                },
+            );
+        Ok(())
+    }
+
+    /// Stores the bytes of the `.hdr` or `.exr` file `source` names, which the engine reads when a
+    /// scene first lights with it.
+    pub fn set_environment(&self, source: String, data: Vec<u8>) -> Result<(), &'static str> {
+        self.inner
+            .environments
+            .write()
+            .map_err(|_| "media store lock poisoned")?
+            .insert(
+                source,
+                StoredFile {
                     data: Arc::new(data),
                     identity: MediaIdentity::unique(),
                 },
@@ -556,8 +597,29 @@ impl WasmMediaStore {
         })?;
         Ok(ResolvedMedia::new(
             model.identity.clone(),
-            MediaResolver::Model(Box::new(WasmModelResolver {
+            MediaResolver::Model(Box::new(WasmFileResolver {
                 data: Arc::clone(&model.data),
+            })),
+        ))
+    }
+
+    fn environment(&self, source: &str) -> Result<ResolvedMedia, MediaError> {
+        let environments = self
+            .inner
+            .environments
+            .read()
+            .map_err(|_| MediaError::source_not_found(source, "media store lock poisoned"))?;
+        let environment = environments.get(source).ok_or_else(|| {
+            MediaFailure::not_found(
+                source,
+                "the preview has no environment map by this name in `media`",
+            )
+            .wanting(&[AssetKind::Environment])
+        })?;
+        Ok(ResolvedMedia::new(
+            environment.identity.clone(),
+            MediaResolver::Environment(Box::new(WasmFileResolver {
+                data: Arc::clone(&environment.data),
             })),
         ))
     }
@@ -591,13 +653,7 @@ impl MediaStore for WasmMediaStore {
             AssetKind::Video => self.video(source),
             AssetKind::Model => self.model(source),
             AssetKind::Font => self.font(source),
-            AssetKind::Environment => Err(MediaFailure::unsupported(
-                source,
-                "the browser preview has no environment maps; render this composition on a \
-                 Lumen server",
-            )
-            .wanting(&[AssetKind::Environment])
-            .into()),
+            AssetKind::Environment => self.environment(source),
             AssetKind::Audio => Err(MediaError::source_not_found(
                 source,
                 "the browser preview plays audio itself",
@@ -692,11 +748,18 @@ impl VideoFrameResolver for WasmVideoResolver {
     }
 }
 
-struct WasmModelResolver {
+/// A model or environment map file.
+struct WasmFileResolver {
     data: Arc<Vec<u8>>,
 }
 
-impl ModelResolver for WasmModelResolver {
+impl ModelResolver for WasmFileResolver {
+    fn data(&self) -> Result<Vec<u8>, MediaError> {
+        Ok(self.data.as_ref().clone())
+    }
+}
+
+impl EnvironmentResolver for WasmFileResolver {
     fn data(&self) -> Result<Vec<u8>, MediaError> {
         Ok(self.data.as_ref().clone())
     }
@@ -1017,6 +1080,34 @@ mod tests {
         store.remove_model("fox").unwrap();
         assert!(!store.has_model("fox"));
         assert!(store.resolve("fox", AssetKind::Model).is_err());
+    }
+
+    #[test]
+    fn an_environment_map_serves_the_set_bytes_until_it_is_removed() {
+        let store = WasmMediaStore::default();
+        let missing = store
+            .resolve("sky.hdr", AssetKind::Environment)
+            .err()
+            .and_then(|error| error.failure().cloned())
+            .expect("a missing environment map is a media failure");
+        assert_eq!(missing.code(), "media.not_found");
+
+        store
+            .set_environment("sky.hdr".to_string(), vec![7, 8])
+            .unwrap();
+        let first = identity(&store, "sky.hdr", AssetKind::Environment);
+        let environment = resolver::<dyn EnvironmentResolver>(&store, "sky.hdr");
+        assert_eq!(environment.data().unwrap(), [7, 8]);
+        assert!(store.has_environment("sky.hdr"));
+
+        store
+            .set_environment("sky.hdr".to_string(), vec![9])
+            .unwrap();
+        assert_ne!(identity(&store, "sky.hdr", AssetKind::Environment), first);
+
+        store.remove_environment("sky.hdr").unwrap();
+        assert!(!store.has_environment("sky.hdr"));
+        assert!(store.resolve("sky.hdr", AssetKind::Environment).is_err());
     }
 
     const FRAME_BYTES: usize = 4;

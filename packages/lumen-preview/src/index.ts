@@ -5,6 +5,7 @@ export {
   type LumenPreviewError,
   type LumenPreviewErrorCode,
   type LumenPreviewListener,
+  type LumenPreviewMediaState,
   type LumenPreviewPatch,
   type LumenPreviewState,
   type LumenPreviewTransport,

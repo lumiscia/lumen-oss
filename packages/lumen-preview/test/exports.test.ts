@@ -37,6 +37,7 @@ describe("public exports", () => {
       "LumenPreviewMedia",
       "LumenPreviewMediaEntry",
       "LumenPreviewMediaKind",
+      "LumenPreviewMediaState",
       "LumenPreviewPatch",
       "LumenPreviewRange",
       "LumenPreviewSession",
@@ -68,11 +69,7 @@ describe("public exports", () => {
       "LumenMediaTarget",
       "LumenPreviewBindings",
       "LumenPreviewControllerBinding",
-      "MediaRegistration",
       "PreviewClock",
-      "RegisteredImageSource",
-      "RegisteredModelSource",
-      "RegisteredVideoSource",
       "VideoSourceRegistration",
     ]);
     expect(Object.keys(advanced)).toEqual([]);

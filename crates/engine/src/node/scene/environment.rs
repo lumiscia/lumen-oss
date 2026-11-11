@@ -207,6 +207,14 @@ fn upload(rec: &mut Recorder, label: &'static str, levels: &[&Equirect]) -> TexR
     rec.adopt(Arc::new(texture))
 }
 
+/// Reads `bytes` as the environment map `source` names, and fails as a render that lights with
+/// it would, short of the device's texture size limit.
+pub fn check_environment(source: &str, bytes: &[u8]) -> Result<(), MediaError> {
+    environment::decode(bytes)
+        .map(drop)
+        .map_err(|error| environment_failure(source, bytes, error))
+}
+
 /// Why `bytes`, the file `source`, is not an environment map that can be read.
 fn environment_failure(source: &str, bytes: &[u8], error: EnvironmentError) -> MediaError {
     let wanted = [AssetKind::Environment];

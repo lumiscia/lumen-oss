@@ -1,0 +1,16 @@
+{
+  "about": "Which media sources lumen-server and the browser preview accept for the same composition. `provided` means the host has the source: a file at that path under the server's media root or an asset with that id in its store, and an entry under the source as written in the preview's `media`. `code` is the failure both report, or null when both read it.",
+  "cases": [
+    { "source": "photo.png", "provided": true, "code": null },
+    { "source": "photo.png", "provided": false, "code": "media.not_found" },
+    { "source": "clips/photo.png", "provided": true, "code": null },
+    { "source": "file://photo.png", "provided": true, "code": null },
+    { "source": "asset:logo", "provided": true, "code": null },
+    { "source": "asset:logo", "provided": false, "code": "media.not_found" },
+    { "source": "https://cdn.test/photo.png", "provided": true, "code": "media.not_found" },
+    { "source": "HTTP://cdn.test/photo.png", "provided": true, "code": "media.not_found" },
+    { "source": "ftp://cdn.test/photo.png", "provided": true, "code": "media.not_found" },
+    { "source": "../photo.png", "provided": true, "code": "media.not_found" },
+    { "source": "clips/../photo.png", "provided": true, "code": "media.not_found" }
+  ]
+}
