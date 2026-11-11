@@ -417,7 +417,7 @@ impl LumenPreviewController {
     /// the source's pixel aspect ratio. `primaries` and `transfer` are the source's tagged
     /// WebCodecs primaries and transfer: BT.2020 and Display P3 (`smpte432`) primaries convert to
     /// BT.709 and PQ and HLG tone-map to SDR, as a render does; any other or missing tag reads as
-    /// BT.709 SDR.
+    /// BT.709 SDR, and a render of the stream warns of a tag it reads so, as `linear`, once.
     #[wasm_bindgen(js_name = "setVideoFrameYuv")]
     #[allow(clippy::too_many_arguments)]
     pub fn set_video_frame_yuv(
@@ -441,28 +441,27 @@ impl LumenPreviewController {
         if display_width == 0 || display_height == 0 {
             return Err(JsValue::from_str("video dimensions must be > 0"));
         }
-        let yuv = yuv_frame(
-            YuvInput {
-                width,
-                height,
-                format,
-                offsets: &offsets,
-                strides: &strides,
-                matrix: matrix.as_deref(),
-                primaries: primaries.as_deref(),
-                transfer: transfer.as_deref(),
-                full_range,
-                rotation,
-            },
-            data,
-        )
-        .map_err(|e| JsValue::from_str(&e))?;
+        let input = YuvInput {
+            width,
+            height,
+            format,
+            offsets: &offsets,
+            strides: &strides,
+            matrix: matrix.as_deref(),
+            primaries: primaries.as_deref(),
+            transfer: transfer.as_deref(),
+            full_range,
+            rotation,
+        };
+        let color_warning = unsupported_color(&input);
+        let yuv = yuv_frame(input, data).map_err(|e| JsValue::from_str(&e))?;
         self.change_media(|media| {
             media.set_video_frame_yuv(
                 stream_id.to_string(),
                 frame,
                 yuv,
                 (display_width, display_height),
+                color_warning,
             )
         })
     }
@@ -697,6 +696,31 @@ fn yuv_color(input: &YuvInput<'_>) -> YuvColor {
         transfer,
         ..YuvColor::sdr(yuv_matrix(input.matrix, input.height), input.full_range)
     }
+}
+
+/// The tags of `input` that `yuv_color` reads without converting, worded as a render's warning
+/// of them. Missing tags ask for nothing.
+fn unsupported_color(input: &YuvInput<'_>) -> Option<String> {
+    let transfer = input
+        .transfer
+        .filter(|tag| !matches!(*tag, "bt709" | "smpte170m" | "iec61966-2-1" | "pq" | "hlg"))
+        .map(|tag| format!("its `{tag}` transfer is read as SDR"));
+    let primaries = input
+        .primaries
+        .filter(|tag| {
+            !matches!(
+                *tag,
+                "bt709" | "bt470bg" | "smpte170m" | "bt2020" | "smpte432"
+            )
+        })
+        .map(|tag| format!("its `{tag}` primaries are read as BT.709"));
+    let notes: Vec<_> = [transfer, primaries].into_iter().flatten().collect();
+    (!notes.is_empty()).then(|| {
+        format!(
+            "{}, which the renderer doesn't convert",
+            notes.join(" and ")
+        )
+    })
 }
 
 fn yuv_frame(input: YuvInput<'_>, data: Vec<u8>) -> Result<YuvFrame, String> {
@@ -995,6 +1019,42 @@ mod tests {
             assert_eq!(sdr.primaries, ColorPrimaries::Bt709, "{primaries:?}");
             assert_eq!(sdr.transfer, TransferFunction::Sdr, "{transfer:?}");
         }
+    }
+
+    #[test]
+    fn tags_read_without_converting_are_warned_of_as_a_render_words_them() {
+        let warning = |primaries, transfer| {
+            unsupported_color(&YuvInput {
+                primaries,
+                transfer,
+                ..yuv_input("NV12", &[0, 8], &[4, 4])
+            })
+        };
+        for (primaries, transfer) in [
+            (None, None),
+            (Some("bt709"), Some("bt709")),
+            (Some("bt470bg"), Some("iec61966-2-1")),
+            (Some("smpte170m"), Some("smpte170m")),
+            (Some("bt2020"), Some("pq")),
+            (Some("smpte432"), Some("hlg")),
+        ] {
+            assert_eq!(
+                warning(primaries, transfer),
+                None,
+                "{primaries:?} {transfer:?}"
+            );
+        }
+        assert_eq!(
+            warning(None, Some("linear")).as_deref(),
+            Some("its `linear` transfer is read as SDR, which the renderer doesn't convert")
+        );
+        assert_eq!(
+            warning(Some("film"), Some("linear")).as_deref(),
+            Some(
+                "its `linear` transfer is read as SDR and its `film` primaries are read as \
+                 BT.709, which the renderer doesn't convert"
+            )
+        );
     }
 
     #[test]

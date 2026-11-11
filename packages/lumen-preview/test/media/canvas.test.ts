@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createVideoFramePayload,
+  decodeImageBitmapToRgba,
   decodeImageBlob,
   syncVideoFrameToTarget,
 } from "../../src/media/canvas.js";
@@ -19,6 +20,26 @@ function fakeFrame(format: string, colorSpace: VideoColorSpaceInit) {
     ]),
     close: vi.fn(),
   } as unknown as VideoFrame;
+}
+
+/** A 2D canvas whose pixels read back as `pixels`, as `OffscreenCanvas` or `document`'s. */
+function stubCanvas(pixels: number[], kind: "offscreen" | "document" = "offscreen") {
+  const context = {
+    drawImage: vi.fn(),
+    getImageData: vi.fn(() => ({ data: Uint8ClampedArray.from(pixels) })),
+  };
+  const getContext = vi.fn(() => context);
+  if (kind === "offscreen") {
+    vi.stubGlobal(
+      "OffscreenCanvas",
+      class {
+        getContext = getContext;
+      },
+    );
+  } else {
+    vi.stubGlobal("document", { createElement: () => ({ getContext }) });
+  }
+  return { context, getContext };
 }
 
 function fakeTarget() {
@@ -112,6 +133,94 @@ describe("syncVideoFrameToTarget", () => {
       1,
       Uint8Array.from([3, 2, 1, 255]),
     );
+  });
+
+  it("copies RGB frames tagged sRGB, BT.709 or BT.601 natively", async () => {
+    for (const colorSpace of [
+      { primaries: "bt709", transfer: "iec61966-2-1" },
+      { primaries: "bt709", transfer: "bt709" },
+      { primaries: "smpte170m", transfer: "smpte170m" },
+    ] as const) {
+      const target = fakeTarget();
+      const frame = fakeFrame("RGBA", colorSpace);
+
+      await syncVideoFrameToTarget(target, "clip", 0, createVideoFramePayload(frame, 1, 1));
+
+      expect(frame.copyTo).toHaveBeenCalledWith(expect.any(Uint8Array), {
+        layout: [{ offset: 0, stride: 4 }],
+      });
+    }
+  });
+
+  it("converts RGB frames in other primaries or transfers to sRGB on a canvas", async () => {
+    const colorSpaces: VideoColorSpaceInit[] = [
+      // TypeScript's DOM types don't list the wide-gamut and linear tags yet.
+      { primaries: "smpte432" as VideoColorPrimaries, transfer: "iec61966-2-1" },
+      { primaries: "bt709", transfer: "linear" as VideoTransferCharacteristics },
+    ];
+    for (const colorSpace of colorSpaces) {
+      const { context, getContext } = stubCanvas([213, 115, 0, 255]);
+      try {
+        const target = fakeTarget();
+        const frame = fakeFrame("BGRA", colorSpace);
+
+        await syncVideoFrameToTarget(target, "clip", 0, createVideoFramePayload(frame, 1, 1));
+
+        expect(frame.copyTo).not.toHaveBeenCalled();
+        expect(getContext).toHaveBeenCalledWith("2d", { colorSpace: "srgb" });
+        expect(context.drawImage).toHaveBeenCalledWith(frame, 0, 0, 1, 1);
+        expect(context.getImageData).toHaveBeenCalledWith(0, 0, 1, 1, { colorSpace: "srgb" });
+        expect(target.setVideoFrame).toHaveBeenCalledWith(
+          "clip",
+          0,
+          1,
+          1,
+          Uint8Array.from([213, 115, 0, 255]),
+        );
+        expect(frame.close).toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  });
+
+  it("asks the browser for sRGB RGBA from frames the target can't take as planes", async () => {
+    const target = { setVideoFrame: vi.fn() } as unknown as NativeVideoFrameTarget;
+    const frame = fakeFrame("NV12", { primaries: "smpte432" as VideoColorPrimaries });
+
+    await syncVideoFrameToTarget(target, "clip", 0, createVideoFramePayload(frame, 2, 1));
+
+    expect(frame.copyTo).toHaveBeenCalledWith(expect.any(Uint8Array), {
+      format: "RGBA",
+      layout: [{ offset: 0, stride: 8 }],
+      colorSpace: "srgb",
+    });
+  });
+});
+
+describe("decodeImageBitmapToRgba", () => {
+  it("draws and reads the image back in sRGB, on either kind of canvas", async () => {
+    for (const kind of ["offscreen", "document"] as const) {
+      const { context, getContext } = stubCanvas([1, 2, 3, 4], kind);
+      try {
+        const bitmap = { width: 1, height: 1, close: vi.fn() } as unknown as ImageBitmap;
+
+        const frame = await decodeImageBitmapToRgba(bitmap);
+
+        expect(getContext).toHaveBeenCalledWith(
+          "2d",
+          kind === "document"
+            ? { colorSpace: "srgb", willReadFrequently: true }
+            : { colorSpace: "srgb" },
+        );
+        expect(context.drawImage).toHaveBeenCalledWith(bitmap, 0, 0);
+        expect(context.getImageData).toHaveBeenCalledWith(0, 0, 1, 1, { colorSpace: "srgb" });
+        expect(frame).toEqual({ width: 1, height: 1, rgba: Uint8Array.from([1, 2, 3, 4]) });
+        expect(bitmap.close).toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
   });
 });
 

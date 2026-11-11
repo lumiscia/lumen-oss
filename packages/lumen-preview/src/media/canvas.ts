@@ -62,7 +62,14 @@ export async function decodeVideoFramePixels(
   const { videoFrame, width, height } = payload;
   const rgba = new Uint8Array(width * height * 4);
   const layout = [{ offset: 0, stride: width * 4 }];
-  if (videoFrame.format && RGB_FORMATS.has(videoFrame.format)) {
+  const rgbFrame = !!videoFrame.format && RGB_FORMATS.has(videoFrame.format);
+  if (rgbFrame && !readsAsSrgb(videoFrame.colorSpace)) {
+    // Safari ignores `format` on RGB frames, so colour in other primaries or another transfer is
+    // converted by drawing the frame on an sRGB canvas, which every browser colour-manages.
+    const { context } = createCanvas(width, height);
+    context.drawImage(videoFrame, 0, 0, width, height);
+    rgba.set(context.getImageData(0, 0, width, height, { colorSpace: "srgb" }).data);
+  } else if (rgbFrame) {
     // Safari ignores `format` and copies the native layout, so RGB frames are copied as they are.
     await videoFrame.copyTo(rgba, { layout });
     if (videoFrame.format.startsWith("BGR")) {
@@ -164,6 +171,16 @@ export async function syncVideoFrameToTarget(
 }
 
 const RGB_FORMATS = new Set<string>(["RGBA", "RGBX", "BGRA", "BGRX"]);
+const SDR_PRIMARIES = new Set<string>(["bt709", "bt470bg", "smpte170m"]);
+const SDR_TRANSFERS = new Set<string>(["bt709", "iec61966-2-1", "smpte170m"]);
+
+/**
+ * Whether RGB in `colorSpace` is already what a render reads: untagged, or BT.709 or BT.601
+ * primaries (which a render reads as BT.709) with an SDR transfer (which it reads as sRGB).
+ */
+function readsAsSrgb({ primaries, transfer }: VideoColorSpace): boolean {
+  return (!primaries || SDR_PRIMARIES.has(primaries)) && (!transfer || SDR_TRANSFERS.has(transfer));
+}
 const YUV_FORMATS = new Set<string>([
   "NV12",
   ...["I420", "I422", "I444"].flatMap((base) =>

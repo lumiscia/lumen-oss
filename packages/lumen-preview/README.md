@@ -140,10 +140,11 @@ onError: ({ code, diagnostics }) => {
 },
 ```
 
-Colour in the preview follows a render's within 8-bit rounding:
+Colour in the preview is converted as a render converts it, but it is not pixel-identical:
 
-- Images are decoded by the browser with their embedded colour profile honoured and converted to sRGB, whatever the display, so a Display P3 or Adobe RGB photo looks as it does in a render. The browser hands them over at 8 bits: a 16-bit PNG or TIFF loses the depth a render keeps, and colour outside sRGB is clipped where a render keeps it for effects such as `exposure` to bring back.
-- Video frames in a YUV layout the engine converts carry the source's tagged primaries and transfer, so BT.2020 and Display P3 video converts to BT.709 and PQ and HLG video is tone-mapped to SDR as in a render. Frames the browser hands over as RGB are converted to sRGB by the browser, which decides how to show HDR.
+- Images are decoded by the browser with their embedded colour profile honoured and converted to sRGB, whatever the display, so a Display P3 or Adobe RGB photo looks as it does in a render. The browser hands them over at 8 bits: a 16-bit PNG or TIFF loses the depth a render keeps, and colour outside sRGB is clipped where a render keeps it for effects such as `exposure` to bring back. Each browser's decoder and colour management round differently, so an image can differ from a render, and between browsers, by a code or so.
+- Images, and video frames the browser converts, pass through an 8-bit 2D canvas, which stores colour premultiplied: where alpha is low, straight colour comes back coarsely rounded, as it always has.
+- Video frames in a YUV layout the engine converts carry the source's tagged primaries and transfer, so BT.2020 and Display P3 video converts to BT.709 and PQ and HLG video is tone-mapped to SDR as in a render, and a tag the engine doesn't convert, such as a `linear` transfer, gets the same `media.color_unsupported` warning. Frames the browser hands over as RGB in other primaries or another transfer are converted to sRGB by the browser, which decides how to show HDR.
 
 Diagnostic codes are public API, and new ones can appear in a patch release, so handle codes you don't know by their `severity`. The [engine README](https://github.com/lumiscia/lumen-oss/tree/main/crates/engine#diagnostics) lists them.
 
