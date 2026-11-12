@@ -35,6 +35,46 @@ jobs:
       - name: Apply changesets
         run: pnpm release:version
 
+      # A new release line moves the schema version, which rewrites fixtures and docs and
+      # regenerates the definitions with the Rust generator. Other releases skip all of it.
+      - name: Read the schema version of the new release
+        id: schema
+        run: |
+          node >> "$GITHUB_OUTPUT" <<'EOF'
+          const { readFileSync } = require("node:fs");
+          const release = require("./packages/lumen-types/package.json").version.split(".").slice(0, 2);
+          const engine = /pub const SCHEMA_VERSION: &str = "(\d+)\.(\d+)";/
+            .exec(readFileSync("crates/engine/src/json/mod.rs", "utf8"))
+            .slice(1);
+          const ahead = Number(release[0]) - Number(engine[0]) || Number(release[1]) - Number(engine[1]);
+          console.log(`line=${release.join(".")}`);
+          console.log(`changed=${ahead > 0}`);
+          EOF
+
+      - uses: extractions/setup-just@v3
+        if: steps.schema.outputs.changed == 'true'
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.schema.outputs.changed == 'true'
+
+      - name: Install system dependencies
+        if: steps.schema.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libavcodec-dev \
+            libavdevice-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswresample-dev \
+            libswscale-dev \
+            pkg-config
+
+      - name: Set the schema version
+        if: steps.schema.outputs.changed == 'true'
+        run: just set-schema-version "${{ steps.schema.outputs.line }}"
+
       - name: Check for version changes
         run: |
           if git diff --quiet; then
