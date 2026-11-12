@@ -531,3 +531,35 @@ fn an_image_picked_by_frame_is_never_kept() {
     }
     assert_eq!(renderer.skipped_pass_count(), 0);
 }
+
+/// `static_under_animated` with the static square placed by `position`.
+fn static_square_at(position: Value) -> Composition {
+    canvas(vec![
+        background(1, [200, 30, 30, 255]),
+        square(2, position, 8, [20, 40, 220, 255]),
+        merge(3, &[1, 2]),
+        square(4, json!("=vec2(frame * 2, 6)"), 4, [30, 220, 60, 255]),
+        merge(5, &[3, 4]),
+    ])
+    .into()
+}
+
+#[test]
+fn a_layer_whose_expressions_do_not_read_the_frame_is_kept() {
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    let mut literal = gpu.renderer();
+    let composition = static_square_at(json!("=vec2(max(4, 2), 4)"));
+    let kept = static_square_at(json!([4, 4]));
+    for frame in 0..3 {
+        let pixels = at(&mut renderer, &composition, f64::from(frame));
+        assert!(pixels == uncached(&mut reference, &composition, f64::from(frame)));
+        assert_eq!(pixel(&pixels, 8, 11), [20, 40, 220, 255], "frame {frame}");
+        at(&mut literal, &kept, f64::from(frame));
+        assert_eq!(
+            renderer.recorded_pass_count(),
+            literal.recorded_pass_count(),
+            "frame {frame}"
+        );
+    }
+}

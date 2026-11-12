@@ -11,6 +11,7 @@ import {
 } from "@lumiscia/lumen-types";
 
 import { Expr, type FunctionDefinition } from "./expression.js";
+import { literalOf } from "./literal.js";
 import type {
   AudioClipOptions,
   AudioTrackOptions,
@@ -404,10 +405,13 @@ export class Composition {
   }
 }
 
-/** Turns every `Expr` in plain objects and arrays into its `=...` string. */
+/**
+ * Turns every `Expr` in plain objects and arrays into its `=...` string, or into the literal a
+ * `vec2(..)` or `vec3(..)` of plain numbers stands for.
+ */
 function lower(value: unknown): unknown {
   if (value instanceof Expr) {
-    return value.toString();
+    return literalOf(value) ?? value.toString();
   }
   if (Array.isArray(value)) {
     return value.map(lower);

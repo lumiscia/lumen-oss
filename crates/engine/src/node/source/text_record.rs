@@ -9,7 +9,7 @@ use crate::node::vector::{
 use crate::node::{Deferred, DelegateEvalContext, JsonNode, Override};
 
 use super::text::{
-    Stable, Text, TextInstance, TextState, decoration_paints, literal_font_families, stroked,
+    Stable, Text, TextInstance, TextState, decoration_paints, stroked, used_font_families,
 };
 use super::text_content::{TextContentDelegate, TextLineDelegate, TextSpanDelegate};
 
@@ -245,7 +245,16 @@ pub(crate) fn record_text(
             state: std::sync::Arc::new(std::sync::Mutex::new(TextState::default())),
         })
     })?;
-    for (_, family) in literal_font_families(text) {
+    let families: Vec<String> = {
+        let expr = cx.expr();
+        let fields = DelegateEvalContext {
+            node_id: text.id,
+            expr: &expr,
+        };
+        let layout = instance.layout.get(&fields)?;
+        used_font_families(&layout).map(str::to_string).collect()
+    };
+    for family in &families {
         cx.note_font(family);
     }
     let drawn = cx.bind_text(&instance)?;
