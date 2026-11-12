@@ -263,9 +263,10 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
     use crate::node::scene::render::{
         FLAG_BASE_COLOR_MAP, FLAG_BLEND, FLAG_EMISSIVE_MAP, FLAG_FLAT_NORMALS, FLAG_MAP_UVS,
         FLAG_MASK, FLAG_METALLIC_ROUGHNESS_MAP, FLAG_MIRRORED, FLAG_NORMAL_MAP, FLAG_OCCLUSION_MAP,
-        FLAG_RASTER, FLAG_RECEIVE_SHADOWS, FLAG_SHADOW_CATCHER, FLAG_SKINNED, FLAG_UNLIT,
-        FLAG_VERTEX_COLORS, GpuEnvironment, GpuGlobals, GpuLight, GpuMapUv, GpuObject, GpuRun,
-        GpuShadowView, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT, MORPH_DELTA_WORDS, SHADER,
+        FLAG_PART, FLAG_RASTER, FLAG_RECEIVE_SHADOWS, FLAG_SHADOW_CATCHER, FLAG_SKINNED,
+        FLAG_UNLIT, FLAG_VERTEX_COLORS, GpuEnvironment, GpuGlobals, GpuLight, GpuMapUv, GpuObject,
+        GpuRun, GpuShadowView, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT, MORPH_DELTA_WORDS,
+        SHADER,
     };
 
     let module = naga::front::wgsl::parse_str(SHADER).expect("the scene shader should parse");
@@ -314,6 +315,7 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
                 morph_targets,
                 first_weight,
                 first_map_uv,
+                part,
             ),
             layout!("Vertex", lumen_3d::Vertex, position, normal, uv),
             layout!("MapUv", GpuMapUv, first, second),
@@ -370,6 +372,7 @@ fn scene_shader_matches_its_rust_layouts_and_constants() {
         ("FLAG_SHADOW_CATCHER", FLAG_SHADOW_CATCHER),
         ("FLAG_VERTEX_COLORS", FLAG_VERTEX_COLORS),
         ("FLAG_MAP_UVS", FLAG_MAP_UVS),
+        ("FLAG_PART", FLAG_PART),
         ("NO_EXTRAS", u32::MAX),
         ("MORPH_DELTA_WORDS", MORPH_DELTA_WORDS),
         ("LIGHT_DIRECTIONAL", LIGHT_DIRECTIONAL),

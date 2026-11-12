@@ -147,6 +147,12 @@ impl NodeParamType for super::vector::dash::DashPattern {
     }
 }
 
+impl NodeParamType for super::scene::Region {
+    fn property_kind() -> PropertyKind {
+        PropertyKind::Region
+    }
+}
+
 impl NodeParamType for super::vector::repeat::Repeat {
     fn property_kind() -> PropertyKind {
         PropertyKind::Repeat

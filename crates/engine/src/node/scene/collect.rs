@@ -253,6 +253,42 @@ impl SceneCache {
     }
 }
 
+/// The part of a raster that an image plane shows, in whole pixels: its left, top, right and bottom
+/// edges within the raster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlanePart([u32; 4]);
+
+/// The part of a raster `display` in size that `region`, `[x, y, width, height]`, covers, cut off
+/// at the raster's edges as `crop` cuts its region; `None` if it covers no pixel.
+fn plane_part(display: lumen_gpu::Size, region: [i64; 4]) -> Option<PlanePart> {
+    let [x, y, width, height] = region;
+    let (across, down) = (i64::from(display.width), i64::from(display.height));
+    let left = x.clamp(0, across);
+    let top = y.clamp(0, down);
+    let right = x.saturating_add(width.max(0)).clamp(left, across);
+    let bottom = y.saturating_add(height.max(0)).clamp(top, down);
+    (left < right && top < bottom)
+        .then(|| PlanePart([left, top, right, bottom].map(|edge| edge as u32)))
+}
+
+impl PlanePart {
+    /// The edges as fractions of the raster's width and height from its top left, as
+    /// [`Object::part`] takes them, or `None` for the whole raster.
+    fn fractions(&self, display: lumen_gpu::Size) -> Option<[f32; 4]> {
+        let [left, top, right, bottom] = self.0;
+        if self.0 == [0, 0, display.width, display.height] {
+            return None;
+        }
+        let (across, down) = (display.width as f32, display.height as f32);
+        Some([
+            left as f32 / across,
+            top as f32 / down,
+            right as f32 / across,
+            bottom as f32 / down,
+        ])
+    }
+}
+
 /// Why `bytes`, the file `source`, is not a model that can be read.
 /// Reads `bytes` as the model `source` names, and fails as a render that draws it would.
 pub fn check_model(source: &str, bytes: &[u8]) -> Result<(), MediaError> {
@@ -765,6 +801,7 @@ impl Collected {
                         first_joint: None,
                         morph: None,
                         bounds: Bounds::EMPTY,
+                        part: None,
                     },
                     Extent::Local(UNIT_BOUNDS),
                 );
@@ -786,6 +823,7 @@ impl Collected {
                             first_joint: None,
                             morph: None,
                             bounds: Bounds::EMPTY,
+                            part: None,
                         },
                         Extent::Local(local),
                     );
@@ -795,8 +833,15 @@ impl Collected {
                 let params = plane.params.eval(&ctx)?;
                 let source_node = required_input(node_id, "source", plane.source)?;
                 let source = cx.input_native(source_node)?;
-                self.rasters.push((source_node, source));
                 let display = source.domain.display_size();
+                let part = match params.region.0 {
+                    Some(region) => match plane_part(display, region) {
+                        Some(part) => part.fractions(display),
+                        None => return Ok(None),
+                    },
+                    None => None,
+                };
+                self.rasters.push((source_node, source));
                 let scale = lumen_3d::plane_scale(
                     params.width.max(0.0) as f32,
                     (display.width, display.height),
@@ -815,6 +860,11 @@ impl Collected {
                 let (rec, cache) = cx.scene_cache();
                 let (mesh, index_count) = cache.quad(rec);
                 self.quad = Some(mesh);
+                let [left, top, right, bottom] = part.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+                let local = Bounds {
+                    min: Vec3::new(left - 0.5, 0.5 - bottom, 0.0),
+                    max: Vec3::new(right - 0.5, 0.5 - top, 0.0),
+                };
                 self.push(
                     Object {
                         world,
@@ -822,15 +872,13 @@ impl Collected {
                         first_index: 0,
                         index_count,
                         surface,
-                        center: world.transform_point3(Vec3::ZERO),
+                        center: world.transform_point3((local.min + local.max) * 0.5),
                         first_joint: None,
                         morph: None,
                         bounds: Bounds::EMPTY,
+                        part,
                     },
-                    Extent::Local(Bounds {
-                        min: Vec3::new(-0.5, -0.5, 0.0),
-                        max: Vec3::new(0.5, 0.5, 0.0),
-                    }),
+                    Extent::Local(local),
                 );
             }
             NodeKind::Model3d(model) => {
@@ -1095,6 +1143,7 @@ impl Collected {
                         .zip(posed.first_weight)
                         .map(|(morph, weight)| (morph, weight + first_weight as u32)),
                     bounds: Bounds::EMPTY,
+                    part: None,
                 },
                 extent,
             );
@@ -1107,7 +1156,9 @@ impl Collected {
 mod tests {
     use lumen_3d::model::{Model, ModelError};
 
-    use super::{evictions, held_frames, model_failure};
+    use lumen_gpu::Size;
+
+    use super::{PlanePart, evictions, held_frames, model_failure, plane_part};
     use crate::error::MediaReason;
     use crate::media::AssetKind;
     use crate::node::scene::Model3dParams;
@@ -1119,6 +1170,32 @@ mod tests {
             animation_loop: looped,
             ..Model3dParams::default()
         }
+    }
+
+    #[test]
+    fn a_region_is_cut_off_at_the_raster_as_a_crop_is() {
+        let size = Size::new(100, 50);
+        let part = |region| plane_part(size, region);
+        assert_eq!(part([10, 5, 20, 10]), Some(PlanePart([10, 5, 30, 15])));
+        assert_eq!(part([-10, -5, 30, 10]), Some(PlanePart([0, 0, 20, 5])));
+        assert_eq!(part([90, 40, 100, 100]), Some(PlanePart([90, 40, 100, 50])));
+        assert_eq!(
+            part([0, 0, i64::MAX, i64::MAX]),
+            Some(PlanePart([0, 0, 100, 50]))
+        );
+        assert_eq!(part([100, 0, 10, 10]), None);
+        assert_eq!(part([-30, 0, 20, 10]), None);
+        assert_eq!(part([10, 10, 0, 10]), None);
+        assert_eq!(part([10, 10, -5, 10]), None);
+    }
+
+    #[test]
+    fn a_region_covers_the_fractions_of_the_raster_it_names() {
+        let size = Size::new(100, 50);
+        let part = plane_part(size, [25, 10, 50, 20]).expect("a region");
+        assert_eq!(part.fractions(size), Some([0.25, 0.2, 0.75, 0.6]));
+        let whole = plane_part(size, [-5, 0, 200, 50]).expect("a region");
+        assert_eq!(whole.fractions(size), None);
     }
 
     #[test]
