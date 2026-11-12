@@ -11,9 +11,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Pull requests read the caches main saves instead of each saving their own, which kept the
+# repository over its cache limit. Line tables keep backtraces and make the caches smaller.
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
-  check:
-    name: Check
+  typescript:
+    name: TypeScript
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -35,7 +40,8 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
-
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -56,8 +62,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install WASM tooling
-        run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.129
 
       - name: Check generated TypeScript artifacts
         run: just verify-typescript-artifacts
@@ -97,11 +104,36 @@ jobs:
           WGPU_POWER_PREF: none
         run: cargo test -p lumen-server --features cli,vulkan --bin lumen-server --test http_api
 
+  lint:
+    name: Rust lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            libavcodec-dev \
+            libavdevice-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libvulkan1 \
+            mesa-vulkan-drivers \
+            pkg-config \
+            vulkan-tools
+
       - name: Check Rust formatting
         run: cargo fmt -- --check
-
-      - name: Check Rust workspace
-        run: cargo check
 
       - name: Lint Rust workspace
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -111,13 +143,63 @@ jobs:
           cargo clippy -p lumen-server --all-targets --features cli -- -D warnings
           cargo clippy -p lumen-server --all-targets --features cli,vulkan,cuda -- -D warnings
 
-      - name: Check hosted CUDA and Vulkan server
-        run: cargo check -p lumen-server --features cli,vulkan,cuda
+  test:
+    name: Rust tests (${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # One cache for the three shards, which build the same thing.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.shard == 1 }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            libavcodec-dev \
+            libavdevice-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswresample-dev \
+            libswscale-dev \
+            libvulkan1 \
+            mesa-vulkan-drivers \
+            pkg-config \
+            vulkan-tools
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
 
       - name: Test Rust workspace
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
-        run: cargo test
+        run: cargo nextest run --partition hash:${{ matrix.shard }}/3
+
+  # The required check. It passes only when every job above has.
+  check:
+    name: Check
+    if: always()
+    needs: [typescript, lint, test]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check the jobs this one waits for
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "$results"
+          [ "$results" = "success success success" ]
 
   windows:
     name: Windows
@@ -142,6 +224,8 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
