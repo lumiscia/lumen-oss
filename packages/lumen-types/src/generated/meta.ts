@@ -5,7 +5,7 @@ import type { Color, ExpressionValue, HexColor, Vec2, Vec3 } from "../values.js"
 
 export type NodeCategory = "compositing" | "output" | "processing" | "scene" | "source" | "vector";
 export type NodePortKind = "raster" | "scene";
-export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
+export type NodeParamKind = "bool" | "clip_props" | "color" | "dash_pattern" | "enum" | "float" | "font_features" | "int" | "paint" | "region" | "repeat" | "shader_uniforms" | "string" | "text_content" | "text_highlight" | "text_line" | "text_stroke" | "vec2" | "vec3";
 export type NodeKind = "background" | "blur" | "boolean" | "camera_3d" | "clip" | "color_grade" | "crop" | "directional_blur" | "displacement_map" | "exposure" | "fractal_noise" | "glow" | "hue_saturation" | "image_plane_3d" | "instance_3d" | "levels" | "light_3d" | "media_in" | "media_output" | "merge" | "merge_3d" | "model_3d" | "motion_blur" | "opacity" | "path" | "radial_blur" | "raster_multimerge" | "render_3d" | "resize" | "shadow" | "shape" | "shape_3d" | "switch" | "text" | "text_3d" | "time_remap" | "transform" | "wgsl_shader" | "zoom_blur";
 /** A kind of media a source can hold. */
 export type MediaSourceKind = "audio" | "environment" | "image" | "lut" | "model" | "video";
@@ -1498,6 +1498,8 @@ export type Projection3d = "perspective" | "orthographic";
 export type RadialBlurEdge = EdgeMode;
 export type RasterMultimergeBlendMode = BlendMode;
 export type RasterSampling = "nearest" | "linear";
+/** A rectangle of pixels, `[x, y, width, height]`. Each number takes an integer or an expression. */
+export type Region = readonly [ExpressionValue<number>, ExpressionValue<number>, ExpressionValue<number>, ExpressionValue<number>];
 export type Render3dOutput = "color" | "depth" | "normal";
 export type Render3dToneMapping = ToneMapping;
 /** The canvas, and how the host that renders the video encodes it. Previews ignore `codec`, `quality`, `bit_depth` and `alpha`. */
@@ -1970,6 +1972,24 @@ export interface ImagePlane3dNode extends CompositionNodeBase<"image_plane_3d"> 
     readonly position?: ExpressionValue<Vec3>;
     /** Darkens where shadows fall on it. An unlit surface shows none. */
     readonly receive_shadows?: ExpressionValue<boolean>;
+    /**
+     * Shows only this part of the source, `[x, y, width, height]` in the source's pixels from its
+     * top left, on a plane that covers just that part, so a plane showing a region is where it
+     * would be and as big as it would be with the whole source on it: it looks as a plane
+     * showing a `crop` of that region does, where `width` is still the width of the whole
+     * source, and `position`, `rotation` and `scale` pivot about the whole source's centre.
+     * Cut off at the source's edges as `crop` cuts its region, and a region with no pixel
+     * left shows nothing. Each of the four numbers takes an integer or an expression, which is
+     * truncated toward zero as `crop`'s are; the whole region cannot be an expression. Unset
+     * shows the whole source. Planes showing parts of one source share its texture and mip
+     * levels and draw together, so a region costs nothing beyond the plane, where a `crop`
+     * costs a raster the size of the source and a draw of its own. Nothing outside the region
+     * ever shows. To keep it so under strong minification, the band along each edge of the
+     * region that is inside the source, and all of a very narrow region, is sampled from a
+     * sharper mip level than its footprint, since a texel of a shared level can hold pixels from
+     * both sides of the edge: it can alias or shimmer there where a `crop` would be smooth.
+     */
+    readonly region?: Region;
     /**
      * Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned
      * X, then roll about the turned Z.

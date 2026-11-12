@@ -574,6 +574,56 @@
       "type": "string",
       "x-lumen-type": "PaintKind"
     },
+    "region": {
+      "description": "A rectangle of pixels, `[x, y, width, height]`. Each number takes an integer or an expression.",
+      "items": false,
+      "maxItems": 4,
+      "minItems": 4,
+      "prefixItems": [
+        {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ]
+        }
+      ],
+      "type": "array",
+      "x-lumen-type": "Region"
+    },
     "renderSettings": {
       "additionalProperties": false,
       "description": "The canvas, and how the host that renders the video encodes it. Previews ignore `codec`, `quality`, `bit_depth` and `alpha`.",
@@ -3278,6 +3328,12 @@
                     "description": "Darkens where shadows fall on it. An unlit surface shows none.",
                     "title": "Receive Shadows",
                     "x-lumen-kind": "bool"
+                  },
+                  "region": {
+                    "$ref": "#/$defs/region",
+                    "description": "Shows only this part of the source, `[x, y, width, height]` in the source's pixels from its\ntop left, on a plane that covers just that part, so a plane showing a region is where it\nwould be and as big as it would be with the whole source on it: it looks as a plane\nshowing a `crop` of that region does, where `width` is still the width of the whole\nsource, and `position`, `rotation` and `scale` pivot about the whole source's centre.\nCut off at the source's edges as `crop` cuts its region, and a region with no pixel\nleft shows nothing. Each of the four numbers takes an integer or an expression, which is\ntruncated toward zero as `crop`'s are; the whole region cannot be an expression. Unset\nshows the whole source. Planes showing parts of one source share its texture and mip\nlevels and draw together, so a region costs nothing beyond the plane, where a `crop`\ncosts a raster the size of the source and a draw of its own. Nothing outside the region\never shows. To keep it so under strong minification, the band along each edge of the\nregion that is inside the source, and all of a very narrow region, is sampled from a\nsharper mip level than its footprint, since a texel of a shared level can hold pixels from\nboth sides of the edge: it can alias or shimmer there where a `crop` would be smooth.",
+                    "title": "Region",
+                    "x-lumen-kind": "region"
                   },
                   "rotation": {
                     "anyOf": [

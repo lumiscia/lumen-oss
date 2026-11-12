@@ -183,6 +183,7 @@ mod tests {
             first_joint: None,
             morph: None,
             bounds: crate::Bounds::EMPTY,
+            part: None,
         }
     }
 

@@ -12,6 +12,7 @@ mod instance;
 #[cfg(feature = "3d")]
 pub(crate) mod mips;
 mod record;
+mod region;
 #[cfg(feature = "3d")]
 pub(crate) mod render;
 mod text_3d;
@@ -25,6 +26,7 @@ pub use environment::check_environment;
 pub use text_3d::{Text3d, Text3dParams, Text3dParamsDelegate};
 
 pub use instance::{Instance3d, Instance3dParams, InstanceCount, MAX_INSTANCES};
+pub use region::{Region, RegionDelegate};
 
 use crate::node::vector::paint::Paint;
 use crate::node::{Deferred, NodeId, NodeParams};
@@ -202,6 +204,23 @@ pub struct ImagePlane3dParams {
     /// aspect ratio of the source's full display size.
     #[meta(min = 0, step = 0.1)]
     pub width: f64,
+    /// Shows only this part of the source, `[x, y, width, height]` in the source's pixels from its
+    /// top left, on a plane that covers just that part, so a plane showing a region is where it
+    /// would be and as big as it would be with the whole source on it: it looks as a plane
+    /// showing a `crop` of that region does, where `width` is still the width of the whole
+    /// source, and `position`, `rotation` and `scale` pivot about the whole source's centre.
+    /// Cut off at the source's edges as `crop` cuts its region, and a region with no pixel
+    /// left shows nothing. Each of the four numbers takes an integer or an expression, which is
+    /// truncated toward zero as `crop`'s are; the whole region cannot be an expression. Unset
+    /// shows the whole source. Planes showing parts of one source share its texture and mip
+    /// levels and draw together, so a region costs nothing beyond the plane, where a `crop`
+    /// costs a raster the size of the source and a draw of its own. Nothing outside the region
+    /// ever shows. To keep it so under strong minification, the band along each edge of the
+    /// region that is inside the source, and all of a very narrow region, is sampled from a
+    /// sharper mip level than its footprint, since a texel of a shared level can hold pixels from
+    /// both sides of the edge: it can alias or shimmer there where a `crop` would be smooth.
+    #[meta()]
+    pub region: Region,
     /// Draws the plane with the opaque objects, writing depth, rather than blended. For a source
     /// with no transparent pixels, this orders the plane correctly against any geometry it
     /// intersects or crosses in depth. Alpha is then ignored: the colour's alpha, `opacity` and the
@@ -221,6 +240,7 @@ impl Default for ImagePlane3dParams {
     fn default() -> Self {
         Self {
             width: 1.0,
+            region: Region::default(),
             opaque: false,
             placement: Placement3d::default(),
             material: Material3d::flat(),

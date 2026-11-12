@@ -411,6 +411,23 @@ fn kind_defs_json() -> Result<Map<String, Value>> {
             }
         }),
     );
+    insert_def(
+        &mut defs,
+        "Region",
+        json!({
+            "description": "A rectangle of pixels, `[x, y, width, height]`. Each number takes an integer or an expression.",
+            "type": "array",
+            "prefixItems": [
+                { "anyOf": [{ "type": "integer" }, { "$ref": "#/$defs/expression" }] },
+                { "anyOf": [{ "type": "integer" }, { "$ref": "#/$defs/expression" }] },
+                { "anyOf": [{ "type": "integer" }, { "$ref": "#/$defs/expression" }] },
+                { "anyOf": [{ "type": "integer" }, { "$ref": "#/$defs/expression" }] }
+            ],
+            "items": false,
+            "minItems": 4,
+            "maxItems": 4
+        }),
+    );
     insert_object_def::<RepeatDelegate>(
         &mut defs,
         "Repeat",
@@ -683,6 +700,7 @@ fn value_schema_json(property: &PropertyDef) -> Value {
         PropertyKind::FontFeatures => json!({ "$ref": "#/$defs/fontFeatures" }),
         PropertyKind::TextStroke => json!({ "$ref": "#/$defs/textStroke" }),
         PropertyKind::DashPattern => json!({ "$ref": "#/$defs/dashPattern" }),
+        PropertyKind::Region => json!({ "$ref": "#/$defs/region" }),
         PropertyKind::Repeat => json!({ "$ref": "#/$defs/repeat" }),
         PropertyKind::Enum => enum_schema_json(property),
     }
@@ -836,6 +854,7 @@ fn property_kind_name(kind: PropertyKind) -> &'static str {
         PropertyKind::FontFeatures => "font_features",
         PropertyKind::TextStroke => "text_stroke",
         PropertyKind::DashPattern => "dash_pattern",
+        PropertyKind::Region => "region",
         PropertyKind::Repeat => "repeat",
     }
 }

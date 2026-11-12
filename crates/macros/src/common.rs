@@ -231,6 +231,7 @@ pub(crate) fn property_kind_tokens(kind: &Ident) -> proc_macro2::TokenStream {
         }
         "text_stroke" | "TextStroke" => quote!(::lumen_engine::node::PropertyKind::TextStroke),
         "dash_pattern" | "DashPattern" => quote!(::lumen_engine::node::PropertyKind::DashPattern),
+        "region" | "Region" => quote!(::lumen_engine::node::PropertyKind::Region),
         "repeat" | "Repeat" => quote!(::lumen_engine::node::PropertyKind::Repeat),
         _ => {
             let span = kind.span();
