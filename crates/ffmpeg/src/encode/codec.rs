@@ -258,7 +258,7 @@ pub(crate) fn video_encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
 
 fn pixel_formats(codec: *const sys::AVCodec) -> Option<&'static [sys::AVPixelFormat]> {
     #[cfg(ffmpeg_supported_config)]
-    {
+    unsafe {
         supported_config(codec, sys::AVCodecConfig::AV_CODEC_CONFIG_PIX_FORMAT)
     }
     #[cfg(not(ffmpeg_supported_config))]
@@ -269,7 +269,7 @@ fn pixel_formats(codec: *const sys::AVCodec) -> Option<&'static [sys::AVPixelFor
 
 fn sample_formats(codec: *const sys::AVCodec) -> Option<&'static [sys::AVSampleFormat]> {
     #[cfg(ffmpeg_supported_config)]
-    {
+    unsafe {
         supported_config(codec, sys::AVCodecConfig::AV_CODEC_CONFIG_SAMPLE_FORMAT)
     }
     #[cfg(not(ffmpeg_supported_config))]
@@ -281,10 +281,13 @@ fn sample_formats(codec: *const sys::AVCodec) -> Option<&'static [sys::AVSampleF
     }
 }
 
-/// The values `codec` lists for `config`, whose element type must be `T`. `None` when it lists
-/// none, which means it takes any.
+/// The values `codec` lists for `config`. `None` when it lists none, which means it takes any.
+///
+/// # Safety
+///
+/// `T` must be the element type FFmpeg documents for `config`.
 #[cfg(ffmpeg_supported_config)]
-fn supported_config<T>(
+unsafe fn supported_config<T>(
     codec: *const sys::AVCodec,
     config: sys::AVCodecConfig,
 ) -> Option<&'static [T]> {
