@@ -294,7 +294,7 @@ impl EncodeTarget {
                 timed(&mut timing.render, || {
                     converter.submit(renderer.gpu_renderer(), &raster.texture)
                 });
-                let read = timed(&mut timing.readback, || {
+                let read = read_back(ring, timing, |ring| {
                     ring.push(renderer.gpu_renderer(), converter.buffer(), pts)
                 })
                 .map_err(readback_failed)?;
@@ -337,7 +337,7 @@ impl EncodeTarget {
                 loop {
                     cancel.check()?;
                     let Some(read) =
-                        timed(&mut timing.readback, || ring.pop(renderer.gpu_renderer()))
+                        read_back(&mut ring, timing, |ring| ring.pop(renderer.gpu_renderer()))
                             .map_err(readback_failed)?
                     else {
                         break;
@@ -411,6 +411,21 @@ pub(super) fn timed<T>(total: &mut Duration, work: impl FnOnce() -> T) -> T {
     let started = Instant::now();
     let result = work();
     *total += started.elapsed();
+    result
+}
+
+/// Runs `work` on `ring`, counting the time it spent waiting for the GPU as `gpu` and the rest as
+/// `readback`.
+fn read_back<T>(
+    ring: &mut ReadbackRing,
+    timing: &mut RenderTiming,
+    work: impl FnOnce(&mut ReadbackRing) -> T,
+) -> T {
+    let started = Instant::now();
+    let result = work(ring);
+    let waited = ring.take_gpu_wait();
+    timing.gpu += waited;
+    timing.readback += started.elapsed().saturating_sub(waited);
     result
 }
 
@@ -562,24 +577,25 @@ fn poll_failed(frame: u32, err: impl std::fmt::Display) -> ServerRenderError {
 }
 
 /// Collects finished GPU work, first waiting for the submission `until` if there is one.
-fn poll(
+pub(super) fn poll(
     renderer: &GpuCompositionRenderer,
     frame: u32,
     timing: &mut RenderTiming,
     until: Option<SubmissionIndex>,
 ) -> Result<(), ServerRenderError> {
-    let poll_type = match until {
-        Some(submission) => PollType::Wait {
-            submission_index: Some(submission),
-            timeout: None,
-        },
-        None => PollType::Poll,
+    let (poll_type, spent) = match until {
+        Some(submission) => (
+            PollType::Wait {
+                submission_index: Some(submission),
+                timeout: None,
+            },
+            &mut timing.gpu,
+        ),
+        None => (PollType::Poll, &mut timing.flush),
     };
-    timed(&mut timing.flush, || {
-        renderer.gpu_renderer().device.poll(poll_type)
-    })
-    .map(|_| ())
-    .map_err(|err| render_failed(format!("GPU poll failed at frame {frame}: {err}")))
+    timed(spent, || renderer.gpu_renderer().device.poll(poll_type))
+        .map(|_| ())
+        .map_err(|err| render_failed(format!("GPU poll failed at frame {frame}: {err}")))
 }
 
 #[cfg(test)]

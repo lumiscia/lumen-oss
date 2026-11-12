@@ -376,7 +376,7 @@ pub(crate) fn is_key_value(kind: ValueKind) -> bool {
 
 pub(crate) fn key_value_error(kind: ValueKind) -> String {
     format!(
-        "`value` must be a number, vec2, vec3, colour or path data, got {}",
+        "`value` must be a number, vec2, vec3, colour, path data or text, got {}",
         kind.name()
     )
 }
@@ -449,14 +449,26 @@ fn keyframes(t: f64, args: &[ExpressionValue]) -> Result<ExpressionValue, String
         return Ok(key.value.clone());
     };
     let ease = key.ease.unwrap_or(default);
-    // A hold doesn't interpolate, so it can switch between paths of any structure.
+    // A hold doesn't interpolate, so it can switch between strings of any kind.
     if ease == Easing::Named(NamedEasing::Hold) {
         return Ok(key.value.clone());
     }
     let eased = ease.apply((t - key.at) / (next.at - key.at));
     interpolate(&key.value, &next.value, eased)
-        .map_err(|error| error.describe([&key_name(key.at), &key_name(next.at)]))?
+        .map_err(|error| key_morph_error(&error, [&key_name(key.at), &key_name(next.at)]))?
         .ok_or_else(|| mixed_keys_error(key.value.kind(), next.value.kind()))
+}
+
+/// Why the strings of two neighbouring keys don't interpolate. A string that isn't path data keys
+/// only where it holds.
+pub(crate) fn key_morph_error(error: &MorphError, names: [&str; 2]) -> String {
+    let details = error.describe(names);
+    match error {
+        MorphError::Malformed { .. } => {
+            format!("{details}; text keys need the 'hold' easing, since they can't interpolate")
+        }
+        _ => details,
+    }
 }
 
 /// How errors name the key at `at`.

@@ -9048,7 +9048,7 @@
             "name": "ease"
           }
         ],
-        "doc": "A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour or path data. `ease` is how the curve leaves this key toward the next.",
+        "doc": "A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour, path data or text. `ease` is how the curve leaves this key toward the next. Text that isn't path data can't interpolate, so a key holding it needs the `'hold'` easing.",
         "maxArgs": 3,
         "minArgs": 2,
         "name": "key",

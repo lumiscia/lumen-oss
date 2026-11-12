@@ -6,8 +6,7 @@ use super::Placement3d;
 use crate::error::LumenError;
 use crate::expr::ExpressionValue;
 use crate::node::{
-    Deferred, DelegateEvaluable, Delegated, NodeId, NodeParamType, NodeParams, ParamValue,
-    PropertyKind, truncated_int,
+    Deferred, Delegated, NodeId, NodeParamType, NodeParams, ParamValue, PropertyKind, truncated_int,
 };
 
 /// Most copies an `instance_3d` may place. It is also the most objects a frame's scene may
@@ -124,15 +123,4 @@ pub struct Instance3d {
 
     #[input(scene)]
     pub scene: Option<NodeId>,
-}
-
-impl Instance3d {
-    /// Whether its params give the same copies at every frame, so that only the instance index
-    /// and count vary.
-    pub(crate) fn is_frame_independent(&self) -> bool {
-        let mut independent = true;
-        self.params
-            .for_each_expression(&mut |expression| independent &= !expression.is_frame_dependent());
-        independent
-    }
 }
