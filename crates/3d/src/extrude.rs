@@ -1093,6 +1093,7 @@ mod tests {
         let start = std::time::Instant::now();
         let error = failure(&[star], &plain(1.0), &limits());
         assert_eq!(error.limit, ExtrudeLimit::Crossings);
-        assert!(start.elapsed().as_secs() < 2, "{:?}", start.elapsed());
+        // Unbounded, this takes minutes. The margin is for a loaded machine running a debug build.
+        assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
     }
 }

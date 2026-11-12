@@ -2,24 +2,20 @@ name: Dry Release
 
 on:
   workflow_dispatch:
+  # A full release build, so only for changes to what is published or how. The Version Packages
+  # workflow starts it on its branch, which is where source changes get their dry run.
   pull_request:
     paths:
       - .github/workflows/dry-release.yml
       - .github/workflows/publish-packages.yml
       - .cargo/config.toml
-      - .changeset/**
+      - .changeset/config.json
       - Cargo.toml
-      - Cargo.lock
-      - crates/**
-      - packages/**
-      - tooling/generate-bindings/**
-      - tooling/generate-types/**
+      - crates/*/Cargo.toml
+      - packages/*/package.json
       - tooling/release/**
       - package.json
-      - pnpm-lock.yaml
       - pnpm-workspace.yaml
-      - tsconfig.base.json
-      - justfile
 
 concurrency:
   group: dry-release-${{ github.ref }}
@@ -68,8 +64,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install WASM tooling
-        run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.129
 
       # The version PR has already applied its changesets, so only apply what is still pending.
       - name: Apply pull request changesets
