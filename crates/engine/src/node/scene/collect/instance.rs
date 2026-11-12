@@ -6,10 +6,10 @@ use lumen_3d::{Camera, MAX_SCENE_NODES};
 
 use super::{Collected, Extent, MAX_SCENE_JOINTS, MAX_SCENE_WEIGHTS, PosedSkin, placement};
 use crate::error::{ExpressionError, LumenError, RenderError};
-use crate::expr::InstanceScope;
+use crate::expr::{ExpressionContext, InstanceScope};
 use crate::gpu::frame_graph::FrameCx;
 use crate::node::scene::{Instance3d, MAX_INSTANCES};
-use crate::node::{DelegateEvalContext, NodeId, required_input};
+use crate::node::{DelegateEvalContext, Node, NodeId, required_input};
 
 const _: () = assert!(MAX_INSTANCES as usize <= MAX_SCENE_NODES);
 
@@ -41,6 +41,23 @@ fn at_instance(error: LumenError, index: u32) -> LumenError {
         }),
         error => error,
     }
+}
+
+/// The matrix placing copy `index` of `node` in its scene's space, in `scoped`, the context
+/// scoped to that copy.
+fn local_placement(
+    node: &Instance3d,
+    scoped: &ExpressionContext<'_>,
+    index: u32,
+) -> crate::Result<Mat4> {
+    let ctx = DelegateEvalContext {
+        node_id: node.id,
+        expr: scoped,
+    };
+    let transform = ctx
+        .eval_field("placement", &node.params.placement)
+        .map_err(|error| at_instance(error, index))?;
+    Ok(placement(&transform).matrix())
 }
 
 impl Collected {
@@ -132,45 +149,8 @@ impl Collected {
         self.skins.reserve(inner.skins.len() * count as usize);
 
         // A scene with nothing to draw has nothing to place.
-        let placed = if inner.scene.objects.is_empty() {
-            0
-        } else {
-            count
-        };
-        let mut scoped = cx.expr();
-        for index in 0..placed {
-            scoped.instance = Some(InstanceScope { index, count });
-            let ctx = DelegateEvalContext {
-                node_id: node.id,
-                expr: &scoped,
-            };
-            let transform = ctx
-                .eval_field("placement", &node.params.placement)
-                .map_err(|error| at_instance(error, index))?;
-            let world = parent * placement(&transform).matrix();
-            let first_skin = self.skins.len();
-            self.skins.extend(inner.skins.iter().map(|skin| PosedSkin {
-                first_joint: joint_base + skin.first_joint,
-                root: world * skin.root,
-                joint_bounds: skin.joint_bounds.clone(),
-                skin: skin.skin,
-                weight: skin.weight,
-            }));
-            for (object, extent) in inner.scene.objects.iter().zip(&inner.extents) {
-                let mut object = object.clone();
-                object.world = world * object.world;
-                object.center = world.transform_point3(object.center);
-                object.first_joint = object.first_joint.map(|joint| joint + joint_base as u32);
-                if let Some((_, weight)) = &mut object.morph {
-                    *weight += weight_base as u32;
-                }
-                let extent = match *extent {
-                    Extent::Skin(skin) => Extent::Skin(first_skin + skin),
-                    Extent::Local(bounds) => Extent::Local(bounds),
-                };
-                self.scene.objects.push(object);
-                self.extents.push(extent);
-            }
+        if !inner.scene.objects.is_empty() {
+            self.place_copies(cx, node, count, &inner, parent, (joint_base, weight_base))?;
         }
         self.indices += inner.indices * copies;
         self.rasters.extend(inner.rasters);
@@ -187,5 +167,69 @@ impl Collected {
             });
         }
         Ok(())
+    }
+
+    /// Adds `count` copies of `inner`, `node`'s scene, each placed by `parent` and the transform
+    /// `node`'s params give for it, with their joints and morph target weights starting at `bases`
+    /// in this scene's. Params that don't read the frame place the copies the same way on every
+    /// frame, so their matrices are kept.
+    fn place_copies(
+        &mut self,
+        cx: &mut FrameCx<'_>,
+        node: &Instance3d,
+        count: u32,
+        inner: &Collected,
+        parent: Mat4,
+        (joint_base, weight_base): (usize, usize),
+    ) -> crate::Result<()> {
+        let keep = !node.is_frame_dependent();
+        if keep && let Some(locals) = cx.kept_placements(node.id, count) {
+            for local in locals.iter() {
+                self.add_copy(inner, parent * *local, joint_base, weight_base);
+            }
+            return Ok(());
+        }
+        let mut locals = Vec::with_capacity(if keep { count as usize } else { 0 });
+        let mut scoped = cx.expr();
+        for index in 0..count {
+            scoped.instance = Some(InstanceScope { index, count });
+            let local = local_placement(node, &scoped, index)?;
+            if keep {
+                locals.push(local);
+            }
+            self.add_copy(inner, parent * local, joint_base, weight_base);
+        }
+        if keep {
+            cx.keep_placements(node.id, count, locals.into());
+        }
+        Ok(())
+    }
+
+    /// Adds a copy of `inner`'s objects and skins placed by `world`, its joints and morph target
+    /// weights starting at `joint_base` and `weight_base` in this scene's.
+    fn add_copy(&mut self, inner: &Collected, world: Mat4, joint_base: usize, weight_base: usize) {
+        let first_skin = self.skins.len();
+        self.skins.extend(inner.skins.iter().map(|skin| PosedSkin {
+            first_joint: joint_base + skin.first_joint,
+            root: world * skin.root,
+            joint_bounds: skin.joint_bounds.clone(),
+            skin: skin.skin,
+            weight: skin.weight,
+        }));
+        for (object, extent) in inner.scene.objects.iter().zip(&inner.extents) {
+            let mut object = object.clone();
+            object.world = world * object.world;
+            object.center = world.transform_point3(object.center);
+            object.first_joint = object.first_joint.map(|joint| joint + joint_base as u32);
+            if let Some((_, weight)) = &mut object.morph {
+                *weight += weight_base as u32;
+            }
+            let extent = match *extent {
+                Extent::Skin(skin) => Extent::Skin(first_skin + skin),
+                Extent::Local(bounds) => Extent::Local(bounds),
+            };
+            self.scene.objects.push(object);
+            self.extents.push(extent);
+        }
     }
 }

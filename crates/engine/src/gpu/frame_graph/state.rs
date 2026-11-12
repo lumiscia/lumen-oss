@@ -71,6 +71,8 @@ impl RecordState {
         self.full_frames.clear();
         self.media.begin_frame();
         self.retained.begin_frame();
+        #[cfg(feature = "3d")]
+        self.scene.begin_frame(self.tick);
     }
 
     /// Trims the caches recording fills to `budgets`, keeping what retained outputs drew.
@@ -420,13 +422,30 @@ pub(super) struct SceneState {
     /// The template and `model_3d` node of each model with skipped primitives reported for this
     /// composition.
     pub(super) skipped_primitives: HashSet<(Option<String>, NodeId)>,
+    /// The copies' local matrices of each `instance_3d` whose params don't read the frame.
+    pub(super) placements: HashMap<GraphNodeKey, KeptPlacements>,
+}
+
+/// The local matrix of each copy an `instance_3d` placed, for the count it placed.
+#[cfg(feature = "3d")]
+pub(super) struct KeptPlacements {
+    pub(super) count: u32,
+    pub(super) locals: Arc<[lumen_3d::glam::Mat4]>,
+    pub(super) last_used: u64,
 }
 
 #[cfg(feature = "3d")]
 impl SceneState {
+    /// Drops the placements that neither this frame nor the last one read.
+    fn begin_frame(&mut self, tick: u64) {
+        self.placements
+            .retain(|_, kept| kept.last_used.saturating_add(1) >= tick);
+    }
+
     fn reset(&mut self) {
         self.shadow_limits.clear();
         self.outline_gaps.clear();
         self.skipped_primitives.clear();
+        self.placements.clear();
     }
 }
