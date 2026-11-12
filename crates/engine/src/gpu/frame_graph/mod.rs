@@ -1086,6 +1086,43 @@ impl<'a> FrameCx<'a> {
         (&mut *self.rec, &mut self.st.scene.cache)
     }
 
+    /// The local matrices kept for the copies of `instance_3d` node `node`, if they were placed for
+    /// `count` copies.
+    #[cfg(feature = "3d")]
+    pub(crate) fn kept_placements(
+        &mut self,
+        node: NodeId,
+        count: u32,
+    ) -> Option<Arc<[lumen_3d::glam::Mat4]>> {
+        let key = (self.graph_key(), node);
+        let kept = self.st.scene.placements.get_mut(&key)?;
+        if kept.count != count {
+            return None;
+        }
+        kept.last_used = self.st.tick;
+        Some(kept.locals.clone())
+    }
+
+    /// Keeps `locals`, the local matrices of the `count` copies of `instance_3d` node `node`,
+    /// for later frames.
+    #[cfg(feature = "3d")]
+    pub(crate) fn keep_placements(
+        &mut self,
+        node: NodeId,
+        count: u32,
+        locals: Arc<[lumen_3d::glam::Mat4]>,
+    ) {
+        let key = (self.graph_key(), node);
+        self.st.scene.placements.insert(
+            key,
+            state::KeptPlacements {
+                count,
+                locals,
+                last_used: self.st.tick,
+            },
+        );
+    }
+
     pub(crate) fn canvas_size(&self) -> Size {
         let settings = &self.scope.scene.render_settings;
         Size::new(settings.width.max(1), settings.height.max(1))

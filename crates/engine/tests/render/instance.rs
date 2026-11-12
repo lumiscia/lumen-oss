@@ -450,3 +450,52 @@ fn the_instance_index_is_only_readable_in_an_instance_nodes_placement() {
     )]);
     assert!(error.contains("`instance` is only available"), "{error}");
 }
+
+#[test]
+fn copies_placed_once_draw_as_copies_placed_again_under_a_moving_parent() {
+    let gpu = gpu();
+    let media = TestMedia::default();
+    let composition: Composition = scene(
+        SIZE,
+        json!([
+            json!({ "id": 51, "type": "camera_3d", "params": {
+                "position": [0, 2, 4], "look_at": true, "fov": 40 } }),
+            shape(1, json!({ "size": [0.3, 0.3, 0.3] })),
+            instance(
+                2,
+                1,
+                json!({ "count": 3, "position": "=vec3(instance * 0.5 - 0.5, 0, 0)",
+                        "rotation": "=vec3(0, instance * 20, 0)" }),
+            ),
+            instance(
+                3,
+                2,
+                json!({ "count": 2, "position": "=vec3(0, instance * 0.5 - 0.25, 0)" }),
+            ),
+            json!({ "id": 4, "type": "merge_3d", "in": { "objects": [3] },
+                    "params": { "rotation": "=vec3(0, frame * 25, frame * 10)" } }),
+            merge(5, &[51, 4]),
+            json!({ "id": 100, "type": "render_3d", "params": { "environment": 0 },
+                    "in": { "scene": 5 } }),
+            json!({ "id": 101, "type": "motion_blur", "params": { "samples": 4, "shutter": 180 },
+                    "in": { "source": 100 } }),
+        ]),
+    )
+    .frames(4)
+    .fps(4.0)
+    .into();
+    let mut kept = gpu.renderer();
+    let frames: Vec<Vec<u8>> = (0..4)
+        .map(|frame| {
+            let at = f64::from(frame);
+            let placed_again = render(&mut gpu.renderer(), &composition, at, &media).rgba;
+            let frame = render(&mut kept, &composition, at, &media).rgba;
+            assert!(
+                frame == placed_again,
+                "frame {at} draws as a first frame would"
+            );
+            frame
+        })
+        .collect();
+    assert!(frames[0] != frames[1], "the parent moves the copies");
+}
