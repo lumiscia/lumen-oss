@@ -20,10 +20,10 @@ use lumen_gpu::{
 use crate::{
     composition::Composition,
     error::{LumenError, RenderError},
-    expr::ExpressionContext,
+    expr::{ExpressionContext, ExpressionValue},
     media::{AssetKind, MediaIdentity, MediaStore},
     node::{
-        Deferred, MediaValue, Node, NodeId, NodeKind,
+        Deferred, DelegateEvaluable, MediaValue, Node, NodeId, NodeKind,
         compositing::clip::Clip,
         required_input,
         source::{
@@ -226,12 +226,17 @@ enum Staticness {
     Always,
     /// On the frames where every model it draws holds one pose, which recording finds out.
     WhileHeld,
+    /// On the frames where the params reading the frame, its own and those of what it reads, take
+    /// the values they took when it was kept, which `frame_values` finds, and where every model
+    /// it draws holds one pose.
+    WhileEqual,
 }
 
 impl Staticness {
     fn and(self, other: Self) -> Self {
         match (self, other) {
             (Self::Never, _) | (_, Self::Never) => Self::Never,
+            (Self::WhileEqual, _) | (_, Self::WhileEqual) => Self::WhileEqual,
             (Self::WhileHeld, _) | (_, Self::WhileHeld) => Self::WhileHeld,
             _ => Self::Always,
         }
@@ -239,7 +244,6 @@ impl Staticness {
 }
 
 /// The frames a kept output stays correct for, and what it drew.
-#[cfg(feature = "3d")]
 #[derive(Debug, Clone)]
 struct HoldTrack {
     /// Both ends included.
@@ -247,7 +251,6 @@ struct HoldTrack {
     models: Vec<String>,
 }
 
-#[cfg(feature = "3d")]
 impl HoldTrack {
     fn new() -> Self {
         Self {
@@ -263,13 +266,13 @@ impl HoldTrack {
     fn contains(&self, frame: f64) -> bool {
         self.frames.0 <= frame && frame <= self.frames.1
     }
+}
 
-    /// Whether some frame other than `frame`, among those a composition has, is also in it.
-    fn contains_another(&self, frame: f64) -> bool {
-        let next = frame.floor() + 1.0;
-        let previous = frame.ceil() - 1.0;
-        self.contains(next) || (previous >= 0.0 && self.contains(previous))
-    }
+/// The frames either side of `frame` among those a composition has.
+fn neighbouring_frames(frame: f64) -> impl Iterator<Item = f64> {
+    [frame.floor() + 1.0, frame.ceil() - 1.0]
+        .into_iter()
+        .filter(|other| *other >= 0.0)
 }
 
 /// What a recorded shader needs, cached by its source.
@@ -383,7 +386,6 @@ impl FrameGraph {
                 single_tile_repeats,
                 retain_static,
                 static_depth: 0,
-                #[cfg(feature = "3d")]
                 holds: Vec::new(),
                 depth: 0,
                 bound: BoundFrame::new(),
@@ -799,9 +801,8 @@ pub(crate) struct FrameCx<'a> {
     retain_static: bool,
     /// How many static nodes the walk is inside, whose readers retain them rather than this.
     static_depth: u32,
-    /// What the nodes that are static while their models hold a pose, which the walk is inside,
-    /// have found out so far, innermost last.
-    #[cfg(feature = "3d")]
+    /// What the nodes that are static while their models hold a pose or their params' values hold,
+    /// which the walk is inside, have found out so far, innermost last.
     holds: Vec<HoldTrack>,
     /// How many nodes the walk is recording inside.
     depth: u32,
@@ -1127,17 +1128,27 @@ impl<'a> FrameCx<'a> {
         } else {
             Staticness::Never
         };
+        // A value that fails to evaluate fails recording, which reports it.
+        let values = match staticness {
+            Staticness::WhileEqual => self.frame_values(node_id, self.frame),
+            _ => Some(Vec::new()),
+        };
+        let (staticness, values) = match values {
+            Some(values) => (staticness, values),
+            None => (Staticness::Never, Vec::new()),
+        };
         let is_static = staticness == Staticness::Always;
+        let tracked = matches!(staticness, Staticness::WhileHeld | Staticness::WhileEqual);
         let frame = self.frame.value();
         if staticness != Staticness::Never
             && let Some(slot) = self.st.retained.slots.get_mut(&(graph, node_id))
             && slot.frames.0 <= frame
             && frame <= slot.frames.1
+            && slot.values == values
         {
             slot.last_used = self.st.tick;
             self.st.retained.skipped_passes += slot.passes;
             let raster = slot.raster;
-            #[cfg(feature = "3d")]
             self.hold_slot(graph, node_id);
             return Ok(raster);
         }
@@ -1145,7 +1156,6 @@ impl<'a> FrameCx<'a> {
         let raster = match self.st.memo.get(&key) {
             Some(raster) => {
                 let raster = *raster;
-                #[cfg(feature = "3d")]
                 if let Some(read) = self.st.retained.held_memo.get(&key)
                     && let Some(track) = self.holds.last_mut()
                 {
@@ -1160,29 +1170,24 @@ impl<'a> FrameCx<'a> {
                 }
                 let passes = self.rec.pass_count();
                 self.static_depth += u32::from(is_static);
-                #[cfg(feature = "3d")]
-                if staticness == Staticness::WhileHeld {
+                if tracked {
                     self.holds.push(HoldTrack::new());
                 }
                 self.depth += 1;
                 let raster = record_node(node, self);
                 self.depth -= 1;
                 self.static_depth -= u32::from(is_static);
-                #[cfg(feature = "3d")]
-                let track = (staticness == Staticness::WhileHeld)
-                    .then(|| self.holds.pop())
-                    .flatten();
+                let track = tracked.then(|| self.holds.pop()).flatten();
                 let raster = raster?;
                 self.st.memo.insert(key, raster);
                 let passes = (self.rec.pass_count() - passes) as u64;
                 if is_static && self.static_depth == 0 {
                     let frames = (f64::NEG_INFINITY, f64::INFINITY);
                     let models = std::mem::take(&mut self.st.retained.static_models);
-                    self.retain(graph, node_id, raster, passes, frames, models);
+                    self.retain(graph, node_id, raster, passes, frames, models, Vec::new());
                 }
-                #[cfg(feature = "3d")]
                 if let Some(track) = track {
-                    self.finish_hold(key, raster, passes, track);
+                    self.finish_hold(key, raster, passes, track, values);
                 }
                 raster
             }
@@ -1190,8 +1195,9 @@ impl<'a> FrameCx<'a> {
         Ok(raster)
     }
 
-    /// Keeps `raster`, the output of `node`, for the `frames` it stays correct on, along with the
-    /// `models` it drew.
+    /// Keeps `raster`, the output of `node`, for the `frames` it stays correct on while the params
+    /// reading the frame take `values`, along with the `models` it drew.
+    #[expect(clippy::too_many_arguments, reason = "the parts of a slot")]
     fn retain(
         &mut self,
         graph: usize,
@@ -1200,6 +1206,7 @@ impl<'a> FrameCx<'a> {
         passes: u64,
         frames: (f64, f64),
         models: Vec<String>,
+        values: Vec<ExpressionValue>,
     ) {
         // A slot kept for other frames makes way.
         self.st.retained.release(self.rec, (graph, node));
@@ -1218,6 +1225,7 @@ impl<'a> FrameCx<'a> {
                 generation: self.st.retained.generation,
                 frames,
                 models,
+                values,
             },
         );
         self.st.retained.pending.push((graph, node));
@@ -1225,7 +1233,6 @@ impl<'a> FrameCx<'a> {
 
     /// Notes in the output being recorded that it reads the kept output of `node`, which holds
     /// only on the frames the slot is correct on.
-    #[cfg(feature = "3d")]
     fn hold_slot(&mut self, graph: usize, node: NodeId) {
         let Some(track) = self.holds.last_mut() else {
             return;
@@ -1236,11 +1243,17 @@ impl<'a> FrameCx<'a> {
         }
     }
 
-    /// Keeps `raster`, the output of `node` just recorded, if the models it drew hold their poses
-    /// on this frame and on another too, and tells the output being recorded around it what it
-    /// found.
-    #[cfg(feature = "3d")]
-    fn finish_hold(&mut self, key: MemoKey, raster: Raster, passes: u64, track: HoldTrack) {
+    /// Keeps `raster`, the output of `node` just recorded with the params reading the frame at
+    /// `values`, if it stays correct on this frame and on one either side of it too, and tells the
+    /// output being recorded around it what it found.
+    fn finish_hold(
+        &mut self,
+        key: MemoKey,
+        raster: Raster,
+        passes: u64,
+        track: HoldTrack,
+        values: Vec<ExpressionValue>,
+    ) {
         let ((graph, _, node), _) = key;
         if let Some(outer) = self.holds.last_mut() {
             outer.narrow(track.frames);
@@ -1248,9 +1261,70 @@ impl<'a> FrameCx<'a> {
         }
         self.st.retained.held_memo.insert(key, track.clone());
         let frame = self.frame.value();
-        if self.static_depth == 0 && track.contains(frame) && track.contains_another(frame) {
-            self.retain(graph, node, raster, passes, track.frames, track.models);
+        let kept_elsewhere = |other: f64| {
+            track.contains(other) && self.frame_values(node, other.into()).as_ref() == Some(&values)
+        };
+        if self.static_depth == 0
+            && track.contains(frame)
+            && neighbouring_frames(frame).any(kept_elsewhere)
+        {
+            self.retain(
+                graph,
+                node,
+                raster,
+                passes,
+                track.frames,
+                track.models,
+                values,
+            );
         }
+    }
+
+    /// The values that the params reading the frame take at `frame`: those of `node` and of each
+    /// node it reads that is kept while they hold, in the same order on every frame. A node that
+    /// blurs its own motion adds their values at either end of its shutter, where it evaluates
+    /// them too. `None` when one fails to evaluate.
+    fn frame_values(&self, node: NodeId, frame: FrameTime) -> Option<Vec<ExpressionValue>> {
+        let graph = self.graph_key();
+        let expr = self.scope.expr_context(frame, self.media);
+        let mut values = Vec::new();
+        let mut pending = vec![node];
+        let mut seen = HashSet::default();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let node = self.scope.node(id)?;
+            let mut contexts = vec![expr];
+            if self.analytic_motion_blur()
+                && let Some(shutter) = analytic_shutter(node)
+                && let Some(offset) = crate::node::motion::shutter_offset(
+                    shutter.eval(id, "motion_blur", &expr).ok()?,
+                )
+            {
+                contexts.extend([expr.at_subframe(-offset), expr.at_subframe(offset)]);
+            }
+            let mut failed = false;
+            for expr in &contexts {
+                node.for_each_expression(&mut |expression| {
+                    if !expression.is_frame_dependent() {
+                        return;
+                    }
+                    match expression.evaluate(expr) {
+                        Ok(value) => values.push(value),
+                        Err(_) => failed = true,
+                    }
+                });
+            }
+            if failed {
+                return None;
+            }
+            let held = |input: &NodeId| {
+                self.st.statics.get(&(graph, *input)) == Some(&Staticness::WhileEqual)
+            };
+            pending.extend(node.input_ports().into_iter().flatten().filter(held));
+        }
+        Some(values)
     }
 
     /// Records `node_id` stored at its full display size, for readers that read texel for texel.
@@ -1570,19 +1644,15 @@ impl<'a> FrameCx<'a> {
 
     /// Notes that `source` was read as `kind` and had `identity`, so that what is kept of this
     /// frame is dropped once it has another. It counts while a kept output records, including one
-    /// kept while its models hold a pose; font families count whenever text names them, as text
-    /// instances are kept across frames whatever reads them.
+    /// kept while its models hold a pose or its params' values hold; font families count whenever
+    /// text names them, as text instances are kept across frames whatever reads them.
     pub(crate) fn read_source(
         &mut self,
         kind: AssetKind,
         source: &str,
         identity: Option<&MediaIdentity>,
     ) {
-        #[cfg(feature = "3d")]
-        let held = !self.holds.is_empty();
-        #[cfg(not(feature = "3d"))]
-        let held = false;
-        let kept = self.static_depth > 0 || held || kind == AssetKind::Font;
+        let kept = self.static_depth > 0 || !self.holds.is_empty() || kind == AssetKind::Font;
         if kept
             && !self
                 .st
@@ -1937,6 +2007,12 @@ impl<'a> FrameCx<'a> {
                         .unwrap_or(Staticness::Never),
                 )
             });
+            // A `motion_blur` mixes its source at frames other than this one, where the values
+            // its source is kept by aren't read.
+            let result = match (node, result) {
+                (NodeKind::MotionBlur(_), Staticness::WhileEqual) => Staticness::Never,
+                _ => result,
+            };
             self.st.statics.insert((graph, id), result);
             pending.pop();
         }
@@ -2034,31 +2110,56 @@ impl<'a> FrameCx<'a> {
 
 /// Whether the node renders the same output on every frame as long as its inputs do.
 fn static_candidate(node: &NodeKind) -> Staticness {
-    let always = |candidate: bool| {
-        if candidate {
-            Staticness::Always
-        } else {
-            Staticness::Never
-        }
+    let reads_frame = node.is_frame_dependent();
+    let held_values = if reads_frame {
+        Staticness::WhileEqual
+    } else {
+        Staticness::Always
     };
     match node {
-        // An image changes only with the media store, which `images_changed` watches.
-        NodeKind::MediaIn(media) => always(
-            matches!(media.params.kind, MediaInSourceKindDelegate::Image)
-                && !node.is_frame_dependent(),
-        ),
-        // Video changes with the frame, and shaders see the built-in time.
+        // An image changes only with the media store, which `images_changed` watches. Video
+        // changes with the frame.
+        NodeKind::MediaIn(media) => match media.params.kind {
+            MediaInSourceKindDelegate::Image => held_values,
+            _ => Staticness::Never,
+        },
+        // Shaders see the built-in time.
         NodeKind::WgslShader(_) => Staticness::Never,
         // A model playing a clip poses differently with the frame, until its clip is over or
         // before it starts, which `add_model` finds out from the clip.
         NodeKind::Model3d(model) if model.animates() => {
-            if cfg!(feature = "3d") && !node.is_frame_dependent() {
+            if cfg!(feature = "3d") && !reads_frame {
                 Staticness::WhileHeld
             } else {
                 Staticness::Never
             }
         }
-        _ => always(!node.is_frame_dependent()),
+        // Per-copy and per-glyph params are evaluated in a scope of their own, which
+        // `frame_values` doesn't evaluate them in.
+        NodeKind::Instance3d(_) if reads_frame => Staticness::Never,
+        NodeKind::Text(text) if reads_frame_in(&text.params.glyph) => Staticness::Never,
+        // A `motion_blur` mixes its source at frames other than this one.
+        NodeKind::MotionBlur(_) if reads_frame => Staticness::Never,
+        _ => held_values,
+    }
+}
+
+/// Whether any expression in `value` may give a different value at another frame.
+fn reads_frame_in(value: &impl DelegateEvaluable) -> bool {
+    let mut dependent = false;
+    value.for_each_expression(&mut |expression| dependent |= expression.is_frame_dependent());
+    dependent
+}
+
+/// The shutter angle of a node that blurs its own motion, evaluating its params at either end of
+/// the shutter outside a `motion_blur` that samples.
+fn analytic_shutter(node: &NodeKind) -> Option<&Deferred<f64>> {
+    match node {
+        NodeKind::Shape(shape) => Some(&shape.params.placement.motion_blur),
+        NodeKind::Path(path) => Some(&path.params.placement.motion_blur),
+        NodeKind::Text(text) => Some(&text.params.placement.motion_blur),
+        NodeKind::Transform(transform) => Some(&transform.params.motion_blur),
+        _ => None,
     }
 }
 

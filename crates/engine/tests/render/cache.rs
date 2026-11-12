@@ -563,3 +563,68 @@ fn a_layer_whose_expressions_do_not_read_the_frame_is_kept() {
         );
     }
 }
+
+/// The position of a square at [4, 4] that jumps to [12, 4] at frame `at`.
+fn held_jump(at: f64) -> Value {
+    json!(format!(
+        "=keyframes(frame, 'hold', key(0, vec2(4, 4)), key({at}, vec2(12, 4)))"
+    ))
+}
+
+#[test]
+fn a_layer_is_kept_while_the_values_of_its_expressions_hold() {
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    let mut literal = gpu.renderer();
+    let composition = static_square_at(held_jump(3.0));
+    let kept = static_square_at(json!([4, 4]));
+    for frame in 0..6 {
+        let pixels = at(&mut renderer, &composition, f64::from(frame));
+        let expected = uncached(&mut reference, &composition, f64::from(frame));
+        assert!(pixels == expected, "frame {frame}");
+        at(&mut literal, &kept, f64::from(frame));
+        let (passes, kept_passes) = (
+            renderer.recorded_pass_count(),
+            literal.recorded_pass_count(),
+        );
+        if frame == 3 {
+            assert!(passes > kept_passes, "the square jumps at frame 3");
+        } else {
+            assert_eq!(passes, kept_passes, "frame {frame}");
+        }
+    }
+}
+
+#[test]
+fn a_held_value_is_kept_only_while_the_shutter_sees_it_hold() {
+    // The shutter around frame 2 sees the jump at 2.2, and frame 2 itself doesn't.
+    let jump = held_jump(2.2);
+    let analytic = canvas(vec![
+        background(1, [200, 30, 30, 255]),
+        json!({ "id": 2, "type": "shape", "params": {
+            "position": jump, "width": 8, "height": 8, "fill_paint": [20, 40, 220, 255],
+            "motion_blur": 180
+        } }),
+        merge(3, &[1, 2]),
+        square(4, json!("=vec2(frame * 2, 6)"), 4, [30, 220, 60, 255]),
+        merge(5, &[3, 4]),
+    ]);
+    let sampled = canvas(vec![
+        background(1, [200, 30, 30, 255]),
+        square(2, jump.clone(), 8, [20, 40, 220, 255]),
+        merge(3, &[1, 2]),
+        json!({ "id": 6, "type": "motion_blur", "in": { "source": 3 } }),
+        square(4, json!("=vec2(frame * 2, 6)"), 4, [30, 220, 60, 255]),
+        merge(5, &[6, 4]),
+    ]);
+    let gpu = gpu();
+    for (name, scene) in [("analytic", analytic), ("sampled", sampled)] {
+        let composition: Composition = scene.into();
+        let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+        for frame in [0.0, 1.0, 2.0, 2.5, 3.0, 4.0] {
+            let pixels = at(&mut renderer, &composition, frame);
+            let expected = uncached(&mut reference, &composition, frame);
+            assert!(pixels == expected, "{name} at frame {frame}");
+        }
+    }
+}
