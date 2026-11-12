@@ -27,6 +27,11 @@ const MAX_SHADERS: usize = 64;
 #[cfg(feature = "ffmpeg")]
 const VIDEO_IMPORT_IDLE_FRAMES: u64 = 600;
 
+pub(super) type FrameValues = (
+    Option<Arc<crate::scope::PropValues>>,
+    Option<Arc<[crate::expr::ExpressionValue]>>,
+);
+
 #[derive(Default)]
 pub(super) struct RecordState {
     pub(super) fingerprint: Option<u64>,
@@ -34,9 +39,9 @@ pub(super) struct RecordState {
     pub(super) tick: u64,
     pub(super) paths: HashMap<(PathId, NodeId), PathId>,
     pub(super) memo: HashMap<MemoKey, Raster>,
-    /// What `FrameCx::own_values` found this frame, by node and frame.
-    pub(super) frame_values:
-        HashMap<(InstanceKey, u64), Option<Arc<[crate::expr::ExpressionValue]>>>,
+    /// What `FrameCx::own_values` found this frame, by node, frame and the address of the props
+    /// of its scope. Each entry holds those props, which keeps their address theirs.
+    pub(super) frame_values: HashMap<(InstanceKey, u64, usize), FrameValues>,
     pub(super) full_frames: HashMap<(TexRef, u32, u32), Raster>,
     pub(super) statics: HashMap<GraphNodeKey, Staticness>,
     /// The textures of external targets, by the address of the texture.
