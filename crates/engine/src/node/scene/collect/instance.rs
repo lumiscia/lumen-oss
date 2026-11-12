@@ -9,7 +9,7 @@ use crate::error::{ExpressionError, LumenError, RenderError};
 use crate::expr::{ExpressionContext, InstanceScope};
 use crate::gpu::frame_graph::FrameCx;
 use crate::node::scene::{Instance3d, MAX_INSTANCES};
-use crate::node::{DelegateEvalContext, NodeId, required_input};
+use crate::node::{DelegateEvalContext, Node, NodeId, required_input};
 
 const _: () = assert!(MAX_INSTANCES as usize <= MAX_SCENE_NODES);
 
@@ -182,7 +182,7 @@ impl Collected {
         parent: Mat4,
         (joint_base, weight_base): (usize, usize),
     ) -> crate::Result<()> {
-        let keep = node.is_frame_independent();
+        let keep = !node.is_frame_dependent();
         if keep && let Some(locals) = cx.kept_placements(node.id, count) {
             for local in locals.iter() {
                 self.add_copy(inner, parent * *local, joint_base, weight_base);
