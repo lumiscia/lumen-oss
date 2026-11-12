@@ -135,6 +135,11 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt -- --check
 
+      - name: Check Rust dependency licenses
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
       - name: Lint Rust workspace
         run: cargo clippy --workspace --all-targets -- -D warnings
 

@@ -39,3 +39,4 @@ examples/3d/compositions
 # Built by crates/cli/release/build.sh
 packages/lumen-cli-*/bin
 packages/lumen-cli-*/licenses
+packages/lumen-cli-*/LICENSE

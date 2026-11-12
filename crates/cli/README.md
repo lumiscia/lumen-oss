@@ -103,7 +103,7 @@ The Linux binaries are built with `cuda`, so NVENC and the Vulkan encoders both 
 
 `release/ports/x265` replaces vcpkg's x265 build with one that keeps its assembly in a static Linux library and links a 10-bit build into the 8-bit one.
 
-Lumen is Apache-2.0, but FFmpeg with x264 and x265 is GPL, so the binaries are distributed under GPL-3.0-or-later, with each library's license in the platform package's `licenses/`. The `@lumiscia/lumen-cli` launcher itself is Apache-2.0.
+Lumen is Apache-2.0, but FFmpeg with x264 and x265 is GPL, so the binaries are distributed under GPL-3.0-or-later, with that text as the platform package's `LICENSE` and each part's own license in its `licenses/`. `release/about.toml` and `about.hbs` are the `cargo about` setup that writes the Rust crates' notices there. The `@lumiscia/lumen-cli` launcher itself is Apache-2.0.
 
 ## Features
 

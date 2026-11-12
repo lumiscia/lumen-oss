@@ -52,6 +52,9 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install nasm pkg-config autoconf automake libtool
 
+      - name: Install cargo-about
+        run: cargo install cargo-about --version 0.9.3 --locked --features cli
+
       - uses: actions/cache@v6
         with:
           path: target/vcpkg-cache
@@ -67,6 +70,8 @@ jobs:
         run: |
           packages/${{ matrix.package }}/bin/lumen --version
           packages/${{ matrix.package }}/bin/lumen --check --composition crates/cli/demo/gradient-paints.json
+          test -s packages/${{ matrix.package }}/LICENSE
+          test -s packages/${{ matrix.package }}/licenses/rust-crates.txt
 
       - uses: actions/upload-artifact@v7
         with:
@@ -74,4 +79,5 @@ jobs:
           path: |
             packages/${{ matrix.package }}/bin
             packages/${{ matrix.package }}/licenses
+            packages/${{ matrix.package }}/LICENSE
           if-no-files-found: error
