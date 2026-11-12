@@ -11,7 +11,7 @@ use anyhow::Context;
 use anyhow::anyhow;
 use lumen_engine::{
     composition::Composition,
-    gpu::{GpuCompositionRenderer, RasterHandle, RenderTarget},
+    gpu::{GpuCompositionRenderer, RenderTarget, RenderedFrame},
 };
 use lumen_ffmpeg::{CpuVideoFrame, MuxedEncoder, PixelFormat, Rational, VideoEncoderConfig};
 
@@ -214,7 +214,7 @@ fn render_frame(
     workload: &Workload<'_>,
     frame: u32,
     phases: &mut Option<&mut PhaseTimes>,
-) -> anyhow::Result<RasterHandle> {
+) -> anyhow::Result<RenderedFrame> {
     let bound = timed(phases, "bind", || {
         renderer.bind_frame(
             workload.composition,
@@ -224,16 +224,19 @@ fn render_frame(
         )
     })?;
     timed(phases, "upload", || renderer.upload_frame(&bound))?;
-    let rendered = timed(phases, "submit", || renderer.submit_frame(&bound))?;
-    Ok(rendered.raster)
+    Ok(timed(phases, "submit", || renderer.submit_frame(&bound))?)
 }
 
-/// Reads the frame `raster` back to the CPU.
+/// Waits for the GPU to finish `rendered`, then copies it to the CPU.
 fn read_frame(
     renderer: &GpuCompositionRenderer,
-    raster: &RasterHandle,
+    rendered: &RenderedFrame,
     phases: &mut Option<&mut PhaseTimes>,
 ) -> anyhow::Result<Vec<u8>> {
+    timed(phases, "gpu", || {
+        rendered.wait(&renderer.gpu_renderer().device)
+    })?;
+    let raster = &rendered.raster;
     timed(phases, "readback", || {
         renderer
             .gpu_renderer()
@@ -273,8 +276,8 @@ async fn readback(
     let setup = setup_started.elapsed();
     let mut times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
-        let raster = render_frame(&mut renderer, workload, frame, phases)?;
-        read_frame(&renderer, &raster, phases)?;
+        let rendered = render_frame(&mut renderer, workload, frame, phases)?;
+        read_frame(&renderer, &rendered, phases)?;
         times.frame_done(frame);
     }
     Ok(times.finish())
@@ -297,8 +300,8 @@ async fn cpu_encode(
     let setup = setup_started.elapsed();
     let times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
-        let raster = render_frame(&mut renderer, workload, frame, phases)?;
-        let pixels = read_frame(&renderer, &raster, phases)?;
+        let rendered = render_frame(&mut renderer, workload, frame, phases)?;
+        let pixels = read_frame(&renderer, &rendered, phases)?;
         timed(phases, "encode", || {
             encoder.write_video_frame(&CpuVideoFrame {
                 width,
@@ -430,11 +433,11 @@ async fn vulkan_video(
     println!("composition_bench vulkan_video encoder={encoder_name}");
     let times = RunTimes::begin(setup);
     for frame in 0..workload.frames {
-        let raster = render_frame(&mut renderer, workload, frame, phases)?;
+        let rendered = render_frame(&mut renderer, workload, frame, phases)?;
         let video_frame = timed(phases, "convert", || {
             target.convert(
                 renderer.gpu_renderer(),
-                &raster.texture,
+                &rendered.raster.texture,
                 Some(i64::from(frame)),
             )
         })?;

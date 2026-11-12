@@ -204,7 +204,11 @@ pub struct RenderTiming {
     pub bind: Duration,
     pub upload: Duration,
     pub render: Duration,
+    /// Collecting finished GPU work without waiting for it.
     pub flush: Duration,
+    /// Blocked waiting for the GPU to finish drawing and converting frames.
+    pub gpu: Duration,
+    /// Copying finished frames to the CPU, which only the CPU paths do.
     pub readback: Duration,
     pub encode_send: Duration,
     pub audio_mix: Duration,
