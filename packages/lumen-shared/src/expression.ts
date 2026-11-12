@@ -36,7 +36,10 @@ export interface Easing {
 /** An easing name such as `ease.outExpo`, or an easing such as `cubicBezier(..)`. */
 export type EasingArg = EasingName | Expr<Easing> | Expr<string>;
 
-/** Strings are path data, which interpolate when their commands match. */
+/**
+ * Strings that are path data interpolate when their commands match; any other string keys only
+ * with the `hold` easing.
+ */
 export type KeyValue = number | Vec2 | Vec3Value | Color | string;
 
 /** What `key` evaluates to: a keyframe holding a `T`. Only `keyframes` takes it. */
