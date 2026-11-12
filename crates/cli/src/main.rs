@@ -33,7 +33,6 @@ const REFERENCE: &str =
     name = "lumen",
     version,
     arg_required_else_help = true,
-    disable_help_subcommand = true,
     after_help = REFERENCE
 )]
 struct Cli {
