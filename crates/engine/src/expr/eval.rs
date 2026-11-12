@@ -35,7 +35,8 @@ fn usable(value: ExpressionValue) -> crate::Result<ExpressionValue> {
 /// Expressions evaluated for each copy of an `instance_3d` as one plan, so a step they share is
 /// evaluated once per copy, and a step that reads neither `instance` nor `instance_count` is
 /// evaluated once for all copies, by the first copy that reaches it. Every evaluation must be in
-/// the same context but for its instance scope.
+/// the same context but for its instance scope. A step that is not pure, or reads one that is
+/// not, is evaluated for each expression as it would be alone.
 #[cfg_attr(
     not(feature = "3d"),
     allow(dead_code, reason = "only instance_3d evaluates copies")
@@ -80,6 +81,8 @@ impl InstanceEvaluator {
         if self.copy != ctx.instance {
             self.scratch.memo[self.plan.kept_slots..].fill(None);
             self.copy = ctx.instance;
+        } else {
+            self.scratch.memo[self.plan.shared_slots..].fill(None);
         }
         let _evaluation = EvaluationGuard::enter(self.depths[index])?;
         usable(
@@ -155,6 +158,10 @@ pub(crate) struct EvalPlan {
     /// Memo slots below this one hold steps whose value is the same for every copy of an
     /// `instance_3d`.
     kept_slots: usize,
+    /// Memo slots from `kept_slots` below this one hold pure steps shared by the expressions for
+    /// one copy. The slots from here hold steps that are not pure, which an expression reuses
+    /// only within its own evaluation.
+    shared_slots: usize,
 }
 
 #[derive(Debug)]
@@ -233,6 +240,22 @@ impl Hash for Literal {
 }
 
 impl Op {
+    /// Whether the value can differ for the same operands and frame-constant context: it reads
+    /// another node, measures text with a font session that its measurements load fonts into, or
+    /// reads the props of the template.
+    fn reads_state(&self) -> bool {
+        matches!(
+            self,
+            Op::ReadProperty(..)
+                | Op::NodeRef(_)
+                | Op::MeasureNode(..)
+                | Op::Builtin(
+                    BuiltinFn::TextWidth | BuiltinFn::TextHeight | BuiltinFn::Prop,
+                    _
+                )
+        )
+    }
+
     /// The steps this one reads.
     fn operands(&self) -> impl Iterator<Item = usize> + '_ {
         let (fixed, args): ([Option<usize>; 3], &[usize]) = match self {
@@ -252,12 +275,25 @@ impl Op {
     }
 }
 
+/// Which memo slots a step's value is kept in, in their order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slots {
+    Kept,
+    Shared,
+    Local,
+}
+
+/// Whether `op` is cheaper to evaluate than to remember.
+fn is_leaf(op: &Op) -> bool {
+    matches!(op, Op::Literal(_) | Op::Global(_))
+}
+
 impl EvalPlan {
     pub(crate) fn new(ast: &ExprNode) -> Self {
         Self::build(&[ast], false)
     }
 
-    /// The plan of `asts` together. With `per_copy`, a step that reads neither `instance` nor
+    /// The plan of `asts` together. With `per_copy`, a pure step that reads neither `instance` nor
     /// `instance_count` keeps its value for every copy, in a slot below `kept_slots`, when more
     /// than one step reads it, a step reading the instance scope reads it, or it is one of `asts`.
     fn build(asts: &[&ExprNode], per_copy: bool) -> Self {
@@ -265,8 +301,10 @@ impl EvalPlan {
         let roots: Vec<usize> = asts.iter().map(|ast| builder.add(ast)).collect();
         let ops = builder.ops;
         let mut reads = vec![0_u32; ops.len()];
-        // Whether a step reads the instance scope, and whether one that does reads it.
+        // Whether a step reads the instance scope, whether it reads something that is not pure,
+        // and whether a step that reads the instance scope reads it.
         let mut copied = vec![false; ops.len()];
+        let mut impure = vec![false; ops.len()];
         let mut read_by_copied = vec![false; ops.len()];
         for root in &roots {
             reads[*root] += 1;
@@ -278,39 +316,47 @@ impl EvalPlan {
                 op,
                 Op::Global(GlobalVar::Instance | GlobalVar::InstanceCount)
             ) || op.operands().any(|operand| copied[operand]);
+            impure[index] = op.reads_state() || op.operands().any(|operand| impure[operand]);
             for operand in op.operands() {
                 reads[operand] += 1;
                 read_by_copied[operand] |= copied[index];
             }
         }
-        let kept: Vec<bool> = (0..ops.len())
-            .map(|index| per_copy && !copied[index] && (reads[index] > 1 || read_by_copied[index]))
+        let slots: Vec<Option<Slots>> = (0..ops.len())
+            .map(|index| {
+                if is_leaf(&ops[index]) {
+                    None
+                } else if impure[index] {
+                    (reads[index] > 1).then_some(Slots::Local)
+                } else if per_copy && !copied[index] && (reads[index] > 1 || read_by_copied[index])
+                {
+                    Some(Slots::Kept)
+                } else {
+                    (reads[index] > 1).then_some(Slots::Shared)
+                }
+            })
             .collect();
-        let kept_slots = kept.iter().filter(|kept| **kept).count();
-        let (mut next_kept, mut next_copied) = (0, kept_slots);
+        let count = |class| slots.iter().filter(|slot| **slot == Some(class)).count();
+        let kept_slots = count(Slots::Kept);
+        let shared_slots = kept_slots + count(Slots::Shared);
+        let mut next = [0, kept_slots, shared_slots];
         let steps = ops
             .into_iter()
-            .enumerate()
-            .map(|(index, op)| {
-                let slot = if matches!(op, Op::Literal(_) | Op::Global(_)) {
-                    None
-                } else if kept[index] {
-                    next_kept += 1;
-                    Some(next_kept - 1)
-                } else if reads[index] > 1 {
-                    next_copied += 1;
-                    Some(next_copied - 1)
-                } else {
-                    None
-                };
-                Step { op, memo: slot }
+            .zip(&slots)
+            .map(|(op, slot)| Step {
+                op,
+                memo: slot.map(|class| {
+                    next[class as usize] += 1;
+                    next[class as usize] - 1
+                }),
             })
             .collect();
         Self {
             steps,
             roots,
-            memo_slots: next_copied,
+            memo_slots: next[Slots::Local as usize],
             kept_slots,
+            shared_slots,
         }
     }
 
@@ -2080,6 +2126,9 @@ mod tests {
             "frame == 48 || 10 / (frame - 48) > instance".to_string(),
             "1 / (frame - 48) + instance".to_string(),
             "node(1, 'font_size') * instance + text_width(node(1)) * 0".to_string(),
+            "sin(node(1, 'font_size')) + instance + sin(node(1, 'font_size'))".to_string(),
+            "hypot(text_width('WW', 16), 2) + instance_count + hypot(text_width('WW', 16), 2)"
+                .to_string(),
         ];
         let expressions: Vec<Expression> = sources
             .iter()
@@ -2104,6 +2153,117 @@ mod tests {
                         "{source} for instance {index} at frame {frame}"
                     );
                 }
+            }
+        }
+    }
+
+    /// Serves the bundled Roboto and Inter together for `Roboto`, and nothing for any other family.
+    #[derive(Debug, Default)]
+    struct RobotoWithInter {
+        session: crate::media::TextSession,
+    }
+
+    struct RobotoAndInter;
+
+    impl crate::media::FontResolver for RobotoAndInter {
+        fn data(&self) -> Result<Vec<Vec<u8>>, crate::error::MediaError> {
+            Ok(vec![
+                lumen_text::ROBOTO_REGULAR_BYTES.to_vec(),
+                include_bytes!("../../../text/assets/inter/InterVariable-Latin.ttf").to_vec(),
+            ])
+        }
+    }
+
+    impl crate::media::MediaStore for RobotoWithInter {
+        fn resolve(
+            &self,
+            name: &str,
+            kind: crate::media::AssetKind,
+        ) -> Result<crate::media::ResolvedMedia, crate::error::MediaError> {
+            if name != "Roboto" || kind != crate::media::AssetKind::Font {
+                return Err(crate::error::MediaError::source_not_found(
+                    name,
+                    "not served",
+                ));
+            }
+            Ok(crate::media::ResolvedMedia::new(
+                crate::media::MediaIdentity::of_key("font-collection"),
+                crate::media::MediaResolver::Font(Box::new(RobotoAndInter)),
+            ))
+        }
+
+        fn text_session(&self) -> Option<&crate::media::TextSession> {
+            Some(&self.session)
+        }
+    }
+
+    #[test]
+    fn text_measured_before_a_font_loads_is_not_shared_with_text_measured_after() {
+        let sources = [
+            "vec3(text_width('Variable weight', 32, 0, 'Inter'), instance, frame)",
+            "vec3(text_width('WWW', 32, 0, 'Roboto'), 0, 0)",
+            "vec3(1, 1, text_width('Variable weight', 32, 0, 'Inter'))",
+        ];
+        let expressions: Vec<Expression> = sources
+            .iter()
+            .map(|source| Expression::parse(source).unwrap())
+            .collect();
+        let (together_fonts, alone_fonts) =
+            (RobotoWithInter::default(), RobotoWithInter::default());
+        let mut together = InstanceEvaluator::new(&expressions);
+        for index in 0..2 {
+            let ctx = ExpressionContext {
+                instance: Some(InstanceScope { index, count: 2 }),
+                ..test_context()
+            };
+            for (at, expression) in expressions.iter().enumerate() {
+                let shared = together.evaluate(
+                    at,
+                    &ExpressionContext {
+                        media: Some(&together_fonts),
+                        ..ctx
+                    },
+                );
+                let alone = expression.evaluate(&ExpressionContext {
+                    media: Some(&alone_fonts),
+                    ..ctx
+                });
+                assert_eq!(
+                    shared.map_err(|error| error.to_string()),
+                    alone.map_err(|error| error.to_string()),
+                    "{} for instance {index}",
+                    sources[at]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn node_reads_in_later_copies_count_against_the_evaluation_budget() {
+        let font_size = ["node({next}, 'font_size')"; 5].join(" + ");
+        let graph = chained_text_nodes(7, &font_size, "'x'");
+        for source in [
+            "vec3(if(instance == 0, 0, node(1, 'font_size')), node(1, 'font_size'), node(1, 'font_size'))",
+            "vec3(if(instance == 0, 0, sin(node(1, 'font_size'))), sin(node(1, 'font_size')), sin(node(1, 'font_size')))",
+        ] {
+            let expression = Expression::parse(source).unwrap();
+            let mut together = InstanceEvaluator::new([&expression]);
+            for index in 0..2 {
+                let ctx = ExpressionContext {
+                    graph: Some(&graph),
+                    instance: Some(InstanceScope { index, count: 2 }),
+                    ..test_context()
+                };
+                let alone = expression.evaluate(&ctx).map_err(|error| error.to_string());
+                let shared = together
+                    .evaluate(0, &ctx)
+                    .map_err(|error| error.to_string());
+                assert_eq!(shared, alone, "{source} for instance {index}");
+                assert_eq!(
+                    alone.is_err_and(|error| error.contains("10000 evaluations")),
+                    index == 1,
+                    "{source} for instance {index}"
+                );
             }
         }
     }
