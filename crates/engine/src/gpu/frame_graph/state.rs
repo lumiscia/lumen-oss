@@ -14,11 +14,9 @@ use crate::{
     node::{NodeId, source::text::TextInstance},
 };
 
-#[cfg(feature = "3d")]
-use super::HoldTrack;
 use super::{
-    CachedShader, GraphNodeKey, InstanceKey, MemoKey, PathId, Raster, ShaderParts, Staticness,
-    VideoFrameKey, source_changed,
+    CachedShader, GraphNodeKey, HoldTrack, InstanceKey, MemoKey, PathId, Raster, ShaderParts,
+    Staticness, VideoFrameKey, source_changed,
 };
 
 /// Frames a retained output stays without being read.
@@ -29,6 +27,11 @@ const MAX_SHADERS: usize = 64;
 #[cfg(feature = "ffmpeg")]
 const VIDEO_IMPORT_IDLE_FRAMES: u64 = 600;
 
+pub(super) type FrameValues = (
+    Option<Arc<crate::scope::PropValues>>,
+    Option<Arc<[crate::expr::ExpressionValue]>>,
+);
+
 #[derive(Default)]
 pub(super) struct RecordState {
     pub(super) fingerprint: Option<u64>,
@@ -36,6 +39,9 @@ pub(super) struct RecordState {
     pub(super) tick: u64,
     pub(super) paths: HashMap<(PathId, NodeId), PathId>,
     pub(super) memo: HashMap<MemoKey, Raster>,
+    /// What `FrameCx::own_values` found this frame, by node, frame and the address of the props
+    /// of its scope. Each entry holds those props, which keeps their address theirs.
+    pub(super) frame_values: HashMap<(InstanceKey, u64, usize), FrameValues>,
     pub(super) full_frames: HashMap<(TexRef, u32, u32), Raster>,
     pub(super) statics: HashMap<GraphNodeKey, Staticness>,
     /// The textures of external targets, by the address of the texture.
@@ -61,6 +67,7 @@ impl RecordState {
     pub(super) fn begin_frame(&mut self) {
         self.tick += 1;
         self.memo.clear();
+        self.frame_values.clear();
         self.full_frames.clear();
         self.media.begin_frame();
         self.retained.begin_frame();
@@ -99,6 +106,7 @@ impl RecordState {
         self.scene.reset();
         self.shaders.clear();
         self.memo.clear();
+        self.frame_values.clear();
         self.full_frames.clear();
         self.output = None;
         self.text.reset(recorder);
@@ -128,11 +136,10 @@ pub(super) struct Slot {
     /// The frames it may be read on, both ends included.
     pub(super) frames: (f64, f64),
     /// The models and environment maps it drew, which the scene cache keeps while it is kept.
-    #[cfg_attr(
-        not(feature = "3d"),
-        allow(dead_code, reason = "read by the scene cache")
-    )]
     pub(super) models: Vec<String>,
+    /// The values the params reading the frame took when it was recorded, which a read must find
+    /// again. Empty for an output that doesn't read the frame.
+    pub(super) values: Vec<crate::expr::ExpressionValue>,
 }
 
 /// The outputs of static subtrees kept across frames, and what they read.
@@ -150,9 +157,8 @@ pub(super) struct Retained {
     pub(super) sources: HashMap<(AssetKind, String), Option<MediaIdentity>>,
     /// Models drawn while the static output being recorded records, which its slot keeps.
     pub(super) static_models: Vec<String>,
-    /// What each output that is static while its models hold a pose found out when it was recorded
-    /// this frame, for the outputs reading it again.
-    #[cfg(feature = "3d")]
+    /// What each output that is static while its models hold a pose or its params' values hold
+    /// found out when it was recorded this frame, for the outputs reading it again.
     pub(super) held_memo: HashMap<MemoKey, HoldTrack>,
     /// Passes reads of retained outputs skipped.
     pub(super) skipped_passes: u64,
@@ -161,7 +167,6 @@ pub(super) struct Retained {
 impl Retained {
     fn begin_frame(&mut self) {
         self.static_models.clear();
-        #[cfg(feature = "3d")]
         self.held_memo.clear();
     }
 

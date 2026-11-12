@@ -196,7 +196,7 @@ builtins! {
     CubicBezier "cubic_bezier" (2, Some(2)) [out: Vec2, in: Vec2] -> Easing,
         "The easing CSS writes `cubic-bezier(out.x, out.y, in.x, in.y)`. Both x components must be in `0..=1`.";
     Key "key" (2, Some(3)) [at: Number, value: Any, ease: Easing] -> Key,
-        "A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour or path data. `ease` is how the curve leaves this key toward the next.";
+        "A keyframe for `keyframes`: `value` at `at`, a number, vec2, vec3, colour, path data or text. `ease` is how the curve leaves this key toward the next. Text that isn't path data can't interpolate, so a key holding it needs the `'hold'` easing.";
     Keyframes "keyframes" (2, None) [t: Number, ease: Easing, keys: Key] -> Any,
         "The value of keys ordered by `at` at time `t`, usually `frame`. `ease` may be left out; it is the easing of keys without one and defaults to `'linear'`. Before the first key and after the last, the value holds. Keys at the same `at` jump.";
     Prop "prop" (1, Some(1)) [name: String] -> Any,

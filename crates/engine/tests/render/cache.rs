@@ -531,3 +531,182 @@ fn an_image_picked_by_frame_is_never_kept() {
     }
     assert_eq!(renderer.skipped_pass_count(), 0);
 }
+
+/// `static_under_animated` with the static square placed by `position`.
+fn static_square_at(position: Value) -> Composition {
+    canvas(vec![
+        background(1, [200, 30, 30, 255]),
+        square(2, position, 8, [20, 40, 220, 255]),
+        merge(3, &[1, 2]),
+        square(4, json!("=vec2(frame * 2, 6)"), 4, [30, 220, 60, 255]),
+        merge(5, &[3, 4]),
+    ])
+    .into()
+}
+
+#[test]
+fn a_layer_whose_expressions_do_not_read_the_frame_is_kept() {
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    let mut literal = gpu.renderer();
+    let composition = static_square_at(json!("=vec2(max(4, 2), 4)"));
+    let kept = static_square_at(json!([4, 4]));
+    for frame in 0..3 {
+        let pixels = at(&mut renderer, &composition, f64::from(frame));
+        assert!(pixels == uncached(&mut reference, &composition, f64::from(frame)));
+        assert_eq!(pixel(&pixels, 8, 11), [20, 40, 220, 255], "frame {frame}");
+        at(&mut literal, &kept, f64::from(frame));
+        assert_eq!(
+            renderer.recorded_pass_count(),
+            literal.recorded_pass_count(),
+            "frame {frame}"
+        );
+    }
+}
+
+/// The position of a square at [4, 4] that jumps to [12, 4] at frame `at`.
+fn held_jump(at: f64) -> Value {
+    json!(format!(
+        "=keyframes(frame, 'hold', key(0, vec2(4, 4)), key({at}, vec2(12, 4)))"
+    ))
+}
+
+#[test]
+fn a_layer_is_kept_while_the_values_of_its_expressions_hold() {
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    let mut literal = gpu.renderer();
+    let composition = static_square_at(held_jump(3.0));
+    let kept = static_square_at(json!([4, 4]));
+    for frame in 0..6 {
+        let pixels = at(&mut renderer, &composition, f64::from(frame));
+        let expected = uncached(&mut reference, &composition, f64::from(frame));
+        assert!(pixels == expected, "frame {frame}");
+        at(&mut literal, &kept, f64::from(frame));
+        let (passes, kept_passes) = (
+            renderer.recorded_pass_count(),
+            literal.recorded_pass_count(),
+        );
+        if frame == 3 {
+            assert!(passes > kept_passes, "the square jumps at frame 3");
+        } else {
+            assert_eq!(passes, kept_passes, "frame {frame}");
+        }
+    }
+}
+
+#[test]
+fn a_held_value_is_kept_only_while_the_shutter_sees_it_hold() {
+    // The shutter around frame 2 sees the jump at 2.2, and frame 2 itself doesn't.
+    let jump = held_jump(2.2);
+    let analytic = canvas(vec![
+        background(1, [200, 30, 30, 255]),
+        json!({ "id": 2, "type": "shape", "params": {
+            "position": jump, "width": 8, "height": 8, "fill_paint": [20, 40, 220, 255],
+            "motion_blur": 180
+        } }),
+        merge(3, &[1, 2]),
+        square(4, json!("=vec2(frame * 2, 6)"), 4, [30, 220, 60, 255]),
+        merge(5, &[3, 4]),
+    ]);
+    let sampled = canvas(vec![
+        background(1, [200, 30, 30, 255]),
+        square(2, jump.clone(), 8, [20, 40, 220, 255]),
+        merge(3, &[1, 2]),
+        json!({ "id": 6, "type": "motion_blur", "in": { "source": 3 } }),
+        square(4, json!("=vec2(frame * 2, 6)"), 4, [30, 220, 60, 255]),
+        merge(5, &[6, 4]),
+    ]);
+    let gpu = gpu();
+    for (name, scene) in [("analytic", analytic), ("sampled", sampled)] {
+        let composition: Composition = scene.into();
+        let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+        for frame in [0.0, 1.0, 2.0, 2.5, 3.0, 4.0] {
+            let pixels = at(&mut renderer, &composition, frame);
+            let expected = uncached(&mut reference, &composition, frame);
+            assert!(pixels == expected, "{name} at frame {frame}");
+        }
+    }
+}
+
+#[test]
+fn a_full_frame_copy_is_not_read_after_its_output_is_drawn_again() {
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    reference.set_static_output_reuse(false);
+    let composition: Composition = canvas(vec![
+        square(
+            1,
+            json!("=vec2(2 + max(0, frame - 1) * 4, 2)"),
+            4,
+            [255, 0, 0, 255],
+        ),
+        json!({
+            "id": 2, "type": "resize", "in": {"source": 1},
+            "params": {"width": 32, "height": 16}
+        }),
+    ])
+    .into();
+    for frame in [0.0, 1.0, 2.0, 3.0] {
+        let actual = at(&mut renderer, &composition, frame);
+        let expected = uncached(&mut reference, &composition, frame);
+        assert!(actual == expected, "frame {frame}");
+    }
+}
+
+#[test]
+fn text_that_gives_zero_then_negative_zero_is_drawn_again() {
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    reference.set_static_output_reuse(false);
+    let composition: Composition = canvas(vec![json!({
+        "id": 1, "type": "text", "params": {
+            "content": "=if(frame < 2, 0, -0)",
+            "font_size": 12, "position": [2, 2]
+        }
+    })])
+    .into();
+    for frame in [0.0, 1.0, 2.0, 0.0] {
+        let actual = at(&mut renderer, &composition, frame);
+        let expected = uncached(&mut reference, &composition, frame);
+        assert!(actual == expected, "frame {frame}");
+    }
+}
+
+#[test]
+fn a_held_clip_whose_props_differ_between_blur_samples_is_drawn_for_each() {
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": {"fps": 10, "duration_frames": 10},
+        "render_settings": {"width": 4, "height": 4},
+        "compositions": {"tile": {
+            "timeline": {"fps": 10, "duration_frames": 1},
+            "render_settings": {"width": 4, "height": 4},
+            "props": {"g": {"type": "number", "default": 0}},
+            "nodes": [
+                {"id": 1, "type": "background", "params": {"paint": "=rgba(prop('g'), 0, 0, 255)"}},
+                {"id": 2, "type": "media_output"}
+            ],
+            "connections": [{"from_node": 1, "to_node": 2, "to_port": "source"}]
+        }},
+        "nodes": [
+            {"id": 1, "type": "clip", "params": {
+                "composition": "tile", "duration": 1, "end": "hold", "props": {"g": "=frame * 60"}
+            }},
+            {"id": 2, "type": "motion_blur"},
+            {"id": 3, "type": "media_output"}
+        ],
+        "connections": [
+            {"from_node": 1, "to_node": 2, "to_port": "source"},
+            {"from_node": 2, "to_node": 3, "to_port": "source"}
+        ]
+    }))
+    .unwrap();
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    reference.set_static_output_reuse(false);
+    for frame in [2.0, 3.0] {
+        let actual = at(&mut renderer, &composition, frame);
+        let expected = uncached(&mut reference, &composition, frame);
+        assert!(actual == expected, "frame {frame}");
+    }
+}

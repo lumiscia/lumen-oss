@@ -1040,6 +1040,67 @@ mod tests {
     }
 
     #[test]
+    fn text_keys_switch_where_they_hold() {
+        let text_at = |source: &str, frame: u32| match evaluate(source, frame) {
+            Ok(ExpressionValue::String(text)) => text,
+            other => panic!("{source}: {other:?}"),
+        };
+        for track in [
+            "keyframes(frame, 'hold', key(0, 'ten'), key(30, 'hundred'), key(60, '1,024'))",
+            "keyframes(frame, key(0, 'ten', 'hold'), key(30, 'hundred', 'hold'), key(60, '1,024'))",
+        ] {
+            let at = |frame| text_at(track, frame);
+            assert_eq!(
+                (at(0), at(29), at(30)),
+                ("ten".into(), "ten".into(), "hundred".into())
+            );
+            assert_eq!(at(59), "hundred");
+        }
+        assert_eq!(
+            text_at(
+                "keyframes(frame, 'hold', key(0, 'ten'), key(30, 'M 0 0'))",
+                30
+            ),
+            "M 0 0"
+        );
+    }
+
+    #[test]
+    fn text_keys_need_a_hold_to_switch() {
+        for source in [
+            "keyframes(frame, key(0, 'ten'), key(30, 'hundred'))",
+            "keyframes(frame, key(0, 'ten', 'hold'), key(30, 'hundred', 'linear'), key(60, 'x'))",
+            "keyframes(frame, key(0, 'ten', 'hold'), key(frame * 0 + 30, 'a', 'out_quad'), key(60, 'x'))",
+        ] {
+            let error = match Expression::parse(source) {
+                Ok(expression) => expression
+                    .evaluate(&test_context())
+                    .unwrap_err()
+                    .to_string(),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.contains("text keys need the 'hold' easing"),
+                "{source}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_data_keys_still_interpolate_and_hold() {
+        let path = "keyframes(frame, key(0, 'M 0 0 L 10 0'), key(10, 'M 0 0 L 20 0'))";
+        assert_eq!(
+            evaluate(path, 5).unwrap(),
+            ExpressionValue::String("M 0 0 L 15 0".to_string())
+        );
+        let hold = "keyframes(frame, 'hold', key(0, 'M 0 0 L 10 0'), key(10, 'M 0 0 Q 1 1 2 2'))";
+        assert_eq!(
+            evaluate(hold, 5).unwrap(),
+            ExpressionValue::String("M 0 0 L 10 0".to_string())
+        );
+    }
+
+    #[test]
     fn cubic_bezier_is_the_css_curve() {
         let close = |source: &str, expected: f64| {
             let value = number_at(source, 5);
@@ -1151,8 +1212,12 @@ mod tests {
             ),
             ("keyframes(frame, 'linear')", "expects at least one key"),
             (
-                "key(0, 'a')",
-                "strings interpolate only as path data, and `value` is malformed path data",
+                "keyframes(frame, key(0, 'a'), key(10, 'b'))",
+                "the key at 0 is malformed path data",
+            ),
+            (
+                "keyframes(frame, 'hold', key(0, 'a'), key(10, 'b', 'linear'), key(20, 'c'))",
+                "the key at 10 is malformed path data",
             ),
             (
                 "abs(cubic_bezier(vec2(0, 0), vec2(1, 1)))",

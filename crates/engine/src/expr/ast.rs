@@ -24,7 +24,7 @@ pub enum ExpressionValue {
 #[derive(Debug, Clone, PartialEq, lumen_macros::StructuralHash)]
 pub struct Key {
     pub at: f64,
-    /// A number, vec2, vec3, colour or path data.
+    /// A number, vec2, vec3, colour, path data or text.
     pub value: ExpressionValue,
     /// How the curve leaves this key, or `None` for the `keyframes` default.
     pub ease: Option<Easing>,
@@ -217,6 +217,7 @@ pub struct Expression {
     pub(super) depth: usize,
     /// How `ast` is evaluated, built from it once.
     pub(super) plan: Arc<super::eval::EvalPlan>,
+    frame_dependent: bool,
 }
 
 impl ExprNode {
@@ -283,6 +284,7 @@ impl Expression {
             plan: Arc::new(super::eval::EvalPlan::new(&ast)),
             depth: ast.depth(),
             reads: Reads::of(&ast),
+            frame_dependent: frame_dependent(&ast),
             ast,
             source,
         }
@@ -296,31 +298,35 @@ impl Expression {
     /// the frame, composition and its own scope that could change: another node, a template
     /// prop, or text measured.
     pub fn is_frame_dependent(&self) -> bool {
-        let mut dependent = false;
-        super::functions::visit(&self.ast, &mut |node| {
-            dependent |= match node {
-                ExprNode::Global(global) => matches!(global, GlobalVar::Frame | GlobalVar::Time),
-                ExprNode::Node(_) | ExprNode::PropertyValue(..) | ExprNode::Param(_) => true,
-                // These count from a frame given implicitly, or read what isn't the arguments.
-                ExprNode::Builtin(builtin, _) => matches!(
-                    builtin,
-                    BuiltinFn::Progress
-                        | BuiltinFn::Tween
-                        | BuiltinFn::Prop
-                        | BuiltinFn::TextWidth
-                        | BuiltinFn::TextHeight
-                ),
-                ExprNode::Literal(_)
-                | ExprNode::Binary(..)
-                | ExprNode::Unary(..)
-                | ExprNode::Conditional(..) => false,
-            };
-        });
-        dependent
+        self.frame_dependent
     }
 }
 
-// The plan and reads follow from `ast`, so they are left out of comparisons and debug output.
+fn frame_dependent(ast: &ExprNode) -> bool {
+    let mut dependent = false;
+    super::functions::visit(ast, &mut |node| {
+        dependent |= match node {
+            ExprNode::Global(global) => matches!(global, GlobalVar::Frame | GlobalVar::Time),
+            ExprNode::Node(_) | ExprNode::PropertyValue(..) | ExprNode::Param(_) => true,
+            // These count from a frame given implicitly, or read what isn't the arguments.
+            ExprNode::Builtin(builtin, _) => matches!(
+                builtin,
+                BuiltinFn::Progress
+                    | BuiltinFn::Tween
+                    | BuiltinFn::Prop
+                    | BuiltinFn::TextWidth
+                    | BuiltinFn::TextHeight
+            ),
+            ExprNode::Literal(_)
+            | ExprNode::Binary(..)
+            | ExprNode::Unary(..)
+            | ExprNode::Conditional(..) => false,
+        };
+    });
+    dependent
+}
+
+// The plan, reads and frame dependence follow from `ast`, so they are left out of comparisons and debug output.
 impl PartialEq for Expression {
     fn eq(&self, other: &Self) -> bool {
         self.ast == other.ast && self.source == other.source
