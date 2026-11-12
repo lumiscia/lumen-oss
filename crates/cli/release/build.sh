@@ -9,10 +9,10 @@ manifest="$root/crates/cli/release"
 target="${CARGO_TARGET_DIR:-$root/target}"
 
 case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64) triplet=x64-linux-release package=lumen-cli-linux-x64 features=static-ffmpeg,cuda ;;
-  Linux-aarch64) triplet=arm64-linux-release package=lumen-cli-linux-arm64 features=static-ffmpeg,cuda ;;
+  Linux-x86_64) rust_target=x86_64-unknown-linux-gnu triplet=x64-linux-release package=lumen-cli-linux-x64 features=static-ffmpeg,cuda ;;
+  Linux-aarch64) rust_target=aarch64-unknown-linux-gnu triplet=arm64-linux-release package=lumen-cli-linux-arm64 features=static-ffmpeg,cuda ;;
   Darwin-arm64)
-    triplet=arm64-osx-13 package=lumen-cli-darwin-arm64 features=static-ffmpeg,metal
+    rust_target=aarch64-apple-darwin triplet=arm64-osx-13 package=lumen-cli-darwin-arm64 features=static-ffmpeg,metal
     # The oldest macOS the binary runs on; triplets/arm64-osx-13.cmake sets it for the libraries.
     export MACOSX_DEPLOYMENT_TARGET=13.0
     ;;
@@ -53,10 +53,22 @@ PKG_CONFIG_PATH="$installed/$triplet/lib/pkgconfig" cargo build \
   --config 'profile.release.strip=true'
 
 out="$root/packages/$package"
-rm -rf "$out/bin" "$out/licenses"
+rm -rf "$out/bin" "$out/licenses" "$out/LICENSE"
 mkdir -p "$out/bin" "$out/licenses"
 cp "$target/release/lumen" "$out/bin/lumen"
+# x264 and x265 put the binary as a whole under the GPL; licenses/ has each part's own license.
+cp "$manifest/GPL-3.0.txt" "$out/LICENSE"
 cp "$root/LICENSE" "$out/licenses/lumen.txt"
+cp "$root/crates/text/assets/roboto/LICENSE.txt" "$out/licenses/roboto-font.txt"
+cargo about generate \
+  --config "$manifest/about.toml" \
+  --manifest-path "$root/crates/cli/Cargo.toml" \
+  --features "$features" \
+  --target "$rust_target" \
+  --locked \
+  --fail \
+  --output-file "$out/licenses/rust-crates.txt" \
+  "$manifest/about.hbs"
 for copyright in "$installed/$triplet"/share/*/copyright; do
   port="$(basename "$(dirname "$copyright")")"
   case "$port" in

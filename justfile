@@ -62,3 +62,7 @@ verify-definitions:
     cargo run -p lumen-generators -- "$tmpdir"
     pnpm exec oxfmt --write "$tmpdir"
     diff -u {{ definitions_out }}/composition.schema.json "$tmpdir/composition.schema.json"
+
+# Checks every Rust dependency's license against deny.toml, as CI does. Needs cargo-deny.
+licenses:
+    cargo deny check licenses
