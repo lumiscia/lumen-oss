@@ -16,11 +16,76 @@ use crate::{
 impl Expression {
     pub fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
         let _evaluation = EvaluationGuard::enter(self.depth)?;
-        let value = self.plan.evaluate(ctx)?;
-        match unusable_result(value.kind()) {
-            Some(details) => Err(LumenError::evaluate(details)),
-            None => Ok(value),
+        let mut scratch = Scratch::new(&self.plan);
+        usable(
+            self.plan
+                .evaluate_step(self.plan.roots[0], ctx, &mut scratch)?,
+        )
+    }
+}
+
+/// `value`, unless it is a kind no param takes.
+fn usable(value: ExpressionValue) -> crate::Result<ExpressionValue> {
+    match unusable_result(value.kind()) {
+        Some(details) => Err(LumenError::evaluate(details)),
+        None => Ok(value),
+    }
+}
+
+/// Expressions evaluated for each copy of an `instance_3d` as one plan, so a step they share is
+/// evaluated once per copy, and a step that reads neither `instance` nor `instance_count` is
+/// evaluated once for all copies, by the first copy that reaches it. Every evaluation must be in
+/// the same context but for its instance scope.
+#[cfg_attr(
+    not(feature = "3d"),
+    allow(dead_code, reason = "only instance_3d evaluates copies")
+)]
+pub(crate) struct InstanceEvaluator {
+    plan: EvalPlan,
+    depths: Vec<usize>,
+    scratch: Scratch,
+    /// The copy whose values the memo holds.
+    copy: Option<InstanceScope>,
+}
+
+#[cfg_attr(
+    not(feature = "3d"),
+    allow(dead_code, reason = "only instance_3d evaluates copies")
+)]
+impl InstanceEvaluator {
+    pub(crate) fn new<'e>(expressions: impl IntoIterator<Item = &'e Expression>) -> Self {
+        let expressions: Vec<&Expression> = expressions.into_iter().collect();
+        let asts: Vec<&ExprNode> = expressions
+            .iter()
+            .map(|expression| &expression.ast)
+            .collect();
+        let plan = EvalPlan::build(&asts, true);
+        Self {
+            scratch: Scratch::new(&plan),
+            plan,
+            depths: expressions
+                .iter()
+                .map(|expression| expression.depth)
+                .collect(),
+            copy: None,
         }
+    }
+
+    /// The value of the `index`th expression for the copy `ctx` is scoped to.
+    pub(crate) fn evaluate(
+        &mut self,
+        index: usize,
+        ctx: &ExpressionContext<'_>,
+    ) -> crate::Result<ExpressionValue> {
+        if self.copy != ctx.instance {
+            self.scratch.memo[self.plan.kept_slots..].fill(None);
+            self.copy = ctx.instance;
+        }
+        let _evaluation = EvaluationGuard::enter(self.depths[index])?;
+        usable(
+            self.plan
+                .evaluate_step(self.plan.roots[index], ctx, &mut self.scratch)?,
+        )
     }
 }
 
@@ -84,15 +149,37 @@ impl Drop for EvaluationGuard {
 #[derive(Debug)]
 pub(crate) struct EvalPlan {
     steps: Vec<Step>,
-    root: usize,
+    /// The step of each expression the plan evaluates.
+    roots: Vec<usize>,
     memo_slots: usize,
+    /// Memo slots below this one hold steps whose value is the same for every copy of an
+    /// `instance_3d`.
+    kept_slots: usize,
 }
 
 #[derive(Debug)]
 struct Step {
     op: Op,
-    /// Where an evaluation keeps the value of a step that more than one step reads.
+    /// Where an evaluation keeps the value of the step, when more than one step reads it or it
+    /// is kept for every copy.
     memo: Option<usize>,
+}
+
+/// What an evaluation of a plan works in: the memo of its steps, and the arguments of the builtin
+/// calls it has open.
+#[derive(Debug)]
+struct Scratch {
+    memo: Vec<Option<ExpressionValue>>,
+    args: Vec<ExpressionValue>,
+}
+
+impl Scratch {
+    fn new(plan: &EvalPlan) -> Self {
+        Self {
+            memo: vec![None; plan.memo_slots],
+            args: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -145,91 +232,130 @@ impl Hash for Literal {
     }
 }
 
+impl Op {
+    /// The steps this one reads.
+    fn operands(&self) -> impl Iterator<Item = usize> + '_ {
+        let (fixed, args): ([Option<usize>; 3], &[usize]) = match self {
+            Op::Unary(_, value) => ([Some(*value), None, None], &[]),
+            Op::Binary(lhs, _, rhs) => ([Some(*lhs), Some(*rhs), None], &[]),
+            Op::Builtin(_, args) => ([None; 3], args),
+            Op::Conditional(condition, when_true, when_false) => {
+                ([Some(*condition), Some(*when_true), Some(*when_false)], &[])
+            }
+            Op::Literal(_)
+            | Op::Global(_)
+            | Op::ReadProperty(..)
+            | Op::NodeRef(_)
+            | Op::MeasureNode(..) => ([None; 3], &[]),
+        };
+        fixed.into_iter().flatten().chain(args.iter().copied())
+    }
+}
+
 impl EvalPlan {
     pub(crate) fn new(ast: &ExprNode) -> Self {
+        Self::build(&[ast], false)
+    }
+
+    /// The plan of `asts` together. With `per_copy`, a step that reads neither `instance` nor
+    /// `instance_count` keeps its value for every copy, in a slot below `kept_slots`, when more
+    /// than one step reads it, a step reading the instance scope reads it, or it is one of `asts`.
+    fn build(asts: &[&ExprNode], per_copy: bool) -> Self {
         let mut builder = PlanBuilder::default();
-        let root = builder.add(ast);
-        let mut reads = vec![0_u32; builder.ops.len()];
-        for op in &builder.ops {
-            match op {
-                Op::Unary(_, value) => reads[*value] += 1,
-                Op::Binary(lhs, _, rhs) => {
-                    reads[*lhs] += 1;
-                    reads[*rhs] += 1;
-                }
-                Op::Builtin(_, args) => args.iter().for_each(|arg| reads[*arg] += 1),
-                Op::Conditional(condition, when_true, when_false) => {
-                    for step in [condition, when_true, when_false] {
-                        reads[*step] += 1;
-                    }
-                }
-                Op::Literal(_)
-                | Op::Global(_)
-                | Op::ReadProperty(..)
-                | Op::NodeRef(_)
-                | Op::MeasureNode(..) => {}
+        let roots: Vec<usize> = asts.iter().map(|ast| builder.add(ast)).collect();
+        let ops = builder.ops;
+        let mut reads = vec![0_u32; ops.len()];
+        // Whether a step reads the instance scope, and whether one that does reads it.
+        let mut copied = vec![false; ops.len()];
+        let mut read_by_copied = vec![false; ops.len()];
+        for root in &roots {
+            reads[*root] += 1;
+            read_by_copied[*root] = true;
+        }
+        // Operands come before the steps reading them.
+        for (index, op) in ops.iter().enumerate() {
+            copied[index] = matches!(
+                op,
+                Op::Global(GlobalVar::Instance | GlobalVar::InstanceCount)
+            ) || op.operands().any(|operand| copied[operand]);
+            for operand in op.operands() {
+                reads[operand] += 1;
+                read_by_copied[operand] |= copied[index];
             }
         }
-        let mut memo_slots = 0;
-        let steps = builder
-            .ops
+        let kept: Vec<bool> = (0..ops.len())
+            .map(|index| per_copy && !copied[index] && (reads[index] > 1 || read_by_copied[index]))
+            .collect();
+        let kept_slots = kept.iter().filter(|kept| **kept).count();
+        let (mut next_kept, mut next_copied) = (0, kept_slots);
+        let steps = ops
             .into_iter()
-            .zip(reads)
-            .map(|(op, reads)| {
-                let memo =
-                    (reads > 1 && !matches!(op, Op::Literal(_) | Op::Global(_))).then(|| {
-                        memo_slots += 1;
-                        memo_slots - 1
-                    });
-                Step { op, memo }
+            .enumerate()
+            .map(|(index, op)| {
+                let slot = if matches!(op, Op::Literal(_) | Op::Global(_)) {
+                    None
+                } else if kept[index] {
+                    next_kept += 1;
+                    Some(next_kept - 1)
+                } else if reads[index] > 1 {
+                    next_copied += 1;
+                    Some(next_copied - 1)
+                } else {
+                    None
+                };
+                Step { op, memo: slot }
             })
             .collect();
         Self {
             steps,
-            root,
-            memo_slots,
+            roots,
+            memo_slots: next_copied,
+            kept_slots,
         }
-    }
-
-    fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
-        let mut memo = vec![None; self.memo_slots];
-        self.evaluate_step(self.root, ctx, &mut memo)
     }
 
     fn evaluate_step(
         &self,
         index: usize,
         ctx: &ExpressionContext<'_>,
-        memo: &mut [Option<ExpressionValue>],
+        scratch: &mut Scratch,
     ) -> crate::Result<ExpressionValue> {
         let step = &self.steps[index];
         if let Some(slot) = step.memo
-            && let Some(value) = &memo[slot]
+            && let Some(value) = &scratch.memo[slot]
         {
             return Ok(value.clone());
         }
         let value = match &step.op {
             Op::Literal(Literal(value)) => value.clone(),
             Op::Global(global) => global_value(*global, ctx)?,
-            Op::Unary(op, value) => unary(*op, self.evaluate_step(*value, ctx, memo)?)?,
+            Op::Unary(op, value) => unary(*op, self.evaluate_step(*value, ctx, scratch)?)?,
             Op::Binary(lhs, op, rhs) => {
-                let lhs = self.evaluate_step(*lhs, ctx, memo)?;
-                binary(lhs, *op, || self.evaluate_step(*rhs, ctx, memo))?
+                let lhs = self.evaluate_step(*lhs, ctx, scratch)?;
+                binary(lhs, *op, || self.evaluate_step(*rhs, ctx, scratch))?
             }
             Op::Builtin(builtin, args) => {
-                let args = args
+                // The arguments go on the stack of open calls' arguments, and come off it however
+                // the call ends.
+                let start = scratch.args.len();
+                let value = args
                     .iter()
-                    .map(|arg| self.evaluate_step(*arg, ctx, memo))
-                    .collect::<crate::Result<Vec<_>>>()?;
-                evaluate_builtin(*builtin, &args, ctx)?
+                    .try_for_each(|arg| {
+                        let value = self.evaluate_step(*arg, ctx, scratch)?;
+                        scratch.args.push(value);
+                        Ok(())
+                    })
+                    .and_then(|()| evaluate_builtin(*builtin, &scratch.args[start..], ctx));
+                scratch.args.truncate(start);
+                value?
             }
             Op::Conditional(condition, when_true, when_false) => {
-                let branch = if self.evaluate_step(*condition, ctx, memo)?.as_bool() {
+                let branch = if self.evaluate_step(*condition, ctx, scratch)?.as_bool() {
                     when_true
                 } else {
                     when_false
                 };
-                self.evaluate_step(*branch, ctx, memo)?
+                self.evaluate_step(*branch, ctx, scratch)?
             }
             Op::ReadProperty(node_id, property) => read_property(*node_id, property, ctx)?,
             Op::NodeRef(node_id) => {
@@ -241,7 +367,7 @@ impl EvalPlan {
             Op::MeasureNode(builtin, node_id) => measure_node(*builtin, *node_id, ctx)?,
         };
         if let Some(slot) = step.memo {
-            memo[slot] = Some(value.clone());
+            scratch.memo[slot] = Some(value.clone());
         }
         Ok(value)
     }
@@ -1938,6 +2064,47 @@ mod tests {
                 .evaluate(&test_context())
                 .expect_err("NaN bound");
             assert!(error.to_string().contains("clamp requires min <= max"));
+        }
+    }
+
+    #[test]
+    fn copies_evaluated_together_give_what_each_expression_gives_alone() {
+        let ripple = "sin(hypot(mod(instance, 4), 2) * 0.05 - frame * 0.2) * 6";
+        let sources = [
+            format!("vec3((mod(instance, 4) - 1.5) * 1.2, floor(instance / 4), {ripple})"),
+            format!("vec3(1, 1, {ripple} + 7)"),
+            "keyframes(frame, key(0, 0, 'out_expo'), key(60, 6))".to_string(),
+            "if(instance == 3, 10 / (frame - 48), instance)".to_string(),
+            "instance < 3 || glyph > 0".to_string(),
+            "if(instance < 5, 1, 10 / (frame - 48)) + instance_count".to_string(),
+            "frame == 48 || 10 / (frame - 48) > instance".to_string(),
+            "1 / (frame - 48) + instance".to_string(),
+            "node(1, 'font_size') * instance + text_width(node(1)) * 0".to_string(),
+        ];
+        let expressions: Vec<Expression> = sources
+            .iter()
+            .map(|source| Expression::parse(source).unwrap())
+            .collect();
+        let graph = chained_text_nodes(1, "32", "");
+        for frame in [47.0, 48.0] {
+            let mut together = InstanceEvaluator::new(&expressions);
+            for index in 0..7 {
+                let ctx = ExpressionContext {
+                    frame,
+                    graph: Some(&graph),
+                    instance: Some(InstanceScope { index, count: 7 }),
+                    ..test_context()
+                };
+                for (at, (source, expression)) in sources.iter().zip(&expressions).enumerate() {
+                    assert_eq!(
+                        together
+                            .evaluate(at, &ctx)
+                            .map_err(|error| error.to_string()),
+                        expression.evaluate(&ctx).map_err(|error| error.to_string()),
+                        "{source} for instance {index} at frame {frame}"
+                    );
+                }
+            }
         }
     }
 }

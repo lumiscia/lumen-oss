@@ -6,10 +6,10 @@ use lumen_3d::{Camera, MAX_SCENE_NODES};
 
 use super::{Collected, Extent, MAX_SCENE_JOINTS, MAX_SCENE_WEIGHTS, PosedSkin, placement};
 use crate::error::{ExpressionError, LumenError, RenderError};
-use crate::expr::{ExpressionContext, InstanceScope};
+use crate::expr::{ExpressionContext, InstanceEvaluator, InstanceScope};
 use crate::gpu::frame_graph::FrameCx;
-use crate::node::scene::{Instance3d, MAX_INSTANCES};
-use crate::node::{DelegateEvalContext, NodeId, required_input};
+use crate::node::scene::{Instance3d, MAX_INSTANCES, Placement3d, Pose3d};
+use crate::node::{Deferred, DelegateEvalContext, NodeId, ParamValue, required_input};
 
 const _: () = assert!(MAX_INSTANCES as usize <= MAX_SCENE_NODES);
 
@@ -43,21 +43,59 @@ fn at_instance(error: LumenError, index: u32) -> LumenError {
     }
 }
 
-/// The matrix placing copy `index` of `node` in its scene's space, in `scoped`, the context
-/// scoped to that copy.
-fn local_placement(
-    node: &Instance3d,
-    scoped: &ExpressionContext<'_>,
-    index: u32,
-) -> crate::Result<Mat4> {
-    let ctx = DelegateEvalContext {
-        node_id: node.id,
-        expr: scoped,
-    };
-    let transform = ctx
-        .eval_field("placement", &node.params.placement)
-        .map_err(|error| at_instance(error, index))?;
-    Ok(placement(&transform).matrix())
+/// Evaluates the matrix placing each of an `instance_3d`'s copies in its scene's space, from its
+/// `position`, `rotation` and `scale` evaluated together.
+struct Placer<'n> {
+    node_id: NodeId,
+    /// Each param, with where a failure of it is located.
+    params: [(&'static str, &'n Deferred<[f64; 3]>); 3],
+    /// The params that are expressions, in their order.
+    expressions: InstanceEvaluator,
+}
+
+impl<'n> Placer<'n> {
+    fn new(node: &'n Instance3d) -> Self {
+        let given = &node.params.placement;
+        let params = [
+            ("placement.position", &given.pose.position),
+            ("placement.rotation", &given.pose.rotation),
+            ("placement.scale", &given.scale),
+        ];
+        let expressions =
+            InstanceEvaluator::new(params.iter().filter_map(|(_, param)| match param {
+                Deferred::Expr(expression) => Some(expression),
+                Deferred::Value(_) => None,
+            }));
+        Self {
+            node_id: node.id,
+            params,
+            expressions,
+        }
+    }
+
+    /// The matrix of copy `index`, in `scoped`, the context scoped to that copy.
+    fn local(&mut self, scoped: &ExpressionContext<'_>, index: u32) -> crate::Result<Mat4> {
+        let mut values = [[0.0; 3]; 3];
+        let mut expression = 0;
+        for (value, (path, param)) in values.iter_mut().zip(self.params) {
+            *value = match param {
+                Deferred::Value(value) => *value,
+                Deferred::Expr(_) => {
+                    expression += 1;
+                    self.expressions
+                        .evaluate(expression - 1, scoped)
+                        .and_then(<[f64; 3]>::from_expression)
+                        .map_err(|error| at_instance(error.located(self.node_id, path), index))?
+                }
+            };
+        }
+        let [position, rotation, scale] = values;
+        Ok(placement(&Placement3d {
+            pose: Pose3d { position, rotation },
+            scale,
+        })
+        .matrix())
+    }
 }
 
 impl Collected {
@@ -190,10 +228,11 @@ impl Collected {
             return Ok(());
         }
         let mut locals = Vec::with_capacity(if keep { count as usize } else { 0 });
+        let mut placer = Placer::new(node);
         let mut scoped = cx.expr();
         for index in 0..count {
             scoped.instance = Some(InstanceScope { index, count });
-            let local = local_placement(node, &scoped, index)?;
+            let local = placer.local(&scoped, index)?;
             if keep {
                 locals.push(local);
             }
