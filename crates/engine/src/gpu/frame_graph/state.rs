@@ -34,6 +34,9 @@ pub(super) struct RecordState {
     pub(super) tick: u64,
     pub(super) paths: HashMap<(PathId, NodeId), PathId>,
     pub(super) memo: HashMap<MemoKey, Raster>,
+    /// What `FrameCx::own_values` found this frame, by node and frame.
+    pub(super) frame_values:
+        HashMap<(InstanceKey, u64), Option<Arc<[crate::expr::ExpressionValue]>>>,
     pub(super) full_frames: HashMap<(TexRef, u32, u32), Raster>,
     pub(super) statics: HashMap<GraphNodeKey, Staticness>,
     /// The textures of external targets, by the address of the texture.
@@ -59,6 +62,7 @@ impl RecordState {
     pub(super) fn begin_frame(&mut self) {
         self.tick += 1;
         self.memo.clear();
+        self.frame_values.clear();
         self.full_frames.clear();
         self.media.begin_frame();
         self.retained.begin_frame();
@@ -95,6 +99,7 @@ impl RecordState {
         self.scene.reset();
         self.shaders.clear();
         self.memo.clear();
+        self.frame_values.clear();
         self.full_frames.clear();
         self.output = None;
         self.text.reset(recorder);

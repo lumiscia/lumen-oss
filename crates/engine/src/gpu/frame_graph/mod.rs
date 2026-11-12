@@ -1279,16 +1279,14 @@ impl<'a> FrameCx<'a> {
         }
         self.st.retained.held_memo.insert(key, track.clone());
         let frame = self.frame.value();
-        let kept_elsewhere = |other: f64| {
+        let at_root = self.static_depth == 0;
+        let mut kept_elsewhere = |other: f64| {
             track.contains(other)
                 && self
                     .frame_values(node, other.into())
                     .is_some_and(|elsewhere| same_values(&elsewhere, &values))
         };
-        if self.static_depth == 0
-            && track.contains(frame)
-            && neighbouring_frames(frame).any(kept_elsewhere)
-        {
+        if at_root && track.contains(frame) && neighbouring_frames(frame).any(&mut kept_elsewhere) {
             self.retain(
                 graph,
                 node,
@@ -1305,9 +1303,8 @@ impl<'a> FrameCx<'a> {
     /// node it reads that is kept while they hold, in the same order on every frame. A node that
     /// blurs its own motion adds their values at either end of its shutter, where it evaluates
     /// them too. `None` when one fails to evaluate.
-    fn frame_values(&self, node: NodeId, frame: FrameTime) -> Option<Vec<ExpressionValue>> {
+    fn frame_values(&mut self, node: NodeId, frame: FrameTime) -> Option<Vec<ExpressionValue>> {
         let graph = self.graph_key();
-        let expr = self.scope.expr_context(frame, self.media);
         let mut values = Vec::new();
         let mut pending = vec![node];
         let mut seen = HashSet::default();
@@ -1315,37 +1312,53 @@ impl<'a> FrameCx<'a> {
             if !seen.insert(id) {
                 continue;
             }
-            let node = self.scope.node(id)?;
-            let mut contexts = vec![expr];
-            if self.analytic_motion_blur()
-                && let Some(shutter) = analytic_shutter(node)
-                && let Some(offset) = crate::node::motion::shutter_offset(
-                    shutter.eval(id, "motion_blur", &expr).ok()?,
-                )
-            {
-                contexts.extend([expr.at_subframe(-offset), expr.at_subframe(offset)]);
-            }
-            let mut failed = false;
-            for expr in &contexts {
-                node.for_each_expression(&mut |expression| {
-                    if !expression.is_frame_dependent() {
-                        return;
-                    }
-                    match expression.evaluate(expr) {
-                        Ok(value) => values.push(value),
-                        Err(_) => failed = true,
-                    }
-                });
-            }
-            if failed {
-                return None;
-            }
+            values.extend_from_slice(&self.own_values(id, frame)?);
             let held = |input: &NodeId| {
                 self.st.statics.get(&(graph, *input)) == Some(&Staticness::WhileEqual)
             };
-            pending.extend(node.input_ports().into_iter().flatten().filter(held));
+            let inputs = self.scope.node(id)?.input_ports();
+            pending.extend(inputs.into_iter().flatten().filter(held));
         }
         Some(values)
+    }
+
+    /// The values the params of `id` itself that read the frame take at `frame`, evaluated once
+    /// per frame for every node that reads it.
+    fn own_values(&mut self, id: NodeId, frame: FrameTime) -> Option<Arc<[ExpressionValue]>> {
+        let key = ((self.graph_key(), self.path, id), frame.value().to_bits());
+        if let Some(values) = self.st.frame_values.get(&key) {
+            return values.clone();
+        }
+        let values = self.evaluate_own_values(id, frame);
+        self.st.frame_values.insert(key, values.clone());
+        values
+    }
+
+    fn evaluate_own_values(&self, id: NodeId, frame: FrameTime) -> Option<Arc<[ExpressionValue]>> {
+        let expr = self.scope.expr_context(frame, self.media);
+        let node = self.scope.node(id)?;
+        let mut contexts = vec![expr];
+        if self.analytic_motion_blur()
+            && let Some(shutter) = analytic_shutter(node)
+            && let Some(offset) =
+                crate::node::motion::shutter_offset(shutter.eval(id, "motion_blur", &expr).ok()?)
+        {
+            contexts.extend([expr.at_subframe(-offset), expr.at_subframe(offset)]);
+        }
+        let mut values = Vec::new();
+        let mut failed = false;
+        for expr in &contexts {
+            node.for_each_expression(&mut |expression| {
+                if !expression.is_frame_dependent() {
+                    return;
+                }
+                match expression.evaluate(expr) {
+                    Ok(value) => values.push(value),
+                    Err(_) => failed = true,
+                }
+            });
+        }
+        (!failed).then(|| values.into())
     }
 
     /// Records `node_id` stored at its full display size, for readers that read texel for texel.
