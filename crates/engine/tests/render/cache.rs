@@ -628,3 +628,47 @@ fn a_held_value_is_kept_only_while_the_shutter_sees_it_hold() {
         }
     }
 }
+
+#[test]
+fn a_full_frame_copy_is_not_read_after_its_output_is_drawn_again() {
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    reference.set_static_output_reuse(false);
+    let composition: Composition = canvas(vec![
+        square(
+            1,
+            json!("=vec2(2 + max(0, frame - 1) * 4, 2)"),
+            4,
+            [255, 0, 0, 255],
+        ),
+        json!({
+            "id": 2, "type": "resize", "in": {"source": 1},
+            "params": {"width": 32, "height": 16}
+        }),
+    ])
+    .into();
+    for frame in [0.0, 1.0, 2.0, 3.0] {
+        let actual = at(&mut renderer, &composition, frame);
+        let expected = uncached(&mut reference, &composition, frame);
+        assert!(actual == expected, "frame {frame}");
+    }
+}
+
+#[test]
+fn text_that_gives_zero_then_negative_zero_is_drawn_again() {
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    reference.set_static_output_reuse(false);
+    let composition: Composition = canvas(vec![json!({
+        "id": 1, "type": "text", "params": {
+            "content": "=if(frame < 2, 0, -0)",
+            "font_size": 12, "position": [2, 2]
+        }
+    })])
+    .into();
+    for frame in [0.0, 1.0, 2.0, 0.0] {
+        let actual = at(&mut renderer, &composition, frame);
+        let expected = uncached(&mut reference, &composition, frame);
+        assert!(actual == expected, "frame {frame}");
+    }
+}

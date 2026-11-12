@@ -268,6 +268,24 @@ impl HoldTrack {
     }
 }
 
+/// Whether `a` and `b` are the same values to every param, which tells `0` from `-0` and holds for
+/// two NaNs of the same bits, as the same inputs give the same output.
+fn same_values(a: &[ExpressionValue], b: &[ExpressionValue]) -> bool {
+    fn same_bits(a: &[f64], b: &[f64]) -> bool {
+        a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
+    }
+    a.len() == b.len()
+        && a.iter().zip(b).all(|pair| match pair {
+            (ExpressionValue::Number(a), ExpressionValue::Number(b)) => a.to_bits() == b.to_bits(),
+            (ExpressionValue::Vec2((ax, ay)), ExpressionValue::Vec2((bx, by))) => {
+                same_bits(&[*ax, *ay], &[*bx, *by])
+            }
+            (ExpressionValue::Vec3(a), ExpressionValue::Vec3(b)) => same_bits(a, b),
+            (ExpressionValue::Color(a), ExpressionValue::Color(b)) => same_bits(a, b),
+            (a, b) => a == b,
+        })
+}
+
 /// The frames either side of `frame` among those a composition has.
 fn neighbouring_frames(frame: f64) -> impl Iterator<Item = f64> {
     [frame.floor() + 1.0, frame.ceil() - 1.0]
@@ -1144,7 +1162,7 @@ impl<'a> FrameCx<'a> {
             && let Some(slot) = self.st.retained.slots.get_mut(&(graph, node_id))
             && slot.frames.0 <= frame
             && frame <= slot.frames.1
-            && slot.values == values
+            && same_values(&slot.values, &values)
         {
             slot.last_used = self.st.tick;
             self.st.retained.skipped_passes += slot.passes;
@@ -1262,7 +1280,10 @@ impl<'a> FrameCx<'a> {
         self.st.retained.held_memo.insert(key, track.clone());
         let frame = self.frame.value();
         let kept_elsewhere = |other: f64| {
-            track.contains(other) && self.frame_values(node, other.into()).as_ref() == Some(&values)
+            track.contains(other)
+                && self
+                    .frame_values(node, other.into())
+                    .is_some_and(|elsewhere| same_values(&elsewhere, &values))
         };
         if self.static_depth == 0
             && track.contains(frame)
@@ -1334,7 +1355,9 @@ impl<'a> FrameCx<'a> {
             return Ok(raster);
         }
         let slot_key = (self.graph_key(), node_id);
+        let kept = |slot: &Slot| slot.raster.tex == raster.tex;
         if let Some(slot) = self.st.retained.slots.get(&slot_key)
+            && kept(slot)
             && let Some(full) = slot.full
         {
             return Ok(Raster {
@@ -1344,13 +1367,7 @@ impl<'a> FrameCx<'a> {
             });
         }
         let full = self.full_frame(raster);
-        if self
-            .st
-            .retained
-            .slots
-            .get(&slot_key)
-            .is_some_and(|slot| slot.raster.tex == raster.tex)
-        {
+        if self.st.retained.slots.get(&slot_key).is_some_and(kept) {
             self.rec.retain(full.tex);
             let bytes = self.rec.texture_bytes(full.tex);
             self.st.retained.bytes += bytes;
