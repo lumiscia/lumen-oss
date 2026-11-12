@@ -1,6 +1,7 @@
 //! What needs no GPU device: the graphs a composition refuses to build from, and the media it
 //! predicts a frame needs.
 
+use lumen_engine::expr::{Expression, ExpressionContext, ExpressionValue};
 use lumen_engine::{
     composition::{Composition, CompositionBuilder, RenderSettings, TimelineSettings},
     error::{GraphValidationError, LumenError},
@@ -580,4 +581,30 @@ fn color_grade_interpolation_is_a_sampling_name() {
     for value in [json!(0), json!("cubic")] {
         assert!(load(value.clone()).is_err(), "{value}");
     }
+}
+
+#[test]
+fn a_vector_written_as_a_literal_keeps_its_components_exactly() {
+    let composition = lumen_engine::json::parse(
+        r#"{
+            "timeline": { "fps": 24, "duration_frames": 12 },
+            "render_settings": { "width": 8, "height": 4 },
+            "nodes": [
+                { "id": 1, "type": "shape", "params": { "position": [0.9999999999999999, 0] } },
+                { "id": 2, "type": "media_output" }
+            ],
+            "connections": [{ "from_node": 1, "to_node": 2, "to_port": "source" }]
+        }"#,
+    )
+    .unwrap();
+    let ctx = ExpressionContext {
+        fps: composition.timeline().fps,
+        graph: Some(composition.graph()),
+        ..Default::default()
+    };
+    let equal = Expression::parse("if(node(1, 'position') == vec2(0.9999999999999999, 0), 1, 0)")
+        .unwrap()
+        .evaluate(&ctx)
+        .unwrap();
+    assert_eq!(equal, ExpressionValue::Number(1.0));
 }
