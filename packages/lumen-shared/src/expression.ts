@@ -9,6 +9,7 @@ import {
   type Vec2,
 } from "@lumiscia/lumen-types";
 
+import { setLiteral } from "./literal.js";
 import { quote } from "./quote.js";
 import type { NodeReference } from "./types.js";
 
@@ -36,7 +37,10 @@ export interface Easing {
 /** An easing name such as `ease.outExpo`, or an easing such as `cubicBezier(..)`. */
 export type EasingArg = EasingName | Expr<Easing> | Expr<string>;
 
-/** Strings are path data, which interpolate when their commands match. */
+/**
+ * Strings that are path data interpolate when their commands match; any other string keys only
+ * with the `hold` easing.
+ */
 export type KeyValue = number | Vec2 | Vec3Value | Color | string;
 
 /** What `key` evaluates to: a keyframe holding a `T`. Only `keyframes` takes it. */
@@ -328,7 +332,12 @@ function call(spec: BuiltinSpec, given: readonly (AnyArg | undefined)[]): Expr {
           : `${minArgs} to ${maxArgs}`;
     throw new TypeError(`\`${name}\` expects ${expected} arguments, got ${args.length}.`);
   }
-  return new Expr(`${name}(${(args as readonly AnyArg[]).map(lower).join(", ")})`);
+  const expr = new Expr(`${name}(${(args as readonly AnyArg[]).map(lower).join(", ")})`);
+  const numbers = args.filter((arg): arg is number => typeof arg === "number");
+  if ((name === "vec2" || name === "vec3") && numbers.length === args.length) {
+    setLiteral(expr, numbers);
+  }
+  return expr;
 }
 
 const builtins = Object.fromEntries(

@@ -726,13 +726,14 @@ fn render_summary(report: &RenderReport) -> String {
     let timing = &report.timing;
     let frames = f64::from(report.frames.max(1));
     format!(
-        "render complete frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={} held_bytes={} skipped_passes={:.1} submitted_passes={:.1}",
+        "render complete frames={} audio_mix_ms={} bind_ms={} upload_ms={} render_ms={} flush_ms={} gpu_ms={} readback_ms={} encode_send_ms={} encode_finish_ms={} total_ms={} held_bytes={} skipped_passes={:.1} submitted_passes={:.1}",
         report.frames,
         millis(timing.audio_mix),
         millis(timing.bind),
         millis(timing.upload),
         millis(timing.render),
         millis(timing.flush),
+        millis(timing.gpu),
         millis(timing.readback),
         millis(timing.encode_send),
         millis(timing.encode_finish),

@@ -136,7 +136,7 @@ impl MetalTarget {
         else {
             return Ok(());
         };
-        timed(&mut timing.flush, || {
+        timed(&mut timing.gpu, || {
             submitted.wait(&renderer.gpu_renderer().device)
         })
         .map_err(|err| poll_failed(frame, err))?;

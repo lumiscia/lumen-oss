@@ -30,6 +30,8 @@ const FLAG_SHADOW_CATCHER: u32 = 8192u;
 const FLAG_VERTEX_COLORS: u32 = 16384u;
 // Maps read their texture coordinates through the object's rows of `map_uvs`.
 const FLAG_MAP_UVS: u32 = 32768u;
+// Draws only `Object::part` of the textured quad.
+const FLAG_PART: u32 = 65536u;
 // No vertex extras, in `Object::extras`.
 const NO_EXTRAS: u32 = 0xffffffffu;
 // Words of one morph target displacement: a position's, then a normal's.
@@ -125,6 +127,9 @@ struct Object {
     first_weight: u32,
     // Where its maps' five rows start in `map_uvs`.
     first_map_uv: u32,
+    // With `FLAG_PART`, the part of the textured quad drawn: its left, top, right and bottom
+    // edges in its texture coordinates.
+    part: vec4<f32>,
 }
 
 struct Vertex {
@@ -309,6 +314,12 @@ fn posed(index: u32) -> Posed {
     let vertex = vertices[vertex_index];
     var position = vec4<f32>(vertex.position[0], vertex.position[1], vertex.position[2], 1.0);
     var normal = vec3<f32>(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
+    var uv = vec2<f32>(vertex.uv[0], vertex.uv[1]);
+    if (has(o.flags, FLAG_PART)) {
+        // The quad's corners, moved to the part's along with their texture coordinates.
+        uv = mix(o.part.xy, o.part.zw, uv);
+        position = vec4<f32>(uv.x - 0.5, 0.5 - uv.y, position.z, 1.0);
+    }
     if (o.morph_targets > 0u) {
         let unmorphed = normal;
         let first = o.first_delta + (vertex_index - o.morph_vertex) * o.morph_targets * MORPH_DELTA_WORDS;
@@ -334,7 +345,7 @@ fn posed(index: u32) -> Posed {
     out.world = o.model * position;
     // Unit length at each vertex, so that its length doesn't weigh how it is interpolated.
     out.normal = unit(o.normal * normal);
-    out.uv = vec2<f32>(vertex.uv[0], vertex.uv[1]);
+    out.uv = uv;
     out.uv1 = out.uv;
     out.color = vec4<f32>(1.0);
     if (o.extras != NO_EXTRAS) {
@@ -436,7 +447,9 @@ fn solid(o: Object, uv: vec2<f32>, uv1: vec2<f32>, vertex_alpha: f32) -> bool {
     }
     var alpha = o.base_color.a * vertex_alpha;
     if (has(o.flags, FLAG_RASTER)) {
-        alpha *= textureSampleLevel(raster_tex, raster_sampler, uv, 0.0).a;
+        // Level 0 reads no shared mip texel, so its footprint is none.
+        let at = in_part(o, uv, vec2<f32>(0.0), vec2<f32>(0.0));
+        alpha *= textureSampleLevel(raster_tex, raster_sampler, at.uv, 0.0).a;
     }
     if (has(o.flags, FLAG_BASE_COLOR_MAP)) {
         let still = vec2<f32>(0.0);
@@ -638,6 +651,46 @@ fn pixel_centre_uv(position: vec2<f32>, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f
     return uv + weight * (dx * to_centre.x + dy * to_centre.y);
 }
 
+// How many footprints a sample keeps from an edge of its part that is inside the raster, so that
+// the texels a filter reads from a mip level, and the taps of an anisotropic one, lie inside the
+// part: half a footprint of taps, and up to one and a half texels of a level whose texels are at
+// most two footprints.
+const PART_EDGE_FOOTPRINTS: f32 = 4.0;
+// The distance to an edge that isn't there.
+const NO_EDGE: f32 = 1e30;
+
+// Where `o` reads its raster at `uv` over a footprint of `dx` and `dy`, so that filtering reads
+// nothing from beyond the edges of its part that are inside the raster; the raster's own edges are
+// the sampler's. Within `PART_EDGE_FOOTPRINTS` footprints of such an edge the footprint shrinks
+// to what keeps the texels it reads inside, down to the first level, whatever the part's width;
+// `uv` is then kept half a texel of the level read from the edge, which is what keeps the
+// linear filter inside at that level. Further from them, and for a plane with no part, `uv`, `dx`
+// and `dy` are returned as they are.
+fn in_part(o: Object, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> MapCoords {
+    if (!has(o.flags, FLAG_PART)) {
+        return MapCoords(uv, dx, dy);
+    }
+    let size = vec2<f32>(textureDimensions(raster_tex));
+    let last = f32(textureNumLevels(raster_tex) - 1u);
+    let to_low = select(vec2<f32>(NO_EDGE), (uv - o.part.xy) * size, o.part.xy > vec2<f32>(0.0));
+    let to_high = select(vec2<f32>(NO_EDGE), (o.part.zw - uv) * size, o.part.zw < vec2<f32>(1.0));
+    let reach = max(min(min(to_low.x, to_low.y), min(to_high.x, to_high.y)), 0.0);
+    let footprint = max(length(dx * size), length(dy * size));
+    // A level's texels are twice the last one's, or a little more where the raster's sides aren't
+    // powers of two, and no more than the level the whole footprint reads.
+    let level = clamp(ceil(log2(max(footprint, 1.0))), 0.0, last);
+    let texel = size / vec2<f32>(textureDimensions(raster_tex, u32(level)));
+    let uneven = max(texel.x, texel.y) / exp2(level);
+    let fit = reach / (PART_EDGE_FOOTPRINTS * uneven * max(footprint, 1e-6));
+    let scale = min(fit, 1.0);
+    let shrunk = clamp(ceil(log2(max(footprint * scale, 1.0))), 0.0, last);
+    let inset = 0.5 / vec2<f32>(textureDimensions(raster_tex, u32(shrunk)));
+    let middle = (o.part.xy + o.part.zw) * 0.5;
+    let low = min(o.part.xy + select(vec2<f32>(0.0), inset, o.part.xy > vec2<f32>(0.0)), middle);
+    let high = max(o.part.zw - select(vec2<f32>(0.0), inset, o.part.zw < vec2<f32>(1.0)), middle);
+    return MapCoords(clamp(uv, low, high), dx * scale, dy * scale);
+}
+
 // The raster at `uv`, over a footprint of `dx` and `dy`, as linear colour with straight alpha. A
 // raster with mip levels is filtered to the footprint.
 fn raster_texel(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
@@ -782,7 +835,8 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     let raster = has(o.flags, FLAG_RASTER);
     var texel = vec4<f32>(1.0);
     if (raster) {
-        texel = raster_texel(pixel_centre_uv(in.clip.xy, in.uv, uv_dx, uv_dy), uv_dx, uv_dy);
+        let at = in_part(o, pixel_centre_uv(in.clip.xy, in.uv, uv_dx, uv_dy), uv_dx, uv_dy);
+        texel = raster_texel(at.uv, at.dx, at.dy);
     }
     var emissive = o.emissive * texel.rgb;
     if (has(o.flags, FLAG_EMISSIVE_MAP)) {

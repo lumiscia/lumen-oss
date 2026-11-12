@@ -16,11 +16,79 @@ use crate::{
 impl Expression {
     pub fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
         let _evaluation = EvaluationGuard::enter(self.depth)?;
-        let value = self.plan.evaluate(ctx)?;
-        match unusable_result(value.kind()) {
-            Some(details) => Err(LumenError::evaluate(details)),
-            None => Ok(value),
+        let mut scratch = Scratch::new(&self.plan);
+        usable(
+            self.plan
+                .evaluate_step(self.plan.roots[0], ctx, &mut scratch)?,
+        )
+    }
+}
+
+/// `value`, unless it is a kind no param takes.
+fn usable(value: ExpressionValue) -> crate::Result<ExpressionValue> {
+    match unusable_result(value.kind()) {
+        Some(details) => Err(LumenError::evaluate(details)),
+        None => Ok(value),
+    }
+}
+
+/// Expressions evaluated for each copy of an `instance_3d` as one plan, so a step they share is
+/// evaluated once per copy, and a step that reads neither `instance` nor `instance_count` is
+/// evaluated once for all copies, by the first copy that reaches it. Every evaluation must be in
+/// the same context but for its instance scope. A step that is not pure, or reads one that is
+/// not, is evaluated for each expression as it would be alone.
+#[cfg_attr(
+    not(feature = "3d"),
+    allow(dead_code, reason = "only instance_3d evaluates copies")
+)]
+pub(crate) struct InstanceEvaluator {
+    plan: EvalPlan,
+    depths: Vec<usize>,
+    scratch: Scratch,
+    /// The copy whose values the memo holds.
+    copy: Option<InstanceScope>,
+}
+
+#[cfg_attr(
+    not(feature = "3d"),
+    allow(dead_code, reason = "only instance_3d evaluates copies")
+)]
+impl InstanceEvaluator {
+    pub(crate) fn new<'e>(expressions: impl IntoIterator<Item = &'e Expression>) -> Self {
+        let expressions: Vec<&Expression> = expressions.into_iter().collect();
+        let asts: Vec<&ExprNode> = expressions
+            .iter()
+            .map(|expression| &expression.ast)
+            .collect();
+        let plan = EvalPlan::build(&asts, true);
+        Self {
+            scratch: Scratch::new(&plan),
+            plan,
+            depths: expressions
+                .iter()
+                .map(|expression| expression.depth)
+                .collect(),
+            copy: None,
         }
+    }
+
+    /// The value of the `index`th expression for the copy `ctx` is scoped to.
+    pub(crate) fn evaluate(
+        &mut self,
+        index: usize,
+        ctx: &ExpressionContext<'_>,
+    ) -> crate::Result<ExpressionValue> {
+        if self.copy != ctx.instance {
+            self.scratch.memo[self.plan.kept_slots..].fill(None);
+            self.copy = ctx.instance;
+        } else {
+            self.scratch.memo[self.plan.shared_slots..].fill(None);
+        }
+        let _evaluation = EvaluationGuard::enter(self.depths[index])?;
+        usable(
+            self.plan
+                .evaluate_step(self.plan.roots[index], ctx, &mut self.scratch)?,
+        )
     }
 }
 
@@ -84,15 +152,41 @@ impl Drop for EvaluationGuard {
 #[derive(Debug)]
 pub(crate) struct EvalPlan {
     steps: Vec<Step>,
-    root: usize,
+    /// The step of each expression the plan evaluates.
+    roots: Vec<usize>,
     memo_slots: usize,
+    /// Memo slots below this one hold steps whose value is the same for every copy of an
+    /// `instance_3d`.
+    kept_slots: usize,
+    /// Memo slots from `kept_slots` below this one hold pure steps shared by the expressions for
+    /// one copy. The slots from here hold steps that are not pure, which an expression reuses
+    /// only within its own evaluation.
+    shared_slots: usize,
 }
 
 #[derive(Debug)]
 struct Step {
     op: Op,
-    /// Where an evaluation keeps the value of a step that more than one step reads.
+    /// Where an evaluation keeps the value of the step, when more than one step reads it or it
+    /// is kept for every copy.
     memo: Option<usize>,
+}
+
+/// What an evaluation of a plan works in: the memo of its steps, and the arguments of the builtin
+/// calls it has open.
+#[derive(Debug)]
+struct Scratch {
+    memo: Vec<Option<ExpressionValue>>,
+    args: Vec<ExpressionValue>,
+}
+
+impl Scratch {
+    fn new(plan: &EvalPlan) -> Self {
+        Self {
+            memo: vec![None; plan.memo_slots],
+            args: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -145,91 +239,238 @@ impl Hash for Literal {
     }
 }
 
+impl Op {
+    /// Whether the value can differ for the same operands and frame-constant context: it reads
+    /// another node, measures text with a font session that its measurements load fonts into, or
+    /// reads the props of the template. Every builtin is listed, so a new one has to be classed.
+    fn reads_state(&self) -> bool {
+        match self {
+            Op::ReadProperty(..) | Op::NodeRef(_) | Op::MeasureNode(..) => true,
+            Op::Literal(_)
+            | Op::Global(_)
+            | Op::Unary(..)
+            | Op::Binary(..)
+            | Op::Conditional(..) => false,
+            Op::Builtin(builtin, _) => match builtin {
+                BuiltinFn::TextWidth | BuiltinFn::TextHeight | BuiltinFn::Prop => true,
+                BuiltinFn::Min
+                | BuiltinFn::Max
+                | BuiltinFn::Abs
+                | BuiltinFn::Floor
+                | BuiltinFn::Ceil
+                | BuiltinFn::Round
+                | BuiltinFn::Sin
+                | BuiltinFn::Cos
+                | BuiltinFn::Clamp
+                | BuiltinFn::Lerp
+                | BuiltinFn::Pow
+                | BuiltinFn::Mod
+                | BuiltinFn::Fract
+                | BuiltinFn::Sign
+                | BuiltinFn::Atan2
+                | BuiltinFn::Hypot
+                | BuiltinFn::Remap
+                | BuiltinFn::Smoothstep
+                | BuiltinFn::Step
+                | BuiltinFn::Uppercase
+                | BuiltinFn::Lowercase
+                | BuiltinFn::Format
+                | BuiltinFn::Concat
+                | BuiltinFn::Vec2
+                | BuiltinFn::Vec3
+                | BuiltinFn::Rgb
+                | BuiltinFn::Rgba
+                | BuiltinFn::Progress
+                | BuiltinFn::Tween
+                | BuiltinFn::Ease
+                | BuiltinFn::CubicBezier
+                | BuiltinFn::Key
+                | BuiltinFn::Keyframes
+                | BuiltinFn::Noise
+                | BuiltinFn::Random
+                | BuiltinFn::Spring
+                | BuiltinFn::PathPoint
+                | BuiltinFn::PathAngle
+                | BuiltinFn::InQuad
+                | BuiltinFn::OutQuad
+                | BuiltinFn::InOutQuad
+                | BuiltinFn::InCubic
+                | BuiltinFn::OutCubic
+                | BuiltinFn::InOutCubic
+                | BuiltinFn::InExpo
+                | BuiltinFn::OutExpo
+                | BuiltinFn::InOutExpo
+                | BuiltinFn::InBack
+                | BuiltinFn::OutBack
+                | BuiltinFn::InOutBack
+                | BuiltinFn::InSine
+                | BuiltinFn::OutSine
+                | BuiltinFn::InOutSine
+                | BuiltinFn::InQuart
+                | BuiltinFn::OutQuart
+                | BuiltinFn::InOutQuart
+                | BuiltinFn::InQuint
+                | BuiltinFn::OutQuint
+                | BuiltinFn::InOutQuint
+                | BuiltinFn::InCirc
+                | BuiltinFn::OutCirc
+                | BuiltinFn::InOutCirc
+                | BuiltinFn::InElastic
+                | BuiltinFn::OutElastic
+                | BuiltinFn::InOutElastic
+                | BuiltinFn::InBounce
+                | BuiltinFn::OutBounce
+                | BuiltinFn::InOutBounce => false,
+            },
+        }
+    }
+
+    /// The steps this one reads.
+    fn operands(&self) -> impl Iterator<Item = usize> + '_ {
+        let (fixed, args): ([Option<usize>; 3], &[usize]) = match self {
+            Op::Unary(_, value) => ([Some(*value), None, None], &[]),
+            Op::Binary(lhs, _, rhs) => ([Some(*lhs), Some(*rhs), None], &[]),
+            Op::Builtin(_, args) => ([None; 3], args),
+            Op::Conditional(condition, when_true, when_false) => {
+                ([Some(*condition), Some(*when_true), Some(*when_false)], &[])
+            }
+            Op::Literal(_)
+            | Op::Global(_)
+            | Op::ReadProperty(..)
+            | Op::NodeRef(_)
+            | Op::MeasureNode(..) => ([None; 3], &[]),
+        };
+        fixed.into_iter().flatten().chain(args.iter().copied())
+    }
+}
+
+/// Which memo slots a step's value is kept in, in their order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slots {
+    Kept,
+    Shared,
+    Local,
+}
+
+/// Whether `op` is cheaper to evaluate than to remember.
+fn is_leaf(op: &Op) -> bool {
+    matches!(op, Op::Literal(_) | Op::Global(_))
+}
+
 impl EvalPlan {
     pub(crate) fn new(ast: &ExprNode) -> Self {
+        Self::build(&[ast], false)
+    }
+
+    /// The plan of `asts` together. With `per_copy`, a pure step that reads neither `instance` nor
+    /// `instance_count` keeps its value for every copy, in a slot below `kept_slots`, when more
+    /// than one step reads it, a step reading the instance scope reads it, or it is one of `asts`.
+    fn build(asts: &[&ExprNode], per_copy: bool) -> Self {
         let mut builder = PlanBuilder::default();
-        let root = builder.add(ast);
-        let mut reads = vec![0_u32; builder.ops.len()];
-        for op in &builder.ops {
-            match op {
-                Op::Unary(_, value) => reads[*value] += 1,
-                Op::Binary(lhs, _, rhs) => {
-                    reads[*lhs] += 1;
-                    reads[*rhs] += 1;
-                }
-                Op::Builtin(_, args) => args.iter().for_each(|arg| reads[*arg] += 1),
-                Op::Conditional(condition, when_true, when_false) => {
-                    for step in [condition, when_true, when_false] {
-                        reads[*step] += 1;
-                    }
-                }
-                Op::Literal(_)
-                | Op::Global(_)
-                | Op::ReadProperty(..)
-                | Op::NodeRef(_)
-                | Op::MeasureNode(..) => {}
+        let roots: Vec<usize> = asts.iter().map(|ast| builder.add(ast)).collect();
+        let ops = builder.ops;
+        let mut reads = vec![0_u32; ops.len()];
+        // Whether a step reads the instance scope, whether it reads something that is not pure,
+        // and whether a step that reads the instance scope reads it.
+        let mut copied = vec![false; ops.len()];
+        let mut impure = vec![false; ops.len()];
+        let mut read_by_copied = vec![false; ops.len()];
+        for root in &roots {
+            reads[*root] += 1;
+            read_by_copied[*root] = true;
+        }
+        // Operands come before the steps reading them.
+        for (index, op) in ops.iter().enumerate() {
+            copied[index] = matches!(
+                op,
+                Op::Global(GlobalVar::Instance | GlobalVar::InstanceCount)
+            ) || op.operands().any(|operand| copied[operand]);
+            impure[index] = op.reads_state() || op.operands().any(|operand| impure[operand]);
+            for operand in op.operands() {
+                reads[operand] += 1;
+                read_by_copied[operand] |= copied[index];
             }
         }
-        let mut memo_slots = 0;
-        let steps = builder
-            .ops
+        let slots: Vec<Option<Slots>> = (0..ops.len())
+            .map(|index| {
+                if is_leaf(&ops[index]) {
+                    None
+                } else if impure[index] {
+                    (reads[index] > 1).then_some(Slots::Local)
+                } else if per_copy && !copied[index] && (reads[index] > 1 || read_by_copied[index])
+                {
+                    Some(Slots::Kept)
+                } else {
+                    (reads[index] > 1).then_some(Slots::Shared)
+                }
+            })
+            .collect();
+        let count = |class| slots.iter().filter(|slot| **slot == Some(class)).count();
+        let kept_slots = count(Slots::Kept);
+        let shared_slots = kept_slots + count(Slots::Shared);
+        let mut next = [0, kept_slots, shared_slots];
+        let steps = ops
             .into_iter()
-            .zip(reads)
-            .map(|(op, reads)| {
-                let memo =
-                    (reads > 1 && !matches!(op, Op::Literal(_) | Op::Global(_))).then(|| {
-                        memo_slots += 1;
-                        memo_slots - 1
-                    });
-                Step { op, memo }
+            .zip(&slots)
+            .map(|(op, slot)| Step {
+                op,
+                memo: slot.map(|class| {
+                    next[class as usize] += 1;
+                    next[class as usize] - 1
+                }),
             })
             .collect();
         Self {
             steps,
-            root,
-            memo_slots,
+            roots,
+            memo_slots: next[Slots::Local as usize],
+            kept_slots,
+            shared_slots,
         }
-    }
-
-    fn evaluate(&self, ctx: &ExpressionContext<'_>) -> crate::Result<ExpressionValue> {
-        let mut memo = vec![None; self.memo_slots];
-        self.evaluate_step(self.root, ctx, &mut memo)
     }
 
     fn evaluate_step(
         &self,
         index: usize,
         ctx: &ExpressionContext<'_>,
-        memo: &mut [Option<ExpressionValue>],
+        scratch: &mut Scratch,
     ) -> crate::Result<ExpressionValue> {
         let step = &self.steps[index];
         if let Some(slot) = step.memo
-            && let Some(value) = &memo[slot]
+            && let Some(value) = &scratch.memo[slot]
         {
             return Ok(value.clone());
         }
         let value = match &step.op {
             Op::Literal(Literal(value)) => value.clone(),
             Op::Global(global) => global_value(*global, ctx)?,
-            Op::Unary(op, value) => unary(*op, self.evaluate_step(*value, ctx, memo)?)?,
+            Op::Unary(op, value) => unary(*op, self.evaluate_step(*value, ctx, scratch)?)?,
             Op::Binary(lhs, op, rhs) => {
-                let lhs = self.evaluate_step(*lhs, ctx, memo)?;
-                binary(lhs, *op, || self.evaluate_step(*rhs, ctx, memo))?
+                let lhs = self.evaluate_step(*lhs, ctx, scratch)?;
+                binary(lhs, *op, || self.evaluate_step(*rhs, ctx, scratch))?
             }
             Op::Builtin(builtin, args) => {
-                let args = args
+                // The arguments go on the stack of open calls' arguments, and come off it however
+                // the call ends.
+                let start = scratch.args.len();
+                let value = args
                     .iter()
-                    .map(|arg| self.evaluate_step(*arg, ctx, memo))
-                    .collect::<crate::Result<Vec<_>>>()?;
-                evaluate_builtin(*builtin, &args, ctx)?
+                    .try_for_each(|arg| {
+                        let value = self.evaluate_step(*arg, ctx, scratch)?;
+                        scratch.args.push(value);
+                        Ok(())
+                    })
+                    .and_then(|()| evaluate_builtin(*builtin, &scratch.args[start..], ctx));
+                scratch.args.truncate(start);
+                value?
             }
             Op::Conditional(condition, when_true, when_false) => {
-                let branch = if self.evaluate_step(*condition, ctx, memo)?.as_bool() {
+                let branch = if self.evaluate_step(*condition, ctx, scratch)?.as_bool() {
                     when_true
                 } else {
                     when_false
                 };
-                self.evaluate_step(*branch, ctx, memo)?
+                self.evaluate_step(*branch, ctx, scratch)?
             }
             Op::ReadProperty(node_id, property) => read_property(*node_id, property, ctx)?,
             Op::NodeRef(node_id) => {
@@ -241,7 +482,7 @@ impl EvalPlan {
             Op::MeasureNode(builtin, node_id) => measure_node(*builtin, *node_id, ctx)?,
         };
         if let Some(slot) = step.memo {
-            memo[slot] = Some(value.clone());
+            scratch.memo[slot] = Some(value.clone());
         }
         Ok(value)
     }
@@ -799,6 +1040,67 @@ mod tests {
     }
 
     #[test]
+    fn text_keys_switch_where_they_hold() {
+        let text_at = |source: &str, frame: u32| match evaluate(source, frame) {
+            Ok(ExpressionValue::String(text)) => text,
+            other => panic!("{source}: {other:?}"),
+        };
+        for track in [
+            "keyframes(frame, 'hold', key(0, 'ten'), key(30, 'hundred'), key(60, '1,024'))",
+            "keyframes(frame, key(0, 'ten', 'hold'), key(30, 'hundred', 'hold'), key(60, '1,024'))",
+        ] {
+            let at = |frame| text_at(track, frame);
+            assert_eq!(
+                (at(0), at(29), at(30)),
+                ("ten".into(), "ten".into(), "hundred".into())
+            );
+            assert_eq!(at(59), "hundred");
+        }
+        assert_eq!(
+            text_at(
+                "keyframes(frame, 'hold', key(0, 'ten'), key(30, 'M 0 0'))",
+                30
+            ),
+            "M 0 0"
+        );
+    }
+
+    #[test]
+    fn text_keys_need_a_hold_to_switch() {
+        for source in [
+            "keyframes(frame, key(0, 'ten'), key(30, 'hundred'))",
+            "keyframes(frame, key(0, 'ten', 'hold'), key(30, 'hundred', 'linear'), key(60, 'x'))",
+            "keyframes(frame, key(0, 'ten', 'hold'), key(frame * 0 + 30, 'a', 'out_quad'), key(60, 'x'))",
+        ] {
+            let error = match Expression::parse(source) {
+                Ok(expression) => expression
+                    .evaluate(&test_context())
+                    .unwrap_err()
+                    .to_string(),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.contains("text keys need the 'hold' easing"),
+                "{source}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_data_keys_still_interpolate_and_hold() {
+        let path = "keyframes(frame, key(0, 'M 0 0 L 10 0'), key(10, 'M 0 0 L 20 0'))";
+        assert_eq!(
+            evaluate(path, 5).unwrap(),
+            ExpressionValue::String("M 0 0 L 15 0".to_string())
+        );
+        let hold = "keyframes(frame, 'hold', key(0, 'M 0 0 L 10 0'), key(10, 'M 0 0 Q 1 1 2 2'))";
+        assert_eq!(
+            evaluate(hold, 5).unwrap(),
+            ExpressionValue::String("M 0 0 L 10 0".to_string())
+        );
+    }
+
+    #[test]
     fn cubic_bezier_is_the_css_curve() {
         let close = |source: &str, expected: f64| {
             let value = number_at(source, 5);
@@ -910,8 +1212,12 @@ mod tests {
             ),
             ("keyframes(frame, 'linear')", "expects at least one key"),
             (
-                "key(0, 'a')",
-                "strings interpolate only as path data, and `value` is malformed path data",
+                "keyframes(frame, key(0, 'a'), key(10, 'b'))",
+                "the key at 0 is malformed path data",
+            ),
+            (
+                "keyframes(frame, 'hold', key(0, 'a'), key(10, 'b', 'linear'), key(20, 'c'))",
+                "the key at 10 is malformed path data",
             ),
             (
                 "abs(cubic_bezier(vec2(0, 0), vec2(1, 1)))",
@@ -1938,6 +2244,161 @@ mod tests {
                 .evaluate(&test_context())
                 .expect_err("NaN bound");
             assert!(error.to_string().contains("clamp requires min <= max"));
+        }
+    }
+
+    #[test]
+    fn copies_evaluated_together_give_what_each_expression_gives_alone() {
+        let ripple = "sin(hypot(mod(instance, 4), 2) * 0.05 - frame * 0.2) * 6";
+        let sources = [
+            format!("vec3((mod(instance, 4) - 1.5) * 1.2, floor(instance / 4), {ripple})"),
+            format!("vec3(1, 1, {ripple} + 7)"),
+            "keyframes(frame, key(0, 0, 'out_expo'), key(60, 6))".to_string(),
+            "if(instance == 3, 10 / (frame - 48), instance)".to_string(),
+            "instance < 3 || glyph > 0".to_string(),
+            "if(instance < 5, 1, 10 / (frame - 48)) + instance_count".to_string(),
+            "frame == 48 || 10 / (frame - 48) > instance".to_string(),
+            "1 / (frame - 48) + instance".to_string(),
+            "node(1, 'font_size') * instance + text_width(node(1)) * 0".to_string(),
+            "sin(node(1, 'font_size')) + instance + sin(node(1, 'font_size'))".to_string(),
+            "hypot(text_width('WW', 16), 2) + instance_count + hypot(text_width('WW', 16), 2)"
+                .to_string(),
+        ];
+        let expressions: Vec<Expression> = sources
+            .iter()
+            .map(|source| Expression::parse(source).unwrap())
+            .collect();
+        let graph = chained_text_nodes(1, "32", "");
+        for frame in [47.0, 48.0] {
+            let mut together = InstanceEvaluator::new(&expressions);
+            for index in 0..7 {
+                let ctx = ExpressionContext {
+                    frame,
+                    graph: Some(&graph),
+                    instance: Some(InstanceScope { index, count: 7 }),
+                    ..test_context()
+                };
+                for (at, (source, expression)) in sources.iter().zip(&expressions).enumerate() {
+                    assert_eq!(
+                        together
+                            .evaluate(at, &ctx)
+                            .map_err(|error| error.to_string()),
+                        expression.evaluate(&ctx).map_err(|error| error.to_string()),
+                        "{source} for instance {index} at frame {frame}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Serves the bundled Roboto and Inter together for `Roboto`, and nothing for any other family.
+    #[derive(Debug, Default)]
+    struct RobotoWithInter {
+        session: crate::media::TextSession,
+    }
+
+    struct RobotoAndInter;
+
+    impl crate::media::FontResolver for RobotoAndInter {
+        fn data(&self) -> Result<Vec<Vec<u8>>, crate::error::MediaError> {
+            Ok(vec![
+                lumen_text::ROBOTO_REGULAR_BYTES.to_vec(),
+                include_bytes!("../../../text/assets/inter/InterVariable-Latin.ttf").to_vec(),
+            ])
+        }
+    }
+
+    impl crate::media::MediaStore for RobotoWithInter {
+        fn resolve(
+            &self,
+            name: &str,
+            kind: crate::media::AssetKind,
+        ) -> Result<crate::media::ResolvedMedia, crate::error::MediaError> {
+            if name != "Roboto" || kind != crate::media::AssetKind::Font {
+                return Err(crate::error::MediaError::source_not_found(
+                    name,
+                    "not served",
+                ));
+            }
+            Ok(crate::media::ResolvedMedia::new(
+                crate::media::MediaIdentity::of_key("font-collection"),
+                crate::media::MediaResolver::Font(Box::new(RobotoAndInter)),
+            ))
+        }
+
+        fn text_session(&self) -> Option<&crate::media::TextSession> {
+            Some(&self.session)
+        }
+    }
+
+    #[test]
+    fn text_measured_before_a_font_loads_is_not_shared_with_text_measured_after() {
+        let sources = [
+            "vec3(text_width('Variable weight', 32, 0, 'Inter'), instance, frame)",
+            "vec3(text_width('WWW', 32, 0, 'Roboto'), 0, 0)",
+            "vec3(1, 1, text_width('Variable weight', 32, 0, 'Inter'))",
+        ];
+        let expressions: Vec<Expression> = sources
+            .iter()
+            .map(|source| Expression::parse(source).unwrap())
+            .collect();
+        let (together_fonts, alone_fonts) =
+            (RobotoWithInter::default(), RobotoWithInter::default());
+        let mut together = InstanceEvaluator::new(&expressions);
+        for index in 0..2 {
+            let ctx = ExpressionContext {
+                instance: Some(InstanceScope { index, count: 2 }),
+                ..test_context()
+            };
+            for (at, expression) in expressions.iter().enumerate() {
+                let shared = together.evaluate(
+                    at,
+                    &ExpressionContext {
+                        media: Some(&together_fonts),
+                        ..ctx
+                    },
+                );
+                let alone = expression.evaluate(&ExpressionContext {
+                    media: Some(&alone_fonts),
+                    ..ctx
+                });
+                assert_eq!(
+                    shared.map_err(|error| error.to_string()),
+                    alone.map_err(|error| error.to_string()),
+                    "{} for instance {index}",
+                    sources[at]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn node_reads_in_later_copies_count_against_the_evaluation_budget() {
+        let font_size = ["node({next}, 'font_size')"; 5].join(" + ");
+        let graph = chained_text_nodes(7, &font_size, "'x'");
+        for source in [
+            "vec3(if(instance == 0, 0, node(1, 'font_size')), node(1, 'font_size'), node(1, 'font_size'))",
+            "vec3(if(instance == 0, 0, sin(node(1, 'font_size'))), sin(node(1, 'font_size')), sin(node(1, 'font_size')))",
+        ] {
+            let expression = Expression::parse(source).unwrap();
+            let mut together = InstanceEvaluator::new([&expression]);
+            for index in 0..2 {
+                let ctx = ExpressionContext {
+                    graph: Some(&graph),
+                    instance: Some(InstanceScope { index, count: 2 }),
+                    ..test_context()
+                };
+                let alone = expression.evaluate(&ctx).map_err(|error| error.to_string());
+                let shared = together
+                    .evaluate(0, &ctx)
+                    .map_err(|error| error.to_string());
+                assert_eq!(shared, alone, "{source} for instance {index}");
+                assert_eq!(
+                    alone.is_err_and(|error| error.contains("10000 evaluations")),
+                    index == 1,
+                    "{source} for instance {index}"
+                );
+            }
         }
     }
 }

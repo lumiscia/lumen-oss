@@ -450,3 +450,122 @@ fn the_instance_index_is_only_readable_in_an_instance_nodes_placement() {
     )]);
     assert!(error.contains("`instance` is only available"), "{error}");
 }
+
+#[test]
+fn copies_placed_once_draw_as_copies_placed_again_under_a_moving_parent() {
+    let gpu = gpu();
+    let media = TestMedia::default();
+    let composition: Composition = scene(
+        SIZE,
+        json!([
+            json!({ "id": 51, "type": "camera_3d", "params": {
+                "position": [0, 2, 4], "look_at": true, "fov": 40 } }),
+            shape(1, json!({ "size": [0.3, 0.3, 0.3] })),
+            instance(
+                2,
+                1,
+                json!({ "count": 3, "position": "=vec3(instance * 0.5 - 0.5, 0, 0)",
+                        "rotation": "=vec3(0, instance * 20, 0)" }),
+            ),
+            instance(
+                3,
+                2,
+                json!({ "count": 2, "position": "=vec3(0, instance * 0.5 - 0.25, 0)" }),
+            ),
+            json!({ "id": 4, "type": "merge_3d", "in": { "objects": [3] },
+                    "params": { "rotation": "=vec3(0, frame * 25, frame * 10)" } }),
+            merge(5, &[51, 4]),
+            json!({ "id": 100, "type": "render_3d", "params": { "environment": 0 },
+                    "in": { "scene": 5 } }),
+            json!({ "id": 101, "type": "motion_blur", "params": { "samples": 4, "shutter": 180 },
+                    "in": { "source": 100 } }),
+        ]),
+    )
+    .frames(4)
+    .fps(4.0)
+    .into();
+    let mut kept = gpu.renderer();
+    let frames: Vec<Vec<u8>> = (0..4)
+        .map(|frame| {
+            let at = f64::from(frame);
+            let placed_again = render(&mut gpu.renderer(), &composition, at, &media).rgba;
+            let frame = render(&mut kept, &composition, at, &media).rgba;
+            assert!(
+                frame == placed_again,
+                "frame {at} draws as a first frame would"
+            );
+            frame
+        })
+        .collect();
+    assert!(frames[0] != frames[1], "the parent moves the copies");
+}
+
+#[test]
+fn placements_kept_across_frames_draw_as_placements_evaluated_every_frame() {
+    // Adding `frame * 0` makes an expression frame-dependent, so its placements are never kept.
+    let make = |evaluated_every_frame: bool| -> Composition {
+        let frame = if evaluated_every_frame {
+            " + frame * 0"
+        } else {
+            ""
+        };
+        let mut template = render_3d(vec![
+            shape(1, json!({ "size": [0.2, 0.3, 0.2], "unlit": true })),
+            instance(
+                2,
+                1,
+                json!({
+                    "count": 3,
+                    "position": format!("=vec3((instance - 1) * width / 150 + random(instance) * 0.1{frame}, 0, fps / 100)"),
+                    "rotation": format!("=vec3(0, instance * 17{frame}, 0)"),
+                }),
+            ),
+            instance(
+                3,
+                2,
+                json!({
+                    "count": format!("=2{frame}"),
+                    "position": format!("=vec3(instance * 0.4{frame}, 0, 0)"),
+                }),
+            ),
+            json!({ "id": 4, "type": "merge_3d", "in": { "objects": [3] },
+                    "params": { "position": "=vec3(prop('x'), 0, 0)",
+                                "rotation": "=vec3(0, frame * 20, 0)" } }),
+        ])
+        .frames(20)
+        .0;
+        template["props"] = json!({ "x": { "type": "number", "default": 0 } });
+        let mut wide = template.clone();
+        wide["render_settings"]["width"] = json!(192);
+        wide["timeline"]["fps"] = json!(15);
+        let mut root = scene(
+            SIZE,
+            json!([
+                { "id": 1, "type": "clip", "params": { "composition": "tile", "props": { "x": -0.5 } } },
+                { "id": 2, "type": "clip", "params": { "composition": "tile", "props": { "x": 0.5 } } },
+                { "id": 3, "type": "clip", "params": { "composition": "wide" } },
+                { "id": 4, "type": "merge", "in": { "base": 1, "overlay": 2 } },
+                { "id": 5, "type": "merge", "in": { "base": 4, "overlay": 3 } },
+            ]),
+        )
+        .frames(20);
+        root.0["compositions"] = json!({ "tile": template, "wide": wide });
+        root.into()
+    };
+    let (kept, reference) = (make(false), make(true));
+    let gpu = gpu();
+    let (mut renderer, mut other) = (gpu.renderer(), gpu.renderer());
+    let media = TestMedia::default();
+    let frames: Vec<Vec<u8>> = [0.0, 1.0, 2.0, 3.0, 8.0, 1.0, 0.0]
+        .into_iter()
+        .map(|at| {
+            let frame = render(&mut renderer, &kept, at, &media).rgba;
+            assert!(
+                frame == render(&mut other, &reference, at, &media).rgba,
+                "frame {at} draws as it does with its placements evaluated every frame"
+            );
+            frame
+        })
+        .collect();
+    assert!(frames[0] != frames[1], "the parent moves the copies");
+}

@@ -23,6 +23,7 @@ pub enum PropertyKind {
     DashPattern = 15,
     Repeat = 16,
     Vec3 = 17,
+    Region = 18,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

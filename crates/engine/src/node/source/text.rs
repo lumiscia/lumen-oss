@@ -1116,7 +1116,10 @@ where
         })
     }
 
-    fn get(&self, ctx: &DelegateEvalContext<'_>) -> crate::Result<Cow<'_, D::Evaluated>> {
+    pub(crate) fn get(
+        &self,
+        ctx: &DelegateEvalContext<'_>,
+    ) -> crate::Result<Cow<'_, D::Evaluated>> {
         Ok(match self {
             Self::Constant(value) => Cow::Borrowed(value),
             Self::Animated(delegate) => Cow::Owned(delegate.eval(ctx)?),

@@ -130,6 +130,8 @@ pub(crate) const FLAG_SHADOW_CATCHER: u32 = 8192;
 pub(crate) const FLAG_VERTEX_COLORS: u32 = 16384;
 /// The object's maps read through its rows of the map coordinates table.
 pub(crate) const FLAG_MAP_UVS: u32 = 32768;
+/// The object draws only its `part` of the textured quad.
+pub(crate) const FLAG_PART: u32 = 65536;
 pub(crate) const LIGHT_DIRECTIONAL: u32 = 0;
 pub(crate) const LIGHT_POINT: u32 = 1;
 pub(crate) const LIGHT_SPOT: u32 = 2;
@@ -231,6 +233,8 @@ pub(crate) struct GpuObject {
     /// Where the object's five rows of the map coordinates table start.
     pub(crate) first_map_uv: u32,
     _pad: [u32; 2],
+    /// [`Object::part`]'s edges, or the whole quad's.
+    pub(crate) part: [f32; 4],
 }
 
 /// One map's row of the map coordinates table; keep in sync with `MapUv` in `scene.wgsl`.
@@ -412,6 +416,9 @@ fn gpu_object(
     if surface.texture.is_some() {
         flags |= FLAG_RASTER;
     }
+    if object.part.is_some() {
+        flags |= FLAG_PART;
+    }
     let normal = row.normal;
     GpuObject {
         model: object.world.to_cols_array_2d(),
@@ -436,6 +443,7 @@ fn gpu_object(
         first_weight: object.morph.map_or(0, |(_, weight)| weight),
         first_map_uv,
         _pad: [0; 2],
+        part: object.part.unwrap_or([0.0, 0.0, 1.0, 1.0]),
     }
 }
 

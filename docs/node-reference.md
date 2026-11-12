@@ -584,6 +584,7 @@ Params:
 - **`opaque`** (boolean; default `false`) Draws the plane with the opaque objects, writing depth, rather than blended. For a source with no transparent pixels, this orders the plane correctly against any geometry it intersects or crosses in depth. Alpha is then ignored: the colour's alpha, `opacity` and the source's alpha. A source pixel that is transparent shows its colour at full opacity, which is black for a fully transparent one, and a half-transparent one shows its colour undimmed. It casts a shadow over its whole rectangle. A shadow catcher is always drawn as one, so this has no effect on it.
 - **`position`** ([number, number, number]; default `[0,0,0]`) Position in world units along X, Y and Z, in the parent's space.
 - **`receive_shadows`** (boolean; default `true`) Darkens where shadows fall on it. An unlit surface shows none.
+- **`region`** ([region](#type-region); literal as a whole) Shows only this part of the source, `[x, y, width, height]` in the source's pixels from its top left, on a plane that covers just that part, so a plane showing a region is where it would be and as big as it would be with the whole source on it: it looks as a plane showing a `crop` of that region does, where `width` is still the width of the whole source, and `position`, `rotation` and `scale` pivot about the whole source's centre. Cut off at the source's edges as `crop` cuts its region, and a region with no pixel left shows nothing. Each of the four numbers takes an integer or an expression, which is truncated toward zero as `crop`'s are; the whole region cannot be an expression. Unset shows the whole source. Planes showing parts of one source share its texture and mip levels and draw together, so a region costs nothing beyond the plane, where a `crop` costs a raster the size of the source and a draw of its own. Sampling is kept inside the region, so what is outside it isn't meant to show. To keep it so under strong minification, the band along each edge of the region that is inside the source, and all of a narrow region, is sampled from a sharper mip level than its footprint, since a texel of a shared level can hold pixels from both sides of the edge: it can alias or shimmer there where a `crop` would be smooth, across the whole of a piece drawn much smaller than its pixels.
 - **`rotation`** ([number, number, number]; default `[0,0,0]`) Rotation in degrees about X, Y and Z, applied as yaw about Y, then pitch about the turned X, then roll about the turned Z.
 - **`roughness`** (number, 0 to 1; default `0.5`) 0 is a mirror finish, 1 fully diffuse.
 - **`scale`** ([number, number, number]; default `[1,1,1]`) Scale multiplier along X, Y and Z, applied before the rotation.
@@ -830,6 +831,12 @@ Value: { color: [color](#type-color); offset: number } | [number, [color](#type-
 A solid color or a gradient.
 
 Value: [color](#type-color) | [gradientPaint](#type-gradientpaint).
+
+### Type `region`
+
+A rectangle of pixels, `[x, y, width, height]`. Each number takes an integer or an expression.
+
+Value: [integer | expression, integer | expression, integer | expression, integer | expression].
 
 ### Type `repeat`
 
