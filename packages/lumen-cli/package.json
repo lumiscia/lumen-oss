@@ -1,6 +1,6 @@
 {
   "name": "@lumiscia/lumen-cli",
-  "version": "0.5.1",
+  "version": "0.6.0-beta.0",
   "description": "The lumen command: check and render Lumen compositions on a local GPU.",
   "keywords": [
     "cli",

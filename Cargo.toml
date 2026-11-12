@@ -17,7 +17,7 @@ exclude = ["crates/3d/fuzz"]
 resolver = "3"
 
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0-beta.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/lumiscia/lumen-oss"
@@ -33,10 +33,10 @@ codegen-units = 1
 overflow-checks = false
 
 [workspace.dependencies]
-lumen-3d = { package = "lumen-engine-3d", path = "crates/3d", version = "0.5.1", default-features = false }
-lumen-engine = { path = "crates/engine", version = "0.5.1" }
-lumen-ffmpeg = { package = "lumen-engine-ffmpeg", path = "crates/ffmpeg", version = "0.5.1" }
-lumen-gpu = { package = "lumen-engine-gpu", path = "crates/gpu", version = "0.5.1" }
-lumen-macros = { package = "lumen-engine-macros", path = "crates/macros", version = "0.5.1" }
-lumen-server = { path = "crates/server", version = "0.5.1" }
-lumen-text = { package = "lumen-engine-text", path = "crates/text", version = "0.5.1" }
+lumen-3d = { package = "lumen-engine-3d", path = "crates/3d", version = "0.6.0-beta.0", default-features = false }
+lumen-engine = { path = "crates/engine", version = "0.6.0-beta.0" }
+lumen-ffmpeg = { package = "lumen-engine-ffmpeg", path = "crates/ffmpeg", version = "0.6.0-beta.0" }
+lumen-gpu = { package = "lumen-engine-gpu", path = "crates/gpu", version = "0.6.0-beta.0" }
+lumen-macros = { package = "lumen-engine-macros", path = "crates/macros", version = "0.6.0-beta.0" }
+lumen-server = { path = "crates/server", version = "0.6.0-beta.0" }
+lumen-text = { package = "lumen-engine-text", path = "crates/text", version = "0.6.0-beta.0" }
