@@ -96,7 +96,7 @@ To render a composition JSON file without a server, install the [`lumen` CLI](cr
 
 ```bash
 npm install -g @lumiscia/lumen-cli
-lumen --composition composition.json --output out.mp4
+lumen render composition.json -o out.mp4
 ```
 
 **3. Preview it.** In the browser with WebGPU, using `@lumiscia/lumen-react` or `@lumiscia/lumen-svelte`:

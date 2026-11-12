@@ -41,8 +41,8 @@ From the repository root:
 ```bash
 pnpm install
 pnpm --filter @lumiscia/example-3d start   # writes examples/3d/compositions/*.json
-cargo run -p lumen-cli -- --composition examples/3d/compositions/animated-model.json --output animated-model.mp4
-cargo run -p lumen-cli -- --composition examples/3d/compositions/layers.json --output layers.png --frame 60
+cargo run -p lumen-cli -- render examples/3d/compositions/animated-model.json -o animated-model.mp4
+cargo run -p lumen-cli -- render examples/3d/compositions/layers.json -o layers.png --frame 60
 ```
 
 Run `lumen` from the repository root: the compositions name their media by paths under it, and `lumen` reads media from the directory it runs in unless `--media-root` says otherwise.

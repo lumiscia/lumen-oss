@@ -1,4 +1,4 @@
-//! Every JSON composition in `docs/3d.md` passes `lumen --check`, with no warnings either.
+//! Every JSON composition in `docs/3d.md` passes `lumen check`, with no warnings either.
 
 use std::process::Command;
 
@@ -38,7 +38,7 @@ fn the_3d_guides_compositions_pass_check() {
         let path = dir.path().join(format!("block-{index}.json"));
         std::fs::write(&path, block.to_string()).expect("write composition");
         let output = Command::new(env!("CARGO_BIN_EXE_lumen"))
-            .args(["--check", "--format", "json", "--composition"])
+            .args(["check", "--format", "json"])
             .arg(&path)
             .args(["--media-root", dir.path().to_str().unwrap()])
             .env_remove("LUMEN_FONT_DIR")

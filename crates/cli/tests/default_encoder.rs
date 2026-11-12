@@ -218,7 +218,7 @@ fn default_encoder_falls_back_to_libx264_with_one_warning_and_a_correct_video() 
     let output = lumen(
         &icd,
         &[
-            "--composition",
+            "render",
             composition.to_str().unwrap(),
             "--output",
             video.to_str().unwrap(),
@@ -255,7 +255,7 @@ fn named_encoders_fail_instead_of_falling_back() {
     let composition = write_composition(directory.path(), &two_colour_composition());
     let video = directory.path().join("out.mp4");
     let base_args = [
-        "--composition",
+        "render",
         composition.to_str().unwrap(),
         "--output",
         video.to_str().unwrap(),
@@ -290,7 +290,7 @@ fn hardware_decode_that_cannot_run_falls_back_to_the_cpu_with_one_warning() {
         let output = lumen(
             &icd,
             &[
-                "--composition",
+                "render",
                 composition.to_str().unwrap(),
                 "--media-root",
                 directory.path().to_str().unwrap(),

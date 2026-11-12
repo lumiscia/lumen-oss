@@ -69,7 +69,7 @@ jobs:
       - name: Run lumen
         run: |
           packages/${{ matrix.package }}/bin/lumen --version
-          packages/${{ matrix.package }}/bin/lumen --check --composition crates/cli/demo/gradient-paints.json
+          packages/${{ matrix.package }}/bin/lumen check crates/cli/demo/gradient-paints.json
           test -s packages/${{ matrix.package }}/LICENSE
           test -s packages/${{ matrix.package }}/licenses/rust-crates.txt
 

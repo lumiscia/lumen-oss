@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{ArgGroup, Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use lumen_engine::{
     composition::Composition,
     diagnostic::{Diagnostic, Severity},
@@ -23,148 +23,90 @@ use lumen_server::render::{
 };
 use tracing_subscriber::EnvFilter;
 
-/// Renders a Lumen composition to an .mp4, .mov or .webm video, one frame to a .png or .jpg image,
-/// or a range of frames to numbered images.
+/// Where the reference for every option lives; the help prints one line pointing to it.
+const REFERENCE: &str =
+    "Reference: https://github.com/lumiscia/lumen-oss/tree/main/crates/cli#readme";
+
+/// Renders and checks Lumen compositions
 #[derive(Debug, Parser)]
 #[command(
     name = "lumen",
     version,
-    args_override_self = true,
-    group(ArgGroup::new("rate_control").args(["bitrate", "crf", "qp"])),
-    after_help = "\
-Media sources in the composition resolve inside --media-root, which defaults to the current \
-directory. Fonts come from --font-dir, which must exist, then <media-root>/assets/fonts, then the \
-system, matched by the family name inside each font file. A family none of them has warns once \
-and renders in the bundled font.
-
-On video output, --quality names a preset: draft, standard (the default), high, lossless, or one \
---quality-config defines. --codec picks h264 (the default), hevc or av1 for .mp4; .mov is prores \
-(ProRes 4444) and .webm is vp9. --bit-depth 10 encodes hevc or av1 at 10 bits, from the \
-renderer's float colour; the default is 8, h264 and vp9 with alpha are always 8, prores always 10, \
-and an encoder that can't write the depth is skipped, or fails the render when pinned. --alpha \
-keeps the frame's transparency as an alpha channel, in .mov (prores_ks) or .webm (libvpx-vp9) \
-only; hardware encoders can't write it. They win over the \
-composition's render_settings, which win over the config's defaults. Each codec tries its encoders \
-in order, warning when one won't open: on Linux the Vulkan encoder, then libx264, libx265 or \
-libsvtav1 (av1 on an NVIDIA host tries av1_nvenc, not av1_vulkan), and on macOS VideoToolbox, then \
-the same CPU encoders. A preset with no settings for an encoder skips it, so \
-lossless uses libx264, libx265 or libvpx-vp9. --encoder or LUMEN_VIDEO_ENCODER pins one encoder, which either \
-opens or fails the render.
-
---bitrate, --crf, --qp and --preset replace the preset with those settings on every encoder tried, \
-and can't be combined with --quality. --preset alone, with no rate control, targets 14 Mb/s. Each fails on an encoder that \
-doesn't support it (--crf: libx264, libx265, libsvtav1, libvpx-vp9, NVENC; --qp: libx264, libx265, \
-libsvtav1, NVENC, Vulkan and prores_ks; --preset: libx264 and libx265 ultrafast..placebo, NVENC \
-p1..p7, libsvtav1 0..13, libvpx-vp9 0..5), which moves on to the next.
-
---output picks what is written. .mp4, .mov and .webm are a video of the frames, with the audio cut \
-to the same span: AAC in .mp4 and .mov, Opus (libopus) in .webm. \
-.png and .jpg (or .jpeg) are one image, frame 0 unless --frame says another; a PNG keeps \
-transparency and a JPEG is opaque. A file name with %d or %0Nd, such as frames/shot_%d.png, writes \
-one image per frame instead, numbered with the composition's frame numbers and padded to at least \
-four digits (%d) or N digits (%0Nd), wider if the last frame needs it. --frames START..END renders \
-those frames of the composition, END not included; either side can be left out, and an mp4 or \
-sequence starts at time 0.
-
---check reads the composition without rendering it and prints what is wrong with it, with fonts \
-resolved as a render would resolve them. It exits 1 when there are errors; warnings alone exit 0.
-
-LUMEN_HARDWARE_DECODE=1 decodes video on the GPU when the hardware supports it. RUST_LOG sets the \
-log filter (default lumen_engine=warn,lumen_server=warn).
-
-A text node draws at most --max-text-glyphs glyph, stroke and decoration instances (16384 by \
-default, up to 1048576), which bounds the work its text can ask for; whitespace is not drawn."
+    arg_required_else_help = true,
+    after_help = REFERENCE
 )]
 struct Cli {
-    /// Composition JSON to render
-    #[arg(long, value_name = "PATH")]
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Render a composition to a video, an image or an image sequence
+    ///
+    /// The output's extension picks what is written: .mp4, .mov or .webm is a video of the frames,
+    /// .png or .jpg one image, and a name with %d an image per frame.
+    #[command(args_override_self = true, after_help = REFERENCE)]
+    Render(RenderArgs),
+
+    /// Check a composition without rendering it
+    ///
+    /// Prints what is wrong with the composition, with fonts resolved as a render would resolve
+    /// them. Exits 1 when there are errors; warnings alone exit 0.
+    #[command(args_override_self = true, after_help = REFERENCE)]
+    Check(CheckArgs),
+}
+
+/// The composition and where its media and fonts come from.
+#[derive(Debug, Args)]
+struct SourceArgs {
+    /// Composition JSON file
+    #[arg(value_name = "COMPOSITION")]
     composition: PathBuf,
 
-    /// Where to write the render: .mp4, .mov or .webm is a video, .png or .jpg one image, and a
-    /// name with %d (frame_%04d.png) an image per frame
-    #[arg(
-        long,
-        value_name = "PATH.[mp4|mov|webm|png|jpg]",
-        required_unless_present = "check"
-    )]
-    output: Option<PathBuf>,
-
-    /// Check the composition without rendering it, exiting 1 if it has errors
-    #[arg(long, conflicts_with_all = ["output", "frame"])]
-    check: bool,
-
-    /// How --check prints what it finds
-    #[arg(long, value_enum, default_value_t = Format::Text, requires = "check")]
-    format: Format,
-
-    /// Directory that media sources must stay inside [default: the current directory]
-    #[arg(long, value_name = "PATH")]
+    /// Directory media sources must stay inside [default: the current directory]
+    #[arg(long, value_name = "DIR")]
     media_root: Option<PathBuf>,
 
-    /// Directory of fonts to look in before the media root's assets/fonts and the system fonts
-    #[arg(long, env = FONT_DIR_ENV, value_name = "PATH", value_parser = existing_font_dir)]
+    /// Directory of fonts to look in first
+    ///
+    /// It must exist. Fonts come from it, then <media-root>/assets/fonts, then the system, matched
+    /// by the family name inside each font file.
+    #[arg(long, env = FONT_DIR_ENV, value_name = "DIR", value_parser = existing_font_dir)]
     font_dir: Option<PathBuf>,
+}
 
-    /// Video encoder name, defaulting to LUMEN_VIDEO_ENCODER. Video only
-    #[arg(long, value_name = "NAME")]
-    encoder: Option<String>,
+#[derive(Debug, Args)]
+struct CheckArgs {
+    #[command(flatten)]
+    source: SourceArgs,
 
-    /// Quality preset name. Video only
-    #[arg(long, value_name = "NAME", conflicts_with_all = ["bitrate", "crf", "qp", "preset"])]
-    quality: Option<String>,
+    /// How to print what is found
+    #[arg(long, value_enum, default_value_t = Format::Text)]
+    format: Format,
+}
 
-    /// Video codec: h264, hevc or av1 in .mp4, prores in .mov, vp9 in .webm. Video only
-    #[arg(long, value_name = "CODEC")]
-    codec: Option<EncodeCodec>,
+#[derive(Debug, Args)]
+struct RenderArgs {
+    /// Output file: .mp4, .mov, .webm, .png, .jpg, or a %d name for an image sequence
+    ///
+    /// A name with %d or %0Nd, such as frames/shot_%d.png, writes an image per frame. A video is
+    /// written beside the output and moved into place when the render succeeds.
+    #[arg(short, long, value_name = "PATH")]
+    output: PathBuf,
 
-    /// Bits per sample: 8 or 10 (hevc and av1; prores is 10). Video only
-    #[arg(long, value_name = "BITS")]
-    bit_depth: Option<BitDepth>,
-
-    /// Keep transparency as an alpha channel: .mov (ProRes 4444) or .webm (VP9) only.
-    /// `--alpha false` renders opaque over a composition that asks for alpha
-    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
-    alpha: Option<bool>,
-
-    /// JSON file of quality presets and encoder orders, checked before rendering
-    #[arg(long, env = QUALITY_CONFIG_ENV, value_name = "PATH")]
-    quality_config: Option<PathBuf>,
-
-    /// Target bits per second, as 14000000, 14000k or 14M. Video only
-    #[arg(long, value_name = "BPS|Nk|NM", value_parser = parse_bitrate)]
-    bitrate: Option<u64>,
-
-    /// Constant rate factor. Video only
-    #[arg(long, value_name = "N")]
-    crf: Option<u8>,
-
-    /// Constant quantizer. Video only
-    #[arg(long, value_name = "N")]
-    qp: Option<u8>,
-
-    /// Encoder speed preset. Video only
-    #[arg(long, value_name = "NAME")]
-    preset: Option<String>,
-
-    /// Frame to render [default: 0]. One image only
-    #[arg(long, value_name = "N", conflicts_with = "frames")]
-    frame: Option<u32>,
-
-    /// Frames to render as START..END, END not included, either side optional [default: all].
-    /// A video or sequence starts at time 0
+    /// Frames to render as START..END, END not included [default: all]
+    ///
+    /// Either side can be left out, as in 30.. or ..60. A video or sequence starts at time 0.
     #[arg(long, value_name = "START..END", value_parser = parse_frames)]
     frames: Option<FrameRange>,
 
-    /// JPEG quality from 1 to 100 [default: 90]. .jpg only
-    #[arg(
-        long,
-        value_name = "N",
-        value_parser = clap::value_parser!(u8).range(1..=100)
-    )]
-    jpeg_quality: Option<u8>,
+    #[command(flatten)]
+    source: SourceArgs,
 
-    /// Most glyph, stroke and decoration instances one text node may draw. A text over it fails
-    /// the render
+    /// Most glyph instances one text node may draw
+    ///
+    /// Counts glyph, stroke and decoration instances. A text over it fails the render.
     #[arg(
         long,
         env = "LUMEN_MAX_TEXT_GLYPHS",
@@ -173,6 +115,84 @@ struct Cli {
         value_parser = clap::value_parser!(u32).range(1..=MAX_TEXT_GLYPHS_CEILING as i64)
     )]
     max_text_glyphs: u32,
+
+    #[command(flatten)]
+    video: VideoArgs,
+
+    #[command(flatten)]
+    image: ImageArgs,
+}
+
+/// Flags only a video output takes.
+#[derive(Debug, Args)]
+#[command(next_help_heading = "Video options")]
+struct VideoArgs {
+    /// Video codec: h264, hevc or av1 in .mp4, prores in .mov, vp9 in .webm
+    #[arg(long, value_name = "CODEC")]
+    codec: Option<EncodeCodec>,
+
+    /// Quality preset: draft, standard, high, lossless, or one from --quality-config
+    ///
+    /// It can't go with --bitrate, --crf, --qp or --preset, which replace the preset's settings.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["bitrate", "crf", "qp", "preset"])]
+    quality: Option<String>,
+
+    /// JSON file of quality presets and encoder orders
+    #[arg(long, env = QUALITY_CONFIG_ENV, value_name = "PATH")]
+    quality_config: Option<PathBuf>,
+
+    /// Bits per sample: 8 or 10 (hevc and av1)
+    #[arg(long, value_name = "BITS")]
+    bit_depth: Option<BitDepth>,
+
+    /// Keep transparency as an alpha channel (.mov or .webm)
+    ///
+    /// `--alpha false` renders opaque over a composition that asks for alpha.
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        hide_possible_values = true
+    )]
+    alpha: Option<bool>,
+
+    /// Pin one encoder, with no fallback (also LUMEN_VIDEO_ENCODER)
+    #[arg(long, value_name = "NAME")]
+    encoder: Option<String>,
+
+    /// Target bits per second, as 14000000, 14000k or 14M
+    #[arg(long, value_name = "BPS|Nk|NM", value_parser = parse_bitrate, group = "rate_control")]
+    bitrate: Option<u64>,
+
+    /// Constant rate factor
+    #[arg(long, value_name = "N", group = "rate_control")]
+    crf: Option<u8>,
+
+    /// Constant quantizer
+    #[arg(long, value_name = "N", group = "rate_control")]
+    qp: Option<u8>,
+
+    /// Encoder speed preset
+    #[arg(long, value_name = "NAME")]
+    preset: Option<String>,
+}
+
+/// Flags only an image output takes.
+#[derive(Debug, Args)]
+#[command(next_help_heading = "Image options")]
+struct ImageArgs {
+    /// Frame to render as one image [default: 0]
+    #[arg(long, value_name = "N", conflicts_with = "frames")]
+    frame: Option<u32>,
+
+    /// JPEG quality from 1 to 100 [default: 90]
+    #[arg(
+        long,
+        value_name = "N",
+        value_parser = clap::value_parser!(u8).range(1..=100)
+    )]
+    jpeg_quality: Option<u8>,
 }
 
 /// What to write, and where each frame goes.
@@ -269,14 +289,7 @@ enum Format {
     Json,
 }
 
-impl Cli {
-    /// Where to write the render, which clap requires unless checking.
-    fn output(&self) -> &Path {
-        self.output
-            .as_deref()
-            .expect("clap requires --output to render")
-    }
-
+impl SourceArgs {
     /// An empty `LUMEN_FONT_DIR` counts as unset.
     fn font_dir(&self) -> Option<PathBuf> {
         self.font_dir
@@ -295,6 +308,15 @@ impl Cli {
         }
     }
 
+    fn media_store(&self) -> Result<LocalMediaStore> {
+        Ok(LocalMediaStore::new(
+            media_root(self.media_root.as_deref())?,
+            &self.render_config(),
+        ))
+    }
+}
+
+impl VideoArgs {
     /// The rate control and preset the command line asked for, or `None` if it asked for neither.
     fn quality(&self) -> Option<EncoderQuality> {
         EncoderQuality::from_options(self.bitrate, self.crf, self.qp, self.preset.clone())
@@ -324,11 +346,23 @@ impl Cli {
         Ok(resolve_encoder(&config, composition, format, request)?)
     }
 
+    /// Whether any flag only a video takes was given.
+    fn any(&self) -> bool {
+        self.encoder.is_some()
+            || self.quality.is_some()
+            || self.codec.is_some()
+            || self.bit_depth.is_some()
+            || self.alpha.is_some()
+            || self.quality().is_some()
+    }
+}
+
+impl RenderArgs {
     /// What the command line asks to write, after checking that no flag only another kind of
     /// output supports was given. `LUMEN_VIDEO_ENCODER` is a default, so only `--encoder`
     /// conflicts with an image.
     fn plan(&self) -> Result<OutputPlan> {
-        let output = self.output();
+        let output = self.output.as_path();
         let extension = output
             .extension()
             .and_then(|value| value.to_str())
@@ -355,25 +389,18 @@ impl Cli {
                 output.display()
             ),
         };
-        if !format.is_video()
-            && (self.encoder.is_some()
-                || self.quality.is_some()
-                || self.codec.is_some()
-                || self.bit_depth.is_some()
-                || self.alpha.is_some()
-                || self.quality().is_some())
-        {
+        if !format.is_video() && self.video.any() {
             bail!(
                 "--encoder, --quality, --codec, --bit-depth, --alpha, --bitrate, --crf, --qp and --preset are only supported when output is a video (.mp4, .mov or .webm)"
             );
         }
-        if format.is_video() && self.frame.is_some() {
+        if format.is_video() && self.image.frame.is_some() {
             bail!("--frame is only supported when output is an image; use --frames for a video");
         }
-        if format.is_sequence() && self.frame.is_some() {
+        if format.is_sequence() && self.image.frame.is_some() {
             bail!("--frame renders one image; use --frames START..END for a sequence");
         }
-        if self.jpeg_quality.is_some() && !format.is_jpeg() {
+        if self.image.jpeg_quality.is_some() && !format.is_jpeg() {
             bail!("--jpeg-quality is only supported when output is .jpg");
         }
         if !format.is_video()
@@ -391,7 +418,7 @@ impl Cli {
                 extension
             );
         }
-        let frames = match (self.frames, self.frame) {
+        let frames = match (self.frames, self.image.frame) {
             (Some(frames), _) => frames,
             (None, Some(frame)) => FrameRange {
                 start: Some(frame),
@@ -403,7 +430,7 @@ impl Cli {
             output: RenderOutput {
                 format,
                 frames,
-                jpeg_quality: self.jpeg_quality,
+                jpeg_quality: self.image.jpeg_quality,
             },
             files: pattern.map_or(Files::One, Files::Sequence),
         })
@@ -419,11 +446,9 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
     lumen_ffmpeg::raise_open_file_limit();
-    let cli = Cli::parse();
-    let result = if cli.check {
-        check(&cli)
-    } else {
-        run(&cli).map(|()| true)
+    let result = match Cli::parse().command {
+        Command::Check(args) => check(&args),
+        Command::Render(args) => run(&args).map(|()| true),
     };
     match result {
         Ok(true) => {}
@@ -448,20 +473,16 @@ fn failure_line(error: &anyhow::Error) -> String {
 }
 
 /// Prints what is wrong with the composition, and whether it renders.
-fn check(cli: &Cli) -> Result<bool> {
-    let raw = fs::read_to_string(&cli.composition).with_context(|| {
-        format!(
-            "failed to read composition file {}",
-            cli.composition.display()
-        )
-    })?;
-    let media_store =
-        LocalMediaStore::new(media_root(cli.media_root.as_deref())?, &cli.render_config());
+fn check(args: &CheckArgs) -> Result<bool> {
+    let composition = &args.source.composition;
+    let raw = fs::read_to_string(composition)
+        .with_context(|| format!("failed to read composition file {}", composition.display()))?;
+    let media_store = args.source.media_store()?;
     let known_font = |family: &str| media_store.resolve(family, AssetKind::Font).is_ok();
     let diagnostics =
         lumen_engine::json::check(&raw, Some(&known_font), Some(media_store.assets()));
     let ok = !diagnostics.iter().any(Diagnostic::is_error);
-    match cli.format {
+    match args.format {
         Format::Json => println!(
             "{}",
             serde_json::json!({ "ok": ok, "diagnostics": diagnostics })
@@ -476,7 +497,7 @@ fn check(cli: &Cli) -> Result<bool> {
                 .count();
             println!(
                 "{}: {errors} errors, {} warnings",
-                cli.composition.display(),
+                composition.display(),
                 diagnostics.len() - errors
             );
         }
@@ -506,32 +527,32 @@ fn print_warnings(diagnostics: &[Diagnostic]) {
     }
 }
 
-fn run(cli: &Cli) -> Result<()> {
-    let plan = cli.plan()?;
-    let composition = load_composition(&cli.composition)?;
-    let media_root = media_root(cli.media_root.as_deref())?;
-    let media_store =
-        LocalMediaStore::new(media_root, &cli.render_config()).explaining_missing_sources();
+fn run(args: &RenderArgs) -> Result<()> {
+    let plan = args.plan()?;
+    let composition = load_composition(&args.source.composition)?;
+    let media_store = args.source.media_store()?.explaining_missing_sources();
 
     if plan.output.format.is_video() {
-        let choice = cli.encoder_choice(&composition, plan.output.format)?;
-        return render_to_partial(cli.output(), |partial| {
+        let choice = args
+            .video
+            .encoder_choice(&composition, plan.output.format)?;
+        return render_to_partial(&args.output, |partial| {
             render_mp4(
                 &composition,
                 media_store,
                 partial,
                 choice,
                 &plan.output,
-                cli.max_text_glyphs,
+                args.max_text_glyphs,
             )
         });
     }
     render_images(
         &composition,
         media_store,
-        cli.output(),
+        &args.output,
         &plan,
-        cli.max_text_glyphs,
+        args.max_text_glyphs,
     )
 }
 
@@ -745,7 +766,8 @@ mod tests {
     use lumen_server::render::{FrameRange, OutputFormat, RenderOutput};
 
     use super::{
-        Cli, EncoderQuality, SequencePattern, failure_line, parse_frames, render_to_partial,
+        Cli, Command, EncoderQuality, RenderArgs, SequencePattern, failure_line, parse_frames,
+        render_to_partial,
     };
 
     #[test]
@@ -912,9 +934,77 @@ mod tests {
         assert_eq!(fs::read(&target).expect("target"), b"new");
     }
 
-    fn parse(flags: &[&str]) -> Result<Cli, clap::Error> {
-        let base = ["lumen", "--composition", "in.json"];
-        Cli::try_parse_from(base.into_iter().chain(flags.iter().copied()))
+    fn parse_cli(args: &[&str]) -> Result<Command, clap::Error> {
+        Cli::try_parse_from(["lumen"].into_iter().chain(args.iter().copied()))
+            .map(|cli| cli.command)
+    }
+
+    /// `lumen render in.json` with `flags`.
+    fn parse(flags: &[&str]) -> Result<RenderArgs, clap::Error> {
+        match parse_cli(&[&["render", "in.json"], flags].concat())? {
+            Command::Render(args) => Ok(args),
+            Command::Check(_) => unreachable!("parsed `render`"),
+        }
+    }
+
+    #[test]
+    fn each_subcommand_takes_the_composition_and_its_own_flags() {
+        use clap::error::ErrorKind;
+
+        let Command::Render(render) =
+            parse_cli(&["render", "in.json", "-o", "o.mp4", "--codec", "hevc"]).unwrap()
+        else {
+            panic!("parsed `render`");
+        };
+        assert_eq!(render.source.composition, Path::new("in.json"));
+        assert_eq!(render.output, Path::new("o.mp4"));
+
+        let Command::Check(check) =
+            parse_cli(&["check", "in.json", "--format", "json", "--media-root", "."]).unwrap()
+        else {
+            panic!("parsed `check`");
+        };
+        assert_eq!(check.source.composition, Path::new("in.json"));
+        assert_eq!(check.format, super::Format::Json);
+
+        let kind = |args: &[&str]| parse_cli(args).unwrap_err().kind();
+        assert_eq!(
+            kind(&["render", "in.json"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(
+            kind(&["render", "-o", "o.mp4"]),
+            ErrorKind::MissingRequiredArgument
+        );
+        for render_only in [["--codec", "hevc"], ["--output", "o.mp4"], ["--frame", "3"]] {
+            assert_eq!(
+                kind(&[&["check", "in.json"], &render_only[..]].concat()),
+                ErrorKind::UnknownArgument,
+                "{render_only:?}"
+            );
+        }
+        assert_eq!(
+            kind(&["render", "in.json", "-o", "o.mp4", "--format", "json"]),
+            ErrorKind::UnknownArgument
+        );
+        for removed in [
+            &["--composition", "in.json", "--output", "o.mp4"][..],
+            &["--composition", "in.json", "--check"],
+            &["render", "--composition", "in.json", "-o", "o.mp4"],
+        ] {
+            assert_eq!(kind(removed), ErrorKind::UnknownArgument, "{removed:?}");
+        }
+    }
+
+    #[test]
+    fn no_arguments_prints_the_help() {
+        let error = parse_cli(&[]).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+        let help = error.to_string();
+        assert!(help.contains("render") && help.contains("check"), "{help}");
     }
 
     #[test]
@@ -936,7 +1026,7 @@ mod tests {
 
     #[test]
     fn rate_control_flags_conflict_and_validate() {
-        let quality = |flags: &[&str]| parse(flags).unwrap().quality().unwrap();
+        let quality = |flags: &[&str]| parse(flags).unwrap().video.quality().unwrap();
         let output = ["--output", "o.mp4"];
         assert_eq!(
             quality(&[&output[..], &["--crf", "23", "--preset", "fast"]].concat()),
@@ -1149,6 +1239,7 @@ mod tests {
             let base = ["--output", "o.mp4", "--quality-config", config];
             parse(&[&base[..], flags].concat())
                 .unwrap()
+                .video
                 .encoder_choice(&composition, OutputFormat::Mp4)
         };
 
@@ -1191,6 +1282,7 @@ mod tests {
         let alpha = |flags: &[&str]| {
             parse(&[&["--output", "o.mov"], flags].concat())
                 .unwrap()
+                .video
                 .alpha
         };
         assert_eq!(alpha(&[]), None);
@@ -1223,7 +1315,7 @@ mod tests {
             return;
         };
         let cli = parse(&flags.split_whitespace().collect::<Vec<_>>()).unwrap();
-        println!("font_dir={:?}", cli.font_dir());
+        println!("font_dir={:?}", cli.source.font_dir());
     }
 
     #[test]
