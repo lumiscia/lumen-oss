@@ -69,16 +69,17 @@ jobs:
           tool: wasm-bindgen@0.2.129
 
       # The version PR has already applied its changesets, so only apply what is still pending.
+      # A prerelease keeps the ones it has applied in .changeset/pre.
       - name: Apply pull request changesets
         if: github.event_name == 'pull_request'
         run: |
-          if [ -n "$(find .changeset -type f -name '*.md' ! -name README.md -print -quit)" ]; then
+          if [ -n "$(find .changeset -maxdepth 1 -type f -name '*.md' ! -name README.md -print -quit)" ]; then
             pnpm release:version
           fi
 
       - name: Check release readiness
         run: |
-          pending_changeset="$(find .changeset -type f -name '*.md' ! -name README.md -print -quit)"
+          pending_changeset="$(find .changeset -maxdepth 1 -type f -name '*.md' ! -name README.md -print -quit)"
           if [ "${{ github.event_name }}" != "pull_request" ] && [ -n "$pending_changeset" ]; then
             echo "Pending changeset found: $pending_changeset"
             echo "Run the Version Packages workflow and merge its PR before publishing."
