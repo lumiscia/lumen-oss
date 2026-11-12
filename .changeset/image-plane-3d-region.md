@@ -17,4 +17,4 @@ Planes with regions of one source share its texture and its mip levels and draw 
 }
 ```
 
-Nothing outside the region ever shows, however small the plane is drawn. The price is under strong minification: the band along each edge of the region that is inside the source, and all of a very narrow region, is sampled from a sharper mip level than its footprint, because a texel of a shared level can hold pixels from both sides of the edge. That band can alias or shimmer where a `crop` would be smooth.
+Sampling is kept inside the region, so what is outside it isn't meant to show, however small the plane is drawn. The price is under strong minification: the band along each edge of the region that is inside the source, and all of a narrow region, is sampled from a sharper mip level than its footprint, because a texel of a shared level can hold pixels from both sides of the edge. That band can alias or shimmer where a `crop` would be smooth.

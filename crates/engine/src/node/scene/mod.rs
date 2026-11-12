@@ -214,11 +214,12 @@ pub struct ImagePlane3dParams {
     /// truncated toward zero as `crop`'s are; the whole region cannot be an expression. Unset
     /// shows the whole source. Planes showing parts of one source share its texture and mip
     /// levels and draw together, so a region costs nothing beyond the plane, where a `crop`
-    /// costs a raster the size of the source and a draw of its own. Nothing outside the region
-    /// ever shows. To keep it so under strong minification, the band along each edge of the
-    /// region that is inside the source, and all of a very narrow region, is sampled from a
-    /// sharper mip level than its footprint, since a texel of a shared level can hold pixels from
-    /// both sides of the edge: it can alias or shimmer there where a `crop` would be smooth.
+    /// costs a raster the size of the source and a draw of its own. Sampling is kept inside the
+    /// region, so what is outside it isn't meant to show. To keep it so under strong minification,
+    /// the band along each edge of the region that is inside the source, and all of a narrow
+    /// region, is sampled from a sharper mip level than its footprint, since a texel of a shared
+    /// level can hold pixels from both sides of the edge: it can alias or shimmer there where a
+    /// `crop` would be smooth, across the whole of a piece drawn much smaller than its pixels.
     #[meta()]
     pub region: Region,
     /// Draws the plane with the opaque objects, writing depth, rather than blended. For a source
