@@ -120,7 +120,7 @@ fn writes_stills_sequences_and_ranged_videos() {
     let composition = composition.to_str().unwrap();
     let out = directory.path().join("out");
     let run = |args: &[&str]| {
-        let output = lumen(&icd, &[&["--composition", composition], args].concat());
+        let output = lumen(&icd, &[&["render", composition], args].concat());
         assert!(
             output.status.success(),
             "{args:?}: {}",
@@ -206,7 +206,7 @@ fn refuses_ranges_the_timeline_does_not_have_without_writing_anything() {
         let output = lumen(
             &icd,
             &[
-                "--composition",
+                "render",
                 composition,
                 "--output",
                 out.join(output).to_str().unwrap(),

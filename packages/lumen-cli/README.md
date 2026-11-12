@@ -5,14 +5,14 @@ The `lumen` command checks and renders [Lumen](https://github.com/lumiscia/lumen
 ```bash
 npm install -g @lumiscia/lumen-cli
 
-lumen --composition composition.json --check
-lumen --composition composition.json --output out.mp4
-lumen --composition composition.json --output frame.png --frame 30
+lumen check composition.json
+lumen render composition.json -o out.mp4
+lumen render composition.json -o frame.png --frame 30
 ```
 
 It installs a prebuilt binary for Linux on x64 and arm64 (glibc 2.28 or later) and for macOS on Apple silicon, with FFmpeg linked in. Rendering needs a GPU, with Vulkan on Linux and Metal on macOS.
 
-`lumen --help` lists every flag, and the [CLI README](https://github.com/lumiscia/lumen-oss/tree/main/crates/cli#readme) explains them.
+`lumen render --help` and `lumen check --help` list every flag, and the [CLI README](https://github.com/lumiscia/lumen-oss/tree/main/crates/cli#readme) explains them.
 
 ## License
 

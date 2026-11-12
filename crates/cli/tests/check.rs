@@ -1,4 +1,4 @@
-//! `--check` reads a composition without a GPU and says what is wrong with it.
+//! `lumen check` reads a composition without a GPU and says what is wrong with it.
 
 use std::process::{Command, Output};
 
@@ -9,7 +9,7 @@ fn check(composition: &Value, format: &[&str]) -> Output {
     let path = dir.path().join("composition.json");
     std::fs::write(&path, composition.to_string()).expect("write composition");
     Command::new(env!("CARGO_BIN_EXE_lumen"))
-        .args(["--check", "--composition", path.to_str().unwrap()])
+        .args(["check", path.to_str().unwrap()])
         .args(format)
         .args(["--media-root", dir.path().to_str().unwrap()])
         .env_remove("LUMEN_FONT_DIR")

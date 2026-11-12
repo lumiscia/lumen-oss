@@ -124,7 +124,7 @@ fn template_audio_plays_at_each_clip_placement_and_speed() {
     let video = directory.path().join("out.mp4");
 
     let output = Command::new(env!("CARGO_BIN_EXE_lumen"))
-        .args(["--composition", composition_path.to_str().unwrap()])
+        .args(["render", composition_path.to_str().unwrap()])
         .args(["--media-root", directory.path().to_str().unwrap()])
         .args(["--output", video.to_str().unwrap()])
         .args(["--encoder", "libx264"])
