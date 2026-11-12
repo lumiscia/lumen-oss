@@ -8,8 +8,9 @@ use crate::{
             parse_hex_color,
         },
         builtins::{
-            FROM_TO, handle_x_error, is_key_value, key_name, key_order_error, key_value_error,
-            kind_error, mixed_keys_error, param, range_error, unknown_easing, unusable_result,
+            FROM_TO, handle_x_error, is_key_value, key_morph_error, key_name, key_order_error,
+            key_value_error, kind_error, mixed_keys_error, param, range_error, unknown_easing,
+            unusable_result,
         },
         functions,
         path::morph,
@@ -785,10 +786,6 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
             {
                 return Err(error(key_value_error(kind)));
             }
-            if let Some(data) = literal_string(&args[1]) {
-                let names = ["`value`"; 2];
-                morph(data, data, 0.0).map_err(|morph| error(morph.describe(names)))?;
-            }
         }
         BuiltinFn::Keyframes => {
             if args.len() == 2 && matches!(second, Some(ValueKind::Easing | ValueKind::String)) {
@@ -819,7 +816,10 @@ fn validate_builtin_call(spec: &BuiltinSpec, args: &[ExprNode]) -> Result<(), Ex
                 {
                     let name = key_name(format!("{}{}", at.0, at.1));
                     morph(previous, data, 0.0).map_err(|morph| {
-                        error(morph.describe([previous_name.as_str(), name.as_str()]))
+                        error(key_morph_error(
+                            &morph,
+                            [previous_name.as_str(), name.as_str()],
+                        ))
                     })?;
                 }
                 let interpolates = match key.get(2).or(default_ease) {
