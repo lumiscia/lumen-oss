@@ -46,10 +46,11 @@ composition.addNode({
 const bezier = cubicBezier([0.4, 0], [0.2, 1]);
 const keyed: Expr<number> = keyframes(frame, key(0, 0), key(30, 1, bezier));
 const eased: Expr<Vec2> = keyframes(frame, ease.outExpo, key(0, [0, 0]), key(30, point, "hold"));
+const readout: Expr<string> = keyframes(frame, ease.hold, key(0, "ten"), key(30, "hundred"));
 const curve: Expr<number> = ease(bezier, 0.5);
 const bent: Expr<number> = tween(0, 1, 0, 12, bezier);
 void [scalar, position, tint, slid, composition, spring(1), rgb(1, 2, 3)];
-void [keyed, eased, curve, bent];
+void [keyed, eased, readout, curve, bent];
 
 const spot: Expr<Vec3Value> = vec3(frame, 0, 1);
 const flown: Expr<Vec3Value> = tween(spot, vec3(0, 0, 100), 0, 12, ease.outExpo)
