@@ -65,6 +65,16 @@ pub trait Node: Send + Sync {
         self.for_each_expression(&mut |_| any = true);
         any
     }
+
+    /// Whether any of the node's params may give a different value at another frame, as
+    /// [`Expression::is_frame_dependent`] finds.
+    fn is_frame_dependent(&self) -> bool {
+        let mut dependent = false;
+        self.for_each_expression(&mut |expression| {
+            dependent |= expression.is_frame_dependent();
+        });
+        dependent
+    }
 }
 
 pub trait PropertyEval {
