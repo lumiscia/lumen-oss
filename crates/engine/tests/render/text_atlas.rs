@@ -492,6 +492,15 @@ fn kept_text_is_drawn_again_once_its_font_arrives() {
             },
         ),
         (
+            "static expression node family, kept under a moving square",
+            FontArrival {
+                scene: under_square(small_text("WWW", "=concat('Cac', 'hey')", 1.2, [10, 10])),
+                media: arriving("Cachey"),
+                before: vec![0.0, 1.0],
+                after: 2.0,
+            },
+        ),
+        (
             "literal span family",
             FontArrival {
                 scene: spans(json!([{ "text": "WWW", "font_family": "Spanny" }])),

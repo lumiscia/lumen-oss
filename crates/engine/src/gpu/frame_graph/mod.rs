@@ -2082,22 +2082,20 @@ fn static_candidate(node: &NodeKind) -> Staticness {
         // An image changes only with the media store, which `images_changed` watches.
         NodeKind::MediaIn(media) => always(
             matches!(media.params.kind, MediaInSourceKindDelegate::Image)
-                && !node.has_expressions(),
+                && !node.is_frame_dependent(),
         ),
         // Video changes with the frame, and shaders see the built-in time.
         NodeKind::WgslShader(_) => Staticness::Never,
         // A model playing a clip poses differently with the frame, until its clip is over or
         // before it starts, which `add_model` finds out from the clip.
         NodeKind::Model3d(model) if model.animates() => {
-            if cfg!(feature = "3d") && !node.has_expressions() {
+            if cfg!(feature = "3d") && !node.is_frame_dependent() {
                 Staticness::WhileHeld
             } else {
                 Staticness::Never
             }
         }
-        NodeKind::Model3d(_) => always(!node.has_expressions()),
-        NodeKind::Instance3d(instance) => always(instance.is_frame_independent()),
-        _ => always(!node.has_expressions()),
+        _ => always(!node.is_frame_dependent()),
     }
 }
 

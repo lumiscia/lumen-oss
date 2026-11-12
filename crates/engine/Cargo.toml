@@ -42,7 +42,7 @@ image = { version = "0.25.9", default-features = false, features = [
 tiff = { version = "0.11.3", default-features = false, optional = true }
 moxcms = { version = "0.8.1", default-features = false, optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = { version = "1.0.145" }
+serde_json = { version = "1.0.145", features = ["float_roundtrip"] }
 serde_path_to_error = "0.1.20"
 anyhow = "1.0.101"
 foldhash = "0.2.0"

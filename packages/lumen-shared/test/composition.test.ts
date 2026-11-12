@@ -2,7 +2,19 @@ import { lumenSchemaVersion } from "@lumiscia/lumen-types";
 import { describe, expect, test } from "vitest";
 
 import { Composition } from "../src/composition.js";
-import { frame, hex, progress, time, tween, uppercase, vec2, when } from "../src/expression.js";
+import {
+  frame,
+  hex,
+  key,
+  keyframes,
+  progress,
+  time,
+  tween,
+  uppercase,
+  vec2,
+  vec3,
+  when,
+} from "../src/expression.js";
 import { defineComposition } from "../src/template.js";
 
 describe("Composition schema version", () => {
@@ -340,6 +352,30 @@ describe("Composition rich text", () => {
       ],
       strikethrough: { offset: "=(frame - 4)", style: "dashed" },
     });
+  });
+});
+
+describe("Composition vector literals", () => {
+  test("writes a vec2 or vec3 of plain numbers as a literal, and keeps it an expression inside one", () => {
+    const composition = new Composition();
+
+    composition.addNode({
+      type: "camera_3d",
+      params: {
+        position: vec3(0, 0, 520),
+        target: keyframes(frame, key(0, vec3(0, 0, 0)), key(30, vec3(1, 2, 3))),
+      },
+    });
+    composition.addNode({ type: "shape", params: { position: vec2(4, 8), scale: vec2(frame, 1) } });
+
+    expect(composition.toJSON().nodes.map((node) => node.params)).toEqual([
+      {
+        position: [0, 0, 520],
+        target: "=keyframes(frame, key(0, vec3(0, 0, 0)), key(30, vec3(1, 2, 3)))",
+      },
+      { position: [4, 8], scale: "=vec2(frame, 1)" },
+    ]);
+    expect(vec3(0, 0, 520).toString()).toBe("=vec3(0, 0, 520)");
   });
 });
 
