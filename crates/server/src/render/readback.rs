@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
     sync::mpsc::{self, TryRecvError},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, anyhow};
@@ -25,6 +26,7 @@ pub(super) struct ReadbackRing {
     size: u64,
     free: Vec<Buffer>,
     pending: VecDeque<Pending>,
+    gpu_wait: Duration,
 }
 
 impl ReadbackRing {
@@ -44,7 +46,14 @@ impl ReadbackRing {
             size,
             free,
             pending: VecDeque::with_capacity(RING_SLOTS),
+            gpu_wait: Duration::ZERO,
         }
+    }
+
+    /// The time since the last call that [`pop`](Self::pop) spent waiting for the GPU to finish
+    /// the frame, before any of its bytes were copied.
+    pub(super) fn take_gpu_wait(&mut self) -> Duration {
+        std::mem::take(&mut self.gpu_wait)
     }
 
     /// Queues the copy of `source`, which holds `frame`, behind the work already submitted, so
@@ -90,27 +99,30 @@ impl ReadbackRing {
         let Some(pending) = self.pending.pop_front() else {
             return Ok(None);
         };
-        renderer
+        let waiting = Instant::now();
+        let result = renderer
             .device
             .poll(PollType::Wait {
                 submission_index: Some(pending.submission),
                 timeout: None,
             })
-            .context("GPU readback poll failed")?;
-        let result = match pending.mapped.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => {
-                renderer
-                    .device
-                    .poll(PollType::wait_indefinitely())
-                    .context("GPU readback poll failed")?;
-                pending
-                    .mapped
-                    .recv()
-                    .map_err(|_| anyhow!("GPU readback callback closed"))?
-            }
-            Err(TryRecvError::Disconnected) => return Err(anyhow!("GPU readback callback closed")),
-        };
+            .context("GPU readback poll failed")
+            .and_then(|_| match pending.mapped.try_recv() {
+                Ok(result) => Ok(result),
+                Err(TryRecvError::Empty) => {
+                    renderer
+                        .device
+                        .poll(PollType::wait_indefinitely())
+                        .context("GPU readback poll failed")?;
+                    pending
+                        .mapped
+                        .recv()
+                        .map_err(|_| anyhow!("GPU readback callback closed"))
+                }
+                Err(TryRecvError::Disconnected) => Err(anyhow!("GPU readback callback closed")),
+            });
+        self.gpu_wait += waiting.elapsed();
+        let result = result?;
         result.context("GPU readback map failed")?;
         let mapped = pending
             .buffer

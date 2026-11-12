@@ -15,7 +15,9 @@ use super::{
     CancelToken, ErrorCode, OutputFormat, RenderOutput, RenderProgress, RenderReport, RenderTiming,
     ServerRenderError,
     device_budget::{DeviceReservation, reserve_devices},
-    encode_target::{checked_size, gpu_renderer_failed, readback_failed, render_raster, timed},
+    encode_target::{
+        checked_size, gpu_renderer_failed, poll, readback_failed, render_raster, timed,
+    },
     gpu::{create_gpu_renderer, prefetch_media_frames},
     media::LocalMediaStore,
 };
@@ -114,15 +116,21 @@ impl<'a> ImageRender<'a> {
         for (index, frame) in self.frames.clone().enumerate() {
             self.cancel.check()?;
             prefetch_media_frames(self.composition, &self.media_store, frame);
-            let raster = render_raster(
+            let rendered = render_raster(
                 &mut self.renderer,
                 self.composition,
                 &self.media_store,
                 frame,
                 &mut timing,
-            )?
-            .raster;
-            let size = checked_size(self.composition, &raster, frame)?;
+            )?;
+            let raster = &rendered.raster;
+            let size = checked_size(self.composition, raster, frame)?;
+            poll(
+                &self.renderer,
+                frame,
+                &mut timing,
+                Some(rendered.submission.clone()),
+            )?;
             let pixels = timed(&mut timing.readback, || {
                 self.renderer
                     .gpu_renderer()
