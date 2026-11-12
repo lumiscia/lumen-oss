@@ -1323,8 +1323,12 @@ impl<'a> FrameCx<'a> {
     }
 
     /// The values the params of `id` itself that read the frame take at `frame`, evaluated once
-    /// per frame for every node that reads it.
+    /// per frame for every node that reads it. A scope with props evaluates them every time,
+    /// since its props can differ between two reads of one frame.
     fn own_values(&mut self, id: NodeId, frame: FrameTime) -> Option<Arc<[ExpressionValue]>> {
+        if self.scope.props.is_some() {
+            return self.evaluate_own_values(id, frame);
+        }
         let key = ((self.graph_key(), self.path, id), frame.value().to_bits());
         if let Some(values) = self.st.frame_values.get(&key) {
             return values.clone();

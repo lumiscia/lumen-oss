@@ -672,3 +672,41 @@ fn text_that_gives_zero_then_negative_zero_is_drawn_again() {
         assert!(actual == expected, "frame {frame}");
     }
 }
+
+#[test]
+fn a_held_clip_whose_props_differ_between_blur_samples_is_drawn_for_each() {
+    let composition = lumen_engine::json::parse_value(&json!({
+        "timeline": {"fps": 10, "duration_frames": 10},
+        "render_settings": {"width": 4, "height": 4},
+        "compositions": {"tile": {
+            "timeline": {"fps": 10, "duration_frames": 1},
+            "render_settings": {"width": 4, "height": 4},
+            "props": {"g": {"type": "number", "default": 0}},
+            "nodes": [
+                {"id": 1, "type": "background", "params": {"paint": "=rgba(prop('g'), 0, 0, 255)"}},
+                {"id": 2, "type": "media_output"}
+            ],
+            "connections": [{"from_node": 1, "to_node": 2, "to_port": "source"}]
+        }},
+        "nodes": [
+            {"id": 1, "type": "clip", "params": {
+                "composition": "tile", "duration": 1, "end": "hold", "props": {"g": "=frame * 60"}
+            }},
+            {"id": 2, "type": "motion_blur"},
+            {"id": 3, "type": "media_output"}
+        ],
+        "connections": [
+            {"from_node": 1, "to_node": 2, "to_port": "source"},
+            {"from_node": 2, "to_node": 3, "to_port": "source"}
+        ]
+    }))
+    .unwrap();
+    let gpu = gpu();
+    let (mut renderer, mut reference) = (gpu.renderer(), gpu.renderer());
+    reference.set_static_output_reuse(false);
+    for frame in [2.0, 3.0] {
+        let actual = at(&mut renderer, &composition, frame);
+        let expected = uncached(&mut reference, &composition, frame);
+        assert!(actual == expected, "frame {frame}");
+    }
+}
