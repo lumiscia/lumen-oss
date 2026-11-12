@@ -242,18 +242,87 @@ impl Hash for Literal {
 impl Op {
     /// Whether the value can differ for the same operands and frame-constant context: it reads
     /// another node, measures text with a font session that its measurements load fonts into, or
-    /// reads the props of the template.
+    /// reads the props of the template. Every builtin is listed, so a new one has to be classed.
     fn reads_state(&self) -> bool {
-        matches!(
-            self,
-            Op::ReadProperty(..)
-                | Op::NodeRef(_)
-                | Op::MeasureNode(..)
-                | Op::Builtin(
-                    BuiltinFn::TextWidth | BuiltinFn::TextHeight | BuiltinFn::Prop,
-                    _
-                )
-        )
+        match self {
+            Op::ReadProperty(..) | Op::NodeRef(_) | Op::MeasureNode(..) => true,
+            Op::Literal(_)
+            | Op::Global(_)
+            | Op::Unary(..)
+            | Op::Binary(..)
+            | Op::Conditional(..) => false,
+            Op::Builtin(builtin, _) => match builtin {
+                BuiltinFn::TextWidth | BuiltinFn::TextHeight | BuiltinFn::Prop => true,
+                BuiltinFn::Min
+                | BuiltinFn::Max
+                | BuiltinFn::Abs
+                | BuiltinFn::Floor
+                | BuiltinFn::Ceil
+                | BuiltinFn::Round
+                | BuiltinFn::Sin
+                | BuiltinFn::Cos
+                | BuiltinFn::Clamp
+                | BuiltinFn::Lerp
+                | BuiltinFn::Pow
+                | BuiltinFn::Mod
+                | BuiltinFn::Fract
+                | BuiltinFn::Sign
+                | BuiltinFn::Atan2
+                | BuiltinFn::Hypot
+                | BuiltinFn::Remap
+                | BuiltinFn::Smoothstep
+                | BuiltinFn::Step
+                | BuiltinFn::Uppercase
+                | BuiltinFn::Lowercase
+                | BuiltinFn::Format
+                | BuiltinFn::Concat
+                | BuiltinFn::Vec2
+                | BuiltinFn::Vec3
+                | BuiltinFn::Rgb
+                | BuiltinFn::Rgba
+                | BuiltinFn::Progress
+                | BuiltinFn::Tween
+                | BuiltinFn::Ease
+                | BuiltinFn::CubicBezier
+                | BuiltinFn::Key
+                | BuiltinFn::Keyframes
+                | BuiltinFn::Noise
+                | BuiltinFn::Random
+                | BuiltinFn::Spring
+                | BuiltinFn::PathPoint
+                | BuiltinFn::PathAngle
+                | BuiltinFn::InQuad
+                | BuiltinFn::OutQuad
+                | BuiltinFn::InOutQuad
+                | BuiltinFn::InCubic
+                | BuiltinFn::OutCubic
+                | BuiltinFn::InOutCubic
+                | BuiltinFn::InExpo
+                | BuiltinFn::OutExpo
+                | BuiltinFn::InOutExpo
+                | BuiltinFn::InBack
+                | BuiltinFn::OutBack
+                | BuiltinFn::InOutBack
+                | BuiltinFn::InSine
+                | BuiltinFn::OutSine
+                | BuiltinFn::InOutSine
+                | BuiltinFn::InQuart
+                | BuiltinFn::OutQuart
+                | BuiltinFn::InOutQuart
+                | BuiltinFn::InQuint
+                | BuiltinFn::OutQuint
+                | BuiltinFn::InOutQuint
+                | BuiltinFn::InCirc
+                | BuiltinFn::OutCirc
+                | BuiltinFn::InOutCirc
+                | BuiltinFn::InElastic
+                | BuiltinFn::OutElastic
+                | BuiltinFn::InOutElastic
+                | BuiltinFn::InBounce
+                | BuiltinFn::OutBounce
+                | BuiltinFn::InOutBounce => false,
+            },
+        }
     }
 
     /// The steps this one reads.
