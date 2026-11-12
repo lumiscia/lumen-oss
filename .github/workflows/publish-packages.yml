@@ -17,8 +17,16 @@ permissions:
   id-token: write
 
 jobs:
+  cli:
+    name: CLI
+    # Both jobs use the commit the workflow was started on, so the binaries, the packages and
+    # the tag are one commit even when main moves during the build.
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/build-cli.yml
+
   publish:
     name: Release
+    needs: cli
     runs-on: ubuntu-latest
     environment: release
 
@@ -26,7 +34,6 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: main
 
       - uses: pnpm/action-setup@v4
         with:
@@ -106,6 +113,16 @@ jobs:
           done
           cargo publish --workspace "${excludes[@]}"
 
+      # Artifacts drop the executable bit, and each platform package refuses to pack without it.
+      - name: Download lumen binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: lumen-cli-*
+          path: packages
+
+      - name: Mark lumen binaries executable
+        run: chmod +x packages/lumen-cli-*/bin/lumen
+
       - name: Publish npm packages
         run: pnpm publish:packages
 
@@ -130,6 +147,7 @@ jobs:
 
           npm:
           - @lumiscia/lumen-bindings@$release_version
+          - @lumiscia/lumen-cli@$release_version, with binaries for Linux x64, Linux arm64 and macOS arm64
           - @lumiscia/lumen-preview@$release_version
           - @lumiscia/lumen-react@$release_version
           - @lumiscia/lumen-sdk@$release_version

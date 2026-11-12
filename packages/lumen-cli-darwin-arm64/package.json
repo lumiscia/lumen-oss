@@ -1,0 +1,34 @@
+{
+  "name": "@lumiscia/lumen-cli-darwin-arm64",
+  "version": "0.5.1",
+  "description": "The lumen binary for macOS on Apple silicon. Install @lumiscia/lumen-cli to get it.",
+  "homepage": "https://github.com/lumiscia/lumen-oss/tree/main/crates/cli#readme",
+  "bugs": {
+    "url": "https://github.com/lumiscia/lumen-oss/issues"
+  },
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lumiscia/lumen-oss.git",
+    "directory": "packages/lumen-cli-darwin-arm64"
+  },
+  "files": [
+    "bin",
+    "licenses"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "publishConfig": {
+    "executableFiles": [
+      "bin/lumen"
+    ]
+  },
+  "scripts": {
+    "prepack": "test -x bin/lumen"
+  },
+  "preferUnplugged": true
+}

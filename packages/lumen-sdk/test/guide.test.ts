@@ -10,7 +10,7 @@ import * as sdk from "../src/index.js";
 // composition and the JSON is its nodes and connections. Every `ts` block must type-check and
 // define `composition`. `UPDATE_GUIDE=1` rewrites the JSON blocks from the TypeScript ones, on one
 // line each for the formatter to lay out (`just update-3d-guide` does both);
-// `crates/local/tests/docs.rs` checks that the engine accepts them.
+// `crates/cli/tests/docs.rs` checks that the engine accepts them.
 const guidePath = fileURLToPath(new URL("../../../docs/3d.md", import.meta.url));
 const sdkPath = fileURLToPath(new URL("../src/index.ts", import.meta.url));
 const baseConfigPath = fileURLToPath(new URL("../../../tsconfig.base.json", import.meta.url));

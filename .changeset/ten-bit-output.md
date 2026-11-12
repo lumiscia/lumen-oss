@@ -4,7 +4,7 @@
 "@lumiscia/lumen-sdk": minor
 ---
 
-**Opt-in 10-bit video output.** A render can ask for 10 bits per sample with `hevc` or `av1`: the request's `bit_depth`, `lumen-local --bit-depth 10` or the SDK's `render(..., { bitDepth: 10 })`, which win over `render_settings.bit_depth`, which wins over a custom preset's `bit_depth` in the quality config, as `codec` does. The default stays 8 everywhere.
+**Opt-in 10-bit video output.** A render can ask for 10 bits per sample with `hevc` or `av1`: the request's `bit_depth`, `lumen --bit-depth 10` or the SDK's `render(..., { bitDepth: 10 })`, which win over `render_settings.bit_depth`, which wins over a custom preset's `bit_depth` in the quality config, as `codec` does. The default stays 8 everywhere.
 
 ```json
 { "render_settings": { "width": 1920, "height": 1080, "codec": "hevc", "bit_depth": 10 } }

@@ -1,0 +1,39 @@
+{
+  "name": "@lumiscia/lumen-cli",
+  "version": "0.5.1",
+  "description": "The lumen command: check and render Lumen compositions on a local GPU.",
+  "keywords": [
+    "cli",
+    "composition",
+    "gpu",
+    "lumen",
+    "lumiscia",
+    "rendering",
+    "video"
+  ],
+  "homepage": "https://github.com/lumiscia/lumen-oss/tree/main/crates/cli#readme",
+  "bugs": {
+    "url": "https://github.com/lumiscia/lumen-oss/issues"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lumiscia/lumen-oss.git",
+    "directory": "packages/lumen-cli"
+  },
+  "bin": {
+    "lumen": "bin/lumen.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "type": "module",
+  "optionalDependencies": {
+    "@lumiscia/lumen-cli-darwin-arm64": "workspace:*",
+    "@lumiscia/lumen-cli-linux-arm64": "workspace:*",
+    "@lumiscia/lumen-cli-linux-x64": "workspace:*"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

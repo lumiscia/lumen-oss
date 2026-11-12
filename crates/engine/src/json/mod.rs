@@ -887,7 +887,7 @@ mod tests {
 
     #[test]
     fn parses_every_bundled_demo() {
-        let demos = concat!(env!("CARGO_MANIFEST_DIR"), "/../local/demo");
+        let demos = concat!(env!("CARGO_MANIFEST_DIR"), "/../cli/demo");
         for entry in std::fs::read_dir(demos).unwrap() {
             let path = entry.unwrap().path();
             let source = std::fs::read_to_string(&path).unwrap();

@@ -4,7 +4,7 @@ use crate::{FfmpegError, Result};
 
 use super::codec::{EncoderFamily, video_encoder_by_name};
 
-/// The bitrate `--preset` alone targets with lumen-local's rate-control flags.
+/// The bitrate `--preset` alone targets with the `lumen` rate-control flags.
 const FLAG_DEFAULT_BIT_RATE: u64 = 14_000_000;
 
 /// How an encoder trades bitrate against quality.
@@ -34,7 +34,7 @@ pub struct EncoderQuality {
 }
 
 impl EncoderQuality {
-    /// The quality lumen-local's flags ask for: at most one of `bitrate`, `crf` and `qp`, plus a
+    /// The quality the `lumen` flags ask for: at most one of `bitrate`, `crf` and `qp`, plus a
     /// preset, or `None` if they ask for none of them. An encoder preset alone targets 14 Mb/s.
     /// Errors when more than one rate control is given.
     pub fn from_options(
@@ -312,17 +312,19 @@ pub(crate) fn portable_options(encoder: &str, quality: &EncoderQuality) -> Resul
     })
 }
 
-/// Sets the private AVOptions, then the raw ones, which may name a codec context option such as
-/// `g` or an option of the encoder.
+/// Sets the AVOptions lumen chose, then the raw ones. Each names an option of the encoder or, when
+/// the encoder has none of that name, of the codec context, such as `maxrate` or `g`.
 pub(crate) fn apply_quality_options(
     context: *mut sys::AVCodecContext,
     quality: &QualityOptions,
     encoder: &str,
 ) -> Result<()> {
-    for (name, value) in &quality.private {
-        set_option(unsafe { (*context).priv_data }, 0, name, value, encoder)?;
-    }
-    for (name, value) in &quality.options {
+    let chosen = quality.private.iter().map(|(name, value)| (*name, value));
+    let raw = quality
+        .options
+        .iter()
+        .map(|(name, value)| (name.as_str(), value));
+    for (name, value) in chosen.chain(raw) {
         set_option(
             context.cast(),
             sys::AV_OPT_SEARCH_CHILDREN,

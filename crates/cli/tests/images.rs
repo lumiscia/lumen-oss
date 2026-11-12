@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-//! Drives the real `lumen-local` binary on lavapipe to write stills, image sequences and ranged
+//! Drives the real `lumen` binary on lavapipe to write stills, image sequences and ranged
 //! videos. Skips when lavapipe isn't installed.
 
 use std::{
@@ -21,13 +21,13 @@ fn lavapipe_icd() -> Option<PathBuf> {
                 .is_some_and(|name| name.to_string_lossy().starts_with("lvp_icd"))
         });
     if icd.is_none() {
-        eprintln!("lavapipe not installed; skipping lumen-local image tests");
+        eprintln!("lavapipe not installed; skipping lumen image tests");
     }
     icd
 }
 
-fn lumen_local(icd: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_lumen-local"))
+fn lumen(icd: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_lumen"))
         .args(args)
         .env_remove("LUMEN_VIDEO_ENCODER")
         .env_remove("LUMEN_HARDWARE_DECODE")
@@ -38,7 +38,7 @@ fn lumen_local(icd: &Path, args: &[&str]) -> Output {
         .env("WGPU_POWER_PREF", "none")
         .env("NO_COLOR", "1")
         .output()
-        .expect("run lumen-local")
+        .expect("run lumen")
 }
 
 /// Red grows with the frame number, so a frame's image says which frame it is.
@@ -120,7 +120,7 @@ fn writes_stills_sequences_and_ranged_videos() {
     let composition = composition.to_str().unwrap();
     let out = directory.path().join("out");
     let run = |args: &[&str]| {
-        let output = lumen_local(&icd, &[&["--composition", composition], args].concat());
+        let output = lumen(&icd, &[&["--composition", composition], args].concat());
         assert!(
             output.status.success(),
             "{args:?}: {}",
@@ -203,7 +203,7 @@ fn refuses_ranges_the_timeline_does_not_have_without_writing_anything() {
         ("a.mp4", "5..5"),
         ("a.png", "30..31"),
     ] {
-        let output = lumen_local(
+        let output = lumen(
             &icd,
             &[
                 "--composition",

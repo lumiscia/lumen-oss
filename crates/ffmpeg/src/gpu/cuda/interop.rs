@@ -124,7 +124,7 @@ fn driver_error(error: cudarc::driver::result::DriverError) -> String {
 }
 
 pub fn device_pci_bus_id(device: sys::CUdevice) -> Result<String, String> {
-    let mut pci_bus_id = [0i8; 64];
+    let mut pci_bus_id = [0 as std::ffi::c_char; 64];
     unsafe {
         sys::cuDeviceGetPCIBusId(pci_bus_id.as_mut_ptr(), pci_bus_id.len() as i32, device)
             .result()

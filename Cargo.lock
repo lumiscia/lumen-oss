@@ -1596,6 +1596,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "lumen-cli"
+version = "0.5.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "image",
+ "lumen-engine",
+ "lumen-engine-ffmpeg",
+ "lumen-server",
+ "serde_json",
+ "tempfile",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "lumen-engine"
 version = "0.5.1"
 dependencies = [
@@ -1714,21 +1729,6 @@ dependencies = [
  "jsonschema",
  "lumen-engine",
  "serde_json",
-]
-
-[[package]]
-name = "lumen-local"
-version = "0.5.1"
-dependencies = [
- "anyhow",
- "clap",
- "image",
- "lumen-engine",
- "lumen-engine-ffmpeg",
- "lumen-server",
- "serde_json",
- "tempfile",
- "tracing-subscriber",
 ]
 
 [[package]]

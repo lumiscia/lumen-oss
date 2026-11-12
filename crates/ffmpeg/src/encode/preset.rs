@@ -71,9 +71,15 @@ impl EncodeCodec {
     }
 
     /// The encoders tried without a `codecs` entry in the operator config: the platform's
-    /// hardware encoder, then the software one.
+    /// hardware encoder, then the software one. AV1 on a Linux host with NVIDIA's encode library goes to
+    /// NVENC, because `av1_vulkan` encodes wrong frames there.
     pub fn default_encoders(self) -> &'static [&'static str] {
+        self.default_encoders_for(nvidia_driver_loaded())
+    }
+
+    fn default_encoders_for(self, nvidia: bool) -> &'static [&'static str] {
         match self {
+            Self::Av1 if cfg!(target_os = "linux") && nvidia => &["av1_nvenc", "libsvtav1"],
             Self::H264 if cfg!(target_os = "macos") => &["h264_videotoolbox", "libx264"],
             Self::Hevc if cfg!(target_os = "macos") => &["hevc_videotoolbox", "libx265"],
             Self::H264 if cfg!(target_os = "linux") => &["h264_vulkan", "libx264"],
@@ -86,6 +92,25 @@ impl EncodeCodec {
             Self::Vp9 => &["libvpx-vp9"],
         }
     }
+}
+
+/// Whether this Linux host has NVIDIA's encode library, which is what FFmpeg loads for NVENC.
+fn nvidia_driver_loaded() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        static LOADS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *LOADS.get_or_init(|| {
+            let library =
+                unsafe { libc::dlopen(c"libnvidia-encode.so.1".as_ptr(), libc::RTLD_LAZY) };
+            if library.is_null() {
+                return false;
+            }
+            unsafe { libc::dlclose(library) };
+            true
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    false
 }
 
 impl fmt::Display for EncodeCodec {
@@ -237,7 +262,7 @@ pub struct QualityRequest {
     /// An alpha channel, which only ProRes and VP9 hold and only their software encoders write.
     /// Unset is opaque.
     pub alpha: Option<bool>,
-    /// Settings every candidate uses in place of a preset's, from lumen-local's rate-control flags.
+    /// Settings every candidate uses in place of a preset's, from the `lumen` rate-control flags.
     pub settings: Option<EncoderQuality>,
     /// The one encoder to use, with no fallback.
     pub encoder: Option<String>,
@@ -772,6 +797,28 @@ mod tests {
             QualityConfig::built_in().presets["standard"].encoders
                 [EncodeCodec::H264.default_encoders()[0]]
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn only_av1_changes_its_default_encoders_on_an_nvidia_host() {
+        assert_eq!(
+            EncodeCodec::Av1.default_encoders_for(false),
+            ["av1_vulkan", "libsvtav1"]
+        );
+        assert_eq!(
+            EncodeCodec::Av1.default_encoders_for(true),
+            ["av1_nvenc", "libsvtav1"]
+        );
+        for codec in EncodeCodec::ALL {
+            if codec != EncodeCodec::Av1 {
+                assert_eq!(
+                    codec.default_encoders_for(true),
+                    codec.default_encoders_for(false),
+                    "{codec}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Every JSON composition in `docs/3d.md` passes `lumen-local --check`, with no warnings either.
+//! Every JSON composition in `docs/3d.md` passes `lumen --check`, with no warnings either.
 
 use std::process::Command;
 
@@ -37,13 +37,13 @@ fn the_3d_guides_compositions_pass_check() {
         block["render_settings"] = json!({ "width": 64, "height": 36 });
         let path = dir.path().join(format!("block-{index}.json"));
         std::fs::write(&path, block.to_string()).expect("write composition");
-        let output = Command::new(env!("CARGO_BIN_EXE_lumen-local"))
+        let output = Command::new(env!("CARGO_BIN_EXE_lumen"))
             .args(["--check", "--format", "json", "--composition"])
             .arg(&path)
             .args(["--media-root", dir.path().to_str().unwrap()])
             .env_remove("LUMEN_FONT_DIR")
             .output()
-            .expect("run lumen-local");
+            .expect("run lumen");
         let report: Value = serde_json::from_slice(&output.stdout).expect("JSON report");
         assert_eq!(
             report,

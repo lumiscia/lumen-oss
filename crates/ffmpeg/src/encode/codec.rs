@@ -256,46 +256,75 @@ pub(crate) fn video_encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
     Ok(codec)
 }
 
-#[cfg(ffmpeg_supported_config)]
 fn pixel_formats(codec: *const sys::AVCodec) -> Option<&'static [sys::AVPixelFormat]> {
+    #[cfg(ffmpeg_supported_config)]
+    unsafe {
+        supported_config(codec, sys::AVCodecConfig::AV_CODEC_CONFIG_PIX_FORMAT)
+    }
+    #[cfg(not(ffmpeg_supported_config))]
+    unsafe {
+        terminated_list((*codec).pix_fmts, sys::AVPixelFormat::AV_PIX_FMT_NONE)
+    }
+}
+
+fn sample_formats(codec: *const sys::AVCodec) -> Option<&'static [sys::AVSampleFormat]> {
+    #[cfg(ffmpeg_supported_config)]
+    unsafe {
+        supported_config(codec, sys::AVCodecConfig::AV_CODEC_CONFIG_SAMPLE_FORMAT)
+    }
+    #[cfg(not(ffmpeg_supported_config))]
+    unsafe {
+        terminated_list(
+            (*codec).sample_fmts,
+            sys::AVSampleFormat::AV_SAMPLE_FMT_NONE,
+        )
+    }
+}
+
+/// The values `codec` lists for `config`. `None` when it lists none, which means it takes any.
+///
+/// # Safety
+///
+/// `T` must be the element type FFmpeg documents for `config`.
+#[cfg(ffmpeg_supported_config)]
+unsafe fn supported_config<T>(
+    codec: *const sys::AVCodec,
+    config: sys::AVCodecConfig,
+) -> Option<&'static [T]> {
     use std::ffi::{c_int, c_void};
 
-    let mut formats: *const c_void = std::ptr::null();
+    let mut values: *const c_void = std::ptr::null();
     let mut count: c_int = 0;
     let result = unsafe {
         sys::avcodec_get_supported_config(
             std::ptr::null(),
             codec,
-            sys::AVCodecConfig::AV_CODEC_CONFIG_PIX_FORMAT,
+            config,
             0,
-            &mut formats,
+            &mut values,
             &mut count,
         )
     };
-    if result < 0 || formats.is_null() {
+    if result < 0 || values.is_null() {
         return None;
     }
     // The list is static data of the codec.
     Some(unsafe {
-        std::slice::from_raw_parts(
-            formats.cast::<sys::AVPixelFormat>(),
-            usize::try_from(count).unwrap_or(0),
-        )
+        std::slice::from_raw_parts(values.cast::<T>(), usize::try_from(count).unwrap_or(0))
     })
 }
 
+/// A codec's static list that `end` terminates. `None` when the codec has no list.
 #[cfg(not(ffmpeg_supported_config))]
-fn pixel_formats(codec: *const sys::AVCodec) -> Option<&'static [sys::AVPixelFormat]> {
-    let formats = unsafe { (*codec).pix_fmts };
-    if formats.is_null() {
+unsafe fn terminated_list<T: PartialEq>(list: *const T, end: T) -> Option<&'static [T]> {
+    if list.is_null() {
         return None;
     }
     let mut count = 0;
-    while unsafe { *formats.add(count) } != sys::AVPixelFormat::AV_PIX_FMT_NONE {
+    while unsafe { *list.add(count) != end } {
         count += 1;
     }
-    // The list is static data of the codec, ended by `AV_PIX_FMT_NONE`.
-    Some(unsafe { std::slice::from_raw_parts(formats, count) })
+    Some(unsafe { std::slice::from_raw_parts(list, count) })
 }
 
 pub(crate) fn encoder_by_name(name: &str) -> Result<*const sys::AVCodec> {
@@ -370,37 +399,20 @@ pub(crate) fn find_audio_encoder(config: &AudioEncoderConfig) -> Result<*const s
 pub(crate) fn select_audio_sample_format(
     codec: *const sys::AVCodec,
 ) -> Result<sys::AVSampleFormat> {
-    use sys::AVSampleFormat::{AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_FLTP, AV_SAMPLE_FMT_NONE};
+    use sys::AVSampleFormat::{AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_FLTP};
 
-    unsafe {
-        let formats = (*codec).sample_fmts;
-        if formats.is_null() {
-            return Ok(AV_SAMPLE_FMT_FLTP);
-        }
-        let mut index = 0;
-        let mut fallback = AV_SAMPLE_FMT_NONE;
-        loop {
-            let format = *formats.add(index);
-            if format == AV_SAMPLE_FMT_NONE {
-                break;
-            }
-            if format == AV_SAMPLE_FMT_FLTP {
-                return Ok(format);
-            }
-            if format == AV_SAMPLE_FMT_FLT {
-                fallback = format;
-            }
-            index += 1;
-        }
-        if fallback != AV_SAMPLE_FMT_NONE {
-            Ok(fallback)
-        } else {
-            Err(FfmpegError::new(
+    let Some(formats) = sample_formats(codec) else {
+        return Ok(AV_SAMPLE_FMT_FLTP);
+    };
+    [AV_SAMPLE_FMT_FLTP, AV_SAMPLE_FMT_FLT]
+        .into_iter()
+        .find(|format| formats.contains(format))
+        .ok_or_else(|| {
+            FfmpegError::new(
                 "AudioEncoder::create",
                 "the audio encoder doesn't take f32 samples",
-            ))
-        }
-    }
+            )
+        })
 }
 
 #[cfg(test)]

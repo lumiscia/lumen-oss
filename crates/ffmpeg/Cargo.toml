@@ -18,6 +18,7 @@ cuda = ["dep:cudarc"]
 build-ffmpeg = ["ffmpeg-sys-next/build"]
 gpl = ["ffmpeg-sys-next/build-license-gpl"]
 nonfree = ["ffmpeg-sys-next/build-license-nonfree"]
+static = ["ffmpeg-sys-next/static"]
 
 [dependencies]
 ffmpeg-sys-next = { version = "9.0.1", default-features = false, features = [

@@ -27,7 +27,7 @@ use tracing_subscriber::EnvFilter;
 /// or a range of frames to numbered images.
 #[derive(Debug, Parser)]
 #[command(
-    name = "lumen-local",
+    name = "lumen",
     version,
     args_override_self = true,
     group(ArgGroup::new("rate_control").args(["bitrate", "crf", "qp"])),
@@ -46,7 +46,8 @@ keeps the frame's transparency as an alpha channel, in .mov (prores_ks) or .webm
 only; hardware encoders can't write it. They win over the \
 composition's render_settings, which win over the config's defaults. Each codec tries its encoders \
 in order, warning when one won't open: on Linux the Vulkan encoder, then libx264, libx265 or \
-libsvtav1, and on macOS VideoToolbox, then the same CPU encoders. A preset with no settings for an encoder skips it, so \
+libsvtav1 (av1 on an NVIDIA host tries av1_nvenc, not av1_vulkan), and on macOS VideoToolbox, then \
+the same CPU encoders. A preset with no settings for an encoder skips it, so \
 lossless uses libx264, libx265 or libvpx-vp9. --encoder or LUMEN_VIDEO_ENCODER pins one encoder, which either \
 opens or fails the render.
 
@@ -441,8 +442,8 @@ fn failure_line(error: &anyhow::Error) -> String {
         .chain()
         .find_map(|cause| cause.downcast_ref::<lumen_engine::error::LumenError>());
     match engine {
-        Some(engine) => format!("lumen-local failed ({}): {error:#}", engine.code()),
-        None => format!("lumen-local failed: {error:#}"),
+        Some(engine) => format!("lumen failed ({}): {error:#}", engine.code()),
+        None => format!("lumen failed: {error:#}"),
     }
 }
 
@@ -552,7 +553,7 @@ fn render_to_partial(output: &Path, render: impl FnOnce(&Path) -> Result<()>) ->
         extension.to_string_lossy().to_ascii_lowercase()
     });
     let suffix = format!(".partial.{extension}");
-    partial.prefix(".lumen-local-").suffix(&suffix);
+    partial.prefix(".lumen-").suffix(&suffix);
     // Without this the rename would leave a new output readable only by its owner, and a render
     // replacing a private output would be readable by others while it runs.
     #[cfg(unix)]
@@ -759,11 +760,11 @@ mod tests {
         let error = anyhow::Error::new(media).context("failed to render");
         assert_eq!(
             failure_line(&error),
-            "lumen-local failed (media.not_found): failed to render: image `logo.png` not found: no such file"
+            "lumen failed (media.not_found): failed to render: image `logo.png` not found: no such file"
         );
         assert_eq!(
             failure_line(&anyhow::anyhow!("disk full")),
-            "lumen-local failed: disk full"
+            "lumen failed: disk full"
         );
     }
 
@@ -911,7 +912,7 @@ mod tests {
     }
 
     fn parse(flags: &[&str]) -> Result<Cli, clap::Error> {
-        let base = ["lumen-local", "--composition", "in.json"];
+        let base = ["lumen", "--composition", "in.json"];
         Cli::try_parse_from(base.into_iter().chain(flags.iter().copied()))
     }
 

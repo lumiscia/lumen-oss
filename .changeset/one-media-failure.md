@@ -4,7 +4,7 @@
 "@lumiscia/lumen-preview": minor
 ---
 
-Every media source that can't be used fails the same way, for images, videos, audio, fonts, models and environment maps, in the engine, `check`, `lumen-server`, `lumen-local` and the preview.
+Every media source that can't be used fails the same way, for images, videos, audio, fonts, models and environment maps, in the engine, `check`, `lumen-server`, `lumen` and the preview.
 
 A failure names the source as the composition wrote it, the kinds the place using it reads, the kind it is when that is established (a container such as MP4 or WebM can't be told as video or audio from its header, so it has no `found` until it is opened), where it is used (node and param, audio clip, template), and why, with one of five public codes:
 
@@ -16,7 +16,7 @@ A failure names the source as the composition wrote it, the kinds the place usin
 | `media.too_large`   | Over a limit (file bytes, pixels, the device's texture size, a model's counts), with the `limit` and the `actual` value when they are known |
 | `media.decode`      | The data is corrupt, truncated, contradicts itself, or is in no format the engine identifies                                                |
 
-`media.decode` and `media.frame_out_of_range` keep their codes. `check` reports missing and wrong-kind `asset:` references with these codes and the JSON pointer of the param or audio clip, also inside templates. `lumen-server` carries the engine's code through unchanged, and marks a render retryable only for a shortage that can pass (out of memory or file descriptors, `EAGAIN`, a busy device), in the engine's reads, in FFmpeg's open and decode, and while resolving a path. Failures after a source opened name it as the composition wrote it, and the HTTP error message never shows a path on the server. A `.gltf` JSON file is `media.unsupported` in renders and in the upload probe; other text that starts with `{` is `media.decode`. The upload probe's rejection reasons end with the code, such as `(media.too_large)`. `lumen-local` prints `lumen-local failed (media.not_found): ...`.
+`media.decode` and `media.frame_out_of_range` keep their codes. `check` reports missing and wrong-kind `asset:` references with these codes and the JSON pointer of the param or audio clip, also inside templates. `lumen-server` carries the engine's code through unchanged, and marks a render retryable only for a shortage that can pass (out of memory or file descriptors, `EAGAIN`, a busy device), in the engine's reads, in FFmpeg's open and decode, and while resolving a path. Failures after a source opened name it as the composition wrote it, and the HTTP error message never shows a path on the server. A `.gltf` JSON file is `media.unsupported` in renders and in the upload probe; other text that starts with `{` is `media.decode`. The upload probe's rejection reasons end with the code, such as `(media.too_large)`. `lumen` prints `lumen failed (media.not_found): ...`.
 
 The thrown error of the WASM bindings carries `code` (the dotted code for a media failure) and `media` (the structured fields). `LumenPreviewError` has a new `media` field with them, typed as `MediaFailure` in `@lumiscia/lumen-types`, and it is `null` for other failures. The preview's own reasons agree with the engine's: an audio-only file registered as video is `media.wrong_kind` (found `audio`), a video the browser can't decode is `media.unsupported`, and a file it can't open or identify is `media.decode`.
 

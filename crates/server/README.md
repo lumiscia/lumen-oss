@@ -90,7 +90,7 @@ let options = RenderOptions {
 };
 ```
 
-Quality presets and encoders (`RenderOptions::encoder`) apply to videos only. A sequence is bounded by `RenderOptions::sequence_limits`, a `SequenceLimits { max_frames, max_bytes }` whose default is what a ZIP holds (65535 frames, 3 GiB of images). A range that is empty or reaches past the timeline, a still of several frames, a JPEG quality outside 1 to 100 or on another format, and a sequence longer than `max_frames` all fail before any GPU work, with `invalid_output` or `output_too_large`. Frames are rendered, encoded and written to the archive one at a time, so memory holds one frame and then the archive. A sequence over `max_bytes`, or a cancelled one, ends with the temporary archive removed. `ImageRender` and `Mp4Render` take a `RenderOutput` too, for renders opened by hand: `ImageRender::run` hands each encoded frame to a callback, which is how `lumen-local` writes numbered files.
+Quality presets and encoders (`RenderOptions::encoder`) apply to videos only. A sequence is bounded by `RenderOptions::sequence_limits`, a `SequenceLimits { max_frames, max_bytes }` whose default is what a ZIP holds (65535 frames, 3 GiB of images). A range that is empty or reaches past the timeline, a still of several frames, a JPEG quality outside 1 to 100 or on another format, and a sequence longer than `max_frames` all fail before any GPU work, with `invalid_output` or `output_too_large`. Frames are rendered, encoded and written to the archive one at a time, so memory holds one frame and then the archive. A sequence over `max_bytes`, or a cancelled one, ends with the temporary archive removed. `ImageRender` and `Mp4Render` take a `RenderOutput` too, for renders opened by hand: `ImageRender::run` hands each encoded frame to a callback, which is how `lumen` writes numbered files.
 
 On the CPU upload path, frames are read back through a ring of three buffers while the next ones render, so memory stays at three frames and frames reach the encoder in order.
 
@@ -254,7 +254,7 @@ Renders run in submission order, `--max-concurrent-renders` at a time (default 1
 }
 ```
 
-- `codecs.<codec>.encoders` is the order a codec's encoders are tried in, and the first that opens wins, with a warning for each that didn't. Without it, Linux tries `<codec>_vulkan` then `libx264`, `libx265` or `libsvtav1`, macOS tries `h264_videotoolbox` or `hevc_videotoolbox` then the same software encoders, and elsewhere only the software encoder. NVENC is only tried when named here or in `LUMEN_VIDEO_ENCODER`.
+- `codecs.<codec>.encoders` is the order a codec's encoders are tried in, and the first that opens wins, with a warning for each that didn't. Without it, Linux tries `<codec>_vulkan` then `libx264`, `libx265` or `libsvtav1`, macOS tries `h264_videotoolbox` or `hevc_videotoolbox` then the same software encoders, and elsewhere only the software encoder. On a Linux host with NVIDIA's encode library, `av1` tries `av1_nvenc` in place of `av1_vulkan`, which encodes wrong frames there. Other NVENC encoders are only tried when named here or in `LUMEN_VIDEO_ENCODER`.
 - A preset's `encoders` are keyed by FFmpeg encoder name. Each sets at most one of `crf`, `qp` and `bitrate` (bits per second, or text such as `"14M"`), plus an optional `preset`, which lumen translates for the encoder: `crf` is `rc=vbr` plus `cq` on NVENC, and `qp` is `rc_mode=cqp` on Vulkan. `options` are FFmpeg AVOptions, set after those, and may not repeat a key they set. Startup checks each option's name and, for numbers and named values, its range. Free-text values such as libx264's `tune` or `profile` are only checked when the encoder opens, so a bad one fails renders instead of startup. `prores_ks` always encodes the 4444 profile, and with alpha its `alpha_bits` must stay 16: an option that changes either, which would drop the alpha plane, fails the encoder when it opens.
 - A render only tries the encoders its preset has settings for, so `lossless` skips to an encoder that is truly lossless: `libx264` (`qp` 0), `libx265` (`x265-params lossless=1`) and NVENC H.264 and HEVC (`tune=lossless`).
 - An entry for a built-in preset replaces that encoder's built-in settings, and other encoders keep theirs. A custom preset's `codec` and `bit_depth` (`8` or `10`) apply when neither the request nor the composition names one.
@@ -341,7 +341,7 @@ Each job's manifest is limited to 256 entries, 512 MiB per file, and 2 GiB in to
 
 Downloads refuse hosts that resolve to private, loopback, link-local, and other non-public addresses. The check runs on every connection, so it covers DNS rebinding and redirects. Up to 5 redirects are followed. Environment proxy settings are ignored. To download from an internal host, list it as it appears in the URL with `--allow-media-host` (repeatable; `LUMEN_SERVER_ALLOW_MEDIA_HOSTS` takes a comma-separated list).
 
-Fonts are found by the family name inside each font file, not by file name, in the same order as `lumen-local`:
+Fonts are found by the family name inside each font file, not by file name, in the same order as `lumen`:
 
 - a font staged in the job's manifest, named by its alias (`"font_family": "<alias>"`).
 - the directory `--font-dir` or `LUMEN_FONT_DIR` names, if set. The server refuses to start if it isn't a directory. It is scanned once per render.
