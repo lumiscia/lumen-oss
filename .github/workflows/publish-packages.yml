@@ -78,7 +78,8 @@ jobs:
 
       - name: Check release readiness
         run: |
-          pending_changeset="$(find .changeset -type f -name '*.md' ! -name README.md -print -quit)"
+          # A prerelease keeps the changesets it has applied in .changeset/pre.
+          pending_changeset="$(find .changeset -maxdepth 1 -type f -name '*.md' ! -name README.md -print -quit)"
           if [ -n "$pending_changeset" ]; then
             echo "Pending changeset found: $pending_changeset"
             echo "Run the Version Packages workflow and merge its PR before publishing."
@@ -133,6 +134,10 @@ jobs:
           {
             echo "version=$release_version"
             echo "tag=v$release_version"
+            case "$release_version" in
+              *-*) echo "prerelease=true" ;;
+              *) echo "prerelease=false" ;;
+            esac
             echo "target=$(git rev-parse HEAD)"
           } >> "$GITHUB_OUTPUT"
 
@@ -173,4 +178,5 @@ jobs:
           name: Lumen ${{ steps.release_metadata.outputs.version }}
           body_path: release-notes.md
           generate_release_notes: true
-          make_latest: true
+          prerelease: ${{ steps.release_metadata.outputs.prerelease }}
+          make_latest: ${{ steps.release_metadata.outputs.prerelease == 'false' }}
