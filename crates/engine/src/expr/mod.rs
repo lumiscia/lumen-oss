@@ -18,6 +18,8 @@ pub use ast::{
     BinaryOp, BuiltinFn, Easing, ExprNode, Expression, ExpressionValue, GlobalVar, Key, Reads,
     UnaryOp,
 };
+#[cfg(feature = "3d")]
+pub(crate) use eval::InstanceEvaluator;
 pub use functions::FunctionScope;
 pub use spec::{
     BUILTINS, BuiltinArg, BuiltinSpec, FORMS, FormSpec, GLOBALS, GlobalSpec, NamedEasing,
