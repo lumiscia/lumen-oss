@@ -1,6 +1,9 @@
 //! `lumen check` reads a composition without a GPU and says what is wrong with it.
 
-use std::process::{Command, Output};
+use std::{
+    io::Write,
+    process::{Command, Output, Stdio},
+};
 
 use serde_json::{Value, json};
 
@@ -70,4 +73,35 @@ fn asset_references_are_errors_without_an_asset_store() {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert_eq!(diagnostics[0]["code"], json!("media.not_found"));
     assert_eq!(diagnostics[0]["path"], json!("/nodes/0/params/font_family"));
+}
+
+#[test]
+fn a_dash_reads_the_composition_from_stdin() {
+    let run = |input: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_lumen"))
+            .args(["check", "-"])
+            .env_remove("LUMEN_FONT_DIR")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run lumen");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(input.as_bytes())
+            .expect("write stdin");
+        child.wait_with_output().expect("wait for lumen")
+    };
+
+    let output = run(&text_composition("Roboto").to_string());
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "<stdin>: 0 errors, 0 warnings\n");
+
+    let output = run("");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("stdin"), "{stderr}");
 }
