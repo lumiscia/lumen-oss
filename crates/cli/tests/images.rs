@@ -5,8 +5,9 @@
 
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 use lumen_ffmpeg::{DecodeMode, DecodedVideoFrame, InputContext, VideoDecoder, VideoDecoderConfig};
@@ -218,4 +219,36 @@ fn refuses_ranges_the_timeline_does_not_have_without_writing_anything() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("frame range"));
     }
     assert!(!out.exists() || names(&out).is_empty());
+}
+
+#[test]
+fn renders_a_composition_read_from_stdin() {
+    let Some(icd) = lavapipe_icd() else { return };
+    let directory = tempfile::tempdir().unwrap();
+    let composition = fs::read(write_composition(directory.path())).unwrap();
+    let out = directory.path().join("stdin.png");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lumen"))
+        .args(["render", "-", "--frame", "29", "-o", out.to_str().unwrap()])
+        .env("VK_ICD_FILENAMES", icd)
+        .env("LUMEN_GPU_FORCE_FALLBACK_ADAPTER", "1")
+        .env("WGPU_ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER", "1")
+        .env("WGPU_BACKEND", "vulkan")
+        .env("WGPU_POWER_PREF", "none")
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run lumen");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&composition)
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("wait for lumen");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(red_of(&out), 255);
 }

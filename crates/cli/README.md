@@ -23,9 +23,12 @@ lumen render crates/cli/demo/gradient-paints.json -o frame.png --frame 30
 lumen render crates/cli/demo/gradient-paints.json -o frames/shot_%d.png --frames 30..60
 lumen render crates/cli/demo/gradient-paints.json -o clip.mp4 --frames 30..90
 lumen check crates/cli/demo/gradient-paints.json
+node composition.js | lumen render - -o clip.mp4
 ```
 
 `lumen render <composition> -o <output>` renders a composition JSON file, and `lumen check <composition>` says what is wrong with one without rendering it. `lumen render -h` and `lumen check -h` list each command's flags in a line each, and `--help` says a little more; this page is the reference.
+
+A `<composition>` of `-` is read from stdin, so a script can pipe a composition in without writing a file: `node composition.js | lumen render - -o out.mp4`. Messages and the `lumen check` summary call it `<stdin>`, and media is found under `--media-root`, which defaults to the current directory. Empty input, or stdin that is a terminal, fails with an error at once. Use `./-` for a file named `-`.
 
 `examples/README.md` has [3D compositions](../../examples/README.md#3d) to render this way.
 
@@ -44,7 +47,7 @@ lumen render title.json -o title.webm --alpha --quality high
 
 | Flag                    | Environment             | Meaning                                                                                                                                                                                                                                                 |
 | ----------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<composition>`         |                         | Composition JSON to render. Required.                                                                                                                                                                                                                   |
+| `<composition>`         |                         | Composition JSON file to render, or `-` for stdin. Required.                                                                                                                                                                                            |
 | `-o`, `--output <path>` |                         | `.mp4`, `.mov`, `.webm`, `.png`, `.jpg`, or a `%d` name for a sequence. Required. A video is written beside the output and moved into place when the render succeeds, so a failed render keeps any earlier file.                                        |
 | `--frames <start..end>` |                         | The frames to render, `end` not included, either side optional. Defaults to the whole timeline.                                                                                                                                                         |
 | `--media-root <dir>`    |                         | Directory media sources must stay inside. Defaults to the current directory.                                                                                                                                                                            |
@@ -85,7 +88,7 @@ Progress and the render summary go to stdout. Warnings and errors go to stderr, 
 
 | Flag                    | Environment      | Meaning                                                                                                                                             |
 | ----------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<composition>`         |                  | Composition JSON to check. Required.                                                                                                                |
+| `<composition>`         |                  | Composition JSON file to check, or `-` for stdin. Required.                                                                                         |
 | `--format <text\|json>` |                  | `text` (the default) prints a line per problem and a count; `json` prints `{ "ok", "diagnostics" }`, as the server's `POST /renders/check` answers. |
 | `--media-root <dir>`    |                  | As for `lumen render`.                                                                                                                              |
 | `--font-dir <dir>`      | `LUMEN_FONT_DIR` | As for `lumen render`.                                                                                                                              |

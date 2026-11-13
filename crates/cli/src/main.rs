@@ -1,5 +1,6 @@
 use std::{
     env, fs,
+    io::{IsTerminal, Read},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -60,7 +61,9 @@ enum Command {
 /// The composition and where its media and fonts come from.
 #[derive(Debug, Args)]
 struct SourceArgs {
-    /// Composition JSON file
+    /// Composition JSON file, or - to read it from stdin
+    ///
+    /// A file named - is ./- instead. Media is still found under --media-root.
     #[arg(value_name = "COMPOSITION")]
     composition: PathBuf,
 
@@ -290,6 +293,39 @@ enum Format {
 }
 
 impl SourceArgs {
+    /// The composition's JSON, from stdin when the argument is `-`.
+    fn read_composition(&self) -> Result<String> {
+        if self.composition != Path::new("-") {
+            return fs::read_to_string(&self.composition).with_context(|| {
+                format!(
+                    "failed to read composition file {}",
+                    self.composition.display()
+                )
+            });
+        }
+        let mut stdin = std::io::stdin();
+        if stdin.is_terminal() {
+            bail!("expected a composition on stdin, but stdin is a terminal; pipe one in");
+        }
+        let mut raw = String::new();
+        stdin
+            .read_to_string(&mut raw)
+            .context("failed to read the composition from stdin")?;
+        if raw.trim().is_empty() {
+            bail!("expected a composition on stdin, but it was empty");
+        }
+        Ok(raw)
+    }
+
+    /// What messages call the composition: its path, or `<stdin>`.
+    fn composition_name(&self) -> String {
+        if self.composition == Path::new("-") {
+            "<stdin>".to_owned()
+        } else {
+            self.composition.display().to_string()
+        }
+    }
+
     /// An empty `LUMEN_FONT_DIR` counts as unset.
     fn font_dir(&self) -> Option<PathBuf> {
         self.font_dir
@@ -474,9 +510,7 @@ fn failure_line(error: &anyhow::Error) -> String {
 
 /// Prints what is wrong with the composition, and whether it renders.
 fn check(args: &CheckArgs) -> Result<bool> {
-    let composition = &args.source.composition;
-    let raw = fs::read_to_string(composition)
-        .with_context(|| format!("failed to read composition file {}", composition.display()))?;
+    let raw = args.source.read_composition()?;
     let media_store = args.source.media_store()?;
     let known_font = |family: &str| media_store.resolve(family, AssetKind::Font).is_ok();
     let diagnostics =
@@ -497,7 +531,7 @@ fn check(args: &CheckArgs) -> Result<bool> {
                 .count();
             println!(
                 "{}: {errors} errors, {} warnings",
-                composition.display(),
+                args.source.composition_name(),
                 diagnostics.len() - errors
             );
         }
@@ -529,7 +563,7 @@ fn print_warnings(diagnostics: &[Diagnostic]) {
 
 fn run(args: &RenderArgs) -> Result<()> {
     let plan = args.plan()?;
-    let composition = load_composition(&args.source.composition)?;
+    let composition = load_composition(&args.source)?;
     let media_store = args.source.media_store()?.explaining_missing_sources();
 
     if plan.output.format.is_video() {
@@ -623,12 +657,11 @@ fn resolve_output_destination(output: &Path) -> Result<PathBuf> {
     Ok(destination)
 }
 
-fn load_composition(path: &Path) -> Result<Composition> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read composition file {}", path.display()))?;
+fn load_composition(source: &SourceArgs) -> Result<Composition> {
+    let raw = source.read_composition()?;
 
     lumen_engine::json::parse(&raw)
-        .with_context(|| format!("failed to parse composition {}", path.display()))
+        .with_context(|| format!("failed to parse composition {}", source.composition_name()))
 }
 
 /// Writes each frame of the render as a file: the output path for a still, and for a sequence the
