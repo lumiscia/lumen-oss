@@ -1,19 +1,13 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 
-const platformPackage = `@lumiscia/lumen-cli-${process.platform}-${process.arch}`;
+import { resolveBinary } from "../dist/binary.js";
 
 let binary;
 try {
-  binary = createRequire(import.meta.url).resolve(`${platformPackage}/bin/lumen`);
-} catch {
-  console.error(
-    `lumen: ${platformPackage} is not installed. Prebuilt binaries exist for Linux (glibc) on ` +
-      "x64 and arm64 and for macOS on arm64, and are optional dependencies, so an install that " +
-      "omits optional dependencies leaves them out. On other systems, build from source: " +
-      "https://github.com/lumiscia/lumen-oss/tree/main/crates/cli",
-  );
+  binary = resolveBinary();
+} catch (error) {
+  console.error(`lumen: ${error.message}`);
   process.exit(1);
 }
 
