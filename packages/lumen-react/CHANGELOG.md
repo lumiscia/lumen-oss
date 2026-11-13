@@ -1,5 +1,14 @@
 # @lumiscia/lumen-react
 
+## 0.6.0-beta.2
+
+### Patch Changes
+
+- Updated dependencies [eec0701]
+- Updated dependencies [7a3a9e9]
+  - @lumiscia/lumen-bindings@0.6.0-beta.2
+  - @lumiscia/lumen-preview@0.6.0-beta.2
+
 ## 0.6.0-beta.1
 
 ### Patch Changes

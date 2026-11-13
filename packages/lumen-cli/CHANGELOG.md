@@ -1,5 +1,43 @@
 # @lumiscia/lumen-cli
 
+## 0.6.0-beta.2
+
+### Minor Changes
+
+- eec0701: **New: `lumen preview` writes a contact sheet of a composition.** It renders frames sampled evenly across the timeline and tiles them into one `.png` or `.jpg`, so a whole composition can be seen at a glance without rendering a video.
+
+  ```bash
+  lumen preview composition.json -o sheet.png
+  lumen preview composition.json -o sheet.jpg --count 20 --columns 5 --frames 30..300
+  ```
+
+  `--count` (default 12) frames are spread from the first frame of `--frames` (default the whole timeline) to its last, `--columns` (default 4) to a row on a sheet `--width` (default 1920) pixels wide, each cell at the composition's aspect ratio over a dark grey background. It also takes `--media-root`, `--font-dir` and `--max-text-glyphs`, as `lumen render` does.
+
+- 29827be: `@lumiscia/lumen-cli` can be imported to check, render and preview a composition from a script, so running the script that builds it is all it takes. It works under Node, Bun and Deno, pipes the composition to the installed `lumen` binary and passes the binary's progress and warnings through:
+
+  ```ts
+  import { check, preview, render } from "@lumiscia/lumen-cli";
+
+  await render(composition, { output: "out.mp4", quality: "high" });
+  await preview(composition, { output: "sheet.png", count: 20, columns: 5 });
+  const { ok, diagnostics } = await check(composition);
+  ```
+
+  `composition` is the JSON or anything with `toJSON()`, such as the SDK's `Composition`. A failed run rejects with a `LumenCliError` holding the exit code and stderr, and `quiet` and `signal` hide the output and stop the run. `preview()` needs a `lumen` binary with `lumen preview`.
+
+- 7a3a9e9: `lumen render` and `lumen check` read the composition from stdin when it is `-`, so a script can pipe one in without writing a file:
+
+  ```bash
+  node composition.js | lumen render - -o out.mp4
+  cat composition.json | lumen check - --format json
+  ```
+
+  Messages and the `lumen check` summary call the source `<stdin>`. Media is found under `--media-root`, which defaults to the current directory. Empty input, or stdin that is a terminal, fails with an error instead of waiting. A file named `-` is reached as `./-`.
+
+### Patch Changes
+
+- @lumiscia/lumen-types@0.6.0-beta.2
+
 ## 0.6.0-beta.1
 
 ### Minor Changes
