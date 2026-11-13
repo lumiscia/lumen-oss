@@ -1,7 +1,7 @@
 {
   "name": "@lumiscia/lumen-cli",
   "version": "0.6.0-beta.1",
-  "description": "The lumen command: check and render Lumen compositions on a local GPU.",
+  "description": "The lumen command, and a Node, Bun and Deno API to check, render and preview Lumen compositions on a local GPU.",
   "keywords": [
     "cli",
     "composition",
@@ -25,9 +25,31 @@
     "lumen": "bin/lumen.js"
   },
   "files": [
-    "bin"
+    "bin",
+    "dist",
+    "src"
   ],
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "prepack": "test -f dist/index.js"
+  },
+  "dependencies": {
+    "@lumiscia/lumen-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:"
+  },
   "optionalDependencies": {
     "@lumiscia/lumen-cli-darwin-arm64": "workspace:*",
     "@lumiscia/lumen-cli-linux-arm64": "workspace:*",
