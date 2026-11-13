@@ -38,7 +38,7 @@ deno run -A composition.ts
 
 A composition is JSON, or anything with `toJSON()`. `render` and `preview` need `output`, and the other options are the flags of the same name in camelCase: `frames`, `frame`, `mediaRoot`, `fontDir`, `maxTextGlyphs`, `codec`, `quality`, `qualityConfig`, `bitDepth`, `alpha`, `encoder`, `bitrate`, `crf`, `qp`, `preset` and `jpegQuality` for `render`, and `count`, `columns`, `width`, `frames`, `mediaRoot`, `fontDir` and `maxTextGlyphs` for `preview`. `check` takes `mediaRoot` and `fontDir`. They resolve with `{ output }`, and `check` resolves with the report whether or not the composition has errors.
 
-`lumen`'s progress and warnings go to this process's stdout and stderr, as they do on the command line, and `quiet: true` hides them. `signal` stops `lumen` when it aborts. A run that fails rejects with a `LumenCliError`, which holds `exitCode`, `signal` and the end of `stderr`:
+`lumen`'s progress and warnings go to this process's stdout and stderr, as they do on the command line, and `quiet: true` hides them. `signal` stops `lumen` when it aborts, and a `SIGINT`, `SIGTERM` or `SIGHUP` sent to this process stops it too. A video render stopped either way keeps any earlier file at the output, and leaves its unfinished `.lumen-*.partial` file beside it. A run that fails rejects with a `LumenCliError`, which holds `exitCode`, `signal` and the end of `stderr`:
 
 ```ts
 try {

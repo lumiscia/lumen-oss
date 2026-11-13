@@ -36,30 +36,18 @@ describe("argument mapping", () => {
     ).toEqual([
       "render",
       "-",
-      "--output",
-      "out.mp4",
-      "--frames",
-      "30..90",
-      "--media-root",
-      "media",
-      "--font-dir",
-      "fonts",
-      "--max-text-glyphs",
-      "1000",
-      "--codec",
-      "hevc",
-      "--quality",
-      "high",
-      "--quality-config",
-      "quality.json",
-      "--bit-depth",
-      "10",
-      "--encoder",
-      "libx265",
-      "--bitrate",
-      "14M",
-      "--preset",
-      "slow",
+      "--output=out.mp4",
+      "--frames=30..90",
+      "--media-root=media",
+      "--font-dir=fonts",
+      "--max-text-glyphs=1000",
+      "--codec=hevc",
+      "--quality=high",
+      "--quality-config=quality.json",
+      "--bit-depth=10",
+      "--encoder=libx265",
+      "--bitrate=14M",
+      "--preset=slow",
       "--alpha=false",
     ]);
   });
@@ -68,30 +56,20 @@ describe("argument mapping", () => {
     expect(renderArgs({ output: "a.png", frames: { end: 60 }, alpha: true, frame: 0 })).toEqual([
       "render",
       "-",
-      "--output",
-      "a.png",
-      "--frames",
-      "..60",
-      "--frame",
-      "0",
+      "--output=a.png",
+      "--frames=..60",
+      "--frame=0",
       "--alpha=true",
     ]);
-    expect(renderArgs({ output: "a.png", frames: {} })).toEqual([
-      "render",
-      "-",
-      "--output",
-      "a.png",
-    ]);
+    expect(renderArgs({ output: "a.png", frames: {} })).toEqual(["render", "-", "--output=a.png"]);
   });
 
   test("check asks for the JSON report", () => {
     expect(checkArgs({ mediaRoot: "media" })).toEqual([
       "check",
       "-",
-      "--format",
-      "json",
-      "--media-root",
-      "media",
+      "--format=json",
+      "--media-root=media",
     ]);
   });
 
@@ -107,16 +85,11 @@ describe("argument mapping", () => {
     ).toEqual([
       "preview",
       "-",
-      "--output",
-      "sheet.png",
-      "--count",
-      "20",
-      "--columns",
-      "5",
-      "--width",
-      "1600",
-      "--frames",
-      "10..",
+      "--output=sheet.png",
+      "--count=20",
+      "--columns=5",
+      "--width=1600",
+      "--frames=10..",
     ]);
   });
 });
@@ -145,7 +118,7 @@ describe("running the binary", () => {
     const result = await render({ toJSON: () => composition }, { output: "out.png", quiet: true });
     expect(result).toEqual({ output: "out.png" });
     expect(recorded()).toEqual({
-      args: ["render", "-", "--output", "out.png"],
+      args: ["render", "-", "--output=out.png"],
       stdin: JSON.stringify(composition),
     });
   });
@@ -154,7 +127,7 @@ describe("running the binary", () => {
     vi.stubEnv("STUB_MODE", "ok");
     await preview(composition, { output: "sheet.png", count: 4, quiet: true });
     expect(recorded()).toMatchObject({
-      args: ["preview", "-", "--output", "sheet.png", "--count", "4"],
+      args: ["preview", "-", "--output=sheet.png", "--count=4"],
       stdin: JSON.stringify(composition),
     });
   });
@@ -197,13 +170,30 @@ describe("running the binary", () => {
     vi.stubEnv("STUB_STDOUT", JSON.stringify(report));
     vi.stubEnv("STUB_EXIT", "1");
     expect(await check(composition)).toEqual(report);
-    expect(recorded()).toMatchObject({ args: ["check", "-", "--format", "json"] });
+    expect(recorded()).toMatchObject({ args: ["check", "-", "--format=json"] });
   });
 
   test("check rejects when exit 1 comes without a report", async () => {
-    vi.stubEnv("STUB_MODE", "fail");
-    vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    await expect(check(composition)).rejects.toMatchObject({ exitCode: 3 });
+    vi.stubEnv("STUB_MODE", "report");
+    vi.stubEnv("STUB_STDOUT", "");
+    vi.stubEnv("STUB_EXIT", "1");
+    await expect(check(composition)).rejects.toMatchObject({ exitCode: 1 });
+  });
+
+  test("a signal to this process reaches the child", async () => {
+    vi.stubEnv("STUB_MODE", "hang");
+    // Stands in for the caller's own handler, so the signal does not end the test run.
+    const handled = (): void => {};
+    process.on("SIGHUP", handled);
+    try {
+      const pending = render(composition, { output: "out.mp4", quiet: true });
+      await vi.waitFor(() => recorded());
+      process.kill(process.pid, "SIGHUP");
+      await expect(pending).rejects.toMatchObject({ exitCode: null, signal: "SIGHUP" });
+      expect(process.listeners("SIGHUP")).toEqual([handled]);
+    } finally {
+      process.off("SIGHUP", handled);
+    }
   });
 
   test("aborting kills the child and rejects with the signal's reason", async () => {

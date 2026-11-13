@@ -2,16 +2,18 @@ import { spawn } from "node:child_process";
 import process from "node:process";
 
 const STDERR_TAIL_CHARS = 16_384;
+const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
 /** `lumen` exited with a failure: a non-zero code, or a signal. */
 export class LumenCliError extends Error {
   /** The exit code, or `null` when a signal ended the process. */
   readonly exitCode: number | null;
-  readonly signal: NodeJS.Signals | null;
+  /** The signal that ended the process, such as `"SIGTERM"`, or `null` when it exited. */
+  readonly signal: string | null;
   /** The end of what `lumen` wrote to stderr. */
   readonly stderr: string;
 
-  constructor(exitCode: number | null, signal: NodeJS.Signals | null, stderr: string) {
+  constructor(exitCode: number | null, signal: string | null, stderr: string) {
     const how = signal === null ? `exited with code ${exitCode}` : `was stopped by ${signal}`;
     super(`lumen ${how}${stderr.trim() === "" ? "" : `:\n${stderr.trim()}`}`);
     this.name = "LumenCliError";
@@ -30,7 +32,7 @@ export interface RunOptions {
 
 export interface RunResult {
   readonly exitCode: number | null;
-  readonly signal: NodeJS.Signals | null;
+  readonly signal: string | null;
   readonly stdout: string;
   readonly stderr: string;
 }
@@ -61,10 +63,18 @@ export function run(
     child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
       stdout += chunk;
     });
-    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+    const childStderr = child.stderr?.setEncoding("utf8");
+    const resumeStderr = () => childStderr?.resume();
+    childStderr?.on("data", (chunk: string) => {
       stderr = (stderr + chunk).slice(-STDERR_TAIL_CHARS);
-      if (!quiet) {
-        process.stderr.write(chunk);
+      // The cut can fall inside a surrogate pair.
+      if (/^[\uDC00-\uDFFF]/.test(stderr)) {
+        stderr = stderr.slice(1);
+      }
+      // Waits for a slow reader of this process's stderr instead of queueing the output for it.
+      if (!quiet && !process.stderr.write(chunk)) {
+        childStderr.pause();
+        process.stderr.once("drain", resumeStderr);
       }
     });
 
@@ -77,12 +87,34 @@ export function run(
     };
     signal?.addEventListener("abort", abort, { once: true });
 
-    child.on("error", (error) => {
+    // A signal sent to this process alone, as a supervisor does, would otherwise leave lumen
+    // running. It ends this process as it would have once lumen has exited, unless the caller
+    // handles the signal itself.
+    let received: (typeof FORWARDED_SIGNALS)[number] | undefined;
+    const forward = (forwarded: (typeof FORWARDED_SIGNALS)[number]) => {
+      received = forwarded;
+      child.kill(forwarded);
+    };
+    for (const forwarded of FORWARDED_SIGNALS) {
+      process.on(forwarded, forward);
+    }
+    const finished = () => {
       signal?.removeEventListener("abort", abort);
+      process.stderr.off("drain", resumeStderr);
+      for (const forwarded of FORWARDED_SIGNALS) {
+        process.off(forwarded, forward);
+      }
+      if (received !== undefined && process.listenerCount(received) === 0) {
+        process.kill(process.pid, received);
+      }
+    };
+
+    child.on("error", (error) => {
+      finished();
       reject(new Error(`could not run ${binary}: ${error.message}`, { cause: error }));
     });
     child.on("close", (exitCode, exitSignal) => {
-      signal?.removeEventListener("abort", abort);
+      finished();
       if (signal?.aborted) {
         reject(signal.reason);
       } else {

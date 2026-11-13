@@ -2,9 +2,12 @@ import type { CheckOptions, FrameRange, PreviewOptions, RenderOptions } from "./
 
 type Flags = readonly (readonly [flag: string, value: string | number | boolean | undefined])[];
 
-/** `--flag value` for each flag with a value, so an unset option adds nothing. */
+/**
+ * `--flag=value` for each flag with a value, so an unset option adds nothing. One argument each,
+ * so a value that starts with `-` is not read as a flag.
+ */
 function flagArgs(flags: Flags): string[] {
-  return flags.flatMap(([flag, value]) => (value === undefined ? [] : [flag, String(value)]));
+  return flags.flatMap(([flag, value]) => (value === undefined ? [] : [`${flag}=${value}`]));
 }
 
 function framesArg(frames: FrameRange | undefined): string | undefined {
@@ -35,8 +38,8 @@ export function renderArgs(options: RenderOptions): string[] {
       ["--qp", options.qp],
       ["--preset", options.preset],
       ["--jpeg-quality", options.jpegQuality],
+      ["--alpha", options.alpha],
     ]),
-    ...(options.alpha === undefined ? [] : [`--alpha=${options.alpha}`]),
   ];
 }
 
@@ -44,8 +47,7 @@ export function checkArgs(options: CheckOptions): string[] {
   return [
     "check",
     "-",
-    "--format",
-    "json",
+    "--format=json",
     ...flagArgs([
       ["--media-root", options.mediaRoot],
       ["--font-dir", options.fontDir],
