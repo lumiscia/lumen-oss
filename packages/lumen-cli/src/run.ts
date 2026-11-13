@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import process from "node:process";
 
+import { forwardSignals } from "./signals.js";
+
 const STDERR_TAIL_CHARS = 16_384;
-const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
 /** `lumen` exited with a failure: a non-zero code, or a signal. */
 export class LumenCliError extends Error {
@@ -64,7 +65,11 @@ export function run(
       stdout += chunk;
     });
     const childStderr = child.stderr?.setEncoding("utf8");
-    const resumeStderr = () => childStderr?.resume();
+    let waitingForDrain = false;
+    const resumeStderr = () => {
+      waitingForDrain = false;
+      childStderr?.resume();
+    };
     childStderr?.on("data", (chunk: string) => {
       stderr = (stderr + chunk).slice(-STDERR_TAIL_CHARS);
       // The cut can fall inside a surrogate pair.
@@ -72,7 +77,8 @@ export function run(
         stderr = stderr.slice(1);
       }
       // Waits for a slow reader of this process's stderr instead of queueing the output for it.
-      if (!quiet && !process.stderr.write(chunk)) {
+      if (!quiet && !process.stderr.write(chunk) && !waitingForDrain) {
+        waitingForDrain = true;
         childStderr.pause();
         process.stderr.once("drain", resumeStderr);
       }
@@ -87,26 +93,11 @@ export function run(
     };
     signal?.addEventListener("abort", abort, { once: true });
 
-    // A signal sent to this process alone, as a supervisor does, would otherwise leave lumen
-    // running. It ends this process as it would have once lumen has exited, unless the caller
-    // handles the signal itself.
-    let received: (typeof FORWARDED_SIGNALS)[number] | undefined;
-    const forward = (forwarded: (typeof FORWARDED_SIGNALS)[number]) => {
-      received = forwarded;
-      child.kill(forwarded);
-    };
-    for (const forwarded of FORWARDED_SIGNALS) {
-      process.on(forwarded, forward);
-    }
+    const stopForwarding = forwardSignals(child);
     const finished = () => {
       signal?.removeEventListener("abort", abort);
       process.stderr.off("drain", resumeStderr);
-      for (const forwarded of FORWARDED_SIGNALS) {
-        process.off(forwarded, forward);
-      }
-      if (received !== undefined && process.listenerCount(received) === 0) {
-        process.kill(process.pid, received);
-      }
+      stopForwarding();
     };
 
     child.on("error", (error) => {
