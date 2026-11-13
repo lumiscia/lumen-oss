@@ -23,10 +23,11 @@ lumen render crates/cli/demo/gradient-paints.json -o frame.png --frame 30
 lumen render crates/cli/demo/gradient-paints.json -o frames/shot_%d.png --frames 30..60
 lumen render crates/cli/demo/gradient-paints.json -o clip.mp4 --frames 30..90
 lumen check crates/cli/demo/gradient-paints.json
+lumen preview crates/cli/demo/gradient-paints.json -o sheet.png
 node composition.js | lumen render - -o clip.mp4
 ```
 
-`lumen render <composition> -o <output>` renders a composition JSON file, and `lumen check <composition>` says what is wrong with one without rendering it. `lumen render -h` and `lumen check -h` list each command's flags in a line each, and `--help` says a little more; this page is the reference.
+`lumen render <composition> -o <output>` renders a composition JSON file, `lumen check <composition>` says what is wrong with one without rendering it, and `lumen preview <composition> -o <output>` tiles frames sampled across it into one image. `lumen render -h`, `lumen check -h` and `lumen preview -h` list each command's flags in a line each, and `--help` says a little more; this page is the reference.
 
 A `<composition>` of `-` is read from stdin, so a script can pipe a composition in without writing a file: `node composition.js | lumen render - -o out.mp4`. Messages and the `lumen check` summary call it `<stdin>`, and media is found under `--media-root`, which defaults to the current directory. Empty input, or stdin that is a terminal, fails with an error at once. Use `./-` for a file named `-`.
 
@@ -106,6 +107,31 @@ The [engine README](../engine/README.md#diagnostics) lists the codes and what on
 Sources are paths under the media root. `lumen` has no asset store, so an `asset:<id>`
 reference, which only resolves on the host that issued it, is an `media.not_found` error in both
 `lumen check` and a render; reference the file by its path instead.
+
+## `lumen preview`
+
+`lumen preview <composition> -o <output>` writes a contact sheet: frames sampled across the timeline, tiled into one `.png` or `.jpg`, to see a whole composition at a glance without rendering a video.
+
+```sh
+lumen preview comp.json -o sheet.png
+lumen preview comp.json -o sheet.jpg --count 20 --columns 5 --frames 30..300
+```
+
+`--count` frames are spread evenly over `--frames`, from its first frame to its last, rounding down to whole frames, so `--count 4` over `0..10` samples 0, 3, 6 and 9. A range with no more frames than `--count` shows every frame. They are laid out a row at a time, `--columns` to a row (fewer when there are fewer frames), with the last row starting at the left. Each cell has the composition's aspect ratio and is as wide as `--width` allows with 8 pixels between cells and around the edge. The sheet is opaque: transparent pixels and the space between cells are dark grey. Each frame is rendered at the composition's size and scaled down to its cell. A zero `--count` or `--columns`, a range that is empty or past the timeline, a `--width` too narrow for the columns, and a sheet that would be more than 65535 pixels tall fail before rendering.
+
+| Flag                    | Environment             | Meaning                                                                                                                                                     |
+| ----------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<composition>`         |                         | Composition JSON file to preview, or `-` for stdin. Required.                                                                                               |
+| `-o`, `--output <path>` |                         | `.png` or `.jpg` (or `.jpeg`). Required. Written beside the output and moved into place when the sheet is done, so a failed preview keeps any earlier file. |
+| `--frames <start..end>` |                         | The frames to sample from, `end` not included, either side optional. Defaults to the whole timeline.                                                        |
+| `--count <n>`           |                         | How many frames to sample. Defaults to 12.                                                                                                                  |
+| `--columns <n>`         |                         | Frames per row. Defaults to 4.                                                                                                                              |
+| `--width <px>`          |                         | The sheet's width in pixels, up to 16384. Defaults to 1920.                                                                                                 |
+| `--media-root <dir>`    |                         | As for `lumen render`.                                                                                                                                      |
+| `--font-dir <dir>`      | `LUMEN_FONT_DIR`        | As for `lumen render`.                                                                                                                                      |
+| `--max-text-glyphs <n>` | `LUMEN_MAX_TEXT_GLYPHS` | As for `lumen render`.                                                                                                                                      |
+
+It takes none of the video or image flags of `lumen render`. Progress and a `preview complete` line with the output, the frame count, the grid and the sheet's size go to stdout, and warnings to stderr, once each.
 
 ## Platform Notes
 

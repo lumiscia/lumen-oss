@@ -24,11 +24,13 @@ use lumen_server::render::{
 };
 use tracing_subscriber::EnvFilter;
 
+mod preview;
+
 /// Where the reference for every option lives; the help prints one line pointing to it.
 const REFERENCE: &str =
     "Reference: https://github.com/lumiscia/lumen-oss/tree/main/crates/cli#readme";
 
-/// Renders and checks Lumen compositions
+/// Renders, checks and previews Lumen compositions
 #[derive(Debug, Parser)]
 #[command(
     name = "lumen",
@@ -56,6 +58,13 @@ enum Command {
     /// them. Exits 1 when there are errors; warnings alone exit 0.
     #[command(args_override_self = true, after_help = REFERENCE)]
     Check(CheckArgs),
+
+    /// Write a contact sheet: frames sampled across the timeline in one image
+    ///
+    /// Renders --count frames spread evenly from the first frame of --frames to the last, and lays
+    /// them out --columns to a row on a sheet --width pixels wide, as a .png or .jpg.
+    #[command(args_override_self = true, after_help = REFERENCE)]
+    Preview(preview::PreviewArgs),
 }
 
 /// The composition and where its media and fonts come from.
@@ -485,6 +494,7 @@ fn main() {
     let result = match Cli::parse().command {
         Command::Check(args) => check(&args),
         Command::Render(args) => run(&args).map(|()| true),
+        Command::Preview(args) => preview::preview(&args).map(|()| true),
     };
     match result {
         Ok(true) => {}
@@ -976,7 +986,7 @@ mod tests {
     fn parse(flags: &[&str]) -> Result<RenderArgs, clap::Error> {
         match parse_cli(&[&["render", "in.json"], flags].concat())? {
             Command::Render(args) => Ok(args),
-            Command::Check(_) => unreachable!("parsed `render`"),
+            _ => unreachable!("parsed `render`"),
         }
     }
 

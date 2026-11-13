@@ -8,11 +8,12 @@ npm install -g @lumiscia/lumen-cli
 lumen check composition.json
 lumen render composition.json -o out.mp4
 lumen render composition.json -o frame.png --frame 30
+lumen preview composition.json -o sheet.png
 ```
 
 It installs a prebuilt binary for Linux on x64 and arm64 (glibc 2.28 or later) and for macOS on Apple silicon, with FFmpeg linked in. Rendering needs a GPU, with Vulkan on Linux and Metal on macOS.
 
-`lumen render --help` and `lumen check --help` list every flag, and the [CLI README](https://github.com/lumiscia/lumen-oss/tree/main/crates/cli#readme) explains them.
+`lumen render --help`, `lumen check --help` and `lumen preview --help` list every flag, and the [CLI README](https://github.com/lumiscia/lumen-oss/tree/main/crates/cli#readme) explains them.
 
 ## License
 
