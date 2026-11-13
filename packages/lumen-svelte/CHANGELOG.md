@@ -1,5 +1,19 @@
 # @lumiscia/lumen-svelte
 
+## 0.6.0-beta.1
+
+### Patch Changes
+
+- Updated dependencies [ce70b5c]
+- Updated dependencies [2a1b3bc]
+- Updated dependencies [3c2dc0f]
+- Updated dependencies [b1af369]
+- Updated dependencies [cfc49e0]
+- Updated dependencies [b3a277d]
+- Updated dependencies [cd82e6d]
+  - @lumiscia/lumen-bindings@0.6.0-beta.1
+  - @lumiscia/lumen-preview@0.6.0-beta.1
+
 ## 0.6.0-beta.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@lumiscia/lumen-types",
-  "version": "0.6.0-beta.0",
+  "version": "0.6.0-beta.1",
   "description": "Generated TypeScript schema and metadata types for Lumen compositions.",
   "keywords": [
     "lumen",
