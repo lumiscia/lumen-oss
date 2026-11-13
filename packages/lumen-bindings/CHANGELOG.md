@@ -1,5 +1,48 @@
 # @lumiscia/lumen-bindings
 
+## 0.6.0-beta.1
+
+### Patch Changes
+
+- ce70b5c: `image_plane_3d` takes `region`, `[x, y, width, height]` in its source's pixels, to show only that part of a raster on a rectangle that covers just that part.
+
+  A plane with a region is where it would be and as big as it would be with the whole source on it, so it looks as a plane showing a `crop` of that region does and the two can be swapped. `width` is still the width of the whole source, and `position`, `rotation` and `scale` pivot about the whole source's centre. A region is cut off at the source's edges as `crop`'s is. Each number takes an integer or an expression; the whole `region` cannot be an expression. Unset shows the whole source, as before.
+
+  Planes with regions of one source share its texture and its mip levels and draw together, so a region costs nothing beyond the plane, even one that changes every frame. A `crop` before each plane makes a raster the size of the source and a draw for every piece, on every frame it changes. Cutting a 1080p raster into 63 planes at 120 frames takes 0.6 s, holds 204 MB and submits 2 passes a frame, where 63 crops took 7.2 s, held 1.2 GB and submitted 64.
+
+  ```json
+  {
+    "id": 4,
+    "type": "image_plane_3d",
+    "params": { "width": 16, "region": [320, 180, 640, 360], "position": [0, 0, -2] }
+  }
+  ```
+
+  Sampling is kept inside the region, so what is outside it isn't meant to show, however small the plane is drawn. The price is under strong minification: the band along each edge of the region that is inside the source, and all of a narrow region, is sampled from a sharper mip level than its footprint, because a texel of a shared level can hold pixels from both sides of the edge. That band can alias or shimmer where a `crop` would be smooth.
+
+- 2a1b3bc: An `instance_3d` evaluates its per-copy params faster. `position`, `rotation` and `scale` are evaluated as one plan, so a pure term two of them share is evaluated once per copy, and a pure part that reads neither `instance` nor `instance_count`, such as a `keyframes` track every copy follows, is evaluated once for all copies. `&&`, `||` and `if` stay lazy, so a part in a branch no copy takes still never runs, and a failure still names the copy it happened in. Expressions also allocate less while they evaluate. A part that reads another node, measures text or reads a template prop is evaluated for each expression as it would be alone. Nothing renders differently.
+- 3c2dc0f: An `instance_3d` whose params don't read the frame places its copies once and keeps their matrices, so a later frame only places them under what holds the node: a still field of copies under a moving camera, light or parent no longer evaluates `position`, `rotation` and `scale` for every copy on every frame. The kept matrices are dropped when the composition changes, or after a frame that doesn't draw the node. Nothing renders differently.
+- b1af369: `keyframes` keys can hold text. A key whose value is a string that isn't path data is accepted wherever its segment eases with `hold`, either the key's own easing or the `keyframes` default when the key has none, so a readout can step between values:
+
+  ```
+  =keyframes(frame, 'hold', key(0, 'ten'), key(30, 'hundred'), key(60, '1,024'))
+  ```
+
+  Text can't interpolate, so any other easing out of a text key fails with an error that names the key and says text keys need `hold`. Path data keys interpolate as before.
+
+- cfc49e0: Reports the time a render waits for the GPU as `gpu_ms` in the `lumen` summary line, instead of counting it under `readback_ms`. `readback_ms` is now only the copy of finished frames to the CPU, and `flush_ms` only the collection of finished work, which no longer includes the waits that `gpu_ms` holds. The server's `RenderTiming` gains a matching `gpu` field.
+- b3a277d: A node whose params read the frame is kept across frames while their values hold. Each frame its expressions are evaluated, along with those of the nodes it reads, and its output from an earlier frame is reused when they give the values it was drawn with. A key track that holds, a `switch` whose `selected_layer` changes once, or an `opacity` that steps from 0 to 1 now redraws only on the frames where a value changes, and so does everything downstream of it. A camera that sits still for 40 frames, moves for 9 and sits still again pays for the 9.
+
+  A shape, path, text or `transform` that blurs its own motion compares its values at either end of its shutter too, and a `motion_blur` over such a node is drawn on every frame, while the samples it takes of its source are reused when their values match. A text node whose `glyph_*` params read the frame, an `instance_3d` whose placement does, video, a `wgsl_shader` and a model playing a clip are drawn on every frame as before.
+
+- cd82e6d: A node whose expressions can't change from frame to frame is kept across frames like one with literal params. `"=vec3(0, 0, 520)"` or `"=max(0.9, 0.5)"` no longer redraws its node, and everything downstream, on every frame. An expression counts as changing when it reads `frame` or `time`, calls `progress` or `tween`, or reads another node, a template prop or measured text, as an `instance_3d` already counted.
+
+  `vec2(..)` and `vec3(..)` of plain numbers are written to a node's params as the literal `[x, y]` or `[x, y, z]`. They are still expressions, so `vec2(1, 2).add(..)` works and `String(vec2(1, 2))` is `"=vec2(1, 2)"`.
+
+  A number written in a composition's JSON is now read exactly, so `[0.9999999999999999, 0]` compares equal to `vec2(0.9999999999999999, 0)` as it does when the vector is written as an expression.
+
+- @lumiscia/lumen-preview@0.6.0-beta.1
+
 ## 0.6.0-beta.0
 
 ### Minor Changes

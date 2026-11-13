@@ -1,6 +1,6 @@
 {
   "name": "@lumiscia/lumen-cli-linux-arm64",
-  "version": "0.6.0-beta.0",
+  "version": "0.6.0-beta.1",
   "description": "The lumen binary for Linux on arm64. Install @lumiscia/lumen-cli to get it.",
   "homepage": "https://github.com/lumiscia/lumen-oss/tree/main/crates/cli#readme",
   "bugs": {
