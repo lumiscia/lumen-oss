@@ -180,22 +180,6 @@ describe("running the binary", () => {
     await expect(check(composition)).rejects.toMatchObject({ exitCode: 1 });
   });
 
-  test("a signal to this process reaches the child", async () => {
-    vi.stubEnv("STUB_MODE", "hang");
-    // Stands in for the caller's own handler, so the signal does not end the test run.
-    const handled = (): void => {};
-    process.on("SIGHUP", handled);
-    try {
-      const pending = render(composition, { output: "out.mp4", quiet: true });
-      await vi.waitFor(() => recorded());
-      process.kill(process.pid, "SIGHUP");
-      await expect(pending).rejects.toMatchObject({ exitCode: null, signal: "SIGHUP" });
-      expect(process.listeners("SIGHUP")).toEqual([handled]);
-    } finally {
-      process.off("SIGHUP", handled);
-    }
-  });
-
   test("aborting kills the child and rejects with the signal's reason", async () => {
     vi.stubEnv("STUB_MODE", "hang");
     const controller = new AbortController();

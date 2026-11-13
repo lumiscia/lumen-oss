@@ -1,8 +1,6 @@
 import { spawn } from "node:child_process";
 import process from "node:process";
 
-import { forwardSignals } from "./signals.js";
-
 const STDERR_TAIL_CHARS = 16_384;
 
 /** `lumen` exited with a failure: a non-zero code, or a signal. */
@@ -93,11 +91,9 @@ export function run(
     };
     signal?.addEventListener("abort", abort, { once: true });
 
-    const stopForwarding = forwardSignals(child);
     const finished = () => {
       signal?.removeEventListener("abort", abort);
       process.stderr.off("drain", resumeStderr);
-      stopForwarding();
     };
 
     child.on("error", (error) => {
