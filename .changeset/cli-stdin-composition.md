@@ -1,5 +1,6 @@
 ---
-"@lumiscia/lumen-cli": patch
+"@lumiscia/lumen-bindings": minor
+"@lumiscia/lumen-cli": minor
 ---
 
 `lumen render` and `lumen check` read the composition from stdin when it is `-`, so a script can pipe one in without writing a file:
