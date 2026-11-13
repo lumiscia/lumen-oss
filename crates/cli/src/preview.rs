@@ -14,14 +14,9 @@ use image::{
     codecs::{jpeg::JpegEncoder, png::PngEncoder},
     imageops::{self, FilterType},
 };
-use lumen_engine::{
-    composition::Composition,
-    diagnostic::Diagnostic,
-    gpu::{DEFAULT_MAX_TEXT_GLYPHS, MAX_TEXT_GLYPHS_CEILING},
-};
+use lumen_engine::gpu::{DEFAULT_MAX_TEXT_GLYPHS, MAX_TEXT_GLYPHS_CEILING};
 use lumen_server::render::{
     CancelToken, DEFAULT_JPEG_QUALITY, FrameRange, ImageRender, OutputFormat, RenderOutput,
-    RenderProgress,
 };
 
 use crate::{
@@ -34,7 +29,7 @@ const GUTTER: u32 = 8;
 const BACKGROUND: Rgb<u8> = Rgb([40, 40, 40]);
 /// The widest `--width` takes.
 const MAX_WIDTH: u32 = 16_384;
-/// The tallest sheet, which is the most a JPEG holds.
+/// The tallest sheet: the most a JPEG holds, and the limit for a PNG too.
 const MAX_HEIGHT: u32 = 65_535;
 
 #[derive(Debug, Args)]
@@ -135,14 +130,15 @@ impl Layout {
     fn new(frames: u32, columns: u32, width: u32, canvas: (u32, u32)) -> Result<Self> {
         let columns = columns.min(frames).max(1);
         let rows = frames.div_ceil(columns);
-        let gutters = GUTTER * (columns + 1);
-        let cell_width = width.saturating_sub(gutters) / columns;
-        if cell_width == 0 {
+        let gutters = u64::from(GUTTER) * (u64::from(columns) + 1);
+        if u64::from(width) < gutters + u64::from(columns) {
             bail!(
                 "--width {width} leaves no room for {columns} columns; they need at least {}",
-                gutters + columns
+                gutters + u64::from(columns)
             );
         }
+        let gutters = gutters as u32;
+        let cell_width = (width - gutters) / columns;
         let (canvas_width, canvas_height) =
             (u64::from(canvas.0.max(1)), u64::from(canvas.1.max(1)));
         let cell_height =
@@ -195,86 +191,58 @@ fn sample_frames(range: Range<u32>, count: u32) -> Vec<u32> {
 pub(crate) fn preview(args: &PreviewArgs) -> Result<()> {
     let format = SheetFormat::of(&args.output)?;
     let composition = load_composition(&args.source)?;
-    let range = RenderOutput {
+    let output = RenderOutput {
         format: OutputFormat::PngSequence,
         frames: args.frames.unwrap_or_default(),
         ..RenderOutput::default()
-    }
-    .resolve(composition.timeline().duration_frames)?;
-    let frames = sample_frames(range, args.count);
+    };
+    let range = output.resolve(composition.timeline().duration_frames)?;
     let settings = composition.render_settings();
+    let sampled = args.count.min(range.end - range.start);
     let layout = Layout::new(
-        frames.len() as u32,
+        sampled,
         args.columns,
         args.width,
         (settings.width, settings.height),
     )?;
+    let frames = sample_frames(range, args.count);
 
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
-    render_to_partial(&args.output, |partial| {
-        let mut sheet = RgbImage::from_pixel(layout.width, layout.height, BACKGROUND);
-        for (index, &frame) in frames.iter().enumerate() {
-            let (image, frame_diagnostics) = render_frame(&composition, args, frame)?;
-            let cell = fit_cell(&image, &layout);
-            let (x, y) = layout.cell_origin(index as u32);
-            imageops::replace(&mut sheet, &cell, i64::from(x), i64::from(y));
-            for diagnostic in frame_diagnostics {
-                if !diagnostics.contains(&diagnostic) {
-                    diagnostics.push(diagnostic);
-                }
-            }
-            let completed = index as u32 + 1;
-            print_progress(RenderProgress {
-                stage: "rendering",
-                frame: completed,
-                total_frames: frames.len() as u32,
-                ratio: completed as f32 / frames.len() as f32,
-            });
-        }
-        write_sheet(&sheet, format, partial)
-    })?;
-    print_warnings(&diagnostics);
+    let media_store = args.source.media_store()?.explaining_missing_sources();
+    let mut render = ImageRender::open(&composition, media_store, &output, CancelToken::new())?;
+    render.set_max_text_glyphs(args.max_text_glyphs as usize);
+    render.render_only(frames)?;
+
+    let mut sheet = RgbImage::from_pixel(layout.width, layout.height, BACKGROUND);
+    let mut index = 0;
+    let report = render.run(
+        &mut |encoded| {
+            let frame = image::load_from_memory_with_format(&encoded.bytes, ImageFormat::Png)
+                .with_context(|| format!("failed to decode frame {}", encoded.frame))?
+                .to_rgba8();
+            let (x, y) = layout.cell_origin(index);
+            imageops::replace(
+                &mut sheet,
+                &fit_cell(&frame, &layout),
+                i64::from(x),
+                i64::from(y),
+            );
+            index += 1;
+            Ok(())
+        },
+        &mut print_progress,
+    )?;
+    render_to_partial(&args.output, |partial| write_sheet(&sheet, format, partial))?;
+    print_warnings(&report.diagnostics);
     println!(
         "preview complete output={} frames={} grid={}x{} size={}x{}",
         args.output.display(),
-        frames.len(),
+        report.frames,
         layout.columns,
         layout.rows,
         layout.width,
         layout.height
     );
     Ok(())
-}
-
-/// Renders one frame at the composition's size, with the warnings its render gave.
-fn render_frame(
-    composition: &Composition,
-    args: &PreviewArgs,
-    frame: u32,
-) -> Result<(RgbaImage, Vec<Diagnostic>)> {
-    let media_store = args.source.media_store()?.explaining_missing_sources();
-    let output = RenderOutput {
-        format: OutputFormat::Png,
-        frames: FrameRange {
-            start: Some(frame),
-            end: None,
-        },
-        ..RenderOutput::default()
-    };
-    let mut render = ImageRender::open(composition, media_store, &output, CancelToken::new())?;
-    render.set_max_text_glyphs(args.max_text_glyphs as usize);
-    let mut decoded = None;
-    let report = render.run(
-        &mut |encoded| {
-            let image = image::load_from_memory_with_format(&encoded.bytes, ImageFormat::Png)
-                .with_context(|| format!("failed to decode frame {frame}"))?;
-            decoded = Some(image.to_rgba8());
-            Ok(())
-        },
-        &mut |_| {},
-    )?;
-    let image = decoded.with_context(|| format!("frame {frame} rendered no image"))?;
-    Ok((image, report.diagnostics))
 }
 
 /// The frame over [`BACKGROUND`], scaled to the layout's cell. It is made opaque first so that
@@ -356,5 +324,6 @@ mod tests {
         assert!(Layout::new(4, 4, 43, (1, 1)).is_err());
         assert!(Layout::new(4, 4, 44, (1, 1)).is_ok());
         assert!(Layout::new(100_000, 1, 1920, (16, 9)).is_err());
+        assert!(Layout::new(u32::MAX, u32::MAX, 16_384, (16, 9)).is_err());
     }
 }

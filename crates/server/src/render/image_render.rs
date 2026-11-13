@@ -41,6 +41,8 @@ pub struct ImageRender<'a> {
     format: OutputFormat,
     jpeg_quality: u8,
     frames: Range<u32>,
+    /// The frames of the range to render, when not all of them.
+    only: Option<Vec<u32>>,
     cancel: CancelToken,
     // Last, so everything holding a device closes before its room is given back.
     _devices: DeviceReservation<'static>,
@@ -86,6 +88,7 @@ impl<'a> ImageRender<'a> {
             format: output.format,
             jpeg_quality: output.jpeg_quality(),
             frames,
+            only: None,
             cancel,
             _devices: devices,
         })
@@ -97,12 +100,29 @@ impl<'a> ImageRender<'a> {
         self.renderer.set_max_text_glyphs(glyphs);
     }
 
-    /// The frames this render draws.
+    /// The range this render draws from.
     pub fn frames(&self) -> Range<u32> {
         self.frames.clone()
     }
 
-    /// Renders each frame of the range in order and passes it to `on_image`. An error from it ends
+    /// Renders only `frames`, in the order given, in place of every frame of the range. Each must
+    /// be in the range.
+    pub fn render_only(&mut self, frames: Vec<u32>) -> Result<(), ServerRenderError> {
+        if let Some(frame) = frames.iter().find(|frame| !self.frames.contains(frame)) {
+            return Err(ServerRenderError::new(
+                ErrorCode::InvalidOutput,
+                format!(
+                    "frame {frame} is outside the render's frames {}..{}",
+                    self.frames.start, self.frames.end
+                ),
+                false,
+            ));
+        }
+        self.only = Some(frames);
+        Ok(())
+    }
+
+    /// Renders each frame in order and passes it to `on_image`. An error from it ends
     /// the render: a [`ServerRenderError`] as it is, and any other as [`ErrorCode::OutputIo`].
     /// Cancelling stops it before the next frame.
     pub fn run(
@@ -111,9 +131,13 @@ impl<'a> ImageRender<'a> {
         on_progress: &mut dyn FnMut(RenderProgress),
     ) -> Result<RenderReport, ServerRenderError> {
         let started = Instant::now();
-        let total_frames = self.frames.end - self.frames.start;
+        let frames: Box<dyn ExactSizeIterator<Item = u32>> = match self.only.take() {
+            Some(frames) => Box::new(frames.into_iter()),
+            None => Box::new(self.frames.clone()),
+        };
+        let total_frames = frames.len() as u32;
         let mut timing = RenderTiming::default();
-        for (index, frame) in self.frames.clone().enumerate() {
+        for (index, frame) in frames.enumerate() {
             self.cancel.check()?;
             prefetch_media_frames(self.composition, &self.media_store, frame);
             let rendered = render_raster(
