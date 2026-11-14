@@ -205,7 +205,10 @@ fn render_schema() -> Result<String> {
                 "required": ["from_node", "to_node", "to_port"],
                 "properties": {
                     "from_node": { "type": "integer", "minimum": 0 },
-                    "from_port": { "type": "string" },
+                    "from_port": {
+                        "description": "The output of `from_node` to read. Optional: it defaults to `output`, the only output any node has.",
+                        "type": "string"
+                    },
                     "to_node": { "type": "integer", "minimum": 0 },
                     "to_port": { "type": "string" }
                 },
@@ -226,7 +229,7 @@ fn render_schema() -> Result<String> {
                         "items": { "$ref": "#/$defs/audioClip" }
                     }
                 },
-                "additionalProperties": true
+                "additionalProperties": false
             },
             "audioTrack": {
                 "x-lumen-type": "AudioTrack",
@@ -237,9 +240,9 @@ fn render_schema() -> Result<String> {
                     "name": { "type": "string" },
                     "muted": { "type": "boolean" },
                     "solo": { "type": "boolean" },
-                    "volume": audio_volume_json()
+                    "gain": audio_gain_json()
                 },
-                "additionalProperties": true
+                "additionalProperties": false
             },
             "audioClip": {
                 "x-lumen-type": "AudioClip",
@@ -253,7 +256,7 @@ fn render_schema() -> Result<String> {
                     "start_ms": { "type": "integer", "minimum": 0 },
                     "duration_ms": { "type": "integer", "minimum": 1 },
                     "source_start_ms": { "type": "integer", "minimum": 0 },
-                    "volume": audio_volume_json(),
+                    "gain": audio_gain_json(),
                     "fade_in_ms": {
                         "description": "Milliseconds the clip rises from silence over at its start, on an equal-power curve.",
                         "type": "integer",
@@ -265,15 +268,7 @@ fn render_schema() -> Result<String> {
                         "minimum": 0
                     }
                 },
-                "not": {
-                    "description": "Retired timing keys, which the engine rejects.",
-                    "anyOf": [
-                        { "required": ["start_frame"] },
-                        { "required": ["duration_frames"] },
-                        { "required": ["source_start_seconds"] }
-                    ]
-                },
-                "additionalProperties": true
+                "additionalProperties": false
             }
         }
     });
@@ -288,8 +283,8 @@ fn render_schema() -> Result<String> {
     Ok(format!("{}\n", serde_json::to_string_pretty(&schema)?))
 }
 
-/// An audio track's or clip's volume: a gain, or an expression of the composition's time.
-fn audio_volume_json() -> Value {
+/// An audio track's or clip's gain: a number, or an expression of the composition's time.
+fn audio_gain_json() -> Value {
     json!({
         "description": "Gain, 1 by default. An expression is evaluated in the time of the composition the audio is in, and reads `frame`, `time`, `fps`, `width`, `height` and props.",
         "anyOf": [

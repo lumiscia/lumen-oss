@@ -1,7 +1,7 @@
 {
   "$defs": {
     "audio": {
-      "additionalProperties": true,
+      "additionalProperties": false,
       "description": "Audio tracks and clips. A template's audio plays wherever a `clip` plays the template, following the clip's start, duration, offset, speed and end.",
       "properties": {
         "clips": {
@@ -22,21 +22,7 @@
       "x-lumen-type": "AudioTimeline"
     },
     "audioClip": {
-      "additionalProperties": true,
-      "not": {
-        "anyOf": [
-          {
-            "required": ["start_frame"]
-          },
-          {
-            "required": ["duration_frames"]
-          },
-          {
-            "required": ["source_start_seconds"]
-          }
-        ],
-        "description": "Retired timing keys, which the engine rejects."
-      },
+      "additionalProperties": false,
       "properties": {
         "duration_ms": {
           "minimum": 1,
@@ -51,6 +37,19 @@
           "description": "Milliseconds the clip falls to silence over at its end, on an equal-power curve.",
           "minimum": 0,
           "type": "integer"
+        },
+        "gain": {
+          "anyOf": [
+            {
+              "maximum": 3.4028234663852886e38,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/expression"
+            }
+          ],
+          "description": "Gain, 1 by default. An expression is evaluated in the time of the composition the audio is in, and reads `frame`, `time`, `fps`, `width`, `height` and props."
         },
         "id": {
           "type": "string"
@@ -74,8 +73,16 @@
         },
         "track_id": {
           "type": "string"
-        },
-        "volume": {
+        }
+      },
+      "required": ["id", "source_id", "track_id", "start_ms", "duration_ms"],
+      "type": "object",
+      "x-lumen-type": "AudioClip"
+    },
+    "audioTrack": {
+      "additionalProperties": false,
+      "properties": {
+        "gain": {
           "anyOf": [
             {
               "maximum": 3.4028234663852886e38,
@@ -87,15 +94,7 @@
             }
           ],
           "description": "Gain, 1 by default. An expression is evaluated in the time of the composition the audio is in, and reads `frame`, `time`, `fps`, `width`, `height` and props."
-        }
-      },
-      "required": ["id", "source_id", "track_id", "start_ms", "duration_ms"],
-      "type": "object",
-      "x-lumen-type": "AudioClip"
-    },
-    "audioTrack": {
-      "additionalProperties": true,
-      "properties": {
+        },
         "id": {
           "type": "string"
         },
@@ -107,19 +106,6 @@
         },
         "solo": {
           "type": "boolean"
-        },
-        "volume": {
-          "anyOf": [
-            {
-              "maximum": 3.4028234663852886e38,
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "$ref": "#/$defs/expression"
-            }
-          ],
-          "description": "Gain, 1 by default. An expression is evaluated in the time of the composition the audio is in, and reads `frame`, `time`, `fps`, `width`, `height` and props."
         }
       },
       "required": ["id"],
@@ -289,6 +275,7 @@
           "type": "integer"
         },
         "from_port": {
+          "description": "The output of `from_node` to read. Optional: it defaults to `output`, the only output any node has.",
           "type": "string"
         },
         "to_node": {
