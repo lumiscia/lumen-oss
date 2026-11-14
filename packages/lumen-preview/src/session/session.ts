@@ -1,16 +1,10 @@
 import type { Diagnostic, MediaFailure } from "@lumiscia/lumen-types";
 
 import { LumenAudioEngine } from "../audio-engine.js";
-import { clockPositionMs, epochNow, fitClock, type PreviewClock } from "../clock.js";
 import {
   DEFAULT_PLAYBACK,
-  describeRangeMisfit,
-  rangeFrame,
-  rangeMs,
   readPlaybackSettings,
-  resolvePlaybackRange,
   type LumenPreviewRange,
-  type PlaybackRange,
   type PlaybackSettings,
 } from "../playback-range.js";
 import type { MediaEntryState } from "../media/lifecycle.js";
@@ -25,7 +19,7 @@ import type {
   LumenPreviewMediaState,
 } from "../preview.js";
 import type { LumenPreviewWorkerCommand, LumenPreviewWorkerEvent } from "../worker-host.js";
-import { Attachment, PARKED_CLOCK, type PreviewWorkerOptions } from "./attachment.js";
+import { Attachment, type PreviewWorkerOptions } from "./attachment.js";
 import { describeError, errorMediaFailure, reportConsoleError } from "./errors.js";
 import {
   absoluteUrl,
@@ -33,6 +27,7 @@ import {
   sameMediaEntry,
   type ResolvedPreviewInputs,
 } from "./inputs.js";
+import { Load } from "./load.js";
 import { EMPTY_PREVIEW_STATS } from "./stats.js";
 import type {
   LumenPreviewSessionInputs,
@@ -41,7 +36,6 @@ import type {
   LumenRuntimeFile,
 } from "./types.js";
 
-const CLOCK_CORRECTION_INTERVAL_MS = 250;
 const DEFAULT_LOOKAHEAD_COUNT = 8;
 const NO_MEDIA: LumenPreviewMediaState = { failed: 0, pending: 0, ready: 0 };
 const WORKER_STARTUP_TIMEOUT_MS = 30_000;
@@ -79,7 +73,7 @@ export class LumenPreviewSession {
   // startup can tell it has been replaced.
   #live: Attachment | null = null;
   // Counts across attachments: a load is named the same to the worker that sees it and to the page.
-  #loadId = 0;
+  #loadCount = 0;
   // Why the options last failed validation. The same message isn't reported again, so a callback
   // that re-renders can't loop. Setting inputs reads it also while nothing is attached.
   #optionFailure: string | null = null;
@@ -134,7 +128,9 @@ export class LumenPreviewSession {
   /** Replaces whatever this session was showing. Resolves when started or failed; never rejects. */
   async attach(host: HTMLElement): Promise<void> {
     this.#teardown();
-    const attachment = new Attachment(this.#desiredOptions());
+    const attachment = new Attachment(this.#desiredOptions(), (state) =>
+      this.#previewInternals.update(state),
+    );
     this.#live = attachment;
     this.#previewInternals.update({
       error: null,
@@ -145,17 +141,9 @@ export class LumenPreviewSession {
       media: NO_MEDIA,
     });
     this.#previewInternals.attach({
-      pause: () => {
-        if (this.#live) {
-          this.#pause(this.#live);
-        }
-      },
-      play: () => {
-        if (this.#live) {
-          this.#play(this.#live);
-        }
-      },
-      seek: (frame) => this.#seek(this.#live, frame),
+      pause: () => this.#live?.transport.pause(),
+      play: () => this.#live?.transport.play(),
+      seek: (frame) => this.#seek(frame),
       whenReady: () => this.whenReady(),
     });
 
@@ -193,11 +181,11 @@ export class LumenPreviewSession {
 
     attachment.canvas = canvas;
     attachment.worker = worker;
-    attachment.audio = new LumenAudioEngine({
+    attachment.transport.audio = new LumenAudioEngine({
       ...this.#audioOptions,
       workerUrl: this.#runtime.audioWorker,
       workletUrl: this.#runtime.audioWorklet,
-      onClockChange: () => this.#correctClock(attachment),
+      onClockChange: () => attachment.transport.correctClock(),
       onError: (message) => this.#reportError("audio_failed", "audio", message),
     });
     worker.onmessage = (event: MessageEvent<LumenPreviewWorkerEvent>) => this.#receive(event.data);
@@ -245,7 +233,7 @@ export class LumenPreviewSession {
 
   /** The playback options in effect: the defaults until a worker is ready to apply the inputs'. */
   #playback(): PlaybackSettings {
-    return this.#live?.playback ?? DEFAULT_PLAYBACK;
+    return this.#live?.transport.playback ?? DEFAULT_PLAYBACK;
   }
 
   #desiredOptions(): PreviewWorkerOptions {
@@ -293,80 +281,12 @@ export class LumenPreviewSession {
     if (!next) {
       return;
     }
-    const previous = live.playback;
-    live.playback = next;
+    const { transport } = live;
+    const previous = transport.playback;
     if (next.volume !== previous.volume || next.muted !== previous.muted) {
-      live.audio?.setVolume(next.volume, next.muted);
+      transport.audio?.setVolume(next.volume, next.muted);
     }
-    if (next.rate !== previous.rate) {
-      this.#changeRate(live, next.rate);
-    }
-    if (next.loop !== previous.loop || !sameRange(next.range, previous.range)) {
-      this.#changeRange(live);
-    }
-  }
-
-  /** Playback carries on from where it is, at the new speed. */
-  #changeRate(live: Attachment, rate: number): void {
-    const positionMs = this.#positionMs(live);
-    live.audio?.setRate(rate);
-    if (!live.running) {
-      return;
-    }
-    live.playbackRevision += 1;
-    live.clock = live.audio?.isPlaying()
-      ? audioClock(live.audio, rate)
-      : { atEpochMs: epochNow(), originMs: positionMs, rate };
-    this.#postClock(live, live.clock);
-  }
-
-  /**
-   * Playback carries on from the position it had under the old loop and range, which both clocks
-   * are rebased to. A playhead outside the new range moves to its start.
-   */
-  #changeRange(live: Attachment): void {
-    const timeline = live.timeline;
-    const positionMs = timeline ? this.#positionMs(live) : 0;
-    const range = timeline ? this.#applyRange(live, timeline) : null;
-    if (timeline) {
-      this.#placeClock(live, positionMs);
-    }
-    const { loop, range: requested } = live.playback;
-    live.playbackRevision += 1;
-    live.post({
-      clock: live.clock,
-      loop,
-      range: requested,
-      revision: live.playbackRevision,
-      type: "set-playback",
-    });
-    if (!timeline || !range) {
-      return;
-    }
-    const frame = frameAt(positionMs, timeline.fps);
-    if (frame < range.inFrame || frame >= range.outFrame) {
-      void this.#seek(live, range.inFrame);
-    } else {
-      this.#correctClock(live);
-    }
-  }
-
-  /** Fits the requested range to the timeline, and tells the audio. */
-  #applyRange(live: Attachment, timeline: { fps: number; totalFrames: number }): PlaybackRange {
-    const { loop, range: requested } = live.playback;
-    const misfit = describeRangeMisfit(requested, timeline.totalFrames);
-    if (misfit !== null && misfit !== live.rangeMisfit) {
-      console.warn(`[LumenPreviewSession] ${misfit}`);
-    }
-    live.rangeMisfit = misfit;
-    const range = resolvePlaybackRange(requested, loop, timeline.totalFrames);
-    live.range = range;
-    live.audio?.setRange({
-      endMs: (range.outFrame * 1_000) / timeline.fps,
-      loop: range.loop,
-      startMs: (range.inFrame * 1_000) / timeline.fps,
-    });
-    return range;
+    transport.setPlayback(next);
   }
 
   /** Reads the composition again and loads only when the JSON or another input the worker reads changed. */
@@ -386,40 +306,32 @@ export class LumenPreviewSession {
     const recovering = live.resolveFailure !== null;
     live.resolveFailure = null;
 
-    const previous = live.loaded;
+    const previous = live.load?.inputs;
     if (
       !recovering &&
+      live.load &&
       previous &&
       previous.compositionJson === next.compositionJson &&
       sameEntries(previous.media, next.media, sameMediaEntry) &&
       sameEntries(previous.fonts, next.fonts, sameMediaInput)
     ) {
-      live.loaded = next;
+      live.load.inputs = next;
       return;
     }
     this.#load(live, next);
   }
 
   #load(live: Attachment, next: ResolvedPreviewInputs): void {
-    const loadId = ++this.#loadId;
-    live.loaded = next;
-    live.settleSeeks(false);
+    const load = new Load(++this.#loadCount, next);
+    live.load = load;
+    live.transport.beginLoad();
     live.reportedFrame = null;
-    live.frameWaiting = false;
-    live.media = null;
     this.#ready = null;
 
-    if (next.compositionJson === null) {
-      live.held = false;
-      live.loading = false;
-      live.pendingSeek = null;
-      live.playing = false;
-      live.stopCorrections();
-      live.clock = PARKED_CLOCK;
-      live.range = null;
-      live.timeline = null;
-      live.audio?.loadAudioTimeline(null);
-      live.post({ loadId, type: "unload" });
+    const { compositionJson } = next;
+    if (compositionJson === null) {
+      live.transport.unload();
+      live.post({ loadId: load.id, type: "unload" });
       this.#previewInternals.update({
         frame: 0,
         height: 0,
@@ -442,15 +354,14 @@ export class LumenPreviewSession {
       const sent = live.sentFonts.get(family);
       return !sent || !sameMediaInput(sent, source);
     });
-    live.loading = true;
     try {
       live.post({
-        clock: live.clock,
-        compositionJson: next.compositionJson,
+        clock: live.transport.clock,
+        compositionJson,
         fonts,
         keepFonts: [...next.fonts.keys()],
         keepMedia: [...next.media.keys()],
-        loadId,
+        loadId: load.id,
         media,
         type: "load",
       });
@@ -458,20 +369,19 @@ export class LumenPreviewSession {
       live.sentMedia = next.media;
     } catch (error) {
       // A source that can't cross to a worker, such as a Request, throws here.
-      this.#loadFailed(live, error);
+      this.#loadFailed(live, load, error);
     }
   }
 
   #loadFailed(
     live: Attachment,
+    load: Load,
     error: unknown,
     diagnostics: readonly Diagnostic[] = [],
     media: MediaFailure | null = errorMediaFailure(error),
   ): void {
-    live.loading = false;
-    this.#pause(live);
-    live.range = null;
-    live.timeline = null;
+    load.failed();
+    live.transport.failLoad();
     this.#inputs.onStats?.(EMPTY_PREVIEW_STATS);
     this.#previewInternals.update({ isLoaded: false });
     this.#settleReady(this.#reportError("load_failed", "load", error, diagnostics, media));
@@ -482,22 +392,23 @@ export class LumenPreviewSession {
     if (!live) {
       return;
     }
+    const { load, transport } = live;
     switch (event.type) {
       case "loaded":
         this.#onLoaded(live, event);
         break;
       case "load-failed":
-        if (event.loadId === this.#loadId) {
-          this.#loadFailed(live, event.message, event.diagnostics, event.media);
+        if (load?.id === event.loadId) {
+          this.#loadFailed(live, load, event.message, event.diagnostics, event.media);
         }
         break;
       case "frame":
         this.#onFrame(live, event);
         break;
       case "render-failed":
-        if (event.loadId === this.#loadId) {
-          live.settleSeeks(false);
-          this.#pause(live);
+        if (load?.id === event.loadId) {
+          transport.settleSeeks(false);
+          transport.pause();
           const error = this.#reportError(
             "render_failed",
             "render",
@@ -511,30 +422,25 @@ export class LumenPreviewSession {
         }
         break;
       case "waiting":
-        if (event.loadId === this.#loadId) {
-          live.frameWaiting = event.waiting;
-          this.#updateHold(live);
+        if (load?.id === event.loadId) {
+          transport.setFrameWaiting(event.waiting);
         }
         break;
       case "ended":
-        if (
-          event.loadId === this.#loadId &&
-          event.seekId === live.seekId &&
-          event.playbackRevision === live.playbackRevision
-        ) {
-          this.#onEnded(live);
+        if (load?.id === event.loadId && transport.ended(event.seekId, event.playbackRevision)) {
+          this.#inputs.onEnded?.();
         }
         break;
       case "media":
-        if (event.loadId === this.#loadId) {
-          this.#onMedia(live, event.media);
+        if (load?.id === event.loadId) {
+          this.#onMedia(live, load, event.media);
         }
         break;
       case "audio-source":
         this.#loadAudioSource(live, event);
         break;
       case "audio-source-released":
-        live.audio?.removeSource(event.source);
+        transport.audio?.removeSource(event.source);
         break;
       case "ready":
       case "startup-failed":
@@ -542,27 +448,22 @@ export class LumenPreviewSession {
     }
   }
 
-  #onMedia(live: Attachment, media: readonly MediaEntryState[]): void {
-    live.media = media;
+  #onMedia(live: Attachment, load: Load, media: readonly MediaEntryState[]): void {
+    load.media = media;
     const count = (status: MediaEntryState["status"]) =>
       media.filter((entry) => entry.status === status).length;
     this.#previewInternals.update({
       media: { failed: count("failed"), pending: count("pending"), ready: count("ready") },
     });
-    this.#updateHold(live);
-    this.#checkReady(live);
+    live.transport.updateHold();
+    this.#checkReady(load);
   }
 
   /** Settles `whenReady` once a frame of the composition is shown and nothing it needs is pending. */
-  #checkReady(live: Attachment): void {
-    const media = live.media;
-    if (
-      this.#ready ||
-      live.loadedId !== this.#loadId ||
-      live.shownId !== this.#loadId ||
-      !media ||
-      media.some(({ status }) => status === "pending")
-    ) {
+  #checkReady(load: Load): void {
+    const media = load.media;
+    // A subscriber may have replaced the load while this one's event was being handled.
+    if (this.#live?.load !== load || this.#ready || !load.isShown || !media || load.mediaPending) {
       return;
     }
     const failure = media.find((entry) => entry.failure)?.failure ?? null;
@@ -586,12 +487,12 @@ export class LumenPreviewSession {
   }
 
   #loadAudioSource(
-    live: Attachment,
+    { transport }: Attachment,
     { input, requestId, source }: WorkerEvent<"audio-source">,
   ): void {
     const settled = (failure: MediaFailure | null) =>
       this.#live?.post({ failure, requestId, type: "audio-source-settled" });
-    const audio = live.audio;
+    const audio = transport.audio;
     if (!audio) {
       return;
     }
@@ -610,95 +511,17 @@ export class LumenPreviewSession {
     );
   }
 
-  /**
-   * Playing waits, with its clock parked, while media the composition needs is pending or the
-   * frame it is on is still loading.
-   */
-  #updateHold(live: Attachment): void {
-    const hold =
-      live.playing &&
-      (live.frameWaiting || (live.media?.some(({ status }) => status === "pending") ?? false));
-    if (hold === live.held) {
-      return;
-    }
-    live.held = hold;
-    live.playbackRevision += 1;
-    if (hold) {
-      const originMs = this.#positionMs(live);
-      live.audio?.pause();
-      live.stopCorrections();
-      live.clock = { atEpochMs: epochNow(), originMs, rate: 0 };
-      if (live.range && live.timeline) {
-        live.clock = fitClock(live.clock, live.range, live.timeline.fps);
-      }
-      this.#postClock(live, live.clock);
-    } else {
-      this.#startClock(live);
-    }
-  }
-
-  /**
-   * The worker starts the new timeline on the clock it already follows, so an unchanged audio
-   * timeline needs only the usual correction. A pending seek, or audio restarted for a new
-   * timeline, seeks both.
-   */
   #onLoaded(live: Attachment, event: WorkerEvent<"loaded">): void {
-    if (event.loadId !== this.#loadId) {
+    const { load, transport } = live;
+    if (load?.id !== event.loadId) {
       return;
     }
-    const { fps, totalFrames } = event;
-    // Read against the previous timeline, before the audio can be told about the new one.
-    const positionMs = this.#positionMs(live);
-    const pending = live.pendingSeek;
-    live.loadedId = event.loadId;
-    live.loading = false;
-    live.pendingSeek = null;
-    const timeline = { fps, totalFrames };
-    live.timeline = timeline;
-    const audioChanged =
-      live.audio?.loadAudioTimeline(event.audioTimelineJson, {
-        durationFrames: totalFrames,
-        fps,
-      }) ?? false;
-
-    const range = this.#applyRange(live, timeline);
-    const lastFrame = range.outFrame - 1;
-    const lastFrameMs = (lastFrame * 1_000) / fps;
-    const restartAudio = audioChanged && live.running;
-    let frame = this.preview.getSnapshot().frame;
-    if (pending !== null || restartAudio) {
-      // Playback carries on round the new range, as the worker would.
-      const originMs =
-        pending !== null
-          ? (clampFrame(pending, range) * 1_000) / fps
-          : Math.min(rangeMs(positionMs, range, fps), lastFrameMs);
-      if (restartAudio) {
-        live.audio?.play(originMs);
-      } else {
-        live.audio?.seekMs(originMs);
-      }
-      this.#placeClock(live, originMs);
-      this.#postSeek(live);
-      frame = clampFrame(frameAt(originMs, fps), range);
-    } else if (live.running) {
-      this.#correctClock(live);
-      // The frame on screen stands until the worker shows the next, unless it's outside the range.
-      if (frame < range.inFrame || frame > lastFrame) {
-        frame = rangeFrame(frameAt(this.#positionMs(live), fps), range);
-      }
-    } else {
-      // The worker fits its clock the same way.
-      live.clock = fitClock(live.clock, range, fps);
-      if (audioChanged) {
-        live.audio?.seekMs(live.clock.originMs);
-      }
-      frame = frameAt(live.clock.originMs, fps);
-    }
-
+    load.loaded();
+    const frame = transport.load(event, this.preview.getSnapshot().frame);
     this.#inputs.onStats?.({
       ...EMPTY_PREVIEW_STATS,
-      targetFrameDurationMs: 1_000 / fps,
-      timelineFps: fps,
+      targetFrameDurationMs: 1_000 / event.fps,
+      timelineFps: event.fps,
     });
     this.#previewInternals.update({
       // Newer inputs that didn't resolve keep their error over this earlier load.
@@ -707,29 +530,24 @@ export class LumenPreviewSession {
       frame,
       height: event.height,
       isLoaded: true,
-      isPlaying: live.playing,
-      totalFrames,
+      isPlaying: transport.isPlaying,
+      totalFrames: event.totalFrames,
       width: event.width,
     });
-    this.#checkReady(live);
+    this.#checkReady(load);
   }
 
   #onFrame(live: Attachment, event: WorkerEvent<"frame">): void {
-    if (event.loadId !== this.#loadId || !live.timeline) {
+    const { load, transport } = live;
+    const timeline = transport.timeline;
+    if (load?.id !== event.loadId || !timeline) {
       return;
     }
-    if (live.shownId !== event.loadId) {
-      live.shownId = event.loadId;
-      this.#checkReady(live);
-    }
-    for (const [seekId, resolve] of live.pendingSeeks) {
-      if (seekId <= event.seekId) {
-        live.pendingSeeks.delete(seekId);
-        resolve(true);
-      }
+    if (load.shown()) {
+      this.#checkReady(load);
     }
     // This render started before a newer seek, so its frame would pull the playhead back.
-    if (event.seekId !== live.seekId) {
+    if (!transport.acknowledgeSeeks(event.seekId)) {
       return;
     }
     const recovered =
@@ -742,150 +560,25 @@ export class LumenPreviewSession {
       live.reportedFrame = event.frame;
       this.#inputs.onTimeUpdate?.({
         frame: event.frame,
-        timeMs: (event.frame * 1_000) / live.timeline.fps,
+        timeMs: (event.frame * 1_000) / timeline.fps,
       });
     }
     this.#inputs.onStats?.({
       actualFps: event.actualFps,
       frame: event.frame,
       renderMs: event.renderMs,
-      targetFrameDurationMs: 1_000 / live.timeline.fps,
-      timelineFps: live.timeline.fps,
+      targetFrameDurationMs: 1_000 / timeline.fps,
+      timelineFps: timeline.fps,
     });
   }
 
-  #play(live: Attachment): void {
-    const range = live.range;
-    if (!live.timeline || !range || live.playing) {
-      return;
+  /** The preview still offers its seek once the worker has crashed, though there is nothing to seek. */
+  #seek(frame: number): Promise<boolean> {
+    if (this.#live) {
+      return this.#live.transport.seek(frame);
     }
-    // Playing from the last frame of a range that doesn't loop starts it again.
-    if (!range.loop && frameAt(this.#positionMs(live), live.timeline.fps) >= range.outFrame - 1) {
-      void this.#seek(live, range.inFrame);
-    }
-    live.playing = true;
-    live.playbackRevision += 1;
-    this.#previewInternals.update({ isPlaying: true });
-    this.#updateHold(live);
-    if (!live.held) {
-      this.#startClock(live);
-    }
-  }
-
-  #startClock(live: Attachment): void {
-    live.audio?.play(this.#positionMs(live));
-    this.#correctClock(live);
-    live.correctionTimer = setInterval(
-      () => this.#correctClock(live),
-      CLOCK_CORRECTION_INTERVAL_MS,
-    );
-  }
-
-  #pause(live: Attachment): void {
-    if (!live.playing) {
-      return;
-    }
-    const originMs = this.#positionMs(live);
-    live.playing = false;
-    live.held = false;
-    live.playbackRevision += 1;
-    live.audio?.pause();
-    live.stopCorrections();
-    live.clock = { atEpochMs: epochNow(), originMs, rate: 0 };
-    if (live.range && live.timeline) {
-      live.clock = fitClock(live.clock, live.range, live.timeline.fps);
-    }
-    this.#postClock(live, live.clock);
-    this.#previewInternals.update({ isPlaying: false });
-  }
-
-  /** Playback ran out of range: it stops on the last frame, as a pause there would. */
-  #onEnded(live: Attachment): void {
-    const range = live.range;
-    const timeline = live.timeline;
-    if (!live.playing || !range || !timeline) {
-      return;
-    }
-    const lastFrame = range.outFrame - 1;
-    const lastFrameMs = (lastFrame * 1_000) / timeline.fps;
-    live.playing = false;
-    live.audio?.pause();
-    live.audio?.seekMs(lastFrameMs);
-    live.stopCorrections();
-    live.clock = { atEpochMs: epochNow(), originMs: lastFrameMs, rate: 0 };
-    this.#postClock(live, live.clock);
-    this.#previewInternals.update({ frame: lastFrame, isPlaying: false });
-    this.#inputs.onEnded?.();
-  }
-
-  /** `live` is null once the worker has crashed, while the preview still offers its seek. */
-  #seek(live: Attachment | null, frame: number): Promise<boolean> {
-    const timeline = live?.timeline;
-    if (!live || live.loading || !timeline) {
-      // The next load decides how long the composition is, then seeks there.
-      const pending = Math.max(0, Math.round(frame));
-      if (live) {
-        live.pendingSeek = pending;
-      }
-      this.#previewInternals.update({ frame: pending });
-      return Promise.resolve(false);
-    }
-    const target = clampFrame(
-      Math.max(0, Math.round(frame)),
-      live.range ?? { inFrame: 0, loop: false, outFrame: timeline.totalFrames },
-    );
-    const originMs = (target * 1_000) / timeline.fps;
-    live.audio?.seekMs(originMs);
-    this.#placeClock(live, originMs);
-    this.#previewInternals.update({ frame: target });
-    const seekId = this.#postSeek(live);
-    return new Promise((resolve) => live.pendingSeeks.set(seekId, resolve));
-  }
-
-  #placeClock(live: Attachment, originMs: number): void {
-    live.clock = {
-      atEpochMs: epochNow(),
-      originMs,
-      rate: live.running && !live.audio?.isPlaying() ? live.playback.rate : 0,
-    };
-  }
-
-  #postSeek(live: Attachment): number {
-    const seekId = ++live.seekId;
-    live.post({ clock: live.clock, seekId, type: "seek" });
-    return seekId;
-  }
-
-  /** Audio leads whenever it's playing. Without it the worker's clock simply keeps running. */
-  #correctClock(live: Attachment): void {
-    if (!live.running) {
-      return;
-    }
-    const audio = live.audio;
-    let next: PreviewClock | null = null;
-    if (audio?.isPlaying()) {
-      next = audioClock(audio, live.playback.rate);
-    } else if (live.clock.rate === 0) {
-      next = { atEpochMs: epochNow(), originMs: live.clock.originMs, rate: live.playback.rate };
-    }
-    if (next) {
-      live.clock = next;
-      this.#postClock(live, next);
-    }
-  }
-
-  #postClock(live: Attachment, clock: PreviewClock): void {
-    live.post({ clock, revision: live.playbackRevision, type: "clock" });
-  }
-
-  /** Wrapped into the range, or held at its end, as the worker shows it. */
-  #positionMs(live: Attachment): number {
-    const ms = live.audio?.isPlaying()
-      ? live.audio.currentTimeMs()
-      : clockPositionMs(live.clock, epochNow());
-    return live.range && live.timeline
-      ? rangeMs(Math.max(ms, 0), live.range, live.timeline.fps)
-      : Math.max(ms, 0);
+    this.#previewInternals.update({ frame: Math.max(0, Math.round(frame)) });
+    return Promise.resolve(false);
   }
 
   #workerCrashed(message: string): void {
@@ -1027,28 +720,6 @@ function startWorker(
     };
     worker.postMessage(start);
   });
-}
-
-function audioClock(audio: LumenAudioEngine, rate: number): PreviewClock {
-  return {
-    atEpochMs: epochNow(),
-    originMs: audio.currentTimeMs(),
-    rate: audio.isClockRunning() ? rate : 0,
-  };
-}
-
-/** A seek lands inside the range, whether or not it loops. */
-function clampFrame(frame: number, range: PlaybackRange): number {
-  return Math.max(range.inFrame, Math.min(frame, range.outFrame - 1));
-}
-
-function sameRange(left: LumenPreviewRange | null, right: LumenPreviewRange | null): boolean {
-  return left?.in === right?.in && left?.out === right?.out;
-}
-
-// Matches the worker's rounding, so a frame's own start time doesn't land on the frame before.
-function frameAt(positionMs: number, fps: number): number {
-  return Math.floor((positionMs * fps) / 1_000 + 1e-6);
 }
 
 function sameEntries<T>(
