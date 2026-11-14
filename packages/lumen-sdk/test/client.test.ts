@@ -700,3 +700,110 @@ describe("Lumen check and media routes", () => {
     expect(calls).toEqual(["GET /v1/media/m_1", "DELETE /v1/media/m_1", "DELETE /v1/media/m_1"]);
   });
 });
+
+describe("Lumen multipart part retries", () => {
+  type Step = "network" | "body" | "busy" | 500 | 429 | 409 | 400 | "ok";
+
+  function uploadWith(steps: Step[]) {
+    let partRequests = 0;
+    const stub = (async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/v1/media") {
+        return Response.json({ media: mediaBody(), uploadUrl: "/v1/media/m/content" });
+      }
+      if (path.endsWith("/multipart")) return Response.json({ uploadId: "u" });
+      if (path.includes("/parts/")) {
+        const step = steps[partRequests] ?? "ok";
+        partRequests += 1;
+        if (step === "network") throw new TypeError("socket hang up");
+        if (step === "body") {
+          return new Response(
+            new ReadableStream({
+              start: (controller) => controller.error(new TypeError("terminated")),
+            }),
+          );
+        }
+        if (step === "busy") {
+          return Response.json(
+            { code: "upload_part_in_progress", error: "busy" },
+            { status: 409, headers: { "retry-after": "0" } },
+          );
+        }
+        if (step !== "ok") {
+          return Response.json(
+            { code: "part_failed", error: "no" },
+            { status: step, headers: { "retry-after": "0" } },
+          );
+        }
+        return Response.json({ etag: "e", partNumber: 1 });
+      }
+      return Response.json({ media: mediaBody() });
+    }) as typeof fetch;
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+    const upload = () =>
+      lumen.uploadMedia({
+        body: new Blob(["abc"]).stream(),
+        contentType: "video/mp4",
+        sizeBytes: 3,
+      });
+    return { partRequests: () => partRequests, upload };
+  }
+
+  test("a part is sent again after a network error, a dropped response, a server error or a rate limit", async () => {
+    for (const steps of [
+      ["network", "body", "ok"],
+      [500, 429, "ok"],
+    ] as Step[][]) {
+      const { partRequests, upload } = uploadWith(steps);
+
+      await expect(upload()).resolves.toMatchObject({ id: "media 1" });
+      expect(partRequests()).toBe(3);
+    }
+  });
+
+  test("a part is sent again while an earlier attempt at it is still being received", async () => {
+    const { partRequests, upload } = uploadWith(["busy", "ok"]);
+
+    await expect(upload()).resolves.toMatchObject({ id: "media 1" });
+    expect(partRequests()).toBe(2);
+  });
+
+  test("a part whose response is not JSON is not sent again", async () => {
+    let partRequests = 0;
+    const stub = (async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/v1/media") {
+        return Response.json({ media: mediaBody(), uploadUrl: "/v1/media/m/content" });
+      }
+      if (path.endsWith("/multipart")) return Response.json({ uploadId: "u" });
+      partRequests += 1;
+      return new Response("not json");
+    }) as typeof fetch;
+    const lumen = new Lumen({ apiKey: "test-key", baseUrl: "https://api.test/v1", fetch: stub });
+
+    await expect(
+      lumen.uploadMedia({
+        body: new Blob(["abc"]).stream(),
+        contentType: "video/mp4",
+        sizeBytes: 3,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+    expect(partRequests).toBe(1);
+  });
+
+  test("a part fails with its last error after three attempts", async () => {
+    const { partRequests, upload } = uploadWith([500, 500, 500, "ok"]);
+
+    await expect(upload()).rejects.toMatchObject({ code: "part_failed", status: 500 });
+    expect(partRequests()).toBe(3);
+  });
+
+  test("a client error other than 429 or a busy part is not retried", async () => {
+    for (const status of [400, 409] as const) {
+      const { partRequests, upload } = uploadWith([status, "ok"]);
+
+      await expect(upload()).rejects.toMatchObject({ status });
+      expect(partRequests()).toBe(1);
+    }
+  });
+});

@@ -1826,7 +1826,76 @@ fn wait_until(what: &str, deadline: Duration, mut done: impl FnMut() -> bool) {
 }
 
 #[test]
-fn media_uploads_never_hold_more_than_their_size_on_disk() {
+fn media_multipart_part_sent_again_keeps_its_etag() {
+    let server = Server::start(&[]);
+    let jpeg = normal_sized_jpeg();
+    let created = create_upload(&server, "photo.jpg", "image/jpeg", jpeg.len());
+    let id = media_id(&created["media"]);
+    let started: Value = server
+        .post_to(&format!("/media/{id}/multipart"), &json!({}))
+        .json()
+        .expect("multipart body");
+    let upload_id = started["uploadId"].as_str().expect("upload id");
+
+    let put = || {
+        let response =
+            server.put_bytes(&format!("/media/{id}/multipart/{upload_id}/parts/1"), &jpeg);
+        assert_eq!(response.status(), StatusCode::OK);
+        let part: Value = response.json().expect("part body");
+        part["etag"].clone()
+    };
+    // A retry after a lost response, then the first attempt arriving late as a duplicate.
+    let etag = put();
+    assert_eq!(put(), etag);
+    assert_eq!(put(), etag);
+
+    let completed = server.post_to(
+        &format!("/media/{id}/multipart/{upload_id}/complete"),
+        &json!({ "parts": [{ "etag": etag, "partNumber": 1 }] }),
+    );
+    assert_eq!(completed.status(), StatusCode::OK);
+}
+
+#[test]
+fn media_multipart_part_takes_one_request_at_a_time() {
+    let server = Server::start(&[]);
+    let created = create_upload(&server, "parts.bin", "application/octet-stream", 1024);
+    let id = media_id(&created["media"]);
+    let started: Value = server
+        .post_to(&format!("/media/{id}/multipart"), &json!({}))
+        .json()
+        .expect("multipart body");
+    let upload_id = started["uploadId"].as_str().expect("upload id");
+    let path = format!("/media/{id}/multipart/{upload_id}/parts/1");
+    let parts = server
+        .media_dir
+        .path()
+        .join(&id)
+        .join("parts")
+        .join(upload_id);
+
+    let first = send_raw(
+        &server,
+        &format!("PUT {path} HTTP/1.1\r\nContent-Length: 1024"),
+        &[0; 1000],
+    );
+    wait_until("the first attempt never arrived", TIMEOUT, || {
+        temp_bytes(&parts) >= 1000
+    });
+    let busy = server.put_bytes(&path, &[0; 1024]);
+    assert_eq!(busy.status(), StatusCode::CONFLICT);
+    assert_eq!(error_code(busy), "upload_part_in_progress");
+
+    // The part frees once the first attempt's client goes away.
+    drop(first);
+    wait_until("a dropped attempt kept the part busy", TIMEOUT, || {
+        server.put_bytes(&path, &[0; 1024]).status() == StatusCode::OK
+    });
+}
+
+/// Uploads hold at most their size on disk, plus, while a stored part is being replaced, that part.
+#[test]
+fn media_uploads_hold_at_most_their_size_plus_a_part_being_replaced() {
     let server = Server::start(&["--media-max-bytes", "1024"]);
     let created = create_upload(&server, "parts.bin", "application/octet-stream", 1024);
     let id = media_id(&created["media"]);
@@ -1843,8 +1912,7 @@ fn media_uploads_never_hold_more_than_their_size_on_disk() {
     };
 
     assert_eq!(part(1, 1024).status(), StatusCode::OK);
-    // Sending part 1 again would hold both copies until the new one replaced the old.
-    for (number, size) in [(2, 1), (3, 1024), (1, 1024)] {
+    for (number, size) in [(2, 1), (3, 1024)] {
         let refused = part(number, size);
         assert_eq!(
             refused.status(),
@@ -1853,6 +1921,30 @@ fn media_uploads_never_hold_more_than_their_size_on_disk() {
         );
         assert_eq!(error_code(refused), "media_too_large");
     }
+    assert_eq!(
+        bytes_under(&server.media_dir.path().join(&id).join("parts")),
+        1024
+    );
+
+    // A part being replaced doesn't count against its replacement, which may hold up to its
+    // size on top of sizeBytes until it replaces the stored part.
+    assert_eq!(part(1, 1024).status(), StatusCode::OK);
+    assert_eq!(
+        bytes_under(&server.media_dir.path().join(&id).join("parts")),
+        1024
+    );
+    assert_eq!(part(1, 600).status(), StatusCode::OK);
+    assert_eq!(part(2, 424).status(), StatusCode::OK);
+    for (number, size) in [(1, 601), (2, 425)] {
+        let refused = part(number, size);
+        assert_eq!(
+            refused.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "part {number}"
+        );
+        assert_eq!(error_code(refused), "media_too_large");
+    }
+    assert_eq!(part(1, 600).status(), StatusCode::OK);
     assert_eq!(
         bytes_under(&server.media_dir.path().join(&id).join("parts")),
         1024

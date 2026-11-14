@@ -1,7 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { readFile } from "node:fs/promises";
-import net from "node:net";
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
@@ -21,8 +20,6 @@ describeIntegration("Lumen SDK with lumen-server", () => {
   let serverOutput = "";
 
   beforeAll(async () => {
-    const port = await freePort();
-    baseUrl = `http://127.0.0.1:${port}`;
     server = spawn(
       "cargo",
       [
@@ -35,7 +32,7 @@ describeIntegration("Lumen SDK with lumen-server", () => {
         "lumen-server",
         "--",
         "--bind",
-        `127.0.0.1:${port}`,
+        "127.0.0.1:0",
         "--token",
         serverToken,
         "--progress-min-delta",
@@ -45,18 +42,19 @@ describeIntegration("Lumen SDK with lumen-server", () => {
         cwd: new URL("../../..", import.meta.url),
         env: {
           ...process.env,
+          NO_COLOR: "1",
           RUST_LOG: process.env.RUST_LOG ?? "lumen_server=info,warn",
         },
       },
     );
-    server.stdout.on("data", (chunk) => {
-      serverOutput += String(chunk);
-    });
-    server.stderr.on("data", (chunk) => {
-      serverOutput += String(chunk);
-    });
+    const listening = listeningAddress(server, startupTimeoutMs);
+    for (const stream of [server.stdout, server.stderr]) {
+      stream.on("data", (chunk) => {
+        serverOutput += String(chunk);
+      });
+    }
 
-    await waitForServer(baseUrl, server, startupTimeoutMs);
+    baseUrl = `http://${await listening}`;
   }, startupTimeoutMs + 5_000);
 
   afterAll(async () => {
@@ -155,46 +153,40 @@ function tinyComposition(): Composition {
   return composition;
 }
 
-async function freePort(): Promise<number> {
-  const server = net.createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  server.close();
-  await once(server, "close");
-
-  if (typeof address !== "object" || address === null) {
-    throw new Error("Could not allocate a TCP port for lumen-server.");
-  }
-
-  return address.port;
-}
-
-async function waitForServer(
-  baseUrl: string,
+/** The address the server logs when it is listening, which is how a bind to port 0 is found out. */
+function listeningAddress(
   server: ChildProcessWithoutNullStreams,
   timeoutMs: number,
-): Promise<void> {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    if (server.exitCode !== null) {
-      throw new Error("lumen-server exited before startup.");
-    }
-
-    try {
-      const response = await fetch(new URL("/health", baseUrl));
-      if (response.ok) {
-        return;
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let output = "";
+    const timer = setTimeout(
+      () => finish(new Error("Timed out waiting for lumen-server to start.")),
+      timeoutMs,
+    );
+    const finish = (result: string | Error) => {
+      clearTimeout(timer);
+      server.stdout.off("data", onData);
+      server.stderr.off("data", onData);
+      server.off("exit", onExit);
+      if (typeof result === "string") {
+        resolve(result);
+      } else {
+        reject(result);
       }
-    } catch {
-      // The server is still compiling or binding its socket.
-    }
-
-    await sleep(250);
-  }
-
-  throw new Error("Timed out waiting for lumen-server to start.");
+    };
+    const onData = (chunk: unknown) => {
+      output += String(chunk);
+      const address = /listening address=(\S+)/.exec(output)?.[1];
+      if (address !== undefined) {
+        finish(address);
+      }
+    };
+    const onExit = () => finish(new Error("lumen-server exited before startup."));
+    server.stdout.on("data", onData);
+    server.stderr.on("data", onData);
+    server.on("exit", onExit);
+  });
 }
 
 async function stopServer(server: ChildProcessWithoutNullStreams | undefined): Promise<void> {
@@ -214,8 +206,4 @@ async function stopServer(server: ChildProcessWithoutNullStreams | undefined): P
   } finally {
     clearTimeout(timeout);
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
