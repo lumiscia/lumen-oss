@@ -31,10 +31,13 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./openapi.json": "./dist/openapi.json",
+    "./runtime.schema.json": "./dist/runtime.schema.json",
+    "./composition.schema.json": "./dist/composition.schema.json"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp ../../definitions/openapi.json ../../definitions/runtime.schema.json ../../definitions/composition.schema.json dist/",
     "check": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo"
   }

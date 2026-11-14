@@ -1,0 +1,2663 @@
+{
+  "components": {
+    "schemas": {
+      "CheckReport": {
+        "description": "The answer to `POST /renders/check`.",
+        "properties": {
+          "diagnostics": {
+            "description": "Everything wrong with the composition, each a `Diagnostic` of the runtime schema.",
+            "items": {
+              "$ref": "runtime.schema.json#/$defs/Diagnostic"
+            },
+            "type": "array"
+          },
+          "ok": {
+            "description": "Whether the composition has no errors. Warnings don't count.",
+            "type": "boolean"
+          }
+        },
+        "required": ["ok", "diagnostics"],
+        "type": "object"
+      },
+      "CheckRequest": {
+        "description": "The body of `POST /renders/check`. A render request is one too.",
+        "properties": {
+          "composition": {
+            "$ref": "composition.schema.json",
+            "description": "The composition document, as `composition.schema.json` describes it."
+          },
+          "media": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The media manifest a render would stage, whose aliases count as present.",
+            "type": "object"
+          }
+        },
+        "required": ["composition"],
+        "type": "object"
+      },
+      "CompleteMultipartRequest": {
+        "description": "The body of `POST /media/{id}/multipart/{uploadId}/complete`: the parts to join, in order.",
+        "properties": {
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/CompletedPart"
+            },
+            "type": "array"
+          }
+        },
+        "required": ["parts"],
+        "type": "object"
+      },
+      "CompletedPart": {
+        "description": "One uploaded part, as uploading it answered.",
+        "properties": {
+          "etag": {
+            "type": "string"
+          },
+          "partNumber": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": ["etag", "partNumber"],
+        "type": "object"
+      },
+      "CreateMediaRequest": {
+        "description": "The body of `POST /media`, which creates media to upload the content of.",
+        "properties": {
+          "contentType": {
+            "description": "1 to 255 characters. The server decides what the file is from its bytes, not this.",
+            "type": "string"
+          },
+          "fileName": {
+            "description": "1 to 255 characters.",
+            "type": "string"
+          },
+          "sizeBytes": {
+            "description": "The exact size of the content to come.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": ["contentType", "fileName", "sizeBytes"],
+        "type": "object"
+      },
+      "CreateRenderResponse": {
+        "description": "The answer to `POST /renders`.",
+        "properties": {
+          "cached": {
+            "description": "Whether an earlier render with the same input answered the request. Always `false` on\n`lumen-server`.",
+            "type": "boolean"
+          },
+          "render": {
+            "$ref": "#/components/schemas/Render"
+          }
+        },
+        "required": ["cached", "render"],
+        "type": "object"
+      },
+      "ErrorBody": {
+        "description": "The body of every error response, whatever the route.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "diagnostics": {
+            "description": "Each error in the composition, when it was refused as invalid. Each is a `Diagnostic` of the\nruntime schema.",
+            "items": {
+              "$ref": "runtime.schema.json#/$defs/Diagnostic"
+            },
+            "type": "array"
+          },
+          "error": {
+            "description": "What went wrong, for a person to read.",
+            "type": "string"
+          },
+          "media": {
+            "$ref": "runtime.schema.json#/$defs/MediaFailure",
+            "description": "The media source that failed, when one did: the runtime schema's `MediaFailure`."
+          }
+        },
+        "required": ["code", "error"],
+        "type": "object"
+      },
+      "ErrorCode": {
+        "description": "Why a request or a render failed. The listed codes are lumen-server's; another host can send others, and a render the engine failed has the engine's diagnostic code, such as `media.not_found`.",
+        "type": "string",
+        "x-lumen-codes": [
+          {
+            "code": "unauthorized",
+            "description": "The bearer token is missing or wrong."
+          },
+          {
+            "code": "invalid_request_body",
+            "description": "The body is not JSON, or not the JSON the route takes."
+          },
+          {
+            "code": "request_too_large",
+            "description": "The JSON body is over the server's limit."
+          },
+          {
+            "code": "route_not_found",
+            "description": "No route has this path."
+          },
+          {
+            "code": "method_not_allowed",
+            "description": "The route doesn't take this method."
+          },
+          {
+            "code": "invalid_request",
+            "description": "Another request the router refused, such as a path segment that doesn't parse."
+          },
+          {
+            "code": "render_not_found",
+            "description": "No render has this id, or it was evicted."
+          },
+          {
+            "code": "render_queue_full",
+            "description": "Every render slot is busy and the queue is full."
+          },
+          {
+            "code": "artifact_not_ready",
+            "description": "The render has not succeeded yet, so it has no artifact."
+          },
+          {
+            "code": "webhooks_unsupported",
+            "description": "`webhookUrl` was set, and `lumen-server` delivers no webhooks."
+          },
+          {
+            "code": "check_failed",
+            "description": "Checking the composition failed inside the server."
+          },
+          {
+            "code": "render_worker_failed",
+            "description": "The render's worker failed inside the server."
+          },
+          {
+            "code": "invalid_media_alias",
+            "description": "A media manifest alias is not a plain file name."
+          },
+          {
+            "code": "media_manifest_too_large",
+            "description": "The media manifest has too many entries."
+          },
+          {
+            "code": "invalid_project_payload",
+            "description": "The payload is not a composition, or names media this server doesn't have."
+          },
+          {
+            "code": "invalid_quality",
+            "description": "The quality preset, codec or bit depth resolves to no encoder here."
+          },
+          {
+            "code": "invalid_render_profile",
+            "description": "An encoder that doesn't exist, or a frame rate it can't encode."
+          },
+          {
+            "code": "invalid_config",
+            "description": "The server's configuration names something that isn't there, such as a font directory."
+          },
+          {
+            "code": "invalid_output",
+            "description": "The output can't be rendered, such as an empty frame range or encoder settings on an image."
+          },
+          {
+            "code": "output_too_large",
+            "description": "An image sequence has more frames, or adds up to more bytes, than the server allows."
+          },
+          {
+            "code": "render_failed",
+            "description": "The GPU work around the engine failed, such as reading a frame back."
+          },
+          {
+            "code": "encode_failed",
+            "description": "The encoder failed to open, encode or finish."
+          },
+          {
+            "code": "output_io",
+            "description": "The output couldn't be written or read back."
+          },
+          {
+            "code": "render_cancelled",
+            "description": "The render was cancelled."
+          },
+          {
+            "code": "media_download_failed",
+            "description": "A media URL could not be downloaded."
+          },
+          {
+            "code": "media_download_forbidden_host",
+            "description": "A media URL's host has no public address and isn't allowed."
+          },
+          {
+            "code": "media_download_too_large",
+            "description": "A downloaded media file is over its size limit."
+          },
+          {
+            "code": "media_stage_failed",
+            "description": "Downloaded media could not be written to the render's staging directory."
+          },
+          {
+            "code": "media_not_found",
+            "description": "No uploaded media has this id, or it expired."
+          },
+          {
+            "code": "media_already_uploaded",
+            "description": "The media already has its content."
+          },
+          {
+            "code": "media_upload_in_progress",
+            "description": "The media's content is already being checked."
+          },
+          {
+            "code": "media_too_large",
+            "description": "The media is over the server's size limit, or the bytes sent are more than `sizeBytes`."
+          },
+          {
+            "code": "media_upload_limit",
+            "description": "As many uploads as the server allows are waiting for their content."
+          },
+          {
+            "code": "media_size_mismatch",
+            "description": "The bytes received are not `sizeBytes` long."
+          },
+          {
+            "code": "upload_not_found",
+            "description": "No multipart upload has this id."
+          },
+          {
+            "code": "upload_part_in_progress",
+            "description": "Another request is already sending this part. Send it again once that ends."
+          },
+          {
+            "code": "invalid_upload_parts",
+            "description": "The listed parts are not the parts uploaded."
+          },
+          {
+            "code": "media_not_validated",
+            "description": "The media has no validated content."
+          },
+          {
+            "code": "media_store_failed",
+            "description": "The server failed to store the media."
+          }
+        ]
+      },
+      "FontFace": {
+        "description": "One face of an uploaded font.",
+        "properties": {
+          "family": {
+            "type": "string"
+          },
+          "style": {
+            "description": "`normal`, `italic` or `oblique`.",
+            "type": "string"
+          },
+          "weight": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": ["family", "weight", "style"],
+        "type": "object"
+      },
+      "FrameRange": {
+        "additionalProperties": false,
+        "description": "The frames of the timeline a render covers, as `start..end` with `end` not included, like the\nplayer's `range: { in, out }`. Frame numbers are the composition's, so a ranged render of frames\n30 to 60 draws what a full render draws there; its output starts at time 0.\n\n`start` defaults to 0 and `end` to the timeline's end, except for a still, whose `end` defaults\nto the frame after `start`.",
+        "properties": {
+          "end": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "start": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "Health": {
+        "description": "The body of `GET /health`, the one route that needs no token.",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "service": {
+            "description": "What answered, `lumen-server` for this server.",
+            "type": "string"
+          },
+          "version": {
+            "description": "The version of this API the server implements: the `info.version` of the OpenAPI document\nit follows, such as `0.6`.",
+            "type": "string"
+          }
+        },
+        "required": ["ok", "service", "version"],
+        "type": "object"
+      },
+      "Media": {
+        "description": "Uploaded media. A composition uses it as `asset:<id>`.",
+        "properties": {
+          "contentType": {
+            "type": "string"
+          },
+          "createdAt": {
+            "description": "RFC 3339 in UTC.",
+            "type": "string"
+          },
+          "expiresAt": {
+            "description": "When the media is deleted, as RFC 3339 in UTC.",
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "id": {
+            "description": "`m_` and 32 hex digits on `lumen-server`.",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MediaKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the content is, set once it was checked and readable."
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MediaMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What checking the content found, set with `kind`."
+          },
+          "objectKey": {
+            "description": "Where the host keeps the file. `lumen-server` has none.",
+            "type": ["string", "null"]
+          },
+          "rejectionReason": {
+            "description": "Why the content was rejected, when `status` is `rejected`.",
+            "type": ["string", "null"]
+          },
+          "sizeBytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sourceType": {
+            "$ref": "#/components/schemas/MediaSource"
+          },
+          "sourceUrl": {
+            "description": "The URL a `url` media was downloaded from.",
+            "type": ["string", "null"]
+          },
+          "status": {
+            "$ref": "#/components/schemas/MediaStatus"
+          },
+          "uploadedBytes": {
+            "description": "The bytes received so far. `lumen-server` has none.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": ["integer", "null"]
+          }
+        },
+        "required": [
+          "id",
+          "contentType",
+          "createdAt",
+          "expiresAt",
+          "fileName",
+          "objectKey",
+          "rejectionReason",
+          "sizeBytes",
+          "sourceType",
+          "sourceUrl",
+          "status",
+          "uploadedBytes",
+          "kind",
+          "metadata"
+        ],
+        "type": "object"
+      },
+      "MediaKind": {
+        "description": "What the server decided media is by opening it, whatever its name and content type say.",
+        "enum": ["image", "video", "audio", "font", "model", "environment"],
+        "type": "string"
+      },
+      "MediaMetadata": {
+        "description": "What checking media found. Each kind fills its own fields: images their size; video its size,\nframe rate, frames, duration, codec and audio; audio its duration, rate and channels; fonts their\nfamilies and faces; environment maps their size; models their animation clips, materials and\ncameras.",
+        "properties": {
+          "animations": {
+            "description": "The clips a `model_3d`'s `animation` selects, each the runtime schema's `AnimationInfo`.",
+            "items": {
+              "$ref": "runtime.schema.json#/$defs/AnimationInfo"
+            },
+            "type": "array"
+          },
+          "cameras": {
+            "description": "The cameras a `camera` selects, each the runtime schema's `CameraInfo`.",
+            "items": {
+              "$ref": "runtime.schema.json#/$defs/CameraInfo"
+            },
+            "type": "array"
+          },
+          "channels": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "codec": {
+            "type": "string"
+          },
+          "durationMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "faces": {
+            "items": {
+              "$ref": "#/components/schemas/FontFace"
+            },
+            "type": "array"
+          },
+          "families": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "fps": {
+            "format": "float",
+            "type": "number"
+          },
+          "frameCount": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hasAudio": {
+            "type": "boolean"
+          },
+          "height": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "materials": {
+            "description": "The materials a `texture_material` selects, each the runtime schema's `MaterialInfo`.",
+            "items": {
+              "$ref": "runtime.schema.json#/$defs/MaterialInfo"
+            },
+            "type": "array"
+          },
+          "sampleRate": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "MediaResponse": {
+        "description": "The answer to reading media, uploading its content, completing a multipart upload and\n`POST /media/url`.",
+        "properties": {
+          "media": {
+            "$ref": "#/components/schemas/Media"
+          }
+        },
+        "required": ["media"],
+        "type": "object"
+      },
+      "MediaSource": {
+        "description": "How media got its content.",
+        "oneOf": [
+          {
+            "const": "upload",
+            "description": "Sent to the server, whole or in parts.",
+            "type": "string"
+          },
+          {
+            "const": "url",
+            "description": "Downloaded by the server.",
+            "type": "string"
+          }
+        ]
+      },
+      "MediaStatus": {
+        "description": "Where media is. `lumen-server` sends these three; another host can send others, such as the\nhosted API's `uploaded`.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "Waiting for its content.",
+            "type": "string"
+          },
+          {
+            "const": "validated",
+            "description": "Its content was checked and can be rendered.",
+            "type": "string"
+          },
+          {
+            "const": "rejected",
+            "description": "Its content can't be used, as `rejectionReason` says.",
+            "type": "string"
+          }
+        ],
+        "x-lumen-open": true
+      },
+      "MultipartUploadResponse": {
+        "description": "The answer to `POST /media/{id}/multipart`.",
+        "properties": {
+          "uploadId": {
+            "type": "string"
+          }
+        },
+        "required": ["uploadId"],
+        "type": "object"
+      },
+      "OutputFormat": {
+        "description": "The file a render writes, or for a sequence the archive of them.",
+        "oneOf": [
+          {
+            "const": "mp4",
+            "description": "A video of the frames, with the composition's audio cut to the same span: H.264, HEVC or\nAV1, and AAC.",
+            "type": "string"
+          },
+          {
+            "const": "mov",
+            "description": "A QuickTime video of the frames in ProRes 4444, with alpha when asked for, and AAC.",
+            "type": "string"
+          },
+          {
+            "const": "webm",
+            "description": "A WebM video of the frames in VP9, with alpha when asked for, and Opus.",
+            "type": "string"
+          },
+          {
+            "const": "png",
+            "description": "One frame as a PNG. Transparency is kept: the pixels are straight (not premultiplied)\nRGBA, as the renderer's final image has it.",
+            "type": "string"
+          },
+          {
+            "const": "jpeg",
+            "description": "One frame as an opaque JPEG. Transparent pixels are composited onto black, as they are in a\nvideo.",
+            "type": "string"
+          },
+          {
+            "const": "png_sequence",
+            "description": "One PNG per frame, in one ZIP.",
+            "type": "string"
+          },
+          {
+            "const": "jpeg_sequence",
+            "description": "One opaque JPEG per frame, in one ZIP.",
+            "type": "string"
+          }
+        ],
+        "x-lumen-files": [
+          {
+            "contentType": "video/mp4",
+            "extension": "mp4",
+            "format": "mp4"
+          },
+          {
+            "contentType": "video/quicktime",
+            "extension": "mov",
+            "format": "mov"
+          },
+          {
+            "contentType": "video/webm",
+            "extension": "webm",
+            "format": "webm"
+          },
+          {
+            "contentType": "image/png",
+            "extension": "png",
+            "format": "png"
+          },
+          {
+            "contentType": "image/jpeg",
+            "extension": "jpg",
+            "format": "jpeg"
+          },
+          {
+            "contentType": "application/zip",
+            "extension": "zip",
+            "format": "png_sequence"
+          },
+          {
+            "contentType": "application/zip",
+            "extension": "zip",
+            "format": "jpeg_sequence"
+          }
+        ]
+      },
+      "PartResponse": {
+        "description": "The answer to `PUT /media/{id}/multipart/{uploadId}/parts/{partNumber}`.",
+        "properties": {
+          "etag": {
+            "type": "string"
+          },
+          "partNumber": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": ["etag", "partNumber"],
+        "type": "object"
+      },
+      "Render": {
+        "description": "A render, as creating, reading, cancelling and polling it return it.",
+        "properties": {
+          "costMicros": {
+            "description": "What the render cost, in millionths of a US dollar. `lumen-server` reports 0.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "createdAt": {
+            "description": "When the render was requested, as RFC 3339 in UTC.",
+            "type": "string"
+          },
+          "durationMs": {
+            "description": "How long rendering took, in milliseconds, once the render has succeeded.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error": {
+            "$ref": "#/components/schemas/RenderFailure",
+            "description": "Why the render failed or stopped, when `status` is `failed` or `cancelled`."
+          },
+          "id": {
+            "description": "`r_` and 32 hex digits on `lumen-server`.",
+            "type": "string"
+          },
+          "inputHash": {
+            "description": "A hash of what was requested.",
+            "type": "string"
+          },
+          "organizationId": {
+            "description": "`self-hosted` on `lumen-server`.",
+            "type": "string"
+          },
+          "outputBytes": {
+            "description": "The output's size in bytes, once the render has succeeded.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "progress": {
+            "description": "From 0 to 1. Rendering fills 0.05 to 0.99, and only success reaches 1.",
+            "format": "float",
+            "type": "number"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RenderStatus"
+          },
+          "url": {
+            "description": "Where the output downloads from, once the render has succeeded. `lumen-server`'s is\nrelative to the server: `/renders/{id}/artifact`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "progress",
+          "createdAt",
+          "inputHash",
+          "organizationId",
+          "costMicros"
+        ],
+        "type": "object"
+      },
+      "RenderEvent": {
+        "description": "A message on a render's socket, `GET /renders/{id}/socket`, named by its `type`. The socket\nsends the render's current state when it opens, then each change, and closes after\n`render.completed`, `render.failed` or `render.cancelled`. These are `lumen-server`'s events;\nanother host can send others.",
+        "oneOf": [
+          {
+            "description": "The render is waiting for a slot.",
+            "properties": {
+              "renderId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "render.queued",
+                "type": "string"
+              }
+            },
+            "required": ["type", "renderId"],
+            "type": "object"
+          },
+          {
+            "description": "The render has a slot and is staging its media.",
+            "properties": {
+              "renderId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "render.started",
+                "type": "string"
+              }
+            },
+            "required": ["type", "renderId"],
+            "type": "object"
+          },
+          {
+            "description": "The render is drawing frames.",
+            "properties": {
+              "progress": {
+                "description": "From 0 to 1, as the render's `progress`.",
+                "format": "float",
+                "type": "number"
+              },
+              "renderId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "render.progress",
+                "type": "string"
+              }
+            },
+            "required": ["type", "renderId", "progress"],
+            "type": "object"
+          },
+          {
+            "description": "The render succeeded.",
+            "properties": {
+              "renderId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "render.completed",
+                "type": "string"
+              },
+              "url": {
+                "description": "Where the output downloads from, as the render's `url`.",
+                "type": "string"
+              }
+            },
+            "required": ["type", "renderId", "url"],
+            "type": "object"
+          },
+          {
+            "description": "The render failed.",
+            "properties": {
+              "error": {
+                "$ref": "#/components/schemas/RenderFailure"
+              },
+              "renderId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "render.failed",
+                "type": "string"
+              }
+            },
+            "required": ["type", "renderId", "error"],
+            "type": "object"
+          },
+          {
+            "description": "The render was cancelled.",
+            "properties": {
+              "renderId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "render.cancelled",
+                "type": "string"
+              }
+            },
+            "required": ["type", "renderId"],
+            "type": "object"
+          }
+        ]
+      },
+      "RenderEventType": {
+        "description": "The `type` of a socket event. These are lumen-server's; another host can send others.",
+        "enum": [
+          "render.queued",
+          "render.started",
+          "render.progress",
+          "render.completed",
+          "render.failed",
+          "render.cancelled"
+        ],
+        "type": "string",
+        "x-lumen-open": true
+      },
+      "RenderFailure": {
+        "description": "Why a render failed or stopped, kept with it and returned by every read of it.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "media": {
+            "$ref": "runtime.schema.json#/$defs/MediaFailure",
+            "description": "The media source that failed, when one did: the runtime schema's `MediaFailure`."
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "description": "Whether the same render may succeed when tried again.",
+            "type": "boolean"
+          }
+        },
+        "required": ["code", "message", "retryable"],
+        "type": "object"
+      },
+      "RenderOutput": {
+        "additionalProperties": false,
+        "description": "What a render produces: a `format` and the `frames` of the timeline it covers. Without it a\nrender is an MP4 of the whole timeline.\n\nVideo quality and encoder settings are not part of it: they are the render request's own\nfields, and apply to the video formats only.",
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/OutputFormat",
+            "default": "mp4"
+          },
+          "frames": {
+            "$ref": "#/components/schemas/FrameRange",
+            "default": {}
+          },
+          "jpegQuality": {
+            "description": "`1` to `100`, for the JPEG formats only. Unset, `90`.",
+            "format": "uint8",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "RenderRequest": {
+        "description": "The body of `POST /renders`.",
+        "properties": {
+          "alpha": {
+            "description": "Keeps transparency as an alpha channel, in a MOV or WebM only.",
+            "type": "boolean"
+          },
+          "bitDepth": {
+            "$ref": "#/components/schemas/VideoBitDepth",
+            "description": "Without one the codec's default applies: 8, or 10 for ProRes."
+          },
+          "codec": {
+            "$ref": "#/components/schemas/VideoCodec",
+            "description": "Without one a MOV or WebM gets its own codec and an MP4 the host's default."
+          },
+          "composition": {
+            "$ref": "composition.schema.json",
+            "description": "The composition document, as `composition.schema.json` describes it."
+          },
+          "media": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Remote media by the alias the composition uses, each an `http` or `https` URL.",
+            "type": "object"
+          },
+          "output": {
+            "$ref": "#/components/schemas/RenderOutput",
+            "description": "What to render: the format and the frames. Without it, an MP4 of the whole timeline.\n`quality`, `codec`, `bitDepth` and `alpha` apply to the video formats only."
+          },
+          "quality": {
+            "description": "A quality preset name. Every host has `draft`, `standard`, `high` and `lossless`, and its\nquality config can add others. Without one the host's default applies.",
+            "type": "string"
+          },
+          "webhookUrl": {
+            "description": "A URL to notify when the render ends. `lumen-server` delivers no webhooks and refuses it.",
+            "type": "string"
+          }
+        },
+        "required": ["composition"],
+        "type": "object"
+      },
+      "RenderResponse": {
+        "description": "The answer to `GET /renders/{id}`, `GET /renders/{id}/progress` and\n`POST /renders/{id}/cancel`.",
+        "properties": {
+          "render": {
+            "$ref": "#/components/schemas/Render"
+          }
+        },
+        "required": ["render"],
+        "type": "object"
+      },
+      "RenderStatus": {
+        "description": "Where a render is. `lumen-server` sends these five; another host can send others, or not all\nof them (the hosted API has no `cancelled`).",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Waiting for a render slot.",
+            "type": "string"
+          },
+          {
+            "const": "processing",
+            "description": "Staging its media or rendering.",
+            "type": "string"
+          },
+          {
+            "const": "succeeded",
+            "description": "Finished, with an output to download.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Ended with an error.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Stopped on request.",
+            "type": "string"
+          }
+        ],
+        "x-lumen-open": true
+      },
+      "RenderWebhook": {
+        "description": "What a host that delivers webhooks posts to a render's `webhookUrl` when the render ends, as a\n[Standard Webhooks](https://www.standardwebhooks.com) payload. The request is signed with the\n`webhook-id`, `webhook-timestamp` and `webhook-signature` headers of that specification.\n`lumen-server` delivers none.",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Render",
+            "description": "The render as it ended, as reading it returns it."
+          },
+          "timestamp": {
+            "description": "When the event happened, as RFC 3339 in UTC.",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/RenderWebhookType"
+          }
+        },
+        "required": ["type", "timestamp", "data"],
+        "type": "object"
+      },
+      "RenderWebhookType": {
+        "description": "Which end of a render a webhook reports.",
+        "oneOf": [
+          {
+            "const": "render.succeeded",
+            "description": "The render succeeded, and `data.url` is where its output downloads from.",
+            "type": "string"
+          },
+          {
+            "const": "render.failed",
+            "description": "The render failed, and `data.error` says why.",
+            "type": "string"
+          }
+        ]
+      },
+      "UploadTargetResponse": {
+        "description": "The answer to `POST /media`: the media, and where to `PUT` its content.",
+        "properties": {
+          "media": {
+            "$ref": "#/components/schemas/Media"
+          },
+          "uploadUrl": {
+            "description": "`lumen-server`'s is relative to the server: `/media/{id}/content`.",
+            "type": "string"
+          }
+        },
+        "required": ["media", "uploadUrl"],
+        "type": "object"
+      },
+      "UrlMediaRequest": {
+        "description": "The body of `POST /media/url`, which downloads a file once and keeps it as media.",
+        "properties": {
+          "fileName": {
+            "description": "Without one, the URL's last path segment, or `download`.",
+            "type": "string"
+          },
+          "url": {
+            "description": "An `http` or `https` URL, fetched through the same host checks as a media manifest.",
+            "type": "string"
+          }
+        },
+        "required": ["url"],
+        "type": "object"
+      },
+      "VideoBitDepth": {
+        "description": "Bits per sample of a rendered video.",
+        "enum": [8, 10],
+        "type": "integer"
+      },
+      "VideoCodec": {
+        "description": "A video codec a render can ask for: `h264`, `hevc` or `av1` in an MP4, `prores` (ProRes 4444)\nin a MOV, `vp9` in a WebM.",
+        "enum": ["h264", "hevc", "av1", "prores", "vp9"],
+        "type": "string"
+      }
+    },
+    "securitySchemes": {
+      "token": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "The HTTP API of lumen-server, which other hosts of Lumen implement too. A host can leave routes out and add values of its own where a schema is marked `x-lumen-open`.",
+    "title": "Lumen API",
+    "version": "0.6"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "Success."
+          }
+        },
+        "security": [],
+        "summary": "Whether the server is up, and which version of this API it implements.",
+        "tags": ["health"]
+      }
+    },
+    "/media": {
+      "post": {
+        "operationId": "createMedia",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMediaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadTargetResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request_body"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`request_too_large`: The JSON body is over the server's limit.\n\n`media_too_large`: The media is over the server's size limit, or the bytes sent are more than `sizeBytes`.",
+            "x-lumen-codes": ["request_too_large", "media_too_large"]
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request_body"]
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request_body"]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_store_failed`: The server failed to store the media.",
+            "x-lumen-codes": ["media_store_failed"]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_upload_limit`: As many uploads as the server allows are waiting for their content.",
+            "x-lumen-codes": ["media_upload_limit"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "Creates media to upload the content of, and says where to send it.",
+        "tags": ["media"]
+      }
+    },
+    "/media/url": {
+      "post": {
+        "operationId": "createMediaFromUrl",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UrlMediaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request_body"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`request_too_large`: The JSON body is over the server's limit.\n\n`media_download_too_large`: A downloaded media file is over its size limit.\n\n`media_too_large`: The media is over the server's size limit, or the bytes sent are more than `sizeBytes`.",
+            "x-lumen-codes": ["request_too_large", "media_download_too_large", "media_too_large"]
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request_body"]
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.\n\n`media_download_failed`: A media URL could not be downloaded.\n\n`media_download_forbidden_host`: A media URL's host has no public address and isn't allowed.",
+            "x-lumen-codes": [
+              "invalid_request_body",
+              "media_download_failed",
+              "media_download_forbidden_host"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_store_failed`: The server failed to store the media.",
+            "x-lumen-codes": ["media_store_failed"]
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_download_failed`: A media URL could not be downloaded.",
+            "x-lumen-codes": ["media_download_failed"]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_upload_limit`: As many uploads as the server allows are waiting for their content.",
+            "x-lumen-codes": ["media_upload_limit"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "Downloads a file once and keeps it as media.",
+        "tags": ["media"]
+      }
+    },
+    "/media/{id}": {
+      "delete": {
+        "operationId": "deleteMedia",
+        "parameters": [
+          {
+            "description": "The media's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success, with no body."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.",
+            "x-lumen-codes": ["invalid_request"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_not_found`: No uploaded media has this id, or it expired.",
+            "x-lumen-codes": ["media_not_found"]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_store_failed`: The server failed to store the media.",
+            "x-lumen-codes": ["media_store_failed"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "Deletes the media and its content.",
+        "tags": ["media"]
+      },
+      "get": {
+        "operationId": "getMedia",
+        "parameters": [
+          {
+            "description": "The media's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.",
+            "x-lumen-codes": ["invalid_request"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_not_found`: No uploaded media has this id, or it expired.",
+            "x-lumen-codes": ["media_not_found"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "The media as it is now.",
+        "tags": ["media"]
+      }
+    },
+    "/media/{id}/content": {
+      "get": {
+        "operationId": "getMediaContent",
+        "parameters": [
+          {
+            "description": "The media's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {}
+            },
+            "description": "The file, with its own content type."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.",
+            "x-lumen-codes": ["invalid_request"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_not_found`: No uploaded media has this id, or it expired.",
+            "x-lumen-codes": ["media_not_found"]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_not_validated`: The media has no validated content.",
+            "x-lumen-codes": ["media_not_validated"]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_store_failed`: The server failed to store the media.",
+            "x-lumen-codes": ["media_store_failed"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "The media's content, once it has been checked.",
+        "tags": ["media"]
+      },
+      "put": {
+        "operationId": "putMediaContent",
+        "parameters": [
+          {
+            "description": "The media's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {}
+          },
+          "description": "The file's bytes.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.\n\n`media_size_mismatch`: The bytes received are not `sizeBytes` long.\n\n`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request", "media_size_mismatch", "invalid_request_body"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_not_found`: No uploaded media has this id, or it expired.",
+            "x-lumen-codes": ["media_not_found"]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_already_uploaded`: The media already has its content.\n\n`media_upload_in_progress`: The media's content is already being checked.",
+            "x-lumen-codes": ["media_already_uploaded", "media_upload_in_progress"]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_too_large`: The media is over the server's size limit, or the bytes sent are more than `sizeBytes`.",
+            "x-lumen-codes": ["media_too_large"]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_store_failed`: The server failed to store the media.",
+            "x-lumen-codes": ["media_store_failed"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "Uploads the media's content in one request. The server then checks what the file is.",
+        "tags": ["media"]
+      }
+    },
+    "/media/{id}/multipart": {
+      "post": {
+        "operationId": "startMultipartUpload",
+        "parameters": [
+          {
+            "description": "The media's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MultipartUploadResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.",
+            "x-lumen-codes": ["invalid_request"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_not_found`: No uploaded media has this id, or it expired.",
+            "x-lumen-codes": ["media_not_found"]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_already_uploaded`: The media already has its content.\n\n`media_upload_in_progress`: The media's content is already being checked.",
+            "x-lumen-codes": ["media_already_uploaded", "media_upload_in_progress"]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_store_failed`: The server failed to store the media.",
+            "x-lumen-codes": ["media_store_failed"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "Starts uploading the media's content in parts.",
+        "tags": ["media"]
+      }
+    },
+    "/media/{id}/multipart/{uploadId}/complete": {
+      "post": {
+        "operationId": "completeMultipartUpload",
+        "parameters": [
+          {
+            "description": "The media's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The multipart upload's id, as starting it answered.",
+            "in": "path",
+            "name": "uploadId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteMultipartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.\n\n`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.\n\n`invalid_upload_parts`: The listed parts are not the parts uploaded.\n\n`media_size_mismatch`: The bytes received are not `sizeBytes` long.",
+            "x-lumen-codes": [
+              "invalid_request_body",
+              "invalid_request",
+              "invalid_upload_parts",
+              "media_size_mismatch"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_not_found`: No uploaded media has this id, or it expired.\n\n`upload_not_found`: No multipart upload has this id.",
+            "x-lumen-codes": ["media_not_found", "upload_not_found"]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_already_uploaded`: The media already has its content.\n\n`media_upload_in_progress`: The media's content is already being checked.",
+            "x-lumen-codes": ["media_already_uploaded", "media_upload_in_progress"]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`request_too_large`: The JSON body is over the server's limit.",
+            "x-lumen-codes": ["request_too_large"]
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request_body"]
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request_body"]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_store_failed`: The server failed to store the media.",
+            "x-lumen-codes": ["media_store_failed"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "Joins the listed parts in order into the media's content. The server then checks what the file is.",
+        "tags": ["media"]
+      }
+    },
+    "/media/{id}/multipart/{uploadId}/parts/{partNumber}": {
+      "put": {
+        "operationId": "putMultipartPart",
+        "parameters": [
+          {
+            "description": "The media's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The multipart upload's id, as starting it answered.",
+            "in": "path",
+            "name": "uploadId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The part's place in the file, from 1.",
+            "in": "path",
+            "name": "partNumber",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {}
+          },
+          "description": "The file's bytes.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.\n\n`invalid_upload_parts`: The listed parts are not the parts uploaded.\n\n`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request", "invalid_upload_parts", "invalid_request_body"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_not_found`: No uploaded media has this id, or it expired.\n\n`upload_not_found`: No multipart upload has this id.",
+            "x-lumen-codes": ["media_not_found", "upload_not_found"]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_already_uploaded`: The media already has its content.\n\n`media_upload_in_progress`: The media's content is already being checked.\n\n`upload_part_in_progress`: Another request is already sending this part. Send it again once that ends.",
+            "x-lumen-codes": [
+              "media_already_uploaded",
+              "media_upload_in_progress",
+              "upload_part_in_progress"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_too_large`: The media is over the server's size limit, or the bytes sent are more than `sizeBytes`.",
+            "x-lumen-codes": ["media_too_large"]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`media_store_failed`: The server failed to store the media.",
+            "x-lumen-codes": ["media_store_failed"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "Uploads one part. Sending a part again replaces it, and the same bytes answer the same `etag`.",
+        "tags": ["media"]
+      }
+    },
+    "/renders": {
+      "post": {
+        "operationId": "createRender",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRenderResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.\n\n`webhooks_unsupported`: `webhookUrl` was set, and `lumen-server` delivers no webhooks.",
+            "x-lumen-codes": ["invalid_request_body", "webhooks_unsupported"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`request_too_large`: The JSON body is over the server's limit.",
+            "x-lumen-codes": ["request_too_large"]
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request_body"]
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.\n\n`invalid_media_alias`: A media manifest alias is not a plain file name.\n\n`media_manifest_too_large`: The media manifest has too many entries.\n\n`invalid_project_payload`: The payload is not a composition, or names media this server doesn't have.\n\n`invalid_quality`: The quality preset, codec or bit depth resolves to no encoder here.\n\n`invalid_render_profile`: An encoder that doesn't exist, or a frame rate it can't encode.\n\n`invalid_output`: The output can't be rendered, such as an empty frame range or encoder settings on an image.\n\n`output_too_large`: An image sequence has more frames, or adds up to more bytes, than the server allows.",
+            "x-lumen-codes": [
+              "invalid_request_body",
+              "invalid_media_alias",
+              "media_manifest_too_large",
+              "invalid_project_payload",
+              "invalid_quality",
+              "invalid_render_profile",
+              "invalid_output",
+              "output_too_large"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`check_failed`: Checking the composition failed inside the server.",
+            "x-lumen-codes": ["check_failed"]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`render_queue_full`: Every render slot is busy and the queue is full.",
+            "x-lumen-codes": ["render_queue_full"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "Queues a render of a composition and answers with it.",
+        "tags": ["renders"]
+      }
+    },
+    "/renders/check": {
+      "post": {
+        "operationId": "checkRender",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckReport"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request_body"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`request_too_large`: The JSON body is over the server's limit.",
+            "x-lumen-codes": ["request_too_large"]
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.",
+            "x-lumen-codes": ["invalid_request_body"]
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request_body`: The body is not JSON, or not the JSON the route takes.\n\n`invalid_media_alias`: A media manifest alias is not a plain file name.\n\n`media_manifest_too_large`: The media manifest has too many entries.\n\n`invalid_project_payload`: The payload is not a composition, or names media this server doesn't have.",
+            "x-lumen-codes": [
+              "invalid_request_body",
+              "invalid_media_alias",
+              "media_manifest_too_large",
+              "invalid_project_payload"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`check_failed`: Checking the composition failed inside the server.",
+            "x-lumen-codes": ["check_failed"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "Says what is wrong with a composition, without rendering it.",
+        "tags": ["renders"]
+      }
+    },
+    "/renders/{id}": {
+      "get": {
+        "operationId": "getRender",
+        "parameters": [
+          {
+            "description": "The render's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.",
+            "x-lumen-codes": ["invalid_request"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`render_not_found`: No render has this id, or it was evicted.",
+            "x-lumen-codes": ["render_not_found"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "The render as it is now.",
+        "tags": ["renders"]
+      }
+    },
+    "/renders/{id}/artifact": {
+      "get": {
+        "operationId": "getRenderArtifact",
+        "parameters": [
+          {
+            "description": "The render's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {}
+            },
+            "description": "The file, with its own content type."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.",
+            "x-lumen-codes": ["invalid_request"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`render_not_found`: No render has this id, or it was evicted.",
+            "x-lumen-codes": ["render_not_found"]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`artifact_not_ready`: The render has not succeeded yet, so it has no artifact.\n\nThe code of the render's own failure, as its `error.code`.",
+            "x-lumen-codes": ["artifact_not_ready", "*"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "The output of a render that succeeded, as the file its format says.",
+        "tags": ["renders"]
+      }
+    },
+    "/renders/{id}/cancel": {
+      "post": {
+        "operationId": "cancelRender",
+        "parameters": [
+          {
+            "description": "The render's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.",
+            "x-lumen-codes": ["invalid_request"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`render_not_found`: No render has this id, or it was evicted.",
+            "x-lumen-codes": ["render_not_found"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "Cancels a render. `200` when it has ended, cancelled or not; `202` while a running one stops at its next frame.",
+        "tags": ["renders"]
+      }
+    },
+    "/renders/{id}/progress": {
+      "get": {
+        "operationId": "getRenderProgress",
+        "parameters": [
+          {
+            "description": "The render's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderResponse"
+                }
+              }
+            },
+            "description": "Success."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.",
+            "x-lumen-codes": ["invalid_request"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`render_not_found`: No render has this id, or it was evicted.",
+            "x-lumen-codes": ["render_not_found"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "The render as it is now, for polling. The same answer as reading the render.",
+        "tags": ["renders"]
+      }
+    },
+    "/renders/{id}/socket": {
+      "get": {
+        "operationId": "renderSocket",
+        "parameters": [
+          {
+            "description": "The render's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "The connection becomes a WebSocket, whose messages are JSON."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`invalid_request`: Another request the router refused, such as a path segment that doesn't parse.",
+            "x-lumen-codes": ["invalid_request"]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`unauthorized`: The bearer token is missing or wrong.",
+            "x-lumen-codes": ["unauthorized"]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "`render_not_found`: No render has this id, or it was evicted.",
+            "x-lumen-codes": ["render_not_found"]
+          }
+        },
+        "security": [
+          {
+            "token": []
+          }
+        ],
+        "summary": "A WebSocket that sends the render's state when it opens, then each change, and closes when the render ends.",
+        "tags": ["renders"],
+        "x-lumen-socket": {
+          "message": {
+            "$ref": "#/components/schemas/RenderEvent"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "description": "Rendering compositions.",
+      "name": "renders"
+    },
+    {
+      "description": "Uploaded files a composition uses as `asset:<id>`.",
+      "name": "media"
+    },
+    {
+      "name": "health"
+    }
+  ],
+  "webhooks": {
+    "render": {
+      "post": {
+        "operationId": "renderWebhook",
+        "parameters": [
+          {
+            "description": "The message's id, the same on every delivery of it.",
+            "in": "header",
+            "name": "webhook-id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "When this delivery was sent, in seconds since the Unix epoch.",
+            "in": "header",
+            "name": "webhook-timestamp",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Space-separated signatures of `{id}.{timestamp}.{body}`, each `v1,` and base64 HMAC-SHA256.",
+            "in": "header",
+            "name": "webhook-signature",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderWebhook"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "2XX": {
+            "description": "The webhook was received."
+          }
+        },
+        "summary": "Sent to a render's `webhookUrl` when the render ends, signed as a Standard Webhooks request. lumen-server delivers none.",
+        "tags": ["renders"]
+      }
+    }
+  }
+}

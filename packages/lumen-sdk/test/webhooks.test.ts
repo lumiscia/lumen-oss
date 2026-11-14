@@ -8,17 +8,22 @@ const secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
 const otherSecret = "whsec_dGhpcyBpcyBhIGRpZmZlcmVudCBzZWNyZXQ=";
 const webhookId = "msg_p5jXN8AQM9LWM0D4loKWxJek";
 const now = 1_761_800_000;
-const body = JSON.stringify({
-  artifactUrl: "https://cdn.lumiscia.com/renders/render-1.mp4",
+const render = {
   costMicros: 12_500,
   createdAt: "2026-10-30T04:53:20.000Z",
   durationMs: 4_000,
-  event: "render.succeeded",
   id: "render-1",
+  inputHash: "ab12",
   organizationId: "org-1",
   outputBytes: 1_048_576,
-  resolution: "1920x1080",
+  progress: 1,
   status: "succeeded",
+  url: "https://cdn.lumiscia.com/renders/render-1.mp4",
+};
+const body = JSON.stringify({
+  type: "render.succeeded",
+  timestamp: "2026-10-30T04:53:24.000Z",
+  data: render,
 });
 
 function sign(payload: string, options: { secret?: string; timestamp?: number } = {}) {
@@ -66,7 +71,11 @@ describe("verifyWebhook", () => {
 
     await expect(
       verifyWebhook({ body, headers: headers(sign(body)), secret }),
-    ).resolves.toMatchObject({ event: "render.succeeded", id: "render-1", costMicros: 12_500 });
+    ).resolves.toMatchObject({
+      type: "render.succeeded",
+      timestamp: "2026-10-30T04:53:24.000Z",
+      data: { id: "render-1", costMicros: 12_500, url: render.url },
+    });
   });
 
   test("accepts Headers instances, mixed-case records, array values, and byte bodies", async () => {
@@ -75,7 +84,7 @@ describe("verifyWebhook", () => {
 
     await expect(
       verifyWebhook({ body, headers: new Headers(headers(signature)), secret }),
-    ).resolves.toMatchObject({ id: "render-1" });
+    ).resolves.toMatchObject({ data: { id: "render-1" } });
     await expect(
       verifyWebhook({
         body: new TextEncoder().encode(body),
@@ -86,14 +95,14 @@ describe("verifyWebhook", () => {
         },
         secret,
       }),
-    ).resolves.toMatchObject({ id: "render-1" });
+    ).resolves.toMatchObject({ data: { id: "render-1" } });
     await expect(
       verifyWebhook({
         body: new TextEncoder().encode(body).buffer,
         headers: headers(signature),
         secret,
       }),
-    ).resolves.toMatchObject({ id: "render-1" });
+    ).resolves.toMatchObject({ data: { id: "render-1" } });
   });
 
   test("accepts any matching v1 signature and ignores other versions", async () => {
@@ -103,10 +112,10 @@ describe("verifyWebhook", () => {
 
     await expect(
       verifyWebhook({ body, headers: headers(`v1a,abc ${previous} ${current}`), secret }),
-    ).resolves.toMatchObject({ id: "render-1" });
+    ).resolves.toMatchObject({ data: { id: "render-1" } });
     await expect(
       verifyWebhook({ body, headers: headers(`${current} ${previous}`), secret: otherSecret }),
-    ).resolves.toMatchObject({ id: "render-1" });
+    ).resolves.toMatchObject({ data: { id: "render-1" } });
   });
 
   test("rejects a tampered body or the wrong secret", async () => {
@@ -147,7 +156,7 @@ describe("verifyWebhook", () => {
         secret,
         toleranceSeconds: 600,
       }),
-    ).resolves.toMatchObject({ id: "render-1" });
+    ).resolves.toMatchObject({ data: { id: "render-1" } });
     await expect(
       verifyWebhook({ body, headers: headers(sign(body)), secret, toleranceSeconds: Number.NaN }),
     ).rejects.toThrow(RangeError);
@@ -160,7 +169,27 @@ describe("verifyWebhook", () => {
     await expectCode({ body, headers: withoutId, secret }, "missing_headers");
     await expectCode({ body, headers: headers(sign(body)), secret: "whsec_!!" }, "invalid_secret");
 
-    const failed = JSON.stringify({ event: "render.failed", id: "render-1", status: "failed" });
-    await expectCode({ body: failed, headers: headers(sign(failed)), secret }, "invalid_payload");
+    const flat = JSON.stringify({ event: "render.failed", id: "render-1", status: "failed" });
+    await expectCode({ body: flat, headers: headers(sign(flat)), secret }, "invalid_payload");
+    // The event says failed and its render says succeeded.
+    const mismatched = JSON.stringify({ type: "render.failed", timestamp: "t", data: render });
+    await expectCode(
+      { body: mismatched, headers: headers(sign(mismatched)), secret },
+      "invalid_payload",
+    );
+  });
+
+  test("returns a failed render with why it failed", async () => {
+    vi.useFakeTimers({ now: now * 1000 });
+    const error = { code: "media.not_found", message: "hero.png was not found", retryable: false };
+    const failed = JSON.stringify({
+      type: "render.failed",
+      timestamp: "2026-10-30T04:53:24.000Z",
+      data: { ...render, status: "failed", progress: 0.2, url: undefined, error },
+    });
+
+    await expect(
+      verifyWebhook({ body: failed, headers: headers(sign(failed)), secret }),
+    ).resolves.toMatchObject({ type: "render.failed", data: { status: "failed", error } });
   });
 });

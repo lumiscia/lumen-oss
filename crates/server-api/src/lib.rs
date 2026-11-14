@@ -1,6 +1,6 @@
-//! The HTTP API of `lumen-server`, as the types its requests, responses, socket events and errors
-//! (de)serialise with. `definitions/api.schema.json` is generated from them, so another
-//! implementation of the API can follow the same contract.
+//! The HTTP API of `lumen-server`: the types its requests, responses, socket events and errors
+//! (de)serialise with, and every route as data in [`OPERATIONS`]. `definitions/openapi.json` is
+//! generated from both, so another implementation of the API can follow the same contract.
 //!
 //! Every object is camelCase on the wire. Values the engine produces, such as diagnostics and media
 //! failures, are carried as JSON whose schema is the runtime schema's
@@ -9,8 +9,10 @@
 mod error;
 mod event;
 mod media;
+mod operation;
 mod output;
 mod render;
+mod webhook;
 
 use serde::{Deserialize, Serialize};
 
@@ -21,11 +23,13 @@ pub use media::{
     MediaMetadata, MediaResponse, MediaSource, MediaStatus, MultipartUploadResponse, PartResponse,
     UploadTargetResponse, UrlMediaRequest,
 };
+pub use operation::{ANY_RENDER_FAILURE, Body, Method, OPERATIONS, Operation, PathParam};
 pub use output::{FrameRange, OutputFormat, RenderOutput, VideoBitDepth, VideoCodec};
 pub use render::{
     CheckReport, CheckRequest, CreateRenderResponse, Render, RenderFailure, RenderRequest,
     RenderResponse, RenderStatus,
 };
+pub use webhook::{RenderWebhook, RenderWebhookType};
 
 /// The body of `GET /health`, the one route that needs no token.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +39,9 @@ pub struct Health {
     pub ok: bool,
     /// What answered, `lumen-server` for this server.
     pub service: String,
+    /// The version of this API the server implements: the `info.version` of the OpenAPI document
+    /// it follows, such as `0.6`.
+    pub version: String,
 }
 
 /// Schemas of values whose definition lives in another schema file.

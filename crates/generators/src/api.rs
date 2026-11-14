@@ -1,41 +1,217 @@
-//! The schema of `lumen-server`'s HTTP API, built from the `lumen-server-api` types. Values the
-//! engine produces are `$ref`s into `runtime.schema.json`, and a request's composition is a `$ref`
-//! to `composition.schema.json`.
+//! The OpenAPI document of `lumen-server`'s HTTP API, built from the `lumen-server-api` types and
+//! its table of routes. Values the engine produces are `$ref`s into `runtime.schema.json`, and a
+//! request's composition is a `$ref` to `composition.schema.json`.
 
 use anyhow::{Context, Result, anyhow, bail};
 use lumen_server_api::{
-    CheckReport, CheckRequest, CompleteMultipartRequest, CreateMediaRequest, CreateRenderResponse,
-    ErrorBody, Health, MediaResponse, MultipartUploadResponse, OutputFormat, PartResponse,
-    RenderEvent, RenderRequest, RenderResponse, UploadTargetResponse, UrlMediaRequest,
+    ANY_RENDER_FAILURE, Body, CheckReport, CheckRequest, CompleteMultipartRequest,
+    CreateMediaRequest, CreateRenderResponse, ErrorBody, ErrorCode, Health, MediaResponse,
+    MultipartUploadResponse, OPERATIONS, Operation, OutputFormat, PartResponse, RenderEvent,
+    RenderRequest, RenderResponse, RenderWebhook, UploadTargetResponse, UrlMediaRequest,
 };
 use schemars::{SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
 
-/// The API schema, checked to be a valid JSON Schema.
-pub fn render_api_schema_json() -> Result<String> {
-    let schema = render_schema()?;
-    jsonschema::meta::validate(&schema)
-        .map_err(|error| anyhow!("generated API schema is invalid: {error}"))?;
-    serde_json::to_string_pretty(&schema).context("failed to serialise the API schema")
+const SCHEMAS: &str = "#/components/schemas/";
+
+/// The OpenAPI 3.1 document, with each of its schemas checked to be a valid JSON Schema.
+pub fn render_openapi_json() -> Result<String> {
+    let schemas = schemas()?;
+    for (name, schema) in &schemas {
+        jsonschema::meta::validate(schema)
+            .map_err(|error| anyhow!("generated API schema `{name}` is invalid: {error}"))?;
+    }
+    let document = document(schemas)?;
+    serde_json::to_string_pretty(&document).context("failed to serialise the OpenAPI document")
 }
 
-fn render_schema() -> Result<Value> {
+fn document(schemas: Map<String, Value>) -> Result<Value> {
+    let mut paths = Map::new();
+    for operation in OPERATIONS {
+        for name in named_schemas(operation) {
+            if !schemas.contains_key(name) {
+                bail!(
+                    "`{}` names `{name}`, which the API has no schema for",
+                    operation.id
+                );
+            }
+        }
+        let path = paths
+            .entry(operation.path)
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .context("a path is not an object")?;
+        path.insert(
+            operation.method.as_str().to_ascii_lowercase(),
+            operation_object(operation),
+        );
+    }
+    Ok(json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Lumen API",
+            "version": lumen_engine::SCHEMA_VERSION,
+            "description": "The HTTP API of lumen-server, which other hosts of Lumen implement too. A host can leave routes out and add values of its own where a schema is marked `x-lumen-open`."
+        },
+        "tags": [
+            { "name": "renders", "description": "Rendering compositions." },
+            { "name": "media", "description": "Uploaded files a composition uses as `asset:<id>`." },
+            { "name": "health" }
+        ],
+        "paths": paths,
+        "webhooks": { "render": { "post": webhook_object() } },
+        "components": {
+            "schemas": schemas,
+            "securitySchemes": { "token": { "type": "http", "scheme": "bearer" } }
+        }
+    }))
+}
+
+/// The types an operation takes and answers with.
+fn named_schemas(operation: &Operation) -> Vec<&'static str> {
+    std::iter::once(operation.request)
+        .chain(operation.success.iter().map(|(_, body)| *body))
+        .filter_map(|body| match body {
+            Body::Json(name) | Body::Socket(name) => Some(name),
+            Body::Empty | Body::Bytes => None,
+        })
+        .collect()
+}
+
+fn json_content(name: &str) -> Value {
+    json!({ "application/json": { "schema": { "$ref": format!("{SCHEMAS}{name}") } } })
+}
+
+fn operation_object(operation: &Operation) -> Value {
+    let mut object = json!({
+        "operationId": operation.id,
+        "summary": operation.summary,
+        "tags": [operation.tag],
+        "security": if operation.token { json!([{ "token": [] }]) } else { json!([]) },
+    });
+    if !operation.params.is_empty() {
+        object["parameters"] = operation
+            .params
+            .iter()
+            .map(|param| {
+                json!({
+                    "name": param.name,
+                    "in": "path",
+                    "required": true,
+                    "description": param.description,
+                    "schema": if param.integer {
+                        json!({ "type": "integer", "minimum": 1 })
+                    } else {
+                        json!({ "type": "string" })
+                    }
+                })
+            })
+            .collect();
+    }
+    match operation.request {
+        Body::Json(name) => {
+            object["requestBody"] = json!({ "required": true, "content": json_content(name) });
+        }
+        Body::Bytes => {
+            object["requestBody"] = json!({
+                "required": true,
+                "description": "The file's bytes.",
+                "content": { "application/octet-stream": {} }
+            });
+        }
+        Body::Empty | Body::Socket(_) => {}
+    }
+    let mut responses = Map::new();
+    for (status, body) in operation.success {
+        let response = match body {
+            Body::Json(name) => json!({ "description": "Success.", "content": json_content(name) }),
+            Body::Bytes => json!({
+                "description": "The file, with its own content type.",
+                "content": { "*/*": {} }
+            }),
+            Body::Empty => json!({ "description": "Success, with no body." }),
+            Body::Socket(name) => {
+                object["x-lumen-socket"] =
+                    json!({ "message": { "$ref": format!("{SCHEMAS}{name}") } });
+                json!({ "description": "The connection becomes a WebSocket, whose messages are JSON." })
+            }
+        };
+        responses.insert(status.to_string(), response);
+    }
+    for (status, codes) in operation.errors() {
+        responses.insert(status.to_string(), error_response(&codes));
+    }
+    object["responses"] = Value::Object(responses);
+    object
+}
+
+/// An error answer, which says each code it can carry and lists them in `x-lumen-codes`.
+fn error_response(codes: &[&str]) -> Value {
+    let lines: Vec<String> = codes
+        .iter()
+        .map(|code| {
+            if *code == ANY_RENDER_FAILURE {
+                return "The code of the render's own failure, as its `error.code`.".to_string();
+            }
+            let doc = ErrorCode::LISTED
+                .iter()
+                .find(|(listed, _)| listed == code)
+                .map_or("", |(_, doc)| doc.trim());
+            format!("`{code}`: {doc}")
+        })
+        .collect();
+    json!({
+        "description": lines.join("\n\n"),
+        "content": json_content("ErrorBody"),
+        "x-lumen-codes": codes
+    })
+}
+
+/// What a host that delivers webhooks sends, signed as Standard Webhooks.
+fn webhook_object() -> Value {
+    let header = |name: &str, description: &str| {
+        json!({
+            "name": name,
+            "in": "header",
+            "required": true,
+            "description": description,
+            "schema": { "type": "string" }
+        })
+    };
+    json!({
+        "operationId": "renderWebhook",
+        "summary": "Sent to a render's `webhookUrl` when the render ends, signed as a Standard Webhooks request. lumen-server delivers none.",
+        "tags": ["renders"],
+        "parameters": [
+            header("webhook-id", "The message's id, the same on every delivery of it."),
+            header("webhook-timestamp", "When this delivery was sent, in seconds since the Unix epoch."),
+            header("webhook-signature", "Space-separated signatures of `{id}.{timestamp}.{body}`, each `v1,` and base64 HMAC-SHA256.")
+        ],
+        "requestBody": { "required": true, "content": json_content("RenderWebhook") },
+        "responses": { "2XX": { "description": "The webhook was received." } }
+    })
+}
+
+/// Every type of the API, by name.
+fn schemas() -> Result<Map<String, Value>> {
+    let settings = |settings: SchemaSettings| {
+        settings.with(|settings| settings.definitions_path = "/components/schemas".into())
+    };
     // Requests are described as they are read, so a field with a default is optional; responses
     // as they are written, so a field that is always written is required.
-    let mut requests = SchemaSettings::draft2020_12().into_generator();
+    let mut requests = settings(SchemaSettings::draft2020_12()).into_generator();
     requests.subschema_for::<RenderRequest>();
     requests.subschema_for::<CheckRequest>();
     requests.subschema_for::<CreateMediaRequest>();
     requests.subschema_for::<UrlMediaRequest>();
     requests.subschema_for::<CompleteMultipartRequest>();
-    let mut responses = SchemaSettings::draft2020_12()
-        .for_serialize()
-        .into_generator();
+    let mut responses = settings(SchemaSettings::draft2020_12().for_serialize()).into_generator();
     responses.subschema_for::<Health>();
     responses.subschema_for::<CheckReport>();
     responses.subschema_for::<CreateRenderResponse>();
     responses.subschema_for::<RenderResponse>();
     responses.subschema_for::<RenderEvent>();
+    responses.subschema_for::<RenderWebhook>();
     responses.subschema_for::<UploadTargetResponse>();
     responses.subschema_for::<MediaResponse>();
     responses.subschema_for::<MultipartUploadResponse>();
@@ -56,7 +232,7 @@ fn render_schema() -> Result<Value> {
     defs.insert("RenderEventType".to_string(), event_type_def(&defs)?);
     let formats = defs
         .get_mut("OutputFormat")
-        .context("the API schema has no `OutputFormat`")?;
+        .context("the API has no `OutputFormat`")?;
     formats["x-lumen-files"] = OutputFormat::ALL
         .iter()
         .map(|format| {
@@ -67,10 +243,7 @@ fn render_schema() -> Result<Value> {
             })
         })
         .collect();
-    Ok(json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$defs": defs
-    }))
+    Ok(defs)
 }
 
 fn definitions(mut generator: SchemaGenerator) -> Result<Map<String, Value>> {

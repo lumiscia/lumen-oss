@@ -11,14 +11,16 @@ use anyhow::bail;
 use axum::{
     Router,
     extract::DefaultBodyLimit,
+    handler::Handler,
     middleware,
-    routing::{get, post, put},
+    routing::{MethodFilter, on},
 };
 use clap::Parser;
 use lumen_engine::render::{
     FONT_DIR_ENV, GpuSettings, HARDWARE_DECODE_ENV, MAX_ARCHIVE_FRAMES, RenderConfig,
     existing_font_dir, is_enabled_flag,
 };
+use lumen_server_api::{Method, OPERATIONS};
 
 use self::{
     auth::require_token,
@@ -234,30 +236,75 @@ fn spawn_media_sweep(state: &AppState) {
     });
 }
 
+/// The routes, each at the method and path the API's table of operations gives its name, so the
+/// server has the routes `definitions/openapi.json` describes and no others.
+struct Routes {
+    with_token: Router<AppState>,
+    open: Router<AppState>,
+    served: Vec<&'static str>,
+}
+
+impl Routes {
+    fn serve<H, T>(mut self, id: &'static str, handler: H) -> Self
+    where
+        H: Handler<T, AppState>,
+        T: 'static,
+    {
+        let operation = OPERATIONS
+            .iter()
+            .find(|operation| operation.id == id)
+            .unwrap_or_else(|| panic!("the API has no operation `{id}`"));
+        let filter = match operation.method {
+            Method::Get => MethodFilter::GET,
+            Method::Post => MethodFilter::POST,
+            Method::Put => MethodFilter::PUT,
+            Method::Delete => MethodFilter::DELETE,
+        };
+        let router = if operation.token {
+            &mut self.with_token
+        } else {
+            &mut self.open
+        };
+        *router = std::mem::take(router).route(operation.path, on(filter, handler));
+        self.served.push(id);
+        self
+    }
+}
+
 fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/media", post(create_media))
-        .route("/media/url", post(create_url_media))
-        .route("/media/{id}", get(get_media).delete(delete_media))
-        .route("/media/{id}/content", put(put_content).get(get_content))
-        .route("/media/{id}/multipart", post(start_multipart))
-        .route(
-            "/media/{id}/multipart/{upload_id}/parts/{part_number}",
-            put(put_part),
-        )
-        .route(
-            "/media/{id}/multipart/{upload_id}/complete",
-            post(complete_multipart),
-        )
-        .route("/renders", post(create_render))
-        .route("/renders/check", post(check_render))
-        .route("/renders/{id}", get(get_render))
-        .route("/renders/{id}/cancel", post(cancel_render))
-        .route("/renders/{id}/progress", get(get_render))
-        .route("/renders/{id}/socket", get(render_socket))
-        .route("/renders/{id}/artifact", get(get_render_artifact))
+    let routes = Routes {
+        with_token: Router::new(),
+        open: Router::new(),
+        served: Vec::new(),
+    }
+    .serve("health", health)
+    .serve("createRender", create_render)
+    .serve("checkRender", check_render)
+    .serve("getRender", get_render)
+    .serve("getRenderProgress", get_render)
+    .serve("cancelRender", cancel_render)
+    .serve("renderSocket", render_socket)
+    .serve("getRenderArtifact", get_render_artifact)
+    .serve("createMedia", create_media)
+    .serve("createMediaFromUrl", create_url_media)
+    .serve("getMedia", get_media)
+    .serve("deleteMedia", delete_media)
+    .serve("putMediaContent", put_content)
+    .serve("getMediaContent", get_content)
+    .serve("startMultipartUpload", start_multipart)
+    .serve("putMultipartPart", put_part)
+    .serve("completeMultipartUpload", complete_multipart);
+    for operation in OPERATIONS {
+        assert!(
+            routes.served.contains(&operation.id),
+            "the API's operation `{}` has no handler",
+            operation.id
+        );
+    }
+    routes
+        .with_token
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token))
-        .route("/health", get(health))
+        .merge(routes.open)
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(middleware::from_fn(errors::json_errors))
         .with_state(state)

@@ -64,43 +64,43 @@ macro_rules! error_codes {
 }
 
 error_codes! {
-    /// `401`: the bearer token is missing or wrong.
+    /// The bearer token is missing or wrong.
     Unauthorized = "unauthorized",
-    /// `400` or `422`: the body is not JSON, or not the JSON the route takes.
+    /// The body is not JSON, or not the JSON the route takes.
     InvalidRequestBody = "invalid_request_body",
-    /// `413`: the JSON body is over the server's limit.
+    /// The JSON body is over the server's limit.
     RequestTooLarge = "request_too_large",
-    /// `404`: no route has this path.
+    /// No route has this path.
     RouteNotFound = "route_not_found",
-    /// `405`: the route doesn't take this method.
+    /// The route doesn't take this method.
     MethodNotAllowed = "method_not_allowed",
     /// Another request the router refused, such as a path segment that doesn't parse.
     InvalidRequest = "invalid_request",
-    /// `404`: no render has this id, or it was evicted.
+    /// No render has this id, or it was evicted.
     RenderNotFound = "render_not_found",
-    /// `503`: every render slot is busy and the queue is full.
+    /// Every render slot is busy and the queue is full.
     RenderQueueFull = "render_queue_full",
-    /// `409`: the render has not succeeded yet, so it has no artifact.
+    /// The render has not succeeded yet, so it has no artifact.
     ArtifactNotReady = "artifact_not_ready",
-    /// `400`: `webhookUrl` was set, and `lumen-server` delivers no webhooks.
+    /// `webhookUrl` was set, and `lumen-server` delivers no webhooks.
     WebhooksUnsupported = "webhooks_unsupported",
-    /// `500`: checking the composition failed inside the server.
+    /// Checking the composition failed inside the server.
     CheckFailed = "check_failed",
     /// The render's worker failed inside the server.
     RenderWorkerFailed = "render_worker_failed",
-    /// `422`: a media manifest alias is not a plain file name.
+    /// A media manifest alias is not a plain file name.
     InvalidMediaAlias = "invalid_media_alias",
-    /// `422`: the media manifest has too many entries.
+    /// The media manifest has too many entries.
     MediaManifestTooLarge = "media_manifest_too_large",
-    /// `422`: the payload is not a composition, or names media this server doesn't have.
+    /// The payload is not a composition, or names media this server doesn't have.
     InvalidProjectPayload = "invalid_project_payload",
-    /// `422`: the quality preset, codec or bit depth resolves to no encoder here.
+    /// The quality preset, codec or bit depth resolves to no encoder here.
     InvalidQuality = "invalid_quality",
     /// An encoder that doesn't exist, or a frame rate it can't encode.
     InvalidRenderProfile = "invalid_render_profile",
     /// The server's configuration names something that isn't there, such as a font directory.
     InvalidConfig = "invalid_config",
-    /// `422`: the output can't be rendered, such as an empty frame range or encoder settings on an image.
+    /// The output can't be rendered, such as an empty frame range or encoder settings on an image.
     InvalidOutput = "invalid_output",
     /// An image sequence has more frames, or adds up to more bytes, than the server allows.
     OutputTooLarge = "output_too_large",
@@ -120,27 +120,27 @@ error_codes! {
     MediaDownloadTooLarge = "media_download_too_large",
     /// Downloaded media could not be written to the render's staging directory.
     MediaStageFailed = "media_stage_failed",
-    /// `404`: no uploaded media has this id, or it expired.
+    /// No uploaded media has this id, or it expired.
     MediaNotFound = "media_not_found",
-    /// `409`: the media already has its content.
+    /// The media already has its content.
     MediaAlreadyUploaded = "media_already_uploaded",
-    /// `409`: the media's content is already being checked.
+    /// The media's content is already being checked.
     MediaUploadInProgress = "media_upload_in_progress",
-    /// `413`: the media is over the server's size limit, or the bytes sent are more than `sizeBytes`.
+    /// The media is over the server's size limit, or the bytes sent are more than `sizeBytes`.
     MediaTooLarge = "media_too_large",
-    /// `503`: as many uploads as the server allows are waiting for their content.
+    /// As many uploads as the server allows are waiting for their content.
     MediaUploadLimit = "media_upload_limit",
-    /// `400`: the bytes received are not `sizeBytes` long.
+    /// The bytes received are not `sizeBytes` long.
     MediaSizeMismatch = "media_size_mismatch",
-    /// `404`: no multipart upload has this id.
+    /// No multipart upload has this id.
     UploadNotFound = "upload_not_found",
-    /// `409`: another request is already sending this part. Send it again once that ends.
+    /// Another request is already sending this part. Send it again once that ends.
     UploadPartInProgress = "upload_part_in_progress",
-    /// `400`: the listed parts are not the parts uploaded.
+    /// The listed parts are not the parts uploaded.
     InvalidUploadParts = "invalid_upload_parts",
-    /// `409`: the media has no validated content.
+    /// The media has no validated content.
     MediaNotValidated = "media_not_validated",
-    /// `500`: the server failed to store the media.
+    /// The server failed to store the media.
     MediaStoreFailed = "media_store_failed",
 }
 

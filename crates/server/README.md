@@ -17,7 +17,7 @@ Supported targets today are:
 
 ## HTTP API
 
-Its requests, responses, socket events and error codes are the types of the [`lumen-server-api`](../server-api) crate, and [`definitions/api.schema.json`](../../definitions/api.schema.json) is generated from them for other implementations of the API. Every object on the wire is camelCase; the composition inside a request keeps its own format. The server accepts the same public render payload shape as the hosted Lumen API:
+Its routes, requests, responses, socket events and error codes are those of the [`lumen-server-api`](../server-api) crate, and [`definitions/openapi.json`](../../definitions/openapi.json), an OpenAPI 3.1 document, is generated from them for other implementations of the API. Every object on the wire is camelCase; the composition inside a request keeps its own format. The server accepts the same public render payload shape as the hosted Lumen API:
 
 ```json
 {
