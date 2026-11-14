@@ -3,112 +3,163 @@
 
 /** A code a diagnostic can have. Codes are stable and public, and new ones can appear in any release, so treat one you don't know by its severity. */
 export type DiagnosticCode =
-  | "audio.invalid"
-  | "audio.limit"
-  | "audio.unknown_track"
-  | "clip.invalid"
-  | "composition.cycle"
-  | "connection.input_already_connected"
-  | "connection.invalid_from_port"
-  | "connection.missing_source_node"
-  | "connection.missing_target_node"
-  | "connection.unknown_port"
-  | "connection.wrong_kind"
-  | "document.invalid"
-  | "document.schema_version"
+  /** The text is not JSON. */
   | "document.syntax"
-  | "expression.evaluate"
+  /** `lumenSchemaVersion` is not a string, or names a version outside this engine's Lumen line. */
+  | "document.schema_version"
+  /** A key or value outside node params has the wrong shape, is missing or is unknown. */
+  | "document.invalid"
+  /** A function in `functions` doesn't parse, or is defined twice or recursively. */
   | "expression.function"
-  | "expression.invalid_prop_read"
-  | "expression.parse"
-  | "font.fallback"
-  | "font.no_outlines"
-  | "graph.cycle"
-  | "graph.duplicate_node_id"
-  | "graph.missing_media_output"
-  | "graph.missing_required_input"
-  | "graph.multiple_media_outputs"
-  | "graph.node_id_mismatch"
-  | "media.color_unsupported"
-  | "media.decode"
-  | "media.frame_out_of_range"
-  | "media.image_reduced"
-  | "media.not_found"
-  | "media.too_large"
-  | "media.unsupported"
-  | "media.wrong_kind"
-  | "node.invalid_param"
-  | "node.invalid_params"
-  | "node.unknown_param"
+  /** A node's `type` is not a node type. */
   | "node.unknown_type"
+  /** A node's `params` is not an object. */
+  | "node.invalid_params"
+  /** A node has a param its type doesn't. */
+  | "node.unknown_param"
+  /** A param's value is wrong for it, including expressions that don't parse. */
+  | "node.invalid_param"
+  /** A node needs what this build of the engine was built without: any 3D node, without the `3d` feature. */
   | "node.unsupported"
-  | "property.invalid_type"
-  | "render.frame_out_of_range"
-  | "render.gpu"
-  | "render.internal"
-  | "render.invalid_output_type"
-  | "render.limit"
-  | "render.missing_node"
-  | "render.node_evaluation"
-  | "render.too_deeply_nested"
-  | "scene.model_primitives_skipped"
-  | "scene.shadow_limit"
+  /** Two nodes of one graph share an id. */
+  | "graph.duplicate_node_id"
+  /** A connection's `from_port` is not `output`. */
+  | "connection.invalid_from_port"
+  /** A connection or input reads a node that doesn't exist. */
+  | "connection.missing_source_node"
+  /** A connection writes to a node that doesn't exist. */
+  | "connection.missing_target_node"
+  /** A connection writes to an input its node doesn't have. */
+  | "connection.unknown_port"
+  /** A single input is connected twice. */
+  | "connection.input_already_connected"
+  /** A connection wires a scene into an input that takes a raster, or a raster into one that takes a scene. */
+  | "connection.wrong_kind"
+  /** A node is stored under another id. Only builders made in Rust can do this. */
+  | "graph.node_id_mismatch"
+  /** A required input is not connected. */
+  | "graph.missing_required_input"
+  /** A graph has no `media_output` node. */
+  | "graph.missing_media_output"
+  /** A graph has more than one `media_output` node. */
+  | "graph.multiple_media_outputs"
+  /** Nodes read each other in a cycle. */
+  | "graph.cycle"
+  /** A clip names a composition that doesn't exist, sets props it doesn't declare or of the wrong kind, plays a composition and a `source` together, or has a negative `duration` other than -1. */
+  | "clip.invalid"
+  /** `prop()` is used outside a template, names an undeclared prop, or doesn't name it with a string literal. */
+  | "expression.invalid_prop_read"
+  /** A timeline, canvas or prop default can't render, such as an `fps` of 0. */
   | "settings.invalid"
+  /** Audio tracks or clips are duplicated, unknown, too many in one composition, or have invalid timing or gain, or a gain expression reads a node, a glyph, text or an undeclared prop. */
+  | "audio.invalid"
+  /** Templates instantiate themselves. */
+  | "composition.cycle"
+  /** A `text` or `text_3d` node's font family resolved to no font, so it renders in a fallback. */
+  | "font.fallback"
+  /** A `text_3d` node's glyphs have no outlines to extrude, such as colour emoji, so they are left out. */
+  | "font.no_outlines"
+  /** A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none. */
+  | "scene.shadow_limit"
+  /** A `model_3d`'s model has points, lines, or triangle strips or fans, which aren't drawn. */
+  | "scene.model_primitives_skipped"
+  /** A video's colour tags name a transfer or primaries the engine doesn't convert, so it renders as SDR or BT.709 in their place, or an image's ICC profile can't be honoured, so it renders as sRGB. */
+  | "media.color_unsupported"
+  /** An image every use of which is a literal `resize` is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit. */
+  | "media.image_reduced"
+  /** An expression gave a param a value of the wrong type. */
+  | "property.invalid_type"
+  /** An expression built at render time doesn't parse. */
+  | "expression.parse"
+  /** An expression failed to evaluate. */
+  | "expression.evaluate"
+  /** A media source isn't there: a path or alias the host doesn't have, or an `asset:` id its asset store doesn't have. */
+  | "media.not_found"
+  /** A media source is another kind than the place using it reads, such as an `asset:` image used as a model, or a video file given where an image is read. */
+  | "media.wrong_kind"
+  /** A media source is the right kind but in a format or with a feature the engine doesn't read: an unknown container or codec, BT.2020 constant-luminance video, a glTF using a required extension, a `.gltf` JSON file, a WOFF font. */
+  | "media.unsupported"
+  /** A media source is over a limit, in bytes, pixels or counts, or is bigger than the device can hold. The limit and, when known, the actual value are in the failure. */
+  | "media.too_large"
+  /** A media source is meant to be what the place reads but can't be read: it is corrupt, truncated or in no format the engine can identify. */
+  | "media.decode"
+  /** A video frame past the end of its source was asked for. */
+  | "media.frame_out_of_range"
+  /** An audio clip names a track that doesn't exist. */
+  | "audio.unknown_track"
+  /** Audio is more than the plan can hold: too many clips playing sound at once, a loop restarting too often, too many segments in one plan, or a preview timeline too long. */
+  | "audio.limit"
+  /** A frame past the composition's end was asked for. */
+  | "render.frame_out_of_range"
+  /** A node failed to render, such as text with too many glyphs or a `wgsl_shader` that doesn't compile. */
+  | "render.node_evaluation"
+  /** A node read while rendering doesn't exist. */
+  | "render.missing_node"
+  /** A node's output had the wrong type for its reader. */
+  | "render.invalid_output_type"
+  /** The GPU failed: the device, its queue or a driver. Nothing the composition says causes it, so trying again may succeed. */
+  | "render.gpu"
+  /** The composition needs more than the device or engine allows, such as a frame whose data is too large for the device's buffers or a video frame larger than its texture limit. */
+  | "render.limit"
+  /** The engine, or a host's resolver or render target, broke a contract the render relies on, such as a poisoned lock or a stale recorded frame uploaded. Not the composition's fault. Trying again helps only for fonts that kept loading, which stay loaded for the next render. */
+  | "render.internal"
+  /** A node is more than 48 nodes deep, counting through clips. Flatten the chain: put many layers in one `raster_multimerge` instead of chaining `merge`s, and combine consecutive transforms or adjustments. */
+  | "render.too_deeply_nested"
   | (string & {});
 
-/** Each diagnostic code and the severity of the diagnostics that carry it. */
+/** Each diagnostic code with the severity of the diagnostics that carry it, where they are found (`check`, `render` or both) and what the code means, in Markdown. */
 export const diagnosticCodes = [
-  { code: "audio.invalid", severity: "error" },
-  { code: "audio.limit", severity: "error" },
-  { code: "audio.unknown_track", severity: "error" },
-  { code: "clip.invalid", severity: "error" },
-  { code: "composition.cycle", severity: "error" },
-  { code: "connection.input_already_connected", severity: "error" },
-  { code: "connection.invalid_from_port", severity: "error" },
-  { code: "connection.missing_source_node", severity: "error" },
-  { code: "connection.missing_target_node", severity: "error" },
-  { code: "connection.unknown_port", severity: "error" },
-  { code: "connection.wrong_kind", severity: "error" },
-  { code: "document.invalid", severity: "error" },
-  { code: "document.schema_version", severity: "error" },
-  { code: "document.syntax", severity: "error" },
-  { code: "expression.evaluate", severity: "error" },
-  { code: "expression.function", severity: "error" },
-  { code: "expression.invalid_prop_read", severity: "error" },
-  { code: "expression.parse", severity: "error" },
-  { code: "font.fallback", severity: "warning" },
-  { code: "font.no_outlines", severity: "warning" },
-  { code: "graph.cycle", severity: "error" },
-  { code: "graph.duplicate_node_id", severity: "error" },
-  { code: "graph.missing_media_output", severity: "error" },
-  { code: "graph.missing_required_input", severity: "error" },
-  { code: "graph.multiple_media_outputs", severity: "error" },
-  { code: "graph.node_id_mismatch", severity: "error" },
-  { code: "media.color_unsupported", severity: "warning" },
-  { code: "media.decode", severity: "error" },
-  { code: "media.frame_out_of_range", severity: "error" },
-  { code: "media.image_reduced", severity: "warning" },
-  { code: "media.not_found", severity: "error" },
-  { code: "media.too_large", severity: "error" },
-  { code: "media.unsupported", severity: "error" },
-  { code: "media.wrong_kind", severity: "error" },
-  { code: "node.invalid_param", severity: "error" },
-  { code: "node.invalid_params", severity: "error" },
-  { code: "node.unknown_param", severity: "error" },
-  { code: "node.unknown_type", severity: "error" },
-  { code: "node.unsupported", severity: "error" },
-  { code: "property.invalid_type", severity: "error" },
-  { code: "render.frame_out_of_range", severity: "error" },
-  { code: "render.gpu", severity: "error" },
-  { code: "render.internal", severity: "error" },
-  { code: "render.invalid_output_type", severity: "error" },
-  { code: "render.limit", severity: "error" },
-  { code: "render.missing_node", severity: "error" },
-  { code: "render.node_evaluation", severity: "error" },
-  { code: "render.too_deeply_nested", severity: "error" },
-  { code: "scene.model_primitives_skipped", severity: "warning" },
-  { code: "scene.shadow_limit", severity: "warning" },
-  { code: "settings.invalid", severity: "error" },
+  { code: "document.syntax", severity: "error", foundBy: "check", meaning: "The text is not JSON." },
+  { code: "document.schema_version", severity: "error", foundBy: "check", meaning: "`lumenSchemaVersion` is not a string, or names a version outside this engine's Lumen line." },
+  { code: "document.invalid", severity: "error", foundBy: "check", meaning: "A key or value outside node params has the wrong shape, is missing or is unknown." },
+  { code: "expression.function", severity: "error", foundBy: "check", meaning: "A function in `functions` doesn't parse, or is defined twice or recursively." },
+  { code: "node.unknown_type", severity: "error", foundBy: "check", meaning: "A node's `type` is not a node type." },
+  { code: "node.invalid_params", severity: "error", foundBy: "check", meaning: "A node's `params` is not an object." },
+  { code: "node.unknown_param", severity: "error", foundBy: "check", meaning: "A node has a param its type doesn't." },
+  { code: "node.invalid_param", severity: "error", foundBy: "check", meaning: "A param's value is wrong for it, including expressions that don't parse." },
+  { code: "node.unsupported", severity: "error", foundBy: "check", meaning: "A node needs what this build of the engine was built without: any 3D node, without the `3d` feature." },
+  { code: "graph.duplicate_node_id", severity: "error", foundBy: "check", meaning: "Two nodes of one graph share an id." },
+  { code: "connection.invalid_from_port", severity: "error", foundBy: "check", meaning: "A connection's `from_port` is not `output`." },
+  { code: "connection.missing_source_node", severity: "error", foundBy: "check", meaning: "A connection or input reads a node that doesn't exist." },
+  { code: "connection.missing_target_node", severity: "error", foundBy: "check", meaning: "A connection writes to a node that doesn't exist." },
+  { code: "connection.unknown_port", severity: "error", foundBy: "check", meaning: "A connection writes to an input its node doesn't have." },
+  { code: "connection.input_already_connected", severity: "error", foundBy: "check", meaning: "A single input is connected twice." },
+  { code: "connection.wrong_kind", severity: "error", foundBy: "check", meaning: "A connection wires a scene into an input that takes a raster, or a raster into one that takes a scene." },
+  { code: "graph.node_id_mismatch", severity: "error", foundBy: "check", meaning: "A node is stored under another id. Only builders made in Rust can do this." },
+  { code: "graph.missing_required_input", severity: "error", foundBy: "check", meaning: "A required input is not connected." },
+  { code: "graph.missing_media_output", severity: "error", foundBy: "check", meaning: "A graph has no `media_output` node." },
+  { code: "graph.multiple_media_outputs", severity: "error", foundBy: "check", meaning: "A graph has more than one `media_output` node." },
+  { code: "graph.cycle", severity: "error", foundBy: "check", meaning: "Nodes read each other in a cycle." },
+  { code: "clip.invalid", severity: "error", foundBy: "check", meaning: "A clip names a composition that doesn't exist, sets props it doesn't declare or of the wrong kind, plays a composition and a `source` together, or has a negative `duration` other than -1." },
+  { code: "expression.invalid_prop_read", severity: "error", foundBy: "check", meaning: "`prop()` is used outside a template, names an undeclared prop, or doesn't name it with a string literal." },
+  { code: "settings.invalid", severity: "error", foundBy: "check", meaning: "A timeline, canvas or prop default can't render, such as an `fps` of 0." },
+  { code: "audio.invalid", severity: "error", foundBy: "check", meaning: "Audio tracks or clips are duplicated, unknown, too many in one composition, or have invalid timing or gain, or a gain expression reads a node, a glyph, text or an undeclared prop." },
+  { code: "composition.cycle", severity: "error", foundBy: "check", meaning: "Templates instantiate themselves." },
+  { code: "font.fallback", severity: "warning", foundBy: "check, render", meaning: "A `text` or `text_3d` node's font family resolved to no font, so it renders in a fallback." },
+  { code: "font.no_outlines", severity: "warning", foundBy: "render", meaning: "A `text_3d` node's glyphs have no outlines to extrude, such as colour emoji, so they are left out." },
+  { code: "scene.shadow_limit", severity: "warning", foundBy: "render", meaning: "A `render_3d` scene has more than 8 lights casting shadows, so those past the first 8 cast none." },
+  { code: "scene.model_primitives_skipped", severity: "warning", foundBy: "render", meaning: "A `model_3d`'s model has points, lines, or triangle strips or fans, which aren't drawn." },
+  { code: "media.color_unsupported", severity: "warning", foundBy: "render", meaning: "A video's colour tags name a transfer or primaries the engine doesn't convert, so it renders as SDR or BT.709 in their place, or an image's ICC profile can't be honoured, so it renders as sRGB." },
+  { code: "media.image_reduced", severity: "warning", foundBy: "render", meaning: "An image every use of which is a literal `resize` is larger on a side than the device's texture limit, or the host's `set_max_image_side`, so it is shown from a copy reduced to fit." },
+  { code: "property.invalid_type", severity: "error", foundBy: "render", meaning: "An expression gave a param a value of the wrong type." },
+  { code: "expression.parse", severity: "error", foundBy: "render", meaning: "An expression built at render time doesn't parse." },
+  { code: "expression.evaluate", severity: "error", foundBy: "render", meaning: "An expression failed to evaluate." },
+  { code: "media.not_found", severity: "error", foundBy: "check, render", meaning: "A media source isn't there: a path or alias the host doesn't have, or an `asset:` id its asset store doesn't have." },
+  { code: "media.wrong_kind", severity: "error", foundBy: "check, render", meaning: "A media source is another kind than the place using it reads, such as an `asset:` image used as a model, or a video file given where an image is read." },
+  { code: "media.unsupported", severity: "error", foundBy: "render", meaning: "A media source is the right kind but in a format or with a feature the engine doesn't read: an unknown container or codec, BT.2020 constant-luminance video, a glTF using a required extension, a `.gltf` JSON file, a WOFF font." },
+  { code: "media.too_large", severity: "error", foundBy: "render", meaning: "A media source is over a limit, in bytes, pixels or counts, or is bigger than the device can hold. The limit and, when known, the actual value are in the failure." },
+  { code: "media.decode", severity: "error", foundBy: "render", meaning: "A media source is meant to be what the place reads but can't be read: it is corrupt, truncated or in no format the engine can identify." },
+  { code: "media.frame_out_of_range", severity: "error", foundBy: "render", meaning: "A video frame past the end of its source was asked for." },
+  { code: "audio.unknown_track", severity: "error", foundBy: "render", meaning: "An audio clip names a track that doesn't exist." },
+  { code: "audio.limit", severity: "error", foundBy: "render", meaning: "Audio is more than the plan can hold: too many clips playing sound at once, a loop restarting too often, too many segments in one plan, or a preview timeline too long." },
+  { code: "render.frame_out_of_range", severity: "error", foundBy: "render", meaning: "A frame past the composition's end was asked for." },
+  { code: "render.node_evaluation", severity: "error", foundBy: "render", meaning: "A node failed to render, such as text with too many glyphs or a `wgsl_shader` that doesn't compile." },
+  { code: "render.missing_node", severity: "error", foundBy: "render", meaning: "A node read while rendering doesn't exist." },
+  { code: "render.invalid_output_type", severity: "error", foundBy: "render", meaning: "A node's output had the wrong type for its reader." },
+  { code: "render.gpu", severity: "error", foundBy: "render", meaning: "The GPU failed: the device, its queue or a driver. Nothing the composition says causes it, so trying again may succeed." },
+  { code: "render.limit", severity: "error", foundBy: "render", meaning: "The composition needs more than the device or engine allows, such as a frame whose data is too large for the device's buffers or a video frame larger than its texture limit." },
+  { code: "render.internal", severity: "error", foundBy: "render", meaning: "The engine, or a host's resolver or render target, broke a contract the render relies on, such as a poisoned lock or a stale recorded frame uploaded. Not the composition's fault. Trying again helps only for fonts that kept loading, which stay loaded for the next render." },
+  { code: "render.too_deeply_nested", severity: "error", foundBy: "render", meaning: "A node is more than 48 nodes deep, counting through clips. Flatten the chain: put many layers in one `raster_multimerge` instead of chaining `merge`s, and combine consecutive transforms or adjustments." },
 ] as const;
 
 /**

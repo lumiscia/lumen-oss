@@ -55,6 +55,23 @@ fn diagnostics_match_the_schema() {
 }
 
 #[test]
+fn every_diagnostic_code_says_where_it_is_found_and_what_it_means() {
+    let schema: Value =
+        serde_json::from_str(&lumen_generators::render_runtime_schema_json().unwrap()).unwrap();
+    let codes = schema["$defs"]["DiagnosticCode"]["x-lumen-codes"]
+        .as_array()
+        .unwrap();
+    assert_eq!(codes.len(), lumen_engine::diagnostic::codes().count());
+    for entry in codes {
+        assert!(
+            ["check", "render", "check, render"].contains(&entry["foundBy"].as_str().unwrap()),
+            "{entry}"
+        );
+        assert!(!entry["meaning"].as_str().unwrap().is_empty(), "{entry}");
+    }
+}
+
+#[test]
 fn media_inventory_matches_the_schema() {
     let audio = MediaLocation::AudioClip {
         template: Some("intro".to_string()),

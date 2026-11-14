@@ -35,8 +35,10 @@ test("renders diagnostic codes as an open union beside their table", async () =>
   const types = renderRuntimeTypes(schema);
 
   expect(types).toMatch(
-    /export type DiagnosticCode =\n {2}\| "audio\.invalid"[\s\S]*\| \(string & \{\}\);/u,
+    /export type DiagnosticCode =\n {2}\/\*\* The text is not JSON\. \*\/\n {2}\| "document\.syntax"[\s\S]*\| \(string & \{\}\);/u,
   );
-  expect(types).toContain('{ code: "media.not_found", severity: "error" },');
+  expect(types).toContain(
+    '{ code: "media.not_found", severity: "error", foundBy: "check, render", meaning: "A media source isn\'t there: ',
+  );
   expect(types).toContain("export interface Diagnostic {");
 });

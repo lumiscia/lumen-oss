@@ -30,3 +30,5 @@ export const generatedExpressionsPath = path.join(
   repoRoot,
   "packages/lumen-shared/src/generated/expressions.ts",
 );
+
+export const engineReadmePath = path.join(repoRoot, "crates/engine/README.md");

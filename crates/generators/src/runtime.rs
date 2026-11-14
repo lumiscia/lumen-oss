@@ -66,18 +66,16 @@ fn drop_null_types(value: &mut Value) {
 }
 
 fn diagnostic_code_def() -> Value {
-    let mut codes: Vec<_> = diagnostic::code_list().collect();
-    codes.sort_by_key(|(code, _)| *code);
-    codes.dedup_by_key(|(code, _)| *code);
-    let codes: Vec<Value> = codes
-        .into_iter()
-        .map(|(code, severity)| {
+    let codes: Vec<Value> = diagnostic::code_docs()
+        .map(|(doc, severity)| {
             json!({
-                "code": code,
+                "code": doc.code,
                 "severity": match severity {
                     Severity::Error => "error",
                     Severity::Warning => "warning",
-                }
+                },
+                "foundBy": doc.found_by.name(),
+                "meaning": doc.meaning
             })
         })
         .collect();

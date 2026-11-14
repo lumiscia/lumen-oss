@@ -398,13 +398,7 @@ kind it `found` only when that is established, where it is used (`at`: a node pa
 a template), and a `reason` with its public code. Diagnostics from `check` carry the JSON pointer
 of that place.
 
-| Code                | The source...                                                    |
-| ------------------- | ---------------------------------------------------------------- |
-| `media.not_found`   | isn't there                                                      |
-| `media.wrong_kind`  | is there but is another kind than the use reads                  |
-| `media.unsupported` | is the right kind, in a format or with a feature that isn't read |
-| `media.too_large`   | is over a limit (`limit`, and `actual` when it is known)         |
-| `media.decode`      | can't be read as what it should be                               |
+A failure's `reason` is `media.not_found`, `media.wrong_kind`, `media.unsupported`, `media.too_large` or `media.decode`; [Codes](#codes) says what each means.
 
 `media.decode` and `media.unsupported` differ by what the engine knows: it says `unsupported` when
 it identified the data (a container, a codec, a glTF extension, a font format, a `.gltf` JSON
@@ -424,6 +418,8 @@ the engine's own reads and in FFmpeg's, while opening and while decoding) is a `
 `transient` set, which hosts may retry.
 
 ### Codes
+
+<!-- generated:diagnostic-codes:start -->
 
 | Code                                 | Severity | Found by      | Meaning                                                                                                                                                                                                                                                                        |
 | ------------------------------------ | -------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -478,6 +474,8 @@ the engine's own reads and in FFmpeg's, while opening and while decoding) is a `
 | `render.limit`                       | error    | render        | The composition needs more than the device or engine allows, such as a frame whose data is too large for the device's buffers or a video frame larger than its texture limit.                                                                                                  |
 | `render.internal`                    | error    | render        | The engine, or a host's resolver or render target, broke a contract the render relies on, such as a poisoned lock or a stale recorded frame uploaded. Not the composition's fault. Trying again helps only for fonts that kept loading, which stay loaded for the next render. |
 | `render.too_deeply_nested`           | error    | render        | A node is more than 48 nodes deep, counting through clips. Flatten the chain: put many layers in one `raster_multimerge` instead of chaining `merge`s, and combine consecutive transforms or adjustments.                                                                      |
+
+<!-- generated:diagnostic-codes:end -->
 
 ## Features
 
