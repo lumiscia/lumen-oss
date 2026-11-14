@@ -215,6 +215,8 @@ function typeBody(schema: JsonSchema, context: TypeContext, indent: string): str
     case "object":
       return objectType(schema, context, indent);
     default:
+      // A schema that says nothing about its value takes any JSON.
+      if (!Object.keys(schema).some((keyword) => typeKeywords.has(keyword))) return "unknown";
       throw new Error(`unsupported schema ${JSON.stringify(schema)}`);
   }
 }

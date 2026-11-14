@@ -45,6 +45,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "ajv": "catalog:",
     "standardwebhooks": "catalog:"
   },
   "engines": {

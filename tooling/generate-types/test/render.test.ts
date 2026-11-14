@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { expect, test } from "vitest";
 
-import { apiSchemaPath, compositionSchemaPath, runtimeSchemaPath } from "../src/paths.js";
+import { compositionSchemaPath, openApiPath, runtimeSchemaPath } from "../src/paths.js";
 import { renderApiTypes } from "../src/render-api.js";
 import { renderRuntimeTypes } from "../src/render-runtime.js";
 import { renderTypes } from "../src/render.js";
@@ -44,11 +44,9 @@ test("renders diagnostic codes as an open union beside their table", async () =>
   expect(types).toContain("export interface Diagnostic {");
 });
 
-test("renders the API's open unions, its event union and the runtime types it uses", async () => {
+test("renders the API's open unions, its event union, the runtime types it uses and its operations", async () => {
   const [api, runtime] = await Promise.all(
-    [apiSchemaPath, runtimeSchemaPath].map(async (file) =>
-      JSON.parse(await readFile(file, "utf8")),
-    ),
+    [openApiPath, runtimeSchemaPath].map(async (file) => JSON.parse(await readFile(file, "utf8"))),
   );
   const types = renderApiTypes(api, runtime);
 
@@ -62,4 +60,13 @@ test("renders the API's open unions, its event union and the runtime types it us
   expect(types).toContain("readonly objectKey: string | null;");
   expect(types).toContain('import type { LumenComposition } from "./schema.js";');
   expect(types).toContain('"jpeg": { contentType: "image/jpeg", extension: "jpg" },');
+  expect(types).toContain(
+    'getRender: { method: "GET", path: "/renders/{id}", request: "none", response: "json" },',
+  );
+  expect(types).toContain(
+    "readonly createRender: { readonly request: RenderRequest; readonly response: CreateRenderResponse };",
+  );
+  expect(types).toContain(
+    "readonly renderSocket: { readonly request: undefined; readonly response: RenderEvent };",
+  );
 });

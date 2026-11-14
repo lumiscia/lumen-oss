@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 
 import {
-  apiSchemaPath,
   compositionSchemaPath,
   generatedApiTypesPath,
+  openApiPath,
   generatedExpressionsPath,
   generatedMetaTypesPath,
   generatedRuntimeTypesPath,
@@ -26,7 +26,7 @@ import { writeGeneratedFile } from "./write.js";
 const schema = JSON.parse(await readFile(compositionSchemaPath, "utf8")) as JsonSchema;
 const { meta, root } = renderTypes(schema);
 const runtimeSchema = JSON.parse(await readFile(runtimeSchemaPath, "utf8")) as JsonSchema;
-const apiSchema = JSON.parse(await readFile(apiSchemaPath, "utf8")) as JsonSchema;
+const openApi = JSON.parse(await readFile(openApiPath, "utf8")) as JsonSchema;
 
 const diagnosticCodeDef = (runtimeSchema.$defs as Record<string, JsonSchema>).DiagnosticCode;
 const engineReadme = replaceCodeTable(
@@ -39,7 +39,7 @@ await Promise.all([
   writeGeneratedFile(generatedMetaTypesPath, meta),
   writeGeneratedFile(generatedNodeSpecsPath, renderNodeSpecs(schema)),
   writeGeneratedFile(generatedRuntimeTypesPath, renderRuntimeTypes(runtimeSchema)),
-  writeGeneratedFile(generatedApiTypesPath, renderApiTypes(apiSchema, runtimeSchema)),
+  writeGeneratedFile(generatedApiTypesPath, renderApiTypes(openApi, runtimeSchema)),
   writeGeneratedFile(generatedExpressionsPath, renderExpressions(expressionTables(schema))),
   writeGeneratedFile(nodeReferencePath, renderNodeReference(schema)),
   writeGeneratedFile(engineReadmePath, engineReadme),

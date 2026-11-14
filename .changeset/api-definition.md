@@ -4,7 +4,7 @@
 "@lumiscia/lumen-bindings": minor
 ---
 
-`lumen-server`'s HTTP API has one definition: the new `lumen-server-api` crate holds its request, response, socket-event and error types, the server (de)serialises with them, and `definitions/api.schema.json` is generated from them for other implementations of the API. `@lumiscia/lumen-types` exports the generated types (`RenderRequest`, `Render`, `RenderEvent`, `ErrorBody`, `ErrorCode`, `Media`, …), with `errorCodes` (each code and what it means) and `outputFiles` (each output format's content type and extension). `VideoCodec` and `VideoBitDepth` keep their names and now come from that schema.
+`lumen-server`'s HTTP API has one definition: the new `lumen-server-api` crate holds its request, response, socket-event and error types, the server (de)serialises with them, and `definitions/openapi.json` is generated from them for other implementations of the API. `@lumiscia/lumen-types` exports the generated types (`RenderRequest`, `Render`, `RenderEvent`, `ErrorBody`, `ErrorCode`, `Media`, …), with `errorCodes` (each code and what it means) and `outputFiles` (each output format's content type and extension). `VideoCodec` and `VideoBitDepth` keep their names and now come from that schema.
 
 Every object on the wire is camelCase. The composition inside a request keeps its own format.
 

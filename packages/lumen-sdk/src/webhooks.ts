@@ -1,3 +1,9 @@
+import type { RenderWebhookType } from "@lumiscia/lumen-types";
+
+import { isRecord } from "./errors.js";
+import { parseRender } from "./render.js";
+import type { FailedRender, SucceededRender } from "./types.js";
+
 const secretPrefix = "whsec_";
 const encoder = new TextEncoder();
 
@@ -34,29 +40,22 @@ export interface VerifyWebhookOptions {
   readonly toleranceSeconds?: number;
 }
 
-interface RenderWebhookEventFields {
-  /** Render id. */
-  readonly id: string;
-  readonly organizationId: string;
-  readonly createdAt: string;
-  /** Render cost in millionths of a US dollar. */
-  readonly costMicros: number;
-  readonly durationMs?: number;
-  readonly outputBytes?: number;
-  readonly resolution?: string;
-  readonly artifactUrl?: string;
-  readonly error?: string;
-}
-
+/**
+ * A render webhook: the API's `RenderWebhook`, a Standard Webhooks payload, with its render read
+ * as the client's own `Render`.
+ */
 export type RenderWebhookEvent =
-  | (RenderWebhookEventFields & {
-      readonly event: "render.succeeded";
-      readonly status: "succeeded";
-    })
-  | (RenderWebhookEventFields & {
-      readonly event: "render.failed";
-      readonly status: "failed";
-    });
+  | {
+      readonly type: "render.succeeded";
+      /** When the event happened, as RFC 3339 in UTC. */
+      readonly timestamp: string;
+      readonly data: SucceededRender;
+    }
+  | {
+      readonly type: "render.failed";
+      readonly timestamp: string;
+      readonly data: FailedRender;
+    };
 
 /**
  * Verifies a Lumiscia render webhook signed with the Standard Webhooks scheme and returns its
@@ -125,10 +124,11 @@ export async function verifyWebhook(options: VerifyWebhookOptions): Promise<Rend
   } catch {
     throw new LumenWebhookError("invalid_payload", "Webhook body is not valid JSON.");
   }
-  if (!isRenderWebhookEvent(payload)) {
+  const event = renderEvent(payload);
+  if (!event) {
     throw new LumenWebhookError("invalid_payload", "Webhook body is not a render event.");
   }
-  return payload;
+  return event;
 }
 
 function header(headers: WebhookHeaders, name: string): string | undefined {
@@ -171,28 +171,34 @@ function decodeBase64(value: string): Uint8Array<ArrayBuffer> | undefined {
   }
 }
 
-function isRenderWebhookEvent(value: unknown): value is RenderWebhookEvent {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const event = value as Record<string, unknown>;
-  const statusMatches =
-    (event.event === "render.succeeded" && event.status === "succeeded") ||
-    (event.event === "render.failed" && event.status === "failed");
-  return (
-    statusMatches &&
-    typeof event.id === "string" &&
-    typeof event.organizationId === "string" &&
-    typeof event.createdAt === "string" &&
-    typeof event.costMicros === "number" &&
-    optional(event.durationMs, "number") &&
-    optional(event.outputBytes, "number") &&
-    optional(event.resolution, "string") &&
-    optional(event.artifactUrl, "string") &&
-    optional(event.error, "string")
-  );
-}
+const eventTypes: readonly RenderWebhookType[] = ["render.succeeded", "render.failed"];
 
-function optional(value: unknown, type: "number" | "string"): boolean {
-  return value === undefined || typeof value === type;
+/** The event `payload` is, when its `type` and its render's status agree. */
+function renderEvent(payload: unknown): RenderWebhookEvent | undefined {
+  if (
+    !isRecord(payload) ||
+    typeof payload.timestamp !== "string" ||
+    !eventTypes.includes(payload.type as RenderWebhookType) ||
+    !isRecord(payload.data)
+  ) {
+    return undefined;
+  }
+  const { data, timestamp } = payload;
+  // A webhook has no API base to resolve a relative output URL against.
+  if (typeof data.url === "string" && !URL.canParse(data.url)) {
+    return undefined;
+  }
+  let render;
+  try {
+    render = parseRender(data, new URL("https://webhook.invalid"));
+  } catch {
+    return undefined;
+  }
+  if (payload.type === "render.succeeded" && render.status === "succeeded") {
+    return { type: payload.type, timestamp, data: render };
+  }
+  if (payload.type === "render.failed" && render.status === "failed") {
+    return { type: payload.type, timestamp, data: render };
+  }
+  return undefined;
 }

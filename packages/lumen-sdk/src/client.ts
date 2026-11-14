@@ -1,4 +1,6 @@
+import { apiOperations } from "@lumiscia/lumen-types";
 import type {
+  ApiOperationId,
   CheckReport,
   CompositionSource,
   LumenComposition,
@@ -48,6 +50,24 @@ type SendInit = Omit<RequestInit, "signal"> & {
   readonly signal?: AbortSignal | undefined;
 };
 
+/** The names in braces in a path: `"id" | "uploadId"` for `/media/{id}/multipart/{uploadId}`. */
+type PathParamNames<Path extends string> = Path extends `${string}{${infer Name}}${infer Rest}`
+  ? Name | PathParamNames<Rest>
+  : never;
+
+/** A value for each path parameter of an operation. */
+type PathParams<Id extends ApiOperationId> = Readonly<
+  Record<PathParamNames<(typeof apiOperations)[Id]["path"]>, string | number>
+>;
+
+/** An operation's path with its parameters filled in. */
+function operationPath<Id extends ApiOperationId>(id: Id, params: PathParams<Id>): string {
+  const values: Readonly<Record<string, string | number>> = params;
+  return apiOperations[id].path.replace(/\{(\w+)\}/g, (_, name: string) =>
+    encodeURIComponent(String(values[name])),
+  );
+}
+
 interface RequestOptions {
   readonly body?: unknown;
   readonly idempotencyKey?: string | undefined;
@@ -71,20 +91,24 @@ export class Lumen {
 
   /** Submits a render and returns it queued. Pass it to `waitForRender`, then to `download`. */
   async render(composition: CompositionSource, options: RenderOptions = {}): Promise<Render> {
-    const body = await this.#request("POST", "/renders", {
-      body: {
-        composition: compositionJson(composition),
-        media: options.media ?? {},
-        ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
-        ...(options.quality !== undefined ? { quality: options.quality } : {}),
-        ...(options.codec !== undefined ? { codec: options.codec } : {}),
-        ...(options.bitDepth !== undefined ? { bitDepth: options.bitDepth } : {}),
-        ...(options.alpha !== undefined ? { alpha: options.alpha } : {}),
-        ...(options.output !== undefined ? { output: options.output } : {}),
+    const body = await this.#request(
+      "createRender",
+      {},
+      {
+        body: {
+          composition: compositionJson(composition),
+          media: options.media ?? {},
+          ...(options.webhookUrl !== undefined ? { webhookUrl: options.webhookUrl } : {}),
+          ...(options.quality !== undefined ? { quality: options.quality } : {}),
+          ...(options.codec !== undefined ? { codec: options.codec } : {}),
+          ...(options.bitDepth !== undefined ? { bitDepth: options.bitDepth } : {}),
+          ...(options.alpha !== undefined ? { alpha: options.alpha } : {}),
+          ...(options.output !== undefined ? { output: options.output } : {}),
+        },
+        idempotencyKey: options.idempotencyKey,
+        signal: options.signal,
       },
-      idempotencyKey: options.idempotencyKey,
-      signal: options.signal,
-    });
+    );
     return parseRender(
       body.render,
       this.#baseUrl,
@@ -97,10 +121,14 @@ export class Lumen {
     composition: CompositionSource,
     options: { media?: RenderMediaManifest; signal?: AbortSignal } = {},
   ): Promise<CheckReport> {
-    const body = await this.#request("POST", "/renders/check", {
-      body: { composition: compositionJson(composition), media: options.media ?? {} },
-      signal: options.signal,
-    });
+    const body = await this.#request(
+      "checkRender",
+      {},
+      {
+        body: { composition: compositionJson(composition), media: options.media ?? {} },
+        signal: options.signal,
+      },
+    );
     if (typeof body.ok !== "boolean" || !Array.isArray(body.diagnostics)) {
       throw new LumenError("invalid_response", "Lumen API returned a malformed check report.");
     }
@@ -108,7 +136,7 @@ export class Lumen {
   }
 
   async getRender(id: string, options: { signal?: AbortSignal } = {}): Promise<Render> {
-    const body = await this.#request("GET", `/renders/${encodeURIComponent(id)}`, options);
+    const body = await this.#request("getRender", { id }, options);
     return parseRender(body.render, this.#baseUrl);
   }
 
@@ -120,7 +148,7 @@ export class Lumen {
    * flight may still end `succeeded`. Only lumen-server has this route.
    */
   async cancelRender(id: string, options: { signal?: AbortSignal } = {}): Promise<Render> {
-    const body = await this.#request("POST", `/renders/${encodeURIComponent(id)}/cancel`, options);
+    const body = await this.#request("cancelRender", { id }, options);
     return parseRender(body.render, this.#baseUrl);
   }
 
@@ -190,7 +218,7 @@ export class Lumen {
         onProgress: report,
         signal,
         timeoutMs: socketSessionMs,
-        url: this.#apiUrl(`/renders/${encodeURIComponent(id)}/socket`),
+        url: this.#apiUrl(operationPath("renderSocket", { id })),
       });
       if (session.rejection?.status === 429) {
         this.#rateLimited(session.rejection);
@@ -250,10 +278,14 @@ export class Lumen {
       (fileName !== undefined ? contentTypeOf(fileName) : undefined) ??
       "application/octet-stream";
 
-    const created = await this.#request("POST", "/media", {
-      body: { contentType, fileName: fileName ?? "upload", sizeBytes },
-      signal,
-    });
+    const created = await this.#request(
+      "createMedia",
+      {},
+      {
+        body: { contentType, fileName: fileName ?? "upload", sizeBytes },
+        signal,
+      },
+    );
     const upload = parseUploadTarget(created);
 
     if (body instanceof ReadableStream || sizeBytes > singleRequestLimitBytes) {
@@ -271,13 +303,17 @@ export class Lumen {
 
   /** Has the API fetch a file from a public URL, for renders to use. */
   async createUrlMedia(options: CreateUrlMediaOptions): Promise<Media> {
-    const body = await this.#request("POST", "/media/url", {
-      body: {
-        ...(options.fileName !== undefined ? { fileName: options.fileName } : {}),
-        url: String(options.url),
+    const body = await this.#request(
+      "createMediaFromUrl",
+      {},
+      {
+        body: {
+          ...(options.fileName !== undefined ? { fileName: options.fileName } : {}),
+          url: String(options.url),
+        },
+        signal: options.signal,
       },
-      signal: options.signal,
-    });
+    );
     return parseMedia(body.media);
   }
 
@@ -286,11 +322,7 @@ export class Lumen {
     media: string | Pick<Media, "id">,
     options: { signal?: AbortSignal } = {},
   ): Promise<Media> {
-    const body = await this.#request(
-      "GET",
-      `/media/${encodeURIComponent(mediaId(media))}`,
-      options,
-    );
+    const body = await this.#request("getMedia", { id: mediaId(media) }, options);
     return parseMedia(body.media);
   }
 
@@ -303,8 +335,8 @@ export class Lumen {
     media: string | Pick<Media, "id">,
     options: { signal?: AbortSignal } = {},
   ): Promise<void> {
-    await this.#send(this.#apiUrl(`/media/${encodeURIComponent(mediaId(media))}`), {
-      method: "DELETE",
+    await this.#send(this.#apiUrl(operationPath("deleteMedia", { id: mediaId(media) })), {
+      method: apiOperations.deleteMedia.method,
       signal: options.signal,
     });
   }
@@ -315,21 +347,20 @@ export class Lumen {
     sizeBytes: number,
     signal: AbortSignal | undefined,
   ): Promise<Media> {
-    const base = `/media/${encodeURIComponent(id)}/multipart`;
-    const uploadId = parseUploadId(await this.#request("POST", base, { signal }));
-    const uploadPath = `${base}/${encodeURIComponent(uploadId)}`;
+    const uploadId = parseUploadId(await this.#request("startMultipartUpload", { id }, { signal }));
 
     const parts: { etag: string; partNumber: number }[] = [];
     for await (const part of partsOf(body, sizeBytes, signal)) {
-      parts.push(
-        await this.#putPart(this.#apiUrl(`${uploadPath}/parts/${parts.length + 1}`), part, signal),
-      );
+      const partNumber = parts.length + 1;
+      const path = operationPath("putMultipartPart", { id, uploadId, partNumber });
+      parts.push(await this.#putPart(this.#apiUrl(path), part, signal));
     }
 
-    const done = await this.#request("POST", `${uploadPath}/complete`, {
-      body: { parts },
-      signal,
-    });
+    const done = await this.#request(
+      "completeMultipartUpload",
+      { id, uploadId },
+      { body: { parts }, signal },
+    );
     return parseMedia(done.media);
   }
 
@@ -344,7 +375,11 @@ export class Lumen {
   ): Promise<{ readonly etag: string; readonly partNumber: number }> {
     for (let attempt = 1; ; attempt += 1) {
       try {
-        const response = await this.#send(url, { body: part, method: "PUT", signal });
+        const response = await this.#send(url, {
+          body: part,
+          method: apiOperations.putMultipartPart.method,
+          signal,
+        });
         return parsePart(await readJson(response, signal));
       } catch (error) {
         if (attempt >= maxPartAttempts || !isRetryablePartError(error)) {
@@ -367,9 +402,7 @@ export class Lumen {
     for (let failures = 0; ;) {
       await this.#cooldown(signal);
       try {
-        const body = await this.#request("GET", `/renders/${encodeURIComponent(id)}/progress`, {
-          signal,
-        });
+        const body = await this.#request("getRenderProgress", { id }, { signal });
         const render = parseRender(body.render, this.#baseUrl);
         this.#rateLimitStreak = 0;
         reads.lastSucceededAt = Date.now();
@@ -444,14 +477,14 @@ export class Lumen {
     return response;
   }
 
-  /** Calls an authenticated JSON route of the API and returns its success body. */
-  async #request<T extends object = Record<string, unknown>>(
-    method: string,
-    path: string,
+  /** Calls an operation of the API that answers with JSON and returns its success body. */
+  async #request<Id extends ApiOperationId>(
+    id: Id,
+    params: PathParams<Id>,
     options: RequestOptions = {},
-  ): Promise<T> {
-    const response = await this.#send(this.#apiUrl(path), {
-      method,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.#send(this.#apiUrl(operationPath(id, params)), {
+      method: apiOperations[id].method,
       ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
       headers: {
         ...(options.body !== undefined ? { "content-type": "application/json" } : {}),
@@ -459,7 +492,7 @@ export class Lumen {
       },
       signal: options.signal,
     });
-    return readJson<T>(response, options.signal);
+    return readJson(response, options.signal);
   }
 
   #apiUrl(path: string): URL {

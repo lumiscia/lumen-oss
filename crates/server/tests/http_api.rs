@@ -20,14 +20,15 @@ use lumen_ffmpeg::{
     CpuVideoFrame, DecodeMode, DecodedVideoFrame, InputContext, MuxedEncoder, PixelFormat,
     VideoDecoder, VideoDecoderConfig, VideoEncoderConfig, YuvVideoFrame,
 };
-use reqwest::{
-    StatusCode,
-    blocking::{Client, Response},
-};
+use reqwest::{StatusCode, blocking::Client};
 use serde_json::{Value, json};
 use tungstenite::{
     Message, WebSocket, client::IntoClientRequest, http::HeaderValue, stream::MaybeTlsStream,
 };
+
+mod spec;
+
+use spec::{Response, checked};
 
 const TOKEN: &str = "test-token";
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -111,38 +112,39 @@ impl Server {
     }
 
     fn get(&self, path: &str) -> Response {
-        self.http
+        let response = self
+            .http
             .get(format!("{}{path}", self.base))
             .bearer_auth(TOKEN)
             .send()
-            .expect("GET request")
+            .expect("GET request");
+        checked("GET", path, None, response)
     }
 
     fn post(&self, body: &Value) -> Response {
-        self.http
-            .post(format!("{}/renders", self.base))
-            .bearer_auth(TOKEN)
-            .json(body)
-            .send()
-            .expect("POST /renders")
+        self.post_to("/renders", body)
     }
 
     fn post_to(&self, path: &str, body: &Value) -> Response {
-        self.http
+        let response = self
+            .http
             .post(format!("{}{path}", self.base))
             .bearer_auth(TOKEN)
             .json(body)
             .send()
-            .expect("POST request")
+            .expect("POST request");
+        checked("POST", path, Some(body), response)
     }
 
     fn put_bytes(&self, path: &str, bytes: &[u8]) -> Response {
-        self.http
+        let response = self
+            .http
             .put(format!("{}{path}", self.base))
             .bearer_auth(TOKEN)
             .body(bytes.to_vec())
             .send()
-            .expect("PUT request")
+            .expect("PUT request");
+        checked("PUT", path, None, response)
     }
 
     fn check(&self, body: &Value) -> Value {
@@ -413,25 +415,19 @@ fn errors_answer_with_the_code_and_message_the_sdk_reads() {
     let server = Server::start(&[]);
     let body = |response: Response| response.json::<Value>().expect("error body");
     let bytes = |payload: Vec<u8>| {
-        server
+        let response = server
             .http
             .post(format!("{}/renders", server.base))
             .bearer_auth(TOKEN)
             .header("content-type", "application/json")
             .body(payload)
             .send()
-            .expect("request")
+            .expect("request");
+        checked("POST", "/renders", None, response)
     };
 
     assert_eq!(
-        body(
-            server
-                .http
-                .get(format!("{}/renders/nope", server.base))
-                .bearer_auth(TOKEN)
-                .send()
-                .expect("request")
-        ),
+        body(server.get("/renders/nope")),
         json!({ "code": "render_not_found", "error": "render was not found" })
     );
 
@@ -657,13 +653,7 @@ fn codes_and_paths(diagnostics: &Value) -> Vec<(String, String)> {
 fn checks_say_what_is_wrong_and_invalid_renders_carry_the_same_diagnostics() {
     let server = Server::start(&[]);
     let check = |body: &Value| -> Value {
-        let response = server
-            .http
-            .post(format!("{}/renders/check", server.base))
-            .bearer_auth(TOKEN)
-            .json(body)
-            .send()
-            .expect("POST /renders/check");
+        let response = server.post_to("/renders/check", body);
         assert_eq!(response.status(), StatusCode::OK);
         response.json().expect("check body")
     };
@@ -910,12 +900,14 @@ fn renders_stay_queued_until_a_slot_frees() {
 }
 
 fn cancel(server: &Server, id: &str) -> Response {
-    server
+    let path = format!("/renders/{id}/cancel");
+    let response = server
         .http
-        .post(format!("{}/renders/{id}/cancel", server.base))
+        .post(format!("{}{path}", server.base))
         .bearer_auth(TOKEN)
         .send()
-        .expect("POST /renders/:id/cancel")
+        .expect("POST /renders/:id/cancel");
+    checked("POST", &path, None, response)
 }
 
 /// Starts a render whose media download never ends until `media` releases it.
@@ -1496,7 +1488,7 @@ fn media_uploads_are_probed_once_their_bytes_are_complete() {
         content.headers()["content-type"],
         "application/octet-stream"
     );
-    assert_eq!(content.bytes().expect("content").as_ref(), TINY_PNG);
+    assert_eq!(content.bytes().expect("content"), TINY_PNG);
 
     let font = upload(&server, "brand.png", "image/png", &roboto());
     assert_eq!(font["kind"], "font", "{font}");
@@ -2231,7 +2223,7 @@ fn stills_and_sequences_download_as_their_own_files_with_gpu() {
     );
 
     // Without an output the artifact is the same MP4 as before.
-    let (id, _) = render(Value::Null).unwrap();
+    let (id, _) = render_outcome(&server, &json!({ "composition": long_composition(6) })).unwrap();
     server.wait_for_state(&id, &["succeeded"]);
     let (_, content_type, disposition) = artifact_headers(&server, &id);
     assert_eq!(content_type, "video/mp4");

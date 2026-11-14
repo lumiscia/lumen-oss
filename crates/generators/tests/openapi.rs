@@ -13,14 +13,14 @@ use serde_json::{Value, json};
 
 const BASE: &str = "file:///definitions/";
 
-/// What is wrong with `value`, serialised, against the API schema's definition `name`, with the
+/// What is wrong with `value`, serialised, against the OpenAPI document's schema `name`, with the
 /// runtime and composition schemas it refers to beside it.
 fn schema_errors(name: &str, value: &impl Serialize) -> Vec<String> {
     let parse = |json: String| serde_json::from_str::<Value>(&json).unwrap();
     let registry = jsonschema::Registry::new()
         .add(
-            format!("{BASE}api.schema.json"),
-            parse(lumen_generators::render_api_schema_json().unwrap()),
+            format!("{BASE}openapi.json"),
+            parse(lumen_generators::render_openapi_json().unwrap()),
         )
         .unwrap()
         .add(
@@ -35,7 +35,7 @@ fn schema_errors(name: &str, value: &impl Serialize) -> Vec<String> {
         .unwrap()
         .prepare()
         .unwrap();
-    let schema = json!({ "$ref": format!("{BASE}api.schema.json#/$defs/{name}") });
+    let schema = json!({ "$ref": format!("{BASE}openapi.json#/components/schemas/{name}") });
     let validator = jsonschema::options()
         .with_registry(&registry)
         .build(&schema)
@@ -195,4 +195,59 @@ fn requests_and_media_match_the_schema() {
             }),
         },
     );
+}
+
+#[test]
+fn the_document_is_valid_openapi_and_describes_every_operation() {
+    let document: Value =
+        serde_json::from_str(&lumen_generators::render_openapi_json().unwrap()).unwrap();
+    // The OpenAPI Initiative's schema of an OpenAPI 3.1 document.
+    let meta: Value =
+        serde_json::from_str(include_str!("fixtures/openapi-3.1.schema.json")).unwrap();
+    let errors: Vec<String> = jsonschema::validator_for(&meta)
+        .unwrap()
+        .iter_errors(&document)
+        .map(|error| format!("{}: {error}", error.instance_path()))
+        .collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+
+    for operation in lumen_server_api::OPERATIONS {
+        let method = operation.method.as_str().to_ascii_lowercase();
+        let described = &document["paths"][operation.path][&method];
+        assert_eq!(described["operationId"], operation.id);
+        for (status, _) in operation.success {
+            assert!(
+                described["responses"][status.to_string()].is_object(),
+                "{} has no {status}",
+                operation.id
+            );
+        }
+    }
+}
+
+#[test]
+fn webhooks_match_the_schema() {
+    let render = Render {
+        id: "r_1".to_string(),
+        status: RenderStatus::Succeeded,
+        progress: 1.0,
+        url: Some("https://example.com/r_1.mp4".to_string()),
+        error: None,
+        created_at: "2026-11-14T00:00:00Z".to_string(),
+        input_hash: "ab".to_string(),
+        organization_id: "org_1".to_string(),
+        cost_micros: 1200,
+        output_bytes: Some(10),
+        duration_ms: Some(20),
+    };
+    assert_valid(
+        "RenderWebhook",
+        &lumen_server_api::RenderWebhook {
+            kind: lumen_server_api::RenderWebhookType::Succeeded,
+            timestamp: "2026-11-14T00:00:01Z".to_string(),
+            data: render,
+        },
+    );
+    let flat = json!({ "event": "render.succeeded", "id": "r_1" });
+    assert!(!schema_errors("RenderWebhook", &flat).is_empty());
 }

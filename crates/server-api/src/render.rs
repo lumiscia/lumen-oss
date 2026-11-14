@@ -46,11 +46,8 @@ pub struct RenderRequest {
 #[cfg_attr(feature = "metadata", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct CheckRequest {
-    /// The composition document, as `composition.schema.json` describes it.
-    #[cfg_attr(
-        feature = "metadata",
-        schemars(schema_with = "crate::external::composition")
-    )]
+    /// The composition document to check. Any JSON is taken: what is wrong with it, by
+    /// `composition.schema.json` and beyond, is what the report says.
     pub composition: Value,
     /// The media manifest a render would stage, whose aliases count as present.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]

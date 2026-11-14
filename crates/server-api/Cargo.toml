@@ -12,7 +12,7 @@ name = "lumen_server_api"
 path = "src/lib.rs"
 
 [features]
-# Derives the JSON Schema that `definitions/api.schema.json` is generated from.
+# Derives the JSON Schemas that `definitions/openapi.json` is generated from.
 metadata = ["dep:schemars"]
 
 [dependencies]

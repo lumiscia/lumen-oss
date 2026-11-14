@@ -32,6 +32,7 @@ pub(super) async fn health() -> Json<Health> {
     Json(Health {
         ok: true,
         service: "lumen-server".to_string(),
+        version: lumen_engine::SCHEMA_VERSION.to_string(),
     })
 }
 

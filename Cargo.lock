@@ -1755,6 +1755,7 @@ dependencies = [
  "fontdb",
  "futures-util",
  "image",
+ "jsonschema",
  "lumen-engine",
  "lumen-engine-3d",
  "lumen-engine-ffmpeg",

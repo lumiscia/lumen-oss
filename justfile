@@ -43,7 +43,7 @@ set-schema-version version:
 verify-typescript-artifacts:
     #!/usr/bin/env bash
     set -euo pipefail
-    paths=({{ definitions_out }}/composition.schema.json {{ definitions_out }}/runtime.schema.json {{ definitions_out }}/api.schema.json {{ node_reference }} {{ engine_readme }} {{ generated_types_out }} {{ generated_expressions_out }})
+    paths=({{ definitions_out }}/composition.schema.json {{ definitions_out }}/runtime.schema.json {{ definitions_out }}/openapi.json {{ node_reference }} {{ engine_readme }} {{ generated_types_out }} {{ generated_expressions_out }})
     hashes() { find "${paths[@]}" -type f -print0 | sort -z | xargs -0 sha256sum; }
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' EXIT
@@ -75,7 +75,7 @@ verify-definitions:
     pnpm exec oxfmt --write "$tmpdir"
     diff -u {{ definitions_out }}/composition.schema.json "$tmpdir/composition.schema.json"
     diff -u {{ definitions_out }}/runtime.schema.json "$tmpdir/runtime.schema.json"
-    diff -u {{ definitions_out }}/api.schema.json "$tmpdir/api.schema.json"
+    diff -u {{ definitions_out }}/openapi.json "$tmpdir/openapi.json"
 
 # Checks every Rust dependency's license against deny.toml, as CI does. Needs cargo-deny.
 licenses:
