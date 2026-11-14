@@ -9,10 +9,9 @@ use crate::node::vector::{
 };
 use crate::node::{Deferred, DelegateEvalContext, Override};
 
-use super::text::{
-    Stable, Text, TextInstance, TextState, decoration_paints, stroked, used_font_families,
-};
+use super::text::{Stable, Text, TextInstance, TextState, decoration_paints, stroked};
 use super::text_content::{TextContentDelegate, TextLineDelegate, TextSpanDelegate};
+use super::text_fonts::used_font_families;
 
 fn text_shader() -> String {
     [

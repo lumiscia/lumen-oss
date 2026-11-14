@@ -633,9 +633,9 @@ fn measure_text_value(
     ctx: &ExpressionContext<'_>,
     request: lumen_text::TextLayoutRequest,
 ) -> crate::Result<lumen_text::TextMeasurement> {
-    let mut text_system = crate::node::source::text::text_system(ctx.media)?;
+    let mut text_system = crate::node::source::text_fonts::text_system(ctx.media)?;
     for span in &request.spans {
-        crate::node::source::text::load_font_family(
+        crate::node::source::text_fonts::load_font_family(
             &mut text_system,
             ctx.media,
             &span.font_family,

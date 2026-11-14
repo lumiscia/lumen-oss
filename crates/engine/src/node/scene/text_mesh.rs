@@ -19,11 +19,9 @@ use crate::error::{LumenError, RenderError};
 use crate::gpu::frame_graph::FrameCx;
 use crate::media::MediaStore;
 use crate::node::NodeId;
-use crate::node::source::text::{
-    TextAlignmentHorizontal, TextAlignmentVertical, TextLayoutParams, load_font_families,
-    text_system, used_font_families,
-};
+use crate::node::source::text::{TextAlignmentHorizontal, TextAlignmentVertical, TextLayoutParams};
 use crate::node::source::text_content::TextContent;
+use crate::node::source::text_fonts::{load_font_families, text_system, used_font_families};
 
 /// Pixels to the em that text is shaped at, before its outlines are scaled to world units.
 const SHAPE_EM: f64 = 128.0;

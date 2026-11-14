@@ -770,7 +770,7 @@ impl FrameGraph {
 }
 
 fn font_generation(media: Option<&dyn MediaStore>) -> Option<u64> {
-    crate::node::source::text::text_system(media)
+    crate::node::source::text_fonts::text_system(media)
         .ok()
         .map(|text_system| text_system.font_generation())
 }
